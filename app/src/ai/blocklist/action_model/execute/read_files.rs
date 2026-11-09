@@ -156,7 +156,7 @@ impl ReadFilesExecutor {
             Some(SessionType::WarpifiedRemote {
                 host_id: Some(host_id),
             }) => remote_server::manager::RemoteServerManager::as_ref(ctx)
-                .client_for_host(host_id)
+                .client_for_host_with(host_id, remote_server::capability::FILE_CONTEXT)
                 .cloned(),
             _ => None,
         };

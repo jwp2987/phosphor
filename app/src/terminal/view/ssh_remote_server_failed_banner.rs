@@ -151,7 +151,14 @@ pub fn describe_unsupported_reason(reason: &UnsupportedReason) -> String {
             "terminal-ssh-remote-server-unsupported-non-glibc-detail",
             name = name.clone()
         ),
+        UnsupportedReason::HelperUnavailable { detail } => detail.clone(),
     }
+}
+
+/// Whether an `Unsupported` setup state is worth a banner. A missing helper is not: it is the
+/// no-helper path working as designed, so it gets a log line and nothing on screen.
+pub fn unsupported_shows_banner(reason: &UnsupportedReason) -> bool {
+    !matches!(reason, UnsupportedReason::HelperUnavailable { .. })
 }
 
 /// Explains, in one line, why this legacy SSH session never reached a

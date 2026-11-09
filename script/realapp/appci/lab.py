@@ -10,7 +10,8 @@ SSHLAB_DIR = os.path.normpath(os.path.join(HERE, "..", "sshlab"))
 USERS_PY = os.path.join(SSHLAB_DIR, "rootfs", "usr", "local", "lib", "sshlab", "usersdb.py")
 ALL_SHELLS = ("bash", "zsh", "fish", "nu", "pwsh", "dash", "ash", "rbash")
 LATS = {"lan": 0, "150": 150, "300": 300}          # RTT label -> ms
-HELPERS = ("nohelper", "helper")                    # nohelper is the default and always the first arm
+HELPERS = ("nohelper", "helper", "upload", "upgrade", "never")   # nohelper is the default and always the first arm. helper: pre-installed. upload: nothing installed, the app uploads
+# it in-band (the lab blocks outbound, so only an upload can succeed). upgrade: older versions pre-seeded, the app replaces them. never: per-host policy never, nothing may be uploaded
 RTT_TOL_MS = 15.0
 NET_FAULTS = ("rst", "blackhole", "stall10")
 

@@ -636,7 +636,10 @@ impl GlobalBufferModel {
                 let host_id = remote_path.host_id.clone();
                 let path_str = remote_path.path.as_str().to_string();
                 let manager = remote_server::manager::RemoteServerManager::handle(ctx);
-                if let Some(client) = manager.as_ref(ctx).client_for_host(&host_id) {
+                if let Some(client) = manager
+                    .as_ref(ctx)
+                    .client_for_host_with(&host_id, remote_server::capability::BUFFERS)
+                {
                     client.close_buffer(path_str);
                 }
             }
@@ -1833,7 +1836,10 @@ impl GlobalBufferModel {
             // Subscribe to buffer content changes so edits are sent back to the daemon.
             let client_for_sub = {
                 let manager = remote_server::manager::RemoteServerManager::handle(ctx);
-                manager.as_ref(ctx).client_for_host(&host_id).cloned()
+                manager
+                    .as_ref(ctx)
+                    .client_for_host_with(&host_id, remote_server::capability::BUFFERS)
+                    .cloned()
             };
             if let Some(client) = client_for_sub {
                 let path_for_edit = path_str.clone();
@@ -1926,7 +1932,11 @@ impl GlobalBufferModel {
 
             // Look up the client on the main thread, then send OpenBuffer asynchronously.
             let manager = remote_server::manager::RemoteServerManager::handle(ctx);
-            let Some(client) = manager.as_ref(ctx).client_for_host(&host_id).cloned() else {
+            let Some(client) = manager
+                .as_ref(ctx)
+                .client_for_host_with(&host_id, remote_server::capability::BUFFERS)
+                .cloned()
+            else {
                 log::warn!("No remote server client for host {host_id:?}");
                 // Clean up the failed file_id so a subsequent retry can resend OpenBuffer.
                 self.cleanup_file_id(file_id, ctx);
@@ -2015,7 +2025,11 @@ impl GlobalBufferModel {
 
         log::debug!("[remote-buffer] Re-opening buffer with force_reload: path={path_str}");
         let manager = remote_server::manager::RemoteServerManager::handle(ctx);
-        let Some(client) = manager.as_ref(ctx).client_for_host(&host_id).cloned() else {
+        let Some(client) = manager
+            .as_ref(ctx)
+            .client_for_host_with(&host_id, remote_server::capability::BUFFERS)
+            .cloned()
+        else {
             log::warn!("No remote server client for host {host_id:?}");
             ctx.emit(GlobalBufferModelEvent::FailedToLoad {
                 file_id,
@@ -2604,7 +2618,11 @@ impl GlobalBufferModel {
         let path_str = remote_path.path.as_str().to_string();
 
         let manager = remote_server::manager::RemoteServerManager::handle(ctx);
-        let Some(client) = manager.as_ref(ctx).client_for_host(&host_id).cloned() else {
+        let Some(client) = manager
+            .as_ref(ctx)
+            .client_for_host_with(&host_id, remote_server::capability::BUFFERS)
+            .cloned()
+        else {
             log::warn!("save_remote_buffer: host {host_id:?} has no remote server client");
             // Notify the editor that the save failed, to avoid getting stuck in a false "saved" state.
             ctx.emit(GlobalBufferModelEvent::FailedToSave {

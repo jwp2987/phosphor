@@ -161,7 +161,7 @@ use crate::terminal::view::ssh_remote_server_choice_view::{
 };
 use crate::terminal::view::ssh_remote_server_failed_banner::{
     SshRemoteServerFailedBanner, SshRemoteServerFailedBannerEvent, SshRemoteServerFailureKind,
-    describe_unsupported_reason, legacy_fallback_shows_banner,
+    describe_unsupported_reason, legacy_fallback_shows_banner, unsupported_shows_banner,
 };
 use crate::terminal::view::telemetry::PromptSuggestionFallbackReason;
 use crate::workspaces::user_workspaces::UserWorkspacesEvent;
@@ -2224,10 +2224,14 @@ pub enum Event {
     /// Emitted when the user clicks "install" in the SSH remote-server choice block.
     RemoteServerInstallRequested {
         session_id: SessionId,
+        /// "Don't ask me again" was ticked: remember `allow` for this host.
+        remember: bool,
     },
     /// Emitted when the user clicks "skip" in the SSH remote-server choice block.
     RemoteServerSkipRequested {
         session_id: SessionId,
+        /// "Don't ask me again" was ticked: remember `never` for this host.
+        remember: bool,
     },
     OpenThemeChooser,
     OpenConversationHistory,
@@ -5697,7 +5701,9 @@ impl TerminalView {
                         // is a no-op when a banner is already shown for this
                         // session, so this cannot double up.
                         match state {
-                            RemoteServerSetupState::Unsupported { reason } => {
+                            RemoteServerSetupState::Unsupported { reason }
+                                if unsupported_shows_banner(reason) =>
+                            {
                                 me.show_ssh_remote_server_failed_banner(
                                     *session_id,
                                     SshRemoteServerFailureKind::Unsupported,
@@ -20403,13 +20409,19 @@ impl TerminalView {
             ctx.add_typed_action_view(|ctx| SshRemoteServerChoiceView::new(session_id, ctx));
 
         ctx.subscribe_to_view(&choice_view, move |me, _, event, ctx| match event {
-            SshRemoteServerChoiceViewEvent::Install => {
+            SshRemoteServerChoiceViewEvent::Install { remember } => {
                 me.remove_ssh_remote_server_choice_block(session_id, ctx);
-                ctx.emit(Event::RemoteServerInstallRequested { session_id });
+                ctx.emit(Event::RemoteServerInstallRequested {
+                    session_id,
+                    remember: *remember,
+                });
             }
-            SshRemoteServerChoiceViewEvent::Skip => {
+            SshRemoteServerChoiceViewEvent::Skip { remember } => {
                 me.remove_ssh_remote_server_choice_block(session_id, ctx);
-                ctx.emit(Event::RemoteServerSkipRequested { session_id });
+                ctx.emit(Event::RemoteServerSkipRequested {
+                    session_id,
+                    remember: *remember,
+                });
             }
             SshRemoteServerChoiceViewEvent::ZapifySettings => {
                 ctx.emit(Event::OpenSettings(SettingsSection::Warpify));

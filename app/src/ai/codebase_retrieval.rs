@@ -550,6 +550,12 @@ fn handle_for_remote_session(
     }
 
     let host_id = session_context.host_id()?;
+    // A server without a codebase index (the limited helper) is a host with no remote index.
+    if !RemoteServerManager::as_ref(app)
+        .host_supports(host_id, remote_server::capability::CODEBASE_INDEX)
+    {
+        return None;
+    }
     let repo_path =
         RemoteCodebaseIndexModel::as_ref(app).active_repo_path(session_context, None)?;
 

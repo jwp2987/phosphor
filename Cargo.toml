@@ -599,6 +599,20 @@ codegen-units = 4
 inherits = "release-cli"
 opt-level = 3
 
+# The bundled `phosphor-remote` helper (crates/remote_server, bin `phosphor-remote`, Wave H,
+# #1804): the small warpui-free daemon the app uploads over ssh. Size over speed (it serves a
+# handful of requests per keystroke-scale interaction), fat LTO and one codegen unit because it
+# is a tiny crate graph, abort on panic so there is no unwinding machinery. Target 4-8 MB
+# stripped; CI fails the build over 20 MB. Not `release-remote`: that name is the full CLI's.
+[profile.release-remote-helper]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+debug = false
+
 # A custom CLI release-like profile that forces debug assertions on, used for
 # dev/local channel CLI bundles.
 [profile.release-cli-debug_assertions]

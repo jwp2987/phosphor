@@ -145,6 +145,7 @@ async fn round_trip_server_message() {
                 server_version: "0.1.0".to_string(),
                 host_id: "test-host".to_string(),
                 chunked_responses: false,
+                capabilities: Vec::new(),
             },
         )),
     };

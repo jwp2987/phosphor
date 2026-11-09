@@ -360,7 +360,8 @@ impl WorkingDirectoriesModel {
                 let remote = util_remote_path_to_buffer(remote);
                 // Require a connected session for the host; without one the
                 // remote model could not issue GetDiffState.
-                RemoteServerManager::as_ref(ctx).client_for_host(&remote.host_id)?;
+                RemoteServerManager::as_ref(ctx)
+                    .client_for_host_with(&remote.host_id, remote_server::capability::DIFF_STATE)?;
                 ctx.add_model(|ctx| DiffStateModel::new_remote(remote, DiffMode::default(), ctx))
             }
         };

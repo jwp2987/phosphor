@@ -952,6 +952,25 @@ impl RemoteServerManager {
             .find_map(|session_id| self.client_for_session(*session_id))
     }
 
+    /// [`Self::client_for_host`], but only when that client's server supports `capability`
+    /// ([`crate::capability`]). A feature family uses this instead of `client_for_host` so that
+    /// with the limited `phosphor-remote` helper connected it behaves EXACTLY as if no remote
+    /// server were connected and takes its no-helper path, instead of offering something the
+    /// helper can only refuse. A legacy full daemon (no capability list) supports everything.
+    pub fn client_for_host_with(
+        &self,
+        host_id: &HostId,
+        capability: &str,
+    ) -> Option<&Arc<RemoteServerClient>> {
+        self.client_for_host(host_id)
+            .filter(|client| client.capabilities().supports(capability))
+    }
+
+    /// Whether the server for `host_id` is connected and supports `capability`.
+    pub fn host_supports(&self, host_id: &HostId, capability: &str) -> bool {
+        self.client_for_host_with(host_id, capability).is_some()
+    }
+
     /// Checks if the remote server binary is installed and executable.
     /// Emits `BinaryCheckComplete { result }`.
     /// Returns Ok(true) if the binary is installed and executable,
@@ -1138,11 +1157,26 @@ impl RemoteServerManager {
                     let _ = spawner
                         .spawn(move |_me, ctx| {
                             if let Err(error) = &result {
+                                // No helper to upload is not a failed install: the session
+                                // stays on the no-helper path and nothing is shown (#1804).
+                                let state = if crate::setup::is_helper_unavailable(error) {
+                                    log::info!(
+                                        "no remote helper to install for session {session_id:?}: \
+                                         {error}"
+                                    );
+                                    RemoteServerSetupState::Unsupported {
+                                        reason: UnsupportedReason::HelperUnavailable {
+                                            detail: error.clone(),
+                                        },
+                                    }
+                                } else {
+                                    RemoteServerSetupState::Failed {
+                                        error: error.clone(),
+                                    }
+                                };
                                 ctx.emit(RemoteServerManagerEvent::SetupStateChanged {
                                     session_id,
-                                    state: RemoteServerSetupState::Failed {
-                                        error: error.clone(),
-                                    },
+                                    state,
                                 });
                             }
                             ctx.emit(RemoteServerManagerEvent::BinaryInstallComplete {
@@ -1714,6 +1748,16 @@ impl RemoteServerManager {
         }
     }
 
+    /// Whether the server connected for `session_id` supports `capability`
+    /// ([`crate::capability`]). `false` when the session is not connected. A legacy full daemon
+    /// supports everything; the bundled `phosphor-remote` helper only what it lists, and a
+    /// feature it lacks uses its no-helper path (or is simply unavailable) instead of sending a
+    /// request the server can only refuse.
+    pub fn session_supports(&self, session_id: SessionId, capability: &str) -> bool {
+        self.client_for_session(session_id)
+            .is_some_and(|client| client.capabilities().supports(capability))
+    }
+
     /// Rotates the daemon-wide auth credential on each connected remote host.
     /// Only sessions whose stored `identity_key` matches the current identity
     /// (from `auth_context`) receive the notification. This prevents a stale
@@ -1811,6 +1855,17 @@ impl RemoteServerManager {
             log::warn!("navigate_to_directory: no connected client for session {session_id:?}");
             return;
         };
+        // Fires on every `cd`; the helper has no repo-metadata service, and asking it would
+        // only collect a refusal each time.
+        if !client
+            .capabilities()
+            .supports(crate::capability::REPO_METADATA)
+        {
+            log::debug!(
+                "navigate_to_directory: server for session {session_id:?} has no repo metadata"
+            );
+            return;
+        }
         let Some(host_id) = self.host_id_for_session(session_id).cloned() else {
             log::warn!("navigate_to_directory: no host_id for session {session_id:?}");
             return;
@@ -1898,6 +1953,15 @@ impl RemoteServerManager {
             );
             return;
         };
+        if !client
+            .capabilities()
+            .supports(crate::capability::REPO_METADATA)
+        {
+            log::debug!(
+                "load_remote_repo_metadata_directory: server for session {session_id:?} has no repo metadata"
+            );
+            return;
+        }
         let Some(host_id) = self.host_id_for_session(session_id).cloned() else {
             log::warn!(
                 "load_remote_repo_metadata_directory: no host_id for session {session_id:?}"
@@ -2735,6 +2799,13 @@ impl RemoteServerManager {
         ctx: &mut ModelContext<Self>,
     ) -> bool {
         let operation = mutation_kind.operation();
+        if !self.host_supports(&host_id, crate::capability::CODEBASE_INDEX) {
+            log::debug!(
+                "Remote codebase index mutation skipped: the server for host={host_id} \
+                 has no codebase index (limited helper)"
+            );
+            return false;
+        }
         let Some(session_id) = self.connected_session_for_host(&host_id) else {
             log::warn!(
                 "Remote server codebase index mutation: no connected session \

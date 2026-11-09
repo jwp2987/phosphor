@@ -93,7 +93,10 @@ impl RemoteDiffStateModel {
     /// RPC response; later changes arrive as manager push events.
     fn spawn_get_diff_state(&self, ctx: &mut ModelContext<Self>) {
         let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host(&self.remote_path.host_id)
+            .client_for_host_with(
+                &self.remote_path.host_id,
+                remote_server::capability::DIFF_STATE,
+            )
             .cloned()
         else {
             // No connected session for the host; leave the model in its current
@@ -116,7 +119,10 @@ impl RemoteDiffStateModel {
     /// Fire-and-forget `UnsubscribeDiffState` for a `(repo, mode)` pair.
     fn spawn_unsubscribe(&self, mode: &DiffMode, ctx: &mut ModelContext<Self>) {
         let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host(&self.remote_path.host_id)
+            .client_for_host_with(
+                &self.remote_path.host_id,
+                remote_server::capability::DIFF_STATE,
+            )
             .cloned()
         else {
             return;
@@ -516,7 +522,10 @@ impl RemoteDiffStateModel {
         ctx: &mut ModelContext<Self>,
     ) {
         let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host(&self.remote_path.host_id)
+            .client_for_host_with(
+                &self.remote_path.host_id,
+                remote_server::capability::GIT_WRITE,
+            )
             .cloned()
         else {
             // No connected session for the host; nothing to discard against.
@@ -558,7 +567,10 @@ impl RemoteDiffStateModel {
         use super::diff_state::StageTarget;
 
         let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host(&self.remote_path.host_id)
+            .client_for_host_with(
+                &self.remote_path.host_id,
+                remote_server::capability::GIT_WRITE,
+            )
             .cloned()
         else {
             // No connected session for the host; nothing to stage against.
@@ -619,7 +631,10 @@ impl RemoteDiffStateModel {
     /// [`DiffStateModelEvent::BranchesReceived`], matching the local backend.
     pub fn fetch_branches(&self, ctx: &mut ModelContext<Self>) {
         let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host(&self.remote_path.host_id)
+            .client_for_host_with(
+                &self.remote_path.host_id,
+                remote_server::capability::GIT_READ,
+            )
             .cloned()
         else {
             // No connected session for the host; the dropdown keeps its

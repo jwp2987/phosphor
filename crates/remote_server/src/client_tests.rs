@@ -106,6 +106,7 @@ async fn initialize_round_trip() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
 
@@ -115,6 +116,45 @@ async fn initialize_round_trip() {
         .unwrap();
     assert_eq!(resp.server_version, "test-0.1.0");
     assert_eq!(resp.host_id, "test-host-id");
+}
+
+/// The handshake records what the server supports. Before it (and for a legacy full daemon,
+/// which sends no list) everything is supported; the helper's list is exact (#1804).
+#[tokio::test]
+async fn initialize_records_the_servers_capabilities() {
+    use crate::capability::{FILE_CONTEXT, FS_BASIC, RUN_COMMAND};
+
+    for (advertised, file_context, run_command) in [
+        (Vec::new(), true, true),
+        (
+            vec![FS_BASIC.to_string(), RUN_COMMAND.to_string()],
+            false,
+            true,
+        ),
+        (vec![FILE_CONTEXT.to_string()], true, false),
+    ] {
+        let caps = advertised.clone();
+        let (client, _events, _executor) = setup_mock_client(move |_| {
+            server_message::Message::InitializeResponse(InitializeResponse {
+                server_version: "test-0.1.0".to_string(),
+                host_id: "test-host-id".to_string(),
+                chunked_responses: false,
+                capabilities: caps.clone(),
+            })
+        });
+        assert!(
+            client.capabilities().supports(FILE_CONTEXT),
+            "before the handshake everything is supported"
+        );
+        client
+            .initialize(None, ClientPreferences::default())
+            .await
+            .unwrap();
+        let got = client.capabilities();
+        assert_eq!(got.supports(FILE_CONTEXT), file_context, "{advertised:?}");
+        assert_eq!(got.supports(RUN_COMMAND), run_command, "{advertised:?}");
+        assert_eq!(got.is_limited(), !advertised.is_empty());
+    }
 }
 
 #[tokio::test]
@@ -132,6 +172,7 @@ async fn initialize_sends_empty_auth_token_when_none() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
 
@@ -156,6 +197,7 @@ async fn initialize_sends_auth_token_when_provided() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
 
@@ -222,6 +264,7 @@ async fn is_disconnected_starts_false() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
 
@@ -498,6 +541,7 @@ async fn concurrent_in_flight_requests() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
     let client = std::sync::Arc::new(client);
@@ -536,6 +580,7 @@ async fn mock_server_with_error_handling(
                             server_version: "test-0.1.0".to_string(),
                             host_id: "test-host-id".to_string(),
                             chunked_responses: false,
+                            capabilities: Vec::new(),
                         },
                     )),
                 };
@@ -1091,6 +1136,7 @@ async fn initialize_announces_chunked_responses_and_reads_the_confirmation() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: true,
+            capabilities: Vec::new(),
         })
     });
     let resp = client
@@ -1110,6 +1156,7 @@ async fn an_old_daemon_leaves_chunked_responses_off() {
             server_version: "old".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
     let resp = client

@@ -295,6 +295,13 @@ message InitializeResponse {
   // connection (it only does so when the client asked). Absent on an old
   // daemon, which the client reads as false.
   bool chunked_responses = 3;
+  // Wave H (#1804): what this server can do, as capability names (see
+  // `remote_server::capability`). EMPTY means the full app daemon of an older
+  // version, which supports every request; a non-empty list is the small
+  // `phosphor-remote` helper, which answers every request outside the list with
+  // `ErrorCode::UNSUPPORTED`, and the client then uses its no-helper path for
+  // that feature.
+  repeated string capabilities = 4;
 }
 
 // Sent by the client after the SSH session has been bootstrapped.
@@ -357,6 +364,9 @@ enum ErrorCode {
   INVALID_REQUEST = 1;
   // An unexpected server-side failure.
   INTERNAL = 2;
+  // The server does not implement this request (the `phosphor-remote` helper
+  // covers a subset). The client falls back to its no-helper path.
+  UNSUPPORTED = 3;
 }
 
 message ErrorResponse {

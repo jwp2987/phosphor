@@ -3233,3 +3233,46 @@ fn byop_message_for_a_cancelled_transfer_says_why() {
         message.server_message_data
     );
 }
+
+/// The agent file tools follow the connected server's capabilities (#1804): a limited server
+/// without `FILE_CONTEXT` (the bundled helper) is the same as no server, so `read_files`,
+/// `apply_file_diffs` and `read_skill` are withdrawn exactly as in the no-helper case; a legacy
+/// full daemon (no capability list) and a server that lists the capability keep them.
+#[test]
+fn file_tools_are_withdrawn_for_a_server_without_file_context_and_offered_for_a_legacy_daemon() {
+    use remote_server::capability::{
+        FILE_CONTEXT, FS_BASIC, HELPER_CAPABILITIES, RUN_COMMAND, ServerCapabilities,
+    };
+    use remote_server::proto::InitializeResponse;
+
+    let caps = |names: &[&str]| {
+        ServerCapabilities::from_initialize_response(&InitializeResponse {
+            capabilities: names.iter().map(|n| n.to_string()).collect(),
+            ..Default::default()
+        })
+    };
+
+    // No server at all: withdrawn.
+    assert!(!super::file_tools_available(None));
+    // Legacy full daemon: an empty list means everything.
+    assert!(super::file_tools_available(Some(&caps(&[]))));
+    // The helper as it ships today: no FILE_CONTEXT.
+    assert!(!super::file_tools_available(Some(&caps(
+        HELPER_CAPABILITIES
+    ))));
+    assert!(!super::file_tools_available(Some(&caps(&[
+        FS_BASIC,
+        RUN_COMMAND
+    ]))));
+    // A server that does list it.
+    assert!(super::file_tools_available(Some(&caps(&[FILE_CONTEXT]))));
+
+    // The end of the chain: a remote session whose server cannot read files has no file tools,
+    // one whose server can has them.
+    assert!(
+        super::SessionContext::new_warpified_remote_for_test(false).is_remote_without_file_tools()
+    );
+    assert!(
+        !super::SessionContext::new_warpified_remote_for_test(true).is_remote_without_file_tools()
+    );
+}

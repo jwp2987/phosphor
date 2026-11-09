@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Guard: the bundled `phosphor-remote` helper must stay small and warpui-free (Wave H, #1804).
+#
+# The helper is built with `-p remote_server --no-default-features --features daemon`. Its
+# whole point is that it is NOT the app: the 273 MB binary it replaces for ssh installs got
+# that big from warpui, the ai crates and the embeddings stack. One careless `use` of a
+# warpui-bound crate from the daemon code (or a default feature that drags one in) would bring
+# them all back, and nothing else would notice until the size gate fails after a cross build.
+#
+# This reads the dependency tree of that exact feature set (`cargo tree`, metadata only; it
+# compiles nothing) and fails if any forbidden crate is in it. Needs cargo and a populated
+# registry index, so it runs on the build box (CI job `guards-helper-deps`, and as the first
+# step of `build-remote-helper`), not in `script/precheck`'s laptop gates.
+#
+# The forbidden list:
+#   warpui, warpui_core, warp_core, warp_util, repo_metadata, ai  -- the app
+#   tokio, reqwest, rustls, openssl, hyper                         -- a second async runtime or
+#                                                                     any network stack: the
+#                                                                     helper never talks to the
+#                                                                     internet
+#   git2, libgit2-sys                                              -- the C toolchain that
+#                                                                     breaks aarch64 musl cross
+#                                                                     builds (the helper shells
+#                                                                     out to `git`)
+# `tokio` is allowed in dev-dependencies (the tests use it), which is why this reads
+# `-e normal` only.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+forbidden=(warpui warpui_core warp_core warp_util repo_metadata ai tokio reqwest rustls openssl hyper git2 libgit2-sys)
+
+tree=$(cargo tree -p remote_server --no-default-features --features daemon -e normal --prefix none --format '{p}' 2>&1) || {
+    echo "check_remote_helper_deps: cargo tree failed:" >&2
+    echo "$tree" >&2
+    exit 1
+}
+
+# One line per crate: "name vX.Y.Z (...)". Compare the name field exactly.
+crates=$(printf '%s\n' "$tree" | awk '{print $1}' | sort -u)
+bad=0
+for name in "${forbidden[@]}"; do
+    if printf '%s\n' "$crates" | grep -qx "$name"; then
+        echo "check_remote_helper_deps: FORBIDDEN crate in the phosphor-remote tree: $name" >&2
+        bad=1
+    fi
+done
+# Sanity: an empty or error-shaped tree would "pass" vacuously.
+if ! printf '%s\n' "$crates" | grep -qx "remote_server"; then
+    echo "check_remote_helper_deps: remote_server is not in its own tree; cargo tree output was not what was expected:" >&2
+    printf '%s\n' "$tree" | head -20 >&2
+    exit 1
+fi
+if [ "$bad" -ne 0 ]; then
+    echo "check_remote_helper_deps: find who pulls it in with:" >&2
+    echo "  cargo tree -p remote_server --no-default-features --features daemon -e normal -i <crate>" >&2
+    exit 1
+fi
+echo "check_remote_helper_deps: ok ($(printf '%s\n' "$crates" | wc -l) crates, none forbidden)"

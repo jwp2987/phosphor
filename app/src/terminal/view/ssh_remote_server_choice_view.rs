@@ -11,12 +11,11 @@
 //!   cards ("Install Zap's SSH extension" / "Continue without installing"),
 //! - the [`SessionId`] this prompt is scoped to (used for event forwarding),
 //! - the current "Don't ask me this again" checked state (purely local to
-//!   this prompt instance; persisted to `ssh_extension_install_mode` only
-//!   when the user clicks Install or Skip).
+//!   this prompt instance; reported with Install or Skip, and stored by the controller as the
+//!   decision for the connected HOST (`remote_helper_policy`), not as an app-wide mode).
 //!
 //! Dismissing the block (on click of either option, or when the session is
 //! deregistered) is the parent's responsibility.
-use settings::Setting;
 use warp_core::ui::theme::color::internal_colors;
 use warpui::{
     AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
@@ -38,7 +37,6 @@ use crate::{
     send_telemetry_from_ctx,
     server::telemetry::TelemetryEvent,
     terminal::model::session::SessionId,
-    terminal::warpify::settings::{SshExtensionInstallMode, WarpifySettings},
     ui_components::blended_colors,
 };
 
@@ -54,8 +52,14 @@ pub enum SshRemoteServerChoiceViewAction {
 
 #[derive(Clone, Debug)]
 pub enum SshRemoteServerChoiceViewEvent {
-    Install,
-    Skip,
+    /// `remember`: "Don't ask me this again" was ticked, which now means for THIS host (Wave H:
+    /// per-host consent for the bundled helper), not an app-wide mode.
+    Install {
+        remember: bool,
+    },
+    Skip {
+        remember: bool,
+    },
     ZapifySettings,
 }
 
@@ -306,38 +310,16 @@ impl TypedActionView for SshRemoteServerChoiceView {
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
             SshRemoteServerChoiceViewAction::Install => {
-                if self.do_not_ask_again {
-                    let mode = SshExtensionInstallMode::AlwaysInstall;
-                    WarpifySettings::handle(ctx).update(ctx, |settings, ctx| {
-                        if let Err(e) = settings.ssh_extension_install_mode.set_value(mode, ctx) {
-                            log::error!("Failed to persist ssh_extension_install_mode: {e}");
-                        }
-                    });
-                    send_telemetry_from_ctx!(
-                        TelemetryEvent::SetSshExtensionInstallMode {
-                            mode: mode.telemetry_name(),
-                        },
-                        ctx
-                    );
-                }
-                ctx.emit(SshRemoteServerChoiceViewEvent::Install);
+                // The tick is stored per host by the controller, which knows the host; this view
+                // only reports it. The app-wide mode (Settings) is not touched here any more.
+                ctx.emit(SshRemoteServerChoiceViewEvent::Install {
+                    remember: self.do_not_ask_again,
+                });
             }
             SshRemoteServerChoiceViewAction::Skip => {
-                if self.do_not_ask_again {
-                    let mode = SshExtensionInstallMode::NeverInstall;
-                    WarpifySettings::handle(ctx).update(ctx, |settings, ctx| {
-                        if let Err(e) = settings.ssh_extension_install_mode.set_value(mode, ctx) {
-                            log::error!("Failed to persist ssh_extension_install_mode: {e}");
-                        }
-                    });
-                    send_telemetry_from_ctx!(
-                        TelemetryEvent::SetSshExtensionInstallMode {
-                            mode: mode.telemetry_name(),
-                        },
-                        ctx
-                    );
-                }
-                ctx.emit(SshRemoteServerChoiceViewEvent::Skip);
+                ctx.emit(SshRemoteServerChoiceViewEvent::Skip {
+                    remember: self.do_not_ask_again,
+                });
             }
             SshRemoteServerChoiceViewAction::ToggleDoNotAskAgain => {
                 self.do_not_ask_again = !self.do_not_ask_again;

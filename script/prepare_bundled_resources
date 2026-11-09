@@ -38,6 +38,9 @@
 #                           will fail at this step.
 #
 # Environment variables:
+#   PHOSPHOR_REMOTE_HELPER_DIR: Directory of phosphor-remote-<os>-<arch>.gz files to bundle
+#                         under <destination>/remote (with the matching
+#                         PHOSPHOR_REMOTE_SHA256_* digests set; see the step below).
 #   SKIP_SETTINGS_SCHEMA: Set to "1" to skip generating the JSON settings
 #                         schema. By default the schema is always generated
 #                         so that production bundles never accidentally omit it.
@@ -96,6 +99,51 @@ if [ -n "$CHANNEL" ] && [ -d "$GATED_SRC" ]; then
     "$CHANNEL" \
     "$GATED_SRC" \
     "$DEST_SKILLS"
+fi
+
+# Bundle the remote helper (`phosphor-remote`, Wave H, #1804). The app uploads it to ssh hosts
+# in-band; nothing is ever downloaded. PHOSPHOR_REMOTE_HELPER_DIR names a directory holding
+# phosphor-remote-<os>-<arch>.gz (the `build-remote-helper` CI job's artifacts) and the
+# PHOSPHOR_REMOTE_SHA256_<OS>_<ARCH> variables hold the digest of each DECOMPRESSED helper,
+# which the client was compiled with (setup.rs::pinned_helper_sha256). Every bundled file is
+# re-checked against its digest here, so a client can never ship next to a helper it would
+# refuse. Unset: no helper is bundled and the app stays on its no-helper path (a source build).
+if [ -n "${PHOSPHOR_REMOTE_HELPER_DIR:-}" ]; then
+  if [ ! -d "$PHOSPHOR_REMOTE_HELPER_DIR" ]; then
+    echo "Error: PHOSPHOR_REMOTE_HELPER_DIR is not a directory: $PHOSPHOR_REMOTE_HELPER_DIR" >&2
+    exit 1
+  fi
+  HELPER_DEST="$DEST_DIR/remote"
+  rm -rf "$HELPER_DEST"
+  mkdir -p "$HELPER_DEST"
+  helper_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then gunzip -c "$1" | sha256sum | cut -d' ' -f1
+    else gunzip -c "$1" | shasum -a 256 | cut -d' ' -f1; fi
+  }
+  bundled_helpers=0
+  for helper in "$PHOSPHOR_REMOTE_HELPER_DIR"/phosphor-remote-*.gz; do
+    [ -f "$helper" ] || continue
+    name="$(basename "$helper" .gz)"          # phosphor-remote-linux-x86_64
+    platform="${name#phosphor-remote-}"       # linux-x86_64
+    var="PHOSPHOR_REMOTE_SHA256_$(printf '%s' "$platform" | tr 'a-z-' 'A-Z_')"
+    expected="${!var:-}"
+    if [ -z "$expected" ]; then
+      echo "Error: $helper is present but $var is not set; the client would refuse it" >&2
+      exit 1
+    fi
+    actual="$(helper_sha256 "$helper")"
+    if [ "$actual" != "$expected" ]; then
+      echo "Error: $helper decompresses to $actual but the client pins $expected ($var)" >&2
+      exit 1
+    fi
+    cp "$helper" "$HELPER_DEST/"
+    bundled_helpers=$((bundled_helpers + 1))
+    echo "Bundled remote helper $name ($actual)"
+  done
+  if [ "$bundled_helpers" -eq 0 ]; then
+    echo "Error: PHOSPHOR_REMOTE_HELPER_DIR holds no phosphor-remote-*.gz files" >&2
+    exit 1
+  fi
 fi
 
 # Generate third-party license attribution.

@@ -94,7 +94,10 @@ impl RemoteGitRepoStatusModel {
     /// session for the host is connected; `HostConnected` retries.
     pub(super) fn request_snapshot(&self, ctx: &mut ModelContext<Self>) {
         let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host(&self.remote_path.host_id)
+            .client_for_host_with(
+                &self.remote_path.host_id,
+                remote_server::capability::GIT_STATUS,
+            )
             .cloned()
         else {
             return;
