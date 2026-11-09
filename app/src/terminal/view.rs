@@ -3513,6 +3513,11 @@ pub struct TerminalView {
     /// `SUBSHELL_BOOTSTRAP_STALL_CEILING` (#960).
     subshell_bootstrap_announced: Option<(BlockId, Instant)>,
     subshell_bootstrap_generation: u64,
+    /// The session ID the shell-agnostic probe (`write_init_subshell_bytes_to_pty(None)`) was
+    /// minted with (#1710, review H9). Its `InitSubshell` hook is the last thing that carries it:
+    /// the handler unregisters it then, so only this attempt's ID goes, never the parent's or
+    /// the stage-2 ID minted for the shell it names.
+    subshell_probe_session_id: Option<SessionId>,
     /// Keystrokes typed while an announced subshell setup is unfinished (#1014), in order. They
     /// are delivered once setup completes, is abandoned or aborted, or after
     /// `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`; never dropped.
@@ -5356,6 +5361,7 @@ impl TerminalView {
             pending_command_awaits_precmd: false,
             ssh_split_cd_awaits_precmd: false,
             subshell_bootstrap_generation: 0,
+            subshell_probe_session_id: None,
             show_snackbar: true,
             hover_near_snackbar_area: false,
             ai_controller,
@@ -19482,8 +19488,16 @@ impl TerminalView {
                 }
             }
             ModelEvent::InitSubshell(event) => {
+                // #1710 (review H9): the probe's hook is in; nothing else carries its ID. Only
+                // this attempt's ID goes: the stage 2 written below mints its own.
+                if let Some(probe_id) = self.subshell_probe_session_id.take() {
+                    self.model.lock().unregister_session_id(probe_id);
+                }
                 let shell_type = event.shell_type;
                 self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
+            }
+            ModelEvent::SubshellNotPhosphorizable { shell_name } => {
+                self.end_subshell_setup_unsupported(shell_name, ctx);
             }
             ModelEvent::InitSsh(event) => {
                 let shell_type = event.shell_type;
@@ -22119,25 +22133,20 @@ impl TerminalView {
         // short pace so a shell that has not started reading yet is never handed more than its
         // tty input queue holds.
         let line_delay = crate::terminal::bootstrap::subshell_bootstrap_line_delay(shell_type);
-        // #1354/#1372: bash, zsh, fish, nushell and PowerShell print a marker once they ran a line
-        // (PowerShell: once PSReadLine is about to read again); the next line is written when it
-        // arrives, not after `line_delay`, which stays as the give-up pacing. Other shells (and
-        // PHOSPHOR_BOOTSTRAP_TIMED=1) keep the timer pacing.
-        // PowerShell (#1372): its marker is printed when PSReadLine is about to read, i.e. after
-        // the redraw that a marker at the end of the line would race (#1047).
-        let marked = !crate::terminal::bootstrap::bootstrap_timed()
-            && matches!(
-                shell_type,
-                Some(
-                    ShellType::Bash
-                        | ShellType::Zsh
-                        | ShellType::Fish
-                        | ShellType::Nu
-                        | ShellType::PowerShell
-                )
-            );
+        // #1354/#1372/#1710: every setup is paced by the shell's markers: bash, zsh, fish, nushell
+        // and PowerShell print one once they ran a line (PowerShell: once PSReadLine is about to
+        // read again, i.e. after the redraw that a marker at the end of the line would race,
+        // #1047), and the shell-agnostic `sh` probe (`None`: sudo -s, su, ksu, docker exec, a
+        // nested bash from the banner) prints one with a plain `printf` after its prelude. The
+        // next line is written when the marker arrives, not after `line_delay`, which stays as
+        // the give-up pacing. Only PHOSPHOR_BOOTSTRAP_TIMED=1 keeps the timer pacing. The marker
+        // also survives the tmux control-mode path: `%output` carries the pane's raw bytes
+        // (octal-escaped), the same way the DCS hooks reach us there (review H8).
+        let marked = !crate::terminal::bootstrap::bootstrap_timed();
         self.powershell_setup_marker_token =
             (marked && shell_type == Some(ShellType::PowerShell)).then(|| session_id.as_u64());
+        // #1710 (review H9): the probe's ID is this attempt's alone; its `InitSubshell` ends it.
+        self.subshell_probe_session_id = shell_type.is_none().then_some(session_id);
         let all_lines = init_subshell_command_lines_with_markers(
             shell_type,
             &self.env_vars,
@@ -22422,6 +22431,56 @@ impl TerminalView {
                 self.finish_subshell_bootstrap(ctx);
             }
         }
+    }
+
+    /// E-UNSUPPORTED (#1710): the probe reported a shell the bootstrap has no script for (dash,
+    /// ash, ksh, a bash started as `sh`). There is no setup to wait for, so the setup ends HERE,
+    /// on this event: the announcement is cleared, the gates close and every key held since the
+    /// probe's first line goes to the shell, in typed order (the shell is at its prompt reading
+    /// them, which is what makes this a delivery and not a timer's write), and a small toast says
+    /// the pane runs a plain shell. Before, nothing ended the setup: keys stayed held until a net
+    /// fired, which is why `ksu`/`su` to an sh-shelled user felt stuck (#1679).
+    fn end_subshell_setup_unsupported(&mut self, shell_name: &str, ctx: &mut ViewContext<Self>) {
+        log::info!(
+            "subshell setup skipped: {shell_name:?} is not a shell Phosphor can set up; the pane \
+             continues as a plain shell (#1710)"
+        );
+        warpui::input_order::log_hop("subshell_setup_unsupported", || {
+            format!("shell={shell_name}")
+        });
+        // The probe's ID is of no further use (its hook came), and the 7 s bootstrap give-up
+        // armed for this attempt has nothing left to judge.
+        if let Some(probe_id) = self.subshell_probe_session_id.take() {
+            self.model.lock().unregister_session_id(probe_id);
+        }
+        self.cancel_bootstrap_failed_timer();
+        self.model.lock().clear_setup_echo();
+        // The probe's lines are all out (its `InitSubshell` came from the last one). An in-flight
+        // left by the timed pacing is abandoned, and the bootstrap-write gate settles: the aborts
+        // typed meanwhile first, then the keys behind them, in order.
+        self.finish_subshell_bootstrap(ctx);
+        // The announcement ends now, not at a prompt: there is no `Bootstrapped` to wait for.
+        // What the SubshellSetup gate holds follows, in order.
+        self.release_subshell_setup_held_bytes(ctx);
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            let text = format!(
+                "Phosphor setup skipped: {shell_name} is a plain shell here. Your typing was \
+                 passed through."
+            );
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                let toast = DismissibleToast::new(text, ToastFlavor::Default);
+                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+            });
+        }
+    }
+
+    /// Supersedes the bootstrap give-up timer armed by `start_bootstrap_timer` (#1566 carries a
+    /// generation: a timer whose generation is behind does nothing when it fires). For a setup
+    /// that ended by an event that is not `Bootstrapped` (#1710), where the timer has nothing to
+    /// judge any more.
+    fn cancel_bootstrap_failed_timer(&mut self) {
+        self.bootstrap_timer_generation = self.bootstrap_timer_generation.wrapping_add(1);
     }
 
     /// Ends the in-flight subshell bootstrap and delivers the keystrokes held behind it.

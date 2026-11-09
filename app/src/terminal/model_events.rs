@@ -379,6 +379,9 @@ impl ModelEventDispatcher {
             Event::InitSubshell(init_subshell_event) => {
                 ModelEvent::InitSubshell(init_subshell_event)
             }
+            Event::SubshellNotPhosphorizable { shell_name } => {
+                ModelEvent::SubshellNotPhosphorizable { shell_name }
+            }
             Event::SourcedRcFileInSubshell(sourced_rc_file_in_subshell_event) => {
                 ModelEvent::SourcedRcFileInSubshell(sourced_rc_file_in_subshell_event)
             }
@@ -558,6 +561,10 @@ pub enum ModelEvent {
         command: String,
     },
     InitSubshell(InitSubshellEvent),
+    /// See [`Event::SubshellNotPhosphorizable`] (#1710).
+    SubshellNotPhosphorizable {
+        shell_name: String,
+    },
     /// Emitted when the user's RC file has been executed in a subshell.
     SourcedRcFileInSubshell(SourcedRcFileInSubshellEvent),
     InitSsh(InitSshEvent),

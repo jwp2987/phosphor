@@ -2287,6 +2287,71 @@ def c_sub(ctx, r):
         r.skip("no subshell binaries installed")
 
 
+@case("subshell_sh_probe", order=20)
+def c_sub_sh_probe(ctx, r):
+    """#1710 / #1679: a subshell the bootstrap has no script for (dash, busybox ash; `su` to an sh-shelled user when the runner
+    names one in APPCI_SU_SH_USER, passwordless). Phosphorize (Ctrl-I at the banner) writes the sh probe; the probe is marker-paced
+    (its prelude's `printf` marker releases the probe line) and answers InitSubshell "unknown", and THAT event ends the setup
+    (SubshellNotPhosphorizable): the line typed right behind Ctrl-I, held through the probe, must run in the inner shell < 2 s after
+    its Enter, exactly, then every later line, `exit`, and the pane's bash runs the next command. The profile adds `^dash$` and
+    `^busybox ash$` to warpify.subshells.added_subshell_commands so the banner (and so Ctrl-I) exists for them."""
+    if ctx.win or os.name == "nt":
+        r.skip("POSIX shells only: no dash / busybox / su in a Windows pane")
+    trials = []
+    if shutil.which("dash"):
+        trials.append(("dash", "dash", ("dash",)))
+    if shutil.which("busybox") and subprocess.run(["busybox", "ash", "-c", "true"], capture_output=True).returncode == 0:
+        trials.append(("busybox ash", "busybox_ash", ("busybox", "ash")))
+    su_user = os.environ.get("APPCI_SU_SH_USER")
+    if su_user and shutil.which("su"):
+        trials.append(("su -s /bin/sh %s" % su_user, "su_sh", ("sh", "dash", "busybox", "ash")))
+    else:
+        r.note("APPCI_SU_SH_USER unset: the `su` to an sh-shelled user leg did not run (needs a passwordless su on this runner)")
+    if not trials:
+        r.skip("neither dash nor busybox is installed")
+    for cmd, label, comm_prefixes in trials:
+        f = "shp_%s.txt" % label
+        ctx.rm(f)
+        tok = ctx.tok(6)
+        ctx.be.type(cmd, 12, enter=True)
+        time.sleep(1.6)                    # the Phosphorize banner comes 1 s after the command starts
+        ctx.shot("%s_banner" % label)
+        ctx.be.key("ctrl+i")               # terminal:warpify_subshell: the probe is written now
+        t_trigger = time.time()
+        # No gap at all: typed while the probe is still out / unanswered, so held, then delivered to the inner shell by the event.
+        ctx.be.type(ctx.append_cmd("sh", tok, f), 12, enter=True)
+        t_enter = time.time()
+        got = ctx.until(lambda: tok in ctx.lines(f), 10)
+        dt_enter, dt_trigger = time.time() - t_enter, time.time() - t_trigger
+        r.metric("first_inner_line_after_enter_s_%s" % label, round(dt_enter, 3))
+        r.metric("first_inner_line_after_phosphorize_s_%s" % label, round(dt_trigger, 3))
+        r.check(got, "%s: the first inner line ran at all (file %r)" % (label, ctx.lines(f)))
+        r.check(dt_enter < 2.0, "%s: the first inner line ran %.2f s after its Enter (budget 2 s, #1710)" % (label, dt_enter))
+        ctx.be.type("sh -c 'ps -o comm= -p $PPID' >> " + f, 12, enter=True)
+        ctx.until(lambda: len(ctx.lines(f)) >= 2, 6)
+        toks = [ctx.tok(6) for _ in range(4)]
+        for t in toks:
+            ctx.be.type(ctx.append_cmd("sh", t, f), 12, enter=True)
+        ctx.until(lambda: len(ctx.lines(f)) >= 2 + len(toks), 8)
+        ctx.be.type("exit", 12, enter=True)
+        time.sleep(1.0)
+        ctx.be.type(ctx.append_cmd("bash", "back_" + tok, f), 12, enter=True)
+        ctx.until(lambda: len(ctx.lines(f)) >= 3 + len(toks), 6)
+        l = ctx.lines(f)
+        want = [tok] + ["<%s>" % "|".join(comm_prefixes)] + toks + ["back_" + tok]
+        ok = (len(l) == len(want) and l[0] == tok and any(l[1].startswith(p) for p in comm_prefixes)
+              and l[2:2 + len(toks)] == toks and l[-1] == "back_" + tok)
+        r.check(ok, "%s: exact lines in the inner shell, then the pane's bash: got %r, wanted %r" % (label, l, want))
+        log = ctx.app_log_lines()
+        if log:
+            # The EVENT ended the setup (hop subshell_setup_unsupported); no net or give-up timer wrote or handed back.
+            r.check(any("subshell_setup_unsupported" in ln for ln in log),
+                    "%s: the app logged the unsupported-shell event (hop subshell_setup_unsupported)" % label)
+            r.check(not any("writing the rest of the subshell setup on timers" in ln for ln in log),
+                    "%s: the probe was marker-paced (no marker give-up fallback in the app log)" % label)
+        ctx.reset()
+
+
 @case("alt_screen", order=21)
 def c_alt(ctx, r):
     ctx.rm("al.txt")

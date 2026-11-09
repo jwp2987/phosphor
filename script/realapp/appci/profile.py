@@ -2,7 +2,7 @@
 # and the test tree. Never reads the owner's real config: CI has none. The owner-like settings are the ones in
 # docs/testing.md 3.1 (agent mode default, autodetect + natural-language detection on, vertical tabs are not
 # set because they do not affect input), plus a provider ONLY when the endpoint is configured (ci_env.py: env or ~/.config/phosphor-ci/ci.env).
-import os, random, shutil, subprocess, sys
+import os, random, re, shutil, subprocess, sys
 
 
 def _wr(path, text):
@@ -386,6 +386,20 @@ class Profile:
     def owner_seed(self):
         return os.environ.get("APPCI_OWNER_SETTINGS") or self.OWNER_SEED
 
+    # #1710: the shells the `subshell_sh_probe` case starts. Neither is a built-in subshell match (bash/zsh/fish, sudo -s, su, ksu,
+    # docker ... bash are), so without this the pane shows no Phosphorize banner for them and the probe is never written.
+    PROBE_SUBSHELL_COMMANDS = ("^dash$", "^busybox ash$")
+
+    def probe_subshell_commands_toml(self, existing):
+        """TOML array literal of warpify.subshells.added_subshell_commands: the owner's own entries (`existing` is the seed's `key = value`
+        line, or None) with PROBE_SUBSHELL_COMMANDS merged in once each; the owner's regexes are kept as written"""
+        owner = []
+        if existing:
+            value = existing.split("=", 1)[1].strip() if "=" in existing else existing.strip()
+            owner = [m for m in re.findall(r'"((?:[^"\\]|\\.)*)"', value)]
+        merged = owner + [c for c in self.PROBE_SUBSHELL_COMMANDS if c not in owner]
+        return "[" + ", ".join('"%s"' % c for c in merged) + "]"
+
     def gitbash_toml(self, new_session=False):
         """TOML value of the shell a Windows pane is started with through session.startup_shell_override, else None: Git for Windows' bash.exe for the Git
         Bash pane, and for a #1534 startup_shell_override pass PowerShell 7's pwsh.exe (variant "pwsh7") or cmd.exe (variant "cmd"). startup_shell_override
@@ -426,6 +440,8 @@ class Profile:
             t = T.set_key(t, "general", "default_session_mode", '"%s"' % m)
             t = T.set_key(t, "general", "restore_session", "false")                # no saved tabs/sessions
             t = T.set_key(t, "warpify.ssh", "ssh_extension_install_mode", '"never_install"')
+            t = T.set_key(t, "warpify.subshells", "added_subshell_commands", self.probe_subshell_commands_toml(
+                T.get_key(t, "warpify.subshells", "added_subshell_commands")))
             for k in ("startup_shell_override", "new_session_shell_override"):     # the scratch rc logging needs the login shell
                 t = T.del_key(t, "session", k)
             gb = self.gitbash_toml()
@@ -443,6 +459,7 @@ class Profile:
             return
         Profile.owner_note = "not found (bare profile)"
         lines = ['[warpify.ssh]', 'ssh_extension_install_mode = "never_install"', '',
+                 '[warpify.subshells]', 'added_subshell_commands = ' + self.probe_subshell_commands_toml(None), '',
                  '[general]', 'default_session_mode = "%s"' % m, 'restore_session = false', '']
         gb = self.gitbash_toml()
         if gb:

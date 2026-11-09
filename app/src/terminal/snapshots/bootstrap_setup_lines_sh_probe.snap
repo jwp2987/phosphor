@@ -1,0 +1,9 @@
+---
+source: app/src/terminal/bootstrap_snapshot_tests.rs
+expression: bootstrap_setup_lines_sh_probe
+---
+unmarked
+[0]  command -v shopt >/dev/null 2>&1 && eval '__hc0=${HISTCONTROL-}; HISTCONTROL=ignorespace:${HISTCONTROL-}'; command -v setopt >/dev/null 2>&1 && eval '__whi=0; [[ -o hist_ignore_space ]] && __whi=1; __wpe=0; [[ -o print_exit_value ]] && __wpe=1; setopt hist_ignore_space; unsetopt print_exit_value'; true
+
+marked (token 4242)
+[0]  command -v shopt >/dev/null 2>&1 && eval '__hc0=${HISTCONTROL-}; HISTCONTROL=ignorespace:${HISTCONTROL-}'; command -v setopt >/dev/null 2>&1 && eval '__whi=0; [[ -o hist_ignore_space ]] && __whi=1; __wpe=0; [[ -o print_exit_value ]] && __wpe=1; setopt hist_ignore_space; unsetopt print_exit_value'; true; printf '\033]7771;4242;0\a'

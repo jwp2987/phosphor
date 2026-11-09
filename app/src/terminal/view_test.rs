@@ -24062,6 +24062,217 @@ fn subshell_setup_lines_follow_the_shells_markers_not_the_clock() {
     })
 }
 
+/// #1710: the shell-agnostic `sh` probe (sudo -s, su, ksu, docker exec, a nested bash from the
+/// banner: `shell_type == None`) is paced by its marker like the known shells. Line 1 (the probe)
+/// is written on the marker of line 0 (the prelude) and never because 30 ms passed; the probe is
+/// then the last line, so the in-flight write is over (its `InitSubshell` is the consumed event).
+/// The probe's own session ID is remembered for the unregister at `InitSubshell` (review H9).
+#[test]
+fn the_sh_probe_is_marker_paced_not_timed() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let token = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("sudo -s", "");
+            view.write_init_subshell_bytes_to_pty(None, ctx);
+            let token = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|in_flight| in_flight.marker_token)
+                .expect("the probe is paced by its marker");
+            assert_eq!(
+                view.subshell_probe_session_id,
+                Some(SessionId::from(token)),
+                "the probe's ID is remembered for the unregister at InitSubshell"
+            );
+            token
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1, "only the prelude");
+        let prelude: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        let marker_text = format!("printf '\\033]7771;{token};0\\a'");
+        assert!(
+            prelude
+                .windows(marker_text.len())
+                .any(|w| w == marker_text.as_bytes()),
+            "the prelude carries the plain-printf marker: {:?}",
+            String::from_utf8_lossy(&prelude)
+        );
+
+        // Longer than the old 30 ms gap, output of any shape: still only the prelude.
+        warpui::r#async::Timer::after(Duration::from_millis(300)).await;
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("$ ");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(
+            setup_lines_written(&pty_writes),
+            1,
+            "no marker, no probe line"
+        );
+
+        // The marker of line 0 releases the probe line, and that was the last one.
+        terminal.update(&mut app, |view, ctx| {
+            let marker = format!("\x1b]7771;{token};0\x07");
+            view.model.lock().process_bytes(marker.as_str());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(
+                view.subshell_bootstrap_in_flight.is_none(),
+                "the probe is the last line: nothing more to write"
+            );
+            assert!(
+                view.subshell_bootstrap_announced.is_some(),
+                "the setup stays announced until the probe answers"
+            );
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 2);
+        let all: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        let text = String::from_utf8_lossy(&all);
+        assert!(
+            text.contains("InitSubshell"),
+            "the probe line went out: {text}"
+        );
+    })
+}
+
+/// #1710 (E-UNSUPPORTED): the probe names a shell the bootstrap has no script for (dash). The
+/// event ends the setup: the announcement goes, the gates close and every key typed since the
+/// first probe line reaches the shell once, in order, right behind the probe (never before it,
+/// never into the middle of it); a plain-shell toast is shown. Legacy and Table. Before, nothing
+/// ended the setup and the keys stayed held for a net (#1679).
+#[test]
+fn an_unsupported_subshell_ends_the_setup_and_delivers_the_held_keys_in_order() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let token = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("dash", "");
+                view.write_init_subshell_bytes_to_pty(None, ctx);
+                let token = view
+                    .subshell_bootstrap_in_flight
+                    .as_ref()
+                    .and_then(|in_flight| in_flight.marker_token)
+                    .expect("the probe is paced by its marker");
+                // Typed while the prelude is out and the probe line is not: held, in order.
+                for key in [b"ec".to_vec(), b"ho".to_vec(), b"\r".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                }
+                token
+            });
+            let before = written.borrow().clone();
+            assert!(
+                !String::from_utf8_lossy(&before).contains("echo"),
+                "{mode:?}: typed keys reached the pty during the probe: {:?}",
+                String::from_utf8_lossy(&before)
+            );
+            // The shell ran the prelude: the probe line goes out; the keys stay held.
+            terminal.update(&mut app, |view, ctx| {
+                let marker = format!("\x1b]7771;{token};0\x07");
+                view.model.lock().process_bytes(marker.as_str());
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            });
+            let after_probe = written.borrow().clone();
+            assert!(
+                !String::from_utf8_lossy(&after_probe).contains("echo"),
+                "{mode:?}: typed keys reached the pty with the probe line"
+            );
+            assert!(
+                terminal.read(&app, |view, _| held_for_subshell_setup(view).0 > 0),
+                "{mode:?}: the keys are held"
+            );
+            // The probe's answer: not a shell we can set up. The EVENT ends the setup.
+            terminal.update(&mut app, |view, ctx| {
+                view.handle_terminal_event(
+                    &ModelEvent::SubshellNotPhosphorizable {
+                        shell_name: "dash".to_owned(),
+                    },
+                    ctx,
+                );
+                assert!(view.subshell_bootstrap_announced.is_none(), "{mode:?}");
+                assert!(view.subshell_bootstrap_in_flight.is_none(), "{mode:?}");
+                assert!(view.subshell_probe_session_id.is_none(), "{mode:?}");
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+            });
+            let all = written.borrow().clone();
+            assert_eq!(
+                &all[after_probe.len()..],
+                b"echo\r",
+                "{mode:?}: the held keys follow the probe once, in order: {:?}",
+                String::from_utf8_lossy(&all)
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "",
+                        "{mode:?}: delivered to the shell, not handed back"
+                    );
+                });
+            });
+        })
+    }
+}
+
+/// #1710 (review H9): the probe's session ID is this attempt's alone. Once its `InitSubshell`
+/// named the shell, that ID is unregistered, and the stage 2 written for the shell mints and
+/// registers its own; the parent's registration is untouched.
+#[test]
+fn the_probe_id_is_unregistered_when_init_subshell_names_the_shell() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let parent = SessionId::from(77u64);
+            view.model.lock().register_session_id(parent);
+            view.model.lock().simulate_long_running_block("su", "");
+            view.write_init_subshell_bytes_to_pty(None, ctx);
+            let probe = view
+                .subshell_probe_session_id
+                .expect("the probe's ID is remembered");
+            assert!(ansi::Handler::is_registered_session(
+                &*view.model.lock(),
+                probe
+            ));
+            // The probe reported bash; the shell gets its bash stage 2.
+            view.handle_terminal_event(
+                &ModelEvent::InitSubshell(crate::terminal::event::InitSubshellEvent {
+                    shell_type: ShellType::Bash,
+                    uname: None,
+                }),
+                ctx,
+            );
+            assert!(view.subshell_probe_session_id.is_none());
+            let model = view.model.lock();
+            assert!(
+                !ansi::Handler::is_registered_session(&*model, probe),
+                "the probe's ID is gone"
+            );
+            assert!(
+                ansi::Handler::is_registered_session(&*model, parent),
+                "another ID is never touched"
+            );
+            drop(model);
+            let stage2 = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|in_flight| in_flight.marker_token)
+                .map(SessionId::from)
+                .expect("stage 2 is in flight, marker-paced");
+            assert_ne!(stage2, probe);
+            assert!(ansi::Handler::is_registered_session(
+                &*view.model.lock(),
+                stage2
+            ));
+        });
+    })
+}
+
 /// #1372: a PowerShell setup is paced by markers too (printed when PSReadLine is about to read, so
 /// after its redraw): line N+1 is written on line N's marker only. The kill switch keeps timers.
 #[test]
