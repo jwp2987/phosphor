@@ -1869,7 +1869,7 @@ the shipped version equals `MINIMUM_PLUGIN_VERSION` (Codex also the version in `
 `http(s)://`, curl/wget or similar. These replace the tests of the GitLab URL, the `git ls-remote` pre-flight, `marketplace upgrade`, `extensions update` and the `git+https` spec
 (an expectation the owner changed on 2026-11-09). The bundled Codex/Gemini hook scripts also cut long text by characters through `truncate_chars` (jq), not by bash byte substrings.
 
-App cases (Linux only, `--cases 'zero_network_startup,claude_plugin_offline,agent_plugins_offline,network_gate_switch'`, terminal mode):
+App cases (Linux only, `--cases 'zero_network_startup,claude_plugin_offline,agent_plugins_offline,network_gate_switch,network_gate_notice'`, terminal mode):
 
 - **`zero_network_startup`**: relaunches the app under `strace -f -e trace=network` (`App.wrap`), idles `APPCI_ZNS_IDLE_S` seconds (default 120), and fails on any
   `connect`/`sendto`/`sendmsg` to a non-loopback inet address (`outbound_attempts`). The harness profile has no cloud account or provider key. SKIPS (not passes)
@@ -1883,9 +1883,8 @@ App cases (Linux only, `--cases 'zero_network_startup,claude_plugin_offline,agen
 
 - **`network_gate_switch`**: relaunches the app on a rewritten `settings.toml` three times. With `network.gate_enabled` absent the app log has no `network gate: turned OFF`
   line (absent means on, the v0.1.17 behaviour); with `gate_enabled = false` it has exactly one; with `true` again it has none. The log must not contain the host of the
-  `network.allowed_origins` entry the case writes (the log carries a host hash at most). The denial notice, its "Allow this origin" link and the Settings > Network log
-  are reported `UNVERIFIABLE` (status `noref`, never a pass): no setting can make the app issue a request the gate refuses (a configured origin is also an allowed one), and the
-  harness has no verified keyboard path to the Network page widgets. Those are covered by the unit tests listed under "Network gate". Linux only (winmap lists the reason).
+  `network.allowed_origins` entry the case writes (the log carries a host hash at most). The Settings > Network log row and its Allow button are reported `UNVERIFIABLE` (status `noref`, never a pass): the harness has no verified keyboard path to the Network page widgets; the unit tests listed under "Network gate" cover them. Linux only (winmap lists the reason).
+- **`network_gate_notice`** (agent mode only, needs `APPCI_FAKE_MODEL=1`, tesseract and the pointer): the fake model answers `Please show this image: <url>` with a markdown image of the TEST-NET host `192.0.2.1:8099`. Remote images load through `asset_cache::fetch_file_to_memory`, which calls the gate with purpose `remote-asset` (allowlist only), so the gate refuses before any connection: the app log must show `network gate: denied "remote-asset" (host hash <fnv>)` and no host or URL. The case finds the toast's "Allow" by OCR and clicks it, then `settings.toml` must hold `192.0.2.1:8099` exactly once and a second image from that origin must not be refused; finally `gate_enabled=false` is written, the app relaunched, and a third image must not be refused (log `network gate: turned OFF`). Without OCR or a pointer the click, write and retry steps are reported `UNVERIFIABLE`. Terminal mode is not run: the toast belongs to the workspace, not the input mode.
 
 - **`agent_plugins_offline`** (`--cases agent_plugins_offline`): the same for Codex, Gemini CLI and OpenCode. Inside `unshare -rn`, `fakecodex.py` (`plugin marketplace add <folder>`,
   `plugin add warp@codex-warp`; it records `source_type = "local"` and refuses a remote source) and `fakegemini.py` (`extensions install <folder>`; copies the folder, records
