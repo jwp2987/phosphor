@@ -1141,6 +1141,109 @@ fn test_unchanged_chip_refetch_does_not_respawn_on_click_command() {
     });
 }
 
+/// #1801: a remote session's blocks carry its id before its bootstrap completes, so a prompt
+/// refresh in that window finds no session and its shell chips fail to prepare. The refresh
+/// after the bootstrap reports the same block and inputs; it must still run the chips, because
+/// the session became available. Before the fix the unchanged-context skip (#1167) kept them
+/// failed until the next block.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_chips_rerun_when_the_blocks_session_registers() {
+    App::test((), |mut app| async move {
+        let session_id = SessionId::from(1801);
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::GitBranchStatus],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_| History::new(vec![]));
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+        app.add_singleton_model(AuthManager::new_for_test);
+        app.add_singleton_model(|_| crate::settings::manager::SettingsManager::default());
+        crate::settings::InputSettings::register(&mut app);
+        app.update(crate::settings::AISettings::register_and_subscribe_to_events);
+        app.add_singleton_model(crate::workspaces::user_workspaces::UserWorkspaces::default_mock);
+        #[cfg(windows)]
+        app.add_singleton_model(SystemInfo::new);
+        app.update(|ctx| {
+            crate::settings::InputSettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings
+                    .input_box_type
+                    .set_value(crate::settings::InputBoxType::Classic, ctx);
+            });
+        });
+
+        let executor = Arc::new(RecordingCommandExecutor::default());
+        // The session is NOT bootstrapped yet: its id is known, the session is not.
+        let sessions =
+            app.add_model(|_| Sessions::new_for_test().with_command_executor(executor.clone()));
+        let current_prompt = app.add_model({
+            let sessions = sessions.clone();
+            move |ctx| CurrentPrompt::new(sessions, ctx)
+        });
+        executor.clear();
+
+        let context = || PromptContext {
+            active_block_metadata: BlockMetadata::new(Some(session_id), Some("/a".to_string())),
+            environment: Environment::default(),
+        };
+        async fn settle(
+            app: &mut App,
+            current_prompt: &warpui::ModelHandle<CurrentPrompt>,
+            context: PromptContext,
+        ) {
+            current_prompt
+                .update(app, |cp, ctx| {
+                    cp.apply_context("bootstrap-block".to_string(), context, ctx);
+                    cp.await_generators(ctx)
+                })
+                .await;
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(50)).await;
+            current_prompt
+                .update(app, |cp, ctx| cp.await_generators(ctx))
+                .await;
+        }
+
+        // Refresh while the session is still bootstrapping: nothing can run.
+        settle(&mut app, &current_prompt, context()).await;
+        assert_eq!(
+            executor.commands.lock().len(),
+            0,
+            "no command can run before the session is registered"
+        );
+
+        // The bootstrap completes; the refresh that follows has the same block and inputs.
+        sessions.update(&mut app, |sessions, ctx| {
+            sessions.initialize_bootstrapped_session(
+                SessionInfo::new_for_test().with_id(session_id),
+                "test command".to_string(),
+                vec![],
+                None,
+                ctx,
+            );
+        });
+        executor.clear();
+        settle(&mut app, &current_prompt, context()).await;
+        assert!(
+            !executor.commands.lock().is_empty(),
+            "the chips must run once the session is registered, even for an unchanged context"
+        );
+    });
+}
+
 /// #1166: the branch chip must follow the branch the shell reported in precmd immediately,
 /// instead of waiting for the git-status refresh, and the refresh must then take over.
 #[cfg(feature = "local_fs")]

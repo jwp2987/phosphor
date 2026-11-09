@@ -313,6 +313,13 @@ struct PromptContextKey {
     conda_environment: Option<String>,
     node_version: Option<String>,
     external_commands_loaded: bool,
+    /// Whether the block's session is registered in `Sessions` (#1801). A remote session's
+    /// blocks carry its id before its bootstrap completes (the ssh setup holds the bootstrap
+    /// while it checks for the helper, longer over a slow link), so chips refreshed in that
+    /// window find no session and fail with "could not prepare execution context". The
+    /// refresh that follows the bootstrap often has the same block, cwd and environment; this
+    /// is the input that changed, and without it the failed chips were never re-run.
+    session_registered: bool,
 }
 
 /// Context about the current terminal session, needed to update the prompt.
@@ -783,6 +790,14 @@ impl CurrentPrompt {
         self.with_generator_context(ctx, |generator_context| Some(func(generator_context)))
     }
 
+    /// Whether the latest context's session is registered in `Sessions` (#1801).
+    fn latest_context_session_registered(&self, ctx: &AppContext) -> bool {
+        self.latest_context
+            .as_ref()
+            .and_then(|context| context.active_block_metadata.session_id())
+            .is_some_and(|session_id| self.sessions.as_ref(ctx).get(session_id).is_some())
+    }
+
     fn prepare_shell_command_context(
         &self,
         cmd: &ShellCommandGenerator,
@@ -939,7 +954,20 @@ impl CurrentPrompt {
         match generator {
             PromptGenerator::ShellCommand(cmd) => {
                 let Some(exec_ctx) = self.prepare_shell_command_context(cmd, ctx) else {
-                    log::warn!("Generator for {chip_kind:?}: could not prepare execution context");
+                    // #1801: before the block's session is registered (no context yet, or a
+                    // remote session still bootstrapping) this is expected and is retried when
+                    // the session registers (`PromptContextKey::session_registered`); only a
+                    // failure with a registered session is worth a warning.
+                    if self.latest_context_session_registered(ctx) {
+                        log::warn!(
+                            "Generator for {chip_kind:?}: could not prepare execution context"
+                        );
+                    } else {
+                        log::debug!(
+                            "Generator for {chip_kind:?}: session not registered yet; \
+                             retried when it is"
+                        );
+                    }
                     self.update_chip_value(chip_kind, None);
                     self.update_on_click_value(chip_kind, None);
                     self.set_chip_update_status(chip_kind, ChipUpdateStatus::Error);
@@ -1724,6 +1752,10 @@ impl CurrentPrompt {
             }
             None => true,
         };
+        let session = context
+            .active_block_metadata
+            .session_id()
+            .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id));
         let key = PromptContextKey {
             block_id,
             session_id: context.active_block_metadata.session_id(),
@@ -1737,11 +1769,10 @@ impl CurrentPrompt {
             node_version: context.environment.node_version().cloned(),
             // Chip availability depends on which executables the session has found; a load
             // that completes mid-prompt must still restart the chips.
-            external_commands_loaded: context
-                .active_block_metadata
-                .session_id()
-                .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
+            external_commands_loaded: session
+                .as_ref()
                 .is_some_and(|session| session.has_loaded_external_commands()),
+            session_registered: session.is_some(),
         };
         let unchanged = self.latest_context_key.as_ref() == Some(&key);
         self.latest_context_key = Some(key);
