@@ -1898,6 +1898,7 @@ App cases (Linux only, `--cases 'zero_network_startup,claude_plugin_offline,agen
   `connect`/`sendto`/`sendmsg` to a non-loopback inet address (`outbound_attempts`). The harness profile has no cloud account or provider key. SKIPS (not passes)
   when `strace -f` does not work on the runner (ptrace denied); a `unshare -rn` launch was rejected because the app's D-Bus and X11 sockets are abstract and
   a new network namespace cannot reach them.
+  The scripted session proves the shell is in front after Escape (probe line; Escape does not close the settings tab) and closes the tab with the platform's close when it is not, so the ssh connect reaches the shell.
 - **`claude_plugin_offline`**: inside `unshare -rn` (network blocked; without it the case is `noref`, not a pass), `fakeclaude.py` registers the bundled folder and
   installs `warp@claude-code-warp` (it refuses a non-local source and checks the hook scripts exist and are executable), then the plugin's real hook scripts run on
   synthetic Claude Code inputs (a prompt with `;`, multi-byte characters and 300+ characters; tool; permission request; stop). A fake `claude` in a pane prints the
@@ -3348,6 +3349,8 @@ the remote side only (and `phxtab_local_only/` locally), `ssh fake`, types `cd p
 (metric `remote_tab_in_band_ms`). `remote_tab_enter_no_helper` (same setup, ctx.count(3) trials): Tab, Enter 30 ms later;
 the remote rec.log must hold the COMPLETED `cd phxte_<tok>/`, never the typed prefix. Both skip on macOS, whose test
 host's remote shell is /bin/bash 3.2 (no in-band Tab there, by design). No fish remote case: fish is off the path.
+Both read the remote rec.log through `remote_cmds_after`, which drops the harness's own `~/.appci_where` probes: the precondition probe's
+line can reach rec.log AFTER the mark is taken (round 7: both cases failed with only the probe 'received' while the completed `cd` ran).
 
 Lab spec, netem 150 ms (manual; needs root, the harness never applies it): on the Linux box,
 `sudo tc qdisc add dev lo root netem delay 75ms` (150 ms round trip on loopback, where the fake sshd listens), run

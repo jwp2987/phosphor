@@ -112,6 +112,22 @@ def scripted_session(ctx, r):
             ctx.shot("zns_settings_%d" % i)
     ctx.be.key("Escape")
     time.sleep(0.8)
+    # Escape does not close the settings TAB (the same fact cases_coverage_b settings_open_close handles): keys typed next went to the settings page,
+    # and the ssh connect below never reached the shell (round 7 Linux: app log keydowns with live_focus=no). Prove the shell is in front with a probe
+    # line; if not, close the settings tab with the platform's close and prove it again.
+    probe_f = "zns_probe.txt"
+
+    def shell_in_front(n):
+        ctx.rm(probe_f)
+        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), "zns%d" % n, probe_f), 12, enter=True)
+        return bool(ctx.until(lambda: any("zns%d" % n in l for l in ctx.lines(probe_f)), 3))
+    if not shell_in_front(1):
+        how = cases.editor_close(ctx, r)
+        r.note("Escape left the settings page open (the shell did not take the probe line); closed it with %s" % how)
+        time.sleep(0.8)
+        if how is not None:
+            r.check(shell_in_front(2), "the shell pane did not take typing after the settings page was closed with %s" % how)
+    ctx.reset()
     r.note("scripted session: settings page walked with the keyboard (best effort; shots/zns_settings_*), allowlist beyond loopback: %s" % (sorted(allow) or "none"))
     if getattr(ctx, "ssh", None):
         secs = CR.connect(ctx, "fake", 60)
