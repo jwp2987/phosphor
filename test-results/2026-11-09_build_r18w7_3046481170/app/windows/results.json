@@ -1,0 +1,6207 @@
+{
+ "meta": {
+  "platform": "windows",
+  "backend": "windows",
+  "app_display": "windows",
+  "seed": "1",
+  "commit": "a10b7c89",
+  "sha": "a10b7c89e88ec97526f470035cb73d459117f655",
+  "owner_settings": "sha256 a0613b641a27",
+  "tier": "smoke",
+  "scale": "1"
+ },
+ "generated": "2026-11-09T12:30:22-0800",
+ "summary": {
+  "pass": 55,
+  "fail": 15,
+  "skip": 130,
+  "noref": 4
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 1.3,
+   "evidence": [
+    "mode_proof: log_view_mode=terminal ocr_agent_markers=None ocr_terminal_hint=None queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794251468.187,
+    1794251469.454
+   ],
+   "detail": [
+    "mode machine-verified from the app log (hop=view_mode mode=terminal); no OCR engine"
+   ],
+   "metrics": {
+    "log_view_mode": "terminal",
+    "queue_destination": "table"
+   },
+   "shots": [
+    "shots\\terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.1,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794251478.497,
+    1794251484.592
+   ],
+   "detail": [
+    "pty writes: 62, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 15.99,
+     "p95": 17.0,
+     "max": 17.79
+    },
+    "pty_write_cr": {
+     "writes": 62,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\terminal_cadence.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 96.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794251485.85,
+    1794251582.669
+   ],
+   "detail": [
+    "reference conhost (powershell.exe) gap 0.00s: 0/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+    "reference conhost (powershell.exe) gap 0.25s: 1/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+    "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "conhost (powershell.exe)",
+     "runs": {
+      "0.0": {
+       "ref": "conhost (powershell.exe)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": null
+      },
+      "0.25": {
+       "ref": "conhost (powershell.exe)",
+       "n": 30,
+       "bad": 1,
+       "posted": 30,
+       "lines": 29,
+       "exact_bad": null
+      }
+     }
+    },
+    "pty_write_cr": {
+     "writes": 2,
+     "with_cr": 0,
+     "enters": 0
+    }
+   },
+   "shots": [
+    "shots\\terminal_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 53.7,
+   "evidence": [
+    "enter_route: 60 Enter(s) reached the input editor: Shell=60 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794251583.183,
+    1794251636.868
+   ],
+   "detail": [
+    "pty writes: 257, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 257,
+     "with_cr": 0,
+     "enters": 60
+    }
+   },
+   "shots": [
+    "shots\\terminal_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 5.4,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: Shell=6 [Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794251637.308,
+    1794251642.68
+   ],
+   "detail": [
+    "pty writes: 14, of which carrying a CR (\\r): 2; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 14,
+     "with_cr": 2,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots\\terminal_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 21.5,
+   "evidence": [
+    "enter_route: 13 Enter(s) reached the input editor: Shell=13 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794251643.041,
+    1794251664.588
+   ],
+   "detail": [
+    "pty writes: 24, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "completion_give_ups": 0,
+    "pty_write_cr": {
+     "writes": 24,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots\\terminal_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 328.9,
+   "evidence": [
+    "enter_route: 38 Enter(s) reached the input editor: Shell=38 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]",
+    "host load after the case: loadavg1=n/a cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794251664.974,
+    1794251993.913
+   ],
+   "detail": [
+    "^C split (#1401, separate ungated batch with the marks on, medians ms): ^C write -> PowerShell prompt 8.39, -> LineEditorReading 59.2; app: line editor ready 65.8, active 65.9, next command written 3081.5, its Preexec 3096.4",
+    "#1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells",
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 4.14 ms includes the input-tool spawn (harness floor 0.07939996430650353 ms)",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran",
+    "pty writes: 114, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 38 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pwsh_hook_timing_during_samples": false,
+    "ctrl_c_segments_ms": {
+     "ctrl_c_to_prompt": 8.39,
+     "ctrl_c_to_prompt_n": 5,
+     "ctrl_c_to_reading": 59.2,
+     "ctrl_c_to_reading_n": 4,
+     "line_editor_ready_after_ctrl_c": 65.8,
+     "line_editor_ready_after_ctrl_c_n": 5,
+     "line_editor_active_after_ctrl_c": 65.9,
+     "line_editor_active_after_ctrl_c_n": 5,
+     "command_written_after_ctrl_c": 3081.5,
+     "command_written_after_ctrl_c_n": 5,
+     "preexec_after_ctrl_c": 3096.4,
+     "preexec_after_ctrl_c_n": 5
+    },
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 4.14,
+     "p95": 5.53,
+     "max": 31.3
+    },
+    "ctrl_c_app_segments": {
+     "n": 35,
+     "keydown->ctrl_c_keydown": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "ctrl_c_keydown->ctrl_c_to_event_loop": {
+      "n": 35,
+      "p50": 0.4,
+      "p95": 0.55,
+      "max": 0.62
+     },
+     "ctrl_c_to_event_loop->ctrl_c_received": {
+      "n": 35,
+      "p50": 0.08,
+      "p95": 0.18,
+      "max": 0.59
+     },
+     "ctrl_c_received->ctrl_c_pty_write": {
+      "n": 35,
+      "p50": 0.15,
+      "p95": 0.21,
+      "max": 0.36
+     },
+     "keydown_to_write": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "harness_floor_ms": 0.079,
+    "harness_ctrl_c_ignored": true,
+    "app_conpty_ctrl_c_reset": "default(on)",
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 2.6,
+     "p95": 3.84,
+     "max": 6.55
+    },
+    "reference": "conhost (powershell.exe)",
+    "reference_ctrl_c_flag": "cleared",
+    "lat": {
+     "ctrl_c": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 30,
+       "p50": 4.14,
+       "p95": 5.53,
+       "max": 31.3
+      },
+      "reference": {
+       "n": 30,
+       "p50": 2.6,
+       "p95": 3.84,
+       "max": 6.55
+      },
+      "reference_name": "conhost (powershell.exe)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 0.07939996430650353,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 4.14 ms includes the input-tool spawn (harness floor 0.07939996430650353 ms)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.17
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 0.07
+       }
+      },
+      "overhead_ms": 1.54,
+      "overhead_se_ms": 0.18,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": -0.26,
+       "reference": -0.0
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 4.61,
+       "p95": 6.54,
+       "delta_ms": -0.47,
+       "delta_pct": -10.2,
+       "verdict": "pass"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     }
+    },
+    "pty_write_cr": {
+     "writes": 114,
+     "with_cr": 0,
+     "enters": 38
+    },
+    "host_load": "loadavg1=n/a cpus=8"
+   },
+   "shots": [
+    "shots\\terminal_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_flood_ab",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_sh_probe",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_rc_questions",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile with read -p questions on a real pty; the readiness judge's OS facts are POSIX (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_vim_typeahead",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_unsupported_tcsh",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_secret_after_prompt",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash PROMPT_COMMAND read -s on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_relay_shape",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_exec_fish_rc",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_docker_t_without_i",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_zsh_newuser_install",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_rc_clear",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile with clear on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 65.9,
+   "evidence": [
+    "enter_route: 13 Enter(s) reached the input editor: Shell=13 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252000.046,
+    1794252065.992
+   ],
+   "detail": [
+    "ssh_connect_typing gap 0.1 s trial 2: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.1 s trial 3: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.2 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.3 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.3 s trial 3: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing loss: 0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: #1292=5, exact=7"
+   ],
+   "metrics": {
+    "trials": 12,
+    "loss": {
+     "lost": 0,
+     "n": 12,
+     "rate": 0.0,
+     "upper_bound": 0.2209,
+     "conf": 0.95,
+     "text": "0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 890,
+     "with_cr": 36,
+     "enters": 13
+    }
+   },
+   "shots": [
+    "shots\\terminal_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 16.4,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252067.637,
+    1794252084.069
+   ],
+   "detail": [
+    "ssh_enter_then_immediate_command trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_enter_then_immediate_command trial 2: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh trial verdicts: #1292=2, exact=1"
+   ],
+   "metrics": {
+    "ssh_trial_verdicts": [
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 223,
+     "with_cr": 9,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\terminal_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 10.1,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252085.743,
+    1794252095.879
+   ],
+   "detail": [
+    "ssh trial verdicts: exact=1"
+   ],
+   "metrics": {
+    "verdict_give_up_retries": 0,
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 127,
+     "with_cr": 6,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\terminal_ssh_nested_typeahead.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 286.1,
+   "evidence": [
+    "enter_route: 87 Enter(s) reached the input editor: Shell=87 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=n/a cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252097.553,
+    1794252383.649
+   ],
+   "detail": [
+    "app share of Enter->start: enter_begin -> pty_write median 1.66 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "shell side: pty_write -> first pty_read median 4.30 ms (n=63)",
+    "PowerShell side of Enter->start (#1401, separate ungated batch of 20 with the marks on, medians ms): app write->chord handler 0.92, pipe read 2.96, insert 3.33, AcceptLine 2.36, line->Preexec OSC 1.94, OSC->app 0.0, Preexec tail 0.19, hook->command start 8.0; next prompt: precmd -, render 0.99, maintenance+marker 15.31",
+    "W1: reference burst 8.9 ms vs per-key 7.4 ms (+1.5 ms): burst ingestion does not explain the gap",
+    "Enter split (Phosphor - reference, medians ms, #1606): t0_to_inj -0.01; Phosphor app: enter_to_write 1.66, submit_bookkeeping 0.03, effect_flush 0.31, pty_lock_wait 0.00",
+    "NO-REFERENCE: NO-CONPTY-REFERENCE: Enter to command start: Phosphor overhead 37.64 +/- 1.55 ms (SE) over conhost (powershell.exe) (a console with no ConPTY) against the 2 ms budget; the app's own share is in the notes. Install Windows Terminal for a ConPTY reference (owner decision); the overhead budget was NOT judged",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "pty writes: 175, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 87 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pane_shell": "powershell",
+    "stamp_line": "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_%d -Encoding ascii",
+    "enter_sample_start": "t0",
+    "host_load": "loadavg1=n/a cpus=8",
+    "measurement_mode": "sequential",
+    "enter_to_start_ms": {
+     "n": 60,
+     "p50": 45.07,
+     "p95": 63.27,
+     "max": 80.66
+    },
+    "app_enter_to_pty_write_ms": 1.66,
+    "app_segments_ms": {
+     "enter_to_write_ms": 1.66,
+     "enter_to_write_n": 63,
+     "submit_bookkeeping_ms": 0.03,
+     "submit_bookkeeping_n": 63,
+     "effect_flush_ms": 0.31,
+     "effect_flush_n": 63,
+     "write_to_first_read_ms": 4.3,
+     "write_to_first_read_n": 63,
+     "write_to_preexec_ms": 11.33,
+     "write_to_preexec_n": 63,
+     "pty_lock_wait_ms": 0.0,
+     "pty_lock_wait_n": 63,
+     "platform": "windows"
+    },
+    "pwsh_hook_timing_during_samples": false,
+    "pwsh_hook_segments_ms": {
+     "app_write_to_handler": 0.92,
+     "app_write_to_handler_n": 23,
+     "handler_pipe_read": 2.96,
+     "handler_pipe_read_n": 23,
+     "handler_insert": 3.33,
+     "handler_insert_n": 23,
+     "accept_line": 2.36,
+     "accept_line_n": 23,
+     "readline_to_preexec": 1.94,
+     "readline_to_preexec_n": 23,
+     "preexec_osc_to_app": 0.0,
+     "preexec_osc_to_app_n": 22,
+     "preexec_tail": 0.19,
+     "preexec_tail_n": 23,
+     "hook_to_command_start": 8.0,
+     "hook_to_command_start_n": 23,
+     "prompt_render": 0.99,
+     "prompt_render_n": 23,
+     "prompt_to_readline": 1.32,
+     "prompt_to_readline_n": 23,
+     "readline_maintenance": 15.31,
+     "readline_maintenance_n": 22
+    },
+    "harness_floor_ms": 0.079,
+    "reference_burst_enter_to_start_ms": {
+     "n": 29,
+     "p50": 8.91,
+     "p95": 10.61,
+     "max": 20.52
+    },
+    "reference_burst_minus_per_key_ms": 1.48,
+    "reference_enter_to_start_ms": {
+     "n": 60,
+     "p50": 7.43,
+     "p95": 18.44,
+     "max": 25.1
+    },
+    "reference": "conhost (powershell.exe)",
+    "reference_shell": "powershell.exe",
+    "enter_split_ms": {
+     "phosphor": {
+      "n": 63,
+      "t0_to_inj_ms": 0.15
+     },
+     "reference": {
+      "n": 63,
+      "t0_to_inj_ms": 0.16
+     },
+     "delta": {
+      "t0_to_inj_ms": -0.01
+     },
+     "phosphor_app": {
+      "enter_to_write_ms": 1.66,
+      "submit_bookkeeping_ms": 0.03,
+      "effect_flush_ms": 0.31,
+      "pty_lock_wait_ms": 0.0
+     }
+    },
+    "lat": {
+     "enter_to_start": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 60,
+       "p50": 45.07,
+       "p95": 63.27,
+       "max": 80.66
+      },
+      "reference": {
+       "n": 60,
+       "p50": 7.43,
+       "p95": 18.44,
+       "max": 25.1
+      },
+      "reference_name": "conhost (powershell.exe)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 0.07939996430650353,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 1.59
+       },
+       "reference": {
+        "n": 60,
+        "se_median_ms": 0.22
+       }
+      },
+      "overhead_ms": 37.64,
+      "overhead_se_ms": 1.55,
+      "pane_shell": "powershell",
+      "reference_shell": "powershell.exe",
+      "drift_ms": {
+       "phosphor": -3.34,
+       "reference": 1.53
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 49.64,
+       "p95": 61.99,
+       "delta_ms": -4.57,
+       "delta_pct": -9.2,
+       "verdict": "pass"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "fail"
+     }
+    },
+    "pty_write_cr": {
+     "writes": 175,
+     "with_cr": 0,
+     "enters": 87
+    }
+   },
+   "shots": [
+    "shots\\terminal_latency_enter.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: types into a running `cat > /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0.7,
+   "evidence": [
+    "host load after the case: loadavg1=n/a cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252384.531,
+    1794252385.236
+   ],
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+   ],
+   "metrics": {
+    "host_load": "loadavg1=n/a cpus=8"
+   },
+   "shots": [
+    "shots\\terminal_latency_paint.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_mode_switch",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "remote_tab_no_helper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: rec.log of the remote bash and `cd`/`pwd` there, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "remote_tab_enter_no_helper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: rec.log of the remote bash for the completed `cd`, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ui_completions_as_you_type_local",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: asserts the menu on screen after typing in the Git Bash pane (the as-you-type default under test)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "shell_fish",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "shell_nu",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ctrl_c_no_esc_i_local",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794252388.783,
+    1794252389.616
+   ],
+   "detail": [
+    "the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_ctrl_c_no_esc_i_local.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 3.0,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794252390.714,
+    1794252393.678
+   ],
+   "detail": [
+    "no pointer synthesis on this backend: the pointer stays where the last case left it",
+    "no OCR engine (tesseract / Apple Vision): screenshot shots/terminal_md_small_noocr.png only, table text and diagram labels NOT machine-verified"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 1,
+     "with_cr": 0,
+     "enters": 0
+    }
+   },
+   "shots": [
+    "shots\\terminal_md_viewer.png"
+   ]
+  },
+  {
+   "name": "zero_network_startup",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: Wave N: traces the app with Linux strace; a Windows/macOS network trace is not built yet"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "keyring_unavailable_startup",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "claude_plugin_offline",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: Wave N: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the plugin's hook scripts are bash+jq"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_plugins_offline",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the Codex and Gemini hook scripts are bash+jq and write to /dev/tty"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "network_gate_switch",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle) and the Linux profile layout"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "cb_report_problem",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: the Windows Downloads folder is a known folder, not under the scratch HOME, so the bundle does not land where the case looks (set PHOSPHOR_DIAG_BUNDLE_DIR in the app's environment to enable)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "mode_proof",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 1.0,
+   "evidence": [
+    "mode_proof: log_view_mode=terminal ocr_agent_markers=None ocr_terminal_hint=None queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252409.572,
+    1794252410.568
+   ],
+   "detail": [
+    "mode machine-verified from the app log (hop=view_mode mode=terminal); no OCR engine"
+   ],
+   "metrics": {
+    "log_view_mode": "terminal",
+    "queue_destination": "table"
+   },
+   "shots": [
+    "shots\\terminal@gitbash_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 6.1,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252412.907,
+    1794252419.043
+   ],
+   "detail": [
+    "pty writes: 62, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 15.98,
+     "p95": 16.35,
+     "max": 17.36
+    },
+    "pty_write_cr": {
+     "writes": 62,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_cadence.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 33.3,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252420.604,
+    1794252453.902
+   ],
+   "detail": [
+    "injector mode: None (persistent = one session-long virtual keyboard, so 'unprimed' measures Phosphor itself; percall = a keyboard per wtype call, the #1414 artifact)",
+    "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "pty writes: 24, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "key_loss": {
+     "variants": [
+      {
+       "target": "phosphor",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      }
+     ],
+     "reference": "conhost (bash)",
+     "injector_mode": null
+    },
+    "pty_write_cr": {
+     "writes": 24,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_key_loss_control.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 56.5,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794252454.314,
+    1794252510.859
+   ],
+   "detail": [
+    "reference conhost (bash) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+    "reference conhost (bash) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "conhost (bash)",
+     "runs": {
+      "0.0": {
+       "ref": "conhost (bash)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      },
+      "0.25": {
+       "ref": "conhost (bash)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      }
+     }
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 49.2,
+   "evidence": [
+    "enter_route: 60 Enter(s) reached the input editor: Shell=60 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252511.295,
+    1794252560.459
+   ],
+   "detail": [
+    "pty writes: 194, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 194,
+     "with_cr": 0,
+     "enters": 60
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 14.2,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252560.864,
+    1794252575.089
+   ],
+   "detail": [],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 15,
+     "with_cr": 3,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 17.7,
+   "evidence": [
+    "enter_route: 13 Enter(s) reached the input editor: Shell=13 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252575.538,
+    1794252593.24
+   ],
+   "detail": [
+    "pty writes: 24, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "completion_give_ups": 0,
+    "pty_write_cr": {
+     "writes": 24,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 177.0,
+   "evidence": [
+    "enter_route: 33 Enter(s) reached the input editor: Shell=33 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]",
+    "host load after the case: loadavg1=n/a cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252593.672,
+    1794252770.668
+   ],
+   "detail": [
+    "#1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells",
+    "WARN Ctrl-C: median 83.47 vs baseline build +3.23 ms (+4.0%)",
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 83.47 ms includes the input-tool spawn (harness floor 0.13870000839233398 ms)",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran",
+    "pty writes: 99, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 33 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 83.47,
+     "p95": 103.85,
+     "max": 165.42
+    },
+    "ctrl_c_app_segments": {
+     "n": 30,
+     "keydown->ctrl_c_keydown": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "ctrl_c_keydown->ctrl_c_to_event_loop": {
+      "n": 30,
+      "p50": 0.41,
+      "p95": 0.63,
+      "max": 1.41
+     },
+     "ctrl_c_to_event_loop->ctrl_c_received": {
+      "n": 30,
+      "p50": 0.08,
+      "p95": 0.12,
+      "max": 0.21
+     },
+     "ctrl_c_received->ctrl_c_pty_write": {
+      "n": 30,
+      "p50": 0.15,
+      "p95": 0.29,
+      "max": 0.49
+     },
+     "keydown_to_write": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "harness_floor_ms": 0.139,
+    "harness_ctrl_c_ignored": true,
+    "app_conpty_ctrl_c_reset": "default(on)",
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 76.22,
+     "p95": 96.81,
+     "max": 102.81
+    },
+    "reference": "conhost (bash)",
+    "reference_ctrl_c_flag": "cleared",
+    "lat": {
+     "ctrl_c": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 30,
+       "p50": 83.47,
+       "p95": 103.85,
+       "max": 165.42
+      },
+      "reference": {
+       "n": 30,
+       "p50": 76.22,
+       "p95": 96.81,
+       "max": 102.81
+      },
+      "reference_name": "conhost (bash)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 0.13870000839233398,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 83.47 ms includes the input-tool spawn (harness floor 0.13870000839233398 ms)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 3.62
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 2.24
+       }
+      },
+      "overhead_ms": 7.25,
+      "overhead_se_ms": 4.25,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": 6.34,
+       "reference": -5.41
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 80.24,
+       "p95": 102.24,
+       "delta_ms": 3.23,
+       "delta_pct": 4.0,
+       "verdict": "warn"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "warn",
+      "verdict": "warn"
+     }
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    },
+    "pty_write_cr": {
+     "writes": 99,
+     "with_cr": 0,
+     "enters": 33
+    },
+    "host_load": "loadavg1=n/a cpus=8"
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_flood_ab",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_sh_probe",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_rc_questions",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile with read -p questions on a real pty; the readiness judge's OS facts are POSIX (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_vim_typeahead",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_unsupported_tcsh",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_secret_after_prompt",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash PROMPT_COMMAND read -s on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_relay_shape",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_exec_fish_rc",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_docker_t_without_i",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_zsh_newuser_install",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_rc_clear",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile with clear on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 37.8,
+   "evidence": [
+    "enter_route: 13 Enter(s) reached the input editor: Shell=13 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252776.784,
+    1794252814.604
+   ],
+   "detail": [
+    "ssh_connect_typing gap 0.0 s trial 3: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.1 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.1 s trial 2: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.1 s trial 3: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.2 s trial 2: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.3 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.3 s trial 2: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing loss: 0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: #1292=7, exact=5"
+   ],
+   "metrics": {
+    "trials": 12,
+    "loss": {
+     "lost": 0,
+     "n": 12,
+     "rate": 0.0,
+     "upper_bound": 0.2209,
+     "conf": 0.95,
+     "text": "0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 880,
+     "with_cr": 36,
+     "enters": 13
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 9.7,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252816.154,
+    1794252825.887
+   ],
+   "detail": [
+    "ssh trial verdicts: exact=3"
+   ],
+   "metrics": {
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 211,
+     "with_cr": 9,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 19.5,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252827.609,
+    1794252847.065
+   ],
+   "detail": [
+    "ssh trial verdicts: exact=1"
+   ],
+   "metrics": {
+    "verdict_give_up_retries": 0,
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 162,
+     "with_cr": 7,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ssh_nested_typeahead.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal@gitbash",
+   "status": "noref",
+   "seconds": 186.4,
+   "evidence": [
+    "enter_route: 63 Enter(s) reached the input editor: Shell=63 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=n/a cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794252848.779,
+    1794253035.187
+   ],
+   "detail": [
+    "G1: Git Bash fork+exec costs 41.3 ms per process on this host (outside the app); every forking shell hook adds about that",
+    "app share of Enter->start: enter_begin -> pty_write median 0.90 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "shell side: pty_write -> first pty_read median 32.60 ms (n=63)",
+    "W1: reference burst 65.5 ms vs per-key 63.6 ms (+1.9 ms): burst ingestion does not explain the gap",
+    "G2: reference bash with Phosphor's bootstrap sourced 84.2 ms vs the plain reference 63.6 ms (+20.6 ms): that is what the shell hooks cost on this host, outside the app",
+    "Enter split (Phosphor - reference, medians ms, #1606): t0_to_inj +0.00; Phosphor app: enter_to_write 0.90, submit_bookkeeping 0.03, effect_flush 0.18, pty_lock_wait 0.00",
+    "NO-REFERENCE: NO-CONPTY-REFERENCE: Enter to command start: Phosphor overhead 31.24 +/- 2.49 ms (SE) over conhost (bash) (a console with no ConPTY) against the 2 ms budget; the app's own share is in the notes. Install Windows Terminal for a ConPTY reference (owner decision); the overhead budget was NOT judged",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "pty writes: 128, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 63 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pane_shell": "bash",
+    "stamp_line": "date +%%s.%%N > lat_%d",
+    "enter_sample_start": "t0",
+    "host_load": "loadavg1=n/a cpus=8",
+    "gitbash_fork_ms": 41.34,
+    "measurement_mode": "sequential",
+    "enter_to_start_ms": {
+     "n": 60,
+     "p50": 94.84,
+     "p95": 169.91,
+     "max": 304.57
+    },
+    "app_enter_to_pty_write_ms": 0.9,
+    "app_segments_ms": {
+     "enter_to_write_ms": 0.9,
+     "enter_to_write_n": 63,
+     "submit_bookkeeping_ms": 0.03,
+     "submit_bookkeeping_n": 63,
+     "effect_flush_ms": 0.18,
+     "effect_flush_n": 63,
+     "write_to_first_read_ms": 32.6,
+     "write_to_first_read_n": 63,
+     "write_to_preexec_ms": 47.54,
+     "write_to_preexec_n": 63,
+     "pty_lock_wait_ms": 0.0,
+     "pty_lock_wait_n": 63,
+     "platform": "windows"
+    },
+    "harness_floor_ms": 0.139,
+    "reference_burst_enter_to_start_ms": {
+     "n": 29,
+     "p50": 65.5,
+     "p95": 73.62,
+     "max": 75.3
+    },
+    "reference_burst_minus_per_key_ms": 1.9,
+    "reference_bootstrap_enter_to_start_ms": {
+     "n": 30,
+     "p50": 84.22,
+     "p95": 102.42,
+     "max": 108.61
+    },
+    "reference_bootstrap_minus_plain_ms": 20.62,
+    "reference_enter_to_start_ms": {
+     "n": 60,
+     "p50": 63.6,
+     "p95": 76.76,
+     "max": 100.32
+    },
+    "reference": "conhost (bash)",
+    "reference_shell": "bash",
+    "enter_split_ms": {
+     "phosphor": {
+      "n": 63,
+      "t0_to_inj_ms": 0.17
+     },
+     "reference": {
+      "n": 63,
+      "t0_to_inj_ms": 0.17
+     },
+     "delta": {
+      "t0_to_inj_ms": 0.0
+     },
+     "phosphor_app": {
+      "enter_to_write_ms": 0.9,
+      "submit_bookkeeping_ms": 0.03,
+      "effect_flush_ms": 0.18,
+      "pty_lock_wait_ms": 0.0
+     }
+    },
+    "lat": {
+     "enter_to_start": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 60,
+       "p50": 94.84,
+       "p95": 169.91,
+       "max": 304.57
+      },
+      "reference": {
+       "n": 60,
+       "p50": 63.6,
+       "p95": 76.76,
+       "max": 100.32
+      },
+      "reference_name": "conhost (bash)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 0.13870000839233398,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 1.7
+       },
+       "reference": {
+        "n": 60,
+        "se_median_ms": 1.69
+       }
+      },
+      "overhead_ms": 31.24,
+      "overhead_se_ms": 2.49,
+      "pane_shell": "bash",
+      "reference_shell": "bash",
+      "drift_ms": {
+       "phosphor": 0.11,
+       "reference": 7.87
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 95.0,
+       "p95": 139.53,
+       "delta_ms": -0.16,
+       "delta_pct": -0.2,
+       "verdict": "pass"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "fail"
+     }
+    },
+    "pty_write_cr": {
+     "writes": 128,
+     "with_cr": 0,
+     "enters": 63
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_latency_enter.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal@gitbash",
+   "status": "noref",
+   "seconds": 11.8,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]",
+    "host load after the case: loadavg1=n/a cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253035.695,
+    1794253047.507
+   ],
+   "detail": [
+    "#1176 key -> pty write median 0.66 ms (p95 0.92, n=60): within the 1 ms target",
+    "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists",
+    "UI work: 2 frame item(s) >= 4 ms while typing (max 5.5 ms); frame items include rasterisation, so this is a WARN on software GL",
+    "pty writes: 66, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 3.5,
+     "p95": 4.2,
+     "max": 4.77
+    },
+    "key_to_pty_write_ms": {
+     "n": 60,
+     "p50": 0.66,
+     "p95": 0.92,
+     "max": 0.96
+    },
+    "typing_ui_items": {
+     "over_4ms": 0,
+     "over_16ms": 0,
+     "max_ms": 0.0,
+     "by_kind": {}
+    },
+    "typing_lock_holds": {},
+    "lat": {
+     "key_to_frame": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 60,
+       "p50": 3.5,
+       "p95": 4.2,
+       "max": 4.77
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.06
+       }
+      },
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 3.4,
+       "p95": 7.96,
+       "delta_ms": 0.1,
+       "delta_pct": 2.9,
+       "verdict": "pass"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "no-reference"
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 2,
+       "p50": null,
+       "p95": null,
+       "max": 5.54
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "ui-item-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "warn",
+      "verdict": "warn",
+      "notes": [
+       "hop=ui_item logs every main-thread item >= 4 ms: pass = none while typing; warn = frame items (raster-bound on software GL) or a few logic items; fail = more than max(2, 5 %% of the keys) event/action items; >= 16 ms is a dropped frame"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 5.54,
+     "ops": []
+    },
+    "ui_items_over_4ms": {
+     "logic_count": 0,
+     "logic_max_ms": 0.0,
+     "frame_count": 2,
+     "frame_max_ms": 5.54,
+     "allowed": 3,
+     "source": "hop=ui_item"
+    },
+    "pty_write_cr": {
+     "writes": 66,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "host_load": "loadavg1=n/a cpus=8"
+   },
+   "shots": [
+    "shots\\terminal@gitbash_latency_key_log.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0.6,
+   "evidence": [
+    "host load after the case: loadavg1=n/a cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253047.927,
+    1794253048.533
+   ],
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+   ],
+   "metrics": {
+    "host_load": "loadavg1=n/a cpus=8"
+   },
+   "shots": [
+    "shots\\terminal@gitbash_latency_paint.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 59.2,
+   "evidence": [
+    "enter_route: 29 Enter(s) reached the input editor: AI=15 Shell=14 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253049.034,
+    1794253108.262
+   ],
+   "detail": [
+    "pty writes: 30, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 27 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "settings_nld_in_terminal": true,
+    "settings_ai_auto_detection": true,
+    "routing_rows": [
+     {
+      "line": "ls -la",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "git status",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "grep foo foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "echo hello world",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "pwd",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "wc -l foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "uname -a",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "ls the",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "date",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "print -r -- $EPOCHREALTIME > lat_0",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "notacmd_x $HOME/x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "xyz_nocmd > out_nc.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "foo_nocmd --bar | grep x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what does this error mean",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "PlainTerminal",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "how do I undo my last git commit",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain why the build is failing",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "why is my disk full",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you summarize the changes in this repo",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "please walk me through the failing test",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "is five bigger than three",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you show me how to use --verbose?",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "model",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain $PATH to me",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "find the bug in main.rs",
+      "kind": "ambiguous",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "make a PR",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat the error log and tell me what is wrong",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what is 5 > 3",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "model",
+      "verdict_give_up": false
+     }
+    ],
+    "misroutes": 0,
+    "verdict_give_ups": 0,
+    "pty_write_cr": {
+     "writes": 30,
+     "with_cr": 0,
+     "enters": 27
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_routing_table.png"
+   ]
+  },
+  {
+   "name": "agent_mode_switch",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 9.3,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: AI=4 Shell=2 [Shell,AI,AI,Shell,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253108.731,
+    1794253117.998
+   ],
+   "detail": [
+    "pty writes: 4, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "view_mode_trail": [
+     "agent",
+     "terminal",
+     "agent",
+     "terminal",
+     "agent"
+    ],
+    "pty_write_cr": {
+     "writes": 4,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_agent_mode_switch.png"
+   ]
+  },
+  {
+   "name": "remote_tab_no_helper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 7.4,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253118.501,
+    1794253125.89
+   ],
+   "detail": [
+    "Tab after 'cd phxtab_t211_z' should have completed the REMOTE directory: the remote shell received ['echo wT212_pfec7644 >> ~/.appci_where'], want 'cd phxtab_t211_z2j4pc/'",
+    "the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)",
+    "path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 125,
+     "with_cr": 5,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_remote_tab_no_helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "remote_tab_enter_no_helper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 7.8,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253128.536,
+    1794253136.382
+   ],
+   "detail": [
+    "Tab + Enter 30 ms later: the remote shell received ['echo wT220_to913369 >> ~/.appci_where'], want the COMPLETED 'cd phxte_t217_aod2k6/' (the uncompleted 'cd phxte_t217_a' must never run)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 149,
+     "with_cr": 9,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_remote_tab_enter_no_helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "ui_completions_as_you_type_local",
+   "mode": "terminal@gitbash",
+   "status": "noref",
+   "seconds": 2.5,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794253139.04,
+    1794253141.527
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no OCR on this machine (tesseract): the completion menu is not checked"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_ui_completions_as_you_type_local.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794253142.606,
+    1794253143.267
+   ],
+   "detail": [
+    "package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 1,
+     "with_cr": 0,
+     "enters": 0
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_shell_fish.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794253143.827,
+    1794253144.566
+   ],
+   "detail": [
+    "package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_shell_nu.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_no_esc_i_local",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794253145.064,
+    1794253145.725
+   ],
+   "detail": [
+    "the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_ctrl_c_no_esc_i_local.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 3.0,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794253146.706,
+    1794253149.663
+   ],
+   "detail": [
+    "no pointer synthesis on this backend: the pointer stays where the last case left it",
+    "no OCR engine (tesseract / Apple Vision): screenshot shots/terminal@gitbash_md_small_noocr.png only, table text and diagram labels NOT machine-verified"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 1,
+     "with_cr": 0,
+     "enters": 0
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_md_viewer.png"
+   ]
+  },
+  {
+   "name": "zero_network_startup",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: Wave N: traces the app with Linux strace; a Windows/macOS network trace is not built yet"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "keyring_unavailable_startup",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "claude_plugin_offline",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: Wave N: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the plugin's hook scripts are bash+jq"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_plugins_offline",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the Codex and Gemini hook scripts are bash+jq and write to /dev/tty"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "network_gate_switch",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle) and the Linux profile layout"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "cb_report_problem",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: the Windows Downloads folder is a known folder, not under the scratch HOME, so the bundle does not land where the case looks (set PHOSPHOR_DIAG_BUNDLE_DIR in the app's environment to enable)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0.2,
+   "evidence": [
+    "mode_proof: log_view_mode=agent ocr_agent_markers=None ocr_terminal_hint=None queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253171.907,
+    1794253172.104
+   ],
+   "detail": [
+    "mode machine-verified from the app log (hop=view_mode mode=agent); no OCR engine"
+   ],
+   "metrics": {
+    "log_view_mode": "agent",
+    "queue_destination": "table"
+   },
+   "shots": [
+    "shots\\agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 22.0,
+   "evidence": [
+    "enter_route: 30 Enter(s) reached the input editor: Shell=30 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253181.902,
+    1794253203.905
+   ],
+   "detail": [
+    "pty writes: 175, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 30 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 175,
+     "with_cr": 0,
+     "enters": 30
+    }
+   },
+   "shots": [
+    "shots\\agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 5.4,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: Shell=6 [Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253204.355,
+    1794253209.793
+   ],
+   "detail": [
+    "pty writes: 15, of which carrying a CR (\\r): 3; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 15,
+     "with_cr": 3,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots\\agent_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 20.7,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253210.19,
+    1794253230.841
+   ],
+   "detail": [
+    "pty writes: 24, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "completion_give_ups": 0,
+    "pty_write_cr": {
+     "writes": 24,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots\\agent_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 178.2,
+   "evidence": [
+    "enter_route: 38 Enter(s) reached the input editor: Shell=38 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253231.223,
+    1794253409.452
+   ],
+   "detail": [
+    "^C split (#1401, separate ungated batch with the marks on, medians ms): ^C write -> PowerShell prompt 9.18, -> LineEditorReading 56.36; app: line editor ready 59.7, active 59.9, next command written 3148.7, its Preexec 3155.4",
+    "#1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells",
+    "fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran",
+    "pty writes: 114, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 38 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pwsh_hook_timing_during_samples": false,
+    "ctrl_c_segments_ms": {
+     "ctrl_c_to_prompt": 9.18,
+     "ctrl_c_to_prompt_n": 5,
+     "ctrl_c_to_reading": 56.36,
+     "ctrl_c_to_reading_n": 4,
+     "line_editor_ready_after_ctrl_c": 59.7,
+     "line_editor_ready_after_ctrl_c_n": 5,
+     "line_editor_active_after_ctrl_c": 59.9,
+     "line_editor_active_after_ctrl_c_n": 5,
+     "command_written_after_ctrl_c": 3148.7,
+     "command_written_after_ctrl_c_n": 5,
+     "preexec_after_ctrl_c": 3155.4,
+     "preexec_after_ctrl_c_n": 5
+    },
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 4.42,
+     "p95": 5.95,
+     "max": 6.6
+    },
+    "ctrl_c_app_segments": {
+     "n": 35,
+     "keydown->ctrl_c_keydown": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "ctrl_c_keydown->ctrl_c_to_event_loop": {
+      "n": 35,
+      "p50": 0.41,
+      "p95": 0.55,
+      "max": 0.56
+     },
+     "ctrl_c_to_event_loop->ctrl_c_received": {
+      "n": 35,
+      "p50": 0.08,
+      "p95": 0.16,
+      "max": 0.16
+     },
+     "ctrl_c_received->ctrl_c_pty_write": {
+      "n": 35,
+      "p50": 0.15,
+      "p95": 0.27,
+      "max": 0.34
+     },
+     "keydown_to_write": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "harness_floor_ms": 0.167,
+    "harness_ctrl_c_ignored": true,
+    "app_conpty_ctrl_c_reset": "default(on)",
+    "pty_write_cr": {
+     "writes": 114,
+     "with_cr": 0,
+     "enters": 38
+    }
+   },
+   "shots": [
+    "shots\\agent_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_flood_ab",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_sh_probe",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_rc_questions",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile with read -p questions on a real pty; the readiness judge's OS facts are POSIX (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_vim_typeahead",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_unsupported_tcsh",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_secret_after_prompt",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash PROMPT_COMMAND read -s on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_relay_shape",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_exec_fish_rc",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_docker_t_without_i",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_zsh_newuser_install",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_rc_clear",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile with clear on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 64.9,
+   "evidence": [
+    "enter_route: 13 Enter(s) reached the input editor: Shell=13 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253416.593,
+    1794253481.527
+   ],
+   "detail": [
+    "ssh_connect_typing gap 0.0 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.1 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.2 s trial 2: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.2 s trial 3: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.3 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing loss: 0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: #1292=5, exact=7"
+   ],
+   "metrics": {
+    "trials": 12,
+    "loss": {
+     "lost": 0,
+     "n": 12,
+     "rate": 0.0,
+     "upper_bound": 0.2209,
+     "conf": 0.95,
+     "text": "0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 866,
+     "with_cr": 36,
+     "enters": 13
+    }
+   },
+   "shots": [
+    "shots\\agent_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 17.9,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253483.37,
+    1794253501.284
+   ],
+   "detail": [
+    "ssh_enter_then_immediate_command trial 2: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh trial verdicts: #1292=1, exact=2"
+   ],
+   "metrics": {
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 216,
+     "with_cr": 9,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 67.5,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253503.183,
+    1794253570.67
+   ],
+   "detail": [
+    "ssh_nested_typeahead (outer): before `exit`, a fresh probe ran in no shell, not the remote one: `exit` NOT typed; stopping",
+    "ssh trial verdicts: exact=1"
+   ],
+   "metrics": {
+    "verdict_give_up_retries": 0,
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 194,
+     "with_cr": 7,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\agent_ssh_nested_typeahead_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_stream_cancel",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_input_exact",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "routing_table",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_mode_switch",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_lrc_no_false_takeover",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1796: the interactive-prompt take-over it tests (PromptWatch, termios + /proc tty-read probe) is unix-only; ConPTY has no termios"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "remote_tab_no_helper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: rec.log of the remote bash and `cd`/`pwd` there, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "remote_tab_enter_no_helper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: rec.log of the remote bash for the completed `cd`, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ctrl_c_no_esc_i_local",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 1.3,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794253588.201,
+    1794253589.459
+   ],
+   "detail": [
+    "the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_ctrl_c_no_esc_i_local.png"
+   ]
+  },
+  {
+   "name": "keyring_unavailable_startup",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0.2,
+   "evidence": [
+    "mode_proof: log_view_mode=agent ocr_agent_markers=None ocr_terminal_hint=None queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253602.631,
+    1794253602.823
+   ],
+   "detail": [
+    "mode machine-verified from the app log (hop=view_mode mode=agent); no OCR engine"
+   ],
+   "metrics": {
+    "log_view_mode": "agent",
+    "queue_destination": "table"
+   },
+   "shots": [
+    "shots\\agent@gitbash_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 19.4,
+   "evidence": [
+    "enter_route: 30 Enter(s) reached the input editor: Shell=30 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253605.629,
+    1794253625.003
+   ],
+   "detail": [
+    "pty writes: 139, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 30 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 139,
+     "with_cr": 0,
+     "enters": 30
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 9.0,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253625.466,
+    1794253634.462
+   ],
+   "detail": [],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 15,
+     "with_cr": 3,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 16.5,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: Shell=15 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253634.879,
+    1794253651.339
+   ],
+   "detail": [
+    "pty writes: 24, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "completion_give_ups": 0,
+    "pty_write_cr": {
+     "writes": 24,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 83.9,
+   "evidence": [
+    "enter_route: 33 Enter(s) reached the input editor: Shell=33 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253651.858,
+    1794253735.786
+   ],
+   "detail": [
+    "#1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells",
+    "fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran",
+    "pty writes: 99, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 33 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 85.9,
+     "p95": 113.3,
+     "max": 116.04
+    },
+    "ctrl_c_app_segments": {
+     "n": 30,
+     "keydown->ctrl_c_keydown": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "ctrl_c_keydown->ctrl_c_to_event_loop": {
+      "n": 30,
+      "p50": 0.39,
+      "p95": 0.62,
+      "max": 0.66
+     },
+     "ctrl_c_to_event_loop->ctrl_c_received": {
+      "n": 30,
+      "p50": 0.08,
+      "p95": 0.12,
+      "max": 0.13
+     },
+     "ctrl_c_received->ctrl_c_pty_write": {
+      "n": 30,
+      "p50": 0.14,
+      "p95": 0.21,
+      "max": 0.24
+     },
+     "keydown_to_write": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "harness_floor_ms": 0.142,
+    "harness_ctrl_c_ignored": true,
+    "app_conpty_ctrl_c_reset": "default(on)",
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": null
+    },
+    "pty_write_cr": {
+     "writes": 99,
+     "with_cr": 0,
+     "enters": 33
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_flood_ab",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_sh_probe",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_rc_questions",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile with read -p questions on a real pty; the readiness judge's OS facts are POSIX (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_vim_typeahead",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_unsupported_tcsh",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_secret_after_prompt",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash PROMPT_COMMAND read -s on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_relay_shape",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_exec_fish_rc",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_docker_t_without_i",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_zsh_newuser_install",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "subshell_ready_rc_clear",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: bash --rcfile with clear on a real pty (#1679 step 3)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 37.5,
+   "evidence": [
+    "enter_route: 13 Enter(s) reached the input editor: Shell=13 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253742.717,
+    1794253780.2
+   ],
+   "detail": [
+    "ssh_connect_typing gap 0.0 s trial 3: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.2 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.2 s trial 2: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing gap 0.3 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh_connect_typing loss: 0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: #1292=4, exact=8"
+   ],
+   "metrics": {
+    "trials": 12,
+    "loss": {
+     "lost": 0,
+     "n": 12,
+     "rate": 0.0,
+     "upper_bound": 0.2209,
+     "conf": 0.95,
+     "text": "0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 855,
+     "with_cr": 36,
+     "enters": 13
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 9.8,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253781.922,
+    1794253791.703
+   ],
+   "detail": [
+    "ssh_enter_then_immediate_command trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "ssh trial verdicts: #1292=1, exact=2"
+   ],
+   "metrics": {
+    "ssh_trial_verdicts": [
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 201,
+     "with_cr": 9,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 19.4,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253793.422,
+    1794253812.819
+   ],
+   "detail": [
+    "ssh trial verdicts: exact=1"
+   ],
+   "metrics": {
+    "verdict_give_up_retries": 0,
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "pty_write_cr": {
+     "writes": 156,
+     "with_cr": 7,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_ssh_nested_typeahead.png"
+   ]
+  },
+  {
+   "name": "agent_stream_cancel",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 19.0,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: AI=2 [AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253814.452,
+    1794253833.494
+   ],
+   "detail": [
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "no OCR engine: typed-while-streaming landing is screenshot-only (shots/agent_typed_while_streaming.png)",
+    "Ctrl-C #1: stream stopped (2 distinct frames in 5), typed text not checkable (no OCR), app route cancel_conversation",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "request_start_s": 2.19,
+    "stream_opened_s": 3.86,
+    "first_visible_change_s": 7.32,
+    "distinct_frames_after_cancel": 2,
+    "ctrl_c_routes": [
+     [
+      "cancel_conversation"
+     ]
+    ],
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_stream_cancel.png"
+   ]
+  },
+  {
+   "name": "agent_input_exact",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 6.2,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: AI=3 [AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253834.013,
+    1794253840.24
+   ],
+   "detail": [
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_input_exact.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 57.5,
+   "evidence": [
+    "enter_route: 29 Enter(s) reached the input editor: AI=17 Shell=12 [Shell,AI,Shell,Shell,AI,Shell,Shell,Shell,Shell,AI,Shell,Shell,Shell,Shell,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,Shell,AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253840.712,
+    1794253898.257
+   ],
+   "detail": [
+    "pty writes: 30, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 27 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "settings_nld_in_terminal": true,
+    "settings_ai_auto_detection": true,
+    "routing_rows": [
+     {
+      "line": "ls -la",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "git status",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "grep foo foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "echo hello world",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "pwd",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "wc -l foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "uname -a",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "ls the",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "date",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "print -r -- $EPOCHREALTIME > lat_0",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "notacmd_x $HOME/x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "xyz_nocmd > out_nc.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "foo_nocmd --bar | grep x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what does this error mean",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "how do I undo my last git commit",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain why the build is failing",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "why is my disk full",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you summarize the changes in this repo",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "please walk me through the failing test",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "is five bigger than three",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you show me how to use --verbose?",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "model",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain $PATH to me",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "find the bug in main.rs",
+      "kind": "ambiguous",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "make a PR",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat the error log and tell me what is wrong",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what is 5 > 3",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "model",
+      "verdict_give_up": false
+     }
+    ],
+    "misroutes": 0,
+    "verdict_give_ups": 0,
+    "pty_write_cr": {
+     "writes": 30,
+     "with_cr": 0,
+     "enters": 27
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_routing_table.png"
+   ]
+  },
+  {
+   "name": "agent_mode_switch",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 9.3,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: AI=4 Shell=2 [Shell,AI,AI,Shell,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253898.675,
+    1794253908.003
+   ],
+   "detail": [
+    "pty writes: 4, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "view_mode_trail": [
+     "agent",
+     "terminal",
+     "agent",
+     "terminal",
+     "agent"
+    ],
+    "pty_write_cr": {
+     "writes": 4,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_mode_switch.png"
+   ]
+  },
+  {
+   "name": "agent_lrc_no_false_takeover",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1796: the interactive-prompt take-over it tests (PromptWatch, termios + /proc tty-read probe) is unix-only; ConPTY has no termios"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "remote_tab_no_helper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 7.2,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253908.87,
+    1794253916.086
+   ],
+   "detail": [
+    "Tab after 'cd phxtab_t99_7' should have completed the REMOTE directory: the remote shell received ['echo wT100_kmxy7ug0 >> ~/.appci_where'], want 'cd phxtab_t99_7978bs/'",
+    "the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)",
+    "path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 124,
+     "with_cr": 5,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_remote_tab_no_helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "remote_tab_enter_no_helper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 7.8,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253918.856,
+    1794253926.676
+   ],
+   "detail": [
+    "Tab + Enter 30 ms later: the remote shell received ['echo wT108_oihl0dg8 >> ~/.appci_where'], want the COMPLETED 'cd phxte_t105_d75qpv/' (the uncompleted 'cd phxte_t105_d' must never run)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 150,
+     "with_cr": 9,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_remote_tab_enter_no_helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_no_esc_i_local",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794253929.377,
+    1794253930.241
+   ],
+   "detail": [
+    "the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_ctrl_c_no_esc_i_local.png"
+   ]
+  },
+  {
+   "name": "keyring_unavailable_startup",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_interactive_password",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_edit_accept",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1835: the file path typed to the scripted model and read back is POSIX-form; the fake-model pass is Git Bash only"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_edit_reject",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1835: same as agent_edit_accept"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_edit_conflict",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1835: same as agent_edit_accept"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_edit_touch_only",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1835: same as agent_edit_accept"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_edit_endings",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1835: same as agent_edit_accept"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@fake",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "agent_fault_429",
+   "mode": "agent@fake",
+   "status": "fail",
+   "seconds": 16.5,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: AI=3 Shell=1 [Shell,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253962.363,
+    1794253978.874
+   ],
+   "detail": [
+    "unexpected ERROR line: 2026-11-09T19:52:49Z [ERROR] MultiAgent request failed after 0 recovery attempts: Failed with status code 429 Too Many Requests: BYOP open stream failed: HTTP status 429: Too Many Requests: {\"error\": \"fake model fault: HTTP 429\"}",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "no OCR engine: the error block's wording is checked from the app log only (shots/agent_f429_ocr.png)",
+    "pty writes: 3, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "f429_turn_s": 4.0,
+    "f429_fault_hits": 4,
+    "f429_requests": 4,
+    "pty_write_cr": {
+     "writes": 3,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots\\agent_agent_fault_429_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_fault_500",
+   "mode": "agent@fake",
+   "status": "fail",
+   "seconds": 26.6,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: AI=3 [AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794253981.091,
+    1794254007.703
+   ],
+   "detail": [
+    "unexpected ERROR line: 2026-11-09T19:53:18Z [ERROR] MultiAgent request failed after 0 recovery attempts: Failed with status code 500 Internal Server Error: BYOP open stream failed: HTTP status 500: Internal Server Error: {\"error\": \"fake model fault: HTTP 500\"}",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "no OCR engine: the error block's wording is checked from the app log only (shots/agent_f500_ocr.png)",
+    "pty writes: 1, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "f500_turn_s": 14.6,
+    "f500_fault_hits": 4,
+    "f500_requests": 4,
+    "pty_write_cr": {
+     "writes": 1,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent_agent_fault_500_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_fault_disconnect",
+   "mode": "agent@fake",
+   "status": "fail",
+   "seconds": 13.4,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: AI=3 [AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254009.982,
+    1794254023.336
+   ],
+   "detail": [
+    "the turn ended in 'success' (hop=turn), expected `error` after the disconnect fault",
+    "a stream cut AFTER output was sent was re-sent (2 requests): a retry would repeat output / tool calls",
+    "unexpected ERROR line: 2026-11-09T19:53:33Z [ERROR] MultiAgent request failed after 0 recovery attempts: BYOP stream error: Network/streaming request failed: Web stream error for model 'fake-model (adapter: Ollama)'.",
+    "the turn state changed on its own after the error: 'success'",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "no OCR engine: the error block's wording is checked from the app log only (shots/agent_fdisc_ocr.png)",
+    "pty writes: 1, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "fdisc_turn_s": 1.5,
+    "fdisc_fault_hits": 1,
+    "fdisc_requests": 2,
+    "pty_write_cr": {
+     "writes": 1,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent_agent_fault_disconnect_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_fault_down",
+   "mode": "agent@fake",
+   "status": "fail",
+   "seconds": 35.0,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: AI=3 [AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254025.868,
+    1794254060.84
+   ],
+   "detail": [
+    "unexpected ERROR line: 2026-11-09T19:54:11Z [ERROR] MultiAgent request failed after 0 recovery attempts: BYOP open stream failed: Network/streaming request failed: Web stream error for model 'fake-model (adapter: Ollama)'.",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "no OCR engine: the error block's wording is checked from the app log only (shots/agent_fdown_ocr.png)",
+    "pty writes: 1, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "fdown_turn_s": 22.9,
+    "fdown_fault_hits": 0,
+    "fdown_requests": 0,
+    "pty_write_cr": {
+     "writes": 1,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent_agent_fault_down_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_fault_slow_cancel",
+   "mode": "agent@fake",
+   "status": "fail",
+   "seconds": 14.0,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: AI=2 Shell=1 [Shell,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254063.045,
+    1794254077.013
+   ],
+   "detail": [
+    "during the first-token delay the turn is None, expected in_progress",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "pty writes: 1, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "cancel_to_state_s": 0.04,
+    "pty_write_cr": {
+     "writes": 1,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent_agent_fault_slow_cancel_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_fault_queued_rows",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 19.2,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: AI=4 [AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254079.239,
+    1794254098.482
+   ],
+   "detail": [
+    "the 2 /queue row(s) did not appear (no hop=queued_row queued within 12 s): the queue precondition cannot be proven, so nothing is judged",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "pty writes: 1, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 1,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots\\agent_agent_fault_queued_rows.png"
+   ]
+  },
+  {
+   "name": "agent_latency_key",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: its terminal-editor reference types into a POSIX shell line editor and the case needs the scripted fake model: runs in the Git Bash pane (#1828)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_interactive_vim",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_restart_quit_stream",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794254100.261,
+    1794254100.835
+   ],
+   "detail": [
+    "a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_agent_restart_quit_stream.png"
+   ]
+  },
+  {
+   "name": "agent_restart_quit_queued",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794254101.908,
+    1794254102.46
+   ],
+   "detail": [
+    "a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_agent_restart_quit_queued.png"
+   ]
+  },
+  {
+   "name": "agent_restart_quit_blocked",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794254103.632,
+    1794254104.185
+   ],
+   "detail": [
+    "a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_agent_restart_quit_blocked.png"
+   ]
+  },
+  {
+   "name": "agent_latency_enter",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: its terminal-editor reference submits a POSIX `true # tok` line: runs in the Git Bash pane (#1828)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_interactive_ssh",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_restart_kill_stream",
+   "mode": "agent@fake",
+   "status": "pass",
+   "seconds": 97.7,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254106.27,
+    1794254203.975
+   ],
+   "detail": [
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "ar_kill_stream: the completed turn is unchecked (no OCR) on the relaunched screen (OCR; the store check above is the verdict)",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "pty writes: 7, of which carrying a CR (\\r): 1; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ar_kill_stream_setup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.3,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "ar_kill_stream_stored_rows": 1,
+    "ar_kill_stream_cleanup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.17,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "pty_write_cr": {
+     "writes": 7,
+     "with_cr": 1,
+     "enters": 2
+    }
+   },
+   "shots": [
+    "shots\\agent_agent_restart_kill_stream.png"
+   ]
+  },
+  {
+   "name": "agent_restart_kill_queued",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 76.3,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254204.333,
+    1794254280.616
+   ],
+   "detail": [
+    "the 2 /queue row(s) did not appear (no hop=queued_row queued within 12 s): the queue precondition cannot be proven, so nothing is judged",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "pty writes: 7, of which carrying a CR (\\r): 1; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ar_kill_queued_setup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.14,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "ar_kill_queued_cleanup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.18,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "pty_write_cr": {
+     "writes": 7,
+     "with_cr": 1,
+     "enters": 2
+    }
+   },
+   "shots": [
+    "shots\\agent_agent_restart_kill_queued.png"
+   ]
+  },
+  {
+   "name": "agent_restart_kill_blocked",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 72.6,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254280.983,
+    1794254353.546
+   ],
+   "detail": [
+    "ar_kill_blocked: typing under the blocked card made no queued row (hop=queued_row): the queue precondition cannot be proven",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "pty writes: 7, of which carrying a CR (\\r): 1; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ar_kill_blocked_setup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.14,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "ar_kill_blocked_cleanup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.2,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "pty_write_cr": {
+     "writes": 7,
+     "with_cr": 1,
+     "enters": 2
+    }
+   },
+   "shots": [
+    "shots\\agent_agent_restart_kill_blocked.png"
+   ]
+  },
+  {
+   "name": "agent_steer_fast",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (#1828)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_interactive_less",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_noninteractive_no_takeover",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "network_gate_notice",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: needs the Linux pointer + OCR path and a relaunch on a rewritten settings file"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_gate_deny_allow",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: Linux-only: pointer + OCR for the toast and live edits of the Linux profile's settings.toml"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_gate_off_live",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: Linux-only: live edits of the Linux profile's settings.toml"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_mcp_faults",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1834: the fake MCP servers are configured through the HOME-relative ~/.warp/.mcp.json, which the Windows profile does not use in this harness"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_gate_key_never_leaves",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: Linux-only: live edits of the Linux profile's settings.toml and the fake model's request headers"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_multitab_streaming",
+   "mode": "agent@fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1833: needs the rc-hook received-command proof and the pty-echo frame pairing, neither verified for a Windows pane; Linux and macOS run it"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_interactive_password",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_edit_accept",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1835: the file path typed to the scripted model and read back is POSIX-form; the fake-model pass is Git Bash only"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_edit_reject",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1835: same as agent_edit_accept"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_edit_conflict",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1835: same as agent_edit_accept"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_edit_touch_only",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1835: same as agent_edit_accept"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_edit_endings",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1835: same as agent_edit_accept"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash+fake",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "agent_fault_429",
+   "mode": "agent@gitbash+fake",
+   "status": "fail",
+   "seconds": 16.2,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: AI=3 Shell=1 [Shell,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254373.072,
+    1794254389.31
+   ],
+   "detail": [
+    "unexpected ERROR line: 2026-11-09T19:59:40Z [ERROR] MultiAgent request failed after 0 recovery attempts: Failed with status code 429 Too Many Requests: BYOP open stream failed: HTTP status 429: Too Many Requests: {\"error\": \"fake model fault: HTTP 429\"}",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "no OCR engine: the error block's wording is checked from the app log only (shots/agent_f429_ocr.png)",
+    "pty writes: 2, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "f429_turn_s": 3.5,
+    "f429_fault_hits": 4,
+    "f429_requests": 4,
+    "pty_write_cr": {
+     "writes": 2,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_fault_429_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_fault_500",
+   "mode": "agent@gitbash+fake",
+   "status": "fail",
+   "seconds": 27.0,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: AI=3 [AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254391.545,
+    1794254418.525
+   ],
+   "detail": [
+    "unexpected ERROR line: 2026-11-09T20:00:09Z [ERROR] MultiAgent request failed after 0 recovery attempts: Failed with status code 500 Internal Server Error: BYOP open stream failed: HTTP status 500: Internal Server Error: {\"error\": \"fake model fault: HTTP 500\"}",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "no OCR engine: the error block's wording is checked from the app log only (shots/agent_f500_ocr.png)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "f500_turn_s": 14.9,
+    "f500_fault_hits": 4,
+    "f500_requests": 4,
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_fault_500_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_fault_disconnect",
+   "mode": "agent@gitbash+fake",
+   "status": "fail",
+   "seconds": 12.9,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: AI=3 [AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254420.805,
+    1794254433.695
+   ],
+   "detail": [
+    "the turn ended in 'success' (hop=turn), expected `error` after the disconnect fault",
+    "a stream cut AFTER output was sent was re-sent (2 requests): a retry would repeat output / tool calls",
+    "unexpected ERROR line: 2026-11-09T20:00:24Z [ERROR] MultiAgent request failed after 0 recovery attempts: BYOP stream error: Network/streaming request failed: Web stream error for model 'fake-model (adapter: Ollama)'.",
+    "the turn state changed on its own after the error: 'success'",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "no OCR engine: the error block's wording is checked from the app log only (shots/agent_fdisc_ocr.png)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "fdisc_turn_s": 0.9,
+    "fdisc_fault_hits": 1,
+    "fdisc_requests": 2,
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_fault_disconnect_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_fault_down",
+   "mode": "agent@gitbash+fake",
+   "status": "fail",
+   "seconds": 35.2,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: AI=3 [AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254436.0,
+    1794254471.15
+   ],
+   "detail": [
+    "unexpected ERROR line: 2026-11-09T20:01:01Z [ERROR] MultiAgent request failed after 0 recovery attempts: BYOP open stream failed: Network/streaming request failed: Web stream error for model 'fake-model (adapter: Ollama)'.",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "no OCR engine: the error block's wording is checked from the app log only (shots/agent_fdown_ocr.png)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "fdown_turn_s": 23.0,
+    "fdown_fault_hits": 0,
+    "fdown_requests": 0,
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_fault_down_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_fault_slow_cancel",
+   "mode": "agent@gitbash+fake",
+   "status": "fail",
+   "seconds": 13.9,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: AI=3 [AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254473.392,
+    1794254487.342
+   ],
+   "detail": [
+    "during the first-token delay the turn is None, expected in_progress",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "cancel_to_state_s": 0.04,
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_fault_slow_cancel_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_fault_queued_rows",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 18.7,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: AI=4 [AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254489.738,
+    1794254508.484
+   ],
+   "detail": [
+    "the 2 /queue row(s) did not appear (no hop=queued_row queued within 12 s): the queue precondition cannot be proven, so nothing is judged",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_fault_queued_rows.png"
+   ]
+  },
+  {
+   "name": "agent_latency_key",
+   "mode": "agent@gitbash+fake",
+   "status": "pass",
+   "seconds": 54.9,
+   "evidence": [
+    "enter_route: 8 Enter(s) reached the input editor: AI=8 [AI,AI,AI,AI,AI,AI,AI,AI]",
+    "host load after the case: loadavg1=n/a cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254509.456,
+    1794254564.392
+   ],
+   "detail": [
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "agent_latency_key/idle: reference = the same key->frame measure typed into the terminal-mode input editor of this session (before and after the agent phases); both are the app's own keydown -> first frame built, so the shared vsync wait cancels in the overhead",
+    "agent_latency_key/streaming: reference = the same key->frame measure typed into the terminal-mode input editor of this session (before and after the agent phases); both are the app's own keydown -> first frame built, so the shared vsync wait cancels in the overhead",
+    "agent_latency_key/streaming: keys typed while the fake model's reply streamed (12 s slow steady stream, restarted per chunk of keys)",
+    "UI work (agent_streaming): 2 frame item(s) >= 4 ms (max 5.6 ms); frame items include rasterisation: WARN on software GL, not a failure",
+    "pty writes: 1, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 8 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "key_to_frame_agent_idle_ms": {
+     "n": 60,
+     "p50": 3.55,
+     "p95": 6.2,
+     "max": 7.24
+    },
+    "key_to_frame_agent_streaming_ms": {
+     "n": 87,
+     "p50": 1.46,
+     "p95": 3.85,
+     "max": 5.02
+    },
+    "key_to_frame_terminal_editor_ms": {
+     "n": 57,
+     "p50": 3.41,
+     "p95": 4.28,
+     "max": 4.57
+    },
+    "stream_runs": 3,
+    "lat": {
+     "idle": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 60,
+       "p50": 3.55,
+       "p95": 6.2,
+       "max": 7.24
+      },
+      "reference": {
+       "n": 57,
+       "p50": 3.41,
+       "p95": 4.28,
+       "max": 4.57
+      },
+      "reference_name": "same app, terminal-mode input editor",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "reference = the same key->frame measure typed into the terminal-mode input editor of this session (before and after the agent phases); both are the app's own keydown -> first frame built, so the shared vsync wait cancels in the overhead"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.08
+       },
+       "reference": {
+        "n": 57,
+        "se_median_ms": 0.07
+       }
+      },
+      "overhead_ms": 0.14,
+      "overhead_se_ms": 0.11,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": 0.19,
+       "reference": 0.13
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "verdict": "none"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "none",
+      "verdict": "pass"
+     },
+     "streaming": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 87,
+       "p50": 1.46,
+       "p95": 3.85,
+       "max": 5.02
+      },
+      "reference": {
+       "n": 57,
+       "p50": 3.41,
+       "p95": 4.28,
+       "max": 4.57
+      },
+      "reference_name": "same app, terminal-mode input editor",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "reference = the same key->frame measure typed into the terminal-mode input editor of this session (before and after the agent phases); both are the app's own keydown -> first frame built, so the shared vsync wait cancels in the overhead",
+       "keys typed while the fake model's reply streamed (12 s slow steady stream, restarted per chunk of keys)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 87,
+        "se_median_ms": 0.04
+       },
+       "reference": {
+        "n": 57,
+        "se_median_ms": 0.07
+       }
+      },
+      "overhead_ms": -1.95,
+      "overhead_se_ms": 0.09,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": 0.04,
+       "reference": 0.13
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "verdict": "none"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "none",
+      "verdict": "pass"
+     }
+    },
+    "ui_items_agent_idle": {
+     "logic_count": 0,
+     "logic_max_ms": 0.0,
+     "frame_count": 0,
+     "frame_max_ms": 0.0,
+     "allowed": 3
+    },
+    "ui_items_agent_streaming": {
+     "logic_count": 0,
+     "logic_max_ms": 0.0,
+     "frame_count": 2,
+     "frame_max_ms": 5.6,
+     "allowed": 4
+    },
+    "pty_write_cr": {
+     "writes": 1,
+     "with_cr": 0,
+     "enters": 8
+    },
+    "host_load": "loadavg1=n/a cpus=8"
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_latency_key.png"
+   ]
+  },
+  {
+   "name": "agent_interactive_vim",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_restart_quit_stream",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794254565.879,
+    1794254566.492
+   ],
+   "detail": [
+    "a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_agent_restart_quit_stream.png"
+   ]
+  },
+  {
+   "name": "agent_restart_quit_queued",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0.5,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794254567.581,
+    1794254568.11
+   ],
+   "detail": [
+    "a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_agent_restart_quit_queued.png"
+   ]
+  },
+  {
+   "name": "agent_restart_quit_blocked",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794254569.176,
+    1794254569.771
+   ],
+   "detail": [
+    "a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_agent_restart_quit_blocked.png"
+   ]
+  },
+  {
+   "name": "agent_latency_enter",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 1474.0,
+   "evidence": [
+    "enter_route: 198 Enter(s) reached the input editor: AI=71 Shell=127 [AI,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794254570.877,
+    1794256044.926
+   ],
+   "detail": [
+    "no Enter keydown -> hop=enter_begin pair in the app log (input-order logging off, or the Enters never reached the editor)",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "pty writes: 252, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 198 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "enter_share_agent_idle_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "enter_share_agent_streaming_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "enter_share_terminal_editor_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "enter_to_request_idle_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "enter_to_request_streaming_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "pty_write_cr": {
+     "writes": 252,
+     "with_cr": 0,
+     "enters": 198
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_latency_enter.png"
+   ]
+  },
+  {
+   "name": "agent_interactive_ssh",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_restart_kill_stream",
+   "mode": "agent@gitbash+fake",
+   "status": "pass",
+   "seconds": 52.7,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794256046.54,
+    1794256099.229
+   ],
+   "detail": [
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "ar_kill_stream: the completed turn is unchecked (no OCR) on the relaunched screen (OCR; the store check above is the verdict)",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"
+   ],
+   "metrics": {
+    "ar_kill_stream_setup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.18,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "ar_kill_stream_stored_rows": 1,
+    "ar_kill_stream_cleanup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.14,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "pty_write_cr": {
+     "writes": 7,
+     "with_cr": 1,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_restart_kill_stream.png"
+   ]
+  },
+  {
+   "name": "agent_restart_kill_queued",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 46.0,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794256099.695,
+    1794256145.732
+   ],
+   "detail": [
+    "the 2 /queue row(s) did not appear (no hop=queued_row queued within 12 s): the queue precondition cannot be proven, so nothing is judged",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"
+   ],
+   "metrics": {
+    "ar_kill_queued_setup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.16,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "ar_kill_queued_cleanup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.16,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "pty_write_cr": {
+     "writes": 7,
+     "with_cr": 1,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_restart_kill_queued.png"
+   ]
+  },
+  {
+   "name": "agent_restart_kill_blocked",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 42.4,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794256146.181,
+    1794256188.627
+   ],
+   "detail": [
+    "ar_kill_blocked: typing under the blocked card made no queued row (hop=queued_row): the queue precondition cannot be proven",
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"
+   ],
+   "metrics": {
+    "ar_kill_blocked_setup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.13,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "ar_kill_blocked_cleanup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.21,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "pty_write_cr": {
+     "writes": 7,
+     "with_cr": 1,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_restart_kill_blocked.png"
+   ]
+  },
+  {
+   "name": "agent_steer_fast",
+   "mode": "agent@gitbash+fake",
+   "status": "pass",
+   "seconds": 25.4,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: AI=5 Shell=1 [Shell,AI,AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794256189.074,
+    1794256214.514
+   ],
+   "detail": [
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "pty writes: 3, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "steer_type_seconds": [
+     5.47,
+     4.03,
+     5.5
+    ],
+    "steer_lengths": [
+     237,
+     237,
+     237
+    ],
+    "steer_pty_writes": 0,
+    "pty_write_cr": {
+     "writes": 3,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_steer_fast.png"
+   ]
+  },
+  {
+   "name": "agent_interactive_less",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_noninteractive_no_takeover",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "network_gate_notice",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: needs the Linux pointer + OCR path and a relaunch on a rewritten settings file"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_gate_deny_allow",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: Linux-only: pointer + OCR for the toast and live edits of the Linux profile's settings.toml"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_gate_off_live",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: Linux-only: live edits of the Linux profile's settings.toml"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_mcp_faults",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1834: the fake MCP servers are configured through the HOME-relative ~/.warp/.mcp.json, which the Windows profile does not use in this harness"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_gate_key_never_leaves",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: Linux-only: live edits of the Linux profile's settings.toml and the fake model's request headers"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "agent_multitab_streaming",
+   "mode": "agent@gitbash+fake",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run on Windows: #1833: needs the rc-hook received-command proof and the pty-echo frame pairing, neither verified for a Windows pane; Linux and macOS run it"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "restore",
+   "mode": "-",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+   ],
+   "metrics": {},
+   "shots": []
+  }
+ ]
+}

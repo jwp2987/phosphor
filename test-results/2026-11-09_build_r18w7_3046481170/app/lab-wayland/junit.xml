@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="27" failures="0" skipped="27">
+<testcase classname="terminal" name="lab_fam_agent_context.bash.lan.nohelper" time="1.20">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.150.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.lan.nohelper" time="0.50">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.150.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.lan.nohelper" time="0.50">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.150.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.lan.nohelper" time="0.50">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.150.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.lan.helper" time="0.50">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.150.helper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.lan.helper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.150.helper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.lan.helper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.150.helper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.lan.helper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.150.helper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_flow.bash.lan.nohelper" time="1.30">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_flow.nu.lan.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_errors.bash.lan.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_errors.nu.lan.nohelper" time="0.50">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_drop.bash.lan.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_drop.nu.lan.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_conflict.bash.lan.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_conflict.nu.lan.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_delete_conflict.bash.lan.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_endings.bash.lan.nohelper" time="0.60">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_touch_only.bash.lan.nohelper" time="0.50">
+<skipped message="labctl start failed (1): image localhost/phosphor-sshlab:full-025cf2afab536cb8 is not built: run the sshlab-image job (labctl.py build)"/>
+</testcase>
+</testsuite>

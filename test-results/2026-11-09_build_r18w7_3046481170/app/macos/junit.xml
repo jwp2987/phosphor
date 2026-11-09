@@ -1,0 +1,441 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="114" failures="37" skipped="25">
+<testcase classname="terminal" name="mode_proof" time="3.40">
+</testcase>
+<testcase classname="terminal" name="cadence" time="7.60">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="42.00">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="78.60">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="68.20">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="7.90">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="27.00">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="558.60">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_flood_ab" time="410.50">
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe" time="12.80">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_questions" time="18.60">
+<failure message="rcq: exact lines in the inner shell then the pane's bash: got ['T171_bg1vve'], wanted ['T171_bg1vve', 'back_T174_qtac']">rcq: exact lines in the inner shell then the pane's bash: got ['T171_bg1vve'], wanted ['T171_bg1vve', 'back_T174_qtac']
+injector accounting: injector sent 189; app saw 202; lost-before-app 0 (Enter: sent 8, app saw 10); app logged 13 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 9 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_vim_typeahead" time="14.30">
+<failure message="the setup was written after vim (hop subshell_setup_ready_write)">the setup was written after vim (hop subshell_setup_ready_write)
+injector accounting: injector sent 226; app saw 241; lost-before-app 0 (Enter: sent 8, app saw 9); app logged 15 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 9 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_unsupported_tcsh" time="8.40">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_prompt" time="45.10">
+<failure message="the secret read after our first line cancelled the attempt (hop why=Secret)">the secret read after our first line cancelled the attempt (hop why=Secret)
+the password reached the read -s, not a command: ['set | command grep "^WARP_BOOTSTRAPPED[= ]" &gt;/dev/null || printf "\\033]9278;f;{"hook": "InitSubshell", "value": { "shell": "%s", "uname": "%s", "session_id": 7524628093992789661 }}\\a" $(set | command grep "^FISH_VERSION[= ]" &gt;/dev/null &amp;&amp; echo "fish" || { echo $0 | command -p grep -q zsh &amp;&amp; echo "zsh"; } || { echo $0 | command -p grep -q bash &amp;&amp; echo "bash"; } || echo "unknown") $(uname); command -v shopt &gt;/dev/null 2&gt;&amp;1 &amp;&amp; eval \'case $0 in *bash*|*zsh*) ;; *) HISTCONTROL=${__hc0-}; unset __hc0;; esac\'; command -v setopt &gt;/dev/null 2&gt;&amp;1 &amp;&amp; eval \'case $0 in *bash*|*zsh*) ;; *) [ "${__whi-}" = 1 ] || unsetopt hist_ignore_space; unset __whi; [ "${__wpe-}" != 1 ] || setopt print_exit_value; unset __wpe;; esac\'; true']
+the setup was written again after the secret was answered
+the held line went to the editor, not the pty: []
+the handed-back line ran once when the user pressed Enter on it: []
+secret: exact lines in the inner shell then the pane's bash: got ['back_T190_dac8'], wanted ['T187_6oq1xo', 'back_T190_dac8']
+injector accounting: injector sent 200; app saw 214; lost-before-app 0 (Enter: sent 6, app saw 10); app logged 14 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 9 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="2.30">
+<skipped message="no passwordless sudo on this runner (sudo -n true failed)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_exec_fish_rc" time="35.30">
+<failure message="relay_or_fish: the shell in front after leaving is the pane's ROOT shell (got none)">relay_or_fish: the shell in front after leaving is the pane's ROOT shell (got none)
+the pane's bash runs the next command
+injector accounting: injector sent 247; app saw 258; lost-before-app 0 (Enter: sent 6, app saw 7); app logged 11 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 7 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_subshell_ready_exec_fish_rc" time="0.00">
+<failure message="after subshell_ready_exec_fish_rc the pane's shell was not the root shell (none; root pid 63853); the app is relaunched so later cases start clean">after subshell_ready_exec_fish_rc the pane's shell was not the root shell (none; root pid 63853); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_docker_t_without_i" time="3.00">
+<skipped message="docker with a local alpine image is not available (never pulled by the harness)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_zsh_newuser_install" time="37.30">
+<failure message="nothing was written into the newuser-install menu">nothing was written into the newuser-install menu
+zshnew: the line typed into the inner shell ran (file [])
+the menu footer read as an InputPrompt in at least one sample
+zshnew: the shell in front after leaving is the pane's ROOT shell (got none)
+zshnew: exact lines in the inner shell then the pane's bash: got ['back_T206_pwuk'], wanted ['T203_xwuz46', 'back_T206_pwuk']
+injector accounting: injector sent 183; app saw 193; lost-before-app 0 (Enter: sent 5, app saw 6); app logged 10 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 6 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_subshell_ready_zsh_newuser_install" time="0.00">
+<failure message="after subshell_ready_zsh_newuser_install the pane's shell was not the root shell (none; root pid 65360); the app is relaunched so later cases start clean">after subshell_ready_zsh_newuser_install the pane's shell was not the root shell (none; root pid 65360); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="9.40">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="36.70">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="10.10">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="7.90">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="493.50">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="30.70">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 0.38 ms (p95 0.72, n=60): within the 1 ms target"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="126.40">
+<failure message="Key to paint: Phosphor overhead 6.96 +/- 1.61 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE &gt; budget)">Key to paint: Phosphor overhead 6.96 +/- 1.61 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE &gt; budget)
+measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks
+Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)
+injector accounting: injector sent 14; app saw 20; lost-before-app 0 (Enter: sent 0, app saw 0); app logged 6 more than were injected (keys from an earlier case or another source)</failure>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="79.10">
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="16.40">
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="1.40">
+<skipped message="the macOS test host's remote shell is /bin/bash 3.2: no in-band Tab below bash 4.0 (by design, #1801 review B3)"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="1.50">
+<skipped message="the macOS test host's remote shell is /bin/bash 3.2: no in-band Tab below bash 4.0 (by design, #1801 review B3)"/>
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="5.60">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="35.30">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="44.20">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_no_esc_i_local" time="33.30">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="5.70">
+</testcase>
+<testcase classname="terminal" name="zero_network_startup" time="1.50">
+<skipped message="zero_network_startup (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_zero_network_startup" time="0.00">
+<failure message="after zero_network_startup the pane's shell was not the root shell (none; root pid 66030); the app is relaunched so later cases start clean">after zero_network_startup the pane's shell was not the root shell (none; root pid 66030); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal" name="keyring_unavailable_startup" time="2.20">
+<skipped message="needs the Linux App launcher (its private D-Bus session decides which Secret Service exists)"/>
+</testcase>
+<testcase classname="terminal" name="claude_plugin_offline" time="1.40">
+<skipped message="claude_plugin_offline (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="agent_plugins_offline" time="1.40">
+<skipped message="agent_plugins_offline (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="1.30">
+<skipped message="network_gate_switch (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="cb_report_problem" time="8.00">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.40">
+</testcase>
+<testcase classname="agent" name="cadence" time="7.60">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="67.20">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="7.90">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="27.00">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="557.20">
+</testcase>
+<testcase classname="agent" name="ctrl_c_flood_ab" time="407.80">
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe" time="12.80">
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_questions" time="18.30">
+<failure message="rcq: exact lines in the inner shell then the pane's bash: got ['T87_6z4gi2'], wanted ['T87_6z4gi2', 'back_T90_ect8']">rcq: exact lines in the inner shell then the pane's bash: got ['T87_6z4gi2'], wanted ['T87_6z4gi2', 'back_T90_ect8']
+injector accounting: injector sent 185; app saw 200; lost-before-app 0 (Enter: sent 8, app saw 10); app logged 15 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 9 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent" name="subshell_ready_vim_typeahead" time="14.20">
+<failure message="the setup was written after vim (hop subshell_setup_ready_write)">the setup was written after vim (hop subshell_setup_ready_write)
+injector accounting: injector sent 222; app saw 234; lost-before-app 0 (Enter: sent 8, app saw 9); app logged 12 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 9 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent" name="subshell_ready_unsupported_tcsh" time="8.30">
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_prompt" time="27.00">
+<failure message="the password reached the read -s, not a command: ['echo T103_y65ez6 &gt;&gt; lab_secret.txthunter2']">the password reached the read -s, not a command: ['echo T103_y65ez6 &gt;&gt; lab_secret.txthunter2']
+the handed-back line ran once when the user pressed Enter on it: []
+secret: exact lines in the inner shell then the pane's bash: got ['back_T106_7087'], wanted ['T103_y65ez6', 'back_T106_7087']
+injector accounting: injector sent 200; app saw 212; lost-before-app 0 (Enter: sent 6, app saw 9); app logged 12 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 9 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent" name="subshell_ready_relay_shape" time="2.30">
+<skipped message="no passwordless sudo on this runner (sudo -n true failed)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_exec_fish_rc" time="35.30">
+<failure message="relay_or_fish: the shell in front after leaving is the pane's ROOT shell (got none)">relay_or_fish: the shell in front after leaving is the pane's ROOT shell (got none)
+the pane's bash runs the next command
+injector accounting: injector sent 247; app saw 257; lost-before-app 0 (Enter: sent 6, app saw 7); app logged 10 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 7 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_subshell_ready_exec_fish_rc" time="0.00">
+<failure message="after subshell_ready_exec_fish_rc the pane's shell was not the root shell (none; root pid 2853); the app is relaunched so later cases start clean">after subshell_ready_exec_fish_rc the pane's shell was not the root shell (none; root pid 2853); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="subshell_ready_docker_t_without_i" time="3.00">
+<skipped message="docker with a local alpine image is not available (never pulled by the harness)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_zsh_newuser_install" time="37.40">
+<failure message="nothing was written into the newuser-install menu">nothing was written into the newuser-install menu
+zshnew: the line typed into the inner shell ran (file [])
+the menu footer read as an InputPrompt in at least one sample
+zshnew: the shell in front after leaving is the pane's ROOT shell (got none)
+zshnew: exact lines in the inner shell then the pane's bash: got ['back_T122_nv5g'], wanted ['T119_fyh2s6', 'back_T122_nv5g']
+injector accounting: injector sent 183; app saw 193; lost-before-app 0 (Enter: sent 5, app saw 6); app logged 10 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 6 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_subshell_ready_zsh_newuser_install" time="0.00">
+<failure message="after subshell_ready_zsh_newuser_install the pane's shell was not the root shell (none; root pid 4462); the app is relaunched so later cases start clean">after subshell_ready_zsh_newuser_install the pane's shell was not the root shell (none; root pid 4462); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="9.50">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="36.50">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="10.20">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="7.80">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="412.90">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="29.70">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 0.39 ms (p95 0.83, n=60): within the 1 ms target"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="126.10">
+<failure message="Key to paint: Phosphor overhead 6.66 +/- 0.73 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE &gt; budget)">Key to paint: Phosphor overhead 6.66 +/- 0.73 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE &gt; budget)
+measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks
+Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)
+injector accounting: injector sent 14; app saw 20; lost-before-app 0 (Enter: sent 0, app saw 0); app logged 6 more than were injected (keys from an earlier case or another source)</failure>
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="46.00">
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="8.40">
+</testcase>
+<testcase classname="agent" name="routing_table" time="75.40">
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="15.50">
+</testcase>
+<testcase classname="agent" name="agent_lrc_no_false_takeover" time="133.50">
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="1.40">
+<skipped message="the macOS test host's remote shell is /bin/bash 3.2: no in-band Tab below bash 4.0 (by design, #1801 review B3)"/>
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="1.40">
+<skipped message="the macOS test host's remote shell is /bin/bash 3.2: no in-band Tab below bash 4.0 (by design, #1801 review B3)"/>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="35.60">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="44.50">
+</testcase>
+<testcase classname="agent" name="ctrl_c_no_esc_i_local" time="33.60">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_ctrl_c_no_esc_i_local" time="0.00">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="5.60">
+</testcase>
+<testcase classname="agent" name="keyring_unavailable_startup" time="10.30">
+<skipped message="needs the Linux App launcher (its private D-Bus session decides which Secret Service exists)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_password" time="56.90">
+<failure message="ai_pw: `read -s` at its prompt was never handed to the user within 45 s (awaited=True)">ai_pw: `read -s` at its prompt was never handed to the user within 45 s (awaited=True)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 156; app saw 150; lost-before-app 6 (Enter: sent 3, app saw 4)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_accept" time="90.90">
+<failure message="lf: the accepted multi-hunk edit: 187 bytes on disk, 208 expected; first difference at byte 23 (b'beta t4yn1b7o\nL03 gamma ' vs b'BETA-EDITED t4yn1b7o\nL03'); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 10, 0, True)">lf: the accepted multi-hunk edit: 187 bytes on disk, 208 expected; first difference at byte 23 (b'beta t4yn1b7o\nL03 gamma ' vs b'BETA-EDITED t4yn1b7o\nL03'); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 10, 0, True)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+accept: no follow-up model request within 40 s (the tool result may not have reached the model)
+partial accept: the diff card has no per-hunk accept (Up/Down only move between hunks, code_diff_view.rs); accept applies every hunk, reject none: not testable, not claimed
+injector accounting: injector sent 263; app saw 272; lost-before-app 0 (Enter: sent 2, app saw 5); app logged 9 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 5 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_reject" time="143.80">
+<failure message="after_reject: the accepted multi-hunk edit: 187 bytes on disk, 208 expected; first difference at byte 23 (b'beta t7v616mt\nL03 gamma ' vs b'BETA-EDITED t7v616mt\nL03'); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 10, 0, True)">after_reject: the accepted multi-hunk edit: 187 bytes on disk, 208 expected; first difference at byte 23 (b'beta t7v616mt\nL03 gamma ' vs b'BETA-EDITED t7v616mt\nL03'); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 10, 0, True)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+reject: no follow-up model request within 40 s (the tool result may not have reached the model)
+accept: no follow-up model request within 40 s (the tool result may not have reached the model)
+partial accept: the diff card has no per-hunk accept (Up/Down only move between hunks, code_diff_view.rs); accept applies every hunk, reject none: not testable, not claimed
+injector accounting: injector sent 521; app saw 533; lost-before-app 0 (Enter: sent 3, app saw 7); app logged 12 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 7 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_conflict" time="66.10">
+<failure message="local: the conflict was not reported (no 'Failed to save file for accepted AgentMode diffs' / 'changed on disk' line in the app log)">local: the conflict was not reported (no 'Failed to save file for accepted AgentMode diffs' / 'changed on disk' line in the app log)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+accept: no follow-up model request within 40 s (the tool result may not have reached the model)
+injector accounting: injector sent 266; app saw 279; lost-before-app 0 (Enter: sent 2, app saw 5); app logged 13 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 5 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_touch_only" time="87.50">
+<failure message="local: an accept after a touch-only change (bytes identical): 197 bytes on disk, 218 expected; first difference at byte 24 (b'beta t11tzkk6o\nL03 gamma' vs b'BETA-EDITED t11tzkk6o\nL0'); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 10, 0, True)">local: an accept after a touch-only change (bytes identical): 197 bytes on disk, 218 expected; first difference at byte 24 (b'beta t11tzkk6o\nL03 gamma' vs b'BETA-EDITED t11tzkk6o\nL0'); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 10, 0, True)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+accept: no follow-up model request within 40 s (the tool result may not have reached the model)
+injector accounting: injector sent 267; app saw 281; lost-before-app 0 (Enter: sent 2, app saw 5); app logged 14 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 5 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_endings" time="260.20">
+<failure message="crlf: the accepted multi-hunk edit: 207 bytes on disk, 228 expected; first difference at byte 25 (b'beta t133r9ay6\r\nL03 gamm' vs b'BETA-EDITED t133r9ay6\r\nL'); line endings (crlf, bare lf, bare cr, final newline) (10, 0, 0, True) vs expected (10, 0, 0, True)">crlf: the accepted multi-hunk edit: 207 bytes on disk, 228 expected; first difference at byte 25 (b'beta t133r9ay6\r\nL03 gamm' vs b'BETA-EDITED t133r9ay6\r\nL'); line endings (crlf, bare lf, bare cr, final newline) (10, 0, 0, True) vs expected (10, 0, 0, True)
+lf_no_eol: the accepted multi-hunk edit: 196 bytes on disk, 217 expected; first difference at byte 24 (b'beta t1479n1d4\nL03 gamma' vs b'BETA-EDITED t1479n1d4\nL0'); line endings (crlf, bare lf, bare cr, final newline) (0, 9, 0, False) vs expected (0, 9, 0, False)
+crlf_no_eol: the accepted multi-hunk edit: 205 bytes on disk, 226 expected; first difference at byte 25 (b'beta t159m605w\r\nL03 gamm' vs b'BETA-EDITED t159m605w\r\nL'); line endings (crlf, bare lf, bare cr, final newline) (9, 0, 0, False) vs expected (9, 0, 0, False)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+accept: no follow-up model request within 40 s (the tool result may not have reached the model)
+accept: no follow-up model request within 40 s (the tool result may not have reached the model)
+accept: no follow-up model request within 40 s (the tool result may not have reached the model)
+injector accounting: injector sent 786; app saw 796; lost-before-app 0 (Enter: sent 4, app saw 11); app logged 10 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 10 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 11 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_429" time="19.80">
+<failure message='unexpected ERROR line: 2026-11-09T20:24:29Z [ERROR] MultiAgent request failed after 0 recovery attempts: Failed with status code 429 Too Many Requests: BYOP open stream failed: HTTP status 429: Too Many Requests: {"error": "fake model fault: HTTP 429"}'>unexpected ERROR line: 2026-11-09T20:24:29Z [ERROR] MultiAgent request failed after 0 recovery attempts: Failed with status code 429 Too Many Requests: BYOP open stream failed: HTTP status 429: Too Many Requests: {"error": "fake model fault: HTTP 429"}
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 76; app saw 82; lost-before-app 0 (Enter: sent 3, app saw 4); app logged 6 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 4 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_500" time="31.00">
+<failure message='unexpected ERROR line: 2026-11-09T20:25:01Z [ERROR] MultiAgent request failed after 0 recovery attempts: Failed with status code 500 Internal Server Error: BYOP open stream failed: HTTP status 500: Internal Server Error: {"error": "fake model fault: HTTP 500"}'>unexpected ERROR line: 2026-11-09T20:25:01Z [ERROR] MultiAgent request failed after 0 recovery attempts: Failed with status code 500 Internal Server Error: BYOP open stream failed: HTTP status 500: Internal Server Error: {"error": "fake model fault: HTTP 500"}
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 76; app saw 89; lost-before-app 0 (Enter: sent 3, app saw 4); app logged 13 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 4 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_disconnect" time="17.20">
+<failure message="the turn ended in 'success' (hop=turn), expected `error` after the disconnect fault">the turn ended in 'success' (hop=turn), expected `error` after the disconnect fault
+a stream cut AFTER output was sent was re-sent (2 requests): a retry would repeat output / tool calls
+unexpected ERROR line: 2026-11-09T20:25:19Z [ERROR] MultiAgent request failed after 0 recovery attempts: BYOP stream error: Network/streaming request failed: Web stream error for model 'fake-model (adapter: Ollama)'.
+the turn state changed on its own after the error: 'success'
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 76; app saw 84; lost-before-app 0 (Enter: sent 3, app saw 4); app logged 8 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 4 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_down" time="30.80">
+<failure message="unexpected ERROR line: 2026-11-09T20:25:51Z [ERROR] MultiAgent request failed after 0 recovery attempts: BYOP open stream failed: Network/streaming request failed: Web stream error for model 'fake-model (adapter: Ollama)'.">unexpected ERROR line: 2026-11-09T20:25:51Z [ERROR] MultiAgent request failed after 0 recovery attempts: BYOP open stream failed: Network/streaming request failed: Web stream error for model 'fake-model (adapter: Ollama)'.
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 76; app saw 89; lost-before-app 0 (Enter: sent 3, app saw 4); app logged 13 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 4 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_slow_cancel" time="16.90">
+<failure message="during the first-token delay the turn is None, expected in_progress">during the first-token delay the turn is None, expected in_progress
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 77; app saw 85; lost-before-app 0 (Enter: sent 3, app saw 4); app logged 8 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 4 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_queued_rows" time="37.80">
+<failure message="unexpected turn state while queueing: None">unexpected turn state while queueing: None
+ERROR lines: ['unexpected ERROR line: 2026-11-09T20:26:41Z [ERROR] MultiAgent request failed after 0 recovery attempts: Failed with status code 500 Internal Server Error: BYOP open stream failed: HTTP status 500: Internal Server Error: {"error": "fake model fault: HTTP 500"}']
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 140; app saw 150; lost-before-app 0 (Enter: sent 4, app saw 5); app logged 10 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 5 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_key" time="128.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_vim" time="41.70">
+<failure message="ai_vim: no hop=fullscreen_handover in the app log after typing into the full-screen program: the hand-over is not proven">ai_vim: no hop=fullscreen_handover in the app log after typing into the full-screen program: the hand-over is not proven
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+ai_vim: hand-over line in the app log: no (a full-screen program may be driven without the prompt hand-over)
+injector accounting: injector sent 153; app saw 165; lost-before-app 0 (Enter: sent 4, app saw 6); app logged 12 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 7 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_stream" time="1.40">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_queued" time="1.40">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_blocked" time="1.50">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_enter" time="1502.40">
+<failure message="harness exception: CaseTimeout('case exceeded the 1500s per-case limit (APPCI_CASE_TIMEOUT)')">harness exception: CaseTimeout('case exceeded the 1500s per-case limit (APPCI_CASE_TIMEOUT)')
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 3317; app saw 3306; lost-before-app 11 (Enter: sent 178, app saw 179)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 178 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 180 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_ssh" time="70.40">
+<failure message="ai_ssh: the remote `read` at its prompt was never handed to the user within 60 s">ai_ssh: the remote `read` at its prompt was never handed to the user within 60 s
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 157; app saw 165; lost-before-app 0 (Enter: sent 2, app saw 4); app logged 8 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)
+TAINTED (not a clean app signal): 1 of 5 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect.</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_stream" time="50.20">
+<failure message="ar_kill_stream (relaunch): unexpected ERROR line: 2026-11-09T20:56:37Z [ERROR] Failed to read local control mode from secure storage: unknown error: A default keychain could not be found.">ar_kill_stream (relaunch): unexpected ERROR line: 2026-11-09T20:56:37Z [ERROR] Failed to read local control mode from secure storage: unknown error: A default keychain could not be found.
+ar_kill_stream (relaunch): unexpected ERROR line: 2026-11-09T20:56:37Z [ERROR] Failed to read API keys from secure storage: unknown error
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+ar_kill_stream: the completed turn is visible on the relaunched screen (OCR; the store check above is the verdict)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 121; app saw 129; lost-before-app 0 (Enter: sent 5, app saw 6); app logged 8 more than were injected (keys from an earlier case or another source)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_queued" time="56.20">
+<failure message="ar_kill_queued (relaunch): unexpected ERROR line: 2026-11-09T20:57:31Z [ERROR] Failed to read local control mode from secure storage: unknown error: A default keychain could not be found.">ar_kill_queued (relaunch): unexpected ERROR line: 2026-11-09T20:57:31Z [ERROR] Failed to read local control mode from secure storage: unknown error: A default keychain could not be found.
+ar_kill_queued (relaunch): unexpected ERROR line: 2026-11-09T20:57:31Z [ERROR] Failed to read API keys from secure storage: unknown error
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+ar_kill_queued: the completed turn is visible on the relaunched screen (OCR; the store check above is the verdict)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 258; app saw 250; lost-before-app 8 (Enter: sent 8, app saw 8)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_blocked" time="54.60">
+<failure message="ar_kill_blocked (relaunch): unexpected ERROR line: 2026-11-09T20:58:26Z [ERROR] Failed to read local control mode from secure storage: unknown error: A default keychain could not be found.">ar_kill_blocked (relaunch): unexpected ERROR line: 2026-11-09T20:58:26Z [ERROR] Failed to read local control mode from secure storage: unknown error: A default keychain could not be found.
+ar_kill_blocked (relaunch): unexpected ERROR line: 2026-11-09T20:58:26Z [ERROR] Failed to read API keys from secure storage: unknown error
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+ar_kill_blocked: the completed turn is visible on the relaunched screen (OCR; the store check above is the verdict)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 350; app saw 342; lost-before-app 8 (Enter: sent 7, app saw 7)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_steer_fast" time="28.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_less" time="40.10">
+<skipped message="ai_less: no hop=alt_screen_enter within 30 s, so less never took the screen and no keys were typed"/>
+</testcase>
+<testcase classname="agent@fake" name="pane_not_local_after_agent_interactive_less" time="0.00">
+<failure message="after agent_interactive_less the pane's shell was not the root shell (none; root pid 42809); the app is relaunched so later cases start clean">after agent_interactive_less the pane's shell was not the root shell (none; root pid 42809); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_noninteractive_no_takeover" time="35.70">
+</testcase>
+<testcase classname="agent@fake" name="network_gate_notice" time="1.50">
+<skipped message="network_gate_notice (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_deny_allow" time="1.40">
+<skipped message="agent_gate (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_off_live" time="1.40">
+<skipped message="agent_gate (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_mcp_faults" time="31.70">
+<skipped message="precondition: the healthy control server's tool was not offered to the model or the call never returned (servers seen: []; starts (0, 0)): the app did not load ~/.warp/.mcp.json, so no fault could be "/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_key_never_leaves" time="2.20">
+<skipped message="agent_gate (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_multitab_streaming" time="167.60">
+</testcase>
+<testcase classname="agent@fake" name="left_agent_mode_after_agent_multitab_streaming" time="0.00">
+<failure message="after agent_multitab_streaming the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.">after agent_multitab_streaming the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+</testsuite>
