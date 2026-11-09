@@ -1442,8 +1442,10 @@ enum EnterHold {
     /// given up by a timer, which never submits (#1666/#1667): the line is handed back.
     TabCompletion {
         since: Instant,
-        /// The completion is the remote shell's in-band answer (#1801), which takes a round
-        /// trip: it gets [`REMOTE_NATIVE_TAB_ENTER_BUDGET`] instead of the local budget.
+        /// The completion is the remote shell's in-band answer (#1801). No clock decides what
+        /// this Enter runs: it waits for the answer (a frame's candidates, or nothing, which
+        /// runs the typed line), and a pty-level give-up (no answer ever) hands the line back
+        /// and runs nothing. Only the backstop net remains ([`EnterHold::backstop`]).
         remote_native: bool,
     },
 }
@@ -1458,8 +1460,8 @@ struct TabCompletionRequest {
     /// is never waited for.
     local: bool,
     /// The remote shell is asked first, in-band (#1801): one round trip on the session's own
-    /// connection, so an Enter right after the Tab waits for it (within
-    /// [`REMOTE_NATIVE_TAB_ENTER_BUDGET`]) and runs the completed line, as a local Tab does.
+    /// connection, so an Enter right after the Tab waits for the answer, however long it takes,
+    /// and runs the completed line, as a local Tab does.
     remote_native: bool,
     /// The compute the completer job spends (#1351): the Enter's give-up cap is measured on it.
     compute: ComputeClock,
@@ -1470,11 +1472,6 @@ struct TabCompletionRequest {
 /// purpose: completion does I/O. The give-up hands the uncompleted line back to the editor and
 /// runs nothing (#1666): the clock must not run a line the user meant to complete.
 const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
-/// The same cap for a remote shell's in-band Tab answer (#1801 review: "Tab then a fast Enter
-/// runs the completed line" over a slow link too). Wall time from the job's start: a round trip
-/// plus the shell's own completion work. Under the 2 s prompt watchdog, so a shell that does not
-/// answer hands the line back (#1666) rather than running the uncompleted text.
-const REMOTE_NATIVE_TAB_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
 /// A hold longer than this is logged at WARN, so slow completers can be traced.
 const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
 /// The wall-clock net of an Enter held for its verdict, before the size allowance (#1662, busy-
@@ -1542,10 +1539,12 @@ impl EnterHold {
             EnterHold::Verdict { .. } => {
                 crate::ai::blocklist::input_model::enter_verdict_budget_for(text_len)
             }
+            // No cap: a remote in-band answer is waited for, never timed (it is event-driven;
+            // "no answer ever" is an event too, `native_completions_missed`).
             EnterHold::TabCompletion {
                 remote_native: true,
                 ..
-            } => REMOTE_NATIVE_TAB_ENTER_BUDGET,
+            } => std::time::Duration::MAX,
             EnterHold::TabCompletion { .. } => TAB_COMPLETION_ENTER_BUDGET,
         }
     }
@@ -1569,11 +1568,13 @@ impl EnterHold {
             .min(HOLD_BACKSTOP_LIMIT),
             // #1667: kept at 500 ms. Its give-up hands the line back and runs nothing, so a busy
             // machine that outlasts it costs one more Enter, never a wrong command.
-            // #1801: the remote in-band answer's cap plus the same 350 ms margin as locally.
+            // #1801: the remote in-band answer has no clock deciding what the Enter runs. This is
+            // only a lost-signal net, above the pty's 2 s prompt give-up (which is an event) and
+            // under the Enter gate's leak net; its expiry hands the line back and runs nothing.
             EnterHold::TabCompletion {
                 remote_native: true,
                 ..
-            } => REMOTE_NATIVE_TAB_ENTER_BUDGET + std::time::Duration::from_millis(350),
+            } => HOLD_BACKSTOP_LIMIT,
             EnterHold::TabCompletion { .. } => std::time::Duration::from_millis(500),
         }
     }
@@ -12646,8 +12647,12 @@ impl Input {
                     async move {
                         let started = Instant::now();
                         let _compute = completion_compute.begin();
-                        native_results_fut
-                            .await
+                        // `None`: no answer at all (the requester's channel closed: the pty gave
+                        // up, refused, or the shell left). `Some(empty)`: the shell (or a cancel)
+                        // answered with nothing. They differ for a held Enter.
+                        let results = native_results_fut.await;
+                        let answered = results.is_some();
+                        let suggestions = results
                             .filter(|results| !results.is_empty())
                             .map(|results| {
                                 // Never the candidates: they are the user's file names.
@@ -12662,9 +12667,10 @@ impl Input {
                                     &buffer_text,
                                     cursor_position,
                                 )
-                            })
+                            });
+                        (answered, suggestions)
                     },
-                    move |input, suggestions, ctx| match suggestions {
+                    move |input, (answered, suggestions), ctx| match suggestions {
                         Some(suggestions) => input.deliver_completion_suggestions_results(
                             generation,
                             Some(suggestions),
@@ -12674,6 +12680,7 @@ impl Input {
                         ),
                         None => input.native_completions_missed(
                             generation,
+                            !answered,
                             before_cursor_text,
                             matcher,
                             completions_trigger,
@@ -12774,6 +12781,7 @@ impl Input {
     fn native_completions_missed(
         &mut self,
         generation: u64,
+        no_answer: bool,
         before_cursor_text: String,
         matcher: MatchStrategy,
         completions_trigger: CompletionsTrigger,
@@ -12783,6 +12791,13 @@ impl Input {
         ctx: &mut ViewContext<'_, Input>,
     ) {
         if self.is_stale_generation(generation) {
+            return;
+        }
+        // No answer ever (the pty gave up, refused, or the shell left): an Enter held for it is
+        // handed back with its line and runs NOTHING (#1577, #1666); no timer decides what runs.
+        // (A shell that answered with no candidates, or a cancel, is not this: the typed line
+        // runs below.)
+        if no_answer && self.give_up_unanswered_remote_hold(ctx) {
             return;
         }
         if self.end_remote_native_tab_wait(
@@ -12804,6 +12819,25 @@ impl Input {
             false,
             ctx,
         );
+    }
+
+    /// The remote shell gave NO answer (see [`Self::native_completions_missed`]): the Tab request
+    /// stops being remote-native, and an Enter held for it is given up like any Tab-completion
+    /// give-up: the line is handed back, nothing runs, keys typed meanwhile stay held in order.
+    /// Returns whether an Enter was held (and so handed back).
+    fn give_up_unanswered_remote_hold(&mut self, ctx: &mut ViewContext<'_, Input>) -> bool {
+        if let Some(request) = self.tab_completion_request.as_mut() {
+            request.remote_native = false;
+        }
+        if !self
+            .verdict_wait
+            .as_ref()
+            .is_some_and(VerdictWait::holds_for_tab_completion)
+        {
+            return false;
+        }
+        self.give_up_completion_hold("remote_no_answer", ctx);
+        true
     }
 
     /// The first half of [`Self::native_completions_missed`]: the Tab request stops being
@@ -15089,6 +15123,16 @@ impl Input {
             return;
         };
         if !wait.compute.is_running() {
+            return;
+        }
+        // A remote in-band answer has no compute cap (see `EnterHold::compute_cap`).
+        if matches!(
+            wait.hold,
+            EnterHold::TabCompletion {
+                remote_native: true,
+                ..
+            }
+        ) {
             return;
         }
         let remaining = wait.hold.cap_remaining(&wait.compute, wait.text.len());

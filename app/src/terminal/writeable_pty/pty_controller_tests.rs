@@ -3966,7 +3966,9 @@ fn a_reused_or_missing_prompt_token_is_cancelled() {
                 Some(&native_completions_cancel()),
                 "{second_token:?}: {out:?}"
             );
-            assert!(second.recv().await.is_err(), "{second_token:?}");
+            // The cancel is an answer of nothing (owner decision: an Enter held for the Tab then
+            // runs the typed line); only a give-up is "no answer" (a closed channel).
+            assert_eq!(second.recv().await.ok(), Some(vec![]), "{second_token:?}");
         });
     }
 }

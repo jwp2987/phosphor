@@ -2948,9 +2948,15 @@ What changed and what pins it:
   `a_setup_write_during_an_exchange_is_preceded_by_the_cancel_frame`; terminal-query replies and a resize do not pass
   through the cancel-first rule (why each is safe: the design comment); `native_shell_completions_need_the_advertised_protocol_and_bash_4`
   (`warp_terminal`); `completions_prompt_token_is_letters_and_digits_only` (`ansi/mod_test.rs`). Tab then a fast
-  Enter runs the COMPLETED line remotely too: the editor holds the Enter for the in-band answer up to
-  `REMOTE_NATIVE_TAB_ENTER_BUDGET` (1.5 s; give-up hands the line back, #1666); when the shell has no answer the
-  Enter runs the visible line at once and the completer answers the menu (`input_test.rs`, Legacy and Table):
+  Enter runs the COMPLETED line remotely too: the editor holds the Enter for the in-band answer with NO time budget
+  (`REMOTE_NATIVE_TAB_ENTER_BUDGET` is gone; owner decision: no timer decides what Enter runs). The answer is an
+  event: candidates run the completed line however late; an answer of nothing (the shell found none, or the app
+  cancelled the exchange: the cancel sends an empty result) runs the typed line and the completer answers the menu;
+  NO answer at all (the pty's 2 s give-up closes the channel, or the shell left) hands the line back and runs nothing
+  (`give_up_unanswered_remote_hold`, #1577/#1666), keys typed meanwhile held in order. Only the 9 s hold backstop
+  remains as a lost-signal net with the same hand-back. Tab-path timers left: pty 2 s prompt give-up (writes nothing),
+  hook read deadline 20 s (writes nothing), results timeout 15 s (writes nothing), 9 s hold backstop (hands back),
+  and the local Tab's 150 ms cap / 500 ms backstop (hand back, never run) (`input_test.rs`, Legacy and Table):
   `test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_modes`,
   `test_tab_then_enter_remote_in_band_give_up_runs_nothing_in_both_modes`,
   `test_tab_then_enter_remote_in_band_keys_typed_during_hold_follow_the_completed_line`,

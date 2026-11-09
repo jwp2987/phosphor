@@ -251,7 +251,8 @@ enum PtyWrite {
 //    answer lands, so it runs the completed line.
 // c. The prompt arriving writes the answer frame (the hook consumes exactly the frame; later
 //    bytes wait in the tty for the line editor). No prompt in time (2 s): the app GIVES UP. It
-//    stops waiting, closes the requester's channel (the completer answers) and marks the
+//    stops waiting, closes the requester's channel (no answer: the completer answers, and an
+//    Enter held for the Tab is handed back with its line, never run) and marks the
 //    cancel frame OWED; it writes NOTHING. The owed cancel goes in front of the next real write
 //    (rule b), or when the shell's own late prompt arrives (a response to the shell's event);
 //    either clears the debt, so there is never a second cancel. If neither ever happens, the
@@ -1406,11 +1407,18 @@ impl<T: EventLoopSender> PtyController<T> {
         report: bool,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
-        let Some(NativeShellCompletionsState::AwaitingPrompt { remote_first, .. }) =
-            self.in_flight_native_completions_state.take()
+        let Some(NativeShellCompletionsState::AwaitingPrompt {
+            remote_first,
+            results_tx,
+            ..
+        }) = self.in_flight_native_completions_state.take()
         else {
             return false;
         };
+        // The cancel IS an answer (of nothing): the requester then runs an Enter held for it on
+        // the typed line. A give-up (`abandon_native_exchange`) sends nothing: the channel just
+        // closes, "no answer", and the held Enter is handed back instead.
+        let _ = results_tx.try_send(Vec::new());
         self.native_cancel_owed = false;
         self.send_write_to_event_loop(
             PtyWrite::Bytes {
