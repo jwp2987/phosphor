@@ -80,7 +80,7 @@
     },
     {
       "op": {
-        "kind": "ctrl_c"
+        "kind": "stop"
       },
       "timing": "fast"
     },
