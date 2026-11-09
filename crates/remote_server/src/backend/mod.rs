@@ -18,6 +18,7 @@
 mod executor;
 mod features;
 mod helper;
+pub mod index_sync;
 pub mod refresh;
 mod router;
 mod shell;
