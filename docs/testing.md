@@ -2919,21 +2919,26 @@ What changed and what pins it:
   exchange with a fresh token (OSC `9280;P;<token>`; a reused or missing token is cancelled); the app always ends it
   with ONE frame, `RS <token> : <%HH text> US` (RS = 0x1e, US = 0x1f), or the cancel frame `RS - : US`. The hook and
   the RS widget at the prompt consume nothing outside a frame: the first byte must be RS, then the frame's exact shape
-  with at most 0.1 s between bytes; on any other byte or a gap everything read goes back to the line editor, an Enter
+  (`(<digits>x<digits>x<digits> | -) : (%HH)* US`), judged by CONTENT only with no inter-byte timing (a frame may
+  arrive in pieces with any pauses; the only clock is the overall read deadline `PHOSPHOR_NC_DEADLINE`, a give-up net
+  that hands back what was read and writes nothing); on the first byte that cannot continue a frame everything read goes back to the line editor, an Enter
   included (bash: ^Y and RS are macros that run the function and then a key it rebinds to accept-line), and a
   terminal reply (a DA report) is dropped whole. US is not bound (it stays the line editor's undo). App: an exchange
   starts only when the write queue is empty, no command is executing, the line editor is active and no other write
   path is engaged (including a `SetupChunked` job the writer still holds: `SetupLive` counts it until the writer
   drops it); while it waits
   for its prompt, ANY write (a command, typed or pasted bytes, agent bytes, ^C) first writes the cancel frame, then
-  goes out, in order. Nothing is queued behind `^Y`, so there is nothing to hold, hand back or reorder; the shell
+  goes out, in order. The 2 s prompt timeout is a give-up that WRITES NOTHING: it closes the requester's channel (the
+  completer answers) and marks the cancel frame owed; the owed cancel goes in front of the next real write, or when the
+  shell's own late prompt arrives, exactly once (`the_cancel_owed_after_a_timeout_precedes_the_next_write_exactly_once`,
+  `a_late_prompt_after_the_timeout_gets_the_cancel_once`). Nothing is queued behind `^Y`, so there is nothing to hold, hand back or reorder; the shell
   leaving first just ends the exchange. Unit tests (`pty_controller_tests.rs`, through the real write APIs):
   `native_completions_frames_are_self_identifying_and_never_end_a_line`,
   `an_exchange_starts_only_when_nothing_is_queued_or_running`,
   `writes_during_an_exchange_go_out_in_order_after_the_cancel_frame` (an editor command and agent bytes; the queue
   stays empty), `a_direct_byte_write_during_an_exchange_is_preceded_by_the_cancel_frame` (bytes, paste, ^C),
   `the_prompt_is_answered_with_one_frame_and_later_writes_follow_it`, `a_reused_or_missing_prompt_token_is_cancelled`,
-  `prompt_timeout_cancels_without_a_toast_for_a_remote_first_request`,
+  `prompt_timeout_cancels_without_a_toast_for_a_remote_first_request` (now: the timeout writes nothing),
   `prompt_timeout_of_a_fallback_request_asks_for_the_toast`,
   `keys_after_the_prompt_timeout_and_a_late_prompt_lose_nothing` (#1674/H14: `^Y`, timeout cancel, keys, command, then a
   late prompt: the tty order is kept and the late prompt writes nothing; same for Legacy and Table, the pty layer is
@@ -2956,7 +2961,8 @@ What changed and what pins it:
   app could put one there: the app sends the cancel frame before any write).
   Every shell writes candidates as the whole whitespace-delimited token (zsh now adds its
   IPREFIX and -P/-p prefixes, so `cd dir/fo` no longer offers `foo/`). The OSC parser rejoins a payload split at `;`
-  (`completions_osc_payload_rejoins_a_payload_split_at_semicolons`). Shell side: `script/test_native_completions`.
+  (`completions_osc_payload_rejoins_a_payload_split_at_semicolons`). Shell side: `script/test_native_completions` (also: a frame split with 0.5 s and 3 s pauses is consumed whole with
+  no junk, RS + `ls` + Enter and RS + letters + Ctrl-C hand back by content, a stale-token frame is consumed).
   Kill switch: `PHOSPHOR_REMOTE_NATIVE_COMPLETIONS=0`.
 - **Chips re-run when the session registers.** A remote session's blocks carry its id before its bootstrap completes
   (the ssh setup holds the bootstrap while it checks for the helper), so chips refreshed then failed with "could not

@@ -1299,16 +1299,18 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # native-completions exchange"): this hook names it with a fresh token (OSC 9280;P;<token>),
     # and the app always ends it with ONE frame, RS <token> : <%HH bytes> US (RS = 0x1e,
     # US = 0x1f), or the cancel frame RS - : US, written in one piece. The hook consumes nothing
-    # that is not a frame: the first byte must be RS, then the frame's exact shape (a token of
-    # letters and digits, or `-`; `:`; `%HH` pairs; US) with at most 0.1 s between bytes. On any
-    # other byte, or a gap, everything read after the RS goes back to the line (text inserted, ^P
+    # that is not a frame: the first byte must be RS, then the frame's exact shape (the token
+    # `<digits>x<digits>x<digits>` or `-`; `:`; `%HH` pairs; US), judged by content only, with no
+    # inter-byte timing (a frame may arrive in pieces with any pauses). On the first byte that
+    # cannot continue a frame, everything read after the RS goes back to the line (text inserted, ^P
     # clears the line, an Enter accepts it, a bracketed paste is read whole and inserted, a
     # terminal reply such as a DA report is dropped whole) and the exchange ends. A frame for
     # another token, or the cancel, ends it with nothing. A frame that arrives after this hook
     # gave up lands at the prompt, where RS is bound to warp_native_discard, which reads the rest
     # by the same rules and drops it. US is not bound (it stays readline's undo): the discard
-    # widget consumes a frame's own US. The first byte waits PHOSPHOR_NC_DEADLINE seconds
-    # (default 20); a frame must be whole within 5 more.
+    # widget consumes a frame's own US. The only clock is the overall read deadline,
+    # PHOSPHOR_NC_DEADLINE seconds (default 20), a give-up net: on expiry the hook (or widget)
+    # hands back what it read and exits, writing nothing.
     #
     # Readline cannot run accept-line from a `bind -x` function, so ^Y and RS are bound to macros
     # that run the function and then \C-x\C-_9, which the function rebinds to accept-line when it
@@ -1424,24 +1426,30 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         esac
     }
 
-    # Reads the rest of a frame after its RS. Returns 0 with __warp_nc_body set to
-    # "<token>:<%HH...>" when the bytes have the frame's exact shape up to its US; otherwise
-    # hands everything read back to the line and returns 1.
+    # Reads the rest of a frame after its RS, by CONTENT only (no inter-byte timing): bytes are
+    # consumed while they still form a valid prefix of `(token | -) ':' (%HH)* US`, the token
+    # being the hook's own `<digits>x<digits>x<digits>`. The first byte that cannot continue a
+    # frame ends the read: everything read so far plus that byte goes back to the line. Returns
+    # 0 with __warp_nc_body set to "<token>:<%HH...>" at the frame's US; otherwise returns 1.
+    # The caller's deadline (__warp_nc_deadline_set) is the only clock, a give-up net: on expiry
+    # what was read goes back and nothing is invented.
     __warp_nc_read_frame_body () {
         __warp_nc_body=
         local __phase=start
-        __warp_nc_deadline_set 5
         while __warp_nc_time_left; do
-            if ! __warp_nc_read_byte 0.1; then
+            if ! __warp_nc_read_byte "$__warp_nc_left"; then
                 __warp_nc_give_back "$__warp_nc_body" ""
                 return 1
             fi
             local __c=$__warp_nc_byte __ok=
             case $__phase:$__c in
                 start:-) __phase=dash __ok=1 ;;
-                start:[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]|tok:[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789])
-                    __phase=tok __ok=1 ;;
-                tok:: | dash::) __phase=hex __ok=1 ;;
+                start:[0123456789]|d1:[0123456789]) __phase=d1 __ok=1 ;;
+                d1:x) __phase=x1 __ok=1 ;;
+                x1:[0123456789]|d2:[0123456789]) __phase=d2 __ok=1 ;;
+                d2:x) __phase=x2 __ok=1 ;;
+                x2:[0123456789]|d3:[0123456789]) __phase=d3 __ok=1 ;;
+                d3:: | dash::) __phase=hex __ok=1 ;;
                 hex:%) __phase=h1 __ok=1 ;;
                 h1:[0123456789ABCDEFabcdef]) __phase=h2 __ok=1 ;;
                 h2:[0123456789ABCDEFabcdef]) __phase=hex __ok=1 ;;
@@ -1512,6 +1520,9 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # ended (the hook gave up, or was interrupted). Read the rest by the hook's rules and drop it;
     # anything that is not a frame goes back to the line. A frame is never run.
     __warp_native_discard_impl () {
+        local __pc_deadline=${PHOSPHOR_NC_DEADLINE:-20}
+        [[ $__pc_deadline =~ ^[0-9]+$ ]] || __pc_deadline=20
+        __warp_nc_deadline_set "$__pc_deadline"
         __warp_nc_read_frame_body
         return 0
     }
