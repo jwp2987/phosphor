@@ -232,17 +232,18 @@ fn winsize_never_zero_and_never_wraps() {
 #[test]
 fn the_master_end_of_a_pty_reports_canonical_mode() {
     let ends = nix::pty::openpty(None, None).expect("openpty");
-    let master = ends.master.as_raw_fd();
+    let master_end = &ends.master;
+    let master = master_end.as_raw_fd();
     assert_eq!(fd_is_canonical(master), Some(true), "a fresh pty is cooked");
 
-    let mut raw = termios::tcgetattr(master).expect("tcgetattr");
+    let mut raw = termios::tcgetattr(master_end).expect("tcgetattr");
     termios::cfmakeraw(&mut raw);
-    termios::tcsetattr(master, SetArg::TCSANOW, &raw).expect("tcsetattr");
+    termios::tcsetattr(master_end, SetArg::TCSANOW, &raw).expect("tcsetattr");
     assert_eq!(fd_is_canonical(master), Some(false));
 
-    let mut cooked = termios::tcgetattr(master).expect("tcgetattr");
+    let mut cooked = termios::tcgetattr(master_end).expect("tcgetattr");
     cooked.local_flags.insert(termios::LocalFlags::ICANON);
-    termios::tcsetattr(master, SetArg::TCSANOW, &cooked).expect("tcsetattr");
+    termios::tcsetattr(master_end, SetArg::TCSANOW, &cooked).expect("tcsetattr");
     assert_eq!(fd_is_canonical(master), Some(true));
     assert_eq!(fd_is_canonical(-1), None);
 }
