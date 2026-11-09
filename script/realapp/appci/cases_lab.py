@@ -428,3 +428,27 @@ def c_ctrl_c_no_esc_i(ctx, r, arm):
         r.check("^[i" not in txt and "^[ i" not in txt, "a literal ^[i is on screen after the Ctrl-C rounds")
     ctx.shot("lab_ctrlc_end")
     finish_remote(ctx, r)
+
+
+# ------------------------------------------------------------------ 9. The "limited: no remote helper" chip (Wave 1.5)
+@lab_case("no_helper_chip", shells=("bash", "zsh"), lat=("lan",), helper=("nohelper",), modes=("terminal",))
+def c_no_helper_chip(ctx, r, arm):
+    """A Phosphorized ssh session WITHOUT the remote helper shows the small, informational chip "limited: no remote helper" (OCR). It never blocks: a command
+    typed right after connecting still runs once, and the chip is not an error banner (no 'ERROR' text next to it)."""
+    import cases_caseagent as CAG
+    if connect_or_fail(ctx, r, arm) is None:
+        ctx.reset()
+        return
+    time.sleep(1.0 + 2 * rtt_s(arm))
+    txt = ctx.ocr("lab_no_helper_chip")
+    if txt is None:
+        r.unverifiable("no OCR on this machine (tesseract): the chip on screen is not checked")
+    else:
+        flat = " ".join(txt.split())
+        r.check(CAG.fuzzy_has(flat, "no remote helper"), "no 'limited: no remote helper' chip on screen in a no-helper ssh session")
+        r.check("ERROR" not in flat, "an ERROR text is on screen next to the no-helper chip: it must stay informational")
+    tok = unique(ctx)
+    ctx.be.type("echo chip%s" % tok, type_pace(ctx), enter=True)
+    time.sleep(1.0 + 2 * rtt_s(arm))
+    r.check(sum(1 for _, cmd in ctx.remote.commands() if "echo chip%s" % tok in cmd) == 1, "a command typed after connecting did not run exactly once with the chip up")
+    finish_remote(ctx, r)

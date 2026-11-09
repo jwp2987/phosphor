@@ -2725,7 +2725,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i"}, base
+    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip"}, base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     ordered = sorted(labs, key=lambda c: c["order"])
     assert [c["arm"]["helper"] for c in ordered] == sorted((c["arm"]["helper"] for c in labs), key=lambda h: L.HELPERS.index(h)), "nohelper arms sort before helper arms"

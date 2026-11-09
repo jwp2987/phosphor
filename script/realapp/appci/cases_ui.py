@@ -1064,3 +1064,28 @@ def c_settings(ctx, r):
         time.sleep(1.5)
         exact_burst(ctx, r, "set_restored", 3)
         ctx.shot("set_restored")
+
+
+@case("ui_completions_as_you_type_local", modes=("terminal",), order=64, gui=True)
+def c_completions_as_you_type_local(ctx, r):
+    """Wave 1.5: completions-as-you-type is ON by default for LOCAL sessions. With the setting not written by the profile, typing the common prefix of two
+    files (NO Tab) opens the menu: both candidate names are on screen (OCR). Skips when the profile sets the option explicitly (an explicit value wins)."""
+    import cases_caseagent as CAG
+    explicit = CAG.setting_bool(ctx, "completions_open_while_typing")
+    if explicit is not None:
+        r.skip("the profile sets completions_open_while_typing explicitly (%s); the default is not under test" % explicit)
+    d = os.path.join(ctx.W, "tc")
+    for n in ("cayt_alpha.txt", "cayt_bravo.txt"):
+        open(os.path.join(d, n), "w").close()
+    ctx.be.type("ls tc/cayt_", 15)
+    time.sleep(1.2)
+    txt = ctx.ocr("cayt_menu")
+    if txt is None:
+        r.unverifiable("no OCR on this machine (tesseract): the completion menu is not checked")
+    else:
+        flat = " ".join(txt.split())
+        r.check(CAG.fuzzy_has(flat, "cayt_alpha") and CAG.fuzzy_has(flat, "cayt_bravo"), "no completion menu with both candidates after typing a shared prefix without Tab")
+    mark = ctx.cmd_mark()
+    ctx.be.key("Escape")
+    ctx.reset()
+    r.check(ctx.cmds_since(mark) == [], "Escape/reset ran a command: %r" % ctx.cmds_since(mark))
