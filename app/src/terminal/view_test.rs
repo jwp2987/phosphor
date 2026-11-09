@@ -15559,6 +15559,47 @@ fn typeahead_handoff_not_engaged_releases_the_keys_waiting_for_the_route() {
     })
 }
 
+/// Owner ruling 2026-11-09 (a timer never commits): a young line's deferred Enter does not wait
+/// for the input-type verdict when the type is already decided (locked, or autodetection off) --
+/// no verdict can change the route. It is submitted at once, an event of the wait's start, and the
+/// wait arms no timer; with an undecided type the wait still waits. Legacy and Table.
+#[test]
+fn a_decided_input_type_submits_the_young_enter_at_once_without_a_timer() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                lock_input_in_ai_mode(view, ctx);
+                assert!(
+                    view.input
+                        .read(ctx, |input, ctx| input.input_type_is_decided(ctx)),
+                    "{mode:?}: the lock decides the input type"
+                );
+                view.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .force_deferred_submit_pending_for_test();
+                view.young_enter_released = false;
+                let wait_id = view.young_enter_wait_id;
+                view.finish_young_detection_wait(false, Instant::now(), ctx);
+                assert!(
+                    view.young_enter_released,
+                    "{mode:?}: a decided type does not wait for a verdict"
+                );
+                assert_eq!(
+                    view.young_enter_wait_id, wait_id,
+                    "{mode:?}: no wait (and no timer) was armed"
+                );
+            });
+        })
+    }
+}
+
 /// What follows the Enter's own replay request in a #1630 scenario.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfterRunEnter {
