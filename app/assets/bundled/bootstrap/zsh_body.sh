@@ -2363,13 +2363,6 @@ esac
     # warp_read_completion_buffer) if the app's reply never arrives; bail out
     # rather than complete on a stale or empty buffer.
     zle warp_read_completion_buffer || return
-    # Phosphor (#1801): an empty buffer is the app's answer to a prompt it had already given up
-    # on; end the exchange at once instead of completing every command name.
-    if [[ -z $BUFFER ]]; then
-      warp_mark_start_of_completions_for_compadd_override
-      warp_mark_end_of_completions
-      return
-    fi
 
     compprefuncs=( warp_mark_start_of_completions_for_compadd_override )
     comppostfuncs=( warp_mark_end_of_completions )
@@ -2382,36 +2375,47 @@ esac
   function warp_read_completion_buffer() {
     # Phosphor (#1014): runs from a widget/completion with the user's options; none of errexit,
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
-    # Read data from the terminal into a temporary variable and set it as the
-    # current zle buffer.  We want to prevent anything visible from being sent
-    # to the terminal (it would be treated as background output), so we use -s
-    # to suppress echoing and send an OSC as the synchronization signal (so the
-    # terminal knows when to send the input buffer that needs completions).
-    #
-    # `-t` bounds this read so an abandoned handshake can never wedge this
-    # shell in `read` forever (see TODO.md, "The shell lockup", and
-    # phosphor#770): if the app gives up on this request -- its own prompt
-    # watchdog fires, or its reply is lost for any other reason -- this read
-    # must still return on its own rather than depend on the app to answer.
-    # The bound is comfortably longer than the app's own completions-results
-    # budget (`NATIVE_COMPLETIONS_RESULTS_TIMEOUT`, 15s in pty_controller.rs
-    # as of this writing) so a legitimately slow-but-successful reply still
-    # gets through; it only protects against a reply that never arrives.
-    local TEMP
-    if ! IFS= builtin read -t 20 -d $'\4' -s "$(builtin echo -e "TEMP?\e]9280;P\a")" < /dev/tty; then
-      # Timed out (or /dev/tty went away) before the app answered. Whatever
-      # partial bytes landed in TEMP are not a completable buffer. The app
-      # cannot be trusted to answer late either way: once it has abandoned
-      # this request (which it will have, well before this bound elapses),
-      # `ModelEvent::SendCompletionsPrompt` writes nothing at all for it (see
-      # pty_controller.rs) precisely so it never types into a prompt whose
-      # state it can no longer see. Bail out of the widget without touching
-      # BUFFER, so whatever the user had typed before pressing the completion
-      # key is left exactly as it was.
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal extendedglob
+    # Phosphor (#1801): the exchange is self-identifying (design in pty_controller.rs, "The
+    # in-band native-completions exchange"). Name it with a fresh token, then read the app's ONE
+    # frame for it: RS <token> : <%HH bytes of the text> RS (RS = 0x1e), or the cancel frame
+    # RS - : RS. Read one byte first: anything that is not RS goes back to zle (`zle -U`) and the
+    # exchange ends, so nothing but a frame is ever consumed. Every byte is read with `read -k 1`
+    # against a TOTAL deadline ($EPOCHREALTIME), so a frame cut short can never hold this shell
+    # (`read -t` alone bounds only the wait for the first byte): PHOSPHOR_NC_DEADLINE seconds
+    # (default 20) for the frame to start, 5 more for the rest, which the app writes in one
+    # piece. A frame with another token, the cancel, or a deadline ends the exchange with nothing;
+    # a frame that arrives after that lands at the prompt, where RS is bound to
+    # warp_native_discard, which drops it whole. A frame is never run.
+    (( ${+EPOCHREALTIME} )) || zmodload -F zsh/datetime +p:EPOCHREALTIME 2>/dev/null
+    (( ${+EPOCHREALTIME} )) || return 1
+    local __rs=$'\x1e' __c __body= __hex __left __tok
+    __warp_nc_seq=$(( ${__warp_nc_seq:-0} + 1 ))
+    __tok="$RANDOM${__warp_nc_seq}$RANDOM"
+    local -F __deadline=$(( EPOCHREALTIME + ${PHOSPHOR_NC_DEADLINE:-20} ))
+    builtin printf '\e]9280;P;%s\a' "$__tok"
+    __left=$(( __deadline - EPOCHREALTIME ))
+    (( __left > 0 )) || return 1
+    IFS= builtin read -s -r -k 1 -t $__left __c </dev/tty || return 1
+    if [[ $__c != $__rs ]]; then
+      # Not a frame: it is the user's (or another write's) first byte. Give it back to zle.
+      zle -U "$__c"
       return 1
     fi
-    BUFFER="$TEMP"
+    __deadline=$(( EPOCHREALTIME + 5 ))
+    while :; do
+      __left=$(( __deadline - EPOCHREALTIME ))
+      (( __left > 0 )) || return 1
+      IFS= builtin read -s -r -k 1 -t $__left __c </dev/tty || return 1
+      [[ $__c == $__rs ]] && break
+      __body+=$__c
+      (( ${#__body} <= 3000000 )) || return 1
+    done
+    # Another exchange's frame, or the cancel frame: nothing to complete.
+    [[ $__body == ${__tok}:* ]] || return 1
+    __hex=${__body#*:}
+    [[ $__hex == (%[0-9A-Fa-f][0-9A-Fa-f])# ]] || return 1
+    BUFFER=${(g::)${__hex//\%/\\x}}
 
     # We push and pop the buffer stack to get zle to properly treat the buffer
     # as the data for the completer run.  Without this, the completer will
@@ -2426,6 +2430,23 @@ esac
     zle get-line
     builtin echo -n "$DCS_END"
   }
+  # Phosphor (#1801): RS at the prompt opens a native-completions frame whose exchange already
+  # ended (the hook gave up, or was interrupted). Read the rest of the frame, against a total
+  # deadline, and drop it: a frame is never run.
+  function warp_native_discard() {
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    (( ${+EPOCHREALTIME} )) || zmodload -F zsh/datetime +p:EPOCHREALTIME 2>/dev/null
+    (( ${+EPOCHREALTIME} )) || return 0
+    local __c __left
+    local -F __deadline=$(( EPOCHREALTIME + 5 ))
+    while :; do
+      __left=$(( __deadline - EPOCHREALTIME ))
+      (( __left > 0 )) || return 0
+      IFS= builtin read -s -r -k 1 -t $__left __c </dev/tty || return 0
+      [[ $__c == $'\x1e' ]] && return 0
+    done
+  }
+  zle -N warp_native_discard
   zle -N warp_read_completion_buffer
 
   # Registers the custom completion widgets and hooks them up to
@@ -2443,6 +2464,10 @@ esac
   zle -N warp_complete_via_compadd_override
   bindkey '^X' warp_complete_via_list_choices
   bindkey '^Y' warp_complete_via_compadd_override
+  # Phosphor (#1801): RS opens a native-completions answer frame; at the prompt it is dropped.
+  bindkey '^^' warp_native_discard
+  bindkey -M viins '^^' warp_native_discard 2>/dev/null
+  bindkey -M vicmd '^^' warp_native_discard 2>/dev/null
 
   # Set style for the list-choices approach
   zstyle ':completion:warp_complete_via_list_choices:*' verbose no

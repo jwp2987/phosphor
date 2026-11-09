@@ -88,6 +88,12 @@ const WARP_COMPLETIONS_OSC_MARKER: &[u8] = b"9280";
 /// joined with the `;` the OSC parser split them at. The shells write the payload raw, so a
 /// match or description that contains `;` (a file name, a description sentence) arrives as
 /// several parameters; reading only the third truncated it at the first `;` (#1801).
+/// The token of a completions prompt OSC (`9280;P;<token>`, #1801): 1-32 ASCII letters or digits.
+fn completions_prompt_token(raw: &[u8]) -> Option<String> {
+    (!raw.is_empty() && raw.len() <= 32 && raw.iter().all(u8::is_ascii_alphanumeric))
+        .then(|| String::from_utf8_lossy(raw).into_owned())
+}
+
 fn completions_osc_payload(params: &[&[u8]]) -> Option<String> {
     let rest = params.get(2..).filter(|rest| !rest.is_empty())?;
     Some(String::from_utf8_lossy(&rest.join(&b';')).into_owned())
@@ -1469,7 +1475,12 @@ where
                     }
                 }
                 Some(&WARP_COMPLETIONS_PROMPT_BYTE) => {
-                    self.handler.send_completions_prompt();
+                    // #1801: the shell names the exchange; anything that is not a plain token is
+                    // treated as no token (the app then cancels instead of answering).
+                    let token = params
+                        .get(2)
+                        .and_then(|token| completions_prompt_token(token));
+                    self.handler.send_completions_prompt(token);
                 }
                 _ => {
                     log::warn!(

@@ -244,6 +244,15 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
             PtyControllerEvent::InputBufferOverflow => {
                 surface.update(ctx, |surface, ctx| surface.on_input_buffer_overflow(ctx));
             }
+            PtyControllerEvent::HeldCommandsHandedBack { commands } => {
+                let commands = commands.clone();
+                surface.update(ctx, |surface, ctx| {
+                    surface.on_held_commands_handed_back(&commands, ctx)
+                });
+            }
+            PtyControllerEvent::WaitingForRemoteShell => {
+                surface.update(ctx, |surface, ctx| surface.on_waiting_for_remote_shell(ctx));
+            }
         }
     });
 }

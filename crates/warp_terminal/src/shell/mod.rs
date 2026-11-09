@@ -472,12 +472,12 @@ impl ShellType {
     /// `^Y` to a widget that answers the in-band completions handshake. zsh from upstream; bash
     /// (programmable completion, COMP_* emulated) since #1801.
     ///
-    /// Not fish, although its bootstrap answers the handshake (`warp_native_complete`, pinned by
-    /// `script/test_native_completions`): fish can only read the text with external commands,
-    /// and around every external command it switches its terminal modes off and back on
-    /// (bracketed paste, keypad, modifyOtherKeys). The switch back comes after the exchange's
-    /// last OSC, so a write the app releases at that OSC could reach fish with bracketed paste
-    /// off, typed key by key, where abbreviations expand (#1801 review).
+    /// Not fish (#1801 review): fish can read the answer only with external commands (its `read`
+    /// runs its line editor, which draws and queries the terminal), and around every external
+    /// command fish switches its terminal modes off and back on (bracketed paste, keypad,
+    /// modifyOtherKeys) after the exchange's last OSC, so a write released then could reach fish
+    /// with bracketed paste off, typed key by key, where abbreviations expand. fish's bootstrap
+    /// has no `^Y` handler.
     fn supports_native_shell_completions(&self) -> bool {
         matches!(self, ShellType::Zsh | ShellType::Bash)
     }

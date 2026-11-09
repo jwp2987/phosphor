@@ -19688,7 +19688,7 @@ impl TerminalView {
                 ctx.notify();
             }
             ModelEvent::CompletionsFinished(_data) => {}
-            ModelEvent::SendCompletionsPrompt => {}
+            ModelEvent::SendCompletionsPrompt { .. } => {}
             ModelEvent::ImageReceived {
                 image_id,
                 image_data,
@@ -36045,6 +36045,25 @@ impl TerminalSurface for TerminalView {
             "Too much input is waiting to be sent to this terminal; the newest keys were discarded, not run",
             ctx,
         );
+    }
+
+    fn on_held_commands_handed_back(&mut self, commands: &[String], ctx: &mut ViewContext<Self>) {
+        if let Some(first) = commands.first() {
+            self.restore_user_command(first, ctx);
+        }
+        let message = if commands.len() == 1 {
+            "Not run: the shell was interrupted or ended before this command was sent. It is back in the input".to_owned()
+        } else {
+            format!(
+                "Not run: the shell was interrupted or ended before {} commands were sent (the first is back in the input)",
+                commands.len()
+            )
+        };
+        self.show_ssh_typing_toast(&message, ctx);
+    }
+
+    fn on_waiting_for_remote_shell(&mut self, ctx: &mut ViewContext<Self>) {
+        self.show_ssh_typing_toast("Waiting for the remote shell to answer Tab\u{2026}", ctx);
     }
 
     fn on_command_coalesced(&mut self, command: &str, ctx: &mut ViewContext<Self>) {

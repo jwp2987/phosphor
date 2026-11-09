@@ -1,38 +1,44 @@
 #!/usr/bin/env python3
-"""Drive the in-band native-completions handshake of bash, zsh and fish in a pty (#1801).
+"""Drive the self-identifying in-band native-completions exchange of bash and zsh in a pty (#1801).
 
 WHY THIS EXISTS
 ---------------
 A Phosphorized remote session without the remote helper asks the remote shell itself for
-its completions on Tab (`app/src/terminal/input/native_completions.rs`): the app writes ^Y,
-the shell answers OSC 9280;P, the app writes the text to complete (raw + EOT for zsh, one
-line of %HH bytes for bash and fish: `NativeCompletionsBufferEncoding`), and the shell writes
-OSC 9280;A, one OSC 9280;C;<candidate> per candidate, OSC 9280;B. Each candidate must be the
-whole whitespace-delimited token before the cursor, because that is what the app replaces.
-This pins that protocol against the REAL bundled bootstrap text in real shells. Needs only
-python3 and the shells (no cargo); a missing shell is SKIPPED.
+its completions on Tab (`app/src/terminal/input/native_completions.rs`). The exchange shares
+the tty with every other write, and the shell and the app each have their own clock, so it is
+self-identifying (design in `app/src/terminal/writeable_pty/pty_controller.rs`, "The in-band
+native-completions exchange"):
+
+  app ^Y -> shell OSC 9280;P;<token> -> app ONE frame, RS <token> : <%HH text> RS (RS = 0x1e),
+  or the cancel frame RS - : RS -> shell OSC 9280;A, one OSC 9280;C;<candidate> each, OSC 9280;B.
+
+The hook consumes nothing that is not a frame (a first byte that is not RS goes back to the line
+editor), a frame for another token or the cancel ends the exchange with nothing, and a frame that
+lands at the prompt is dropped whole by the widget bound to RS. This pins all of that against the
+REAL bundled bootstrap text in real shells. Needs only python3 and the shells (no cargo); a
+missing shell is SKIPPED. fish is not exercised: the app never sends fish ^Y (see
+`ShellType::supports_native_shell_completions`), and its bootstrap has no handler.
 
 WHAT IT DOES
 ------------
-Cuts the handshake functions out of `app/assets/bundled/bootstrap/{bash_body,zsh_body,fish}.sh`,
-starts each shell interactively in a pty in a scratch directory and checks, per shell:
+Cuts the hook and widget functions out of `app/assets/bundled/bootstrap/{bash_body,zsh_body}.sh`,
+starts each shell interactively in a pty in a scratch directory (PHOSPHOR_NC_DEADLINE=2, so the
+hook's own deadline is short) and checks, per shell:
 
-  * the shell answers ^Y with OSC 9280;P and ends with OSC 9280;B;
-  * `cd pro` offers the directories `projects/` and `proto/` (a remote directory by Tab);
-  * `cat dir/fi` offers `dir/file1` (the whole token, not `file1`);
-  * `echo a;ec` offers candidates that keep `a;` (the token starts before the shell's word);
-  * the shell's own completion definitions answer (bash `complete -F/-W`, with COMP_WORDS and
-    COMP_CWORD as bash sets them and the `--opt=` part of a token kept; fish `complete -c`);
-  * the shell is alive and runs a command afterwards;
-  * #1801 review: a command written right behind the text (same write, and 5 ms later) is NOT
-    taken by the shell's read: it runs after the exchange;
-  * #1801 review: an abandoned exchange (the app gave up, then answers the late prompt with an
-    empty text) ends at once with no candidates, and the next command runs;
-  * #1801 review: fish writes nothing during the exchange but the OSCs and its own terminal-mode
-    switches (no echo marks, no cursor or device queries); the mode switches are reported as a
-    NOTE, and are why the app does not send fish ^Y (fish is off the remote-first path).
-bash 3.2 is not exercised here unless it is the installed bash: the bootstrap does not bind ^Y
-below bash 4.0 and the app does not send it (`Shell::supports_native_shell_completions`).
+  * candidates: `cd pro` offers `projects/` and `proto/`; `cat dir/fi` offers the WHOLE token
+    `dir/file1`; `echo a;ec` keeps the token's `a;` lead; bash's own `complete -F` / `-W`
+    specs answer, with COMP_WORDS and COMP_CWORD as bash sets them and the `--opt=` part of a
+    token kept;
+  * no key is lost: a command written behind the frame (same write, and 5 ms later) runs
+    after the exchange;
+  * a command that arrives before the hook's prompt (no frame at all) runs normally, whole;
+  * the cancel frame ends the exchange with no candidates and the next command runs;
+  * a frame for another token is ignored and the next command runs;
+  * a frame that arrives after the hook gave up (its deadline passed) is dropped at the prompt,
+    nothing of it runs, and the command behind it runs;
+  * a frame cut short (no closing RS) is bounded by the hook's deadline, and the shell then
+    runs the next command;
+  * the shell is alive at the end.
 
 USAGE
     script/test_native_completions
@@ -45,6 +51,7 @@ import re
 import select
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -52,8 +59,11 @@ import time
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BOOTSTRAP = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap")
 CANDIDATE_RE = re.compile(rb"\x1b\]9280;C;([^\x07]*)\x07")
+PROMPT_RE = re.compile(rb"\x1b\]9280;P;([0-9A-Za-z]+)\x07")
+RS = b"\x1e"
 failures = []
 skipped = []
+counter = [40]
 
 
 def read_file(name):
@@ -72,8 +82,11 @@ def cut(text, start_re, end_re, what):
     raise SystemExit(f"test_native_completions: could not cut {what} out of the bootstrap")
 
 
-def percent_line(text):
-    return ("".join("%%%02X" % b for b in text.encode()) + "\n").encode()
+def frame(token, text):
+    return RS + token + b":" + "".join("%%%02X" % b for b in text.encode()).encode() + RS
+
+
+CANCEL = RS + b"-:" + RS
 
 
 class Pty:
@@ -86,7 +99,7 @@ class Pty:
         buf = b""
         end = time.time() + timeout
         while time.time() < end:
-            ready, _, _ = select.select([self.fd], [], [], 0.1)
+            ready, _, _ = select.select([self.fd], [], [], 0.05)
             if ready:
                 try:
                     data = os.read(self.fd, 65536)
@@ -96,6 +109,9 @@ class Pty:
                 if re.search(pattern, buf):
                     return buf
         return buf
+
+    def drain(self, seconds):
+        return self.read_until(rb"(?!x)x", seconds)
 
     def write(self, data):
         os.write(self.fd, data)
@@ -116,35 +132,49 @@ def check(shell, name, ok, detail=""):
         print(f"ok   {shell}: {name}")
 
 
-OSC_9280_RE = re.compile(rb"\x1b\]9280;[^\x07]*\x07")
-
-
-def payload(line, raw_eot):
-    return line.encode() + b"\x04" if raw_eot else percent_line(line)
-
-
-def complete(sh, shell, line, raw_eot, after=b"", gap=None, exchange=None):
-    """One exchange. `after` is written behind the text: in the same write (gap None) or `gap`
-    seconds later. `exchange`, if a list, receives every byte from the ^Y through OSC 9280;B."""
+def ask(sh, shell, what):
+    """^Y, then the hook's prompt; returns its token or None."""
     sh.write(b"\x19")
-    got_p = sh.read_until(rb"\x1b\]9280;P\x07")
-    if b"\x1b]9280;P\x07" not in got_p:
-        check(shell, f"answers ^Y for {line!r}", False, f"(got {got_p[-200:]!r})")
+    got = sh.read_until(PROMPT_RE)
+    m = PROMPT_RE.search(got)
+    if not m:
+        check(shell, f"answers ^Y with a named prompt ({what})", False, f"(got {got[-200:]!r})")
+        return None
+    return m.group(1)
+
+
+def complete(sh, shell, line, after=b"", gap=None):
+    """One full exchange for `line`; `after` is written behind the frame (same write, or `gap`
+    seconds later). Returns the candidates, or None."""
+    token = ask(sh, shell, repr(line))
+    if token is None:
         return None
     if after and gap is None:
-        sh.write(payload(line, raw_eot) + after)
+        sh.write(frame(token, line) + after)
     else:
-        sh.write(payload(line, raw_eot))
+        sh.write(frame(token, line))
         if after:
             time.sleep(gap)
             sh.write(after)
     got = sh.read_until(rb"\x1b\]9280;B\x07")
-    if exchange is not None:
-        exchange.append(got_p + got)
     if b"\x1b]9280;B\x07" not in got or b"\x1b]9280;A;incrementally_typed\x07" not in got:
         check(shell, f"ends the reply for {line!r}", False, f"(got {got[-200:]!r})")
         return None
     return [c.decode("utf-8", "replace") for c in CANDIDATE_RE.findall(got)]
+
+
+def command():
+    """A command whose OUTPUT (not its echo) proves it ran: (bytes to write, output to expect)."""
+    counter[0] += 1
+    n = counter[0]
+    return (b"echo ran-$((%d+1))\n" % (n - 1), b"ran-%d" % n)
+
+
+def expect_runs(sh, shell, what, want):
+    out = sh.read_until(re.escape(want))
+    check(shell, what, want in out, f"(got {out[-200:]!r})")
+    stray = re.search(rb"not found|%[0-9A-F]{2}", out)
+    check(shell, what + ": nothing else ran", stray is None, f"(stray {out[-200:]!r})")
 
 
 def make_lab(base):
@@ -156,48 +186,72 @@ def make_lab(base):
     return lab
 
 
-def common_checks(sh, shell, raw_eot):
-    got = complete(sh, shell, "cd pro", raw_eot)
+def protocol_checks(sh, shell):
+    got = complete(sh, shell, "cd pro")
     if got is not None:
         check(shell, "cd pro offers projects/ and proto/", {"projects/", "proto/"} <= set(got), f"(got {got})")
         check(shell, "cd pro offers no file", "other/" not in got, f"(got {got})")
-    got = complete(sh, shell, "cat dir/fi", raw_eot)
+    got = complete(sh, shell, "cat dir/fi")
     if got is not None:
         check(shell, "cat dir/fi offers the whole token dir/file1", "dir/file1" in got, f"(got {got})")
-    got = complete(sh, shell, "echo a;ec", raw_eot)
+    got = complete(sh, shell, "echo a;ec")
     if got is not None:
-        check(
-            shell,
-            "echo a;ec keeps the token's a; lead",
-            bool(got) and all(c.startswith("a;") for c in got) and "a;echo" in got,
-            f"(got {got[:10]})",
-        )
+        check(shell, "echo a;ec keeps the token's a; lead",
+              bool(got) and all(c.startswith("a;") for c in got) and "a;echo" in got, f"(got {got[:10]})")
 
+    # No key lost behind the frame.
+    for gap, label in ((None, "same write"), (0.005, "5 ms later")):
+        cmd, want = command()
+        got = complete(sh, shell, "cd pro", after=cmd, gap=gap)
+        check(shell, f"answers with a command behind the frame ({label})", got is not None and "projects/" in got, f"(got {got})")
+        expect_runs(sh, shell, f"a command behind the frame ({label}) runs", want)
 
-def keys_behind_the_text(sh, shell, raw_eot, command, want):
-    for gap, label in ((None, "0 ms"), (0.005, "5 ms")):
-        got = complete(sh, shell, "cd pro", raw_eot, after=command, gap=gap)
-        if got is not None:
-            check(shell, f"the exchange still answers with a command behind the text ({label})", "projects/" in got, f"(got {got})")
+    # A command that arrives before the prompt: the hook takes nothing of it.
+    cmd, want = command()
+    sh.write(b"\x19" + cmd)
+    expect_runs(sh, shell, "a command arriving with the ^Y (before any frame) runs whole", want)
+
+    # The cancel frame.
+    if ask(sh, shell, "cancel") is not None:
+        cmd, want = command()
+        sh.write(CANCEL + cmd)
         out = sh.read_until(re.escape(want))
-        check(shell, f"a command written {label} behind the text is not taken by the read: it runs", want in out,
-              f"(got {out[-200:]!r})")
+        check(shell, "the cancel frame ends the exchange with no candidates", CANDIDATE_RE.search(out) is None, f"(got {out[-200:]!r})")
+        check(shell, "the command after the cancel frame runs", want in out, f"(got {out[-200:]!r})")
 
+    # A frame for another exchange.
+    token = ask(sh, shell, "stale token")
+    if token is not None:
+        cmd, want = command()
+        sh.write(frame(b"999" + token, "cd pro") + cmd)
+        out = sh.read_until(re.escape(want))
+        check(shell, "a frame with another token is ignored (no candidates)", CANDIDATE_RE.search(out) is None, f"(got {out[-200:]!r})")
+        check(shell, "the command after a stale frame runs", want in out, f"(got {out[-200:]!r})")
 
-def abandoned_then_command(sh, shell, raw_eot, command, want):
-    # The app gave up on this exchange; the prompt arrives late and the app answers it empty.
-    got = complete(sh, shell, "", raw_eot)
-    if got is not None:
-        check(shell, "an empty (abandoned) answer ends the exchange with no candidates", got == [], f"(got {got[:5]})")
-    sh.write(command)
+    # A frame that arrives after the hook gave up (PHOSPHOR_NC_DEADLINE=2): dropped at the prompt.
+    token = ask(sh, shell, "late frame")
+    if token is not None:
+        sh.drain(2.6)
+        cmd, want = command()
+        sh.write(frame(token, "cd pro") + cmd)
+        expect_runs(sh, shell, "a frame landing at the prompt is dropped; the command behind it runs", want)
+
+    # A frame cut short: bounded by the hook's own deadline.
+    token = ask(sh, shell, "cut-short frame")
+    if token is not None:
+        sh.write(RS + token + b":%63%64")
+        t0 = time.time()
+        sh.drain(5.8)
+        cmd, want = command()
+        sh.write(cmd)
+        out = sh.read_until(re.escape(want), 10)
+        check(shell, "a frame cut short is bounded by the deadline; the next command then runs", want in out,
+              f"(after {time.time() - t0:.1f}s, got {out[-200:]!r})")
+
+    cmd, want = command()
+    sh.write(cmd)
     out = sh.read_until(re.escape(want))
-    check(shell, "the command after an abandoned exchange runs", want in out, f"(got {out[-200:]!r})")
-
-
-def alive(sh, shell, command):
-    sh.write(command)
-    got = sh.read_until(rb"alive-42")
-    check(shell, "the shell runs a command afterwards", b"alive-42" in got)
+    check(shell, "the shell runs a command at the end", want in out)
 
 
 def run_bash(base, lab):
@@ -205,19 +259,19 @@ def run_bash(base, lab):
     if not bash:
         skipped.append("bash")
         return
-    import subprocess
     ver = subprocess.run([bash, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True).stdout.strip()
     if ver and int(ver) < 4:
-        print("NOTE bash: bash %s is below 4.0; the bootstrap does not bind ^Y there and the app does not send it" % ver)
+        print("NOTE bash: bash %s is below 4.0; the bootstrap binds no ^Y there and the app sends none" % ver)
         skipped.append("bash (below 4.0, by design)")
         return
-    print("NOTE bash: bash %s; bash 3.2 (macOS /bin/bash) is not exercised here (no ^Y below 4.0, by design)" % ver)
+    print("NOTE bash: bash %s; bash 3.2 (macOS /bin/bash) is not exercised here: no ^Y below 4.0, by design" % ver)
     body = read_file("bash_body.sh")
     text = (
         cut(body, r"^    __warp_relax_opts \(\) \{", r"^    \}$", "__warp_relax_opts")
         + cut(body, r"^    __warp_set_status \(\)", r"^    __warp_set_status", "__warp_set_status")
         + cut(body, r"^    __warp_run_relaxed \(\) \{", r"^    \}$", "__warp_run_relaxed")
         + cut(body, r"^    __warp_native_complete_impl \(\) \{", r"^    function warp_native_complete ", "warp_native_complete")
+        + cut(body, r"^    __warp_native_discard_impl \(\) \{", r"^    function warp_native_discard ", "warp_native_discard")
         + cut(body, r"^    __warp_native_candidates \(\) \{", r"^    \}$", "__warp_native_candidates")
     )
     rc = os.path.join(base, "bashrc")
@@ -225,6 +279,7 @@ def run_bash(base, lab):
         f.write(text)
         f.write(
             "bind -x '\"\\C-y\":\"warp_native_complete\"'\n"
+            "bind -x '\"\\C-^\":\"warp_native_discard\"'\n"
             "_phx() { COMPREPLY=($(compgen -W 'alpha beta' -- \"$2\")); }\n"
             "complete -F _phx phx\n"
             "_phz() { COMPREPLY=(\"w${COMP_CWORD}-${COMP_WORDS[1]}\"); }\n"
@@ -234,28 +289,22 @@ def run_bash(base, lab):
             "complete -W '--force --file' phy\n"
             f"cd '{lab}'\nPS1='PROMPT> '\nset -u\n"
         )
-    env = dict(os.environ, HOME=base, TERM="xterm", INPUTRC="/dev/null")
+    env = dict(os.environ, HOME=base, TERM="xterm", INPUTRC="/dev/null", PHOSPHOR_NC_DEADLINE="2")
     sh = Pty([bash, "--noprofile", "--rcfile", rc, "-i"], env)
     try:
         if b"PROMPT> " not in sh.read_until(rb"PROMPT> "):
             check("bash", "starts", False)
             return
-        common_checks(sh, "bash", raw_eot=False)
-        got = complete(sh, "bash", "phx al", False)
-        if got is not None:
-            check("bash", "a complete -F function answers", got == ["alpha"], f"(got {got})")
-        got = complete(sh, "bash", "phz one tw", False)
-        if got is not None:
-            check("bash", "COMP_WORDS and COMP_CWORD are set as bash sets them", got == ["w2-one"], f"(got {got})")
-        got = complete(sh, "bash", "phq --color=re", False)
-        if got is not None:
-            check("bash", "the token's --opt= part is kept", got == ["--color=red"], f"(got {got})")
-        got = complete(sh, "bash", "phy --fo", False)
-        if got is not None:
-            check("bash", "a complete -W spec answers", got == ["--force"], f"(got {got})")
-        keys_behind_the_text(sh, "bash", False, b"echo after-$((40+2))\n", b"after-42")
-        abandoned_then_command(sh, "bash", False, b"echo next-$((40+3))\n", b"next-43")
-        alive(sh, "bash", b"echo alive-$((40+2))\n")
+        protocol_checks(sh, "bash")
+        for line, want, name in (
+            ("phx al", ["alpha"], "a complete -F function answers"),
+            ("phz one tw", ["w2-one"], "COMP_WORDS and COMP_CWORD are set as bash sets them"),
+            ("phq --color=re", ["--color=red"], "the token's --opt= part is kept"),
+            ("phy --fo", ["--force"], "a complete -W spec answers"),
+        ):
+            got = complete(sh, "bash", line)
+            if got is not None:
+                check("bash", name, got == want, f"(got {got})")
     finally:
         sh.close()
 
@@ -273,65 +322,18 @@ def run_zsh(base, lab):
         f.write(
             "DCS_START=\"$(builtin printf '\\eP$')\"\nDCS_END=\"$(builtin printf '\\x9c')\"\n"
             "OSC_PARAM_SEPARATOR=';'\nOSC_END=\"$(builtin printf '\\a')\"\n"
+            "zmodload -F zsh/datetime +p:EPOCHREALTIME\n"
             f"autoload -Uz compinit && compinit -u -d '{zdot}/.zcompdump'\n"
         )
         f.write(text)
         f.write(f"cd '{lab}'\nPS1='PROMPT> '\n")
-    env = dict(os.environ, ZDOTDIR=zdot, HOME=base, TERM="xterm")
+    env = dict(os.environ, ZDOTDIR=zdot, HOME=base, TERM="xterm", PHOSPHOR_NC_DEADLINE="2")
     sh = Pty([zsh, "-i"], env)
     try:
         if b"PROMPT> " not in sh.read_until(rb"PROMPT> "):
             check("zsh", "starts", False)
             return
-        common_checks(sh, "zsh", raw_eot=True)
-        keys_behind_the_text(sh, "zsh", True, b"echo after-$((40+2))\n", b"after-42")
-        abandoned_then_command(sh, "zsh", True, b"echo next-$((40+3))\n", b"next-43")
-        alive(sh, "zsh", b"echo alive-$((40+2))\n")
-    finally:
-        sh.close()
-
-
-def run_fish(base, lab):
-    fish = shutil.which("fish")
-    if not fish:
-        skipped.append("fish")
-        return
-    body = read_file("fish.sh")
-    text = cut(body, r"^function warp_native_complete$", r"^end$", "warp_native_complete")
-    rc = os.path.join(base, "nc.fish")
-    with open(rc, "w") as f:
-        f.write(text)
-        f.write(
-            "bind \\cy warp_native_complete\n"
-            "complete -c phx -f -a 'alpha beta'\n"
-            "complete -c phx -f -a 'gamma' -d 'third; letter'\n"
-            f"cd '{lab}'\nfunction fish_prompt; echo -n 'PROMPT> '; end\n"
-        )
-    env = dict(os.environ, HOME=base, TERM="xterm", XDG_CONFIG_HOME=os.path.join(base, "cfg"))
-    sh = Pty([fish, "--no-config", "-i", "-C", f"source '{rc}'"], env)
-    try:
-        if b"PROMPT> " not in sh.read_until(rb"PROMPT> "):
-            check("fish", "starts", False)
-            return
-        common_checks(sh, "fish", raw_eot=False)
-        got = complete(sh, "fish", "phx al", False)
-        if got is not None:
-            check("fish", "a complete -c definition answers", got == ["alpha"], f"(got {got})")
-        exchange = []
-        complete(sh, "fish", "cd pro", False, exchange=exchange)
-        if exchange:
-            stray = OSC_9280_RE.sub(b"", exchange[0][1:] if exchange[0][:1] == b"\x19" else exchange[0])
-            # fish switches its terminal modes around the external commands its read needs, so
-            # the exchange is not clean; that is why the app does not send fish ^Y
-            # (`ShellType::supports_native_shell_completions`). Reported, not judged: the day
-            # this is clean, fish can join the remote-first path.
-            ctl = re.sub(rb"\x1b\[\?2004[hl]|\x1b\[>4;[01]m|\x1b[=>]", b"", stray)
-            check("fish", "writes nothing during the exchange but the OSCs and fish's own mode switches", ctl == b"", f"(stray {ctl[:200]!r})")
-            if stray:
-                print("NOTE fish: mode switches during the exchange (why fish is off the app's ^Y path): %r" % stray[:120])
-        keys_behind_the_text(sh, "fish", False, b"echo after-(math 40+2)\r", b"after-42")
-        abandoned_then_command(sh, "fish", False, b"echo next-(math 40+3)\r", b"next-43")
-        alive(sh, "fish", b"echo alive-(math 40+2)\r")
+        protocol_checks(sh, "zsh")
     finally:
         sh.close()
 
@@ -339,10 +341,11 @@ def run_fish(base, lab):
 def main():
     with tempfile.TemporaryDirectory(prefix="phx-native-") as base:
         lab = make_lab(base)
-        for runner, name in ((run_bash, "bash"), (run_zsh, "zsh"), (run_fish, "fish")):
+        for runner, name in ((run_bash, "bash"), (run_zsh, "zsh")):
             sub = os.path.join(base, name)
             os.makedirs(sub)
             runner(sub, lab)
+    print("NOTE fish: not exercised; the app never sends fish ^Y (ShellType::supports_native_shell_completions)")
     for shell in skipped:
         print(f"SKIPPED {shell}: not installed")
     if failures:

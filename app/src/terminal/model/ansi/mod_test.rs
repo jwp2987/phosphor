@@ -2093,3 +2093,18 @@ fn completions_osc_payload_rejoins_a_payload_split_at_semicolons() {
     let params: [&[u8]; 2] = [b"9280", b"C"];
     assert_eq!(completions_osc_payload(&params), None);
 }
+
+/// #1801: the completions prompt names its exchange with a token of letters and digits; anything
+/// else is no token (the app then cancels instead of answering).
+#[test]
+fn completions_prompt_token_is_letters_and_digits_only() {
+    assert_eq!(
+        completions_prompt_token(b"1234567").as_deref(),
+        Some("1234567")
+    );
+    assert_eq!(completions_prompt_token(b"aZ9").as_deref(), Some("aZ9"));
+    assert_eq!(completions_prompt_token(b""), None);
+    assert_eq!(completions_prompt_token(b"-"), None);
+    assert_eq!(completions_prompt_token(b"12:3"), None);
+    assert_eq!(completions_prompt_token(&[b'1'; 33]), None);
+}

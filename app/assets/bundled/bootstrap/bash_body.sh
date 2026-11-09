@@ -750,6 +750,10 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           bind -x '"\C-y":"warp_native_complete"' 2>/dev/null
           bind -m vi-insert -x '"\C-y":"warp_native_complete"' 2>/dev/null
           bind -m vi-command -x '"\C-y":"warp_native_complete"' 2>/dev/null
+          # RS (^^) opens a native-completions answer frame; at the prompt it is dropped whole.
+          bind -x '"\C-^":"warp_native_discard"' 2>/dev/null
+          bind -m vi-insert -x '"\C-^":"warp_native_discard"' 2>/dev/null
+          bind -m vi-command -x '"\C-^":"warp_native_discard"' 2>/dev/null
         fi
 
         # Readline 7.0 and 8.0 (bash 4.4 and 5.0) have bracketed paste but leave it off unless the
@@ -1202,45 +1206,66 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     }
     function warp_report_input { __warp_run_relaxed __warp_report_input_impl "$@"; }
 
-    # Phosphor (#1801): in-band native completions for bash, answering the app's `^Y`
-    # handshake (zsh has had this since upstream; bash and fish join it so a remote session
-    # without the helper gets the remote shell's own completions on Tab, over the session's
-    # own connection, instead of ControlMaster side commands).
+    # Phosphor (#1801): in-band native completions for bash 4.0+, answering the app's `^Y`
+    # (zsh has had this since upstream; bash joins it so a remote session without the helper gets
+    # the remote shell's own completions on Tab, over the session's own connection, instead of
+    # ControlMaster side commands).
     #
-    # The handshake: the app writes ^Y; this replies OSC 9280;P and reads the text to complete
-    # as one line of %HH bytes (NativeCompletionsBufferEncoding::PercentLine in
-    # pty_controller.rs); then it writes OSC 9280;A;incrementally_typed, one OSC 9280;C;<match>
-    # per candidate, and OSC 9280;B. Each candidate is the WHOLE whitespace-delimited token
-    # before the cursor as bash would leave it (the part of the token before the readline
-    # word, e.g. `--file=`, is kept), because the app replaces that token.
+    # The exchange is self-identifying (design in pty_controller.rs, "The in-band
+    # native-completions exchange"): this hook names it with a fresh token (OSC 9280;P;<token>),
+    # and the app always ends it with ONE frame, RS <token> : <%HH bytes> RS (RS = 0x1e), or
+    # the cancel frame RS - : RS. The hook reads one byte first and consumes nothing that is not
+    # a frame: any other byte goes back to the line editor and the exchange ends. A frame with
+    # another token, or the cancel, ends it with nothing. A frame that arrives after this hook
+    # gave up lands at the prompt, where RS is bound to warp_native_discard, which reads the rest
+    # of the frame and drops it. So a frame never runs and a command is never read as a frame.
+    # Each read is bounded (PHOSPHOR_NC_DEADLINE seconds for the first byte, default 20; 5 for
+    # the rest of a frame, which the app writes in one piece).
     #
-    # Candidates come from the same place bash's own Tab takes them: the command's `complete`
-    # spec (a -F function such as bash-completion's, run with COMP_WORDS/COMP_CWORD/COMP_LINE/
-    # COMP_POINT set as bash would; -C commands; compgen actions and -o options), the
-    # bash-completion dynamic loader (`complete -D`) for a command with no spec yet, command
-    # names in command position, and file names otherwise.
+    # Results: OSC 9280;A;incrementally_typed, one OSC 9280;C;<match> per candidate, OSC
+    # 9280;B. Each candidate is the WHOLE whitespace-delimited token before the cursor as bash
+    # would leave it (the part of the token before the readline word, e.g. `--file=`, is kept),
+    # because the app replaces that token. Candidates come from the same place bash's own Tab
+    # takes them: the command's `complete` spec (a -F function such as bash-completion's, run
+    # with COMP_WORDS/COMP_CWORD/COMP_LINE/COMP_POINT set as bash would; -C commands; compgen
+    # actions and -o options), the bash-completion dynamic loader (`complete -D`) for a command
+    # with no spec yet, command names in command position, and file names otherwise.
     #
     # Known limits: a quoted word that contains spaces (`cat "my fi`) is not one token to the
-    # app, which replaces only the text after the last space; and a backslash-escaped word
-    # (`cd my\ di`) is handed to compgen and completion functions as typed, not dequoted, so
-    # it may match nothing.
+    # app, which replaces only the text after the last space; a backslash-escaped word
+    # (`cd my\ di`) is handed to compgen and completion functions as typed, not dequoted, so it
+    # may match nothing; and a first byte that is not a frame can be handed back to the line
+    # only when it is text (or ^P, which clears the line): the app never writes anything else
+    # between `^Y` and its frame, so only a write that bypasses its queue could be dropped.
     __warp_native_complete_impl () {
-        local __pc_hex __pc_line __pc_hexre='^(%[0-9A-Fa-f][0-9A-Fa-f])*$'
-        builtin printf '\e]9280;P\a'
-        # Bounded, like zsh's `read -t` in warp_read_completion_buffer: an abandoned handshake
-        # must never hold this shell in `read` (the app holds its writes for 11 s after a
-        # prompt it has not seen, `NativeCompletionsBufferEncoding::late_prompt_net`). `-n`
-        # makes bash read the tty one byte at a time, so nothing after the newline (the user's
-        # next keys) is taken by this read; a plain line read on a tty is buffered (#1801 review).
-        IFS= builtin read -r -s -t 10 -n 1000000 __pc_hex < /dev/tty || return 0
-        [[ $__pc_hex =~ $__pc_hexre ]] || return 0
-        builtin printf -v __pc_line '%b' "${__pc_hex//\%/\\x}"
-        # An empty line is the app's answer to a prompt it had already given up on: end the
-        # exchange at once, without completing anything.
-        if [[ -z $__pc_line ]]; then
-            builtin printf '\e]9280;A;incrementally_typed\a\e]9280;B\a'
+        local __pc_c __pc_body __pc_hex __pc_line __pc_hexre='^(%[0-9A-Fa-f][0-9A-Fa-f])*$'
+        local __pc_rs=$'\x1e' __pc_deadline=${PHOSPHOR_NC_DEADLINE:-20}
+        __warp_nc_seq=$(( ${__warp_nc_seq:-0} + 1 ))
+        local __pc_tok="$RANDOM${__warp_nc_seq}$RANDOM"
+        builtin printf '\e]9280;P;%s\a' "$__pc_tok"
+        # One byte, unbuffered (-N/-n), so nothing behind it is consumed.
+        if (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[1] >= 1 )); then
+            IFS= builtin read -r -s -t "$__pc_deadline" -N 1 __pc_c < /dev/tty || return 0
+        else
+            IFS= builtin read -r -s -t "$__pc_deadline" -n 1 __pc_c < /dev/tty || return 0
+        fi
+        if [[ $__pc_c != "$__pc_rs" ]]; then
+            # Not a frame: give it back to the line and end the exchange.
+            case $__pc_c in
+                $'\x10') READLINE_LINE= READLINE_POINT=0 ;;
+                [[:print:]])
+                    READLINE_LINE="${READLINE_LINE:0:READLINE_POINT}$__pc_c${READLINE_LINE:READLINE_POINT}"
+                    READLINE_POINT=$((READLINE_POINT + 1)) ;;
+            esac
             return 0
         fi
+        # The rest of the frame, up to its closing RS (-d makes the read unbuffered).
+        IFS= builtin read -r -s -t 5 -n 3000000 -d "$__pc_rs" __pc_body < /dev/tty || return 0
+        # Another exchange's frame, or the cancel frame: nothing to do.
+        [[ $__pc_body == "$__pc_tok:"* ]] || return 0
+        __pc_hex=${__pc_body#*:}
+        [[ $__pc_hex =~ $__pc_hexre ]] || return 0
+        builtin printf -v __pc_line '%b' "${__pc_hex//\%/\\x}"
 
         __warp_native_candidates "$__pc_line" </dev/null >/dev/null 2>&1
 
@@ -1255,6 +1280,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         __warp_nc_out=()
     }
     function warp_native_complete { __warp_run_relaxed __warp_native_complete_impl "$@"; }
+
+    # Phosphor (#1801): RS at the prompt opens a native-completions frame whose exchange already
+    # ended (the hook above gave up, or was interrupted). Read the rest of the frame and drop it:
+    # a frame is never run.
+    __warp_native_discard_impl () {
+        local __pc_rest
+        IFS= builtin read -r -s -t 5 -n 3000000 -d $'\x1e' __pc_rest < /dev/tty
+        return 0
+    }
+    function warp_native_discard { __warp_run_relaxed __warp_native_discard_impl "$@"; }
 
     # Sets __warp_nc_out to the candidates for the line $1 (cursor at its end). Builtins
     # except where bash offers no other way to capture output (`complete -p`, compgen, -C).

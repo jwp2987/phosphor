@@ -184,7 +184,11 @@ pub enum Event {
     FinishUpdate(FinishUpdateValue),
     TextSelectionChanged,
     ShellSpawned(ShellType),
-    SendCompletionsPrompt,
+    /// The shell's hook is ready for the text to complete (OSC 9280;P). `token` names this
+    /// exchange (#1801): the answer must carry it, see `pty_controller::native_completions_answer`.
+    SendCompletionsPrompt {
+        token: Option<String>,
+    },
     ImageReceived {
         image_id: u32,
         image_data: std::sync::Arc<Vec<u8>>,
@@ -696,7 +700,7 @@ impl Debug for Event {
             Event::FinishUpdate(data) => write!(f, "FinishUpdate({})", data.update_id),
             Event::TextSelectionChanged => write!(f, "TextSelectionChanged"),
             Event::ShellSpawned(shell_type) => write!(f, "ShellSpawned({shell_type:?})"),
-            Event::SendCompletionsPrompt => write!(f, "SendCompletionsPrompt"),
+            Event::SendCompletionsPrompt { .. } => write!(f, "SendCompletionsPrompt"),
             Event::ImageReceived { image_id, .. } => {
                 write!(f, "ImageReceived(image_id: {image_id})")
             }

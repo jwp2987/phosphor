@@ -4556,9 +4556,9 @@ impl ansi::Handler for TerminalModel {
         }
     }
 
-    fn send_completions_prompt(&mut self) {
+    fn send_completions_prompt(&mut self, token: Option<String>) {
         self.event_proxy
-            .send_terminal_event(Event::SendCompletionsPrompt);
+            .send_terminal_event(Event::SendCompletionsPrompt { token });
     }
 
     fn start_iterm_image_receiving(&mut self, metadata: ITermImageMetadata) {
