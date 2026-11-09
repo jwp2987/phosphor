@@ -91,6 +91,8 @@ for out in "$@"; do
   # audit (also on macOS, where this is the after_script): what of the recorded set is still alive, and what else names the out dir
   alive=""; for p in $ours; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
   echo "teardown $out: recorded processes still alive:${alive:- none}"
+  tleft=""; for p in $termpids; do case " $alive " in *" $p "*) tleft="$tleft $p";; esac; done   # #1826: a Terminal.app this run launched still running = its windows are still open
+  [ -n "$termpids" ] && echo "teardown $out: reference Terminal.app windows left open by this run:${tleft:+ FAIL, pid}${tleft:- NONE}"
   left=$(ps -axo pid=,command= 2>/dev/null | grep -F "$out" | grep -v "grep -F" | cut -c1-160)
   if [ -n "$left" ]; then echo "teardown $out: other processes naming it:"; echo "$left" | sed 's/^/teardown:   /'; else echo "teardown $out: no other process names it"; fi
 done

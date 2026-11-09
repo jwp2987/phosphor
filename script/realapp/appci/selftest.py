@@ -3672,6 +3672,42 @@ def upgrade_case_pure_helpers():
     assert winmap.skip_reason("upgrade_from_v0_1_17", "gitbash"), "the Windows reason must be stated"
 
 
+@check
+def refterm_mac_bookkeeping():
+    """#1826: which Terminal.app is ours, and quitting it at the end of each reference block (pure parts; no process is touched)"""
+    import refterm_mac as R
+    t0 = 1000.0
+    # ours = the single Terminal that started after the harness did, never the one running at harness start
+    assert R.pick_ours([50, 90], 50, {50: 10.0, 90: 1005.0}, t0) == 90
+    assert R.pick_ours([50], 50, {50: 10.0}, t0) is None, "the pre-existing Terminal is never ours"
+    assert R.pick_ours([90], None, {90: 999.5}, t0) == 90, "lstart has 1 s resolution"
+    assert R.pick_ours([90], None, {90: 500.0}, t0) is None, "started before the harness: not ours"
+    assert R.pick_ours([90, 91], None, {90: 1005.0, 91: 1006.0}, t0) is None, "two candidates: never guess"
+    assert R.pick_ours([90], None, {90: None}, t0) is None and R.pick_ours([90], None, {90: 1005.0}, None) is None
+    # quit_launched: quits only our PID, per reference block, and the next launch is a fresh one
+    saved = (dict(R._state), R.terminal_pids, R.os.kill, R.time.sleep, R._started_epoch)
+    live, killed = [50], []
+    try:
+        R.time.sleep = lambda s: None
+        R.terminal_pids = lambda: list(live)
+        R._started_epoch = lambda p: {50: 10.0, 91: 2005.0, 92: 2105.0}.get(p)
+        R.os.kill = lambda pid, sig: (killed.append((pid, sig)), live.remove(pid))[0]
+        R._state.update(snapshotted=True, was_running=True, pre_pid=50, pid=None, run=None, t0=2000.0)
+        assert R.quit_launched() and not killed and R.left_windows() == [], "an already-running Terminal is left alone"
+        live.remove(50)                                     # the owner quit their Terminal during the run; the reference block launches a new one
+        live.append(91)
+        assert R.left_windows() == [91]
+        assert R.quit_launched() and killed == [(91, R.signal.SIGTERM)] and live == [], (killed, live)
+        live.append(92)                                     # the next block launches another one
+        assert R.left_windows() == [92]
+        assert R.quit_launched() and killed[-1] == (92, R.signal.SIGTERM) and live == [] and R.left_windows() == []
+        assert [k[0] for k in killed] == [91, 92]
+    finally:
+        R._state.clear()
+        R._state.update(saved[0])
+        R.terminal_pids, R.os.kill, R.time.sleep, R._started_epoch = saved[1:]
+
+
 def main():
     failed = 0
     for f in CHECKS:

@@ -2944,13 +2944,18 @@ def ref_terminal(ctx):
 
         def close():
             ctx.prof.ref_active = False
-            # never Cmd-W/Q: `exit` ends the shell; the window itself goes when a Terminal.app this run launched is quit by exact PID at
-            # the end of the run (refterm_mac), which also removes a shell whose exit was lost
+            # never Cmd-W/Q: `exit` ends the shell (the .command execs it); Terminal keeps the window of an exited shell, so a Terminal.app this run
+            # launched is quit by exact PID right here at the end of the reference block (#1826: one window per probe piled up to ~250 per run), which
+            # also removes a shell whose exit was lost. A Terminal.app that was already running is never quit. Measurements are taken before close().
             try:
                 ctx.be.type("exit", 12, enter=True)
             except Exception:
                 pass
             time.sleep(0.8)
+            try:
+                refterm_mac.quit_launched("end of the reference block")
+            except Exception as e:
+                print("reference Terminal.app quit failed: %s: %s" % (type(e).__name__, e), flush=True)
             ctx.be.guard_override = None
             ctx.be.refocus()
         rt = RefTerm("Terminal.app (.command via open)", close=close)
