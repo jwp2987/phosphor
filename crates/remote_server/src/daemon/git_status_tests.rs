@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::proto::{GitStatusPush, UpdateGitStatus, notification, server_message};
 use crate::shellcmd::git::test_runner::{git, git_available, repo_with};
 
-use super::live_tests_support::Live;
+use crate::daemon::live_tests_support::Live;
 
 fn ask(live: &mut Live, wire: &str) {
     live.notify(notification::Message::UpdateGitStatus(UpdateGitStatus {

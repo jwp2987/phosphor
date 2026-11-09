@@ -217,9 +217,14 @@ fn decode_discard_targets(
                 .as_ref()
                 .and_then(|s| s.status.as_ref())
                 .ok_or_else(|| "missing status in FileStatusInfo".to_string())?;
-            if let Status::Renamed(r) | Status::Copied(r) = status {
-                if !is_absolute_on_its_host(&r.old_path) {
-                    return Err(format!("old_path is not absolute: {}", r.old_path));
+            let old_path = match status {
+                Status::Renamed(r) => Some(&r.old_path),
+                Status::Copied(c) => Some(&c.old_path),
+                _ => None,
+            };
+            if let Some(old_path) = old_path {
+                if !is_absolute_on_its_host(old_path) {
+                    return Err(format!("old_path is not absolute: {old_path}"));
                 }
             }
             let rel_path = info

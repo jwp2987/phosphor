@@ -155,59 +155,65 @@ impl ShellBackend {
         }
         let (_mode, listed) = parse_scan_output(&section.text());
 
-        // Whatever an earlier scan of this repository kept, by (path, hash).
         let store = index.store(&repo_path);
-        let previous = store.load_scan().filter(|s| s.repo_path == repo_path);
-        let (known_files, known_skipped, known_chunks) = match &previous {
-            Some(p) => {
-                let mut by_path: HashMap<&str, Vec<&ChunkEntry>> = HashMap::new();
-                for c in &p.scan.chunks {
-                    by_path.entry(c.path.as_str()).or_default().push(c);
-                }
-                (
-                    p.scan
-                        .manifest
-                        .iter()
-                        .map(|m| ((m.path.as_str(), m.file_hash.as_str()), ()))
-                        .collect::<HashMap<_, _>>(),
-                    p.skipped
-                        .iter()
-                        .map(|m| ((m.path.as_str(), m.file_hash.as_str()), ()))
-                        .collect::<HashMap<_, _>>(),
-                    by_path,
-                )
-            }
-            None => Default::default(),
-        };
-
         index.clear_text();
-        let mut manifest: Vec<ManifestEntry> = Vec::new();
-        let mut chunks: Vec<ChunkEntry> = Vec::new();
-        let mut skipped: Vec<ManifestEntry> = Vec::new();
-        let mut to_read: Vec<String> = Vec::new();
-        for file in &listed {
-            let key = (file.path.as_str(), file.sha256.as_str());
-            if known_files.contains_key(&key) {
-                manifest.push(ManifestEntry {
-                    path: file.path.clone(),
-                    file_hash: file.sha256.clone(),
-                });
-                chunks.extend(
-                    known_chunks
-                        .get(file.path.as_str())
-                        .into_iter()
-                        .flatten()
-                        .map(|c| (*c).clone()),
-                );
-            } else if known_skipped.contains_key(&key) {
-                skipped.push(ManifestEntry {
-                    path: file.path.clone(),
-                    file_hash: file.sha256.clone(),
-                });
-            } else {
-                to_read.push(file.path.clone());
+        // The borrowed lookup tables live in their own block so that nothing borrowed is held
+        // across the `.await` below (a borrowed-key map in the future trips rustc's
+        // higher-ranked `Send` check once the future is boxed as `BoxFuture`).
+        let (mut manifest, mut chunks, mut skipped, to_read) = {
+            // Whatever an earlier scan of this repository kept, by (path, hash).
+            let previous = store.load_scan().filter(|s| s.repo_path == repo_path);
+            let (known_files, known_skipped, known_chunks) = match &previous {
+                Some(p) => {
+                    let mut by_path: HashMap<&str, Vec<&ChunkEntry>> = HashMap::new();
+                    for c in &p.scan.chunks {
+                        by_path.entry(c.path.as_str()).or_default().push(c);
+                    }
+                    (
+                        p.scan
+                            .manifest
+                            .iter()
+                            .map(|m| ((m.path.as_str(), m.file_hash.as_str()), ()))
+                            .collect::<HashMap<_, _>>(),
+                        p.skipped
+                            .iter()
+                            .map(|m| ((m.path.as_str(), m.file_hash.as_str()), ()))
+                            .collect::<HashMap<_, _>>(),
+                        by_path,
+                    )
+                }
+                None => Default::default(),
+            };
+
+            let mut manifest: Vec<ManifestEntry> = Vec::new();
+            let mut chunks: Vec<ChunkEntry> = Vec::new();
+            let mut skipped: Vec<ManifestEntry> = Vec::new();
+            let mut to_read: Vec<String> = Vec::new();
+            for file in &listed {
+                let key = (file.path.as_str(), file.sha256.as_str());
+                if known_files.contains_key(&key) {
+                    manifest.push(ManifestEntry {
+                        path: file.path.clone(),
+                        file_hash: file.sha256.clone(),
+                    });
+                    chunks.extend(
+                        known_chunks
+                            .get(file.path.as_str())
+                            .into_iter()
+                            .flatten()
+                            .map(|c| (*c).clone()),
+                    );
+                } else if known_skipped.contains_key(&key) {
+                    skipped.push(ManifestEntry {
+                        path: file.path.clone(),
+                        file_hash: file.sha256.clone(),
+                    });
+                } else {
+                    to_read.push(file.path.clone());
+                }
             }
-        }
+            (manifest, chunks, skipped, to_read)
+        };
 
         let contents = self.read_files(&repo_path, tool, &to_read).await?;
         for (path, bytes) in to_read.iter().zip(contents) {

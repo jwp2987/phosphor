@@ -374,7 +374,10 @@ fn a_probe_that_answers_in_time_reports_its_result() {
     let _guard = super::availability::test_guard();
     super::availability::reset_for_test();
     assert_eq!(
-        super::probe_with_give_up(|| Err("no such name".to_owned()), Duration::from_secs(5)),
+        super::probe_with_give_up(
+            || Err::<(), String>("no such name".to_owned()),
+            Duration::from_secs(5)
+        ),
         super::Probe::Answered(Err("no such name".to_owned()))
     );
     assert_eq!(

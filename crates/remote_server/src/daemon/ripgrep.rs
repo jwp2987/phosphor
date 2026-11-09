@@ -30,6 +30,7 @@ const MAX_RIPGREP_SEARCH_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 /// memory on minified or generated files.
 const SEARCHER_LINE_HEAP_LIMIT: usize = 64 * 1024;
 
+#[derive(Debug)]
 pub(super) struct RipgrepSearchParams {
     pattern: String,
     roots: Vec<PathBuf>,

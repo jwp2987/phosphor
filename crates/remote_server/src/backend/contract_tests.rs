@@ -2013,7 +2013,7 @@ impl OutOfBandExecutor for GhShExecutor {
         ShellKind::Posix
     }
     fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
-        Box::pin(async move { run_local_sh(request, Some(&self.path)) })
+        Box::pin(async move { run_local_sh(request, Some(self.path.as_os_str()), None) })
     }
 }
 
@@ -2437,7 +2437,7 @@ async fn the_shell_arm_reads_only_files_whose_hash_is_new() {
             if request.command.contains("head -c") {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
-            Box::pin(async move { run_local_sh(request, None) })
+            Box::pin(async move { run_local_sh(request, None, None) })
         }
     }
     let dir = tempfile::tempdir().unwrap();

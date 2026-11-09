@@ -193,6 +193,12 @@ fn every_host_scoped_request_has_a_response_disposition() {
             // The codebase-index requests that answer directly.
             M::GetFragmentMetadataFromHash(_) => "manager::get_fragment_metadata_from_hash",
             M::SearchRemoteCodebase(_) => "manager::search_remote_codebase",
+            // The shell-mode codebase index (remote parity P9b): the client forwards the raw
+            // response of each to the caller.
+            M::ScanCodebase(_) => "client::scan_codebase",
+            M::GetChunks(_) => "client::get_chunks",
+            M::StoreVectors(_) => "client::store_vectors",
+            M::QueryVectors(_) => "client::query_vectors",
         }
     }
 

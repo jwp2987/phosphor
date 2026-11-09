@@ -7,7 +7,7 @@ use crate::proto::{
 };
 use crate::shellcmd::git::test_runner::{git, git_available, repo_with};
 
-use super::live_tests_support::Live;
+use crate::daemon::live_tests_support::Live;
 
 /// A directory with a fake `gh` that answers `pr view` and `repo view`, put first on `PATH` for
 /// the whole test process (the daemon's workers inherit it). Tests that use it hold the lock.

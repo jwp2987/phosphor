@@ -208,11 +208,12 @@ fn bundle_has_the_window_the_manifest_and_scrubbed_settings_only() {
     let mut names = Vec::new();
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).unwrap();
-        names.push(f.name().to_string());
+        let name = f.name().expect("zip entry name").to_string();
+        names.push(name.clone());
         let mut body = String::new();
         f.read_to_string(&mut body).unwrap();
         all.push_str(&body);
-        if f.name() == "app-log-window.txt" {
+        if name == "app-log-window.txt" {
             assert!(body.contains("recent-line") && body.contains("hop=enter_begin"));
             assert!(!body.contains("ancient-line"));
         }

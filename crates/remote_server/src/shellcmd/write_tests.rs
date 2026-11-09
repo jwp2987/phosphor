@@ -22,7 +22,7 @@ fn a_single_chunk_write_is_dir_temp_decode_mode_rename_in_one_command() {
         "n0nce",
         b"hi",
         FIRST_AND_LAST,
-        DecodeTool::Lower,
+        Some(DecodeTool::Lower),
         None,
     );
     assert!(c.starts_with("f='/a/b c.txt'\n"), "{c}");
@@ -44,7 +44,7 @@ fn middle_chunks_append_and_only_the_last_one_renames() {
             first: true,
             last: false,
         },
-        DecodeTool::Upper,
+        Some(DecodeTool::Upper),
         None,
     );
     let mid = posix_write_command(
@@ -55,7 +55,7 @@ fn middle_chunks_append_and_only_the_last_one_renames() {
             first: false,
             last: false,
         },
-        DecodeTool::Upper,
+        Some(DecodeTool::Upper),
         None,
     );
     let last = posix_write_command(
@@ -66,7 +66,7 @@ fn middle_chunks_append_and_only_the_last_one_renames() {
             first: false,
             last: true,
         },
-        DecodeTool::Upper,
+        Some(DecodeTool::Upper),
         None,
     );
     assert!(first.contains("base64 -D > \"$tmp\"") && first.contains("mkdir"));
@@ -85,7 +85,7 @@ fn a_guarded_write_checks_size_and_mtime_or_absence_before_the_rename() {
         "n",
         b"a",
         FIRST_AND_LAST,
-        DecodeTool::Lower,
+        Some(DecodeTool::Lower),
         Some(stamp),
     );
     let check = c
@@ -98,7 +98,7 @@ fn a_guarded_write_checks_size_and_mtime_or_absence_before_the_rename() {
         "n",
         b"a",
         FIRST_AND_LAST,
-        DecodeTool::Lower,
+        Some(DecodeTool::Lower),
         Some(Expect::Absent),
     );
     assert!(absent.contains("= 'absent' ]"));
@@ -111,7 +111,7 @@ fn hostile_paths_are_quoted_and_tilde_expands_on_the_host() {
         "n",
         b"",
         FIRST_AND_LAST,
-        DecodeTool::Lower,
+        Some(DecodeTool::Lower),
         None,
     );
     assert!(c.starts_with("f='/t/it'\\''s $x'\n"), "{c}");
@@ -198,7 +198,7 @@ fn a_hash_guarded_write_compares_the_files_sha256_before_the_rename() {
         "n",
         b"a",
         FIRST_AND_LAST,
-        DecodeTool::Lower,
+        Some(DecodeTool::Lower),
         Some(Expect::Sha256(digest)),
     );
     assert!(c.contains("sha256sum") && c.contains("shasum -a 256"));

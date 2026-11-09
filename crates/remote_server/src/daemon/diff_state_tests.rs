@@ -7,7 +7,7 @@ use crate::proto::{
 use crate::shellcmd::git::diff::Mode;
 use crate::shellcmd::git::test_runner::{git, git_available, repo_with};
 
-use super::live_tests_support::Live;
+use crate::daemon::live_tests_support::Live;
 
 fn get(repo: &str, mode: &Mode) -> session_scoped_request::Message {
     session_scoped_request::Message::GetDiffState(GetDiffState {

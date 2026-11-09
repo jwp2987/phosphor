@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::HostId;
 use crate::auth::RemoteServerAuthContext;
+use crate::backend::RemoteFeatures as _;
 use crate::client::ClientEvent;
 use crate::client::RemoteServerClient;
 use crate::setup::PreinstallCheckResult;
@@ -697,7 +698,10 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::GitHubRepositoryInfoPushReceived { .. }
             // Host-scoped: the agent-context snapshot is keyed by `HostId`, not by
             // any one session on that host.
-            | RemoteServerManagerEvent::RemoteAgentContextSnapshot { .. } => None,
+            | RemoteServerManagerEvent::RemoteAgentContextSnapshot { .. }
+            // Host-scoped: a refresh hint is keyed by the host (or the session's shell-mode
+            // stand-in), not by one session.
+            | RemoteServerManagerEvent::ShellRefresh { .. } => None,
         }
     }
 }
