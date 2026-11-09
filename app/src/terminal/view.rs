@@ -14258,16 +14258,11 @@ impl TerminalView {
                         id,
                         // #1661: the long net; the events release the hold.
                         handoff.young_hold_give_up(Instant::now()),
-                        handoff.queued_line_bytes_stamp(),
                     )
                 });
-                hold_start.prompt = handoff.take_prompt_hold_started().map(|id| {
-                    (
-                        id,
-                        handoff.prompt_hold_give_up(),
-                        handoff.queued_line_bytes_stamp(),
-                    )
-                });
+                hold_start.prompt = handoff
+                    .take_prompt_hold_started()
+                    .map(|id| (id, handoff.prompt_hold_give_up()));
                 hold_start.deferred = handoff.take_deferred_key_started();
             }
             route
@@ -14281,14 +14276,13 @@ impl TerminalView {
         if handoff_route == UserBytesRoute::Held {
             input_queue::trace::hold(input_queue::trace::legacy::HANDOFF, bytes.len());
             // #933: an Enter held because the command may already have finished.
-            if let Some((hold_id, hold_wait, stamp)) = hold_start.young {
+            if let Some((hold_id, hold_wait)) = hold_start.young {
                 // #1016: keys the editor takes while this Enter waits for the report follow it.
                 self.input
                     .update(ctx, |input, ctx| input.note_handoff_enter(ctx));
                 // #1353 phase 5b: the Enter and the keys behind it are entries of the input
                 // queue behind a `PromptSeen` gate; the prompt's precmd, the report, a command
                 // or a signal end the hold (events), and the gate's cap is only the give-up.
-                self.paste_queue.line_stamp.get_or_insert(stamp);
                 self.hold_young_keys_in_queue(
                     hold_id,
                     hold_wait,
@@ -14300,8 +14294,7 @@ impl TerminalView {
             }
             // #1162: keys held between a prompt's precmd and its line editor's ready signal. The
             // hold's give-up cap is the only timer (#1349): the gate's own.
-            if let Some((prompt_hold_id, prompt_hold_expiry, stamp)) = hold_start.prompt {
-                self.paste_queue.line_stamp.get_or_insert(stamp);
+            if let Some((prompt_hold_id, prompt_hold_expiry)) = hold_start.prompt {
                 self.hold_prompt_keys_in_queue(
                     prompt_hold_id,
                     prompt_hold_expiry,
@@ -15637,10 +15630,6 @@ impl TerminalView {
         prompt_cycle_expected: bool,
         ctx: &mut ViewContext<Self>,
     ) {
-        /// Long enough for the prompt cycle bash and zsh run after an interrupted line, so the
-        /// editor is not reinitialized under the user after it took over. Only the path without
-        /// prompt sequence numbers (older bootstraps, `PHOSPHOR_PROMPT_SEQ=0`) waits this long.
-        const INTERRUPT_SETTLE: Duration = Duration::from_millis(250);
         /// #1353 phase 6: the one give-up of the event-driven hand-back, for a prompt cycle (or a
         /// report) that was expected after the interrupt and never came.
         // give-up-net: logged give-up for an interrupt's expected prompt cycle that never came; hands input back via the hand-off, writes nothing
@@ -15677,12 +15666,16 @@ impl TerminalView {
             });
             return;
         }
-        // zsh usually runs no prompt cycle after ^C at the prompt, so no precmd or line-editor
-        // activation would otherwise come to hand input back, ask for keys typed since, or
-        // notice that the counts were off because an earlier Enter was consumed by a program.
-        ctx.spawn(Timer::after(INTERRUPT_SETTLE), |me, _, ctx| {
-            me.commit_typeahead_handoff_at_prompt(ctx);
-        });
+        // The path without prompt sequence numbers (older bootstraps, `PHOSPHOR_PROMPT_SEQ=0`).
+        // zsh usually runs no prompt cycle after ^C at the prompt. Owner rule (a timer never
+        // commits): the former 250 ms settle timer is gone. The hand-off set
+        // `interrupt_settle_pending`; the line editor's ready signal while it is already active
+        // (zle / readline restart the line) or the next Precmd hands input back, through the
+        // controller's decision. A shell that never signals and runs no prompt cycle (dash/sh)
+        // keeps the pty as input -- a plain terminal -- until its next Precmd.
+        log::debug!(
+            "typeahead hand-off: ^C without prompt sequence numbers; waiting for the line editor's signal"
+        );
     }
 
     /// This function is invoked every time there is some form of view event
@@ -40833,21 +40826,12 @@ fn subshell_bootstrap_key_forwarded(
 /// What a user key that the hand-off held started, read under the key path's one model lock.
 #[derive(Default)]
 struct HandoffHoldStart {
-    /// A young Enter was held: the hold's id, its give-up cap and the mid-line stamp to share.
-    young: Option<(
-        u64,
-        Duration,
-        crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp,
-    )>,
+    /// A young Enter was held: the hold's id and its give-up cap.
+    young: Option<(u64, Duration)>,
     /// A key was held behind an Enter deferred for the shell's report: the gate's id.
     deferred: Option<u64>,
-    /// Keys are held for the prompt (ConPTY): the hold's id, its give-up cap and the mid-line
-    /// stamp to share.
-    prompt: Option<(
-        u64,
-        Duration,
-        crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp,
-    )>,
+    /// Keys are held for the prompt (ConPTY): the hold's id and its give-up cap.
+    prompt: Option<(u64, Duration)>,
 }
 
 /// Whether any SSH setup choice block belongs to the pending session (#976). Stale blocks of

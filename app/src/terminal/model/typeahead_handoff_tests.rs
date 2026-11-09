@@ -4,16 +4,19 @@ use super::*;
 /// from.
 fn after_submit() -> TypeaheadHandoff {
     let mut handoff = young_after_submit();
-    // A command that has been running longer than `YOUNG_ENTER_WINDOW` (#933).
-    handoff.last_activity_at = None;
+    // A command that has been running a while: the stream is fully applied, so an Enter is
+    // typeahead for it (#933's race needs unparsed output).
+    handoff.age_last_activity_for_test();
     handoff
 }
 
-/// A hand-off whose command was written just now, so an Enter the user types may be a line typed
-/// at a prompt the app has not noticed yet (#933).
+/// A hand-off whose command was written just now and whose pty stream has unparsed output, so an
+/// Enter the user types may be a line typed at a prompt whose Precmd is still in that output
+/// (#933). Where nothing samples the shell the barrier decides, not a clock.
 fn young_after_submit() -> TypeaheadHandoff {
     let mut handoff = TypeaheadHandoff::default();
     handoff.on_command_written();
+    handoff.stream_undrained_for_test();
     handoff
 }
 
@@ -1695,7 +1698,7 @@ fn a_command_written_behind_lines_queued_ahead_settles_nothing() {
     let mut handoff = TypeaheadHandoff::default();
     write_named_command(&mut handoff, "sleep 1");
     // Not a young command: the Enter typed into it is written, not held (#933).
-    handoff.last_activity_at = None;
+    handoff.age_last_activity_for_test();
     assert_eq!(
         type_and_flush(&mut handoff, b"make\r"),
         UserBytesRoute::WriteCounted
@@ -1811,45 +1814,34 @@ fn a_prompt_arriving_first_resolves_a_held_enter_without_its_timer() {
     assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Keep);
 }
 
+/// Owner rule (2026-11-08, a timer never decides): the wait of a young hold is no function of the
+/// measured round trip or of a window any more. Events release the hold; this is only the net.
 #[test]
-fn the_hold_scales_with_the_measured_round_trip() {
+fn the_young_hold_wait_is_the_event_net_whatever_the_round_trip() {
     let now = Instant::now();
     let mut handoff = young_after_submit();
-    // No samples yet: the unmeasured behaviour.
-    handoff.last_activity_at = Some(now - Duration::from_millis(100));
-    assert_eq!(handoff.young_hold_wait(now), Duration::from_millis(500));
-    // A local-ish 5 ms trip: 3 x 5 ms = 15 ms, raised to the floor.
+    assert_eq!(handoff.young_hold_wait(now), EVENT_HOLD_GIVE_UP);
     for _ in 0..8 {
         handoff.record_rtt_for_test(Duration::from_millis(5));
     }
-    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
-    // A remote 80 ms trip scales it: 240 ms.
-    let mut remote = young_after_submit();
-    remote.last_activity_at = Some(now - Duration::from_millis(100));
-    for _ in 0..8 {
-        remote.record_rtt_for_test(Duration::from_millis(80));
-    }
-    assert_eq!(remote.young_hold_wait(now), Duration::from_millis(240));
-    // Never past what is left of the window.
-    remote.last_activity_at = Some(now - Duration::from_millis(500));
-    assert_eq!(remote.young_hold_wait(now), Duration::from_millis(100));
+    assert_eq!(handoff.young_hold_wait(now), EVENT_HOLD_GIVE_UP);
+    handoff.record_rtt_for_test(Duration::from_secs(30));
+    assert_eq!(handoff.young_hold_wait(now), EVENT_HOLD_GIVE_UP);
 }
 
+/// The samples stay a diagnostic (logged); a stalled one ages out of the rolling window.
 #[test]
-fn one_stalled_sample_does_not_inflate_the_hold_and_ages_out() {
-    let now = Instant::now();
+fn one_stalled_sample_ages_out_of_the_round_trip_window() {
     let mut handoff = young_after_submit();
-    handoff.last_activity_at = Some(now);
     for _ in 0..9 {
         handoff.record_rtt_for_test(Duration::from_millis(5));
     }
     handoff.record_rtt_for_test(Duration::from_secs(30));
-    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
     for _ in 0..16 {
         handoff.record_rtt_for_test(Duration::from_millis(5));
     }
     assert_eq!(handoff.rtt_samples.len(), 16);
-    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
+    assert_eq!(handoff.rtt_p90(), Some(Duration::from_millis(5)));
 }
 
 #[test]
@@ -1862,24 +1854,13 @@ fn a_request_to_report_round_trip_is_sampled() {
 }
 
 /// #1131: the editor's command write to its preexec is a round trip through the same shell and
-/// pty pipeline, so it seeds the hold from the session's first command on; before any sample the
-/// first young Enter waited at least `YOUNG_ENTER_MIN_HOLD`. A line the shell started itself is
-/// not the command's preexec, and the command's own sample is dropped with it.
+/// pty pipeline, sampled for diagnostics from the session's first command on. A line the shell
+/// started itself is not the command's preexec, and the command's own sample is dropped with it.
 #[test]
-fn a_command_write_to_preexec_round_trip_seeds_the_hold_before_any_report() {
-    let now = Instant::now();
+fn a_command_write_to_preexec_round_trip_is_sampled_before_any_report() {
     let mut handoff = young_after_submit();
-    assert_eq!(
-        handoff.young_hold_wait(now),
-        YOUNG_ENTER_WINDOW,
-        "no sample yet"
-    );
     assert!(!handoff.on_preexec(false));
     assert_eq!(handoff.rtt_samples.len(), 1);
-    assert!(
-        handoff.young_hold_wait(Instant::now()) < YOUNG_ENTER_MIN_HOLD,
-        "a local loop of microseconds sizes the hold at its floor"
-    );
 
     let mut queued = young_after_submit();
     assert!(!queued.on_preexec(true));
@@ -1901,24 +1882,69 @@ fn an_enter_is_still_held_while_the_shell_may_own_the_foreground() {
     // #933: the probe says "not provably a plain program" (the shell's own group, an ssh hop, or
     // unknown), so the young Enter keeps waiting for the prompt.
     let mut handoff = young_after_submit();
-    handoff.set_foreground_probe(ForegroundProbe::new(Arc::new(|| false)));
+    handoff.set_foreground_probe(
+        ForegroundProbe::new(Arc::new(|| false)).with_stream_drained(Arc::new(|| false)),
+    );
     type_and_flush(&mut handoff, b"frob");
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     assert!(handoff.take_young_hold_started().is_some());
 }
 
+/// No window: how long ago the last activity was changes nothing. What decides an Enter typed
+/// while a line is unanswered, where nothing samples the shell, is the stream barrier at the
+/// moment of the Enter (owner rulings 2026-11-08/09): unparsed output holds it until the barrier's
+/// publish; a fully applied stream delivers it (the command is running); no barrier at all (ConPTY
+/// whose peek failed) is a plain terminal and delivers it.
 #[test]
-fn a_held_enter_waits_only_for_what_is_left_of_the_window() {
-    let mut handoff = young_after_submit();
+fn an_enter_is_held_by_the_stream_barrier_not_by_the_age_of_the_last_activity() {
     let now = Instant::now();
-    handoff.last_activity_at = Some(now - Duration::from_millis(500));
-    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_MIN_HOLD);
-    handoff.last_activity_at = Some(now - Duration::from_millis(100));
-    assert_eq!(handoff.young_hold_wait(now), Duration::from_millis(500));
-    handoff.last_activity_at = Some(now);
-    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_WINDOW);
-    handoff.last_activity_at = None;
-    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_MIN_HOLD);
+    for age in [0u64, 100, 500, 5000] {
+        let mut undrained = young_after_submit();
+        undrained.last_activity_at = Some(now - Duration::from_millis(age));
+        type_and_flush(&mut undrained, b"frob");
+        assert_eq!(
+            undrained.on_user_bytes(b"\r"),
+            UserBytesRoute::Held,
+            "{age}"
+        );
+        assert_eq!(
+            undrained.young_hold_evidence(),
+            Some(YoungHoldEvidence::PrecmdInFlight),
+            "{age}"
+        );
+
+        let mut drained = young_after_submit();
+        drained.age_last_activity_for_test();
+        drained.last_activity_at = Some(now - Duration::from_millis(age));
+        type_and_flush(&mut drained, b"frob");
+        assert_eq!(
+            drained.on_user_bytes(b"\r"),
+            UserBytesRoute::WriteCounted,
+            "{age}"
+        );
+        assert!(!drained.has_young_hold(), "{age}");
+    }
+    // No barrier (the ConPTY peek failed, or none was installed): a plain terminal.
+    let mut none = TypeaheadHandoff::default();
+    none.on_command_written();
+    none.set_foreground_probe(ForegroundProbe::default());
+    type_and_flush(&mut none, b"frob");
+    assert_eq!(none.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    // A barrier whose look failed answers `None`, the same.
+    let mut unknown = TypeaheadHandoff::default();
+    unknown.on_command_written();
+    unknown.set_foreground_probe(
+        ForegroundProbe::default().with_stream_drained_or_unknown(Arc::new(|| None)),
+    );
+    type_and_flush(&mut unknown, b"frob");
+    assert_eq!(unknown.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    // The barrier's publish decides a held Enter: output applied with no Precmd in it makes the
+    // Enter typeahead for the running command.
+    let mut held = young_after_submit();
+    type_and_flush(&mut held, b"frob");
+    assert_eq!(held.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    held.foreground_probe.stream_drained = Some(Arc::new(|| true));
+    assert_eq!(held.on_stream_applied(), StreamApplied::HoldEnded);
 }
 
 /// A hand-off on a ConPTY session whose command was written just now (#1162).
@@ -1997,11 +2023,19 @@ fn conpty_writes_no_request_while_a_line_is_still_being_typed() {
             precmds_seen: 1,
         }
     );
-    // Once the user paused, the request goes out.
-    handoff.last_line_bytes_at = Some(Instant::now() - CONPTY_MIDLINE_QUIET * 2);
+    // Owner rule (a timer never decides): no pause releases the request. The line is a STATE
+    // (its keys are in the shell's line without an Enter); only a boundary event decides again --
+    // here the line's Enter and its Precmd.
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    handoff.age_last_activity_for_test();
+    type_and_flush(&mut handoff, b"\r");
+    handoff.on_precmd();
     assert_eq!(
         handoff.on_line_editor_active(true, true),
-        ActiveDecision::SendRequest
+        ActiveDecision::Committed
     );
 }
 
@@ -2021,18 +2055,16 @@ fn conpty_still_commits_without_a_request_at_a_line_boundary() {
 
 /// #1189: keys that are Held behind a young Enter are still typing; the ConPTY mid-line guard
 /// counted only keys written to the pty, so requests landed between held keys.
-/// Old code: `typing_a_line_on_conpty` stayed false after the held key.
-/// Not compiled/run when written.
+/// The guard is a state fact now (no clock): a line in progress, or a live young hold, counts.
 #[test]
 fn conpty_midline_guard_counts_held_keys() {
     let mut handoff = conpty_young_after_submit();
+    assert!(!handoff.typing_a_line_on_conpty());
     type_and_flush(&mut handoff, b"abc");
+    assert!(handoff.typing_a_line_on_conpty());
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    handoff.last_line_bytes_at = Some(Instant::now() - CONPTY_MIDLINE_QUIET * 2);
-    assert!(!handoff.typing_a_line_on_conpty(Instant::now()));
-    // A key typed behind the hold goes to the view's queue, which stamps it for the guard.
-    handoff.queued_line_bytes_stamp().note_now();
-    assert!(handoff.typing_a_line_on_conpty(Instant::now()));
+    assert!(handoff.young_hold_queued());
+    assert!(handoff.typing_a_line_on_conpty());
 }
 
 /// #1131: a new session's shell (the remote shell of an `ssh`) has its own loop; the previous
@@ -2045,14 +2077,10 @@ fn a_new_session_drops_the_previous_sessions_round_trips() {
     for _ in 0..8 {
         handoff.record_rtt_for_test(Duration::from_millis(5));
     }
-    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
+    assert_eq!(handoff.rtt_samples.len(), 8);
     handoff.on_new_session();
     assert_eq!(handoff.rtt_samples.len(), 0);
-    assert_eq!(
-        handoff.young_hold_wait(now),
-        YOUNG_ENTER_WINDOW,
-        "unmeasured again until the new shell's first command"
-    );
+    assert_eq!(handoff.young_hold_wait(now), EVENT_HOLD_GIVE_UP);
     // The new session's first command measures afresh.
     handoff.on_command_written();
     assert!(!handoff.on_preexec(false));
@@ -2859,16 +2887,21 @@ fn a_signal_takes_the_queued_hold_and_ends_the_wait() {
     );
 }
 
-/// Keys queued behind a prompt hold are still typing: the view stamps them lock-free and the
-/// ConPTY mid-line guard sees the stamp (#1189 for the queue).
+/// Keys queued behind a prompt hold are a line in progress: the hold is a state flag (no stamp,
+/// no clock), and the guard sees it. Not on the prompt-sequence path.
 #[test]
-fn the_midline_guard_sees_keys_the_view_queued() {
+fn the_midline_guard_sees_keys_held_behind_a_prompt_hold() {
     let mut handoff = conpty_young_after_submit();
     handoff.age_last_activity_for_test();
-    handoff.last_line_bytes_at = Some(Instant::now() - CONPTY_MIDLINE_QUIET * 2);
-    assert!(!handoff.typing_a_line_on_conpty(Instant::now()));
-    handoff.queued_line_bytes_stamp().note_now();
-    assert!(handoff.typing_a_line_on_conpty(Instant::now()));
+    assert!(!handoff.typing_a_line_on_conpty());
+    handoff.prompt_hold_queued = true;
+    assert!(handoff.typing_a_line_on_conpty());
+    handoff.set_prompt_seq_enabled(true);
+    handoff.on_precmd_seq(Some(7), Some(1));
+    assert!(
+        !handoff.typing_a_line_on_conpty(),
+        "the sequence path decides at queue boundaries"
+    );
 }
 
 // ---- #1353 phase 6: prompt sequence numbers replace the timing guesses -------------------------
@@ -2970,6 +3003,7 @@ fn seq_unsampled_after_submit() -> TypeaheadHandoff {
     handoff.set_prompt_seq_enabled(true);
     handoff.on_precmd_seq(Some(7), Some(1));
     handoff.on_command_written();
+    handoff.stream_undrained_for_test();
     handoff
 }
 
@@ -3036,17 +3070,18 @@ fn a_young_enter_is_held_or_written_by_what_the_shell_is_doing_not_by_elapsed_ti
     assert_eq!(unknown.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
     assert!(!unknown.has_young_hold());
 
-    // Nothing sampled at all (ConPTY): the window still decides, as before.
+    // Nothing sampled at all (ConPTY): the stream barrier decides, not a window. Unparsed output
+    // holds the Enter for the barrier's publish.
     let mut unsampled = seq_unsampled_after_submit();
     type_and_flush(&mut unsampled, b"explain");
     assert_eq!(unsampled.on_user_bytes(b"\r"), UserBytesRoute::Held);
     assert_eq!(
         unsampled.young_hold_evidence(),
-        Some(YoungHoldEvidence::TimingWindow)
+        Some(YoungHoldEvidence::PrecmdInFlight)
     );
-    assert_ne!(
-        unsampled.young_hold_wait(Instant::now()),
-        EVENT_HOLD_GIVE_UP
+    assert_eq!(
+        unsampled.young_hold_give_up(Instant::now()),
+        YOUNG_HOLD_GIVE_UP
     );
     let mut unsampled_late = seq_unsampled_after_submit();
     type_and_flush(&mut unsampled_late, b"explain");
@@ -3114,9 +3149,12 @@ fn an_outstanding_line_with_live_markers_takes_the_window_hold_only_unsampled() 
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     assert_eq!(
         handoff.young_hold_evidence(),
-        Some(YoungHoldEvidence::TimingWindow)
+        Some(YoungHoldEvidence::PrecmdInFlight)
     );
-    assert_ne!(handoff.young_hold_wait(Instant::now()), EVENT_HOLD_GIVE_UP);
+    assert_eq!(
+        handoff.young_hold_give_up(Instant::now()),
+        YOUNG_HOLD_GIVE_UP
+    );
 
     let mut sampled = seq_after_submit(ShellPromptFact::Unknown);
     sampled.on_line_editor_reading(Some(7), Some(1));
@@ -4176,6 +4214,19 @@ impl RawReadProbe {
         handoff.set_foreground_probe(probe);
     }
 
+    /// As [`Self::install`] for a platform that samples nothing (ConPTY): only the barrier.
+    fn install_unsampled(&self, handoff: &mut TypeaheadHandoff) {
+        let mut probe = ForegroundProbe::default();
+        if let Some(drained) = self.drained.clone() {
+            let asked = self.asked.clone();
+            probe = probe.with_stream_drained(Arc::new(move || {
+                asked.lock().unwrap().push("barrier");
+                drained.load(Ordering::SeqCst)
+            }));
+        }
+        handoff.set_foreground_probe(probe);
+    }
+
     fn asked(&self) -> Vec<&'static str> {
         std::mem::take(&mut *self.asked.lock().unwrap())
     }
@@ -4362,7 +4413,7 @@ fn a_cooked_shell_in_front_holds_only_while_the_stream_is_unapplied() {
     assert_eq!(pending.on_user_bytes(b"\r"), UserBytesRoute::Held);
     assert_eq!(
         pending.young_hold_evidence(),
-        Some(YoungHoldEvidence::TimingWindow)
+        Some(YoungHoldEvidence::PrecmdMaybeInFlight)
     );
 }
 
@@ -5220,17 +5271,20 @@ fn a_latched_command_that_exited_still_holds_the_933_enter() {
     assert!(!remote.command_interactive());
 }
 
-/// #1614 (design item 6, the property): over every combination of what the platform samples, what
-/// the barrier says, what the hooks said last, whether the command is latched interactive, whether
-/// the Enter is in the window and whether the prompt-sequence path is on, a `Held` answer names
-/// evidence whose release is satisfiable then and there: the request is due and the report runs
-/// the Enter; or the barrier's next publish decides; or the window's Precmd (an event) sends the
-/// request. The peek the destination table takes always agrees with the commit.
+/// #1614 (design item 6, the property): over every combination of what the platform samples
+/// (including a platform that samples nothing but has the stream barrier, ConPTY), what the
+/// barrier says, what the hooks said last, whether the command is latched interactive and whether
+/// the prompt-sequence path is on, a `Held` answer names evidence whose release is satisfiable
+/// then and there: the request is due and the report runs the Enter; or the barrier's next
+/// publish decides; or the Precmd (an event) sends the request. No clock decides (the window is
+/// gone, 2026-11-09). The peek the destination table takes always agrees with the commit.
 #[test]
 fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
     #[derive(Clone, Copy, Debug)]
     enum Probe {
         None,
+        /// Nothing sampled; only the barrier (ConPTY's pipe peek).
+        Unsampled(Option<bool>),
         Fact(ShellPromptFact, Option<bool>),
     }
     #[derive(Clone, Copy, Debug)]
@@ -5240,7 +5294,11 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
         PreexecLast,
         ReadingAfterPreexec,
     }
-    let mut probes = vec![Probe::None];
+    let mut probes = vec![
+        Probe::None,
+        Probe::Unsampled(Some(true)),
+        Probe::Unsampled(Some(false)),
+    ];
     for fact in [
         ShellPromptFact::NotAtPrompt,
         ShellPromptFact::LineEditorReading,
@@ -5261,14 +5319,16 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
     for probe in probes {
         for hooks in hooks_dim {
             for interactive in [false, true] {
-                for in_window in [false, true] {
+                {
                     for seq_mode in [false, true] {
                         let label = format!(
-                            "{probe:?} {hooks:?} interactive={interactive} \
-                             in_window={in_window} seq_mode={seq_mode}"
+                            "{probe:?} {hooks:?} interactive={interactive} seq_mode={seq_mode}"
                         );
                         let raw = match probe {
                             Probe::None => None,
+                            Probe::Unsampled(barrier) => {
+                                Some(RawReadProbe::new(ShellPromptFact::Unknown, barrier))
+                            }
                             Probe::Fact(fact, barrier) => Some(RawReadProbe::new(fact, barrier)),
                         };
                         let mut handoff = TypeaheadHandoff::default();
@@ -5276,7 +5336,11 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
                         handoff.note_shell_hook_parsed(ParsedShellHook::Precmd);
                         handoff.on_precmd_seq(Some(7), Some(1));
                         if let Some(raw) = &raw {
-                            raw.install(&mut handoff);
+                            if matches!(probe, Probe::Unsampled(_)) {
+                                raw.install_unsampled(&mut handoff);
+                            } else {
+                                raw.install(&mut handoff);
+                            }
                         }
                         handoff.on_command_written();
                         match hooks {
@@ -5299,10 +5363,7 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
                             handoff.note_command_interactive();
                         }
                         type_and_flush(&mut handoff, b"frob");
-                        if !in_window {
-                            handoff.age_last_activity_for_test();
-                            handoff.young_line = false;
-                        }
+                        handoff.young_line = false;
                         let peek = handoff.peek_user_bytes_route(b"\r", true, Instant::now());
                         let route = handoff.on_user_bytes(b"\r");
                         assert_eq!(peek, route, "the peek agrees with the commit: {label}");
@@ -5316,7 +5377,7 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
                             .take_young_hold_started()
                             .unwrap_or_else(|| panic!("a hold started: {label}"));
                         assert!(
-                            !(interactive && matches!(probe, Probe::None)),
+                            !(interactive && matches!(probe, Probe::None | Probe::Unsampled(_))),
                             "never held into a latched command where nothing is sampled: {label}"
                         );
                         // The block lifecycle is at a prompt unless a Preexec started a block
@@ -5343,7 +5404,10 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
                             YoungHoldEvidence::PrecmdInFlight => {
                                 let raw = raw.as_ref().unwrap_or_else(|| panic!("{label}"));
                                 assert!(
-                                    matches!(probe, Probe::Fact(_, Some(false))),
+                                    matches!(
+                                        probe,
+                                        Probe::Fact(_, Some(false)) | Probe::Unsampled(Some(false))
+                                    ),
                                     "only an installed, undrained barrier: {label}"
                                 );
                                 assert_eq!(
@@ -5353,13 +5417,12 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
                                 );
                                 raw.set_drained(true);
                                 match handoff.on_stream_applied() {
-                                    // The written command's own Preexec is still pending and the
-                                    // Enter is in the window: the hold waits for that Preexec
-                                    // (which does not end it) and the Precmd that makes the
-                                    // request due.
+                                    // The written command's own Preexec is still pending: the
+                                    // hold waits for that Preexec (which does not end it) and
+                                    // the Precmd that makes the request due.
                                     StreamApplied::Nothing => {
                                         assert!(
-                                            matches!(hooks, Hooks::None) && in_window,
+                                            matches!(hooks, Hooks::None),
                                             "applied, undecided: {label}"
                                         );
                                         assert!(!handoff.on_preexec(false), "{label}");
@@ -5405,38 +5468,17 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
                                     matches!(
                                         probe,
                                         Probe::Fact(ShellPromptFact::LineEditorReading, None)
-                                    ),
-                                    "only the editor sampled reading with no barrier: {label}"
+                                    ) || (matches!(hooks, Hooks::None)
+                                        && matches!(
+                                            probe,
+                                            Probe::Fact(
+                                                ShellPromptFact::LineEditorReading,
+                                                Some(true)
+                                            ) | Probe::Fact(ShellPromptFact::ShellCooked, _)
+                                        )),
+                                    "the editor sampled reading with no barrier, or the written \
+                                     command's own Preexec pending: {label}"
                                 );
-                                handoff.on_precmd();
-                                assert_eq!(
-                                    handoff.on_line_editor_active(true, true),
-                                    ActiveDecision::SendRequest,
-                                    "{label}"
-                                );
-                                assert_eq!(
-                                    handoff.on_report(),
-                                    ReportDisposition::InsertThenSubmitYoung,
-                                    "{label}"
-                                );
-                            }
-                            YoungHoldEvidence::TimingWindow => {
-                                assert!(in_window, "{label}");
-                                assert!(
-                                    !seq_mode
-                                        || matches!(probe, Probe::None | Probe::Fact(_, None))
-                                        || (matches!(hooks, Hooks::None)
-                                            && matches!(
-                                                probe,
-                                                Probe::Fact(
-                                                    ShellPromptFact::LineEditorReading,
-                                                    Some(true)
-                                                ) | Probe::Fact(ShellPromptFact::ShellCooked, _)
-                                            )),
-                                    "the window only where nothing can be asked, or while the \
-                                     written command's own Preexec is pending: {label}"
-                                );
-                                // Its release: the prompt's Precmd, then the request and report.
                                 handoff.on_precmd();
                                 assert_eq!(
                                     handoff.on_line_editor_active(true, true),
@@ -5615,12 +5657,12 @@ fn a_signal_behind_a_deferred_enter_waits_in_order_r18u23_fuzz() {
     assert_eq!(h.take_deferred_key_started(), None);
 }
 
-/// #1661 (owner decision 2026-11-05): two young holds end at their cap by design and keep their
-/// short cap (and, in the view, the hand-back): the fish no-barrier hold (2 s) and the window hold
-/// of a session without prompt sequence numbers. Every other young hold's cap is a give-up: the
-/// 10 s net (which drops the keys).
+/// #1661 (owner decision 2026-11-05): one young hold ends at its cap by design and keeps its short
+/// cap (and, in the view, the hand-back): the fish no-barrier hold (2 s). The window hold of a
+/// session without prompt sequence numbers is gone with the window (2026-11-09); every other
+/// young hold's cap is a give-up: the 10 s net (which drops the keys).
 #[test]
-fn only_the_two_normal_end_young_holds_keep_their_short_cap() {
+fn only_the_no_barrier_young_hold_keeps_its_short_cap() {
     // Fish, no barrier: `PrecmdMaybeInFlight`, the 2 s cap is its normal end.
     let mut fish = seq_after_submit(ShellPromptFact::LineEditorReading);
     type_and_flush(&mut fish, b"explain");
@@ -5652,13 +5694,14 @@ fn only_the_two_normal_end_young_holds_keep_their_short_cap() {
         YOUNG_HOLD_GIVE_UP
     );
 
-    // The window with prompt sequence numbers (ConPTY that sends them): a give-up, 10 s.
+    // Nothing sampled, prompt sequence numbers (ConPTY that sends them): the barrier says output
+    // is unparsed -- a give-up, 10 s.
     let mut unsampled = seq_unsampled_after_submit();
     type_and_flush(&mut unsampled, b"explain");
     assert_eq!(unsampled.on_user_bytes(b"\r"), UserBytesRoute::Held);
     assert_eq!(
         unsampled.young_hold_evidence(),
-        Some(YoungHoldEvidence::TimingWindow)
+        Some(YoungHoldEvidence::PrecmdInFlight)
     );
     assert!(!unsampled.young_hold_cap_is_normal_end());
     assert_eq!(
@@ -5666,44 +5709,41 @@ fn only_the_two_normal_end_young_holds_keep_their_short_cap() {
         YOUNG_HOLD_GIVE_UP
     );
 
-    // The window without prompt sequence numbers: its end is the hold's normal end, at most
-    // `YOUNG_ENTER_WINDOW`.
+    // No prompt sequence numbers: the same barrier decides, and the cap is a give-up too.
     let mut legacy = young_after_submit();
     type_and_flush(&mut legacy, b"explain");
     assert_eq!(legacy.on_user_bytes(b"\r"), UserBytesRoute::Held);
     assert_eq!(
         legacy.young_hold_evidence(),
-        Some(YoungHoldEvidence::TimingWindow)
+        Some(YoungHoldEvidence::PrecmdInFlight)
     );
-    assert!(legacy.young_hold_cap_is_normal_end());
-    assert!(legacy.young_hold_give_up(Instant::now()) <= YOUNG_ENTER_WINDOW);
+    assert!(!legacy.young_hold_cap_is_normal_end());
+    assert_eq!(
+        legacy.young_hold_give_up(Instant::now()),
+        YOUNG_HOLD_GIVE_UP
+    );
 }
 
-/// #1661 review: a hold's class is decided when it starts. A window hold of a session without
-/// prompt sequence numbers stays a normal-end hold (short cap, hand-back) when a
-/// sequence-numbered Precmd is parsed while it waits; recomputed at the cap it was dropped.
+/// #1661 review: a hold's class is decided when it starts. A no-barrier (fish) hold stays a
+/// normal-end hold (short cap, hand-back) when a later sequence-numbered Precmd is parsed while it
+/// waits; recomputed at the cap it was dropped.
 #[test]
 fn a_young_holds_normal_end_class_is_fixed_when_it_starts() {
-    let mut handoff = young_after_submit();
-    handoff.set_prompt_seq_enabled(true);
+    let mut handoff = seq_after_submit(ShellPromptFact::LineEditorReading);
     type_and_flush(&mut handoff, b"explain");
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     assert_eq!(
         handoff.young_hold_evidence(),
-        Some(YoungHoldEvidence::TimingWindow)
+        Some(YoungHoldEvidence::PrecmdMaybeInFlight)
     );
-    assert!(!handoff.prompt_seq_mode());
     assert!(handoff.young_hold_cap_is_normal_end());
-    let cap = handoff.young_hold_give_up(Instant::now());
-    assert!(cap <= YOUNG_ENTER_WINDOW);
-
-    // The shell starts sending sequence numbers before the cap.
-    handoff.on_precmd_seq(Some(7), Some(1));
-    assert!(handoff.prompt_seq_mode());
     assert_eq!(
-        handoff.young_hold_evidence(),
-        Some(YoungHoldEvidence::TimingWindow)
+        handoff.young_hold_give_up(Instant::now()),
+        EVENT_HOLD_GIVE_UP
     );
+
+    // The shell sends another sequence number before the cap.
+    handoff.on_precmd_seq(Some(7), Some(2));
     assert!(
         handoff.young_hold_cap_is_normal_end(),
         "the class the hold started with is kept: its cap hands back, it does not drop"
@@ -5875,4 +5915,72 @@ fn a_report_is_pending_before_editor_text_until_it_lands() {
     assert!(!handoff.report_pending_before_editor_text());
     // Keys the pty owns are not the editor's text at all.
     assert!(!after_submit().report_pending_before_editor_text());
+}
+
+/// `read x` finished on a platform that samples nothing (ConPTY): no probe, no barrier.
+fn read_x_finished_unsampled() -> TypeaheadHandoff {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_prompt_seq_enabled(true);
+    handoff.note_shell_hook_parsed(ParsedShellHook::Precmd);
+    handoff.on_precmd_seq(Some(7), Some(1));
+    handoff.on_command_written();
+    handoff.note_shell_hook_parsed(ParsedShellHook::Preexec);
+    handoff.on_preexec(false);
+    assert_eq!(
+        type_and_flush(&mut handoff, b"tok\r"),
+        UserBytesRoute::WriteCounted
+    );
+    handoff.note_shell_hook_parsed(ParsedShellHook::CommandFinished);
+    handoff.note_shell_hook_parsed(ParsedShellHook::Precmd);
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(3));
+    assert!(handoff.counts_diverged());
+    handoff
+}
+
+/// Owner rule (a timer never resets counts or decides): on ConPTY (no probe, no barrier)
+/// PowerShell's `LineEditorReading` marker, parsed after the last counted Enter, is the proof that
+/// its line editor reads again, so a consumed `read`/stuck PS2 re-baselines on that EVENT; with
+/// no marker, a marker from before the Enter, another shell, or the kill switch off, nothing is
+/// proven and the pty keeps input.
+#[test]
+fn a_powershell_marker_after_the_last_enter_proves_stale_counts_without_a_probe() {
+    // No marker yet: not provable; and the proof flag alone is not enough.
+    let mut handoff = read_x_finished_unsampled();
+    handoff.set_conpty_marker_proof(true);
+    assert!(handoff.has_unanswered_lines_for_activation());
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::DrainAndWait { .. }
+    ));
+
+    // The marker after the Enter, PowerShell, switch on: proven, the editor takes input.
+    let mut handoff = read_x_finished_unsampled();
+    handoff.set_conpty_marker_proof(true);
+    handoff.on_line_editor_reading(None, None);
+    assert!(!handoff.has_unanswered_lines_for_activation());
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+
+    // Not PowerShell (or the kill switch off): the marker proves nothing.
+    let mut handoff = read_x_finished_unsampled();
+    handoff.on_line_editor_reading(None, None);
+    assert!(handoff.has_unanswered_lines_for_activation());
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::DrainAndWait { .. }
+    ));
+
+    // An Enter counted after the marker clears it: the marker may predate that Enter.
+    let mut handoff = read_x_finished_unsampled();
+    handoff.set_conpty_marker_proof(true);
+    handoff.on_line_editor_reading(None, None);
+    assert_eq!(
+        type_and_flush(&mut handoff, b"z\r"),
+        UserBytesRoute::WriteCounted
+    );
+    assert!(handoff.has_unanswered_lines_for_activation());
 }

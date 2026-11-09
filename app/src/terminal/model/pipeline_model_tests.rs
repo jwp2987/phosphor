@@ -376,7 +376,7 @@ fn model_ssh_hand_over_keeps_every_held_key_in_order_and_delivers_it_once() {
 ///   at the latest, with an end recorded for the view to apply to the gate
 ///   (`take_young_hold_ends`): no gate outlives its hold and no key is stranded behind one.
 ///
-/// The Enter's young-hold decision may depend on the clock (`YOUNG_ENTER_WINDOW`) when no prompt
+/// The Enter's young-hold decision may depend on the stream barrier's state when no prompt
 /// sequence number is known; both answers are allowed, which is why the assertions are about the
 /// lifecycle and not about which one was given.
 #[test]

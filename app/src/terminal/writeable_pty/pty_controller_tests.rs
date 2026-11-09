@@ -2342,26 +2342,44 @@ mod typeahead_handoff {
         });
     }
 
+    /// PowerShell's marker, as the model thread applies it (stream order) and then as the
+    /// controller receives it.
+    fn powershell_marks_line_editor_reading(app: &mut App, harness: &Harness) {
+        harness
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .on_line_editor_reading(None, None);
+        shell_marks_line_editor_reading(app, harness);
+    }
+
     /// An Enter consumed by a program (`read x` answered `y` Enter) is answered by no prompt.
-    /// The quiet period resets the counts and the controller decides again on its own, handing
-    /// input back to the editor.
+    /// Owner rule (a timer never resets counts or commits): no quiet period releases it any more
+    /// -- the pty keeps input, a plain terminal -- and the shell's own event does: PowerShell's
+    /// `LineEditorReading` marker (ConPTY has no probe) proves the editor reads again, the counts
+    /// are re-baselined by the decision that marker triggers, and the editor takes input back.
+    /// The hand-off and this controller are shared by the Legacy and Table input modes.
     #[test]
-    fn a_consumed_enter_is_released_by_the_quiet_period() {
+    fn a_consumed_enter_is_released_by_the_line_editor_marker_not_a_quiet_period() {
         App::test((), |mut app| async move {
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let harness = harness(&mut app);
+            let harness = harness_with(&mut app, powershell_session_info());
             submit(&mut app, &harness, "read x");
             user_types(&mut app, &harness, b"y\r");
             shell_runs_a_command(&harness.model, "read x");
             line_editor_becomes_active(&mut app, &harness);
             assert!(harness.model.lock().typeahead_handoff().is_pty_owned());
 
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while harness.model.lock().typeahead_handoff().is_pty_owned()
-                && Instant::now() < deadline
-            {
-                Timer::after(Duration::from_millis(50)).await;
-            }
+            // Well past the old 250 ms reset: a timer decides nothing.
+            Timer::after(Duration::from_millis(600)).await;
+            assert!(
+                harness.model.lock().typeahead_handoff().is_pty_owned(),
+                "the pty keeps input until an event"
+            );
+            assert!(!written(&harness).contains(&REQUEST.to_vec()));
+
+            activation_pending(&mut app, &harness);
+            powershell_marks_line_editor_reading(&mut app, &harness);
             assert_eq!(
                 harness.model.lock().typeahead_handoff().state(),
                 &HandoffState::EditorOwned
@@ -2370,368 +2388,13 @@ mod typeahead_handoff {
         });
     }
 
-    /// #1614 (review R3, the timer rule): the stale-count give-up never ends a live young hold.
-    /// Its retry of the request decision is skipped while the hold lives (the hold has its own
-    /// event releases and the hand-back cap); run by this timer, the decision could otherwise
-    /// write the held keys (the no-binding and committed-delivery ends) or a request.
+    /// An in-band command waiting on an Enter that a program consumed is not released by a quiet
+    /// period (no timer writes); the shell's ready event releases it, with no request.
     #[test]
-    fn the_stale_count_reset_leaves_a_live_young_hold_to_its_own_events() {
+    fn an_in_band_command_is_released_by_the_line_editor_marker_not_a_quiet_period() {
         App::test((), |mut app| async move {
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let harness = harness(&mut app);
-            submit(&mut app, &harness, "sleep 2");
-            user_types(&mut app, &harness, b"frob");
-            // The Enter is held (the view's queue carries it; here only the hand-off's record).
-            {
-                let mut model = harness.model.lock();
-                let mut handoff = model.typeahead_handoff_mut();
-                assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-                assert!(handoff.take_young_hold_started().is_some());
-            }
-            // The decision waits (the block runs) and arms the stale-count reset.
-            line_editor_becomes_active(&mut app, &harness);
-            assert!(harness.model.lock().typeahead_handoff().young_hold_queued());
-            // Meanwhile a delivery was committed to the shell's line: a decision run now would
-            // end the hold as typeahead (`committed_delivery`), which only an event may do.
-            harness
-                .model
-                .lock()
-                .typeahead_handoff_mut()
-                .note_committed_delivery();
-
-            Timer::after(Duration::from_millis(400)).await;
-            {
-                let model = harness.model.lock();
-                let handoff = model.typeahead_handoff();
-                assert!(
-                    handoff.young_hold_queued(),
-                    "the timer left the hold to its events"
-                );
-                assert!(!handoff.young_hold_end_pending(), "no end from a timer");
-                assert!(handoff.is_pty_owned());
-            }
-            assert!(
-                !written(&harness).contains(&REQUEST.to_vec()),
-                "no request from the timer"
-            );
-            // The skipped decision is remembered, to run on the next flushed write.
-            harness.controller.update(&mut app, |controller, _| {
-                assert!(controller.handoff_request_waiting);
-            });
-        });
-    }
-
-    /// #1614 (review C2): the decision the stale-count timer skipped while a young hold lived runs
-    /// once the hold is gone. The cap hands the hold back (the view also asks for the decision
-    /// then, `hand_back_young_hold_keys`), the shell's prompt comes with the typed `frob` still in
-    /// its line, and the next flushed write runs the decision: the request goes out and the editor
-    /// takes the line back, instead of the pane staying pty-owned with the handed-back text in
-    /// the editor.
-    #[test]
-    fn after_the_cap_hands_a_hold_back_the_skipped_decision_runs_on_the_next_write() {
-        App::test((), |mut app| async move {
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let harness = harness(&mut app);
-            submit(&mut app, &harness, "sleep 2");
-            user_types(&mut app, &harness, b"frob");
-            let hold_id = {
-                let mut model = harness.model.lock();
-                let mut handoff = model.typeahead_handoff_mut();
-                assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-                handoff.take_young_hold_started().expect("a hold started")
-            };
-            line_editor_becomes_active(&mut app, &harness);
-            Timer::after(Duration::from_millis(400)).await;
-            harness.controller.update(&mut app, |controller, _| {
-                assert!(
-                    controller.handoff_request_waiting,
-                    "the retry was skipped, not lost"
-                );
-            });
-            assert!(harness.model.lock().typeahead_handoff().young_hold_queued());
-
-            // The cap: the hold is handed back (the hand-off's side of the view's hand-back).
-            {
-                let mut model = harness.model.lock();
-                let mut handoff = model.typeahead_handoff_mut();
-                assert_eq!(
-                    handoff.expire_queued_young_hold(hold_id),
-                    YoungHoldExpiry::Release
-                );
-                handoff.finish_young_hold_handed_back(hold_id);
-                assert!(!handoff.young_hold_queued());
-            }
-            // The command ends; its prompt. The counts agree and `frob` is in the shell's line.
-            shell_runs_a_command(&harness.model, "sleep 2");
-            assert!(!harness.model.lock().typeahead_handoff().counts_diverged());
-            assert!(!written(&harness).contains(&REQUEST.to_vec()));
-            // The next flushed write runs the skipped decision: the request goes out.
-            user_types(&mut app, &harness, b"z");
-            assert!(
-                written(&harness).contains(&REQUEST.to_vec()),
-                "the decision ran once the hold was gone"
-            );
-            assert_eq!(
-                harness.model.lock().typeahead_handoff().state(),
-                &HandoffState::AwaitingReport
-            );
-        });
-    }
-
-    /// A command that would be rejected or coalesced right now is not held: it takes the
-    /// normal path, with the same outcome as without the hand-off.
-    #[test]
-    fn a_command_that_cannot_start_now_is_not_held() {
-        App::test((), |mut app| async move {
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let harness = harness(&mut app);
-            submit(&mut app, &harness, "sleep 2");
-            user_types(&mut app, &harness, b"foo");
-            harness.model.lock().preexec(PreexecValue {
-                command: "sleep 2".to_owned(),
-                session_id: None,
-            });
-
-            let outcome = harness.controller.update(&mut app, |controller, ctx| {
-                let outcome = controller.write_command(
-                    "queued",
-                    SHELL,
-                    CommandExecutionSource::QueuedCommand,
-                    ctx,
-                );
-                assert!(controller.pending_writes.is_empty());
-                assert!(!controller.handoff_held_command_pending);
-                outcome
-            });
-            assert_eq!(outcome, StartCommandOutcome::RejectedExecuting);
-        });
-    }
-
-    /// A second command while one is held is coalesced rather than replacing the first.
-    #[test]
-    fn a_second_command_while_one_is_held_is_coalesced() {
-        App::test((), |mut app| async move {
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let harness = harness(&mut app);
-            submit(&mut app, &harness, "sleep 2");
-            user_types(&mut app, &harness, b"foo");
-            shell_runs_a_command(&harness.model, "sleep 2");
-            fire_queued_command(&mut app, &harness);
-
-            let outcome = harness.controller.update(&mut app, |controller, ctx| {
-                controller.write_command(
-                    "second",
-                    SHELL,
-                    CommandExecutionSource::QueuedCommand,
-                    ctx,
-                )
-            });
-            assert_eq!(outcome, StartCommandOutcome::Coalesced);
-
-            line_editor_becomes_active(&mut app, &harness);
-            let written = written(&harness);
-            assert_eq!(
-                &written[2..],
-                &[
-                    REQUEST.to_vec(),
-                    bytes_to_execute_command("queued", SHELL, false)
-                ],
-                "the first held command goes out; the second never replaced it"
-            );
-        });
-    }
-
-    /// A command from the editor while one is held goes first; the held command stays queued
-    /// and starts at the prompt that follows, instead of being dropped by the queue reset.
-    #[test]
-    fn an_editor_command_while_one_is_held_goes_first_and_keeps_it() {
-        App::test((), |mut app| async move {
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let harness = harness(&mut app);
-            submit(&mut app, &harness, "sleep 2");
-            user_types(&mut app, &harness, b"foo");
-            shell_runs_a_command(&harness.model, "sleep 2");
-            fire_queued_command(&mut app, &harness);
-
-            submit(&mut app, &harness, "ls");
-            harness.controller.read(&app, |controller, _| {
-                assert_eq!(controller.pending_writes.len(), 2);
-                assert!(controller.handoff_held_command_pending);
-            });
-
-            line_editor_becomes_active(&mut app, &harness);
-            assert_eq!(
-                written(&harness).last(),
-                Some(&bytes_to_execute_command("ls", SHELL, false))
-            );
-
-            shell_runs_a_command(&harness.model, "ls");
-            line_editor_becomes_active(&mut app, &harness);
-            assert_eq!(
-                written(&harness).last(),
-                Some(&bytes_to_execute_command("queued", SHELL, false))
-            );
-            harness.controller.read(&app, |controller, _| {
-                assert!(!controller.handoff_held_command_pending);
-            });
-        });
-    }
-
-    /// While the shell may still have user lines to run, an in-band command (which starts its
-    /// own block when written) waits, so their output does not land in its block.
-    #[test]
-    fn an_in_band_command_waits_while_user_lines_are_unanswered() {
-        App::test((), |mut app| async move {
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let harness = harness(&mut app);
-            submit(&mut app, &harness, "sleep 1");
-            user_types(&mut app, &harness, b"a\r");
-            shell_runs_a_command(&harness.model, "sleep 1");
-            line_editor_becomes_active(&mut app, &harness);
-
-            let (cancel_tx, _cancel_rx) = async_channel::unbounded();
-            harness.controller.update(&mut app, |controller, ctx| {
-                controller.is_user_command_executing = false;
-                controller.queue_in_band_command(
-                    "echo in-band",
-                    SHELL,
-                    "command-id".to_owned(),
-                    cancel_tx,
-                    ctx,
-                );
-                assert_eq!(controller.pending_writes.len(), 1);
-            });
-
-            shell_runs_a_command(&harness.model, "a");
-            line_editor_becomes_active(&mut app, &harness);
-            assert_eq!(
-                written(&harness).last(),
-                Some(&bytes_to_execute_command("echo in-band", SHELL, false))
-            );
-        });
-    }
-
-    /// The shell exits with a command still held: it is dropped, not left queued.
-    #[test]
-    fn a_held_command_is_dropped_when_the_shell_exits() {
-        App::test((), |mut app| async move {
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let harness = harness(&mut app);
-            submit(&mut app, &harness, "sleep 2");
-            user_types(&mut app, &harness, b"foo");
-            shell_runs_a_command(&harness.model, "sleep 2");
-            fire_queued_command(&mut app, &harness);
-
-            harness.model_events.update(&mut app, |_, ctx| {
-                ctx.emit(ModelEvent::Exit {
-                    reason: ExitReason::PtyDisconnected,
-                })
-            });
-            harness.controller.read(&app, |controller, _| {
-                assert!(controller.pending_writes.is_empty());
-                assert!(!controller.handoff_held_command_pending);
-                assert!(!controller.is_user_command_executing);
-            });
-        });
-    }
-
-    /// A prompt that ran no command (here an empty Enter) brings no line-editor activation. The
-    /// view hands input back at that precmd and asks the controller to decide again, which
-    /// releases the command held for this prompt.
-    #[test]
-    fn an_empty_line_prompt_releases_a_held_command() {
-        App::test((), |mut app| async move {
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            // Lets the empty line's completion apply at a prompt whatever the mock's bootstrap
-            // stage, as a real shell's does.
-            let _recovery = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
-            let harness = harness(&mut app);
-            submit(&mut app, &harness, "sleep 2");
-            // Typed while the command runs, not right after it was written (#933).
-            harness
-                .model
-                .lock()
-                .typeahead_handoff_mut()
-                .age_last_activity_for_test();
-            user_types(&mut app, &harness, b"ls");
-            shell_runs_a_command(&harness.model, "sleep 2");
-            fire_queued_command(&mut app, &harness);
-            // A line typed during the command, long after it began (#933).
-            harness
-                .model
-                .lock()
-                .typeahead_handoff_mut()
-                .age_last_activity_for_test();
-            user_types(&mut app, &harness, b"\r\r");
-
-            shell_runs_a_command(&harness.model, "ls");
-            line_editor_becomes_active(&mut app, &harness);
-            assert!(
-                !written(&harness).contains(&bytes_to_execute_command("queued", SHELL, false)),
-                "the empty line is still to come"
-            );
-
-            // The empty line: a prompt without a preexec. The view's precmd handler commits and
-            // asks for a new decision.
-            harness.model.lock().finish_block();
-            assert!(
-                harness
-                    .model
-                    .lock()
-                    .typeahead_handoff_mut()
-                    .try_commit_at_prompt()
-            );
-            harness.controller.update(&mut app, |controller, ctx| {
-                controller.retry_typeahead_handoff_request(ctx)
-            });
-            assert_eq!(
-                written(&harness).last(),
-                Some(&bytes_to_execute_command("queued", SHELL, false))
-            );
-        });
-    }
-
-    /// The editor command is written at once (the line editor is active) while a command is
-    /// held; the held one stays queued and goes out at the editor command's prompt.
-    #[test]
-    fn an_editor_command_written_at_once_keeps_the_held_one_queued() {
-        App::test((), |mut app| async move {
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let harness = harness(&mut app);
-            submit(&mut app, &harness, "sleep 2");
-            user_types(&mut app, &harness, b"foo");
-            shell_runs_a_command(&harness.model, "sleep 2");
-            fire_queued_command(&mut app, &harness);
-            harness.line_editor_status.update(&mut app, |status, _| {
-                status.set_line_editor_active_for_test(true)
-            });
-
-            submit(&mut app, &harness, "ls");
-            assert_eq!(
-                written(&harness).last(),
-                Some(&bytes_to_execute_command("ls", SHELL, false))
-            );
-            harness.controller.read(&app, |controller, _| {
-                assert_eq!(controller.pending_writes.len(), 1);
-                assert!(controller.handoff_held_command_pending);
-            });
-
-            shell_runs_a_command(&harness.model, "ls");
-            line_editor_becomes_active(&mut app, &harness);
-            assert_eq!(
-                written(&harness).last(),
-                Some(&bytes_to_execute_command("queued", SHELL, false))
-            );
-        });
-    }
-
-    /// An in-band command waiting on an Enter that a program consumed is released by the quiet
-    /// period, with no request.
-    #[test]
-    fn an_in_band_command_is_released_by_the_quiet_period() {
-        App::test((), |mut app| async move {
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let harness = harness(&mut app);
+            let harness = harness_with(&mut app, powershell_session_info());
             submit(&mut app, &harness, "read x");
             user_types(&mut app, &harness, b"y\r");
             shell_runs_a_command(&harness.model, "read x");
@@ -2751,10 +2414,14 @@ mod typeahead_handoff {
             });
 
             let in_band = bytes_to_execute_command("echo in-band", SHELL, false);
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while written(&harness).last() != Some(&in_band) && Instant::now() < deadline {
-                Timer::after(Duration::from_millis(50)).await;
-            }
+            Timer::after(Duration::from_millis(600)).await;
+            assert_ne!(
+                written(&harness).last(),
+                Some(&in_band),
+                "no timer writes the in-band command"
+            );
+            activation_pending(&mut app, &harness);
+            powershell_marks_line_editor_reading(&mut app, &harness);
             assert_eq!(written(&harness).last(), Some(&in_band));
             assert!(!written(&harness).contains(&REQUEST.to_vec()));
         });
@@ -3301,6 +2968,66 @@ mod typeahead_handoff {
             harness.line_editor_status.read(&app, |status, _| {
                 assert!(status.is_line_editor_active() && status.is_proven_reading())
             });
+        });
+    }
+
+    /// Owner rule (a timer never commits): a Ctrl-C at a prompt on a session without prompt
+    /// sequence numbers (here the default test harness) no longer commits the editor 250 ms later.
+    /// Nothing changes with time; the line editor's ready signal (bracketed-paste enable) while it
+    /// is already active -- zle restarting the line after ^C, no Precmd -- hands input back. The
+    /// hand-off and controller are shared by the Legacy and Table input modes.
+    #[test]
+    fn a_ctrl_c_without_seq_numbers_is_settled_by_the_ready_signal_not_a_timer() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "true");
+            shell_runs_a_command(&harness.model, "true");
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(
+                harness
+                    .model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .on_interrupt_for_shell(false),
+                InterruptOutcome::AtPrompt
+            );
+            assert!(
+                harness
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .interrupt_settle_pending()
+            );
+
+            Timer::after(Duration::from_millis(600)).await;
+            assert!(
+                harness.model.lock().typeahead_handoff().is_pty_owned(),
+                "no timer commits"
+            );
+            assert!(
+                harness
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .interrupt_settle_pending()
+            );
+
+            harness.model_events.update(&mut app, |_, ctx| {
+                ctx.emit(ModelEvent::Handler(AnsiHandlerEvent::SetBracketedPaste))
+            });
+            assert!(
+                !harness
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .interrupt_settle_pending()
+            );
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned,
+                "the ready signal handed input back"
+            );
         });
     }
 

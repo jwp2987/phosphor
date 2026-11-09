@@ -15339,6 +15339,64 @@ fn typeahead_handoff_ctrl_c_with_no_prompt_cycle_decides_at_once() {
     })
 }
 
+/// Owner rule (a timer never commits): ^C at a prompt on a session WITHOUT prompt sequence numbers
+/// no longer spawns the 250 ms `INTERRUPT_SETTLE` commit. The hand-off waits (`interrupt_settle_pending`)
+/// for the line editor's ready signal or the next Precmd; time alone changes nothing and asks the
+/// controller for nothing. Legacy and Table.
+#[test]
+fn typeahead_handoff_ctrl_c_without_seq_numbers_does_not_commit_on_a_timer() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let retries = Rc::new(RefCell::new(0));
+            let retries_seen = retries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::RetryTypeaheadHandoffRequest = event {
+                        *retries_seen.borrow_mut() += 1;
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                {
+                    let mut model = view.model.lock();
+                    let mut handoff = model.typeahead_handoff_mut();
+                    handoff.on_command_written();
+                    handoff.on_precmd();
+                }
+                view.handle_typeahead_handoff_interrupt_for_shell(true, ctx);
+                assert!(
+                    view.model
+                        .lock()
+                        .typeahead_handoff()
+                        .interrupt_settle_pending()
+                );
+            });
+            warpui::r#async::Timer::after(Duration::from_millis(600)).await;
+            terminal.read(&app, |view, _| {
+                let model = view.model.lock();
+                assert!(
+                    matches!(
+                        model.typeahead_handoff().state(),
+                        HandoffState::PtyOwned { .. }
+                    ),
+                    "{mode:?}: no timer hands the line to the editor"
+                );
+                assert!(model.typeahead_handoff().interrupt_settle_pending());
+            });
+            assert_eq!(
+                *retries.borrow(),
+                0,
+                "{mode:?}: no timer asks for a decision"
+            );
+        })
+    }
+}
+
 /// #1703 (busy-machine M10): the give-up of the hand-back after a Ctrl-C never commits. On a slow
 /// machine the report or prompt cycle may only be late; the editor must not take the line on the
 /// timer. The give-up only clears the wait for that one signal; owner rule (2026-11-08, a timer
@@ -24132,7 +24190,7 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
                 let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 // Typeahead for a command that has been running a while: a line begun within
-                // `YOUNG_ENTER_WINDOW` of the command being written is young (#933), and its
+                // the barrier-undrained state of the command being written is young (#933), and its
                 // report would be `InsertYoung`.
                 handoff.age_last_activity_for_test();
                 handoff.on_user_bytes(b"echo \"a b");
