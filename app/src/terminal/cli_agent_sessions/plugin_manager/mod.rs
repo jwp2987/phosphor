@@ -285,6 +285,7 @@ const SOURCE_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(20);
 /// leaves the current install exactly as it is. The agents' own fetch also
 /// needs `git`, so a missing `git` correctly fails here too.
 /// `GIT_TERMINAL_PROMPT=0` keeps git from ever waiting on a credential prompt.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn plugin_source_reachable(
     runner: &dyn PluginCommandRunner,
     url: &str,
@@ -348,9 +349,52 @@ const SOURCE_UNREACHABLE_MESSAGE: &str =
 /// The error a manager returns when the pre-flight fails. Nothing was
 /// changed, so the caller may offer the same operation again
 /// ([`PluginInstallError::left_install_unchanged`]).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn source_unreachable_error(log: String) -> PluginInstallError {
     PluginInstallError {
         message: SOURCE_UNREACHABLE_MESSAGE.to_owned(),
+        log,
+    }
+}
+
+/// The folder holding the plugin of one agent that ships with this build, if it can be found:
+/// `$<env_var>`, else `<bundled resources>/<relative>`. `None` when that folder lacks the
+/// `marker` file (a path relative to it). Phosphor never fetches an agent plugin from
+/// anywhere (owner decision, 2026-11-09), so without the folder install and update fail with a
+/// clear message (see [`bundle_missing_error`]).
+pub(crate) fn bundled_plugin_dir(env_var: &str, relative: &str, marker: &str) -> Option<PathBuf> {
+    let candidate = match std::env::var_os(env_var).filter(|value| !value.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => warp_core::paths::bundled_resources_dir()?.join(relative),
+    };
+    candidate.join(marker).is_file().then_some(candidate)
+}
+
+/// Whether `path` is where a Phosphor install keeps a bundled plugin (`.../<relative>`), at
+/// this install location or an older one. Separators of either kind and a trailing one are
+/// ignored.
+pub(crate) fn looks_like_bundle_path(path: &str, relative: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.trim_end_matches('/').ends_with(relative)
+}
+
+/// Whether a recorded folder is the bundled folder of this install (textually, or after
+/// canonicalisation).
+pub(crate) fn same_folder(recorded: &str, bundle: &std::path::Path) -> bool {
+    let trim = |p: &str| p.trim_end_matches(['/', '\\']).to_owned();
+    let canonical = |p: &std::path::Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    trim(recorded) == trim(&bundle.to_string_lossy())
+        || canonical(std::path::Path::new(recorded)) == canonical(bundle)
+}
+
+/// The error when the plugin folder that ships with the app is not there.
+pub(crate) fn bundle_missing_error(agent: &str, mut log: String) -> PluginInstallError {
+    log.push_str(&format!(
+        "The {agent} plugin that ships with Phosphor was not found in the app's resources. \
+         Phosphor does not download it; reinstall Phosphor.\n"
+    ));
+    PluginInstallError {
+        message: format!("The bundled {agent} plugin was not found"),
         log,
     }
 }

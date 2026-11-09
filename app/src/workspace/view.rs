@@ -23499,9 +23499,12 @@ impl TypedActionView for Workspace {
             }
             #[cfg(debug_assertions)]
             InstallOpenCodeWarpPlugin => {
-                let message = set_opencode_warp_plugin(
-                    crate::terminal::cli_agent_sessions::plugin_manager::opencode::PLUGIN_SPEC,
-                );
+                let message =
+                    match crate::terminal::cli_agent_sessions::plugin_manager::opencode::plugin_spec(
+                    ) {
+                        Some(spec) => set_opencode_warp_plugin(&spec),
+                        None => "The bundled OpenCode plugin was not found".to_string(),
+                    };
                 self.toast_stack.update(ctx, |view, ctx| {
                     view.add_ephemeral_toast(DismissibleToast::default(message), ctx);
                 });

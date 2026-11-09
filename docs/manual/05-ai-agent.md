@@ -696,19 +696,13 @@ Claude Code and Codex are programs you installed yourself, and hiding a
 quick-launch button for a command you can type anyway would withhold nothing.
 Their visibility is controlled only by the per-agent settings above.
 
-Richer status (a working indicator that tracks the agent's turn) needs the
-vendor's Phosphor notification plugin: `claude-code-warp` for Claude Code
-(shipped inside Phosphor, see below), `codex-warp` ≥ 0.4.0 for Codex,
-`gemini-cli-warp` ≥ 1.0.0 for Gemini CLI, `opencode-warp` for OpenCode. The
-latter three Phosphor fetches from its own GitLab copies under
-[`gitlab.com/winters-phosphor`](https://gitlab.com/winters-phosphor) (mirrors of
-Warp's repositories, MIT notices kept), not from Warp's GitHub. Codex's is behind
-a build feature that is on by default; Gemini's needs an opt-in flag and is
-effectively off. For OpenCode the entry is the git spec
-`git+https://gitlab.com/winters-phosphor/opencode-warp.git#v0.2.0`; an older
-`@warp-dot-dev/opencode-warp` entry in your global `opencode.json` is rewritten
-to it when you click the move chip (nothing else in the file changes), and a local
-`file://` entry is never touched.
+Richer status (a working indicator that tracks the agent's turn) needs a
+notification plugin for the agent. All four ship inside Phosphor, in the app's
+resources: `claude_plugin` (Claude Code), `codex_plugin` (Codex),
+`gemini_plugin` (Gemini CLI) and `opencode_plugin` (OpenCode), each under
+`resources/bundled/`. Nothing is downloaded from GitHub, GitLab or npm, and
+installing works offline. Codex's is behind a build feature that is on by
+default; Gemini's needs an opt-in flag and is effectively off.
 
 **The Claude Code plugin ships with Phosphor.** Its files are in the app's
 resources (`resources/bundled/claude_plugin`, a complete Claude Code marketplace
@@ -723,6 +717,23 @@ new folder. A plugin you installed earlier from Warp's GitHub or Phosphor's old
 GitLab copy is offered a "Move plugin" chip; nothing moves until you click it, and
 background launches never move anything. A marketplace you pointed at your own
 local checkout is left alone. The `oz-harness-support` plugin is not included.
+
+**Codex, Gemini CLI and OpenCode work the same way, each with its own CLI's local install:**
+
+| Agent | What Phosphor runs | Version pin |
+|---|---|---|
+| Codex | `codex plugin marketplace add <folder>` (a local marketplace, `codex-warp`), then `codex plugin add warp@codex-warp` | 0.4.3 |
+| Gemini CLI | `gemini extensions install <folder> --consent` (Gemini copies the folder into `~/.gemini/extensions/gemini-warp`) | 1.0.0 |
+| OpenCode | no command: the move chip writes a `file://<folder>` entry into the `plugin` array of your global `opencode.json(c)`; the install and update dialogs show that same entry to paste | 0.2.0 |
+
+An update replaces the install with the folder of the running Phosphor (Codex:
+`marketplace remove` + `add` + `plugin add`; Gemini: `extensions uninstall` +
+`install`). A plugin you installed earlier from Warp's GitHub or Phosphor's old
+GitLab copy (for OpenCode, an `@warp-dot-dev/opencode-warp` or `git+https` entry)
+is offered the "Move plugin" chip; nothing moves until you click it. Anything you
+pointed at your own local checkout, and any other `plugin` entry in
+`opencode.json`, is left alone. If the folder is missing from a damaged install,
+the dialog says "the bundled plugin was not found" and nothing is changed.
 
 ### 2. Driving a CLI agent *as* Phosphor's harness
 
