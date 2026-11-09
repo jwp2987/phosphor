@@ -40,8 +40,9 @@ pub const GITHUB: &str = "github";
 /// name for what the earlier `SKILLS` constant (never referenced outside this module) meant;
 /// bundled skills are never part of it, the app supplies its own.
 pub const AGENT_CONTEXT: &str = "agent_context";
-/// Codebase chunking for indexing: the host scans, chunks and hashes, the app embeds. Distinct
-/// from the legacy [`CODEBASE_INDEX`] (host-side embedding), which the helper never implements.
+/// Codebase indexing, host scans and stores, the app embeds: `ScanCodebase`, `GetChunks`,
+/// `StoreVectors`, `QueryVectors`. Distinct from the legacy [`CODEBASE_INDEX`] (host-side
+/// embedding), which the helper never implements. The helper implements it (P9b).
 pub const CODEBASE_CHUNKS: &str = "codebase_chunks";
 
 /// The families above that only the legacy full daemon implements, for documentation and for
@@ -54,7 +55,6 @@ pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
     GIT_STATUS,
     GITHUB,
     AGENT_CONTEXT,
-    CODEBASE_CHUNKS,
 ];
 
 /// Every capability the helper in this build implements.
@@ -66,6 +66,7 @@ pub const HELPER_CAPABILITIES: &[&str] = &[
     RIPGREP_SEARCH,
     REPO_METADATA,
     FILE_CONTEXT,
+    CODEBASE_CHUNKS,
 ];
 
 /// What the server on the other end of a session supports.
@@ -140,7 +141,11 @@ mod tests {
         assert_eq!(AGENT_CONTEXT, "agent_context");
         assert_eq!(CODEBASE_CHUNKS, "codebase_chunks");
         assert!(LEGACY_ONLY_CAPABILITIES.contains(&AGENT_CONTEXT));
-        assert!(LEGACY_ONLY_CAPABILITIES.contains(&CODEBASE_CHUNKS));
+        // P9b: the helper serves codebase chunks; only the legacy host-side index stays legacy.
+        assert!(HELPER_CAPABILITIES.contains(&CODEBASE_CHUNKS));
+        assert!(!LEGACY_ONLY_CAPABILITIES.contains(&CODEBASE_CHUNKS));
+        assert!(LEGACY_ONLY_CAPABILITIES.contains(&CODEBASE_INDEX));
+        assert!(!HELPER_CAPABILITIES.contains(&CODEBASE_INDEX));
     }
 
     #[test]

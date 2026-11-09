@@ -89,7 +89,8 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
             "git_read",
             "ripgrep_search",
             "repo_metadata",
-            "file_context"
+            "file_context",
+            "codebase_chunks"
         ]
     );
     // Parity family a: batch file reads are served by the helper.
@@ -344,6 +345,16 @@ fn every_reserved_family_request_is_unsupported_and_named() {
             "GitStage",
             host_scoped_request::Message::GitStage(Default::default()),
         ),
+        // The legacy host-side index (the host embeds) stays unsupported: the helper never holds
+        // the user's embedding key.
+        (
+            "IndexCodebase",
+            host_scoped_request::Message::IndexCodebase(Default::default()),
+        ),
+        (
+            "SearchRemoteCodebase",
+            host_scoped_request::Message::SearchRemoteCodebase(Default::default()),
+        ),
     ];
     for (name, message) in host_requests {
         h.send(host("rh", message));
@@ -367,6 +378,51 @@ fn every_reserved_family_request_is_unsupported_and_named() {
         assert_eq!(e.code, ErrorCode::Unsupported as i32, "{name}");
         assert!(e.message.contains(name), "{name}: {}", e.message);
     }
+}
+
+/// P9b: the four index requests are served (an answer in their own response type, an error inside
+/// it for a bad path), never `UNSUPPORTED`. The per-case coverage is in `index_store_tests.rs`;
+/// the relative path keeps this test off the host's `~/.phosphor/index`.
+#[test]
+fn codebase_index_requests_are_served_not_unsupported() {
+    let mut h = harness();
+    h.send(host(
+        "s1",
+        host_scoped_request::Message::ScanCodebase(crate::proto::ScanCodebase {
+            repo_path: "relative".into(),
+        }),
+    ));
+    let Some(server_message::Message::ScanCodebaseResponse(resp)) = h.next().message else {
+        panic!("expected ScanCodebaseResponse");
+    };
+    assert!(matches!(
+        resp.result,
+        Some(crate::proto::scan_codebase_response::Result::Error(_))
+    ));
+    h.send(host(
+        "s2",
+        host_scoped_request::Message::GetChunks(Default::default()),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::GetChunksResponse(_))
+    ));
+    h.send(host(
+        "s3",
+        host_scoped_request::Message::StoreVectors(Default::default()),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::StoreVectorsResponse(_))
+    ));
+    h.send(host(
+        "s4",
+        host_scoped_request::Message::QueryVectors(Default::default()),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::QueryVectorsResponse(_))
+    ));
 }
 
 // ---- repo metadata (P3) -------------------------------------------------------------------

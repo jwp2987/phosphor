@@ -24,8 +24,8 @@ use super::exec::{self, SessionShell, ShellKind};
 use super::jobs::{Inflight, Reply};
 use super::watch::{FsKind, WatchSet};
 use super::{
-    buffers, diff_state, file_context, fs_ops, git, git_status, git_write, github, repo_meta,
-    ripgrep,
+    buffers, diff_state, file_context, fs_ops, git, git_status, git_write, github, index_store,
+    repo_meta, ripgrep,
 };
 
 /// How long the daemon waits with no connections before exiting.
@@ -312,7 +312,44 @@ impl Server {
             M::GitCreatePr(_) => git_write::handle(&reply, "GitCreatePr"),
             M::DiscardFiles(_) => git_write::handle(&reply, "DiscardFiles"),
             M::GitStage(_) => git_write::handle(&reply, "GitStage"),
-            // Legacy host-side indexing: never implemented by the helper (see CODEBASE_CHUNKS).
+            // Codebase indexing (`codebase_chunks`): the host scans and stores, the app embeds.
+            M::ScanCodebase(msg) => {
+                log::info!("Handling ScanCodebase");
+                self.inflight.spawn(reply, move |_| {
+                    server_message::Message::ScanCodebaseResponse(index_store::scan_codebase(
+                        &index_store::default_root(),
+                        msg,
+                    ))
+                });
+            }
+            M::GetChunks(msg) => {
+                log::info!("Handling GetChunks ({} hashes)", msg.content_hashes.len());
+                self.inflight.spawn(reply, move |_| {
+                    server_message::Message::GetChunksResponse(index_store::get_chunks(
+                        &index_store::default_root(),
+                        msg,
+                    ))
+                });
+            }
+            M::StoreVectors(msg) => {
+                log::info!("Handling StoreVectors ({} vectors)", msg.vectors.len());
+                self.inflight.spawn(reply, move |_| {
+                    server_message::Message::StoreVectorsResponse(index_store::store_vectors(
+                        &index_store::default_root(),
+                        msg,
+                    ))
+                });
+            }
+            M::QueryVectors(msg) => {
+                log::info!("Handling QueryVectors (top_k={})", msg.top_k);
+                self.inflight.spawn(reply, move |_| {
+                    server_message::Message::QueryVectorsResponse(index_store::query_vectors(
+                        &index_store::default_root(),
+                        msg,
+                    ))
+                });
+            }
+            // Legacy host-side indexing (host embeds): never implemented by the helper.
             other => unsupported(&reply, host_scoped_name(&other)),
         }
     }
@@ -493,6 +530,10 @@ fn host_scoped_name(message: &host_scoped_request::Message) -> &'static str {
         M::SearchRemoteCodebase(_) => "SearchRemoteCodebase",
         M::GitPull(_) => "GitPull",
         M::GitStage(_) => "GitStage",
+        M::ScanCodebase(_) => "ScanCodebase",
+        M::GetChunks(_) => "GetChunks",
+        M::StoreVectors(_) => "StoreVectors",
+        M::QueryVectors(_) => "QueryVectors",
     }
 }
 

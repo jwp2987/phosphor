@@ -13,21 +13,22 @@ use warpui::r#async::executor;
 use crate::proto::{
     Abort, Authenticate, BufferEdit, ClientMessage, CloseBuffer, CreateDirectory,
     CreateDirectoryResponse, DeleteFile, DiffStateFileDelta, DiffStateMetadataUpdate,
-    DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches, GetBranchesResponse,
-    GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse, GetDiffState,
-    GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest,
-    GitCreatePrResponse, GitHubPrInfoPush, GitHubRepositoryInfoPush, GitPullRequest,
-    GitPullResponse, GitPushRequest, GitPushResponse, GitStageRequest, GitStatusPush, Initialize,
-    InitializeResponse, ListDirectory, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
-    NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
-    ReadFileChunkResponse, ReadFileContextRequest, ReadFileContextResponse,
-    RemoteAgentContextSnapshot, ResolveConflict, ResolveConflictResponse, ResolvePath,
-    ResolvePathResponse, RipgrepSearchRequest, RipgrepSearchResponse, RunCommandRequest,
-    RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
-    TextEdit, UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo, UpdateGitStatus,
-    UpdatePreferences, WriteFile, WriteFileChunk, WriteFileChunkResponse, discard_files_response,
-    git_stage_response, host_scoped_request, notification, read_file_chunk_response,
-    server_message, session_scoped_request,
+    DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches, GetBranchesResponse, GetChunks,
+    GetChunksResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
+    GetDiffState, GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse,
+    GitCreatePrRequest, GitCreatePrResponse, GitHubPrInfoPush, GitHubRepositoryInfoPush,
+    GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse, GitStageRequest,
+    GitStatusPush, Initialize, InitializeResponse, ListDirectory, ListDirectoryResponse,
+    LoadRepoMetadataDirectoryResponse, NavigatedToDirectoryResponse, OpenBuffer,
+    OpenBufferResponse, QueryVectors, QueryVectorsResponse, ReadFileChunk, ReadFileChunkResponse,
+    ReadFileContextRequest, ReadFileContextResponse, RemoteAgentContextSnapshot, ResolveConflict,
+    ResolveConflictResponse, ResolvePath, ResolvePathResponse, RipgrepSearchRequest,
+    RipgrepSearchResponse, RunCommandRequest, RunCommandResponse, SaveBuffer, SaveBufferResponse,
+    ScanCodebase, ScanCodebaseResponse, ServerMessage, SessionBootstrapped, StoreVectors,
+    StoreVectorsResponse, TextEdit, UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo,
+    UpdateGitStatus, UpdatePreferences, WriteFile, WriteFileChunk, WriteFileChunkResponse,
+    discard_files_response, git_stage_response, host_scoped_request, notification,
+    read_file_chunk_response, server_message, session_scoped_request,
 };
 
 use crate::capability::ServerCapabilities;
@@ -95,7 +96,11 @@ pub enum ClientError {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClientPreferences {
     pub codebase_index_limits: Option<crate::proto::CodebaseIndexLimits>,
-    /// The user's own embedding endpoint. This is the BYOP replacement for the
+    /// DEPRECATED, IGNORED (P9b owner ruling): the client no longer sends this, whatever it
+    /// holds. The user's embedding key never leaves their machine; the app embeds through the
+    /// network gate and the host only stores vectors. Kept until the app's producer is removed.
+    ///
+    /// (Former doc:) The user's own embedding endpoint. This is the BYOP replacement for the
     /// pin's Warp bearer token — see the `EmbeddingProviderConfig` message in
     /// `proto/remote_server.proto`.
     ///
@@ -377,7 +382,8 @@ impl RemoteServerClient {
             session_scoped_request::Message::Initialize(Initialize {
                 auth_token: auth_token.unwrap_or_default().to_owned(),
                 codebase_index_limits: preferences.codebase_index_limits,
-                embedding_provider: preferences.embedding_provider,
+                // Never sent (P9b owner ruling): the user's embedding key stays on their machine.
+                embedding_provider: None,
                 chunked_responses: chunked_responses_announced(),
             }),
         );
@@ -414,7 +420,8 @@ impl RemoteServerClient {
         let msg = ClientMessage::notification(notification::Message::UpdatePreferences(
             UpdatePreferences {
                 codebase_index_limits: preferences.codebase_index_limits,
-                embedding_provider: preferences.embedding_provider,
+                // Never sent (P9b owner ruling), see `initialize`.
+                embedding_provider: None,
             },
         ));
         self.send_notification(msg);
@@ -542,6 +549,84 @@ impl RemoteServerClient {
             Some(server_message::Message::ReadFileContextResponse(resp)) => Ok(resp),
             other => {
                 log::error!("Unexpected response variant for ReadFileContext: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Scans `repo_path` on the host: manifest, fragment spans and root hash, which the host
+    /// also keeps as the repository's current scan (capability `codebase_chunks`).
+    pub async fn scan_codebase(
+        &self,
+        repo_path: String,
+    ) -> Result<ScanCodebaseResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ScanCodebase(ScanCodebase { repo_path }),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::ScanCodebaseResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for ScanCodebase: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// The text of the fragments in `request` that have no vector yet.
+    pub async fn get_chunks(&self, request: GetChunks) -> Result<GetChunksResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::GetChunks(request),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::GetChunksResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for GetChunks: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Stores embedding vectors on the host, keyed by content hash and storage key.
+    pub async fn store_vectors(
+        &self,
+        request: StoreVectors,
+    ) -> Result<StoreVectorsResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::StoreVectors(request),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::StoreVectorsResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for StoreVectors: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Ranks the host's stored vectors against `request.query_vector`.
+    pub async fn query_vectors(
+        &self,
+        request: QueryVectors,
+    ) -> Result<QueryVectorsResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::QueryVectors(request),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::QueryVectorsResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for QueryVectors: {other:?}");
                 Err(ClientError::UnexpectedResponse)
             }
         }

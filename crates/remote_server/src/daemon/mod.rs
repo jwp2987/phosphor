@@ -6,8 +6,9 @@
 //!   multiple concurrent proxy connections and exits after a grace period with none.
 //!
 //! The request handlers cover the families in [`crate::capability::HELPER_CAPABILITIES`] (repo
-//! metadata and its live file tree arrived with the watch infrastructure in `watch.rs`);
-//! everything else (codebase index, buffers, diff-state and git-status
+//! metadata and its live file tree arrived with the watch infrastructure in `watch.rs`; codebase
+//! indexing is host-scan / app-embed, `index_store.rs`);
+//! everything else (the legacy host-embedding codebase index, buffers, diff-state and git-status
 //! subscriptions, file-context reads, git write operations) is answered with
 //! `ErrorCode::UNSUPPORTED` and the client runs it on its no-helper path. Wave H, #1804.
 
