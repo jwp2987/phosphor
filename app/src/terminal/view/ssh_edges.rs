@@ -294,11 +294,8 @@ impl TerminalView {
             _ => true,
         };
         // #1809: event-based, as in `refresh_ssh_connect_gate`: not for a block whose ssh already
-        // owns the tty (its interactive latch fired before any window existed).
-        let already_owned = snapshot
-            .interactive_latch
-            .as_ref()
-            .is_some_and(|latch| latch.is_latched());
+        // owns the tty (its ownership event arrived before any window existed).
+        let already_owned = self.ssh_owned_block_without_window == Some(snapshot.active_block_hash);
         started_after_release && !already_owned
     }
 

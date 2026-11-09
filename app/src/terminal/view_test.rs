@@ -15366,6 +15366,10 @@ fn typeahead_handoff_ctrl_c_without_seq_numbers_does_not_commit_on_a_timer() {
                     let mut model = view.model.lock();
                     let mut handoff = model.typeahead_handoff_mut();
                     handoff.on_command_written();
+                    // Text typed for the next prompt keeps the pty the owner: with nothing typed
+                    // the prompt's Precmd hands the editor the line at once (nothing to settle).
+                    handoff.on_user_bytes(b"ab");
+                    handoff.on_user_write_flushed();
                     handoff.on_precmd();
                 }
                 view.handle_typeahead_handoff_interrupt_for_shell(true, ctx);

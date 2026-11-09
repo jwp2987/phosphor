@@ -5402,11 +5402,14 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
                                 );
                             }
                             YoungHoldEvidence::PrecmdInFlight => {
-                                let raw = raw.as_ref().unwrap_or_else(|| panic!("{label}"));
+                                // `Probe::None` carries the test default (activity just now =
+                                // an undrained barrier, `note_fresh_activity_for_test`).
                                 assert!(
                                     matches!(
                                         probe,
-                                        Probe::Fact(_, Some(false)) | Probe::Unsampled(Some(false))
+                                        Probe::None
+                                            | Probe::Fact(_, Some(false))
+                                            | Probe::Unsampled(Some(false))
                                     ),
                                     "only an installed, undrained barrier: {label}"
                                 );
@@ -5415,7 +5418,13 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
                                     StreamApplied::Nothing,
                                     "still unapplied: {label}"
                                 );
-                                raw.set_drained(true);
+                                match &raw {
+                                    Some(raw) => raw.set_drained(true),
+                                    None => {
+                                        handoff.foreground_probe.stream_drained =
+                                            Some(Arc::new(|| true))
+                                    }
+                                }
                                 match handoff.on_stream_applied() {
                                     // The written command's own Preexec is still pending: the
                                     // hold waits for that Preexec (which does not end it) and
@@ -5657,10 +5666,10 @@ fn a_signal_behind_a_deferred_enter_waits_in_order_r18u23_fuzz() {
     assert_eq!(h.take_deferred_key_started(), None);
 }
 
-/// #1661 (owner decision 2026-11-05): one young hold ends at its cap by design and keeps its short
-/// cap (and, in the view, the hand-back): the fish no-barrier hold (2 s). The window hold of a
-/// session without prompt sequence numbers is gone with the window (2026-11-09); every other
-/// young hold's cap is a give-up: the 10 s net (which drops the keys).
+/// #1661 (owner decision 2026-11-05): two young holds end at their cap by design and keep their
+/// short cap (and, in the view, the hand-back): the fish no-barrier hold and the barrier hold of a
+/// session without prompt sequence numbers (what the window hold was). Every other young hold's
+/// cap is a give-up: the 10 s net (which drops the keys).
 #[test]
 fn only_the_no_barrier_young_hold_keeps_its_short_cap() {
     // Fish, no barrier: `PrecmdMaybeInFlight`, the 2 s cap is its normal end.
@@ -5709,7 +5718,8 @@ fn only_the_no_barrier_young_hold_keeps_its_short_cap() {
         YOUNG_HOLD_GIVE_UP
     );
 
-    // No prompt sequence numbers: the same barrier decides, and the cap is a give-up too.
+    // No prompt sequence numbers: the same barrier decides, and the cap is the hold's normal end
+    // (the hand-back the window hold of such a session had, #1661).
     let mut legacy = young_after_submit();
     type_and_flush(&mut legacy, b"explain");
     assert_eq!(legacy.on_user_bytes(b"\r"), UserBytesRoute::Held);
@@ -5717,10 +5727,10 @@ fn only_the_no_barrier_young_hold_keeps_its_short_cap() {
         legacy.young_hold_evidence(),
         Some(YoungHoldEvidence::PrecmdInFlight)
     );
-    assert!(!legacy.young_hold_cap_is_normal_end());
+    assert!(legacy.young_hold_cap_is_normal_end());
     assert_eq!(
         legacy.young_hold_give_up(Instant::now()),
-        YOUNG_HOLD_GIVE_UP
+        EVENT_HOLD_GIVE_UP
     );
 }
 

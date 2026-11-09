@@ -2986,8 +2986,14 @@ mod typeahead_handoff {
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let harness = harness(&mut app);
             submit(&mut app, &harness, "true");
+            // Text typed for the next prompt keeps the pty the owner (with nothing typed the
+            // prompt's Precmd hands the editor the line at once: nothing to settle).
+            user_types(&mut app, &harness, b"ab");
             shell_runs_a_command(&harness.model, "true");
-            line_editor_becomes_active(&mut app, &harness);
+            // The line editor is active (never went inactive): no `Active` event, no decision.
+            harness.line_editor_status.update(&mut app, |status, _| {
+                status.set_line_editor_active_for_test(true)
+            });
             assert_eq!(
                 harness
                     .model
