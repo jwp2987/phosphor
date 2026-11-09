@@ -34,7 +34,7 @@ def embed(text: str, dims: int) -> list:
     return [round(x / norm, 8) for x in raw]
 
 
-def make_handler(default_dims: int):
+def make_handler(default_dims: int, log_path=None):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: bytes, ctype: str = "application/json"):
             self.send_response(code)
@@ -70,6 +70,14 @@ def make_handler(default_dims: int):
                 {"object": "embedding", "index": i, "embedding": embed(t, dims)}
                 for i, t in enumerate(inputs)
             ]
+            if log_path:
+                # One line per request, for the lab: how many texts, and a short hash of the
+                # sentinel header (never the header itself) so a test can tell the app's key
+                # reached this endpoint without the key ever being written down.
+                sentinel = self.headers.get("X-Appci-Key") or ""
+                digest = hashlib.sha256(sentinel.encode()).hexdigest()[:8] if sentinel else "none"
+                with open(log_path, "a") as fh:
+                    fh.write(f"embed inputs={len(inputs)} dims={dims} key_sha={digest}\n")
             tokens = sum(len(t.split()) for t in inputs)
             out = {
                 "object": "list",
@@ -90,8 +98,9 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--dims", type=int, default=64)
+    ap.add_argument("--log", default=None, help="append one line per embeddings request here")
     args = ap.parse_args()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(args.dims))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(args.dims, args.log))
     print(server.server_address[1], flush=True)
     try:
         server.serve_forever()

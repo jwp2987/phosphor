@@ -183,6 +183,17 @@ def main():
         ollama_url, ollama_model = fake.url, "fake-model"
         os.environ["APPCI_FAKE_MODEL_ACTIVE"] = "1"
         print("fake model: a local scripted provider is the agent provider for this run (APPCI_FAKE_MODEL=1)", flush=True)
+    if os.environ.get("APPCI_FAKE_EMBEDDINGS") == "1":      # P9b: the user's BYOP /embeddings provider for the remote-index lab case (loopback, no outgoing connection)
+        elog = os.path.join(run, "fake_embeddings.log")
+        open(elog, "w").close()
+        fe = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "fake_embeddings.py"), "--log", elog],
+                              stdout=subprocess.PIPE, text=True)
+        port = int(fe.stdout.readline().strip())
+        os.environ["APPCI_FAKE_EMBEDDINGS_URL"] = "http://127.0.0.1:%d/v1" % port
+        os.environ["APPCI_FAKE_EMBEDDINGS_LOG"] = elog
+        os.environ["APPCI_FAKE_EMBEDDINGS_ACTIVE"] = "1"
+        os.environ.setdefault("ZAP_UNSTABLE_FEATURES", "full_source_code_embedding")
+        print("fake embeddings: a loopback /embeddings provider is configured for this run (APPCI_FAKE_EMBEDDINGS=1)", flush=True)
     sim = a.backend == "sim"
     os.environ["APPCI_PLATFORM"] = a.platform      # linux-wayland | linux-x11 | macos | windows (baselines/<platform>.json)
     if not os.environ.get("APPCI_PREV_RESULTS"):
