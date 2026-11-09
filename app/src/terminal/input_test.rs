@@ -18945,3 +18945,21 @@ fn test_remote_as_you_type_listing_is_single_flight_latest_wins() {
     flight.superseded(new);
     assert!(!flight.is_running());
 }
+
+/// A hung remote listing cannot block as-you-type: an event (Precmd, session end, control
+/// connection error, cwd change) abandons it and drops the held request, and the next keystroke
+/// starts a fresh listing. Mode-independent bookkeeping, as above.
+#[test]
+fn test_remote_listing_event_frees_a_hung_flight() {
+    let mut flight = RemoteListingFlight::<&str>::new();
+    let hung = flight.start();
+    flight.hold(3, "cd pro");
+    assert!(flight.abandon(), "a job was running");
+    assert!(!flight.is_running());
+    // The hung job's late end neither frees a newer flight nor replays the dropped request.
+    let fresh = flight.start();
+    assert_eq!(flight.finished(hung, 3), None);
+    assert!(flight.is_running(), "the fresh listing is untouched");
+    assert_eq!(flight.finished(fresh, 3), None, "nothing was held");
+    assert!(!flight.abandon(), "nothing running, nothing to abort");
+}

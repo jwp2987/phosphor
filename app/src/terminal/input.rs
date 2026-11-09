@@ -2809,6 +2809,14 @@ impl<T> RemoteListingFlight<T> {
             self.job = None;
         }
     }
+
+    /// An event made the running listing stale (a Precmd, the session or block ending, the
+    /// connection erroring, a cwd change): frees the flight and drops the held request. Returns
+    /// whether a job was running (the caller aborts it). The next request starts fresh.
+    fn abandon(&mut self) -> bool {
+        self.pending = None;
+        self.job.take().is_some()
+    }
 }
 
 /// Represents whether the input editor should render the subshell flag.
@@ -2943,6 +2951,17 @@ impl Input {
         ctx.subscribe_to_model(&model_events, |me, _, event, ctx| {
             if let crate::terminal::model_events::ModelEvent::TerminalModeSwapped(_) = event {
                 me.update_cli_agent_editor_text_colors(ctx);
+            }
+            use crate::terminal::model_events::{AnsiHandlerEvent, ModelEvent};
+            if matches!(
+                event,
+                ModelEvent::Handler(AnsiHandlerEvent::Precmd)
+                    | ModelEvent::ExitShell { .. }
+                    | ModelEvent::Exit { .. }
+                    | ModelEvent::SSHControlMasterError
+                    | ModelEvent::PreInteractiveSSHSession
+            ) {
+                me.end_remote_listing_on_event();
             }
         });
         ctx.subscribe_to_model(&TerminalSettings::handle(ctx), move |_, _, event, ctx| {
@@ -12848,10 +12867,14 @@ impl Input {
                         input.remote_listing_finished(job, ctx);
                     }
                 },
-                move |input, _| {
+                move |input, ctx| {
                     // Superseded (an explicit Tab): free the flight; the Tab runs its own request.
+                    // Same handling as a normal end, so the replay never depends on whether this
+                    // closure or the result callback runs first: `finished` frees the flight at
+                    // most once and replays only a request still held and current (an explicit
+                    // Tab and the stale-listing events clear it first).
                     if let Some(job) = listing_job {
-                        input.remote_listing.superseded(job);
+                        input.remote_listing_finished(job, ctx);
                     }
                     // Superseding this job drops its future, which cancels exactly the in-band commands it
                     // issued (`InBandCommandExecutor::execute_command`'s `on_cancel`; the local executor kills
@@ -12862,6 +12885,18 @@ impl Input {
             .abort_handle();
 
         self.completions_abort_handle = Some(abort_handle);
+    }
+
+    /// An event made the running remote as-you-type listing stale (the shell's next Precmd, the
+    /// shell or ssh session exiting, the ssh control connection erroring, a cwd change): aborts
+    /// it and drops the held request, so a hung listing cannot block as-you-type. No timer; the
+    /// next keystroke starts a fresh listing.
+    fn end_remote_listing_on_event(&mut self) {
+        if self.remote_listing.abandon() {
+            if let Some(handle) = self.completions_abort_handle.take() {
+                handle.abort();
+            }
+        }
     }
 
     /// The remote as-you-type listing `job` ended (finished, or superseded by an explicit Tab):
@@ -17827,7 +17862,15 @@ impl Input {
                 input_suggestions.set_path_separators(session.path_separators());
             });
         }
+        let cwd_changed = self
+            .active_block_metadata
+            .as_ref()
+            .and_then(BlockMetadata::current_working_directory)
+            != active_block_metadata.current_working_directory();
         self.active_block_metadata = Some(active_block_metadata);
+        if cwd_changed {
+            self.end_remote_listing_on_event();
+        }
 
         // If needed, update the prompt display with the now-available session
         // context. In-band commands don't meaningfully change block metadata,
