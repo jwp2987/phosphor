@@ -399,6 +399,40 @@ fn ctrl_c_during_a_command_hands_back_at_its_prompt() {
     assert!(handoff.try_commit_at_prompt());
 }
 
+/// #1777: under ConPTY a Ctrl-C does not flush the lines queued behind a running command, so the
+/// pty keeps input until a prompt has answered each of them; the editor does not take over after
+/// the killed command's prompt alone.
+#[test]
+fn conpty_ctrl_c_keeps_the_queued_lines_counted_until_their_prompts_arrive() {
+    let mut handoff = after_submit();
+    handoff.set_conpty_input(true);
+    type_and_flush(&mut handoff, b"a\rb\rc");
+    type_and_flush(&mut handoff, &[0x03]);
+    assert_eq!(handoff.on_interrupt(), InterruptOutcome::CommandRunning);
+    // The killed command's prompt: the lines behind it are still owed their prompts.
+    handoff.on_precmd();
+    assert!(!handoff.try_commit_at_prompt());
+    assert!(handoff.is_pty_owned());
+    // `a` and `b` ran as commands, one prompt each: now the line is empty.
+    handoff.on_precmd();
+    assert!(!handoff.try_commit_at_prompt());
+    handoff.on_precmd();
+    assert!(handoff.try_commit_at_prompt());
+}
+
+#[test]
+fn the_interrupt_enter_count_is_kept_only_on_conpty() {
+    // Running command (1 prompt owed) with two more lines queued behind it.
+    assert_eq!(interrupt_enters_written(true, 3, 0), 3);
+    assert_eq!(interrupt_enters_written(false, 3, 0), 1);
+    // Nothing queued behind the command: the same on both.
+    assert_eq!(interrupt_enters_written(true, 1, 0), 1);
+    assert_eq!(interrupt_enters_written(false, 1, 0), 1);
+    // At a prompt: the line is gone on both.
+    assert_eq!(interrupt_enters_written(true, 2, 2), 2);
+    assert_eq!(interrupt_enters_written(false, 2, 2), 2);
+}
+
 #[test]
 fn ctrl_c_at_the_prompt_discards_the_line() {
     let mut handoff = after_submit();

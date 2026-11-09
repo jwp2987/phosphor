@@ -1078,6 +1078,30 @@ pub struct HeldAgentCommand {
     pub conversation_id: AIConversationId,
 }
 
+/// The Enter count a Ctrl-C leaves behind (#1777). On a POSIX tty the interrupt flushes the input
+/// queue, so only the killed command's own prompt is expected after it: `precmds_seen + 1` while a
+/// command runs, `precmds_seen` at a prompt. Under ConPTY with an msys program the queue is NOT
+/// flushed (a large paste behind `cat` outlived the ^C and bash ran it line by line), so lines
+/// written behind the command may still be consumed by the shell, each answered by a prompt. There
+/// the count is kept, and the pty owns input until the prompts catch up (the stale-count reset
+/// corrects it when the lines were in fact discarded): a key typed in the meantime follows the
+/// queued lines in order instead of splitting between the editor and the pty.
+pub(crate) fn interrupt_enters_written(
+    conpty_input: bool,
+    enters_written: u32,
+    precmds_seen: u32,
+) -> u32 {
+    if precmds_seen >= enters_written {
+        return precmds_seen;
+    }
+    let after_killed_command = precmds_seen.saturating_add(1);
+    if conpty_input {
+        enters_written.max(after_killed_command)
+    } else {
+        after_killed_command
+    }
+}
+
 impl TypeaheadHandoff {
     pub fn state(&self) -> &HandoffState {
         &self.state
@@ -4000,8 +4024,9 @@ impl TypeaheadHandoff {
         self.editor_owns_input() && self.editor_took_over_at.is_some()
     }
 
-    /// A Ctrl-C was written while the pty owned input. The tty discards queued typeahead and the
-    /// shell discards its line, so nothing the user typed survives it.
+    /// A Ctrl-C was written while the pty owned input. A POSIX tty discards queued typeahead and
+    /// the shell discards its line, so nothing the user typed survives it; under ConPTY queued
+    /// lines can survive ([`interrupt_enters_written`], #1777).
     pub fn on_interrupt(&mut self) -> InterruptOutcome {
         self.on_interrupt_for_shell(true)
     }
@@ -4034,11 +4059,11 @@ impl TypeaheadHandoff {
                 self.interrupt_awaiting_cycle = seq_mode && !self.interrupt_barrier;
                 self.state = HandoffState::PtyOwned {
                     wrote_user_bytes: false,
-                    enters_written: if at_prompt {
-                        precmds_seen
-                    } else {
-                        precmds_seen.saturating_add(1)
-                    },
+                    enters_written: interrupt_enters_written(
+                        self.conpty_input,
+                        enters_written,
+                        precmds_seen,
+                    ),
                     precmds_seen,
                 };
                 if at_prompt {
