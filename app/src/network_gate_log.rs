@@ -58,6 +58,24 @@ impl GateLogEntries {
     }
 }
 
+/// The allowed-origins entry that would let `event` through: `host:port` (a bare host when
+/// the port is unknown). `None` when there is no host to allow (an unparseable URL, or the
+/// redirect cap), so no "Allow" is offered.
+pub fn allow_text(event: &GateEvent) -> Option<String> {
+    if event.host.is_empty() {
+        return None;
+    }
+    let host = if event.host.contains(':') {
+        format!("[{}]", event.host)
+    } else {
+        event.host.clone()
+    };
+    Some(match event.port {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub enum NetworkGateLogEvent {
     /// The list changed (an entry was added or the log was cleared).

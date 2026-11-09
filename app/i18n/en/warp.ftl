@@ -924,6 +924,29 @@ settings-network-test-success-tcp = ✅ Proxy reachable ({$latency} ms)
 settings-network-test-success-http = ✅ Internet reachable ({$latency} ms)
 settings-network-test-failed-tcp = ❌ Cannot reach proxy: {$error}
 settings-network-test-failed-http = ❌ Connection failed: {$error}
+settings-network-gate-header = Network gate
+settings-network-gate-description = The gate checks every request Phosphor makes on its own. It allows this computer, your configured AI endpoints and the origins listed here, and refuses anything else.
+settings-network-gate-mode-note = Phosphor settings only; System and Off both mean no proxy
+settings-network-gate-toggle-label = Network gate
+settings-network-gate-toggle-description = On: unlisted requests are refused. Off: every request is allowed. The proxy setting below is not affected.
+settings-network-gate-off-warning = The network gate is OFF. Phosphor can contact any host. Turn it back on when you are done diagnosing.
+settings-network-origins-label = Allowed origins
+settings-network-origins-description = Extra origins Phosphor may contact on its own, for example https://api.example.com. Your configured AI endpoints are always allowed.
+settings-network-origins-placeholder = https://api.example.com
+settings-network-origins-add = Add
+settings-network-origins-remove = Remove
+settings-network-origins-empty = No extra origins.
+settings-network-gate-log-label = Gate log
+settings-network-gate-log-description = Recent refused requests, requests that passed while the gate was off, and requests to other computers. Kept in memory only; cleared when Phosphor quits.
+settings-network-gate-log-empty = Nothing yet.
+settings-network-gate-log-clear = Clear
+settings-network-gate-log-allow = Allow
+settings-network-gate-outcome-allowed = Allowed
+settings-network-gate-outcome-denied = Denied
+settings-network-gate-outcome-gate-off = Passed (gate off)
+settings-network-gate-denied-toast = Blocked a request for "{$purpose}" to {$host}.
+settings-network-gate-denied-toast-no-host = Blocked a request for "{$purpose}".
+settings-network-gate-allow-link = Allow this origin
 
 # --- ANCHOR-SUB-PRIVACY (agent-settings-privacy) ---
 # Privacy settings page (settings_view/privacy_page.rs + privacy/add_regex_modal.rs).

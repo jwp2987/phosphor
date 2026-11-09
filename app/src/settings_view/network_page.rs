@@ -19,6 +19,7 @@ use warpui::{
     ui_components::{
         button::ButtonVariant,
         components::{Coords, UiComponent, UiComponentStyles},
+        switch::SwitchStateHandle,
     },
 };
 
@@ -30,6 +31,7 @@ use super::settings_page::{
 };
 use crate::appearance::Appearance;
 use crate::editor::{EditorView, InteractionState, SingleLineEditorOptions, TextOptions};
+use crate::network_gate_log::{LoggedGateEvent, NetworkGateLog, NetworkGateLogEvent};
 use crate::report_if_error;
 use crate::settings::network::{NetworkSettings, ProxyMode};
 use crate::settings::network_secrets::{ProxyCredentials, ProxyPasswordLoad};
@@ -61,8 +63,74 @@ fn read_system_proxy_env() -> (String, String, String) {
     (read("HTTPS_PROXY"), read("HTTP_PROXY"), read("NO_PROXY"))
 }
 
+/// Splits the stored allowed-origins text the way the gate does (commas or whitespace),
+/// dropping empties and repeats (case-insensitive), keeping the first spelling and the order.
+pub(crate) fn parse_origin_list(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in text.split(|c: char| c == ',' || c.is_whitespace()) {
+        let item = item.trim();
+        if item.is_empty() || out.iter().any(|o| o.eq_ignore_ascii_case(item)) {
+            continue;
+        }
+        out.push(item.to_owned());
+    }
+    out
+}
+
+/// The stored form: one origin per line.
+pub(crate) fn join_origin_list(list: &[String]) -> String {
+    list.join("\n")
+}
+
+/// `text` with `origin` added. Returns `None` when `origin` is empty or holds a separator
+/// (it would become two entries) -- the caller leaves the setting alone then. An origin
+/// already listed changes nothing but the normalisation.
+pub(crate) fn add_origin(text: &str, origin: &str) -> Option<String> {
+    let origin = origin.trim();
+    if origin.is_empty() || origin.contains(|c: char| c == ',' || c.is_whitespace()) {
+        return None;
+    }
+    let mut list = parse_origin_list(text);
+    if !list.iter().any(|o| o.eq_ignore_ascii_case(origin)) {
+        list.push(origin.to_owned());
+    }
+    Some(join_origin_list(&list))
+}
+
+/// `text` without `origin` (case-insensitive).
+pub(crate) fn remove_origin(text: &str, origin: &str) -> String {
+    let list: Vec<String> = parse_origin_list(text)
+        .into_iter()
+        .filter(|o| !o.eq_ignore_ascii_case(origin.trim()))
+        .collect();
+    join_origin_list(&list)
+}
+
+/// Appends `origin` to the user's allowed origins setting (the Allow buttons and the denial
+/// notice's link). Idempotent.
+pub(crate) fn allow_origin(origin: &str, ctx: &mut AppContext) {
+    let current = NetworkSettings::as_ref(ctx).allowed_origins.value().clone();
+    let Some(next) = add_origin(&current, origin) else {
+        return;
+    };
+    if next == current {
+        return;
+    }
+    NetworkSettings::handle(ctx).update(ctx, |settings, ctx| {
+        report_if_error!(settings.allowed_origins.set_value(next, ctx));
+    });
+}
+
 #[derive(Debug, Clone)]
 pub enum NetworkPageAction {
+    /// Flipped the network gate switch.
+    ToggleGate,
+    /// Clicked "Add" on the allowed-origins input.
+    AddOrigin,
+    RemoveOrigin(String),
+    /// Clicked "Allow" on a denied row of the gate log; carries the origin text.
+    AllowOrigin(String),
+    ClearGateLog,
     /// A ProxyMode item was selected in the dropdown; persisted to settings.
     SetProxyMode(ProxyMode),
     /// Clicked the "Save" button on the URL field.
@@ -138,6 +206,13 @@ pub struct NetworkPageView {
     /// Mouse state and status for the test-connection button.
     test_button_state: MouseStateHandle,
     test_state: TestState,
+    gate_switch_state: SwitchStateHandle,
+    origin_editor: ViewHandle<EditorView>,
+    origin_add_state: MouseStateHandle,
+    /// One per listed origin / per log row; resized whenever the list changes.
+    origin_remove_states: Vec<MouseStateHandle>,
+    log_allow_states: Vec<MouseStateHandle>,
+    gate_log_clear_state: MouseStateHandle,
 }
 
 impl NetworkPageView {
@@ -199,6 +274,21 @@ impl NetworkPageView {
             },
         );
 
+        let origin_editor = build_text_editor(
+            ctx,
+            false,
+            crate::t!("settings-network-origins-placeholder"),
+        );
+        ctx.subscribe_to_model(
+            &NetworkGateLog::handle(ctx),
+            |me: &mut Self, _, event, ctx| {
+                if matches!(event, NetworkGateLogEvent::Changed) {
+                    me.resize_row_states(ctx);
+                    ctx.notify();
+                }
+            },
+        );
+
         let mut me = Self {
             page: PageType::new_monolith(NetworkPageWidget::default(), None, false),
             mode_dropdown,
@@ -216,7 +306,14 @@ impl NetworkPageView {
             no_proxy_clear_state: MouseStateHandle::default(),
             test_button_state: MouseStateHandle::default(),
             test_state: TestState::Idle,
+            gate_switch_state: SwitchStateHandle::default(),
+            origin_editor,
+            origin_add_state: MouseStateHandle::default(),
+            origin_remove_states: Vec::new(),
+            log_allow_states: Vec::new(),
+            gate_log_clear_state: MouseStateHandle::default(),
         };
+        me.resize_row_states(ctx);
 
         // Does an initial sync so the dropdown and each editor show the currently saved values.
         Self::sync_all_from_settings(&mut me, ctx);
@@ -224,8 +321,19 @@ impl NetworkPageView {
         me
     }
 
+    /// Keeps one mouse state per listed origin and per log row.
+    fn resize_row_states(&mut self, ctx: &mut ViewContext<Self>) {
+        let origins = parse_origin_list(NetworkSettings::as_ref(ctx).allowed_origins.value());
+        self.origin_remove_states
+            .resize_with(origins.len(), MouseStateHandle::default);
+        let rows = NetworkGateLog::as_ref(ctx).entries_newest_first().len();
+        self.log_allow_states
+            .resize_with(rows, MouseStateHandle::default);
+    }
+
     /// Pushes the current NetworkSettings values into the dropdown and the three non-password editors.
     fn sync_all_from_settings(me: &mut Self, ctx: &mut ViewContext<Self>) {
+        me.resize_row_states(ctx);
         let net = NetworkSettings::as_ref(ctx);
         let mode = *net.proxy_mode.value();
         let url = net.proxy_url.value().clone();
@@ -296,6 +404,41 @@ impl TypedActionView for NetworkPageView {
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
+            NetworkPageAction::ToggleGate => {
+                NetworkSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let on = *settings.gate_enabled.value();
+                    report_if_error!(settings.gate_enabled.set_value(!on, ctx));
+                });
+                ctx.notify();
+            }
+            NetworkPageAction::AddOrigin => {
+                let text = self.origin_editor.as_ref(ctx).buffer_text(ctx);
+                let current = NetworkSettings::as_ref(ctx).allowed_origins.value().clone();
+                if let Some(next) = add_origin(&current, &text) {
+                    NetworkSettings::handle(ctx).update(ctx, |settings, ctx| {
+                        report_if_error!(settings.allowed_origins.set_value(next, ctx));
+                    });
+                    self.origin_editor
+                        .update(ctx, |editor, ctx| editor.set_buffer_text("", ctx));
+                }
+                ctx.notify();
+            }
+            NetworkPageAction::RemoveOrigin(origin) => {
+                let current = NetworkSettings::as_ref(ctx).allowed_origins.value().clone();
+                let next = remove_origin(&current, origin);
+                NetworkSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.allowed_origins.set_value(next, ctx));
+                });
+                ctx.notify();
+            }
+            NetworkPageAction::AllowOrigin(origin) => {
+                allow_origin(origin, ctx);
+                ctx.notify();
+            }
+            NetworkPageAction::ClearGateLog => {
+                NetworkGateLog::handle(ctx).update(ctx, |log, ctx| log.clear(ctx));
+                ctx.notify();
+            }
             NetworkPageAction::SetProxyMode(mode) => {
                 let mode = *mode;
                 NetworkSettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -612,7 +755,7 @@ impl SettingsWidget for NetworkPageWidget {
     type View = NetworkPageView;
 
     fn search_terms(&self) -> &str {
-        "network proxy http https 代理 网络 vpn 公司 corporate system custom off no_proxy 测试连接"
+        "network proxy http https 代理 网络 vpn 公司 corporate system custom off no_proxy 测试连接 gate firewall allow allowed origins blocked denied log 闸门 防火墙 允许 来源 ゲート 許可 オリジン"
     }
 
     fn render(
@@ -630,12 +773,16 @@ impl SettingsWidget for NetworkPageWidget {
 
         let mut content = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_child(render_page_title(&page_title, appearance))
-            .with_child(render_sub_header_with_description(
-                appearance,
-                header,
-                description,
-            ));
+            .with_child(render_page_title(&page_title, appearance));
+
+        // The network gate section sits above the proxy settings.
+        render_gate_section(&mut content, view, appearance, _app);
+
+        content.add_child(render_sub_header_with_description(
+            appearance,
+            header,
+            description,
+        ));
 
         // 1. Mode dropdown -- always enabled
         content.add_child(render_body_item::<NetworkPageAction>(
@@ -861,3 +1008,240 @@ impl SettingsWidget for NetworkPageWidget {
         content.finish()
     }
 }
+
+fn plain_text(
+    text: String,
+    color: pathfinder_color::ColorU,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    Text::new(text, appearance.ui_font_family(), appearance.ui_font_size())
+        .with_color(color)
+        .with_style(Properties::default().weight(Weight::Normal))
+        .finish()
+}
+
+fn text_button(
+    label: String,
+    variant: ButtonVariant,
+    state: &MouseStateHandle,
+    action: NetworkPageAction,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    Container::new(
+        appearance
+            .ui_builder()
+            .button(variant, state.clone())
+            .with_style(UiComponentStyles {
+                font_size: Some(appearance.ui_font_body()),
+                padding: Some(Coords::uniform(BUTTON_PADDING)),
+                ..Default::default()
+            })
+            .with_text_label(label)
+            .build()
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(action.clone());
+            })
+            .finish(),
+    )
+    .with_margin_left(6.)
+    .finish()
+}
+
+/// One log row's text: time, outcome, purpose, host:port.
+fn log_row_text(entry: &LoggedGateEvent) -> String {
+    use http_client::gate::Outcome;
+    let outcome = match entry.event.outcome {
+        Outcome::Allowed => crate::t!("settings-network-gate-outcome-allowed"),
+        Outcome::Denied => crate::t!("settings-network-gate-outcome-denied"),
+        Outcome::AllowedGateOff => crate::t!("settings-network-gate-outcome-gate-off"),
+    };
+    let target = match (entry.event.host.is_empty(), entry.event.port) {
+        (true, _) => "-".to_owned(),
+        (false, Some(port)) => format!("{}:{port}", entry.event.host),
+        (false, None) => entry.event.host.clone(),
+    };
+    format!(
+        "{}  {}  {}  {}",
+        entry.at.format("%H:%M:%S"),
+        outcome,
+        entry.event.purpose,
+        target
+    )
+}
+
+fn render_gate_section(
+    content: &mut Flex,
+    view: &NetworkPageView,
+    appearance: &Appearance,
+    app: &AppContext,
+) {
+    let theme = appearance.theme();
+    let muted: pathfinder_color::ColorU = theme.nonactive_ui_text_color().into();
+    let gate_on = *NetworkSettings::as_ref(app).gate_enabled.value();
+
+    content.add_child(render_sub_header_with_description(
+        appearance,
+        crate::t!("settings-network-gate-header"),
+        format!(
+            "{} {}",
+            crate::t!("settings-network-gate-description"),
+            crate::t!("settings-network-gate-mode-note")
+        ),
+    ));
+
+    // The switch.
+    let switch = appearance
+        .ui_builder()
+        .switch(view.gate_switch_state.clone())
+        .check(gate_on)
+        .build()
+        .on_click(|ctx, _, _| ctx.dispatch_typed_action(NetworkPageAction::ToggleGate))
+        .finish();
+    content.add_child(render_body_item::<NetworkPageAction>(
+        crate::t!("settings-network-gate-toggle-label"),
+        None::<AdditionalInfo<NetworkPageAction>>,
+        LocalOnlyIconState::Hidden,
+        ToggleState::Enabled,
+        appearance,
+        switch,
+        Some(crate::t!("settings-network-gate-toggle-description")),
+    ));
+    if !gate_on {
+        content.add_child(
+            Container::new(plain_text(
+                crate::t!("settings-network-gate-off-warning"),
+                theme.ui_error_color().into(),
+                appearance,
+            ))
+            .with_margin_bottom(8.)
+            .finish(),
+        );
+    }
+
+    // Allowed origins: one row per origin with Remove, then the input and Add.
+    let origins = parse_origin_list(NetworkSettings::as_ref(app).allowed_origins.value());
+    let mut list = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
+    if origins.is_empty() {
+        list.add_child(plain_text(
+            crate::t!("settings-network-origins-empty"),
+            muted,
+            appearance,
+        ));
+    }
+    for (i, origin) in origins.iter().enumerate() {
+        let state = view
+            .origin_remove_states
+            .get(i)
+            .cloned()
+            .unwrap_or_default();
+        list.add_child(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(plain_text(
+                    origin.clone(),
+                    theme.active_ui_text_color().into(),
+                    appearance,
+                ))
+                .with_child(text_button(
+                    crate::t!("settings-network-origins-remove"),
+                    ButtonVariant::Text,
+                    &state,
+                    NetworkPageAction::RemoveOrigin(origin.clone()),
+                    appearance,
+                ))
+                .finish(),
+        );
+    }
+    list.add_child(
+        Container::new(
+            ConstrainedBox::new(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        ConstrainedBox::new(
+                            warpui::elements::ChildView::new(&view.origin_editor).finish(),
+                        )
+                        .with_max_width(INPUT_AREA_MAX_WIDTH - 80.0)
+                        .finish(),
+                    )
+                    .with_child(text_button(
+                        crate::t!("settings-network-origins-add"),
+                        ButtonVariant::Accent,
+                        &view.origin_add_state,
+                        NetworkPageAction::AddOrigin,
+                        appearance,
+                    ))
+                    .finish(),
+            )
+            .with_max_width(INPUT_AREA_MAX_WIDTH)
+            .finish(),
+        )
+        .with_margin_top(4.)
+        .finish(),
+    );
+    content.add_child(render_body_item::<NetworkPageAction>(
+        crate::t!("settings-network-origins-label"),
+        None::<AdditionalInfo<NetworkPageAction>>,
+        LocalOnlyIconState::Hidden,
+        ToggleState::Enabled,
+        appearance,
+        list.finish(),
+        Some(crate::t!("settings-network-origins-description")),
+    ));
+
+    // The decision log, newest first.
+    let entries = NetworkGateLog::as_ref(app).entries_newest_first();
+    let mut log = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
+    log.add_child(text_button(
+        crate::t!("settings-network-gate-log-clear"),
+        ButtonVariant::Text,
+        &view.gate_log_clear_state,
+        NetworkPageAction::ClearGateLog,
+        appearance,
+    ));
+    if entries.is_empty() {
+        log.add_child(plain_text(
+            crate::t!("settings-network-gate-log-empty"),
+            muted,
+            appearance,
+        ));
+    }
+    for (i, entry) in entries.iter().enumerate() {
+        let mut row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(plain_text(
+                log_row_text(entry),
+                theme.active_ui_text_color().into(),
+                appearance,
+            ));
+        if entry.event.outcome == http_client::gate::Outcome::Denied {
+            if let Some(origin) = crate::network_gate_log::allow_text(&entry.event) {
+                let state = view.log_allow_states.get(i).cloned().unwrap_or_default();
+                row.add_child(text_button(
+                    crate::t!("settings-network-gate-log-allow"),
+                    ButtonVariant::Accent,
+                    &state,
+                    NetworkPageAction::AllowOrigin(origin),
+                    appearance,
+                ));
+            }
+        }
+        log.add_child(row.finish());
+    }
+    content.add_child(render_body_item::<NetworkPageAction>(
+        crate::t!("settings-network-gate-log-label"),
+        None::<AdditionalInfo<NetworkPageAction>>,
+        LocalOnlyIconState::Hidden,
+        ToggleState::Enabled,
+        appearance,
+        log.finish(),
+        Some(crate::t!("settings-network-gate-log-description")),
+    ));
+}
+
+#[cfg(test)]
+#[path = "network_page_tests.rs"]
+mod tests;

@@ -864,6 +864,29 @@ settings-network-test-success-tcp = ✅ 代理可达(耗时 {$latency} 毫秒)
 settings-network-test-success-http = ✅ 出网正常(耗时 {$latency} 毫秒)
 settings-network-test-failed-tcp = ❌ 代理不可达:{$error}
 settings-network-test-failed-http = ❌ 连接失败:{$error}
+settings-network-gate-header = 网络闸门
+settings-network-gate-description = 闸门会检查 Phosphor 自行发出的每个请求。它允许本机、你配置的 AI 端点以及此处列出的来源,拒绝其他一切。
+settings-network-gate-mode-note = 仅使用 Phosphor 设置;System 和 Off 都表示不使用代理
+settings-network-gate-toggle-label = 网络闸门
+settings-network-gate-toggle-description = 开启:拒绝未列出的请求。关闭:允许所有请求。不影响下方的代理设置。
+settings-network-gate-off-warning = 网络闸门已关闭。Phosphor 可以连接任何主机。诊断完成后请重新开启。
+settings-network-origins-label = 允许的来源
+settings-network-origins-description = Phosphor 可自行连接的额外来源,例如 https://api.example.com。你配置的 AI 端点始终允许。
+settings-network-origins-placeholder = https://api.example.com
+settings-network-origins-add = 添加
+settings-network-origins-remove = 移除
+settings-network-origins-empty = 没有额外来源。
+settings-network-gate-log-label = 闸门日志
+settings-network-gate-log-description = 最近被拒绝的请求、闸门关闭期间放行的请求以及发往其他计算机的请求。仅保存在内存中,Phosphor 退出后清除。
+settings-network-gate-log-empty = 暂无记录。
+settings-network-gate-log-clear = 清除
+settings-network-gate-log-allow = 允许
+settings-network-gate-outcome-allowed = 已允许
+settings-network-gate-outcome-denied = 已拒绝
+settings-network-gate-outcome-gate-off = 已放行(闸门关闭)
+settings-network-gate-denied-toast = 已拦截“{$purpose}”发往 {$host} 的请求。
+settings-network-gate-denied-toast-no-host = 已拦截“{$purpose}”的请求。
+settings-network-gate-allow-link = 允许此来源
 
 # 云同步设置页面
 

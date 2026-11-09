@@ -45,3 +45,16 @@ fn clear_empties_the_log_and_it_fills_again() {
     log.push(entry(2));
     assert_eq!(log.len(), 1);
 }
+
+#[test]
+fn allow_text_names_host_and_port_and_refuses_hostless_events() {
+    let mut e = entry(1).event;
+    assert_eq!(allow_text(&e).as_deref(), Some("h1.example:443"));
+    e.port = None;
+    assert_eq!(allow_text(&e).as_deref(), Some("h1.example"));
+    e.host = "::1".into();
+    e.port = Some(8080);
+    assert_eq!(allow_text(&e).as_deref(), Some("[::1]:8080"));
+    e.host = String::new();
+    assert_eq!(allow_text(&e), None);
+}
