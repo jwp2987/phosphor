@@ -3581,3 +3581,30 @@ sentinel is nowhere on the host (remote shell commands, `~/.phosphor`, the repo)
 Editor Enter (`Input::wait_for_verdict_then_enter`): a decided input type (locked, or autodetection off) gives up the pending detection and submits at the Enter, and from the model notification (`release_verdict_wait_if_settled`), with no cap armed; `EnterVerdictWait` is `Submit | Wait`. `VERDICT_HANDBACK_CPU_CAP` (1 s of classifier CPU + the size allowance) and the 2 s backstop only hand the line back (`hand_back_slow_verdict`: toast, keys behind the Enter dropped with a count #1661, counted WARN `Enter verdict too slow ... (total N this run)`); an event that decided the Enter meanwhile wins. Tests: see the verdict-cap row above (`test_slow_verdict_cap_hands_the_line_back_and_drops_keys_behind_the_enter`, `test_decided_input_type_submits_at_once_with_no_cap_armed`, `test_lock_change_while_the_enter_waits_submits_it_in_order`, `test_verdict_cpu_cap_ignores_a_job_waiting_off_the_cpu`).
 
 TUI host-colour probe (`crates/warpui_core/src/runtime/terminal_probe.rs`, `run_tui_input_reader`): the probe no longer reads stdin behind crossterm's back (it used to discard every key typed in its 100 ms / 50 ms window and let a late reply leak as typed text, #580 #1748 #1749). It runs on the driver's reader thread -- once at startup AFTER the first frame (the colours apply when they land; the first frame uses `COLORFGBG`, else dark) and on focus -- reading the same crossterm events as the keyboard. `ReplyFilter` swallows only an OUTSTANDING `ESC ] 10|11 ; rgb:|rgba:... (BEL|ST)` (crossterm shows it as Alt-`]` + characters + Ctrl-G / Alt-`\`), by content and once, for the probe window plus `LATE_REPLY_WINDOW` (2 s); every other event passes in order, a withheld Esc/Alt-`]` is handed on after `REPLY_HOLD_NET` (50 ms). It stops the moment OSC 11 completes (`DA1_DRAIN_GRACE` and the DA1 sentinel are gone: crossterm consumes a DA1 reply internally, so it cannot leak). Tests (`crates/warpui_core/src/runtime/terminal_probe_tests.rs`, pure, no tty): `user_bytes_before_between_and_after_replies_keep_their_order`, `a_reply_split_across_reads_still_matches_bel_and_st`, `alt_bracket_then_text_is_not_eaten`, `an_unfinished_match_is_released_in_order_by_the_hold_net`, `a_late_reply_is_swallowed_once_and_only_while_outstanding`, `only_the_asked_for_osc_code_is_swallowed`, `an_event_that_is_not_a_key_breaks_a_partial_match_and_nothing_is_lost`, `key_events_map_to_the_bytes_crossterm_parsed_them_from`, `the_window_stops_when_the_reply_completes_and_forwards_keys_typed_inside_it`, `a_missed_window_gives_up_without_losing_keys_and_the_reply_stays_outstanding`. The old `classify_probe_read` / `contains_da1_reply` tests (the drain-window rule) are deleted with the code they pinned. Real terminals are not exercised by these tests; a real-tty check (type during startup, focus away and back on a slow transport) belongs to the next TUI app round. `script/check_input_path_timers --strict` has no A/B entries left.
+
+## Thread census, the rayon cap and the shared filesystem watcher (perf, measured-only)
+
+Two changes cut idle threads; each has a kill switch and neither is a latency change.
+
+| switch | effect |
+|---|---|
+| `PHOSPHOR_RAYON_THREADS=<n>` | caps rayon's global pool (`warp-rayon-N` threads). Unset = 8 (clamped to the CPU count), `0` = rayon's own default (one per CPU). Applied once at the start of `run()`. |
+| `PHOSPHOR_SHARED_WATCHER=0` | each `BulkFilesystemWatcher` gets its own three threads again. Default (Linux only): all handles share one platform watcher, a `Shared FS Commands` thread and a `Shared FS Dispatch` thread. |
+
+The shared watcher keeps every subscriber's own debounce window (no timers added). A root that
+conflicts with an existing one (same directory, or inside a recursive root) is served by a private
+`Bulk Filesystem Watcher` thread set and logged at info level, so a few of those in the census are
+expected (the home directory is non-recursive and does not conflict with repos below it).
+
+How to measure (build box, Linux), before/after:
+
+1. Start the app, let it idle 30 s, then `script/thread_census.sh <pid>`.
+2. Open a file in the editor, wait 10 s, run the census again.
+3. Repeat with `PHOSPHOR_RAYON_THREADS=0 PHOSPHOR_SHARED_WATCHER=0` for the baseline.
+
+Expect `Bulk Filesystem Watcher`/`Filesystem Debouncer`/inotify threads to fall from 3 per handle
+to 2 shared plus the conflicts, and `warp-rayon-N` to stop at the cap. Re-run the perf scripts
+(`script/bench_gate.py`, the editor open/memory baseline in `script/editor_mem_baseline`) with the
+rayon cap, since a smaller pool can slow a parallel edit or hydration; if it does, raise the default
+rather than drop the cap. Unit tests: `cargo nextest run -p watcher` and the `rayon_pool` tests in
+`-p warp --lib`.
