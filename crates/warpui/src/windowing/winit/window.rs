@@ -148,7 +148,15 @@ impl WindowManager {
             x11_manager: match x11::X11Manager::new() {
                 Ok(x11_manager) => Some(x11_manager),
                 Err(err) => {
-                    log::error!("error creating connection to Xorg server: {err:?}");
+                    // A pure Wayland session has no X server to reach: that is the expected
+                    // state (x11_manager only serves X11-only extras), not an error.
+                    let wayland_only = std::env::var_os("WAYLAND_DISPLAY").is_some()
+                        && std::env::var_os("DISPLAY").is_none();
+                    if wayland_only {
+                        log::debug!("no Xorg server connection (Wayland session): {err:?}");
+                    } else {
+                        log::error!("error creating connection to Xorg server: {err:?}");
+                    }
                     None
                 }
             },
