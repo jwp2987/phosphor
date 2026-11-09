@@ -345,6 +345,34 @@ def fmt_app(m):
 HEAD = ("key_to_frame", "enter", "ctrl_c")
 
 
+def proving_names():
+    """cases.PROVING, read from script/realapp/appci/cases.py as a literal (this collector imports no harness code)"""
+    import ast
+    try:
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "realapp", "appci", "cases.py")).read()
+        for node in ast.parse(src).body:
+            if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "PROVING" for t in node.targets):
+                return set(ast.literal_eval(node.value))
+    except (OSError, SyntaxError, ValueError):
+        pass
+    return set()
+
+
+def render_proving(m):
+    """owner rule 2026-11-09: the PROVING cases with their status per platform and mode. Graduation is the OWNER's decision, never made by code."""
+    pv = proving_names()
+    rows = [(p, c) for p, i in sorted(m.get("app", {}).items()) for c in i["cases"] if c["name"] in pv]
+    if not rows:
+        return []
+    L = ["", "## PROVING cases (owner decides graduation)", "", "| case | platform | mode | status |", "|---|---|---|---|"]
+    L += ["| %s | %s | %s | %s |" % (c["name"], p, c["mode"], c["status"].upper()) for p, c in sorted(rows, key=lambda x: (x[1]["name"], x[0], x[1]["mode"]))]
+    names = {c["name"] for _, c in rows}
+    ok = sorted(n for n in names if all(c["status"] == "pass" for _, c in rows if c["name"] == n))
+    L += ["", "passed everywhere it ran (%d, candidates for the owner's decision): %s" % (len(ok), ", ".join(ok) or "none"),
+          "not passed somewhere (fail / skip / no-reference): %s" % (", ".join(sorted(names - set(ok))) or "none")]
+    return L
+
+
 def fmt_lat(m):
     """headline latency medians vs budget per platform, e.g. wayland key 3.1 (ovh 0.9/2 pass)"""
     parts = []
@@ -409,6 +437,7 @@ def render_readme(m, hist):
         L += ["", "| mode | case | status | detail |", "|---|---|---|---|"]
         for c in i["cases"]:
             L.append("| %s | %s | %s | %s |" % (c["mode"], c["name"], c["status"].upper(), "; ".join(c["detail"])[:140].replace("|", "/")))
+    L += render_proving(m)
     for n in m.get("notes", []):
         L.append("- note: " + n)
     L += ["", "## vs previous run", ""]

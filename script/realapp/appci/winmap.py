@@ -196,12 +196,14 @@ FIX_ONLY_IN = {"key_loss_control": (("terminal", "gitbash"),), "enter_loss_contr
 FULL_OPTS = dict(cases=None, ref=True, ft_gaps=(0.0, 0.25), cc_short=False)
 
 
-def tier_plan(platform, tier, mode, pane, smoke):
-    """-> (case names or None for 'all of the full tier', options dict) for one pass. smoke = the shared SMOKE tuple."""
+def tier_plan(platform, tier, mode, pane, smoke, proving=()):
+    """-> (case names or None for 'all of the full tier', options dict) for one pass. smoke = the shared SMOKE tuple; proving = cases.PROVING (owner rule
+    2026-11-09: a new case runs in the fix tier until it has passed). A PROVING case is added to every pass's list (agent mode included: the `cases`
+    subset below is the SMOKE trim, not a PROVING filter); the ones Windows cannot run SKIP with their reason (skip_reason), they are not dropped."""
     if tier != "smoke":
         return None, dict(FULL_OPTS)
     o = dict(FIX_TIER[platform][mode])
-    names = [n for n in smoke if o["cases"] is None or n in o["cases"]]
+    names = [n for n in smoke if o["cases"] is None or n in o["cases"]] + [n for n in proving if n not in smoke]
     names = [n for n in names if n not in FIX_ONLY_IN or (mode, pane) in FIX_ONLY_IN[n]]
     return names, o
 

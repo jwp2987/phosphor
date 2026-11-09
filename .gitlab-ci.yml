@@ -1461,6 +1461,18 @@ app-test-linux-x11-reuse:
     - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
     - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done   # r18u8: full shots hit 413 Payload Too Large
 
+# the fix tier's PROVING lab cases on a reused Linux build (script/ci/ci_seq.py LAB_FIX_JOB; owner rule 2026-11-09)
+app-test-lab-linux-reuse:
+  extends: app-test-lab-linux
+  needs: []
+  before_script:
+    - script/ci/fetch_build.sh
+  after_script:
+    - python3 script/ci/record_reuse.py
+    - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland"
+    - python3 script/ci/results_scrub.py --tree appci-out
+    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done
+
 app-test-macos-reuse:
   extends: app-test-macos
   needs: []

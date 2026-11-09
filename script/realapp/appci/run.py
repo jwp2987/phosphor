@@ -100,13 +100,15 @@ def self_test():
     shutil.rmtree(d)
     # the Windows fix tier table: case counts per pass (smoke) and the full tier is untouched
     smoke = cases.SMOKE
+    fix = cases.SMOKE + cases.PROVING       # the fix tier runs SMOKE + PROVING (owner rule 2026-11-09)
     n = {}
     for mode in ("terminal", "agent"):
         for pane in ("powershell", "gitbash"):
-            names, o = winmap.tier_plan("windows", "smoke", mode, pane, smoke)
+            names, o = winmap.tier_plan("windows", "smoke", mode, pane, smoke, cases.PROVING)
             ran = [x for x in names if mode in [c for c in cases.CASES if c["name"] == x][0]["modes"] and not winmap.skip_reason(x, pane)]
             n[(mode, pane)] = len(ran)
-            assert all(x in smoke for x in names), "a fix-tier case outside SMOKE"
+            assert all(x in fix for x in names), "a fix-tier case outside SMOKE + PROVING"
+            assert all(x in names for x in cases.PROVING), "a PROVING case missing from the Windows fix-tier plan (it must run or SKIP with a reason)"
             assert {"ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "fast_typing", "ctrl_c_d"} <= set(names), (mode, pane)
             assert ("key_loss_control" in names) == (mode == "terminal" and pane == "gitbash"), (mode, pane)
             assert (not o["ref"]) == (mode == "agent") and (len(o["ft_gaps"]) == 1) == (mode == "agent")
@@ -177,13 +179,17 @@ def main():
         refterm_mac.snapshot(run)       # #1485: was Terminal.app already running? (if not, a reference launch is quit by PID at exit)
     import ci_env
     ollama_url, ollama_model = ci_env.ollama()      # env, else ~/.config/phosphor-ci/ci.env; the value is never printed
-    if not ollama_url and os.environ.get("APPCI_FAKE_MODEL") == "1":      # L2 fake model (fake_model.py): a local Ollama-protocol server, never a real provider
+    secret_url = ollama_url      # the configured (owner machine-local) endpoint: redacted from every artifact even when a pass uses the fake model instead
+    # APPCI_FAKE_MODEL=1 FORCES the fake (owner rule 2026-11-09, lab jobs): the CI machines carry the owner's Ollama settings, which used to win and made every
+    # fake-model case SKIP there. L2 fake model (fake_model.py): a local Ollama-protocol server, never a real provider
+    if os.environ.get("APPCI_FAKE_MODEL") == "1":
         import fake_model
         os.environ.setdefault("APPCI_FAKE_MODEL_LOG", os.path.join(run, "fake_model_requests.jsonl"))      # #1829: what the model was sent, per request
         fake = fake_model.FakeModel().start()
         ollama_url, ollama_model = fake.url, "fake-model"
         os.environ["APPCI_FAKE_MODEL_ACTIVE"] = "1"
         print("fake model: a local scripted provider is the agent provider for this run (APPCI_FAKE_MODEL=1)", flush=True)
+    real_url, real_model = ollama_url, ollama_model      # the provider of the ordinary passes (the fake when forced above); the fake pass below swaps ollama_url per pass and back
     if os.environ.get("APPCI_FAKE_EMBEDDINGS") == "1":      # P9b: the user's BYOP /embeddings provider for the remote-index lab case (loopback, no outgoing connection)
         elog = os.path.join(run, "fake_embeddings.log")
         open(elog, "w").close()
@@ -213,9 +219,9 @@ def main():
         with open(resf, "a") as f:
             f.write(json.dumps(row) + "\n")
         emitted.add((row["mode"], row["name"]))
-        print(ci_env.redact(row_log_line(row), ollama_url), flush=True)
+        print(ci_env.redact(row_log_line(row), secret_url or ollama_url), flush=True)
         for e in (row.get("evidence") or []):
-            print(ci_env.redact("    evidence: " + e, ollama_url), flush=True)
+            print(ci_env.redact("    evidence: " + e, secret_url or ollama_url), flush=True)
         write_partial_report(run, a)      # r18d8: a killed job still leaves every finished row in results.json/summary.md/junit.xml
 
     be = None if sim else backend.make(a.backend)
@@ -232,7 +238,8 @@ def main():
     dest = cases.dest_mode()
     print("destination mode of the app under test: PHOSPHOR_QUEUE_DESTINATION=%s (effective %s)" % (os.environ.get("PHOSPHOR_QUEUE_DESTINATION", "<unset>"), dest), flush=True)
     if not a.cases and os.environ.get("APPCI_TIER") == "smoke":
-        a.cases = ",".join(winmap.smoke_for(dest, cases.SMOKE))       # legacy (the kill switch): the narrowed list, see winmap.KILL_SWITCH_SMOKE
+        # fix tier = SMOKE + PROVING (owner rule 2026-11-09: a new case runs here until it has passed); legacy (the kill switch): the narrowed list, see winmap.KILL_SWITCH_SMOKE
+        a.cases = ",".join(winmap.smoke_for(dest, cases.SMOKE + cases.PROVING))
     reg = {c["name"] for c in cases.CASES}
     bad_names = unknown_case_names(a.cases, reg) + unknown_case_names(a.skip, reg)
     if bad_names:       # #1508: an unknown name is an error, never an empty (green) selection
@@ -254,7 +261,15 @@ def main():
     exit_fail = False
     crashed_exit = None
     case_timeout = float(os.environ.get("APPCI_CASE_TIMEOUT", "1500"))
-    passes = [(m, p) for m in a.modes.split(",") for p in panes]
+    passes = [(m, p, False) for m in a.modes.split(",") for p in panes]
+    # The fake pass (owner rule 2026-11-09): in the fix tier the PROVING cases that need the scripted fake model (cases.PROVING_FAKE) run in their OWN app
+    # launch ("agent@fake", own profile) whose provider is a local fake_model.py; the other passes keep the configured provider, so the SMOKE agent cases are
+    # undisturbed. No fake pass when the whole run already is the fake (APPCI_FAKE_MODEL_ACTIVE), nor when --cases is explicit. A real provider is never sent anything by these cases.
+    fake_plan = fake_pass_plan(a.cases if os.environ.get("APPCI_TIER") == "smoke" and not explicit_cases else None, a.modes.split(","),
+                              os.environ.get("APPCI_FAKE_MODEL_ACTIVE") == "1")
+    fake_server = [None]
+    if fake_plan:
+        passes += [("agent", p, True) for p in panes]
     clock = deadline.Clock()      # the job's own time budget: no new case starts when too little is left (r18e0: killed by the job timeout, artifacts lost)
     print("[deadline] " + clock.describe(), flush=True)
 
@@ -263,13 +278,27 @@ def main():
             return max(case_timeout, float(os.environ.get("APPCI_REPLAY_MINUTES", "15")) * 60 * 1.6 + 900)
         return max(case_timeout, float(os.environ.get("APPCI_SOAK_MIN", "60")) * 60 + 600) if name == "soak" else case_timeout
 
-    for mode, pane in passes:
+    for mode, pane, fake in passes:
         # per-mode fresh profile + app: settings differ (default_session_mode). Windows: once per pane shell too (label = terminal | terminal@gitbash)
         # #1534: "pwsh7" / "cmd" are startup_shell_override passes: `variant` names the pass (label, settings, case list), `pane` is the shell FAMILY every
         # pane-aware helper below keys on (pwsh 7 = powershell, cmd.exe = cmd)
         variant = pane if pane in winmap.VARIANT_FAMILY else None
         pane = winmap.VARIANT_FAMILY.get(pane, pane)
         label = mode if (pane in (None, "powershell") and not variant) else "%s@%s" % (mode, variant or pane)
+        if fake:
+            label += "@fake" if label == mode else "+fake"      # agent@fake (Linux/macOS), agent@gitbash+fake (Windows)
+            if fake_server[0] is None:
+                import fake_model
+                os.environ.setdefault("APPCI_FAKE_MODEL_LOG", os.path.join(run, "fake_model_requests.jsonl"))
+                fake_server[0] = fake_model.FakeModel().start()
+            ollama_url, ollama_model = fake_server[0].url, "fake-model"
+            os.environ["APPCI_FAKE_MODEL_ACTIVE"] = "1"
+            print("fake model: the %s pass uses the local scripted provider (fake pass of the fix tier); the configured provider is not used" % label, flush=True)
+        else:
+            ollama_url, ollama_model = real_url, real_model
+            if fake_plan:      # the fake model is on only in its own pass (it is never the global provider when a plan exists)
+                os.environ.pop("APPCI_FAKE_MODEL_ACTIVE", None)
+        psel = [c for c in sel if fake_pass_ok(c["name"], fake, fake_plan)]
         prof.pane = pane or prof.pane
         prof.variant = variant
         if variant:
@@ -291,8 +320,8 @@ def main():
             clock.logged_stop = True
             tn = None
             if win and not explicit_cases:
-                tn, _o = winmap.tier_plan("windows", os.environ.get("APPCI_TIER"), mode, pane, cases.SMOKE)
-            for c in sel:
+                tn, _o = winmap.tier_plan("windows", os.environ.get("APPCI_TIER"), mode, pane, cases.SMOKE, cases.PROVING)
+            for c in psel:
                 if mode in c["modes"] and (tn is None or c["name"] in tn):
                     emit(dict(name=c["name"], mode=label, status="skip", seconds=0, detail=[why], metrics={}, shots=[]))
             continue
@@ -309,7 +338,7 @@ def main():
                     print("ssh probe failed, ssh cases will skip: %s" % ssh_why, flush=True)
                     sshd.stop(ssh_info)
                     ssh_info = None
-            if any(c.get("lab") and mode in c["modes"] and (not win or not winmap.skip_reason(c["name"], pane)) for c in sel):
+            if any(c.get("lab") and mode in c["modes"] and (not win or not winmap.skip_reason(c["name"], pane)) for c in psel):
                 lab_obj, lab_why = labmod.Lab.start(run)
                 if lab_obj:
                     try:
@@ -347,7 +376,7 @@ def main():
                 ctx.reprove = lambda: prove_keys(ctx, be, pane, label)
             tier_names = None
             if win and not explicit_cases:       # the Windows fix tier is a table (winmap.FIX_TIER); an explicit --cases list always wins, the full tier is untouched
-                tier_names, ctx.opts = winmap.tier_plan("windows", os.environ.get("APPCI_TIER"), mode, pane, cases.SMOKE)
+                tier_names, ctx.opts = winmap.tier_plan("windows", os.environ.get("APPCI_TIER"), mode, pane, cases.SMOKE, cases.PROVING)
             if variant:       # #1534: a startup_shell_override pass runs only its own list (winmap.VARIANT_CASES); an explicit --cases list narrows it further
                 tier_names = list(winmap.variant_cases(variant))
             if not sim:
@@ -375,7 +404,7 @@ def main():
             else:
                 ctx.until(lambda: prof.prompts() > 0, 10)
             proved = not win
-            for c in sel:
+            for c in psel:
                 if mode not in c["modes"]:
                     continue
                 if tier_names is not None and c["name"] not in tier_names:
@@ -684,7 +713,7 @@ def main():
             break
         if not win and not exit_fail:
             # #1508: every selected case that applies to this mode must have a row (pass, fail or skip), else the run did less than asked
-            missing = [c["name"] for c in sel if mode in c["modes"] and (label, c["name"]) not in emitted]
+            missing = [c["name"] for c in psel if mode in c["modes"] and (label, c["name"]) not in emitted]
             if missing:
                 emit(dict(name="cases_not_run", mode=label, status="fail", seconds=0, detail=["selected case(s) produced no row: %s" % ", ".join(missing[:12])]))
                 exit_fail = True
@@ -1095,6 +1124,21 @@ def case_evidence(name, r, ctx, log_off):
     except Exception as e:
         ev.append("evidence capture failed: %r" % (e,))
     return ev
+
+
+def fake_pass_plan(cases_csv, modes, fake_global):
+    """True when the fix tier needs the separate fake-model pass: cases_csv is the fix-tier selection (None outside the fix tier / with explicit --cases),
+    an agent pass exists, the run is not already the fake globally, and the selection names a PROVING case that needs the scripted model."""
+    if cases_csv is None or fake_global or "agent" not in modes:
+        return False
+    names = set(cases_csv.split(","))
+    return any(n in names for n in cases.PROVING_FAKE)
+
+
+def fake_pass_ok(name, fake, plan):
+    """does case `name` run in this pass? Without a fake-pass plan every case runs in every pass (unchanged); with one, the PROVING_FAKE cases run
+    only in the fake pass and everything else only in the ordinary passes."""
+    return True if not plan else (name in cases.PROVING_FAKE) == bool(fake)
 
 
 def write_partial_report(run, a):

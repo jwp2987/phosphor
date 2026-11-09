@@ -23,6 +23,37 @@ SMOKE = ("mode_proof", "key_loss_control", "enter_loss_control", "cadence", "fas
          # #1510: agent input proven byte-exact from the app log, and routing after each agent<->terminal switch
          "agent_input_exact", "agent_mode_switch")
 
+# OWNER RULE (standing, 2026-11-09): every NEW test runs in the FIX tier until it has passed; only then does it graduate to the candidate / full tier.
+# PROVING is that list. A new case is added HERE (not to SMOKE) in the commit that registers it; the fix tier (APPCI_TIER=smoke) runs SMOKE + PROVING.
+# Graduation is NEVER automatic and no code moves a case out of this tuple: after each fix-tier run the coordinator reads the "PROVING cases (owner
+# decides graduation)" section of summary.md / the collected README and asks the owner which passed cases move; the owner decides. A graduated case is
+# removed from PROVING (it then runs in the candidate / full tier only, or is added to SMOKE if it belongs in every fix push).
+# PROVING and SMOKE are disjoint (selftest). A case that cannot run on a platform / pane SKIPS there with a reason (winmap.py), like SMOKE.
+PROVING = (
+    # agent file edits (#1835), agent interactive programs under hand-over (#1829), latency / steer (#1828), MCP faults, multi-tab streaming
+    "agent_edit_accept", "agent_edit_reject", "agent_edit_conflict", "agent_edit_touch_only", "agent_edit_endings",
+    "agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover",
+    "agent_latency_key", "agent_latency_enter", "agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming",
+    # network gate (#1830): the provider key never leaves, deny / allow, gate off live, notice toast, settings page by keyboard
+    "agent_gate_deny_allow", "agent_gate_off_live", "agent_gate_key_never_leaves", "network_gate_notice", "network_gate_switch",
+    # agent fault injection and restarts
+    "agent_fault_429", "agent_fault_500", "agent_fault_disconnect", "agent_fault_down", "agent_fault_slow_cancel", "agent_fault_queued_rows",
+    "agent_restart_quit_stream", "agent_restart_quit_queued", "agent_restart_quit_blocked",
+    "agent_restart_kill_stream", "agent_restart_kill_queued", "agent_restart_kill_blocked",
+    # other cases registered since 2026-11-08 (no scripted model needed)
+    "agent_lrc_no_false_takeover", "ctrl_c_no_esc_i_local", "ui_completions_as_you_type_local", "remote_tab_enter_no_helper", "remote_tab_no_helper",
+    "keyring_unavailable_startup", "cb_report_problem", "zero_network_startup", "claude_plugin_offline", "agent_plugins_offline",
+    "subshell_sh_probe", "subshell_ready_rc_questions", "subshell_ready_vim_typeahead", "subshell_ready_unsupported_tcsh", "subshell_ready_secret_after_prompt",
+    "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
+)
+# The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
+# fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
+PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_interactive_", "agent_noninteractive_", "agent_latency_", "agent_fault_", "agent_restart_",
+                                                         "agent_gate_")) or n in ("agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming", "network_gate_notice"))
+# The PROVING lab cases (cases_lab*.py, the fake ssh lab). Globs, as --cases takes them. The fix tier plays app-test-lab-linux with these
+# (script/ci/ci_seq.py LAB_FIX_CASES), Linux only, APPCI_FAKE_MODEL=1, APPCI_LAB_MATRIX=quick.
+PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*")
+
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):
     def deco(f):

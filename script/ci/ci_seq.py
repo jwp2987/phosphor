@@ -46,6 +46,28 @@ PLAT_SUFFIX = {MAC: "macos", WIN: "windows"}
 BOX_EXTRA = ["integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]", "integration-linux-pwsh", "usage-test-linux"]
 MAC_EXTRA = ["usage-test-macos"]
 # suites that cannot exist on a platform, with the reason: reported, never played (a job that is built to fail is not a test)
+# Owner rule 2026-11-09: every NEW test runs in the fix tier until it has passed (cases.PROVING). The PROVING lab cases (cases.PROVING_LAB, globs over the
+# fake ssh lab arms) need the lab, so the fix tier also plays the Linux lab job (Linux only: the lab runs in a container on the box) with APPCI_CASES limited to
+# them, the scripted fake model forced and the quick matrix. SSHLAB_BOX / SSHLAB_TOKEN are protected project variables (scope *); build/* is a protected
+# branch, so the job gets them on the refs this script drives.
+LAB_FIX_JOB = "app-test-lab-linux"
+
+
+def proving_lab_globs(path=None):
+    """cases.PROVING_LAB, read from cases.py as a literal (this script imports no harness code)"""
+    import ast
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "realapp", "appci", "cases.py")
+    for node in ast.parse(open(path).read()).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "PROVING_LAB" for t in node.targets):
+            return list(ast.literal_eval(node.value))
+    return []
+
+
+def lab_fix_vars(globs=None):
+    """the play-time variables of the fix tier's lab job"""
+    return {"APPCI_CASES": ",".join(globs if globs is not None else proving_lab_globs()), "APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": "quick"}
+
+
 UNSUPPORTED = {"fuzz-smoke-windows": "cargo-fuzz works only on Unix-like systems (no Windows/MSVC)"}
 
 
@@ -336,6 +358,19 @@ def self_test():
         ([verdict(n, RUNNING_DEADLINE) for n in BOX_EXTRA + MAC_EXTRA], ["TIMEOUT"] * (len(BOX_EXTRA) + len(MAC_EXTRA)), "a timed-out integration/usage suite is never a pass"),
     ):
         ok = got == want
+        bad += 0 if ok else 1
+        print("%s %s" % ("ok  " if ok else "FAIL", what))
+    # owner rule 2026-11-09: the fix tier plays the Linux lab job with the PROVING lab cases, the quick matrix and the fake model
+    yml = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".gitlab-ci.yml")).read()
+    globs = proving_lab_globs()
+    lv = lab_fix_vars()
+    for ok, what in (
+        (bool(globs) and all(g.startswith("lab_") for g in globs), "PROVING_LAB names lab globs"),
+        (lv["APPCI_CASES"] == ",".join(globs) and lv["APPCI_FAKE_MODEL"] == "1" and lv["APPCI_LAB_MATRIX"] == "quick", "the fix-tier lab job gets only the PROVING lab cases, the fake model and the quick matrix"),
+        (re.search(r"^%s:" % LAB_FIX_JOB, yml, re.M) is not None and re.search(r"^%s-reuse:" % LAB_FIX_JOB, yml, re.M) is not None, "the lab job and its -reuse variant exist in .gitlab-ci.yml"),
+        (LAB_FIX_JOB in APP_RESULT_DIR and LAB_FIX_JOB not in sum(APP.values(), []), "the lab job is judged like an app job but is not a platform app-test job (never played in candidate/release by APP)"),
+        (verdict(LAB_FIX_JOB, "failed") == "FAIL", "a red lab job fails the fix tier"),
+    ):
         bad += 0 if ok else 1
         print("%s %s" % ("ok  " if ok else "FAIL", what))
     print("self-test: %s" % ("FAILED (%d)" % bad if bad else "all passed"))
@@ -704,6 +739,9 @@ def main():
                 timeline[n + "-reuse"] = (TIER_SKIP, None); continue
             if play(n + "-reuse", rv):
                 reuse_started.append(n + "-reuse")
+        if p == LINUX and tier == "fix" and LAB_FIX_JOB not in SKIP and LAB_FIX_JOB + "-reuse" in jobs() and proving_lab_globs():
+            if play(LAB_FIX_JOB + "-reuse", dict(rv, **lab_fix_vars())):
+                reuse_started.append(LAB_FIX_JOB + "-reuse")
     for n in builds:
         play(n)
     # Each platform's tests start as soon as ITS build succeeds, not after the box test suites (those take ~1 h and
@@ -748,6 +786,11 @@ def main():
                 print("%s: %s succeeded, started %s" % (time.strftime("%H:%M"), b, n), flush=True)
                 with lock:
                     started.append(n)
+        if tier == "fix" and p_of[b] == LINUX and LAB_FIX_JOB not in SKIP and LAB_FIX_JOB in jobs() and proving_lab_globs():
+            if play(LAB_FIX_JOB, dict(appvars, **lab_fix_vars())):      # the PROVING lab cases (owner rule 2026-11-09), after the ordinary Linux app tests
+                print("%s: started %s (PROVING lab cases, quick matrix, fake model)" % (time.strftime("%H:%M"), LAB_FIX_JOB), flush=True)
+                with lock:
+                    started.append(LAB_FIX_JOB)
     watchers = [threading.Thread(target=after_build, args=(b,), daemon=True) for b in builds]
     for t in watchers:
         t.start()
@@ -862,7 +905,7 @@ def classify_network_job(job_id):
     return NETWORK_FAIL if NETWORK_RX.search(trace) else "failed"
 
 
-APP_RESULT_DIR = {"app-test-linux-wayland": "wayland", "app-test-linux-x11": "x11", "app-test-macos": "macos", "app-test-windows": "windows"}
+APP_RESULT_DIR = {"app-test-lab-linux": "wayland", "app-test-linux-wayland": "wayland", "app-test-linux-x11": "x11", "app-test-macos": "macos", "app-test-windows": "windows"}
 
 
 def judged_nothing(doc):
