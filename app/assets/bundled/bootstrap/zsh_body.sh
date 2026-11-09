@@ -621,8 +621,66 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
         honor_ps1="false"
       fi
 
-      local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"\",\"honor_ps1\": $honor_ps1,\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"kube_config\": \"$escaped_kube_config\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq}}"
+      __phosphor_cwd_listing
+      local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"\",\"honor_ps1\": $honor_ps1,\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"kube_config\": \"$escaped_kube_config\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq${__phosphor_cl_json-}}}"
       warp_send_json_message "$escaped_json"
+  }
+
+  # Phosphor (#1801): the bounded cwd listing a remote shell adds to its Precmd, so path detection
+  # works without the remote helper. Same wire format and limits as bash_body.sh
+  # (__phosphor_cwd_listing there; parser app/src/completer/pushed_listing.rs). Sets
+  # $__phosphor_cl_json. No forks: zsh globs, tests and encodes natively. Kill switch:
+  # PHOSPHOR_CWD_LISTING=0.
+  __phosphor_cwd_listing () {
+    emulate -L zsh
+    setopt nomultibyte nullglob globdots
+    typeset -g __phosphor_cl_json=
+    [[ ${WARP_IS_LOCAL_SHELL_SESSION-} == 1 || ${PHOSPHOR_CWD_LISTING-} == 0 || -z ${WARP_BOOTSTRAPPED-} ]] && return 0
+    if [[ $PWD != ${__phosphor_cl_pwd-} ]]; then
+      typeset -g __phosphor_cl_pwd=$PWD __phosphor_cl_sig= __phosphor_cl_big=
+    fi
+    [[ -n ${__phosphor_cl_big-} ]] && return 0
+    local -a dirs files list
+    local kind=L out= n c enc t
+    dirs=( *(N-/) )
+    files=( *(N^-/) )
+    if (( ${#dirs} + ${#files} > 2000 )); then
+      typeset -g __phosphor_cl_big=1
+      kind=T
+    else
+      if (( ${#dirs} + ${#files} > 500 )); then
+        kind=P
+        dirs=( ${dirs[1,500]} )
+        files=( ${files[1,$(( 500 - ${#dirs} ))]} )
+      fi
+      for t in d f; do
+        if [[ $t == d ]]; then list=("${dirs[@]}"); else list=("${files[@]}"); fi
+        for n in "${list[@]}"; do
+          if [[ $n == *[^A-Za-z0-9._+@,=~-]* ]]; then
+            enc=
+            for c in ${(s::)n}; do
+              if [[ $c == [A-Za-z0-9._+@,=~-] ]]; then
+                enc+=$c
+              else
+                enc+=%${(U)${(l:2::0:)${$(( [##16] #c ))}}}
+              fi
+            done
+          else
+            enc=$n
+          fi
+          out+=" $t$enc"
+        done
+      done
+      if (( ${#out} > 32768 )); then
+        out=${out[1,32768]}
+        out=${out% *}
+        kind=P
+      fi
+    fi
+    if [[ $kind$out != ${__phosphor_cl_sig-} ]]; then
+      typeset -g __phosphor_cl_sig=$kind$out
+      typeset -g __phosphor_cl_json=",\"cwd_listing\": \"$kind$out\""
+    fi
   }
 
   warp_clear_on_next_block () {

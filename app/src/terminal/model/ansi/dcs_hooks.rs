@@ -656,6 +656,7 @@ impl RawPrecmdValue {
             "kube_config" => self.prompt_metadata.kube_config = map_empty_to_none(value),
             "session_id" => self.prompt_metadata.session_id = value.parse::<u64>().ok(),
             "seq" => self.prompt_metadata.seq = value.parse::<u64>().ok(),
+            "cwd_listing" => self.prompt_metadata.cwd_listing = map_empty_to_none(value),
             "exit_code" => {
                 self.exit_code = RawPrecmdField::Present(value.parse::<i32>().ok().map(Into::into));
             }
@@ -878,6 +879,12 @@ pub struct PromptMetadata {
     /// counts the Preexecs between them. `None` from a bootstrap that predates it.
     #[serde(default)]
     pub seq: Option<u64>,
+
+    /// A remote shell's bounded listing of its cwd, sent only when the cwd or its contents changed
+    /// since the last one (#1801: path detection without the helper). Wire format and parser:
+    /// `completer::pushed_listing`. `None` from a local shell or one with nothing new to say.
+    #[serde(default)]
+    pub cwd_listing: Option<String>,
 }
 
 impl PromptMetadata {
@@ -910,6 +917,7 @@ impl Default for PromptMetadata {
             session_id: Default::default(),
             is_after_in_band_command: Default::default(),
             seq: Default::default(),
+            cwd_listing: Default::default(),
         }
     }
 }

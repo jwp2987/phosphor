@@ -905,7 +905,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_kv_pair "seq" "$__warp_seq"
           warp_send_hook_via_kv_pairs_end
         else
-          local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"$escaped_ps1\",\"honor_ps1\": $honor_ps1,\"ps1_is_encoded\": true,\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": ${WARP_SESSION_ID:-},\"seq\": $__warp_seq}}"
+          __phosphor_cwd_listing
+          local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"$escaped_ps1\",\"honor_ps1\": $honor_ps1,\"ps1_is_encoded\": true,\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": ${WARP_SESSION_ID:-},\"seq\": $__warp_seq${__phosphor_cl_json-}}}"
           warp_send_json_message "$escaped_json"
         fi
     }
@@ -1135,6 +1136,80 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       done
       __p="${__p//$'\n'/ } "
       __warp_hex_encode_to "$__p" 2048
+    }
+
+    # Phosphor (#1801): path detection without the remote helper. A remote shell (anything not
+    # started by Phosphor itself: WARP_IS_LOCAL_SHELL_SESSION != 1) adds a bounded listing of its
+    # cwd to the Precmd payload when the cwd or the listing changed, so the app can recognise a
+    # typed directory with no round trip. Sets $__phosphor_cl_json to `,"cwd_listing": "..."` or
+    # nothing. No forks: the glob, the directory test and the encoding are builtins. Wire format
+    # and parser: app/src/completer/pushed_listing.rs. Kill switch: PHOSPHOR_CWD_LISTING=0.
+    #   T            more than 2000 entries: not listed (and not looked at again until a cd)
+    #   L[ <t><name>]...   the listing; P instead of L when cut at 500 entries or 32 KB
+    # <t> is d (directory, symlinks followed) or f; a name's bytes outside [A-Za-z0-9._+@,=~-]
+    # are %HH, so no name can break the JSON or the DCS around it.
+    __phosphor_cl_pct () {
+      local __s=$1 __i __c __h __r=
+      for (( __i = 0; __i < ${#__s}; __i++ )); do
+        __c=${__s:__i:1}
+        if [[ $__c == [A-Za-z0-9._+@,=~-] ]]; then
+          __r+=$__c
+        else
+          builtin printf -v __h '%02X' "'$__c"
+          __r+="%${__h: -2}"
+        fi
+      done
+      __phosphor_cl_enc=$__r
+    }
+    __phosphor_cwd_listing () {
+      __phosphor_cl_json=
+      [[ ${WARP_IS_LOCAL_SHELL_SESSION:-} == 1 || ${PHOSPHOR_CWD_LISTING-} == 0 || -z ${WARP_BOOTSTRAPPED:-} ]] && return 0
+      if [[ $PWD != "${__phosphor_cl_pwd-}" ]]; then
+        __phosphor_cl_pwd=$PWD
+        __phosphor_cl_sig=
+        __phosphor_cl_big=
+      fi
+      [[ -n ${__phosphor_cl_big-} ]] && return 0
+      local LC_ALL=C GLOBIGNORE
+      local __o_n=0 __o_d=0 __o_f=0 __o_s=0 __n __t __enc
+      local -a __e
+      shopt -q nullglob && __o_n=1
+      shopt -q dotglob && __o_d=1
+      shopt -q failglob && __o_f=1
+      [[ $- == *f* ]] && { __o_s=1; set +f; }
+      shopt -s nullglob dotglob
+      shopt -u failglob
+      __e=(*)
+      (( __o_n )) || shopt -u nullglob
+      (( __o_d )) || shopt -u dotglob
+      (( __o_f )) && shopt -s failglob
+      (( __o_s )) && set -f
+      local __kind=L __out=
+      if (( ${#__e[@]} > 2000 )); then
+        __phosphor_cl_big=1
+        __kind=T
+      else
+        (( ${#__e[@]} > 500 )) && { __kind=P; __e=("${__e[@]:0:500}"); }
+        for __n in ${__e[@]+"${__e[@]}"}; do
+          if [[ -d $__n ]]; then __t=d; else __t=f; fi
+          if [[ $__n == *[!A-Za-z0-9._+@,=~-]* ]]; then
+            __phosphor_cl_pct "$__n"
+            __enc=$__phosphor_cl_enc
+          else
+            __enc=$__n
+          fi
+          __out+=" $__t$__enc"
+        done
+        if (( ${#__out} > 32768 )); then
+          __out=${__out:0:32768}
+          __out=${__out% *}
+          __kind=P
+        fi
+      fi
+      if [[ $__kind$__out != "${__phosphor_cl_sig-}" ]]; then
+        __phosphor_cl_sig=$__kind$__out
+        __phosphor_cl_json=",\"cwd_listing\": \"$__kind$__out\""
+      fi
     }
 
     # Returns encoded InitShell hook

@@ -1,0 +1,449 @@
+#!/usr/bin/env python3
+"""The bounded cwd listing a REMOTE shell adds to its Precmd hook (#1801).
+
+WHY THIS EXISTS
+---------------
+A Phosphorized ssh session without the remote helper cannot list a directory while the user types
+(a command on the shared ssh connection, #1295), so path detection read a cache only a Tab filled.
+The bash, zsh and fish bootstraps now append `"cwd_listing"` to the Precmd JSON when the cwd or
+its contents changed (`__phosphor_cwd_listing`). The app parses it (`app/src/completer/
+pushed_listing.rs`) into the per-session cache path detection reads. Wire format:
+
+    T                 more than 2000 entries: not listed, and not looked at again until a cd
+    L[ <t><name>]...  the listing           P[...] the same, cut at 500 entries / 32 KB
+    <t> = d (directory, symlinks followed) or f; name bytes outside [A-Za-z0-9._+@,=~-] are %HH
+
+This runs the REAL assembled bootstraps in a pty (the way test_bootstrap_hook_equivalence does)
+as a REMOTE shell (no WARP_IS_LOCAL_SHELL_SESSION) and decodes the Precmd hooks it emits.
+
+WHAT IT CHECKS, per shell (bash, zsh, fish; a missing shell is SKIPPED)
+  * the first prompt after the bootstrap carries the cwd's listing: exactly the real entries,
+    hidden ones included, directories flagged (a symlink to a directory is `d`, a broken link `f`);
+  * the next prompt with nothing changed carries NO listing; a prompt after a command that
+    creates a file carries the new listing; after `cd` the new directory's;
+  * awkward names (space, quote, backslash, %, newline, tab, ESC, `;`, `$`, `|`, a leading `-`,
+    non-ASCII, a name that is not UTF-8) cannot break the hook: every Precmd is valid JSON and the
+    decoded names equal the real ones (the non-UTF-8 name is encoded too; the app drops that
+    one entry);
+  * 600 entries: `P` with exactly 500 entries, all real; 2500 entries: `T` with none, and the next
+    prompts in that directory carry nothing (the directory is not globbed again until a cd);
+  * a LOCAL shell (WARP_IS_LOCAL_SHELL_SESSION=1) and PHOSPHOR_CWD_LISTING=0 never emit one;
+  * timing (printed, and bounded): the cost of `__phosphor_cwd_listing` in the shell itself for
+    10 entries, 500, 2000 (the worst case that is globbed on every prompt), and 10000 entries
+    (globbed once per cd, then skipped), and the prompt-to-prompt time of a `true` in a 10000-entry
+    directory against an empty one.
+
+USAGE
+    script/test_cwd_listing
+Exit 0 when every check passes (or a shell is SKIPPED), 1 otherwise.
+"""
+
+import json
+import os
+import pty
+import re
+import select
+import shlex
+import shutil
+import signal
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS = os.path.join(ROOT, "app", "assets")
+BOOTSTRAP = os.path.join(ASSETS, "bundled", "bootstrap")
+HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c")
+TIMING_RE = re.compile(rb"PHXT ([0-9]+) ([0-9]+)")
+SHELLS = {"bash": shutil.which("bash"), "zsh": shutil.which("zsh"), "fish": shutil.which("fish")}
+failures = []
+timings = {}
+
+# Budget for the shell-side cost of one listing, per entry count: a generous bound (the numbers
+# printed are the evidence); it fails a regression to a fork per entry, not noise.
+BUDGET_MS = {10: 5.0, 500: 40.0, 2000: 120.0, 10000: 400.0}
+
+
+def assemble(text):
+    """Mirror bootstrap.rs: inline #include, trim, drop blank and comment lines."""
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("#include "):
+            with open(os.path.join(ASSETS, line[len("#include "):])) as f:
+                inc = f.read().replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            out.extend(assemble(inc).split("\n"))
+            continue
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def read(name):
+    with open(os.path.join(BOOTSTRAP, name)) as f:
+        return f.read()
+
+
+def check(shell, name, ok, detail=""):
+    if ok:
+        print(f"ok   {shell}: {name}")
+    else:
+        failures.append(f"{shell}: {name} {detail}")
+        print(f"FAIL {shell}: {name} {detail}")
+
+
+def pct_decode(token):
+    out = bytearray()
+    i = 0
+    while i < len(token):
+        if token[i] == "%":
+            out.append(int(token[i + 1:i + 3], 16))
+            i += 3
+        else:
+            out.extend(token[i].encode())
+            i += 1
+    return bytes(out)
+
+
+def parse_listing(raw):
+    """-> (kind, {name_bytes: is_dir}); raises on a malformed value (the app drops those)."""
+    kind, rest = raw[0], raw[1:]
+    assert kind in "LPT", raw[:20]
+    entries = {}
+    if rest:
+        assert rest[0] == " ", raw[:20]
+        for tok in rest[1:].split(" "):
+            assert tok[0] in "df" and re.fullmatch(r"[A-Za-z0-9._+@,=~%-]+", tok[1:]), tok
+            entries[pct_decode(tok[1:])] = tok[0] == "d"
+    return kind, entries
+
+
+class Shell:
+    def __init__(self, kind, home, cwd, local=False, extra_env=None):
+        self.kind, self.buf, self.seen = kind, b"", 0
+        env = {"HOME": home, "USER": os.environ.get("USER", "user"), "PATH": "/usr/local/bin:/usr/bin:/bin",
+               "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_PROMPT_NODE_VERSION_ENABLED": "0",
+               "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "INPUTRC": "/dev/null"}
+        if local:
+            env["WARP_IS_LOCAL_SHELL_SESSION"] = "1"
+        env.update(extra_env or {})
+        sid = "4242"
+        if kind == "bash":
+            init = read("bash_init_shell.sh").replace("@@WARP_SESSION_ID@@", sid).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            rc = os.path.join(home, "rc")
+            with open(rc, "w") as f:
+                f.write(init + "\n" + assemble(read("bash.sh")) + "\n")
+            argv = [SHELLS["bash"], "--noprofile", "--rcfile", rc, "-i"]
+        elif kind == "fish":
+            init = read("fish_init_shell.sh").replace("@@WARP_SESSION_ID@@", sid).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            rc = os.path.join(home, "rc.fish")
+            with open(rc, "w") as f:
+                f.write(init + "\n" + assemble(read("fish.sh")) + "\n")
+            argv = [SHELLS["fish"], "-N", "-C", "source " + rc]
+        else:
+            zd = os.path.join(home, "zdot")
+            os.makedirs(zd, exist_ok=True)
+            for n in (".zshrc", ".zshenv"):
+                open(os.path.join(zd, n), "w").close()
+            body = os.path.join(home, "body.sh")
+            with open(body, "w") as f:
+                f.write(assemble(read("zsh_body.sh")).replace("@@USING_CON_PTY_BOOLEAN@@", "false") + "\n")
+            env["ZDOTDIR"] = zd
+            env["PS1"] = "%# "
+            argv = [SHELLS["zsh"], "-g", "--no-rcs", "-i"]
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(cwd)
+            os.execve(argv[0], argv, env)
+        if kind == "zsh":
+            self.pump(1.5)
+            os.write(self.fd, ("unsetopt ZLE; WARP_SESSION_ID=%s; WARP_USING_WINDOWS_CON_PTY=false; source %s\r"
+                               % (sid, shlex.quote(body))).encode())
+        self.ok = self.pump(30, lambda: any(n == "Bootstrapped" for n, _ in self.hooks()))
+        self.pump(1.0)
+        self.seen = len(self.precmds())
+
+    def pump(self, timeout, until=None):
+        end = time.time() + timeout
+        while time.time() < end:
+            if until is not None and until():
+                return True
+            r, _, _ = select.select([self.fd], [], [], 0.02)
+            if not r:
+                continue
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            self.buf += data
+        return until() if until else False
+
+    def hooks(self):
+        out = []
+        for m in HOOK_RE.finditer(self.buf):
+            try:
+                j = json.loads(bytes.fromhex(m.group(1).decode()).decode())
+            except ValueError:
+                out.append(("INVALID", {"raw": m.group(1)[:200]}))
+                continue
+            out.append((j.get("hook", "?"), j.get("value") or {}))
+        return out
+
+    def precmds(self):
+        return [v for n, v in self.hooks() if n in ("Precmd", "INVALID") and (n == "INVALID" or "exit_code" in v)]
+
+    def run(self, line, timeout=30):
+        """Type a line; return the Precmd that follows it (None on timeout)."""
+        n0 = len(self.precmds())
+        os.write(self.fd, line + b"\r")
+        if not self.pump(timeout, lambda: len(self.precmds()) > n0):
+            return None
+        self.pump(0.05)
+        return self.precmds()[n0]
+
+    def close(self):
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+
+def cd_line(kind, path):
+    if kind == "fish":
+        segs, cur = [], b""
+        for ch in path:
+            if 32 <= ch < 127 and ch not in b"'\\":
+                cur += bytes([ch])
+            else:
+                if cur:
+                    segs.append(b"'" + cur + b"'")
+                    cur = b""
+                segs.append(b"\\x%02x" % ch)
+        if cur:
+            segs.append(b"'" + cur + b"'")
+        return b"cd -- " + b"".join(segs)
+    out = b"".join(bytes([c]) if 32 <= c < 127 and c not in b"'\\" else b"\\x%02x" % c for c in path)
+    return b"cd -- $'" + out + b"'"
+
+
+def real_entries(path):
+    out = {}
+    for name in os.listdir(os.fsencode(path)):
+        out[name] = os.path.isdir(os.path.join(os.fsencode(path), name))
+    return out
+
+
+def listing_of(pre):
+    return pre.get("cwd_listing") if pre else None
+
+
+def make_fixture(base):
+    d = os.path.join(base, "fixture")
+    os.makedirs(os.path.join(d, "projects"))
+    os.makedirs(os.path.join(d, ".hdir"))
+    for f in (b"README.md", b".hidden", b"sp ace", b"q'uote", b'd"q', b"back\\slash", b"per%cent", b"new\nline",
+              b"tab\tx", b"\x1b[31mesc", b"semi;colon", b"$dollar", b"a|b", b"-dash", "café.txt".encode(),
+              b"star*", b"bad\xff"):
+        open(os.path.join(os.fsencode(d), f), "w").close()
+    os.symlink("projects", os.path.join(d, "link_to_dir"))
+    os.symlink("nonexistent", os.path.join(d, "broken"))
+    return d
+
+
+def timing_line(kind, count):
+    """Shell-side: run __phosphor_cwd_listing 20 times forcing a rebuild each time; print PHXT <us> <runs>."""
+    if kind == "fish":
+        body = ("set -l t0 (date +%s%N); for i in (seq 20); set -g __phosphor_cl_sig ''; set -g __phosphor_cl_big 0; "
+                "__phosphor_cwd_listing; end; set -l t1 (date +%s%N); builtin echo PHXT (math -s0 \"($t1 - $t0) / 1000\") 20")
+        return body.encode()
+    if kind == "bash":
+        body = ("t0=${EPOCHREALTIME/./}; for i in {1..20}; do __phosphor_cl_sig=; __phosphor_cl_big=; __phosphor_cwd_listing; done; "
+                "t1=${EPOCHREALTIME/./}; echo PHXT $((t1-t0)) 20")
+        return body.encode()
+    body = ("t0=$EPOCHREALTIME; for i in {1..20}; do __phosphor_cl_sig=; __phosphor_cl_big=; __phosphor_cwd_listing; done; "
+            "t1=$EPOCHREALTIME; typeset -i us=$(( (t1-t0)*1000000 )); echo PHXT $us 20")
+    return body.encode()
+
+
+def measure(sh, shell, label, count):
+    n0 = len(TIMING_RE.findall(sh.buf))
+    pre = sh.run(timing_line(shell, count))
+    m = TIMING_RE.findall(sh.buf)
+    if pre is None or len(m) <= n0:
+        check(shell, f"timing for {label}", False, "(no PHXT line)")
+        return None
+    us, runs = int(m[-1][0]), int(m[-1][1])
+    ms = us / runs / 1000.0
+    timings[(shell, label)] = ms
+    check(shell, f"__phosphor_cwd_listing with {label}: {ms:.2f} ms per call (budget {BUDGET_MS[count]} ms)", ms <= BUDGET_MS[count])
+    return ms
+
+
+def prompt_ms(sh, line, runs=8):
+    """Median Enter-to-Precmd time of `line` (it must emit no new listing)."""
+    ts = []
+    for _ in range(runs):
+        n0 = len(sh.precmds())
+        t0 = time.time()
+        os.write(sh.fd, line + b"\r")
+        sh.pump(30, lambda: len(sh.precmds()) > n0)
+        ts.append((time.time() - t0) * 1000)
+        sh.pump(0.02)
+    ts.sort()
+    return ts[len(ts) // 2]
+
+
+def run_shell(shell, base):
+    if not SHELLS[shell]:
+        print(f"SKIPPED {shell}: not installed")
+        return
+    home = os.path.join(base, shell + "-home")
+    os.makedirs(home)
+    fixture = make_fixture(base)
+    sh = Shell(shell, home, fixture)
+    try:
+        if not sh.ok:
+            check(shell, "bootstraps", False, f"(tail {sh.buf[-300:]!r})")
+            return
+        # 1. the first prompt after the bootstrap
+        sh.run(b"true")
+        check(shell, "every Precmd is valid JSON (odd names cannot break the hook)", all(p.get("raw") is None for p in sh.precmds()))
+        firsts = [listing_of(p) for p in sh.precmds() if listing_of(p) is not None]
+        raw = firsts[0] if firsts else None
+        check(shell, "the first prompt after the bootstrap carries the cwd's listing, once", len(firsts) == 1, f"(got {len(firsts)} listings)")
+        if raw is not None:
+            kind, got = parse_listing(raw)
+            want = real_entries(fixture)
+            check(shell, "the listing is complete (L)", kind == "L", f"(kind {kind})")
+            check(shell, "the entries equal the directory's, hidden included, dirs flagged", got == want,
+                  f"(missing {sorted(set(want) - set(got))[:5]}, extra {sorted(set(got) - set(want))[:5]}, flags differ {[k for k in got if k in want and got[k] != want[k]][:5]})")
+            check(shell, "a symlink to a directory is d, a broken link f", got.get(b"link_to_dir") is True and got.get(b"broken") is False)
+            check(shell, "the listing is bounded and ASCII", len(raw) <= 32768 and raw.isascii())
+        # 2. nothing changed
+        pre = sh.run(b"true")
+        check(shell, "an unchanged directory sends no listing", listing_of(pre) is None, f"(got {str(listing_of(pre))[:60]})")
+        # 3. a command creates a file
+        pre = sh.run(b"touch fresh_file")
+        raw = listing_of(pre)
+        check(shell, "a command that creates a file sends the new listing", raw is not None and b"fresh_file" in parse_listing(raw)[1])
+        # 4. cd
+        sub = os.path.join(fixture, "projects")
+        for n in ("alpha", "beta"):
+            os.makedirs(os.path.join(sub, n))
+        open(os.path.join(sub, "main.rs"), "w").close()
+        pre = sh.run(cd_line(shell, os.fsencode(sub)))
+        raw = listing_of(pre)
+        check(shell, "cd sends the new directory's listing",
+              raw is not None and parse_listing(raw)[1] == {b"alpha": True, b"beta": True, b"main.rs": False}, f"(got {raw})")
+        pre = sh.run(b"true")
+        check(shell, "no listing again until something changes", listing_of(pre) is None)
+        # an empty directory
+        empty = os.path.join(base, "empty")
+        os.makedirs(empty)
+        pre = sh.run(cd_line(shell, os.fsencode(empty)))
+        check(shell, "an empty directory is `L` with no entries", listing_of(pre) == "L", f"(got {listing_of(pre)})")
+        # 5. 600 entries -> P with 500
+        d600 = os.path.join(base, "d600")
+        os.makedirs(d600)
+        for i in range(600):
+            open(os.path.join(d600, "file_%04d" % i), "w").close()
+        pre = sh.run(cd_line(shell, os.fsencode(d600)))
+        raw = listing_of(pre)
+        if raw is None:
+            check(shell, "600 entries send a truncated listing", False)
+        else:
+            kind, got = parse_listing(raw)
+            check(shell, "600 entries: P with exactly 500 real entries", kind == "P" and len(got) == 500 and set(got) <= set(real_entries(d600)), f"(kind {kind}, {len(got)})")
+        # 6. long names: the 32 KB cap
+        dlong = os.path.join(base, "dlong")
+        os.makedirs(dlong)
+        for i in range(400):
+            open(os.path.join(dlong, ("n%04d_" % i) + "é" * 120), "w").close()
+        pre = sh.run(cd_line(shell, os.fsencode(dlong)))
+        raw = listing_of(pre)
+        if raw is None:
+            check(shell, "long names send a truncated listing", False)
+        else:
+            kind, got = parse_listing(raw)
+            check(shell, "long names: P within 32 KB, a prefix of real entries", kind == "P" and len(raw) <= 32768 and 0 < len(got) < 400 and set(got) <= set(real_entries(dlong)), f"(kind {kind}, {len(got)}, {len(raw)} bytes)")
+        # 7. 2500 entries -> T, then not looked at again
+        d2500 = os.path.join(base, "d2500")
+        os.makedirs(d2500)
+        for i in range(2500):
+            open(os.path.join(d2500, "f%05d" % i), "w").close()
+        pre = sh.run(cd_line(shell, os.fsencode(d2500)))
+        check(shell, "2500 entries send `T` and nothing else", listing_of(pre) == "T", f"(got {str(listing_of(pre))[:40]})")
+        pre = sh.run(b"touch f_new")
+        check(shell, "a too-large directory is not listed again at the next prompt", listing_of(pre) is None)
+        pre = sh.run(cd_line(shell, os.fsencode(fixture)))
+        check(shell, "cd back sends the listing again", listing_of(pre) is not None and listing_of(pre)[0] == "L")
+        # 8. timing
+        for count in (10, 500, 2000):
+            dd = os.path.join(base, "t%d" % count)
+            os.makedirs(dd)
+            for i in range(count):
+                open(os.path.join(dd, "file_%05d.txt" % i), "w").close()
+            sh.run(cd_line(shell, os.fsencode(dd)))
+            measure(sh, shell, f"{count} entries", count)
+        d10k = os.path.join(base, "t10000")
+        os.makedirs(d10k)
+        for i in range(10000):
+            open(os.path.join(d10k, "file_%05d.txt" % i), "w").close()
+        t0 = time.time()
+        pre = sh.run(cd_line(shell, os.fsencode(d10k)))
+        cd_ms = (time.time() - t0) * 1000
+        check(shell, "10000 entries send `T`", listing_of(pre) == "T")
+        measure(sh, shell, "10000 entries", 10000)
+        base_ms = prompt_ms(sh, b"true")
+        sh.run(cd_line(shell, os.fsencode(empty)))
+        empty_ms = prompt_ms(sh, b"true")
+        timings[(shell, "prompt in 10000-entry dir (median Enter-to-Precmd)")] = base_ms
+        timings[(shell, "prompt in an empty dir (median Enter-to-Precmd)")] = empty_ms
+        timings[(shell, "cd into the 10000-entry dir (Enter-to-Precmd, once)")] = cd_ms
+        check(shell, f"a prompt in a 10000-entry dir costs no more than one in an empty dir (+25 ms): {base_ms:.1f} vs {empty_ms:.1f} ms", base_ms <= empty_ms + 25)
+    finally:
+        sh.close()
+
+    # 9. local sessions and the kill switch never send one
+    for label, kwargs in (("a LOCAL shell", {"local": True}), ("PHOSPHOR_CWD_LISTING=0", {"extra_env": {"PHOSPHOR_CWD_LISTING": "0"}})):
+        h = os.path.join(base, shell + "-" + re.sub(r"\W", "", label))
+        os.makedirs(h)
+        s2 = Shell(shell, h, fixture, **kwargs)
+        try:
+            if not s2.ok:
+                check(shell, f"{label} bootstraps", False)
+                continue
+            s2.run(b"true")
+            s2.run(b"touch fresh_file2")
+            pre = s2.run(cd_line(shell, os.fsencode(os.path.join(fixture, "projects"))))
+            check(shell, f"{label} never sends a listing", pre is not None and all(listing_of(p) is None for p in s2.precmds()))
+        finally:
+            s2.close()
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix="phx-cwdl-") as base:
+        for shell in ("bash", "zsh", "fish"):
+            sub = os.path.join(base, shell)
+            os.makedirs(sub)
+            run_shell(shell, sub)
+    print()
+    print("TIMINGS")
+    for (shell, label), ms in sorted(timings.items()):
+        print(f"  {shell:5} {label}: {ms:.2f} ms")
+    if failures:
+        print(f"test_cwd_listing: {len(failures)} check(s) failed")
+        return 1
+    print("test_cwd_listing: all checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

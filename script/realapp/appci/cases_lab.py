@@ -17,7 +17,8 @@ import lab as L  # noqa: E402
 
 HOOK_TAB_INSERT = re.compile(r"hop=tab_insert\b|completion_inserted")           # [hook] the completion text reached the editor
 HOOK_TAB_MENU = re.compile(r"hop=tab_menu\b[^\n]*items=(\[[^\n]*\])")             # [hook] the ambiguous-prefix menu and its items
-HOOK_PATH_DETECT = re.compile(r"hop=path_detect\b[^\n]*path=(\S+)")             # [hook] a typed path was recognised as a directory on the remote
+HOOK_CWD_LISTING = re.compile(r"hop=cwd_listing session=(\d+) kind=([LPT]) entries=(\d+)")            # the remote shell's pushed cwd listing arrived (#1801): ids and counts only
+HOOK_PATH_DETECT = re.compile(r"hop=path_detect source=pushed session=(\d+) entries=(\d+) complete=(true|false)")   # path detection answered from that listing, no round trip (ids and counts only)
 SESSION_ABANDONED = "Session abandoned before bootstrap"
 
 
@@ -209,25 +210,34 @@ def c_tab_remote_dir(ctx, r, arm):
 # ------------------------------------------------------------------ 2. path detection while typing
 @lab_case("path_detect", shells=("bash", "zsh", "fish"), lat=("lan", "150", "300"), helper=("nohelper", "helper"), scenarios=("p_exec", "p_tinypath"))
 def c_path_detect(ctx, r, arm):
-    """A directory path typed at the remote prompt (no Enter) is detected [hook], and typing it opens ZERO new exec channels on the server: the no-helper path must
-    not run a command per keystroke (the sshd log counts 'Starting session: command' lines)."""
+    """`cd` into a remote fixture directory, then type a subdirectory's name (no Tab, no Enter): the remote shell pushed its bounded cwd listing with the prompt
+    (hop=cwd_listing, #1801: ids and counts only, never a name) and the app detects the typed word from it (hop=path_detect source=pushed), instantly, from the
+    cache. Typing it opens ZERO new exec channels on the server (sshd log 'Starting session: command'): the no-helper path must not run a command per keystroke."""
     lab, u, base, rt = ctx.lab, arm["user"], work(arm), rtt_s(arm)
     uid = unique(ctx)
-    lab.tree(u, {"pd%s/a.txt" % uid: "", "pd%s/sub/b.txt" % uid: ""})
+    lab.tree(u, {"pd%s/a.txt" % uid: "", "pd%s/sub/b.txt" % uid: ""})          # the fixture directory holds exactly 2 entries: a.txt and sub/
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     time.sleep(2.0 + 3 * rt)                         # the connection's own start-up channels settle first
+    off = ctx.log_size()
+    ctx.be.type("cd %spd%s" % (base, uid), type_pace(ctx), enter=True)
+    got = ctx.until(lambda: [m for m in HOOK_CWD_LISTING.finditer(ctx.log_since(off)) if m.group(3) == "2"], 10 + 6 * rt, step=0.1)
+    if got:
+        r.check(got[-1].group(2) == "L", "the pushed listing of the fixture directory is kind %s, expected L (complete)" % got[-1].group(2))
+    else:
+        r.unverifiable("[hook] no hop=cwd_listing line with entries=2 after the cd (the remote shell's bootstrap sent no listing, or the shell is not one that does): detection from the pushed listing is not proven")
+    time.sleep(0.5 + 2 * rt)
     size0 = lab.sshd_since(0)["size"]
     off = ctx.log_size()
-    ctx.be.type("ls %spd%s/sub/" % (base, uid), 30)
-    time.sleep(1.5 + 3 * rt)
-    hit = HOOK_PATH_DETECT.search(ctx.log_since(off))
+    ctx.be.type("ls sub", 30)                         # a subdirectory of the cwd, typed whole: no Tab, no Enter
+    hit = ctx.until(lambda: HOOK_PATH_DETECT.search(ctx.log_since(off)), 1.5 + 3 * rt, step=0.05)
     ctx.shot("lab_path_detect")
     if hit:
-        r.check("pd%s/sub" % uid in hit.group(1), "the app detected %r, expected the typed directory pd%s/sub" % (hit.group(1), uid))
+        r.check(hit.group(2) == "2" and hit.group(3) == "true", "path detection used a listing of %s entries (complete=%s), expected the fixture's 2 (complete)" % (hit.group(2), hit.group(3)))
     else:
-        r.unverifiable("[hook] no path-detect line in the app log (hop=path_detect path=...): detection itself is not proven; only the channel count below is checked")
+        r.unverifiable("[hook] no hop=path_detect source=pushed line in the app log: detection from the pushed listing is not proven; only the channel count below is checked")
+    time.sleep(0.5 + 2 * rt)
     starts = L.count_starts(lab.sshd_since(size0)["data"])
     r.metric("exec_channels_while_typing", starts)
     r.check(starts["command"] == 0 and starts["subsystem"] == 0, "typing a remote path opened %d exec and %d subsystem channel(s) on the server (expected none)" % (starts["command"], starts["subsystem"]))
