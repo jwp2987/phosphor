@@ -1,9 +1,10 @@
 # appci/lab.py: client of the fake ssh lab (script/realapp/sshlab, docs/testing.md 2.15) plus its pure pieces (matrix expansion, TOTP, the RTT gate,
 # the paired-latency verdict, sshd-log channel counts, the remote-read adapters). No keys, hostnames or IPs live in the repo: the box address comes
-# from APPCI_LAB_BOX / SSHLAB_BOX (remote mode), the forced-command key from APPCI_LAB_KEY, and every lab key is generated per run.
+# from APPCI_LAB_BOX / SSHLAB_BOX (remote mode), the forced-command key from APPCI_LAB_KEY, and every lab key is generated per run. These settings (and APPCI_LAB, APPCI_LAB_KNOWN_HOSTS) may also come from the machine-local ~/.config/phosphor-ci/ci.env (ci_env.get; environment wins).
 #   APPCI_LAB=off|local|remote   default: local when podman exists (the box), else off (the lab cases SKIP with the reason)
 #   APPCI_LAB_MATRIX=quick|full|<spec>   which arms of a lab case run (see matrix_selection)
 import base64, fnmatch, hashlib, hmac, io, itertools, json, os, re, shutil, socket, statistics, struct, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request, urllib.error
+import ci_env
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SSHLAB_DIR = os.path.normpath(os.path.join(HERE, "..", "sshlab"))
@@ -242,15 +243,15 @@ def _host_of(box):
 
 def lab_mode():
     """-> (mode, reason): APPCI_LAB=off|local|remote; unset = local when podman is on PATH, else off"""
-    v = os.environ.get("APPCI_LAB", "").strip().lower()
+    v = ci_env.get("APPCI_LAB", "").strip().lower()
     if v in ("off", "0", "no"):
         return "off", "APPCI_LAB=off"
     if v == "remote":
         if not box_addr():
             return "off", "APPCI_LAB=remote but neither APPCI_LAB_BOX nor SSHLAB_BOX is set"
-        if not os.environ.get("APPCI_LAB_KEY"):
+        if not ci_env.get("APPCI_LAB_KEY"):
             return "off", "APPCI_LAB=remote but APPCI_LAB_KEY (the forced-command key) is not set"
-        kh = os.environ.get("APPCI_LAB_KNOWN_HOSTS", "")
+        kh = ci_env.get("APPCI_LAB_KNOWN_HOSTS", "")
         if not kh or not os.path.isfile(kh):
             return "off", "APPCI_LAB=remote but APPCI_LAB_KNOWN_HOSTS (a machine-local known_hosts file pinning the box's host key) is not set or not a file: the lab fails closed rather than trusting a key on first use"
         return "remote", ""
@@ -262,7 +263,7 @@ def lab_mode():
 
 
 def box_addr():
-    return os.environ.get("APPCI_LAB_BOX") or os.environ.get("SSHLAB_BOX") or ""
+    return ci_env.get("APPCI_LAB_BOX") or ci_env.get("SSHLAB_BOX") or ""
 
 
 def sshlab_tar():
@@ -306,8 +307,8 @@ class Lab:
                 host = "127.0.0.1"
             else:
                 box = box_addr()
-                p = subprocess.run(["ssh", "-i", os.environ["APPCI_LAB_KEY"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
-                                    "-o", "UserKnownHostsFile=" + os.environ["APPCI_LAB_KNOWN_HOSTS"], "-o", "ConnectTimeout=20", box,
+                p = subprocess.run(["ssh", "-i", ci_env.get("APPCI_LAB_KEY"), "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+                                    "-o", "UserKnownHostsFile=" + ci_env.get("APPCI_LAB_KNOWN_HOSTS"), "-o", "ConnectTimeout=20", box,
                                     "start --run %s --flavor %s --ttl %d" % (runid, flavor, ttl)], input=sshlab_tar(), capture_output=True, timeout=300)
                 p.stdout, p.stderr = p.stdout.decode(errors="replace"), p.stderr.decode(errors="replace")
                 host = _host_of(box)
@@ -482,7 +483,7 @@ def stop_container(cid, mode, box_key=None):
         ctl = os.environ.get("APPCI_LAB_CTL") or os.path.join(SSHLAB_DIR, "labctl.py")
         subprocess.run([sys.executable, ctl, "stop", "--id", cid], capture_output=True, timeout=60)
     else:
-        subprocess.run(["ssh", "-i", os.environ["APPCI_LAB_KEY"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+        subprocess.run(["ssh", "-i", ci_env.get("APPCI_LAB_KEY"), "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
                         "-o", "UserKnownHostsFile=" + os.environ.get("APPCI_LAB_KNOWN_HOSTS", os.devnull), box_addr(), "stop --id " + cid],
                        capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
 
