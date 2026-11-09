@@ -12289,9 +12289,17 @@ impl Input {
     }
 
     fn is_completions_while_typing_turned_on(&self, app: &AppContext) -> bool {
-        *InputSettings::as_ref(app)
-            .completions_open_while_typing
-            .value()
+        let setting = &InputSettings::as_ref(app).completions_open_while_typing;
+        // An unknown session counts as local (nothing remote to protect).
+        let session_is_local = self
+            .active_block_session_id()
+            .and_then(|id| self.sessions.as_ref(app).get(id))
+            .is_none_or(|session| session.is_local());
+        crate::settings::completions_while_typing_effective(
+            *setting.value(),
+            setting.is_value_explicitly_set(),
+            session_is_local,
+        )
     }
 
     /// Returns true if an AI context menu should be enabled at the current cursor position based

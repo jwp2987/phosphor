@@ -54,12 +54,14 @@ define_settings_group!(InputSettings,
         },
         completions_open_while_typing: CompletionsOpenWhileTyping {
             type: bool,
-            default: false,
+            // On by default, but only for LOCAL sessions: a remote session keeps it off
+            // unless the user set this explicitly (see `completions_while_typing_effective`).
+            default: true,
             supported_platforms: SupportedPlatforms::ALL,
             sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
             private: false,
             toml_path: "terminal.input.completions_open_while_typing",
-            description: "Whether the completions menu opens automatically while typing.",
+            description: "Whether the completions menu opens automatically while typing. On by default for local sessions; remote sessions keep it off unless this is set explicitly.",
         },
         error_underlining: ErrorUnderliningEnabled {
             type: bool,
@@ -254,5 +256,38 @@ impl InputSettings {
 
     pub fn is_terminal_input_message_bar_enabled(&self) -> bool {
         *self.show_terminal_input_message_bar
+    }
+}
+
+/// Whether the as-you-type completions menu is on for a session. An explicit user
+/// setting always wins; otherwise the default (on) applies to local sessions only, so a
+/// remote session stays off until the user opts in.
+pub fn completions_while_typing_effective(
+    value: bool,
+    explicitly_set: bool,
+    session_is_local: bool,
+) -> bool {
+    if explicitly_set {
+        value
+    } else {
+        value && session_is_local
+    }
+}
+
+#[cfg(test)]
+mod completions_while_typing_tests {
+    use super::completions_while_typing_effective as eff;
+
+    #[test]
+    fn default_is_on_for_local_only() {
+        assert!(eff(true, false, true));
+        assert!(!eff(true, false, false));
+    }
+
+    #[test]
+    fn explicit_setting_wins_everywhere() {
+        assert!(eff(true, true, false));
+        assert!(!eff(false, true, true));
+        assert!(!eff(false, true, false));
     }
 }
