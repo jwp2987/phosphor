@@ -627,7 +627,7 @@ own chrome.
 | `terminal.input.show_hint_text` | boolean | `true` | Show hint text in an empty input. |
 | `terminal.input.input_box_type_setting` | `"classic"` \| `"universal"` | `"classic"` | The input style. `classic` is terminal-first; `universal` is AI-first. |
 | `terminal.input.classic_completions_mode` | boolean | `false` | Use the classic completions behaviour. |
-| `terminal.input.completions_open_while_typing` | boolean | `false` | Open the completions menu automatically as you type rather than on demand. |
+| `terminal.input.completions_open_while_typing` | boolean | `true` (local sessions only unless set) | Open the completions menu automatically as you type rather than on demand. |
 | `terminal.input.error_underlining_enabled` | boolean | `true` | Underline commands that will not run. Desktop only. |
 | `terminal.input.syntax_highlighting` | boolean | `true` | Syntax-highlight the input. Desktop only. |
 | `terminal.input.command_corrections` | boolean | `true` | Suggest corrections for mistyped commands. |

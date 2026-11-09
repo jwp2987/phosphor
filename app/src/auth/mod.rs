@@ -28,9 +28,12 @@ use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
 use crate::server_time::ServerTimestamp;
 
-pub const TEST_USER_EMAIL: &str = "test_user@warp.dev";
+/// Internal placeholder only (never shown: the display name is always set, see
+/// [`User::test`]); deliberately not a real-looking or branded address.
+pub const TEST_USER_EMAIL: &str = "local-user@localhost.invalid";
 pub const TEST_USER_UID: &str = "test_user_uid";
 
+pub mod local_identity;
 pub mod user_uid;
 
 pub use user_uid::UserUid;
@@ -205,7 +208,12 @@ impl User {
             local_id: UserUid::new(TEST_USER_UID),
             metadata: UserMetadata {
                 email: TEST_USER_EMAIL.to_string(),
-                display_name: None,
+                // #1806: the OS user, not a stub "Test User" (a configured name is applied
+                // at the render sites, which can read settings).
+                display_name: Some(local_identity::resolve_display_name(
+                    "",
+                    local_identity::current_os_user_name().as_deref(),
+                )),
                 photo_url: None,
             },
             is_onboarded: true,

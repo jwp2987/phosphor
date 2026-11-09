@@ -1559,6 +1559,12 @@ line inside their editor with no hook, so on ConPTY the 5 s logged give-up is st
 `hop=handoff_stale_counts_reset by=give_up shell_activity=.. markers_live=..` -- `Reading` with `markers_live=true` is a line continued
 inside the editor (pwsh on ConPTY); `Unknown` is a bootstrap without markers.
 
+### 2.14b Wave 1.5 small UI features: unit tests and cases
+
+- `completions_while_typing_effective` (`settings/input.rs`): the as-you-type menu default is on for LOCAL sessions only; an explicit setting always wins. Real-app case `ui_completions_as_you_type_local` (terminal mode, skipped when the profile writes the option): typing a shared prefix without Tab shows both candidates (OCR).
+- `no_helper_chip_visible` (`settings/input.rs`) and `ssh_no_helper_chip_tests.rs`: the chip shows unless the `terminal.remote.show_no_helper_chip` setting is off or the host is in `terminal.remote.no_helper_chip_dismissed_hosts` (case-insensitive). Lab case `lab_no_helper_chip` (2.15).
+- `auth/local_identity_tests.rs` (#1806): display name (configured, then OS user, never "Test User"), stable default emoji, emoji/image-path/missing-file resolution. No real-app avatar case yet: the avatar only renders beside an agent query block, which needs a model scenario (open item).
+
 ### 2.15 Fake ssh lab (`script/realapp/sshlab`, `appci/lab.py`, `appci/cases_lab.py`; Wave 0.5b)
 
 The harness's ssh server used to be the same machine (`sshd.py`: `ctx.lines(remote=True)` reads `prof.rhome` directly), so latency, a second
@@ -1602,6 +1608,7 @@ helper mode changes). They run ONLY when `--cases` names them (`--cases` now tak
 | `lab_enter_start` | 7 shells x LAN/150/300 x helper + p_sete, p_colon | 20 lines at 10-25 ms/key with an instant Enter, interleaved with a plain `ssh -tt` session of the same user: median(app) <= median(plain) + max(15 ms, 10 %) (owner 2026-11-08); the remote `rec.log` equals the typed lines exactly and the effect file has every line once in order. Time = the shell's own record (remote clock mapped by `/health`'s clock) minus the Enter. fish (whole-second stamps), dash and ash (no hook) are exactness-only |
 | `lab_ssh_drop_reconnect` (terminal) | bash zsh x LAN/150 x helper, + `rst` and `stall10` arms | the `ssh_drop_reconnect` body (now `ssh_drop_body(ctx, r, host, variants)`) against `lab-<user>`; `rst`: the lab resets the connection and the pane returns to a local prompt, a reconnect works; `stall10`: the server session is SIGSTOPped for 10 s, the pane stays remote and the lines typed meanwhile arrive exactly, in order |
 | `lab_ctrl_c_no_esc_i` | bash zsh fish x LAN/150 x helper | #1798/#1672: `sleep 30`, then Ctrl-C x1/x2/x3 at gaps 0/50/200 ms, then a typed echo: effect file exact; the shell received exactly [sleep 30, echo]; prompt.log grew one per command (bash exact); no ESC-i in rec.log; no "Session abandoned before bootstrap" in the app log; no visible `^[i` (OCR) |
+| `lab_no_helper_chip` (terminal) | bash zsh x LAN x nohelper | the "limited: no remote helper" chip is on screen (OCR) in a no-helper ssh session, is not an ERROR banner, and a command typed after connecting runs exactly once |
 
 The quick matrix is {bash, zsh, fish} x {LAN, 150} x nohelper (32 arms across the six cases, each in the modes the case declares); `full` is 176 arms and is for a candidate/release run, not a fix round (docs 2.9).
 
