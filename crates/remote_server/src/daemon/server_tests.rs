@@ -89,11 +89,18 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
             "git_read",
             "ripgrep_search",
             "repo_metadata",
-            "file_context"
+            "file_context",
+            "diff_state",
+            "git_status",
+            "github"
         ]
     );
     // Parity family a: batch file reads are served by the helper.
     assert!(caps.supports(crate::capability::FILE_CONTEXT));
+    // Parity families d and e: diff state, git status and GitHub info.
+    assert!(caps.supports(crate::capability::DIFF_STATE));
+    assert!(caps.supports(crate::capability::GIT_STATUS));
+    assert!(caps.supports(crate::capability::GITHUB));
     assert!(!caps.supports(crate::capability::BUFFERS));
 }
 
@@ -145,7 +152,7 @@ fn requests_outside_the_capability_list_are_unsupported() {
 
     h.send(session(
         "r3",
-        session_scoped_request::Message::GetDiffState(Default::default()),
+        session_scoped_request::Message::OpenBuffer(Default::default()),
     ));
     assert_eq!(error_of(h.next()).code, ErrorCode::Unsupported as i32);
 }
@@ -273,6 +280,11 @@ fn abort_of_an_unknown_request_is_harmless() {
 fn unsupported_notifications_are_dropped_silently() {
     let mut h = harness();
     h.send(ClientMessage::notification(
+        notification::Message::BufferEdit(Default::default()),
+    ));
+    assert!(h.rx.try_recv().is_err());
+    // A git-status request for a path that is not a repository is dropped too (nothing to say).
+    h.send(ClientMessage::notification(
         notification::Message::UpdateGitStatus(Default::default()),
     ));
     assert!(h.rx.try_recv().is_err());
@@ -351,16 +363,10 @@ fn every_reserved_family_request_is_unsupported_and_named() {
         assert_eq!(e.code, ErrorCode::Unsupported as i32, "{name}");
         assert!(e.message.contains(name), "{name}: {}", e.message);
     }
-    let session_requests: Vec<(&str, session_scoped_request::Message)> = vec![
-        (
-            "OpenBuffer",
-            session_scoped_request::Message::OpenBuffer(Default::default()),
-        ),
-        (
-            "GetDiffState",
-            session_scoped_request::Message::GetDiffState(Default::default()),
-        ),
-    ];
+    let session_requests: Vec<(&str, session_scoped_request::Message)> = vec![(
+        "OpenBuffer",
+        session_scoped_request::Message::OpenBuffer(Default::default()),
+    )];
     for (name, message) in session_requests {
         h.send(session("rs", message));
         let e = error_of(h.next());

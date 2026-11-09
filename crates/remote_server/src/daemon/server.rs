@@ -5,6 +5,10 @@
 //! This is the warpui-free counterpart of the app daemon's `ServerModel`. It implements the
 //! request families listed in [`crate::capability::HELPER_CAPABILITIES`]; every other request
 //! is answered with `ErrorCode::UNSUPPORTED` so the client takes its no-helper path.
+//!
+//! The git-derived views (diff state, git status, GitHub info) share one set of repository
+//! watches ([`super::repo_watch`]); each filesystem event becomes a `Change` per repository that
+//! the three consumers turn into at most one recompute in flight each.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,7 +29,7 @@ use super::jobs::{Inflight, Reply};
 use super::watch::{FsKind, WatchSet};
 use super::{
     buffers, diff_state, file_context, fs_ops, git, git_status, git_write, github, repo_meta,
-    ripgrep,
+    repo_watch, ripgrep,
 };
 
 /// How long the daemon waits with no connections before exiting.
@@ -64,6 +68,17 @@ pub(super) enum Event {
     RepoIndexed(Box<repo_meta::Indexed>),
     /// A worker finished re-listing the directories a watcher event dirtied.
     RepoRelisted(repo_meta::Relisted),
+    /// A worker planned the watches of a repository whose git state is followed.
+    RepoWatchPlan {
+        root: String,
+        plan: repo_watch::WatchPlan,
+    },
+    /// A diff-state computation finished (`diff_state.rs`).
+    DiffState(diff_state::Done),
+    /// A git-status computation finished (`git_status.rs`).
+    GitStatus(git_status::Done),
+    /// A GitHub lookup finished (`github.rs`).
+    Github(github::Done),
 }
 
 struct Connection {
@@ -123,6 +138,14 @@ pub(super) struct Server {
     watches: WatchSet,
     /// Indexed repository roots and their live trees (`repo_meta.rs`).
     repos: repo_meta::RepoTrees,
+    /// The watches behind the git-derived views (`repo_watch.rs`).
+    repo_watches: repo_watch::RepoWatches,
+    /// Diff-state subscriptions (`diff_state.rs`).
+    diff: diff_state::DiffStates,
+    /// Git-status subscriptions (`git_status.rs`).
+    git_status: git_status::GitStatuses,
+    /// GitHub PR and repository info subscriptions (`github.rs`).
+    github: github::Githubs,
 }
 
 impl Server {
@@ -144,6 +167,10 @@ impl Server {
             events_tx: None,
             watches: WatchSet::disabled(),
             repos: repo_meta::RepoTrees::default(),
+            repo_watches: repo_watch::RepoWatches::default(),
+            diff: diff_state::DiffStates::default(),
+            git_status: git_status::GitStatuses::default(),
+            github: github::Githubs::default(),
         }
     }
 
@@ -180,6 +207,12 @@ impl Server {
         }
     }
 
+    /// Whether no repository watch is held (the git-derived views have no followers).
+    #[cfg(test)]
+    pub(super) fn is_repo_watch_free_for_tests(&self) -> bool {
+        self.repo_watches.is_empty() && self.watches.len() == 0
+    }
+
     pub(super) fn handle_event(&mut self, event: Event) {
         match event {
             Event::Connected { conn, tx, chunking } => {
@@ -202,9 +235,48 @@ impl Server {
                 self.repos
                     .relisted(done, self.events_tx.as_ref(), &mut self.watches, &push);
             }
+            Event::RepoWatchPlan { root, plan } => {
+                self.repo_watches.apply_plan(&root, plan, &mut self.watches);
+            }
+            Event::DiffState(done) => {
+                let push = Pusher { conns: &self.conns };
+                self.diff.done(
+                    done,
+                    self.events_tx.as_ref(),
+                    &mut self.repo_watches,
+                    &mut self.watches,
+                    &push,
+                );
+            }
+            Event::GitStatus(done) => {
+                let push = Pusher { conns: &self.conns };
+                self.git_status.done(
+                    done,
+                    self.events_tx.as_ref(),
+                    &mut self.repo_watches,
+                    &mut self.watches,
+                    &push,
+                );
+            }
+            Event::Github(done) => {
+                let push = Pusher { conns: &self.conns };
+                self.github.done(
+                    done,
+                    self.events_tx.as_ref(),
+                    &mut self.repo_watches,
+                    &mut self.watches,
+                    &push,
+                );
+            }
             Event::Disconnected { conn } => {
                 self.conns.remove(&conn);
                 self.repos.conn_gone(conn, &mut self.watches);
+                self.diff
+                    .conn_gone(conn, &mut self.repo_watches, &mut self.watches);
+                self.git_status
+                    .conn_gone(conn, &mut self.repo_watches, &mut self.watches);
+                self.github
+                    .conn_gone(conn, &mut self.repo_watches, &mut self.watches);
                 log::info!(
                     "Daemon: connection {conn} gone, {} active",
                     self.conns.len()
@@ -222,6 +294,14 @@ impl Server {
         log::trace!("Daemon: fs change {kind:?} {} path(s)", paths.len());
         self.repos
             .on_fs_change(paths, kind, self.events_tx.as_ref());
+        // The git-derived views: each repo with followers gets one `Change`.
+        for (repo, change) in self.repo_watches.classify(paths, kind) {
+            self.diff.on_change(&repo, &change, self.events_tx.as_ref());
+            self.git_status
+                .on_change(&repo, &change, self.events_tx.as_ref());
+            self.github
+                .on_change(&repo, &change, self.events_tx.as_ref());
+        }
     }
 
     fn reply_for(&self, conn: ConnId, request_id: &RequestId) -> Option<Reply> {
@@ -252,7 +332,7 @@ impl Server {
                 ),
             },
             Some(client_message::Message::Notification(n)) => {
-                self.handle_notification(n.message, &request_id)
+                self.handle_notification(conn, n.message, &request_id)
             }
             None => reply.error(
                 ErrorCode::InvalidRequest,
@@ -358,7 +438,14 @@ impl Server {
                 self.repos.load_directory(msg, &reply, &mut self.watches)
             }
             M::OpenBuffer(_) => buffers::handle(&reply, "OpenBuffer"),
-            M::GetDiffState(_) => diff_state::handle(&reply, "GetDiffState"),
+            M::GetDiffState(msg) => self.diff.get_diff_state(
+                conn,
+                msg,
+                reply,
+                self.events_tx.as_ref(),
+                &mut self.repo_watches,
+                &mut self.watches,
+            ),
         }
     }
 
@@ -384,13 +471,15 @@ impl Server {
 
     fn handle_notification(
         &mut self,
+        conn: ConnId,
         message: Option<notification::Message>,
         request_id: &RequestId,
     ) {
         use notification::Message as N;
         match message {
             Some(N::Abort(abort)) => {
-                let aborted = self.inflight.abort(&abort.request_id_to_abort);
+                let aborted = self.inflight.abort(&abort.request_id_to_abort)
+                    || self.diff.abort(&abort.request_id_to_abort);
                 log::info!(
                     "Handling Abort of {} ({})",
                     abort.request_id_to_abort,
@@ -407,9 +496,31 @@ impl Server {
                 }
             }
             Some(N::SessionBootstrapped(msg)) => self.handle_session_bootstrapped(msg),
-            Some(N::UpdateGitStatus(_)) => git_status::ignore("UpdateGitStatus"),
-            Some(N::UpdateGithubPrInfo(_)) => github::ignore("UpdateGitHubPrInfo"),
-            Some(N::UpdateGithubRepoInfo(_)) => github::ignore("UpdateGitHubRepoInfo"),
+            Some(N::UnsubscribeDiffState(msg)) => {
+                self.diff
+                    .unsubscribe(conn, msg, &mut self.repo_watches, &mut self.watches)
+            }
+            Some(N::UpdateGitStatus(msg)) => self.git_status.update(
+                conn,
+                msg,
+                self.events_tx.as_ref(),
+                &mut self.repo_watches,
+                &mut self.watches,
+            ),
+            Some(N::UpdateGithubPrInfo(msg)) => self.github.update_pr(
+                conn,
+                msg,
+                self.events_tx.as_ref(),
+                &mut self.repo_watches,
+                &mut self.watches,
+            ),
+            Some(N::UpdateGithubRepoInfo(msg)) => self.github.update_repo(
+                conn,
+                msg,
+                self.events_tx.as_ref(),
+                &mut self.repo_watches,
+                &mut self.watches,
+            ),
             // Notifications carry no response contract. The ones the helper cannot act on
             // (buffer sync, diff-state and git-status subscriptions, preferences) are dropped;
             // the client does not wait on a response, it waits on pushes that never come, and

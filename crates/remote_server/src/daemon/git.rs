@@ -38,7 +38,7 @@ fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn canonical_repo_path(raw: &str) -> Result<PathBuf> {
+pub(super) fn canonical_repo_path(raw: &str) -> Result<PathBuf> {
     let path = crate::naming::expand_tilde(raw);
     std::fs::canonicalize(&path).map_err(|e| anyhow!("Invalid repo_path: {e}"))
 }
