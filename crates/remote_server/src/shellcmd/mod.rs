@@ -14,6 +14,7 @@
 //! Wave H, P0.
 
 pub mod base64;
+pub mod chunk;
 pub mod frame;
 pub mod predicates;
 pub mod shell_kind;
