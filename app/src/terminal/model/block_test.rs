@@ -2371,16 +2371,16 @@ fn a_silent_command_after_a_trailing_colon_is_not_handed_to_the_user() {
     let mut detector = PromptDetector::default();
 
     assert_eq!(poll(&mut detector, t0, s(0), COOKED, waiting()), None);
-    // Every 1 Hz termios poll and the quiet timer through the whole `sleep 20`: no hand-over,
-    // whether the probe says "not reading" or the platform cannot tell.
+    // Every 1 Hz termios poll and the quiet timer through the whole `sleep 20`: no hand-over.
     for second in 15..=20u64 {
-        let tty_read = if second % 2 == 0 {
-            ForegroundTtyRead::NotReading
-        } else {
-            ForegroundTtyRead::Unknown
-        };
         assert_eq!(
-            poll_with_tty(&mut detector, t0, s(second), waiting(), tty_read),
+            poll_with_tty(
+                &mut detector,
+                t0,
+                s(second),
+                waiting(),
+                ForegroundTtyRead::NotReading
+            ),
             None,
             "{second}s: silence after a trailing `:` is not an input wait"
         );
@@ -2390,10 +2390,114 @@ fn a_silent_command_after_a_trailing_colon_is_not_handed_to_the_user() {
         None,
         "no quiet timer once the window has passed without a tty read: the 1 Hz poll asks again"
     );
+    // A probe that says "not reading" never hands over on silence, however long.
+    assert_eq!(
+        poll_with_tty(
+            &mut detector,
+            t0,
+            INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ * 2,
+            waiting(),
+            ForegroundTtyRead::NotReading
+        ),
+        None
+    );
 
     // `done` arrives: the line ends in a newline, so there is no candidate any more.
-    assert_eq!(poll(&mut detector, t0, s(20), COOKED, None), None);
+    assert_eq!(poll(&mut detector, t0, s(200), COOKED, None), None);
     assert_eq!(detector.next_wake(), None);
+}
+
+/// #1796 review: where the OS cannot tell whether the foreground reads the tty (no probe on
+/// macOS, a Yama-restricted or root-owned `/proc/<pid>/syscall`), "unknown" must not mean
+/// "never": a real `read -p 'Name: '` would hang for the 30-minute backstop. Silence alone is
+/// still not enough at 15-20 s; it hands over after the longer unknown-read window.
+#[test]
+fn a_trailing_colon_with_an_unknown_tty_read_is_handed_over_after_the_longer_window() {
+    let t0 = instant::Instant::now();
+    let s = Duration::from_secs;
+    let name = || Some(candidate("Name: ", 6));
+    let unknown = INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ;
+    assert!(unknown > INTERACTIVE_PROMPT_QUIET_TRAILING);
+    let mut detector = PromptDetector::default();
+
+    assert_eq!(poll(&mut detector, t0, s(0), COOKED, name()), None);
+    for second in 15..=20u64 {
+        assert_eq!(
+            poll_with_tty(
+                &mut detector,
+                t0,
+                s(second),
+                name(),
+                ForegroundTtyRead::Unknown
+            ),
+            None,
+            "{second}s: an unknown tty read is not evidence yet"
+        );
+    }
+    assert_eq!(
+        detector.next_wake(),
+        Some(t0 + unknown),
+        "the quiet timer is re-armed for the end of the unknown-read window"
+    );
+    assert_eq!(
+        poll_with_tty(
+            &mut detector,
+            t0,
+            unknown - s(1),
+            name(),
+            ForegroundTtyRead::Unknown
+        ),
+        None
+    );
+    assert_eq!(
+        poll_with_tty(
+            &mut detector,
+            t0,
+            unknown,
+            name(),
+            ForegroundTtyRead::Unknown
+        ),
+        Some(PromptDetection::Interactive)
+    );
+    assert_eq!(detector.next_wake(), None, "once per episode");
+}
+
+/// #1796 review: once a candidate is waiting for a tty read (no timer armed), a different
+/// candidate -- new output -- starts a fresh window, so a quiet timer is armed again.
+#[test]
+fn a_new_candidate_after_awaiting_a_tty_read_arms_the_quiet_timer_again() {
+    let t0 = instant::Instant::now();
+    let s = Duration::from_secs;
+    let mut detector = PromptDetector::default();
+
+    let first = || Some(candidate("Waiting:", 8));
+    assert_eq!(poll(&mut detector, t0, s(0), COOKED, first()), None);
+    assert_eq!(
+        poll_with_tty(
+            &mut detector,
+            t0,
+            INTERACTIVE_PROMPT_QUIET_TRAILING,
+            first(),
+            ForegroundTtyRead::NotReading
+        ),
+        None
+    );
+    assert_eq!(detector.next_wake(), None, "awaiting a tty read: no timer");
+
+    let second = || Some(candidate("Name: ", 6));
+    assert_eq!(poll(&mut detector, t0, s(30), COOKED, second()), None);
+    assert_eq!(
+        detector.next_wake(),
+        Some(t0 + s(30) + INTERACTIVE_PROMPT_QUIET_TRAILING)
+    );
+
+    // And an explicit marker after it gets its own short window.
+    let confirm = || Some(candidate("Continue? [y/N] ", 16));
+    assert_eq!(poll(&mut detector, t0, s(31), COOKED, confirm()), None);
+    assert_eq!(
+        detector.next_wake(),
+        Some(t0 + s(31) + INTERACTIVE_PROMPT_QUIET_EXPLICIT)
+    );
 }
 
 /// #1796: a command that prints `Name:` and only starts reading later (`printf 'Name: ';

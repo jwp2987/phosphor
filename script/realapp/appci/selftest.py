@@ -2164,6 +2164,12 @@ def agent_lrc_takeover_log_parse():
             "leaving the command with the agent\n")
     assert ca.lrc_takeover_verdict(kept) == (False, True, 0), ca.lrc_takeover_verdict(kept)
     assert ca.lrc_takeover_verdict("") == (False, False, 0)
+    unknown = ("x [INFO] prompt-shaped line Some(\"Name: \") unchanged for 15s, but whether the foreground reads the tty is unknown; "
+               "leaving the command with the agent\n")
+    assert ca.lrc_takeover_verdict(unknown) == (False, True, 0), ca.lrc_takeover_verdict(unknown)
+    waits = ("x [INFO] agent_command_wait awaited=true wait_until_completion=true snapshots=false\n"
+             "y [INFO] agent_command_wait awaited=false wait_until_completion=false snapshots=false\n")
+    assert ca.lrc_awaited(waits) is False and ca.lrc_awaited(waits.splitlines()[0]) is True and ca.lrc_awaited("") is None
     assert "agent_lrc_no_false_takeover" in winmap.NOT_WINDOWS
 
 

@@ -771,9 +771,18 @@ pub const INTERACTIVE_PROMPT_QUIET_EXPLICIT: std::time::Duration =
 /// a progress label and a short `read -t` timeout. Silence alone never hands it over (#1796):
 /// once this has passed the foreground must also be blocked reading the tty
 /// ([`PromptDetector::observe`]). A real `read -p` then waits ~15s for the hand-over; where
-/// that cannot be told (no probe on this platform) it waits for the 30-minute backstop.
+/// that cannot be told it waits for [`INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ`].
 pub const INTERACTIVE_PROMPT_QUIET_TRAILING: std::time::Duration =
     std::time::Duration::from_secs(15);
+/// How long a bare trailing `?` / `:` must sit unchanged when the OS cannot say whether the
+/// foreground reads the tty ([`ForegroundTtyRead::Unknown`]: no probe on this platform, e.g.
+/// macOS; ptrace restrictions; a member owned by another user, e.g. root under `sudo`).
+/// "Unknown" must not mean "never" -- a real `read -p 'Name: '` would otherwise hang for the
+/// 30-minute backstop -- but silence alone is weak evidence (#1796: a slow, silent step of a
+/// long command), so it waits far longer than a probed prompt. A probe that says
+/// [`ForegroundTtyRead::NotReading`] never hands over on silence, however long.
+pub const INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ: std::time::Duration =
+    std::time::Duration::from_secs(90);
 
 impl InteractivePromptShape {
     /// How long the prompt (same text, same cursor) must have been on screen, with no output
@@ -860,8 +869,11 @@ pub enum ForegroundTtyRead {
     /// discipline's read, or an asleep `read` on a tty fd).
     Reading,
     /// It is not: running, sleeping in `nanosleep`, waiting on a socket, a pipe or a child.
+    /// A trailing `?`/`:` is then never handed over on silence.
     NotReading,
-    /// This platform cannot tell. Treated as `NotReading`: no evidence, no hand-over.
+    /// The OS cannot tell (no probe on this platform, an unreadable `/proc/<pid>/syscall`).
+    /// A trailing `?`/`:` is then handed over only after
+    /// [`INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ`].
     Unknown,
 }
 
@@ -892,10 +904,12 @@ pub struct PromptDetector {
     candidate_since: Option<instant::Instant>,
     interactive_latched: bool,
     /// The candidate's quiet window has passed but the foreground was not seen reading the
-    /// tty. No quiet timer is armed for it any more (it would fire at once, forever); the
-    /// 1 Hz termios poll keeps asking, so a command that prints `Name:` and only starts its
-    /// `read` later is still handed over.
-    awaiting_tty_read: bool,
+    /// tty: the probe's last answer (`NotReading` or `Unknown`). For `NotReading` no quiet
+    /// timer is armed any more (it would fire at once, forever); the 1 Hz termios poll keeps
+    /// asking, so a command that prints `Name:` and only starts its `read` later is still
+    /// handed over. For `Unknown` the timer is armed for the longer
+    /// [`INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ`].
+    awaiting_tty_read: Option<ForegroundTtyRead>,
 }
 
 impl PromptDetector {
@@ -946,7 +960,7 @@ impl PromptDetector {
         if self.last_candidate.as_ref() != Some(&candidate) {
             self.candidate_since = Some(now);
             self.interactive_latched = false;
-            self.awaiting_tty_read = false;
+            self.awaiting_tty_read = None;
             self.last_candidate = Some(candidate);
         }
         let since = *self.candidate_since.get_or_insert(now);
@@ -963,19 +977,35 @@ impl PromptDetector {
         let needs_tty_read = self.last_candidate.as_ref().is_some_and(|candidate| {
             candidate.shape == InteractivePromptShape::TrailingPunctuation
         });
-        if needs_tty_read && foreground_tty_read() != ForegroundTtyRead::Reading {
-            if !self.awaiting_tty_read {
-                log::info!(
-                    "prompt-shaped line {:?} unchanged for {quiet_for:?}, but the foreground is not reading the tty; leaving the command with the agent",
-                    self.last_candidate.as_ref().map(|c| c.text.as_str())
-                );
+        let mut evidence = "";
+        if needs_tty_read {
+            match foreground_tty_read() {
+                ForegroundTtyRead::Reading => evidence = ", foreground reading the tty",
+                ForegroundTtyRead::Unknown
+                    if quiet_for >= INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ =>
+                {
+                    evidence = ", tty read unknown, long silence";
+                }
+                verdict => {
+                    if self.awaiting_tty_read != Some(verdict) {
+                        let what = if verdict == ForegroundTtyRead::NotReading {
+                            "the foreground is not reading the tty"
+                        } else {
+                            "whether the foreground reads the tty is unknown"
+                        };
+                        log::info!(
+                            "prompt-shaped line {:?} unchanged for {quiet_for:?}, but {what}; leaving the command with the agent",
+                            self.last_candidate.as_ref().map(|c| c.text.as_str())
+                        );
+                    }
+                    self.awaiting_tty_read = Some(verdict);
+                    return None;
+                }
             }
-            self.awaiting_tty_read = true;
-            return None;
         }
         self.interactive_latched = true;
         log::info!(
-            "interactive prompt {:?} unchanged for {quiet_for:?} (required {required:?}); handing the command to the user",
+            "interactive prompt {:?} unchanged for {quiet_for:?} (required {required:?}{evidence}); handing the command to the user",
             self.last_candidate.as_ref().map(|c| c.text.as_str())
         );
         Some(PromptDetection::Interactive)
@@ -984,18 +1014,25 @@ impl PromptDetector {
     /// When the pending candidate will have been quiet long enough, i.e. when to observe
     /// again if no output arrives first. `None` when there is nothing to wait for.
     pub fn next_wake(&self) -> Option<instant::Instant> {
-        if self.interactive_latched || self.awaiting_tty_read {
+        if self.interactive_latched {
             return None;
         }
         let candidate = self.last_candidate.as_ref()?;
-        Some(self.candidate_since? + candidate.shape.required_quiet())
+        let since = self.candidate_since?;
+        match self.awaiting_tty_read {
+            None => Some(since + candidate.shape.required_quiet()),
+            Some(ForegroundTtyRead::Unknown) => {
+                Some(since + INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ)
+            }
+            Some(_) => None,
+        }
     }
 
     fn clear_interactive(&mut self) {
         self.last_candidate = None;
         self.candidate_since = None;
         self.interactive_latched = false;
-        self.awaiting_tty_read = false;
+        self.awaiting_tty_read = None;
     }
 }
 
