@@ -205,7 +205,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 | `test_local_counted_bootstrap` | counted-read bootstrap behaves identically to the here-doc form (#1226) |
 | `test_ssh_keepalive`, `test_ssh_probe_cache`, `test_ssh_wrapper_forks`, `test_ssh_raw_bootstrap_hook` | ssh wrapper options, probe cache, fork budget, `raw_bootstrap` hook (#1171, #1136, #1172, #1243) |
 | `test_ssh_auth_once` | a failed ssh login (master step 255, no control socket) or a Ctrl-C at its prompt runs ssh ONCE and returns its status, so no second password prompt eats the next command (#1626); a ssh that authenticated but cannot multiplex (socket created, then 255) still falls back to the user's plain ssh once (#1551); r18u13: the same, plus a successful login, with a `$HOME` that is not the passwd home and the absolute passwd-home SSH_SOCKET_DIR the app now exports there (the fake ssh expands `~` from `$PWHOME`, as ssh does from the passwd entry; the old literal `~/.ssh` export made the wrapper miss its own master and log in twice): the wrapper logs in ONCE and multiplexes the session over its master; #1641: the hooks the wrapper prints are logged in order with the ssh calls: `ManagedSSHSessionStarting` exactly once after the master and right before the managed session, `PlainSSHFallback` right before each plain ssh (mux failure, a RemoteCommand, a non-POSIX remote, MSYS2 in bash), nothing on an auth failure or Ctrl-C; #1641 host-key retry: under the default `stricthostkeychecking ask` the master carries `StrictHostKeyChecking=yes`, an unknown host (real `ssh-keygen` known_hosts lookup) gets ONE plain ssh retry with the fallback hook before it, a known host's auth failure makes exactly one call, a user's `accept-new` gets no override (these cases need ssh-keygen and are SKIPPED without it); bash/zsh/fish |
-| `test_native_completions` | the self-identifying in-band native-completions exchange (#1801) in real bash and zsh, cut from the bundled bootstrap: ^Y is answered with OSC 9280;P;<token>, the app's frame `RS token : %HH RS` gets candidates between OSC 9280;A and B (`cd pro` offers the directories, `cat dir/fi` the WHOLE token `dir/file1`, `echo a;ec` keeps the `a;` lead, bash `complete -F`/`-W` specs with COMP_WORDS/COMP_CWORD as bash sets them and the `--opt=` part kept); a command behind the frame (same write, 5 ms later) runs; a command arriving with the ^Y (no frame) runs whole; the cancel frame and a frame for another token end the exchange with no candidates and the next command runs; a frame landing after the hook's deadline is dropped at the prompt and nothing of it runs; a frame cut short is bounded by the deadline (zsh's per-byte total deadline). bash below 4.0 SKIPPED by design; fish not exercised (off the path). A missing shell is SKIPPED |
+| `test_native_completions` | the in-band native-completions exchange (#1801) in the REAL assembled bash and zsh bootstraps (their own bind lines): the Bootstrapped hook advertises `!phosphor_nc_frames_v1`; candidates (`cd pro`, the WHOLE token `dir/file1`, the `a;` lead; bash `complete -F`/`-W` specs, COMP_WORDS/COMP_CWORD, the `--opt=` part); a command behind the frame (same write, 5 ms later) runs; the app's real command bytes (^P + bracketed paste) and a bracketed paste alone (ESC first) right after ^Y run whole; the cancel frame and a stale-token frame give no candidates and the next command runs; a frame landing at the prompt is dropped; a frame's start alone at the prompt stops at the next real key; a frame's tail after a 5 s stall is never run and the real command after it runs whole; vi mode (bash `set -o vi`, zsh `bindkey -v`); zsh without zsh/datetime. bash below 4.0 SKIPPED by design; fish not exercised (off the path). A missing shell is SKIPPED |
 | `test_pwsh_git_head.ps1` | pwsh in-process git head equals `git` (#1163) |
 | `test_warpctrl_early_dispatch` | the app binary honours `--warpctrl` before GUI startup (needs a built binary, else SKIPPED) |
 | `macos/test_create_warpctrl_wrapper` | macOS wrapper packaging |
@@ -2297,33 +2297,39 @@ What changed and what pins it:
   emulated, bash-completion's `-D` loader, `-C` commands, compgen actions, `-o` options); bash 3.2 gets no `^Y` binding
   and the app sends it none (`native_shell_completions_need_bash_4`). fish is off the path and its bootstrap has no
   handler: its read would need external commands, around which fish switches bracketed paste and keypad modes.
-  **The exchange is self-identifying** (design comment in `pty_controller.rs`, "The in-band native-completions
-  exchange"; second #1801 review): the hook names it with a fresh token (OSC `9280;P;<token>`), and the app always ends
-  it with ONE frame, `RS <token> : <%HH text> RS` (RS = 0x1e), or the cancel frame `RS - : RS` when the prompt does not
-  come within 2 s; held writes are released only after the frame. The hook reads one byte first and consumes nothing
-  that is not a frame (anything else goes back to the line editor); a frame for another token or the cancel ends it
-  with nothing; a frame that lands at the prompt is dropped whole by the widget bound to RS. Every hook read is bounded
-  by a total deadline (zsh reads byte by byte against `$EPOCHREALTIME`). So a late prompt, a late answer or a timeout
-  can only cost that Tab's in-band answer, never a key or a command, and no write waits more than 2 s (a notice after
-  1 s). The same holds for upstream's flag-path (Fallback) requests. The shell that was asked leaving first (a Precmd,
-  ExitShell or Exit while its prompt is awaited) writes no frame and hands the commands held behind the `^Y` back to
-  the editor. Unit tests (`pty_controller_tests.rs`): `native_completions_frames_are_self_identifying_and_never_end_a_line`,
-  `writes_held_behind_the_trigger_follow_the_answer_frame_in_order`,
-  `prompt_timeout_cancels_then_releases_held_writes_in_order_without_a_toast`,
-  `prompt_timeout_of_a_fallback_request_asks_for_the_toast`, `a_second_request_while_awaiting_the_prompt_is_refused`,
-  `a_prompt_without_a_token_is_cancelled`, `the_shell_leaving_hands_back_the_held_commands_and_writes_no_frame`; the
-  parser's token: `completions_prompt_token_is_letters_and_digits_only` (`ansi/mod_test.rs`). Tab then a fast Enter
-  runs the COMPLETED line remotely too: the Enter holds for the in-band answer up to `REMOTE_NATIVE_TAB_ENTER_BUDGET`
-  (1.5 s; give-up hands the line back, #1666); when the shell has no answer the Enter runs the visible line at once
-  and the completer answers the menu: `test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_modes`,
+  **The exchange is self-identifying, and nothing is ever held behind it** (design comment in `pty_controller.rs`,
+  "The in-band native-completions exchange"; third #1801 review). Wire: the app writes `^Y` only to a shell whose
+  Bootstrapped hook advertised `!phosphor_nc_frames_v1` in its shell options (bash 4.0+, zsh); the hook names the
+  exchange with a fresh token (OSC `9280;P;<token>`; a reused or missing token is cancelled); the app always ends it
+  with ONE frame, `RS <token> : <%HH text> US` (RS = 0x1e, US = 0x1f), or the cancel frame `RS - : US`. The hook and
+  the RS widget at the prompt consume nothing outside a frame: the first byte must be RS and every later byte must be
+  in the frame alphabet (letters, digits, `:`, `%`, `-`) up to US; any other byte goes back to the line editor (bash
+  also hands back ^P and a whole bracketed paste); US alone is a no-op. Every read is bounded by a total deadline
+  (`$EPOCHREALTIME`; per byte without zsh/datetime or before bash 5). App: an exchange starts only when the write queue
+  is empty, no command is executing, the line editor is active and no other write path is engaged; while it waits
+  for its prompt, ANY write (a command, typed or pasted bytes, agent bytes, ^C) first writes the cancel frame, then
+  goes out, in order. Nothing is queued behind `^Y`, so there is nothing to hold, hand back or reorder; the shell
+  leaving first just ends the exchange. Unit tests (`pty_controller_tests.rs`, through the real write APIs):
+  `native_completions_frames_are_self_identifying_and_never_end_a_line`,
+  `an_exchange_starts_only_when_nothing_is_queued_or_running`,
+  `writes_during_an_exchange_go_out_in_order_after_the_cancel_frame` (an editor command and agent bytes; the queue
+  stays empty), `a_direct_byte_write_during_an_exchange_is_preceded_by_the_cancel_frame` (bytes, paste, ^C),
+  `the_prompt_is_answered_with_one_frame_and_later_writes_follow_it`, `a_reused_or_missing_prompt_token_is_cancelled`,
+  `prompt_timeout_cancels_without_a_toast_for_a_remote_first_request`,
+  `prompt_timeout_of_a_fallback_request_asks_for_the_toast`, `a_second_request_while_one_is_in_flight_is_refused`,
+  `the_shell_leaving_ends_the_exchange_without_a_frame`; `native_shell_completions_need_the_advertised_protocol_and_bash_4`
+  (`warp_terminal`); `completions_prompt_token_is_letters_and_digits_only` (`ansi/mod_test.rs`). Tab then a fast
+  Enter runs the COMPLETED line remotely too: the editor holds the Enter for the in-band answer up to
+  `REMOTE_NATIVE_TAB_ENTER_BUDGET` (1.5 s; give-up hands the line back, #1666); when the shell has no answer the
+  Enter runs the visible line at once and the completer answers the menu (`input_test.rs`, Legacy and Table):
+  `test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_modes`,
   `test_tab_then_enter_remote_in_band_give_up_runs_nothing_in_both_modes`,
   `test_tab_then_enter_remote_in_band_keys_typed_during_hold_follow_the_completed_line`,
-  `test_tab_then_enter_remote_native_miss_submits_the_visible_line_at_once`,
-  `test_remote_native_miss_without_enter_makes_the_next_enter_not_wait` (`input_test.rs`). Known limits: a quoted word
-  with spaces is not one token to the app; a backslash-escaped word is not dequoted before bash's compgen; a frame cut
-  short past the hook's 5 s deadline leaves its remainder for the line editor (the app writes a frame in one piece); a
-  non-frame first byte that is not text (or ^P) cannot be handed back by bash (only a write that bypasses the app's
-  queue could be one).
+  `test_tab_then_enter_remote_native_miss_submits_the_visible_line_at_once_in_both_modes`,
+  `test_remote_native_miss_without_enter_makes_the_next_enter_not_wait_in_both_modes`. Known limits: a quoted word
+  with spaces is not one token to the app; a backslash-escaped word is not dequoted before bash's compgen; a byte
+  outside a frame that is not text, ^P or a bracketed paste cannot be handed back by bash (only a writer outside the
+  app could put one there: the app sends the cancel frame before any write).
   Every shell writes candidates as the whole whitespace-delimited token (zsh now adds its
   IPREFIX and -P/-p prefixes, so `cd dir/fo` no longer offers `foo/`). The OSC parser rejoins a payload split at `;`
   (`completions_osc_payload_rejoins_a_payload_split_at_semicolons`). Shell side: `script/test_native_completions`.

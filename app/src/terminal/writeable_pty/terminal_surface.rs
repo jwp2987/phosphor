@@ -133,17 +133,6 @@ where
     /// the surface tells the user.
     fn on_input_buffer_overflow(&mut self, _ctx: &mut ViewContext<Self>) {}
 
-    /// Called when commands written behind a native-completions request were not sent because
-    /// the shell asked left first (#1801): the surface gives them back, never runs them.
-    fn on_held_commands_handed_back(&mut self, commands: &[String], ctx: &mut ViewContext<Self>) {
-        if let Some(first) = commands.first() {
-            self.restore_user_command(first, ctx);
-        }
-    }
-
-    /// Called when a write has waited behind a native-completions request for a while (#1801).
-    fn on_waiting_for_remote_shell(&mut self, _ctx: &mut ViewContext<Self>) {}
-
     /// Called when `command` was not run because another one is already waiting to start
     /// (`FeatureFlag::TypeaheadHandoff`), so the surface can say so.
     fn on_command_coalesced(&mut self, _command: &str, _ctx: &mut ViewContext<Self>) {}

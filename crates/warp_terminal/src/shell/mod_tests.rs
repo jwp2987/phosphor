@@ -630,37 +630,61 @@ git status`";
     );
 }
 
-/// #1801 review: bash's `^Y` completions binding is a `bind -x` function the bootstrap installs
-/// only from bash 4.0 (as for input reporting), so bash 3.2 (macOS /bin/bash on a remote) must
-/// not be sent `^Y`. zsh always supports it; fish (its terminal-mode switching around the
-/// external commands its read needs, see `supports_native_shell_completions`) and the other
-/// shells never do.
+/// #1801 reviews: the app writes `^Y` and frames only to a shell whose bootstrap advertised the
+/// framed protocol (M2), and for bash only from 4.0 (its `^Y` binding is a `bind -x` function the
+/// bootstrap installs, and advertises, only then). zsh and bash only; fish and the others never.
 #[test]
-fn native_shell_completions_need_bash_4() {
-    let bash = |version: &str| {
+fn native_shell_completions_need_the_advertised_protocol_and_bash_4() {
+    let advertised = || {
+        Some(HashSet::from([
+            NATIVE_COMPLETIONS_PROTOCOL_OPTION.to_owned()
+        ]))
+    };
+    let bash = |version: &str, options: Option<HashSet<String>>| {
         Shell::new(
             ShellType::Bash,
             Some(version.to_owned()),
-            None,
+            options,
             Default::default(),
             None,
         )
     };
-    assert!(!bash("3.2.57(1)-release").supports_native_shell_completions());
-    assert!(bash("4.0.0(1)-release").supports_native_shell_completions());
-    assert!(bash("5.2.15(1)-release").supports_native_shell_completions());
+    assert!(!bash("3.2.57(1)-release", advertised()).supports_native_shell_completions());
+    assert!(bash("4.0.0(1)-release", advertised()).supports_native_shell_completions());
+    assert!(bash("5.2.15(1)-release", advertised()).supports_native_shell_completions());
     assert!(
-        !Shell::new(ShellType::Bash, None, None, Default::default(), None)
-            .supports_native_shell_completions(),
+        !bash("5.2.15(1)-release", None).supports_native_shell_completions(),
+        "a shell that did not advertise the protocol never gets ^Y"
+    );
+    assert!(
+        !bash(
+            "5.2.15(1)-release",
+            Some(HashSet::from(["histappend".to_owned()]))
+        )
+        .supports_native_shell_completions()
+    );
+    assert!(
+        !Shell::new(
+            ShellType::Bash,
+            None,
+            advertised(),
+            Default::default(),
+            None
+        )
+        .supports_native_shell_completions(),
         "an unknown bash version is not assumed to have the binding"
     );
     assert!(
-        Shell::new(ShellType::Zsh, None, None, Default::default(), None)
+        Shell::new(ShellType::Zsh, None, advertised(), Default::default(), None)
+            .supports_native_shell_completions()
+    );
+    assert!(
+        !Shell::new(ShellType::Zsh, None, None, Default::default(), None)
             .supports_native_shell_completions()
     );
     for shell_type in [ShellType::Fish, ShellType::PowerShell, ShellType::Nu] {
         assert!(
-            !Shell::new(shell_type, None, None, Default::default(), None)
+            !Shell::new(shell_type, None, advertised(), Default::default(), None)
                 .supports_native_shell_completions()
         );
     }

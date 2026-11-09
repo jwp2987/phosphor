@@ -751,9 +751,13 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           bind -m vi-insert -x '"\C-y":"warp_native_complete"' 2>/dev/null
           bind -m vi-command -x '"\C-y":"warp_native_complete"' 2>/dev/null
           # RS (^^) opens a native-completions answer frame; at the prompt it is dropped whole.
+          # US (^_) closes one; alone (the tail of a frame cut short) it does nothing.
           bind -x '"\C-^":"warp_native_discard"' 2>/dev/null
           bind -m vi-insert -x '"\C-^":"warp_native_discard"' 2>/dev/null
           bind -m vi-command -x '"\C-^":"warp_native_discard"' 2>/dev/null
+          bind -x '"\C-_":"warp_native_frame_end"' 2>/dev/null
+          bind -m vi-insert -x '"\C-_":"warp_native_frame_end"' 2>/dev/null
+          bind -m vi-command -x '"\C-_":"warp_native_frame_end"' 2>/dev/null
         fi
 
         # Readline 7.0 and 8.0 (bash 4.4 and 5.0) have bracketed paste but leave it off unless the
@@ -1209,18 +1213,21 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Phosphor (#1801): in-band native completions for bash 4.0+, answering the app's `^Y`
     # (zsh has had this since upstream; bash joins it so a remote session without the helper gets
     # the remote shell's own completions on Tab, over the session's own connection, instead of
-    # ControlMaster side commands).
+    # ControlMaster side commands). The bootstrap advertises it with the `!phosphor_nc_frames_v1`
+    # pseudo shell option; the app writes ^Y and frames only to a shell that did.
     #
     # The exchange is self-identifying (design in pty_controller.rs, "The in-band
     # native-completions exchange"): this hook names it with a fresh token (OSC 9280;P;<token>),
-    # and the app always ends it with ONE frame, RS <token> : <%HH bytes> RS (RS = 0x1e), or
-    # the cancel frame RS - : RS. The hook reads one byte first and consumes nothing that is not
-    # a frame: any other byte goes back to the line editor and the exchange ends. A frame with
-    # another token, or the cancel, ends it with nothing. A frame that arrives after this hook
-    # gave up lands at the prompt, where RS is bound to warp_native_discard, which reads the rest
-    # of the frame and drops it. So a frame never runs and a command is never read as a frame.
-    # Each read is bounded (PHOSPHOR_NC_DEADLINE seconds for the first byte, default 20; 5 for
-    # the rest of a frame, which the app writes in one piece).
+    # and the app always ends it with ONE frame, RS <token> : <%HH bytes> US (RS = 0x1e,
+    # US = 0x1f), or the cancel frame RS - : US. The hook consumes nothing outside a frame: the
+    # first byte must be RS and every later byte must be in the frame alphabet (letters, digits,
+    # `:`, `%`, `-`) up to US; any other byte ends the read and goes back to the line. A frame for
+    # another token, or the cancel, ends the exchange with nothing. A frame that arrives after this
+    # hook gave up lands at the prompt, where RS is bound to warp_native_discard (which reads the
+    # rest by the same rule and drops it) and US to a no-op, so a frame, or the tail of one cut
+    # short, is never run. Reads are bounded by a total deadline ($EPOCHREALTIME, or SECONDS
+    # before bash 5): PHOSPHOR_NC_DEADLINE seconds (default 20) for the frame to start, 5 for the
+    # rest, which the app writes in one piece.
     #
     # Results: OSC 9280;A;incrementally_typed, one OSC 9280;C;<match> per candidate, OSC
     # 9280;B. Each candidate is the WHOLE whitespace-delimited token before the cursor as bash
@@ -1234,36 +1241,121 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Known limits: a quoted word that contains spaces (`cat "my fi`) is not one token to the
     # app, which replaces only the text after the last space; a backslash-escaped word
     # (`cd my\ di`) is handed to compgen and completion functions as typed, not dequoted, so it
-    # may match nothing; and a first byte that is not a frame can be handed back to the line
-    # only when it is text (or ^P, which clears the line): the app never writes anything else
-    # between `^Y` and its frame, so only a write that bypasses its queue could be dropped.
+    # may match nothing; and a byte outside a frame can be handed back from a `bind -x` function
+    # only when it is text, ^P (Phosphor's line-clear key, which clears the line) or the start
+    # of a bracketed paste (read whole and inserted): another escape sequence or control key
+    # there is dropped. The app never writes anything between ^Y and its frame (any write first
+    # sends the cancel frame), so only a writer outside the app could meet that.
+
+    # Hands a byte the hook or the discard widget read, but that is not part of a frame, back to
+    # the line editor.
+    __warp_nc_give_back () {
+        case $1 in
+            $'\e') __warp_nc_give_back_escape ;;
+            $'\x10') READLINE_LINE= READLINE_POINT=0 ;;
+            [[:print:]])
+                READLINE_LINE="${READLINE_LINE:0:READLINE_POINT}$1${READLINE_LINE:READLINE_POINT}"
+                READLINE_POINT=$((READLINE_POINT + 1)) ;;
+        esac
+    }
+
+    # ESC as a byte outside a frame: a bracketed paste (how the app writes a command after its ^P)
+    # is read whole and its text inserted into the line, as readline would; any other escape
+    # sequence cannot be handed back from a `bind -x` function and is dropped.
+    __warp_nc_give_back_escape () {
+        local __seq= __text=
+        while (( ${#__seq} < 5 )) && __warp_nc_read_byte 0.05; do
+            __seq+=$__warp_nc_byte
+            [[ $__seq == "[200~" ]] && break
+            [[ "[200~" == "$__seq"* ]] || return 0
+        done
+        [[ $__seq == "[200~" ]] || return 0
+        while __warp_nc_read_byte 1; do
+            __text+=$__warp_nc_byte
+            if [[ $__text == *$'\e[201~' ]]; then
+                __text=${__text%$'\e[201~'}
+                break
+            fi
+            (( ${#__text} <= 1000000 )) || break
+        done
+        READLINE_LINE="${READLINE_LINE:0:READLINE_POINT}$__text${READLINE_LINE:READLINE_POINT}"
+        READLINE_POINT=$((READLINE_POINT + ${#__text}))
+    }
+
+    # Starts a total deadline of $1 whole seconds.
+    __warp_nc_deadline_set () {
+        if [[ -n ${EPOCHREALTIME:-} ]]; then
+            __warp_nc_dl=$(( ${EPOCHREALTIME/[.,]/} + $1 * 1000000 ))
+        else
+            __warp_nc_dl=$(( SECONDS + $1 ))
+        fi
+    }
+
+    # Sets __warp_nc_left to what is left of the deadline (a read -t value); status 1 when none.
+    __warp_nc_time_left () {
+        local __l
+        if [[ -n ${EPOCHREALTIME:-} ]]; then
+            __l=$(( __warp_nc_dl - ${EPOCHREALTIME/[.,]/} ))
+            (( __l > 0 )) || return 1
+            builtin printf -v __warp_nc_left '%d.%06d' $(( __l / 1000000 )) $(( __l % 1000000 ))
+        else
+            __l=$(( __warp_nc_dl - SECONDS ))
+            (( __l > 0 )) || return 1
+            __warp_nc_left=$__l
+        fi
+    }
+
+    # Reads one byte of the tty into __warp_nc_byte within $1 seconds, unbuffered (-N/-n), so
+    # nothing behind it is consumed.
+    __warp_nc_read_byte () {
+        __warp_nc_byte=
+        if (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[1] >= 1 )); then
+            IFS= builtin read -r -s -t "$1" -N 1 __warp_nc_byte < /dev/tty
+        else
+            IFS= builtin read -r -s -t "$1" -n 1 __warp_nc_byte < /dev/tty
+        fi
+    }
+
+    # Reads the rest of a frame after its RS into __warp_nc_body: frame-alphabet bytes up to US,
+    # within 5 s in all. Status 1 when it ended early; a byte outside the alphabet goes back to
+    # the line.
+    __warp_nc_read_frame_body () {
+        __warp_nc_body=
+        __warp_nc_deadline_set 5
+        while __warp_nc_time_left; do
+            __warp_nc_read_byte "$__warp_nc_left" || return 1
+            case $__warp_nc_byte in
+                $'\x1f') return 0 ;;
+                [ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:%-])
+                    __warp_nc_body+=$__warp_nc_byte ;;
+                *)
+                    __warp_nc_give_back "$__warp_nc_byte"
+                    return 1 ;;
+            esac
+            (( ${#__warp_nc_body} <= 3000000 )) || return 1
+        done
+        return 1
+    }
+
     __warp_native_complete_impl () {
-        local __pc_c __pc_body __pc_hex __pc_line __pc_hexre='^(%[0-9A-Fa-f][0-9A-Fa-f])*$'
-        local __pc_rs=$'\x1e' __pc_deadline=${PHOSPHOR_NC_DEADLINE:-20}
+        local __pc_hex __pc_line __pc_hexre='^(%[0-9A-Fa-f][0-9A-Fa-f])*$'
+        local __pc_deadline=${PHOSPHOR_NC_DEADLINE:-20}
+        [[ $__pc_deadline =~ ^[0-9]+$ ]] || __pc_deadline=20
         __warp_nc_seq=$(( ${__warp_nc_seq:-0} + 1 ))
         local __pc_tok="$RANDOM${__warp_nc_seq}$RANDOM"
         builtin printf '\e]9280;P;%s\a' "$__pc_tok"
-        # One byte, unbuffered (-N/-n), so nothing behind it is consumed.
-        if (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[1] >= 1 )); then
-            IFS= builtin read -r -s -t "$__pc_deadline" -N 1 __pc_c < /dev/tty || return 0
-        else
-            IFS= builtin read -r -s -t "$__pc_deadline" -n 1 __pc_c < /dev/tty || return 0
-        fi
-        if [[ $__pc_c != "$__pc_rs" ]]; then
+        __warp_nc_deadline_set "$__pc_deadline"
+        __warp_nc_time_left || return 0
+        __warp_nc_read_byte "$__warp_nc_left" || return 0
+        if [[ $__warp_nc_byte != $'\x1e' ]]; then
             # Not a frame: give it back to the line and end the exchange.
-            case $__pc_c in
-                $'\x10') READLINE_LINE= READLINE_POINT=0 ;;
-                [[:print:]])
-                    READLINE_LINE="${READLINE_LINE:0:READLINE_POINT}$__pc_c${READLINE_LINE:READLINE_POINT}"
-                    READLINE_POINT=$((READLINE_POINT + 1)) ;;
-            esac
+            __warp_nc_give_back "$__warp_nc_byte"
             return 0
         fi
-        # The rest of the frame, up to its closing RS (-d makes the read unbuffered).
-        IFS= builtin read -r -s -t 5 -n 3000000 -d "$__pc_rs" __pc_body < /dev/tty || return 0
+        __warp_nc_read_frame_body || return 0
         # Another exchange's frame, or the cancel frame: nothing to do.
-        [[ $__pc_body == "$__pc_tok:"* ]] || return 0
-        __pc_hex=${__pc_body#*:}
+        [[ $__warp_nc_body == "$__pc_tok:"* ]] || return 0
+        __pc_hex=${__warp_nc_body#*:}
         [[ $__pc_hex =~ $__pc_hexre ]] || return 0
         builtin printf -v __pc_line '%b' "${__pc_hex//\%/\\x}"
 
@@ -1282,14 +1374,14 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     function warp_native_complete { __warp_run_relaxed __warp_native_complete_impl "$@"; }
 
     # Phosphor (#1801): RS at the prompt opens a native-completions frame whose exchange already
-    # ended (the hook above gave up, or was interrupted). Read the rest of the frame and drop it:
-    # a frame is never run.
+    # ended (the hook gave up, or was interrupted). Read the rest by the hook's rule and drop it;
+    # US alone (the tail of a frame cut short) does nothing. A frame is never run.
     __warp_native_discard_impl () {
-        local __pc_rest
-        IFS= builtin read -r -s -t 5 -n 3000000 -d $'\x1e' __pc_rest < /dev/tty
+        __warp_nc_read_frame_body
         return 0
     }
     function warp_native_discard { __warp_run_relaxed __warp_native_discard_impl "$@"; }
+    function warp_native_frame_end { :; }
 
     # Sets __warp_nc_out to the candidates for the line $1 (cursor at its end). Builtins
     # except where bash offers no other way to capture output (`complete -p`, compgen, -C).
@@ -2671,6 +2763,13 @@ fi' RETURN
         # real bash options.
         if [[ -n $USER_HISTCONTROL ]]; then
             shell_options="$shell_options \n !histcontrol_$USER_HISTCONTROL"
+        fi
+        # Phosphor (#1801): advertise the framed in-band native-completions protocol (the ^Y hook
+        # and the RS/US frame keys are bound from bash 4.0, with input reporting, whose flag the
+        # first precmd sets after this hook). The app sends ^Y and frames only to a shell that
+        # reported this pseudo option.
+        if (( BASH_VERSINFO[0] >= 4 )); then
+            shell_options="$shell_options"$'\n''!phosphor_nc_frames_v1'
         fi
 
         # Check if Starship is active for Bash. Note that another prompt could still be overriding Starship, however,
