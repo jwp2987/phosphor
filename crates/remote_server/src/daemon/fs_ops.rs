@@ -203,7 +203,7 @@ fn write_expectation_holds(path: &std::path::Path, expect: &crate::proto::WriteE
             std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
         }
         Some(State::Sha256(want)) => std::fs::read(path)
-            .map(|bytes| crate::index::sha256_hex(&bytes).eq_ignore_ascii_case(want.trim()))
+            .map(|bytes| crate::index::types::sha256_hex(&bytes).eq_ignore_ascii_case(want.trim()))
             .unwrap_or(false),
         _ => false,
     }

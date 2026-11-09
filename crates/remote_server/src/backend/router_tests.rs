@@ -222,7 +222,10 @@ async fn a_guarded_write_with_no_way_to_check_is_refused_and_leaves_the_file() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(err, BackendError::Unavailable(_)), "{err:?}");
+    assert!(
+        matches!(err, crate::backend::BackendError::Unavailable(_)),
+        "{err:?}"
+    );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "user");
 }
 
@@ -255,7 +258,10 @@ async fn a_guarded_delete_with_no_way_to_check_is_refused_and_leaves_the_file() 
         )
         .await
         .unwrap_err();
-    assert!(matches!(err, BackendError::Unavailable(_)), "{err:?}");
+    assert!(
+        matches!(err, crate::backend::BackendError::Unavailable(_)),
+        "{err:?}"
+    );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "user");
 }
 

@@ -405,6 +405,7 @@ pub fn delete_failure_message(path: &str, exit: i32, output: &str) -> String {
 /// Whether the file at `path` is in the state `expect` names: absent, or bytes with that SHA-256.
 /// An unreadable file or an empty `WriteExpect` does not match. Shared by the helper and the app
 /// daemon's guarded delete (#1837 follow-up).
+#[cfg(any(feature = "client", feature = "daemon"))]
 pub fn wire_expectation_holds(path: &std::path::Path, expect: &crate::proto::WriteExpect) -> bool {
     use crate::proto::write_expect::State;
     match &expect.state {
@@ -412,7 +413,7 @@ pub fn wire_expectation_holds(path: &std::path::Path, expect: &crate::proto::Wri
             std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
         }
         Some(State::Sha256(want)) => std::fs::read(path)
-            .map(|bytes| crate::index::sha256_hex(&bytes).eq_ignore_ascii_case(want.trim()))
+            .map(|bytes| crate::index::types::sha256_hex(&bytes).eq_ignore_ascii_case(want.trim()))
             .unwrap_or(false),
         _ => false,
     }

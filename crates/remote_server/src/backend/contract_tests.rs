@@ -1129,8 +1129,9 @@ where
         .join("guarded.txt")
         .to_string_lossy()
         .into_owned();
-    let sha =
-        |bytes: &[u8]| Expect::Sha256(HexDigest::parse(&crate::index::sha256_hex(bytes)).unwrap());
+    let sha = |bytes: &[u8]| {
+        Expect::Sha256(HexDigest::parse(&crate::index::types::sha256_hex(bytes)).unwrap())
+    };
 
     // Absent: creates; once the file exists it refuses and keeps the bytes.
     write(path.clone(), "first".into(), Expect::Absent)
@@ -1191,8 +1192,9 @@ where
     use crate::shellcmd::write::{Expect, HexDigest};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("doomed.txt").to_string_lossy().into_owned();
-    let sha =
-        |bytes: &[u8]| Expect::Sha256(HexDigest::parse(&crate::index::sha256_hex(bytes)).unwrap());
+    let sha = |bytes: &[u8]| {
+        Expect::Sha256(HexDigest::parse(&crate::index::types::sha256_hex(bytes)).unwrap())
+    };
 
     // The user edits the file after the deletion was proposed: refused, their bytes survive.
     std::fs::write(&path, "proposed against").unwrap();
@@ -1266,7 +1268,7 @@ async fn a_host_with_no_sha256_tool_refuses_guarded_changes_and_says_why() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.txt").to_string_lossy().into_owned();
     std::fs::write(&path, "user").unwrap();
-    let digest = HexDigest::parse(&crate::index::sha256_hex(b"user")).unwrap();
+    let digest = HexDigest::parse(&crate::index::types::sha256_hex(b"user")).unwrap();
 
     let err = shell
         .write_file_expecting(path.clone(), "agent".into(), Some(Expect::Sha256(digest)))

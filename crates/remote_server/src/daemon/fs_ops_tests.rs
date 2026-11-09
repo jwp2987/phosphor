@@ -156,7 +156,7 @@ fn write_file_with_an_expectation_writes_only_when_it_holds() {
     assert!(e.message.contains("changed on the host"), "{}", e.message);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "one");
     // Sha256: matching writes, a mismatch (the user changed it) leaves the user's bytes.
-    let one = crate::index::sha256_hex(b"one");
+    let one = crate::index::types::sha256_hex(b"one");
     assert!(matches!(
         attempt(Some(State::Sha256(one.clone())), "three"),
         Some(write_file_response::Result::Success(_))
@@ -197,7 +197,7 @@ fn delete_file_with_an_expectation_deletes_only_when_it_holds() {
         resp.result
     };
     // The user edits the file after the deletion was proposed: refused, bytes untouched.
-    let proposed = crate::index::sha256_hex(b"proposed against");
+    let proposed = crate::index::types::sha256_hex(b"proposed against");
     std::fs::write(&file, "user edit").unwrap();
     let Some(delete_file_response::Result::Error(e)) =
         attempt(Some(State::Sha256(proposed.clone())))
@@ -219,7 +219,9 @@ fn delete_file_with_an_expectation_deletes_only_when_it_holds() {
     assert!(file.exists());
     // The matching hash deletes.
     assert!(matches!(
-        attempt(Some(State::Sha256(crate::index::sha256_hex(b"user edit")))),
+        attempt(Some(State::Sha256(crate::index::types::sha256_hex(
+            b"user edit"
+        )))),
         Some(delete_file_response::Result::Success(_))
     ));
     assert!(!file.exists());

@@ -4472,7 +4472,8 @@ impl ServerModel {
                     .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
                 Some(State::Sha256(want)) => std::fs::read(path)
                     .map(|bytes| {
-                        remote_server::index::sha256_hex(&bytes).eq_ignore_ascii_case(want.trim())
+                        remote_server::index::types::sha256_hex(&bytes)
+                            .eq_ignore_ascii_case(want.trim())
                     })
                     .unwrap_or(false),
                 _ => false,
