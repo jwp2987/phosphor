@@ -51,6 +51,21 @@ MAC_EXTRA = ["usage-test-macos"]
 # them, the scripted fake model forced and the quick matrix. SSHLAB_BOX / SSHLAB_TOKEN are protected project variables (scope *); build/* is a protected
 # branch, so the job gets them on the refs this script drives.
 LAB_FIX_JOB = "app-test-lab-linux"
+# The lab image tag is a hash of the lab inputs (labctl.py image_tag), so any edit under script/realapp/sshlab/ makes the old image the wrong one and every
+# lab case then skips with "image ... is not built". `labctl.py build` is a no-op per tag that already exists (podman image exists), so the lab job is
+# ALWAYS preceded by sshlab-image, played and waited for, in every tier.
+LAB_IMAGE_JOB = "sshlab-image"
+LAB_IMAGE_MISSING_RX = re.compile(r"image \S+ is not built")
+LAB_IMAGE_FAIL = "lab image not built (sshlab-image did not succeed, or the lab cases skipped for a missing image)"
+
+
+def lab_image_skipped(doc):
+    """True when a lab run's results.json has a skip row whose reason is the missing lab image (the cases never ran: that is a FAIL, not a skip)"""
+    rows = (doc or {}).get("cases") or []
+    for r in rows:
+        if isinstance(r, dict) and r.get("status") == "skip" and LAB_IMAGE_MISSING_RX.search(" ".join(str(d) for d in (r.get("detail") or []))):
+            return True
+    return False
 
 
 def proving_lab_globs(path=None):
@@ -370,6 +385,11 @@ def self_test():
         (re.search(r"^%s:" % LAB_FIX_JOB, yml, re.M) is not None and re.search(r"^%s-reuse:" % LAB_FIX_JOB, yml, re.M) is not None, "the lab job and its -reuse variant exist in .gitlab-ci.yml"),
         (LAB_FIX_JOB in APP_RESULT_DIR and LAB_FIX_JOB not in sum(APP.values(), []), "the lab job is judged like an app job but is not a platform app-test job (never played in candidate/release by APP)"),
         (verdict(LAB_FIX_JOB, "failed") == "FAIL", "a red lab job fails the fix tier"),
+        (verdict(LAB_FIX_JOB, LAB_IMAGE_FAIL) == "FAIL", "a lab job that could not run for a missing image is a FAIL"),
+        (verdict(LAB_IMAGE_JOB, "failed") == "FAIL", "a red sshlab-image job fails the tier"),
+        (re.search(r"^%s:" % LAB_IMAGE_JOB, yml, re.M) is not None, "the sshlab-image job exists in .gitlab-ci.yml (ci_seq plays it before every lab job)"),
+        (lab_image_skipped({"cases": [{"status": "skip", "detail": ["labctl start failed (1): image localhost/phosphor-sshlab:full-ab12 is not built: run the sshlab-image job"]}]}), "all-skip rows for a missing image are recognised"),
+        (not lab_image_skipped({"cases": [{"status": "skip", "detail": ["no card"]}, {"status": "pass"}]}), "an ordinary skip is not a missing-image skip"),
     ):
         bad += 0 if ok else 1
         print("%s %s" % ("ok  " if ok else "FAIL", what))
@@ -711,6 +731,28 @@ def main():
             sys.exit(2)
         return True
 
+    lab_image_lock = threading.Lock()
+    lab_image_state = []
+
+    def ensure_lab_image():
+        """Play sshlab-image and wait for it (a no-op build when the tag exists). True = the image is there; False = the lab job must not be played."""
+        with lab_image_lock:
+            if lab_image_state:
+                return lab_image_state[0]
+            if LAB_IMAGE_JOB not in jobs():
+                lab_image_state.append(False)
+                timeline[LAB_IMAGE_JOB] = ("missing", None)
+                print("%s: no %s job in this pipeline; the lab job is not played" % (time.strftime("%H:%M"), LAB_IMAGE_JOB), flush=True)
+                return False
+            if play(LAB_IMAGE_JOB):
+                print("%s: started %s (the lab image tag hashes the lab inputs; build is a no-op when it exists)" % (time.strftime("%H:%M"), LAB_IMAGE_JOB), flush=True)
+            st = wait(LAB_IMAGE_JOB)
+            print(LAB_IMAGE_JOB, st, flush=True)
+            lab_image_state.append(st == "success")
+            if st != "success":
+                timeline[LAB_FIX_JOB] = (LAB_IMAGE_FAIL, None)
+            return lab_image_state[0]
+
     print("pipeline", pid, "tier", tier, flush=True)
     # r18e4: the Mac and Windows builds have `needs: []` and run on their own machines; holding them behind a check-linux that
     # waits for the busy box left those machines idle for hours. Start them now (a compile error fails them on their own).
@@ -740,7 +782,7 @@ def main():
             if play(n + "-reuse", rv):
                 reuse_started.append(n + "-reuse")
         if p == LINUX and tier == "fix" and LAB_FIX_JOB not in SKIP and LAB_FIX_JOB + "-reuse" in jobs() and proving_lab_globs():
-            if play(LAB_FIX_JOB + "-reuse", dict(rv, **lab_fix_vars())):
+            if ensure_lab_image() and play(LAB_FIX_JOB + "-reuse", dict(rv, **lab_fix_vars())):
                 reuse_started.append(LAB_FIX_JOB + "-reuse")
     for n in builds:
         play(n)
@@ -787,7 +829,7 @@ def main():
                 with lock:
                     started.append(n)
         if tier == "fix" and p_of[b] == LINUX and LAB_FIX_JOB not in SKIP and LAB_FIX_JOB in jobs() and proving_lab_globs():
-            if play(LAB_FIX_JOB, dict(appvars, **lab_fix_vars())):      # the PROVING lab cases (owner rule 2026-11-09), after the ordinary Linux app tests
+            if ensure_lab_image() and play(LAB_FIX_JOB, dict(appvars, **lab_fix_vars())):      # the PROVING lab cases (owner rule 2026-11-09), after the ordinary Linux app tests
                 print("%s: started %s (PROVING lab cases, quick matrix, fake model)" % (time.strftime("%H:%M"), LAB_FIX_JOB), flush=True)
                 with lock:
                     started.append(LAB_FIX_JOB)
@@ -919,6 +961,16 @@ def check_app_results(jobs, timeline):
     """Second line of defence behind run.py's own non-zero exit: a successful app job whose results.json judged nothing becomes a failure."""
     for n, d in APP_RESULT_DIR.items():
         j = jobs().get(n)
+        if n == LAB_FIX_JOB and j and j.get("id") and timeline.get(n, ("",))[0] in ("success", "failed"):
+            st, text = api_raw("projects/%s/jobs/%d/artifacts/appci-out/%s/run/results.json" % (PROJECT, j["id"], d))
+            try:
+                ldoc = json.loads(text) if st == 200 else None
+            except ValueError:
+                ldoc = None
+            if lab_image_skipped(ldoc):
+                timeline[n] = (LAB_IMAGE_FAIL, timeline[n][1])
+                print("%s: lab cases skipped because the lab image is not built: FAIL (play sshlab-image)" % n, flush=True)
+                continue
         if not j or timeline.get(n, ("",))[0] != "success" or not j.get("id"):
             continue
         st, text = api_raw("projects/%s/jobs/%d/artifacts/appci-out/%s/run/results.json" % (PROJECT, j["id"], d))
