@@ -88,8 +88,11 @@ impl Obs {
 }
 
 /// Wires the app and sends nothing yet.
-pub fn setup(app: &mut App, scenario: &Scenario) -> Rig {
+pub fn setup(app: &mut App, scenario: &Scenario, safe_allowlist: bool) -> Rig {
     initialize_app_for_terminal_view(app);
+    if safe_allowlist {
+        enable_safe_allowlist(app);
+    }
     let terminal = add_window_with_terminal(app, None);
     let terminal_id = terminal.read(app, |view, _| view.id());
 
@@ -124,6 +127,21 @@ pub fn setup(app: &mut App, scenario: &Scenario) -> Rig {
         running_since: HashMap::new(),
         lrc_alive: false,
     }
+}
+
+/// Turns the safe read-only allowlist on, adding `echo` to the defaults: `Args::Valid`'s
+/// `echo hi` is then a listed line (runs without a card) while the scenario's `fake-cmd cN` lines
+/// are not (they still ask), so both paths are exercised.
+fn enable_safe_allowlist(app: &mut App) {
+    use settings::Setting as _;
+    app.update(|ctx| {
+        crate::settings::AISettings::handle(ctx).update(ctx, |settings, ctx| {
+            let mut entries = crate::ai::blocklist::safe_commands::default_safe_commands();
+            entries.push("echo".to_owned());
+            let _ = settings.safe_command_allowlist.set_value(entries, ctx);
+            let _ = settings.safe_command_allowlist_enabled.set_value(true, ctx);
+        });
+    });
 }
 
 impl Rig {
@@ -249,6 +267,15 @@ impl Rig {
                 .or_insert_with(Instant::now);
             let (output, exit_code, due) = match &plan {
                 CmdOutcome::Completes { output, exit_code } => (output.clone(), *exit_code, true),
+                CmdOutcome::CompletesAfter {
+                    after_ms,
+                    output,
+                    exit_code,
+                } => (
+                    output.clone(),
+                    *exit_code,
+                    since.elapsed() >= Duration::from_millis(*after_ms),
+                ),
                 CmdOutcome::Stays => (String::new(), 0, since.elapsed() >= stall_after),
             };
             if !due {

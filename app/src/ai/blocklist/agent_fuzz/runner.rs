@@ -64,14 +64,21 @@ pub fn stall_cases_supported() -> bool {
         && short("PHOSPHOR_BYOP_STREAM_FIRST_EVENT_TIMEOUT_SECS")
 }
 
-/// Runs `scenario`; panics inside the app become an I6 violation.
+/// Runs `scenario` with the safe read-only allowlist OFF (the shipped default; the gate).
 pub fn run_case(scenario: &Scenario) -> Result<CaseReport, Failure> {
+    run_case_with(scenario, false)
+}
+
+/// Runs `scenario`; panics inside the app become an I6 violation. `safe_allowlist` turns the
+/// safe read-only command allowlist ON (the scenario's `fake-cmd cN` and `echo` lines then run
+/// without an approval card).
+pub fn run_case_with(scenario: &Scenario, safe_allowlist: bool) -> Result<CaseReport, Failure> {
     let result: Arc<Mutex<Option<Result<CaseReport, Violation>>>> = Arc::default();
     let slot = result.clone();
     let owned = scenario.clone();
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(move || {
         App::test((), |mut app| async move {
-            let verdict = drive(&mut app, &owned).await;
+            let verdict = drive(&mut app, &owned, safe_allowlist).await;
             *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(verdict);
         });
     }));
@@ -105,7 +112,11 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "<non-string panic>".to_owned())
 }
 
-async fn drive(app: &mut App, scenario: &Scenario) -> Result<CaseReport, Violation> {
+async fn drive(
+    app: &mut App,
+    scenario: &Scenario,
+    safe_allowlist: bool,
+) -> Result<CaseReport, Violation> {
     // The input queues a follow-up behind a running or blocked turn only with these on.
     let _queue_slash = FeatureFlag::QueueSlashCommand.override_enabled(true);
     let _queue_v2 = FeatureFlag::QueuedPromptsV2.override_enabled(true);
@@ -113,7 +124,7 @@ async fn drive(app: &mut App, scenario: &Scenario) -> Result<CaseReport, Violati
     let knobs = Knobs::from_env();
     let capture = log_capture::install();
     let mark = log_capture::mark();
-    let mut rig = rig::setup(app, scenario);
+    let mut rig = rig::setup(app, scenario, safe_allowlist);
     let mut oracle = Oracle::default();
     let mut report = CaseReport::default();
 

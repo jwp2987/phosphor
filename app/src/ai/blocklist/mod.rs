@@ -33,6 +33,7 @@ pub(crate) mod persistence;
 pub mod prompt;
 mod protected_paths;
 pub mod rewind_revert;
+pub(crate) mod safe_commands;
 // The persistent queued-prompts model (`QueuedQueryModel`).
 pub(crate) mod queued_query;
 pub mod suggested_agent_mode_workflow_modal;

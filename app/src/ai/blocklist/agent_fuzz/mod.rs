@@ -12,6 +12,7 @@
 //! * `runner` - one case end to end
 //! * `log_capture`, `env` - ERROR-log tap (I6), scripted command behaviours
 //! * `coverage` - which (tool x op x timing) and (chaos x phase) cells the run hit
+//! * `matrix` (the deterministic approvals matrix: action kind x response, timings, orders, malformed args, command behaviours)
 //! * `fuzz_tests` (proptest), `corpus_replay_tests` (+ `corpus/*.json`, `known_failures.toml`),
 //!   `prompt_tests` (I5)
 
@@ -25,9 +26,13 @@ mod rig;
 mod runner;
 
 #[cfg(test)]
+mod allowlist_tests;
+#[cfg(test)]
 mod corpus_replay_tests;
 #[cfg(test)]
 mod fuzz_tests;
+#[cfg(test)]
+mod matrix;
 #[cfg(test)]
 mod prompt_tests;
 #[cfg(test)]

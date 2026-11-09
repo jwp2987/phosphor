@@ -2856,6 +2856,33 @@ On `ffdaa4536` (before #1796 / #1797 / #1799) the seeded `wave0_1799_reject_then
 
 Question scenarios tolerate either `ask_user_question` flow: the card appearing without an approval step (an owner decision in flight in another change), or after one. The actor answers whatever question is at the front by staging the answers and executing by id; `OnCard` triggers on any actionable card.
 
+#### Approvals suite and the safe read-only allowlist (Wave 1.5 #2)
+
+Nothing here has been compiled or run yet (written without cargo; the box run is the first).
+
+**The matrix** (`agent_fuzz/matrix.rs`): a deterministic, exhaustive sweep next to the proptest. Every cell is a scenario built in code, run through the same rig and oracle (I1-I7 after every step), once with the safe allowlist OFF (`off`, the gate) and once ON (`on`, a separate test so an ON failure never hides an OFF result). One module per row, so nextest runs rows in parallel processes: `agent_fuzz::matrix::<row>::{off,on}`.
+
+| sweep | rows | cells per mode |
+|---|---|---|
+| `kinds_*`: every action kind (command, listed command, failing, slow, never-ending, read_files, grep, file_glob, question, transfer, write-to-command, read-command-output, websearch, webfetch) x every response at the card (approve, reject, edit, Ctrl-C, stop, close the tab, switch mode, escape, follow-up, answer, skip, never) | 14 | 168 |
+| `timings_*`: command / never-ending command / question x approve, reject, Ctrl-C, stop, close the tab, follow-up x early (during the stream), fast (10-25 ms), late, after the end, twice, burst of three | 3 | 108 |
+| `pairs_*`: every ordered PAIR of six kinds in one turn x seven user policies (approve all, reject first, reject last, Ctrl-C / stop / close the tab / follow-up after the first) | 6 | 252 |
+| `triples_*`: a seeded sample (12 per first kind, xorshift, no dependency) of ordered triples x three policies | 4 | 144 |
+| `malformed_*`: every tool x every malformed-argument shape (empty, `{}`, truncated, wrong types, extra fields; four more for `ask_user_question`) x approve / reject / Ctrl-C | 10 | 162 |
+| `command_behaviours`: quick, failing, slow, never ends, silent, pager, alt screen, secret prompt x approve / reject / Ctrl-C / stop / follow-up | 1 | 40 |
+
+874 cells per mode, 1,748 with both. `the_matrix_sizes_are_what_the_docs_say` pins the counts and `the_matrix_names_every_tool_and_every_response` fails when a tool is added to `KNOWN_TOOLS` without a matrix kind.
+
+Also: `paced_random_sequences_hold_the_invariants` (+ `_with_the_allowlist_on`): random conversations whose user steps are all `Timing::Fast` (10-25 ms apart), 3-9 steps; `random_agent_conversations_hold_the_invariants_with_the_allowlist_on`; `corpus_replays_with_the_allowlist_on`. 29 seeded corpus scenarios (`corpus/appr_*.json`, 36 files in all) cover each combination class: orders (6), timings (6), slow / failing commands (4), malformed arguments (6), kinds x responses spot checks (5), the allowlist (2). New schema piece: `CmdBehaviour::Slow { ms, out }` (finishes by itself after `ms`; `env.rs` `CompletesAfter`).
+
+**The allowlist** (`ai/blocklist/safe_commands.rs`, ships OFF): `AISettings::safe_command_allowlist_enabled` (default `false`, `agents.warp_agent.permissions.safe_command_allowlist_enabled`) and `safe_command_allowlist` (entries `program` or `program subcommand`; default `ls cat head tail wc grep rg pwd whoami id uname df du stat file which basename dirname realpath tree uptime free`, and NO git subcommand: git runs helpers a repository's config names, so a user must add `git status` etc. deliberately). `BlocklistAIPermissions::can_autoexecute_command` consults it AFTER the denylist and the command-word analysis (a denylisted or unresolved line never reaches it) and before the profile policy; reason `SafeReadOnlyAllowlisted`. The matcher accepts one program with plain words only: it rejects any shell metacharacter (pipe, ampersand, semicolon, redirects, parentheses, braces, backtick, dollar, backslash, glob characters, quotes, `#`, `!`, `~`, `=`, `%`, `^`, `@`, `,`, `:`), newline or non-ASCII, a program that is not spelled exactly (no `/`), flags that write / run / never end (`sort -o`, `tail -f`, `rg --pre`, `date -s`, `git diff --output`), and never vouches for `find env xargs sudo sh sed tee cp rm curl less vim ...` even if listed. Residual risk for a git entry a user adds: git runs helpers a repository's config names (`core.fsmonitor`, `diff.external`, textconv); that is why the defaults hold none. Questions (`ask_user_question`) already need no approval and are unchanged. UI: Settings > AI > Permissions, under the command allowlist (switch plus an editable list, entries validated by `is_valid_entry`).
+
+* `safe_commands_tests.rs` (pure matcher), `permissions_test.rs::safe_command_allowlist` (off by default and `ls` asks; on: listed lines allowed, pipes / redirects / `;` / `&&` / substitution / globs / `rm` / `git push` / `find` / `tail -f` asked; denylist still wins), `settings/ai_tests.rs` (ships off).
+* `allowlist_tests.rs`: `allowlist_removes_the_approval_for_a_listed_line_and_only_that` (ON: `echo hi` runs with no card; `fake-cmd` lines still ask), and the differential `allowlist_on_and_off_reach_the_same_terminal_state` (proptest; a user who only approves / answers ends in the same status, request count and tool messages with it ON or OFF; the only permitted difference is the skipped approvals).
+* The rig has no pty and so no shell type; `shell_command.rs::escape_char_without_a_session` (test / `test-util` builds only) assumes POSIX when the allowlist is ON, so the ON runs exercise the real decision. A release build and every OFF run keep "no session -> ask".
+* Agent-mode vs terminal-mode coverage of the approval flows comes from the real-app replay case (`lab_replay`) and the agent appci cases, not from the in-process rig (which has no mode concept).
+* **Owner rule:** the allowlist ships OFF. It is enabled by the owner only after this suite is green with it OFF (the `off` rows, corpus replay, both proptests). Do not flip the default in code.
+
 #### `hop=` diagnostic lines (always on, owner-approved)
 
 Info-level, written only when a state CHANGES, ids / kinds / states only, never content (no command text, prompt text, arguments, error text or the agent's hand-over reason). The later L2 (appci) reads them from the app log to see which hop of a conversation stalled.

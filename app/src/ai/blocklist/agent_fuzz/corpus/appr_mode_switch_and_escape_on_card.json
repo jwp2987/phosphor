@@ -1,0 +1,66 @@
+{
+  "v": 1,
+  "name": "appr_mode_switch_and_escape_on_card",
+  "seed": 126,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "run_shell_command",
+            "args": {
+              "kind": "command",
+              "cmd": "c0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {
+      "c0": {
+        "kind": "quick",
+        "out": "ok"
+      }
+    }
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "mode_switch"
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "escape"
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "on_card"
+    }
+  ]
+}

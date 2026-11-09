@@ -324,6 +324,11 @@ pub enum CmdBehaviour {
     SetE,
     AltScreen,
     Pager,
+    /// A command that finishes by itself, but only after `ms` milliseconds of running.
+    Slow {
+        ms: u64,
+        out: String,
+    },
 }
 
 impl CmdBehaviour {

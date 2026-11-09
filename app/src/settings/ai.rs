@@ -2555,6 +2555,30 @@ define_settings_group!(AISettings, settings: [
         description: "Whether auto-approve bypasses the command denylist.",
     }
 
+    // The safe read-only command allowlist (`ai/blocklist/safe_commands.rs`): commands such as
+    // `ls`, `cat`, `grep` and `git status` run without asking. OFF by default; the owner turns it
+    // on after the agent-approval suite's first green run (docs/testing.md, "Agent approvals").
+    safe_command_allowlist_enabled: SafeCommandAllowlistEnabled {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.warp_agent.permissions.safe_command_allowlist_enabled",
+        description: "Whether the agent may run the safe read-only commands in the allowlist without asking.",
+    }
+
+    // The entries of the safe read-only allowlist: `program` or `program subcommand`.
+    safe_command_allowlist: SafeCommandAllowlist {
+        type: Vec<String>,
+        default: crate::ai::blocklist::safe_commands::default_safe_commands(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.warp_agent.permissions.safe_command_allowlist",
+        description: "Read-only commands (a program, or a program and subcommand) that run without approval when the safe allowlist is on.",
+    }
+
     // Controls whether the conversation history view appears in the tools panel.
     show_conversation_history: ShowConversationHistory {
         type: bool,
