@@ -71,6 +71,7 @@ NOT_WINDOWS = {
     "ui_split_panes": "needs OCR word boxes + pointer synthesis; neither exists in the Windows backend yet",
     "ui_startup_time": "not yet ported: reads the Linux log format / paths",
     "ui_settings_live": "not yet ported: rewrites the Linux settings path while the app runs",
+    "keyring_unavailable_startup": "#1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)",
     "quit_24_tabs": "not yet ported: Linux quit key and log check",
     "flood_typed_line": "not yet ported: POSIX `seq`/`yes` floods and /proc sampling",
     "flood_typing_latency": "not yet ported: POSIX flood and pty arrival reader",

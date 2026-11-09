@@ -2619,6 +2619,47 @@ def windows_app_runs_under_a_kill_on_close_job():
     assert "jobmember" in ps1 and "ToFileTimeUtc" in ps1 and "taskkill.exe /PID" in ps1 and "-Name" not in ps1.replace("-NoNewline", "")
 
 
+@check
+def keyring_unavailable_startup_pure_pieces():
+    """#1805: the launcher's keyring variants and the per-launch log judgement of keyring_unavailable_startup"""
+    import app as _app
+    import cases_ui as U
+    assert _app.keyring_dbus_files("unlocked", "/r") == {}
+    assert _app.launcher_argv("unlocked", "/r", "/r/inner.sh") == ["dbus-run-session", "--", "/r/inner.sh"]
+    absent = _app.keyring_dbus_files("absent", "/r")
+    assert list(absent) == ["/r/dbus-session-absent.conf"], absent
+    conf = absent["/r/dbus-session-absent.conf"]
+    assert "<servicedir>" not in conf and "standard_session_servicedirs" not in conf and "<type>session</type>" in conf, conf
+    hang = _app.keyring_dbus_files("hang", "/r")
+    svc = hang["/r/dbus-services-hang/org.freedesktop.secrets.service"]
+    assert "Name=org.freedesktop.secrets" in svc and "Exec=" in svc
+    assert "<servicedir>/r/dbus-services-hang</servicedir>" in hang["/r/dbus-session-hang.conf"]
+    assert _app.launcher_argv("hang", "/r", "/r/inner.sh")[1] == "--config-file=/r/dbus-session-hang.conf"
+    try:
+        _app.keyring_dbus_files("locked", "/r")
+        raise AssertionError("an unknown variant must be refused")
+    except ValueError:
+        pass
+
+    good = ("startup timing: A=1ms FIRST_FRAME_DRAWN=380ms total=900ms\n"
+            "Failed to acquire default Secret Service collection: the service did not answer\n"
+            "Showing the keyring-unavailable notice\n"
+            "slow model update: 40 ms (model warp::settings::network_secrets::ProxyCredentials)\n")
+    f = U.keyring_launch_facts(good)
+    assert f["first_frame_ms"] == 900 and f["notices"] == 1 and f["acquire_errors"] == 1 and f["slow_secure"] == [(40, "model warp::settings::network_secrets::ProxyCredentials")], f
+    assert U.keyring_launch_verdicts(f, "absent", 2000) == []
+    # the #1805 launch: a 120 s ProxyCredentials update, the frame late, the notice never shown, the error twice
+    bad = ("slow model update: 119937 ms (model warp::settings::network_secrets::ProxyCredentials)\n"
+           "secure storage: a call did not return within 30s; abandoning the worker\n"
+           + "Failed to acquire default Secret Service collection: x\n" * 2 + "startup timing: FIRST_FRAME_DRAWN=1ms total=121000ms\n")
+    v = U.keyring_launch_verdicts(U.keyring_launch_facts(bad), "absent", 2000)
+    assert len(v) == 5 and any("121000 ms" in m for m in v) and any("119937 ms" in m for m in v), v
+    assert any("never drawn" in m for m in U.keyring_launch_verdicts(U.keyring_launch_facts(""), "hang", 2000))
+    # a working keyring: no notice allowed, no first-frame bound (it is the control)
+    assert U.keyring_launch_verdicts(U.keyring_launch_facts("startup timing: total=5000ms\n"), "unlocked", 2000) == []
+    assert U.keyring_launch_verdicts(U.keyring_launch_facts(good), "unlocked", 2000) == ["unlocked: the keyring notice was shown 1 time(s) with a working keyring"]
+
+
 def main():
     failed = 0
     for f in CHECKS:

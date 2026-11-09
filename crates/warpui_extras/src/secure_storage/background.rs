@@ -231,6 +231,10 @@ fn watch(
     st.abandoned = true;
     let stuck = st.running.take();
     drop(st);
+    // A keyring that leaves a call hanging this long is unusable for this run (#1805): record it
+    // before the next worker can start, so that worker's handle goes straight to its fallback
+    // instead of hanging the same way and being given up on in turn.
+    super::availability::mark_unavailable();
     log::error!(
         "secure storage: a call did not return within {give_up:?}; abandoning the worker \
          (the OS keyring is probably locked or unresponsive). The stuck call and everything \

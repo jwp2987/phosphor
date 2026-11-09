@@ -10,7 +10,9 @@ export SHELL=/bin/bash ZDOTDIR="%(home)s"
 export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug
 export WARP_INPUT_ORDER_LOG_TEXT=1
 mkdir -p "$XDG_STATE_HOME" "$XDG_DATA_HOME"
-printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || echo "WARNING: gnome-keyring-daemon unavailable" >&2
+if [ -z "$APPCI_NO_KEYRING" ]; then
+  printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || echo "WARNING: gnome-keyring-daemon unavailable" >&2
+fi
 echo $$ > "%(run)s/app.pid"
 cd "%(home)s/w"
 exec "%(bin)s" >> "%(run)s/app.stdout" 2>&1
@@ -40,10 +42,64 @@ def with_user_bin_dirs(path, isdir=os.path.isdir):
     return os.pathsep.join(have + list(dict.fromkeys(extra)))
 
 
+# #1805: how the app's private D-Bus session offers a Secret Service. "unlocked" (the default) starts gnome-keyring-daemon unlocked, as
+# every case expects; the other two give the session NO keyring daemon, through a bus config with no standard service directories (so a
+# gnome-keyring .service file on the box cannot be auto-started):
+#   "absent"  nothing provides org.freedesktop.secrets: every call fails at once (ServiceUnknown);
+#   "hang"    a .service file whose Exec never claims the name, so a call waits for the bus's service_start_timeout (120 s, the
+#             window the waste audit saw block startup). Only the Secret Service is affected; other activatable services are also
+#             missing in both variants (portals, notifications), which the app tolerates.
+KEYRING_VARIANTS = ("unlocked", "absent", "hang")
+
+DBUS_CONFIG = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <keep_umask/>
+  <listen>unix:tmpdir=/tmp</listen>
+  <auth>EXTERNAL</auth>
+%(servicedir)s  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+  <limit name="service_start_timeout">120000</limit>
+</busconfig>
+"""
+
+HANG_SERVICE = """[D-BUS Service]
+Name=org.freedesktop.secrets
+Exec=/bin/sleep 600
+"""
+
+
+def keyring_dbus_files(variant, run):
+    """-> {path: text} the D-Bus session of `variant` needs under the run dir (empty for "unlocked": the default session)"""
+    if variant not in KEYRING_VARIANTS:
+        raise ValueError("unknown keyring variant %r (one of %s)" % (variant, ", ".join(KEYRING_VARIANTS)))
+    if variant == "unlocked":
+        return {}
+    files, servicedir = {}, ""
+    if variant == "hang":
+        sdir = os.path.join(run, "dbus-services-hang")
+        files[os.path.join(sdir, "org.freedesktop.secrets.service")] = HANG_SERVICE
+        servicedir = "  <servicedir>%s</servicedir>\n" % sdir
+    files[os.path.join(run, "dbus-session-%s.conf" % variant)] = DBUS_CONFIG % {"servicedir": servicedir}
+    return files
+
+
+def launcher_argv(variant, run, inner):
+    """the dbus-run-session command line for `variant` (see keyring_dbus_files)"""
+    if variant == "unlocked":
+        return ["dbus-run-session", "--", inner]
+    return ["dbus-run-session", "--config-file=%s" % os.path.join(run, "dbus-session-%s.conf" % variant), "--", inner]
+
+
 class App:
     def __init__(self, run, home, binary, display="wayland"):
         self.run, self.home, self.bin, self.display = run, home, binary, display
         self.proc = None
+        self.keyring = "unlocked"      # #1805: a case sets another KEYRING_VARIANTS entry before start() and puts it back after
 
     def start(self):
         inner = os.path.join(self.run, "inner.sh")
@@ -52,12 +108,18 @@ class App:
         # r18u22 (Wayland agent shell_nu): the r18cz fix below lived only in WindowsApp.env (its `os.name != "nt"` branch never ran), so on
         # Linux nu stayed off the app's PATH and the agent pass sent `nu` to the agent: "nu never executed a probe line".
         env = dict(os.environ, APPCI_APP_DISPLAY=self.display, PATH=with_user_bin_dirs(os.environ.get("PATH", "")))
+        env.pop("APPCI_NO_KEYRING", None)
+        for path, text in keyring_dbus_files(self.keyring, self.run).items():
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").write(text)
+        if self.keyring != "unlocked":
+            env["APPCI_NO_KEYRING"] = "1"
         try:
             os.remove(os.path.join(self.run, "app.pid"))
         except FileNotFoundError:
             pass
-        # own session => own process group; it is the ONLY thing stop() ever signals
-        self.proc = subprocess.Popen(["dbus-run-session", "--", inner], env=env, start_new_session=True,
+        # own session => own process group; it is the ONLY thing stop() ever signals (the "hang" variant's sleep is in it too)
+        self.proc = subprocess.Popen(launcher_argv(self.keyring, self.run, inner), env=env, start_new_session=True,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with open(os.path.join(self.run, "pids"), "a") as f:
             f.write("app-launcher %d\n" % self.proc.pid)

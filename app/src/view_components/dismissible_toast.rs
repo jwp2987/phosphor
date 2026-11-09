@@ -121,8 +121,9 @@ impl<A: Action + Clone> DismissibleToastStack<A> {
     /// whichever comes first.
     pub fn add_ephemeral_toast(&mut self, toast: DismissibleToast<A>, ctx: &mut ViewContext<Self>) {
         let uuid = Uuid::new_v4();
+        let on_shown = toast.on_shown.clone();
         let abort_handle = ctx.spawn_abortable(
-            Timer::after(self.timeout),
+            Timer::after(toast.timeout.unwrap_or(self.timeout)),
             move |view, _, ctx| view.dismiss_toast_by_uuid(&uuid, ctx),
             |_, _| {},
         );
@@ -140,6 +141,9 @@ impl<A: Action + Clone> DismissibleToastStack<A> {
         self.evict_oldest_toasts();
 
         ctx.notify();
+        if let Some(on_shown) = on_shown {
+            on_shown(ctx);
+        }
     }
 
     /// Cap the stack at [`MAX_VISIBLE_TOASTS`] by evicting the oldest entries,
@@ -161,6 +165,7 @@ impl<A: Action + Clone> DismissibleToastStack<A> {
         ctx: &mut ViewContext<Self>,
     ) {
         toast.persistent = true;
+        let on_shown = toast.on_shown.clone();
         if let Some(object_id) = &toast.object_id {
             self.dismiss_older_toasts(object_id, ctx);
         }
@@ -174,6 +179,9 @@ impl<A: Action + Clone> DismissibleToastStack<A> {
         self.evict_oldest_toasts();
 
         ctx.notify();
+        if let Some(on_shown) = on_shown {
+            on_shown(ctx);
+        }
     }
 
     /// Find a toast by uuid and removed it from the stack.
@@ -416,6 +424,11 @@ pub struct DismissibleToast<A: Action + Clone> {
     persistent: bool,
     /// Optional callback invoked when the toast body is clicked.
     pub(crate) on_body_click: Option<OnBodyClickCallback<A>>,
+    /// Optional callback invoked once a stack has actually put the toast on screen, so a sender
+    /// that must know the user was told (#1805) learns it from the stack, not from having emitted.
+    on_shown: Option<OnBodyClickCallback<A>>,
+    /// An ephemeral toast's own display time; `None` uses the stack's timeout.
+    timeout: Option<Duration>,
 }
 
 pub enum ToastType {
@@ -441,6 +454,8 @@ impl<A: Action + Clone> DismissibleToast<A> {
             action_button: Default::default(),
             persistent: false,
             on_body_click: None,
+            on_shown: None,
+            timeout: None,
         }
     }
 
@@ -485,6 +500,21 @@ impl<A: Action + Clone> DismissibleToast<A> {
         F: Fn(&mut ViewContext<DismissibleToastStack<A>>) + 'static,
     {
         self.on_body_click = Some(Rc::new(callback));
+        self
+    }
+
+    /// Sets a callback invoked when a stack has put this toast on screen.
+    pub fn with_on_shown<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(&mut ViewContext<DismissibleToastStack<A>>) + 'static,
+    {
+        self.on_shown = Some(Rc::new(callback));
+        self
+    }
+
+    /// Shows an ephemeral toast for `timeout` instead of the stack's default.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 

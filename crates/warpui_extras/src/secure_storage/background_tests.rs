@@ -112,6 +112,8 @@ impl SecureStorage for Hanging {
 
 #[test]
 fn a_stuck_call_is_given_up_on_and_later_calls_use_a_fresh_worker() {
+    let _guard = crate::secure_storage::availability::test_guard();
+    crate::secure_storage::availability::reset_for_test();
     let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
     let for_factory = release.clone();
     set_give_up_for_test(Some(std::time::Duration::from_millis(150)));
@@ -126,6 +128,12 @@ fn a_stuck_call_is_given_up_on_and_later_calls_use_a_fresh_worker() {
     let behind = run(|s| s.read_value("behind")).unwrap();
     assert!(futures_lite_block_on(stuck.wait()).is_none());
     assert!(futures_lite_block_on(behind.wait()).is_none());
+    // #1805: the give-up also records the keyring as unavailable for the run, so the fresh worker
+    // goes to its fallback instead of hanging the same way.
+    assert_eq!(
+        crate::secure_storage::availability::current(),
+        crate::secure_storage::availability::Availability::Unavailable
+    );
 
     // A later call is served by a fresh worker instead of hanging forever.
     let later = run(|s| s.read_value("later")).unwrap();
@@ -139,6 +147,7 @@ fn a_stuck_call_is_given_up_on_and_later_calls_use_a_fresh_worker() {
     release.1.notify_all();
     set_give_up_for_test(None);
     set_factory_for_test(None);
+    crate::secure_storage::availability::reset_for_test();
 }
 
 fn futures_lite_block_on<F: std::future::Future>(f: F) -> F::Output {
