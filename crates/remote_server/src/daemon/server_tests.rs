@@ -263,3 +263,74 @@ fn a_connection_keeps_the_daemon_alive_past_the_grace_period() {
     drop(events_tx);
     handle.join().unwrap();
 }
+
+/// P0 reserved a module per future family; until its package lands each one answers its
+/// requests with UNSUPPORTED, naming the request so the client's log says what it fell back on.
+#[test]
+fn every_reserved_family_request_is_unsupported_and_named() {
+    let mut h = harness();
+    let host_requests: Vec<(&str, host_scoped_request::Message)> = vec![
+        (
+            "ReadFileContext",
+            host_scoped_request::Message::ReadFileContext(Default::default()),
+        ),
+        (
+            "SaveBuffer",
+            host_scoped_request::Message::SaveBuffer(Default::default()),
+        ),
+        (
+            "ResolveConflict",
+            host_scoped_request::Message::ResolveConflict(Default::default()),
+        ),
+        (
+            "GitCommitChain",
+            host_scoped_request::Message::GitCommitChain(Default::default()),
+        ),
+        (
+            "GitPull",
+            host_scoped_request::Message::GitPull(Default::default()),
+        ),
+        (
+            "GitCreatePr",
+            host_scoped_request::Message::GitCreatePr(Default::default()),
+        ),
+        (
+            "DiscardFiles",
+            host_scoped_request::Message::DiscardFiles(Default::default()),
+        ),
+        (
+            "GitStage",
+            host_scoped_request::Message::GitStage(Default::default()),
+        ),
+    ];
+    for (name, message) in host_requests {
+        h.send(host("rh", message));
+        let e = error_of(h.next());
+        assert_eq!(e.code, ErrorCode::Unsupported as i32, "{name}");
+        assert!(e.message.contains(name), "{name}: {}", e.message);
+    }
+    let session_requests: Vec<(&str, session_scoped_request::Message)> = vec![
+        (
+            "NavigatedToDirectory",
+            session_scoped_request::Message::NavigatedToDirectory(Default::default()),
+        ),
+        (
+            "LoadRepoMetadataDirectory",
+            session_scoped_request::Message::LoadRepoMetadataDirectory(Default::default()),
+        ),
+        (
+            "OpenBuffer",
+            session_scoped_request::Message::OpenBuffer(Default::default()),
+        ),
+        (
+            "GetDiffState",
+            session_scoped_request::Message::GetDiffState(Default::default()),
+        ),
+    ];
+    for (name, message) in session_requests {
+        h.send(session("rs", message));
+        let e = error_of(h.next());
+        assert_eq!(e.code, ErrorCode::Unsupported as i32, "{name}");
+        assert!(e.message.contains(name), "{name}: {}", e.message);
+    }
+}

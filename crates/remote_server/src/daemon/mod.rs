@@ -10,15 +10,26 @@
 //! subscriptions, file-context reads, git write operations) is answered with
 //! `ErrorCode::UNSUPPORTED` and the client runs it on its no-helper path. Wave H, #1804.
 
+mod agent_context;
+mod buffers;
+mod chunk;
 mod conn;
+mod diff_state;
 mod exec;
+mod file_context;
 mod fs_ops;
 mod git;
+mod git_status;
+mod git_write;
+mod github;
+mod index_store;
 mod jobs;
 pub mod logger;
 mod proxy;
+mod repo_meta;
 mod ripgrep;
 mod server;
+mod watch;
 
 use std::fs::Permissions;
 use std::os::unix::fs::PermissionsExt;
