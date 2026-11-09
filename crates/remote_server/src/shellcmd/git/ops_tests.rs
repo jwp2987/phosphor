@@ -467,3 +467,60 @@ fn branch_tracking_reads_upstream_then_counts() {
     );
     assert_eq!(r.calls().len(), 1);
 }
+
+#[test]
+fn branch_list_skips_head_pointers_and_marks_main() {
+    let r = Fake::new(|a, _| match a.join(" ").as_str() {
+        "symbolic-ref refs/remotes/origin/HEAD" => ok("refs/remotes/origin/main\n"),
+        "for-each-ref --count=100 --sort=-committerdate --format=%(refname:short) refs/heads" => {
+            ok("feature\nmain\n(HEAD detached at x)\norigin/HEAD\nfeature\n\n")
+        }
+        _ => None,
+    });
+    let branches = block(get_all_branches(&r, Path::new(REPO), None, false)).unwrap();
+    assert_eq!(
+        branches,
+        vec![("feature".to_string(), false), ("main".to_string(), true)]
+    );
+}
+
+#[test]
+fn branch_list_honours_remotes_and_caps_the_count() {
+    let r = Fake::new(|a, _| match a.join(" ").as_str() {
+        "symbolic-ref refs/remotes/origin/HEAD" => ok("refs/remotes/origin/main\n"),
+        "for-each-ref --count=500 --sort=-committerdate --format=%(refname:short) refs/heads refs/remotes" => {
+            ok("origin/main\n")
+        }
+        _ => None,
+    });
+    let branches = block(get_all_branches(&r, Path::new(REPO), Some(9999), true)).unwrap();
+    assert_eq!(branches, vec![("origin/main".to_string(), true)]);
+}
+
+#[test]
+fn committed_branch_files_come_from_numstat_against_the_merge_base() {
+    let r = Fake::new(|a, _| match a.join(" ").as_str() {
+        "symbolic-ref refs/remotes/origin/HEAD" => ok("refs/remotes/origin/main\n"),
+        "merge-base HEAD origin/main" => ok("abc123\n"),
+        "diff --numstat abc123 HEAD" => ok("3\t1\tsrc/a.rs\n-\t-\timg.png\n"),
+        _ => None,
+    });
+    let files = block(get_committed_branch_file_entries(&r, Path::new(REPO))).unwrap();
+    assert_eq!(
+        files,
+        vec![
+            ("src/a.rs".to_string(), 3, 1),
+            ("img.png".to_string(), 0, 0)
+        ]
+    );
+    // No merge base: an empty list, not an error.
+    let r = Fake::new(|a, _| match a.join(" ").as_str() {
+        "symbolic-ref refs/remotes/origin/HEAD" => ok("refs/remotes/origin/main\n"),
+        _ => None,
+    });
+    assert!(
+        block(get_committed_branch_file_entries(&r, Path::new(REPO)))
+            .unwrap()
+            .is_empty()
+    );
+}

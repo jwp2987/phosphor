@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use futures::FutureExt as _;
 
-use super::{InflightLimit, command_timeout_from_env, max_inflight_from_env};
+use super::{
+    InflightLimit, command_timeout_from_env, max_inflight_from_env, shell_mode_timeout_from_env,
+};
 
 /// #1240: the in-flight limit is a counting semaphore whose waiters leave the queue with their
 /// futures, so a superseded generator never holds a slot it will not use.
@@ -105,4 +107,21 @@ fn login_shell_types_map_to_command_builder_kinds() {
     assert_eq!(kind(ShellType::Fish), ShellKind::Fish);
     assert_eq!(kind(ShellType::Nu), ShellKind::Nu);
     assert_eq!(kind(ShellType::PowerShell), ShellKind::Pwsh);
+}
+
+#[test]
+fn shell_mode_timeout_matches_the_helper_budget() {
+    assert_eq!(
+        shell_mode_timeout_from_env(None),
+        Some(Duration::from_secs(120))
+    );
+    assert_eq!(
+        shell_mode_timeout_from_env(Some("x")),
+        Some(Duration::from_secs(120))
+    );
+    assert_eq!(
+        shell_mode_timeout_from_env(Some("15")),
+        Some(Duration::from_secs(15))
+    );
+    assert_eq!(shell_mode_timeout_from_env(Some("0")), None);
 }

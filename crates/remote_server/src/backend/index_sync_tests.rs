@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::super::contract_tests::LocalShExecutor;
+use super::super::contract_tests::scratch_home_executor;
 use super::super::{ShellBackend, ShellIndex};
 use super::*;
 
@@ -72,7 +72,7 @@ fn shell() -> ShellBackend {
     let root = Box::leak(Box::new(tempfile::tempdir().unwrap()))
         .path()
         .to_path_buf();
-    ShellBackend::new(Some(std::sync::Arc::new(LocalShExecutor)))
+    ShellBackend::new(Some(scratch_home_executor()))
         .with_index(std::sync::Arc::new(ShellIndex::new(root, "t".into())))
 }
 

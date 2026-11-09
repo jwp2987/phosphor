@@ -698,3 +698,90 @@ pub async fn discard_files(
     }
     Ok(())
 }
+
+/// How many branches `GetBranches` returns when the caller names no count.
+pub const DEFAULT_BRANCH_COUNT: usize = 100;
+/// The most branches one `GetBranches` returns, whatever the caller asked (the helper's cap).
+pub const MAX_BRANCH_COUNT_CAP: usize = 500;
+
+/// The branch picker's list as `(name, is_main)` pairs, most recently committed first:
+/// `git for-each-ref` over `refs/heads` (and `refs/remotes` with `include_remotes`), without HEAD
+/// pointers, without duplicates. Same rules as the app's local listing, so the picker looks the
+/// same on every backend. The main branch is detected ([`detect_main_branch`]).
+pub async fn get_all_branches(
+    runner: &dyn GitRunner,
+    repo: &Path,
+    max_branch_count: Option<usize>,
+    include_remotes: bool,
+) -> Result<Vec<(String, bool)>> {
+    let main_branch = match detect_main_branch(runner, repo).await {
+        Ok(branch) => branch,
+        Err(err) => {
+            log::warn!("Failed to detect main branch: {err}");
+            "origin/main".to_string()
+        }
+    };
+    let count = max_branch_count
+        .unwrap_or(DEFAULT_BRANCH_COUNT)
+        .min(MAX_BRANCH_COUNT_CAP);
+    let count_arg = format!("--count={count}");
+    let mut args = vec![
+        "for-each-ref",
+        count_arg.as_str(),
+        "--sort=-committerdate",
+        "--format=%(refname:short)",
+        "refs/heads",
+    ];
+    if include_remotes {
+        args.push("refs/remotes");
+    }
+    let output = git_text(runner, repo, &args).await?;
+    let mut branches = Vec::new();
+    for branch in output.lines() {
+        let branch = branch.trim();
+        if branch.is_empty() || branch.contains("HEAD") || branch.starts_with('(') {
+            continue;
+        }
+        let is_main = branch == main_branch || branch == main_branch.trim_start_matches("origin/");
+        branches.push((branch.to_string(), is_main));
+    }
+    let mut seen = std::collections::HashSet::new();
+    branches.retain(|(name, _)| seen.insert(name.clone()));
+    Ok(branches)
+}
+
+/// The committed-only changed files of the current branch (`git diff --numstat <merge-base>
+/// HEAD`) as `(path, additions, deletions)`; binary files and unparsable counts are 0. An
+/// unknown merge base is an empty list, like the local listing.
+pub async fn get_committed_branch_file_entries(
+    runner: &dyn GitRunner,
+    repo: &Path,
+) -> Result<Vec<(String, u64, u64)>> {
+    let main_branch = detect_main_branch(runner, repo).await?;
+    let merge_base = match git_text(runner, repo, &["merge-base", "HEAD", main_branch.trim()]).await
+    {
+        Ok(output) => output.trim().to_string(),
+        Err(err) => {
+            log::warn!("Could not determine merge base against branch {main_branch}: {err:?}");
+            return Ok(Vec::new());
+        }
+    };
+    let output = git_text(runner, repo, &["diff", "--numstat", &merge_base, "HEAD"])
+        .await
+        .unwrap_or_default();
+    let mut entries = Vec::new();
+    for line in output.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 3 {
+            entries.push((
+                parts[2].to_string(),
+                parts[0].parse().unwrap_or(0),
+                parts[1].parse().unwrap_or(0),
+            ));
+        }
+    }
+    Ok(entries)
+}

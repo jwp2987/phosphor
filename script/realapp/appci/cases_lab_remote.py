@@ -139,7 +139,7 @@ def saw_added(text, name, event="update"):
     return any(e == event and want in hashes for e, _s, _r, _a, hashes in tree_events(text))
 
 
-@CL.lab_case("file_tree_remote", shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150"), helper=("nohelper", "upload"), modes=("terminal",))
+@CL.lab_case("file_tree_remote", shells=("bash", "zsh", "fish", "nu", "dash", "ash"), lat=("lan", "150"), helper=("nohelper", "upload"), modes=("terminal",))
 def c_file_tree_remote(ctx, r, arm):
     """The remote file tree, with and without the helper. In a git repository on the server the user `cd`s into a subdirectory: the app gets the repo's tree
     (a snapshot from the helper, or from `git ls-files` over the out-of-band channel). Then a file is created OUTSIDE the terminal (a separate ssh connection,

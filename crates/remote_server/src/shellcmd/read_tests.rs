@@ -468,3 +468,37 @@ fn every_base64_tool_has_an_encoder_filter() {
     assert_eq!(Base64Tool::Openssl.encoder_filter(), "openssl base64");
     assert_eq!(Base64Tool::Od.encoder_filter(), "od -An -v -tx1");
 }
+
+#[test]
+fn a_range_section_skips_whole_blocks_and_reads_back() {
+    let command = posix_range_section("/a b/f", 7 * RANGE_BLOCK_BYTES, RANGE_CHUNK_BYTES, "base64");
+    assert!(command.contains("f='/a b/f'"), "{command}");
+    assert!(command.contains("bs=1048576 skip=7 count=4"), "{command}");
+    assert!(command.contains("head -c 4194304 | base64"), "{command}");
+    let payload = super::super::base64::encode(b"tail bytes");
+    let bytes =
+        parse_range_section(&section(&format!("OK\n{payload}")), Some(Base64Tool::GnuW0)).unwrap();
+    assert_eq!(bytes, b"tail bytes");
+    assert_eq!(
+        parse_range_section(&section("NOTFOUND"), None).unwrap_err(),
+        "File does not exist"
+    );
+    assert!(parse_range_section(&section("garbage"), None).is_err());
+}
+
+#[test]
+fn the_pwsh_range_section_seeks_and_the_ranged_read_never_re_encodes_text() {
+    let range = pwsh_range_section("C:\\it's", 8_388_608, 4_194_304);
+    assert!(range.contains("$f = 'C:\\it''s'"), "{range}");
+    assert!(range.contains("Seek(8388608"), "{range}");
+    let ranged = pwsh_file_section(
+        "C:\\f.txt",
+        &GatherPlan {
+            prefix_bytes: 1000,
+            through_line: Some(5),
+        },
+    );
+    assert!(ranged.contains("IndexOf($buf, [byte]10"), "{ranged}");
+    assert!(!ranged.contains("UTF8"), "{ranged}");
+    assert!(!ranged.contains("-join"), "{ranged}");
+}

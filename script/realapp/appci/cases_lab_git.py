@@ -46,7 +46,7 @@ def run(lab, arm, script, timeout=60):
     return out.returncode, out.stdout, out.stderr
 
 
-@lab_case("git_write_remote", shells=("bash", "zsh", "fish", "nu"), lat=("lan",), helper=("nohelper", "upload"), modes=("terminal",))
+@lab_case("git_write_remote", shells=("bash", "zsh", "fish", "nu", "dash", "ash", "pwsh"), lat=("lan",), helper=("nohelper", "upload"), modes=("terminal",))
 def c_git_write_remote(ctx, r, arm):
     lab, rt = ctx.lab, rtt_s(arm)
     d = work(arm, "gw_%s" % unique(ctx, 6)).rstrip("/")

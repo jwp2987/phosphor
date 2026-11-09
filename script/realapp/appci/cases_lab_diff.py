@@ -24,7 +24,7 @@ import cases_lab_git as CLG  # noqa: E402
 import cases_lab_remote as CLR  # noqa: E402
 import cases_lab_helper as CLH  # noqa: E402
 
-SHELLS = ("bash", "zsh", "fish", "nu")
+SHELLS = ("bash", "zsh", "fish", "nu", "dash", "ash")      # + pwsh where the case says so (git over PowerShell: shellcmd/git/pwsh.rs)
 HOOK_DIFF = re.compile(r"hop=diff_state event=(snapshot|delta) source=(helper|shell) files=(\d+) path_hash=\[([0-9a-f,]*)\]")
 HOOK_CHIP = re.compile(r"hop=git_chip source=(helper|shell) files=(\d+) added=(\d+) removed=(\d+) ahead=(\d+) behind=(\d+) upstream=([01])")
 HOOK_GH = re.compile(r"hop=gh_chip event=(pr|repo) source=(helper|shell) (?:pr=(\w+)|repo=(\w+))")
@@ -71,7 +71,7 @@ def want_source(arm):
     return "helper" if arm["helper"] == "upload" else "shell"
 
 
-@CL.lab_case("diff_panel_remote", shells=SHELLS, lat=("lan",), helper=("nohelper", "upload"), modes=("terminal",))
+@CL.lab_case("diff_panel_remote", shells=SHELLS + ("pwsh",), lat=("lan",), helper=("nohelper", "upload"), modes=("terminal",))
 def c_diff_panel_remote(ctx, r, arm):
     lab, u, rt = ctx.lab, arm["user"], CL.rtt_s(arm)
     uid = CL.unique(ctx)

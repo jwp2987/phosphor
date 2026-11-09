@@ -114,23 +114,102 @@ impl IndexStore {
     /// The store for `key` (any stable string naming host and repository) under `root`.
     pub fn open(root: &Path, key: &str) -> Self {
         Self {
-            dir: root.join(&sha256_hex(key.as_bytes())[..32]),
+            dir: root.join(Self::dir_name(key)),
         }
+    }
+
+    /// A store over an existing directory (the shell arm's local mirror of a host's store).
+    pub fn at(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+
+    /// The directory name `key` maps to under a store root: both arms must agree on it for them
+    /// to share one host's store.
+    pub fn dir_name(key: &str) -> String {
+        sha256_hex(key.as_bytes())[..32].to_string()
+    }
+
+    /// The file name of the scan.
+    pub const META_FILE: &'static str = "meta.json";
+
+    /// The file name of the vectors for `storage_key`.
+    pub fn vector_file_name(storage_key: &str) -> String {
+        format!("vectors-{}.bin", &sha256_hex(storage_key.as_bytes())[..16])
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
+    /// Writes `bytes` as the file `name` of this store (atomically).
+    pub fn put_file(&self, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.write_atomic(&self.dir.join(name), bytes)
+    }
+
+    /// Removes the file `name` of this store, if there is one.
+    pub fn remove_file(&self, name: &str) {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = fs::remove_file(self.dir.join(name));
+    }
+
+    /// The header a vector file for `storage_key` and `dims` starts with.
+    pub fn vector_header(storage_key: &str, dims: usize) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(16 + storage_key.len());
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&(storage_key.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(storage_key.as_bytes());
+        bytes.extend_from_slice(&(dims as u32).to_le_bytes());
+        bytes
+    }
+
+    /// Reads a vector file's start: `(storage key, dimensions, header length, record size)`, or
+    /// `None` if `bytes` is not one of our headers (or is cut short).
+    pub fn parse_vector_header(bytes: &[u8]) -> Option<(String, usize, u64, u64)> {
+        let mut cursor = std::io::Cursor::new(bytes);
+        let (key, header) = Self::read_any_header(&mut cursor)?;
+        Some((key, header.dims, header.len, header.record_size()))
+    }
+
+    /// The most bytes a vector file's header can take: enough to read it from the host.
+    pub const MAX_HEADER_BYTES: u64 = (8 + 4 + 4096 + 4) as u64;
+
+    /// Validates `vectors` and lays them out as file records: `(dimension, bytes)`. All vectors
+    /// must be finite and of one dimension.
+    pub fn encode_vectors(vectors: &[(String, Vec<f32>)]) -> anyhow::Result<(usize, Vec<u8>)> {
+        let Some(first) = vectors.first() else {
+            return Ok((0, Vec::new()));
+        };
+        let dims = first.1.len();
+        if dims == 0 {
+            bail!("empty vector for {}", first.0);
+        }
+        let mut records = Vec::with_capacity(vectors.len() * (HASH_BYTES + dims * 4));
+        for (hash, vector) in vectors {
+            if vector.len() != dims {
+                bail!(
+                    "vector for {hash} has {} dimensions, expected {dims}",
+                    vector.len()
+                );
+            }
+            if vector.iter().any(|x| !x.is_finite()) {
+                bail!("vector for {hash} has a non-finite value");
+            }
+            let raw = decode_hash(hash).ok_or_else(|| anyhow!("not a content hash: {hash:?}"))?;
+            records.extend_from_slice(&raw);
+            for x in vector {
+                records.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        Ok((dims, records))
+    }
+
     fn meta_path(&self) -> PathBuf {
-        self.dir.join("meta.json")
+        self.dir.join(Self::META_FILE)
     }
 
     fn vector_path(&self, storage_key: &str) -> PathBuf {
-        self.dir.join(format!(
-            "vectors-{}.bin",
-            &sha256_hex(storage_key.as_bytes())[..16]
-        ))
+        self.dir.join(Self::vector_file_name(storage_key))
     }
 
     fn write_atomic(&self, path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -222,30 +301,10 @@ impl IndexStore {
         storage_key: &str,
         vectors: &[(String, Vec<f32>)],
     ) -> anyhow::Result<usize> {
-        let Some(first) = vectors.first() else {
+        if vectors.is_empty() {
             return Ok(0);
-        };
-        let dims = first.1.len();
-        if dims == 0 {
-            bail!("empty vector for {}", first.0);
         }
-        let mut records = Vec::with_capacity(vectors.len() * (HASH_BYTES + dims * 4));
-        for (hash, vector) in vectors {
-            if vector.len() != dims {
-                bail!(
-                    "vector for {hash} has {} dimensions, expected {dims}",
-                    vector.len()
-                );
-            }
-            if vector.iter().any(|x| !x.is_finite()) {
-                bail!("vector for {hash} has a non-finite value");
-            }
-            let raw = decode_hash(hash).ok_or_else(|| anyhow!("not a content hash: {hash:?}"))?;
-            records.extend_from_slice(&raw);
-            for x in vector {
-                records.extend_from_slice(&x.to_le_bytes());
-            }
-        }
+        let (dims, records) = Self::encode_vectors(vectors)?;
 
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         fs::create_dir_all(&self.dir)?;
@@ -269,11 +328,7 @@ impl IndexStore {
             }
             // New, unreadable, other format or other dimension: start the file over.
             _ => {
-                let mut bytes = Vec::with_capacity(20 + storage_key.len() + records.len());
-                bytes.extend_from_slice(MAGIC);
-                bytes.extend_from_slice(&(storage_key.len() as u32).to_le_bytes());
-                bytes.extend_from_slice(storage_key.as_bytes());
-                bytes.extend_from_slice(&(dims as u32).to_le_bytes());
+                let mut bytes = Self::vector_header(storage_key, dims);
                 bytes.extend_from_slice(&records);
                 self.write_atomic(&path, &bytes)?;
             }

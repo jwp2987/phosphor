@@ -154,7 +154,7 @@ pub(super) struct Subject {
 }
 
 /// The family-independent assertion that proves the harness: a request the shell arm does not
-/// implement (git reads are helper-only) is reported as Unsupported (so the router can fall
+/// implement (`resolve_path`, `create_directory`, ripgrep are helper-only) is reported as Unsupported (so the router can fall
 /// back), never a hang, a panic or a generic failure. The helper arm has no such request any
 /// more -- the daemon serves every `RemoteFeatures` method -- so its `UNSUPPORTED` handling is
 /// covered by `unsupported_from_the_helper_is_served_by_the_shell_and_sticks` and the daemon's
@@ -165,9 +165,9 @@ pub(super) async fn assert_unimplemented_is_unsupported(subject: &Subject) {
     }
     let err = subject
         .backend
-        .get_branches(crate::proto::GetBranches::default())
+        .resolve_path(String::new())
         .await
-        .expect_err("get_branches is not implemented by the shell arm");
+        .expect_err("resolve_path is not implemented by the shell arm");
     assert!(
         err.is_unsupported(),
         "{}: expected Unsupported, got {err:?}",
@@ -457,15 +457,171 @@ pub(super) async fn assert_file_write(subject: &Subject) {
     );
 }
 
+/// A file past the shell arm's first-section cap (7 MiB) is read whole, byte for byte, by
+/// chunked range reads; the helper's chunked read does the same (#1873).
+pub(super) async fn assert_big_file_read(subject: &Subject) {
+    let name = subject.name;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("big.bin");
+    // 9 MiB + 5: crosses the 7 MiB prefix and ends inside a block.
+    let bytes: Vec<u8> = (0..(9 * 1024 * 1024 + 5u32))
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    std::fs::write(&path, &bytes).unwrap();
+    let read = subject
+        .backend
+        .read_file_bytes(path.to_string_lossy().into_owned())
+        .await
+        .unwrap();
+    assert_eq!(read.len(), bytes.len(), "{name}");
+    assert!(read == bytes, "{name}: content differs");
+}
+
+/// `ListDirectory` reports names, kinds (symlinks included), sizes of regular files and
+/// modification times, the same on both arms (#1878).
+pub(super) async fn assert_list_directory(subject: &Subject) {
+    use crate::proto::{FileSystemEntryKind, list_directory_response};
+    let name = subject.name;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"hello").unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::os::unix::fs::symlink("a.txt", dir.path().join("ln")).unwrap();
+    let response = subject
+        .backend
+        .list_directory(dir.path().to_string_lossy().into_owned())
+        .await
+        .unwrap();
+    let Some(list_directory_response::Result::Success(success)) = response.result else {
+        panic!("{name}: no listing: {response:?}");
+    };
+    let by_name: std::collections::HashMap<_, _> = success
+        .entries
+        .iter()
+        .map(|e| (e.name.as_str(), e))
+        .collect();
+    assert_eq!(by_name.len(), 3, "{name}: {by_name:?}");
+    let file = by_name["a.txt"];
+    assert_eq!(file.kind, FileSystemEntryKind::File as i32, "{name}");
+    assert_eq!(file.size_bytes, Some(5), "{name}");
+    let want = std::fs::metadata(dir.path().join("a.txt"))
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let got = file.modified_epoch_millis.expect("a modification time") as i64;
+    assert!((got - want).abs() < 2000, "{name}: mtime {got} vs {want}");
+    let sub = by_name["sub"];
+    assert_eq!(sub.kind, FileSystemEntryKind::Directory as i32, "{name}");
+    assert!(sub.is_dir && sub.size_bytes.is_none(), "{name}");
+    let link = by_name["ln"];
+    assert_eq!(link.kind, FileSystemEntryKind::Symlink as i32, "{name}");
+    assert!(!link.is_dir && link.size_bytes.is_none(), "{name}");
+}
+
 /// Every contract assertion. Family packages append theirs here.
 pub(super) async fn assert_contract(subject: &Subject) {
     assert_unimplemented_is_unsupported(subject).await;
     assert_read_file_context(subject).await;
     assert_file_write(subject).await;
+    assert_big_file_read(subject).await;
+    assert_list_directory(subject).await;
     assert_repo_metadata(subject).await;
     assert_git_write_contract(subject).await;
+    assert_git_read_contract(subject).await;
     assert_diff_state(subject).await;
     assert_codebase_index(subject).await;
+}
+
+// ---- family `git_read`: the branch picker and the PR file list -------------------------------
+
+/// `GetBranches` and `GetCommittedBranchFiles` give the same answers on the helper and the shell
+/// arm (#1872).
+pub(super) async fn assert_git_read_contract(subject: &Subject) {
+    use crate::proto::{get_branches_response, get_committed_branch_files_response};
+    if !have_git() {
+        return;
+    }
+    let name = subject.name;
+    let b = &subject.backend;
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path();
+    git(work, &["init", "-q", "-b", "main"]);
+    git(work, &["config", "user.email", "t@example.com"]);
+    git(work, &["config", "user.name", "t"]);
+    std::fs::write(work.join("a.txt"), "one\n").unwrap();
+    git(work, &["add", "."]);
+    git(work, &["commit", "-q", "-m", "first"]);
+    git(work, &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(work.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    std::fs::write(work.join("b.txt"), "b\n").unwrap();
+    git(work, &["add", "."]);
+    git(work, &["commit", "-q", "-m", "second"]);
+    let repo_path = work.to_string_lossy().into_owned();
+
+    let response = b
+        .get_branches(crate::proto::GetBranches {
+            repo_path: repo_path.clone(),
+            max_branch_count: None,
+            include_remotes: false,
+        })
+        .await
+        .unwrap();
+    let Some(get_branches_response::Result::Success(success)) = response.result else {
+        panic!("{name}: no branch list: {response:?}");
+    };
+    let mut branches: Vec<(String, bool)> = success
+        .branches
+        .into_iter()
+        .map(|b| (b.name, b.is_main))
+        .collect();
+    branches.sort();
+    assert_eq!(
+        branches,
+        vec![("feature".to_string(), false), ("main".to_string(), true)],
+        "{name}"
+    );
+
+    let response = b
+        .get_committed_branch_files(crate::proto::GetCommittedBranchFilesRequest {
+            repo_path: repo_path.clone(),
+        })
+        .await
+        .unwrap();
+    let Some(get_committed_branch_files_response::Result::Success(success)) = response.result
+    else {
+        panic!("{name}: no committed file list: {response:?}");
+    };
+    let mut files: Vec<(String, u64, u64)> = success
+        .files
+        .into_iter()
+        .map(|f| (f.path, f.additions, f.deletions))
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        vec![("a.txt".to_string(), 2, 0), ("b.txt".to_string(), 1, 0)],
+        "{name}"
+    );
+
+    // A path that is not a repository is an error answer, not a transport failure.
+    let not_repo = tempfile::tempdir().unwrap();
+    let response = b
+        .get_branches(crate::proto::GetBranches {
+            repo_path: not_repo.path().to_string_lossy().into_owned(),
+            max_branch_count: None,
+            include_remotes: false,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            response.result,
+            Some(get_branches_response::Result::Error(_))
+        ),
+        "{name}: {response:?}"
+    );
 }
 
 // ---- family f: git writes --------------------------------------------------------------
@@ -1079,15 +1235,26 @@ async fn a_shell_refresh_queues_only_what_changed_and_never_before_it_is_asked()
 
 /// A shell backend whose app-side index store lives in a scratch directory that is never
 /// cleaned up before the test process exits.
+///
+/// The "host" is this machine, whose index store the shell arm keeps under `$HOME`: the shell
+/// gets a scratch `$HOME`, so a test never writes to the real one.
 fn shell_with_index() -> (ShellBackend, std::path::PathBuf) {
     let root = Box::leak(Box::new(tempfile::tempdir().unwrap()))
         .path()
         .to_path_buf();
     let index = Arc::new(ShellIndex::new(root.clone(), "contract-host".into()));
     (
-        ShellBackend::new(Some(Arc::new(LocalShExecutor))).with_index(index),
+        ShellBackend::new(Some(scratch_home_executor())).with_index(index),
         root,
     )
+}
+
+/// A local `sh` whose `$HOME` is a scratch directory that lives until the process exits.
+pub(super) fn scratch_home_executor() -> Arc<dyn OutOfBandExecutor> {
+    let home = Box::leak(Box::new(tempfile::tempdir().unwrap()))
+        .path()
+        .to_path_buf();
+    Arc::new(HomeShExecutor { home })
 }
 
 fn shell_subject() -> Subject {
@@ -2083,8 +2250,8 @@ async fn a_buffer_opened_through_the_helper_is_guarded_when_the_save_falls_back_
 
 /// A local `sh` whose `$HOME` is a fixture directory: the host whose skills the shell arm reads.
 #[derive(Debug)]
-struct HomeShExecutor {
-    home: std::path::PathBuf,
+pub(super) struct HomeShExecutor {
+    pub(super) home: std::path::PathBuf,
 }
 
 impl OutOfBandExecutor for HomeShExecutor {
@@ -2958,7 +3125,13 @@ async fn the_shell_arm_rereads_fragments_when_its_text_cache_is_cold() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "alpha\nbeta\n").unwrap();
     let repo = dir.path().to_string_lossy().into_owned();
-    let (first, root) = shell_with_index();
+    let first_executor = scratch_home_executor();
+    let root = Box::leak(Box::new(tempfile::tempdir().unwrap()))
+        .path()
+        .to_path_buf();
+    let first = ShellBackend::new(Some(first_executor.clone())).with_index(Arc::new(
+        ShellIndex::new(root.clone(), "contract-host".into()),
+    ));
     let scan = scan_ok(
         &Subject {
             name: "first",
@@ -2967,7 +3140,7 @@ async fn the_shell_arm_rereads_fragments_when_its_text_cache_is_cold() {
         &repo,
     )
     .await;
-    let cold = ShellBackend::new(Some(Arc::new(LocalShExecutor)))
+    let cold = ShellBackend::new(Some(first_executor))
         .with_index(Arc::new(ShellIndex::new(root, "contract-host".into())));
     let subject = Subject {
         name: "cold",
@@ -3000,7 +3173,7 @@ async fn the_shell_arm_rereads_fragments_when_its_text_cache_is_cold() {
 #[tokio::test]
 async fn the_shell_arm_reads_only_files_whose_hash_is_new() {
     #[derive(Debug)]
-    struct Counting(std::sync::atomic::AtomicUsize);
+    struct Counting(std::sync::atomic::AtomicUsize, std::path::PathBuf);
     impl OutOfBandExecutor for Counting {
         fn channel_kind(&self) -> ChannelKind {
             ChannelKind::LocalSh
@@ -3012,7 +3185,7 @@ async fn the_shell_arm_reads_only_files_whose_hash_is_new() {
             if request.command.contains("head -c") {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
-            Box::pin(async move { run_local_sh(request, None, None) })
+            Box::pin(async move { run_local_sh(request, None, Some(&self.1)) })
         }
     }
     let dir = tempfile::tempdir().unwrap();
@@ -3022,7 +3195,10 @@ async fn the_shell_arm_reads_only_files_whose_hash_is_new() {
     let root = Box::leak(Box::new(tempfile::tempdir().unwrap()))
         .path()
         .to_path_buf();
-    let counting = Arc::new(Counting(Default::default()));
+    let home = Box::leak(Box::new(tempfile::tempdir().unwrap()))
+        .path()
+        .to_path_buf();
+    let counting = Arc::new(Counting(Default::default(), home));
     let shell = ShellBackend::new(Some(counting.clone()))
         .with_index(Arc::new(ShellIndex::new(root, "h".into())));
     shell.scan_codebase(repo.clone()).await.unwrap();

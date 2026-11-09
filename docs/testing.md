@@ -3701,8 +3701,9 @@ the host keeps a flat-file store; search is brute-force cosine. Off by default: 
 Wire (additive): `ScanCodebase` -> manifest + fragment spans + root hash (a big reply is split into FrameChunks like any large frame), `GetChunks` -> text only
 for fragments without a vector under the storage key, `StoreVectors`, `QueryVectors` (host-scoped tags 25-28, responses 44-47).
 
-Store (`crates/remote_server/src/index/store.rs`; helper: `~/.phosphor/index/<hash of repo path>/`, override `PHOSPHOR_REMOTE_INDEX_DIR` for tests; no-helper arm:
-`<state dir>/remote-index/<hash of user@host + repo>/`, so it survives reconnects): `meta.json` (format 1: manifest, spans, root hash; atomic rename) and one
+Store (`crates/remote_server/src/index/store.rs`; ON THE HOST for both arms, in the same directory `~/.phosphor/index/<hash of the canonical repo path>/`, override
+`PHOSPHOR_REMOTE_INDEX_DIR` for tests and the lab; #1881: the no-helper arm drives that directory over the shell, so switching the helper on or off never re-embeds):
+`meta.json` (format 1: manifest, spans, root hash; atomic rename) and one
 `vectors-<hash of storage key>.bin` per embedding space (header `PHVEC001`, key, dims; records = 32 raw hash bytes + dims f32 LE; appended, torn tail ignored and
 cut by the next append; last record of a hash wins). A storage-key change leaves the old space unused and `StoreVectors` removes it, so the repository re-embeds.
 Fragments whose vectors are dead (edited/deleted files) are compacted away on a scan once the file holds 1.5x the live set + 64 records.
@@ -3711,8 +3712,22 @@ No-helper arm (`shellcmd/index.rs`, `backend/shell/index.rs`): `git ls-files -z 
 target, __pycache__, .venv) piped through `find -maxdepth 0 -type f -size -3000000c` into `sha256sum` / `shasum -a 256` / `sha256 -r` (hashes equal the helper's;
 `git ls-files -s` was NOT used because it hashes the index and misses unstaged edits). Only files whose hash is new are read (base64, 32 per command, halved when
 the output cap is hit) and chunked with the shared chunker; binary/empty files are remembered by hash and not read again. Known differences from the helper:
-the shell arm does not read `.warpindexingignore`/`.cursorignore`/`.codeiumignore`, prunes the five directory names in a non-git tree, and is not offered on
-PowerShell hosts (Unsupported). Both arms use the naive chunker, not the app's tree-sitter split (fragment hashes differ from the app's local index).
+the shell arm does not read `.warpindexingignore`/`.cursorignore`/`.codeiumignore`, prunes the five directory names in a non-git tree, and on PowerShell hosts lists with `git ls-files` or a walk
+and hashes with `Get-FileHash` (#1874). Both arms use the naive chunker, not the app's tree-sitter split (fragment hashes differ from the app's local index).
+
+No-helper store on the host (`shellcmd/index_store.rs`, `backend/shell/host_store.rs`, #1881): nothing can run on the host without the helper, so `meta.json` and the
+vector file travel over the channel. Writes go to the host first (`meta.json`: atomic replace from stdin; vectors: `cat >>` of the new records from stdin after cutting a
+torn tail with `dd seek`, or a fresh atomic file when the key/dimension differs; other spaces dropped), then the app's local MIRROR (the old app-side directory, now a
+cache) follows. Reads and the brute-force cosine search run over the mirror, which is refreshed from the host only when the host file's size or mtime differs from the one
+mirrored (one `stat` round trip). The API key never crosses the channel: only hashes, vectors and file text. A scan whose table is unchanged writes nothing. Tests:
+`shellcmd::index_store_tests` (builders, stat parser), `backend::contract_tests::assert_codebase_index` (store/query/known-hash through the host files, the shell arm over a
+scratch `$HOME`), `the_shell_arm_rereads_fragments_when_its_text_cache_is_cold` (a second backend with an empty mirror stamp table reads the host's files). Not covered
+without the lab: another writer racing the append (exit 6 falls back to a fresh file). An app-side store from before #1881 is not migrated: the first sync after the
+update finds no vectors on the host and embeds once.
+
+Scan paging (#1871, `shellcmd::index::scan_page_command`): the listing is hashed `SCAN_PAGE_FILES` (2000) files at a time (`sed -n 'A,Bp;Bq'` over the NUL-split list; page 0
+also prints `TOTAL:`), so no repository reaches the 10 MiB output cap or the command timeout. `shellcmd::index_tests` check the slice arithmetic and the total; the PowerShell
+page has the same output shape (`scan_page_command_pwsh`).
 
 App (`app/src/remote_server/remote_index_driver.rs`, `remote_server::backend::index_sync`): the algorithm is written once over `RemoteFeatures` (scan -> get_chunks
 windows of 256 -> embed in the provider's batch size -> store_vectors; rescans up to twice when a file changed between scan and fetch). `RemoteIndexDriver` starts
@@ -3891,3 +3906,22 @@ In `table` mode `paste()` is decided by the table's plan alone (`paste_plan_via_
 - **Round-7 restart/queue corrections (Linux Wayland agent@fake)**: `agent_restart_quit_*` failed on "unexpected ERROR line: error creating connection to Xorg server" from the RELAUNCH log; this was an APP defect, not the harness (every Wayland launch logged it at line 4, the first launch too, and the relaunch uses the same environment): `windowing/winit/window.rs` now logs it at debug when `WAYLAND_DISPLAY` is set and `DISPLAY` is not. `agent_fault_queued_rows` treats a missing `hop=turn` as the implicit InProgress of a new conversation (`implicit_in_progress`, self-test row `agent_resilience_pure_parts`).
 
 Remote no-helper payloads on stdin (#1864, #1869, #1870; `docs/design/remote-backend-parity-audit.md` findings 1, 6, 7). File chunks, git patches and commit messages no longer ride in the ssh argv or the host's `sh -c` argument (visible in `ps`, kept by audit logs, 128 KiB E2BIG, 32 767 characters on Windows): `ExecRequest.stdin` carries them (`posix_write_payload` base64 for `base64 -d >> "$tmp"`, raw bytes for the `cat` no-decoder fallback, `pwsh_write_payload` read with `[Console]::OpenStandardInput()`; `ShellGitRunner` passes the patch as stdin and `run_commit` uses `git commit -F -`, which also changes the helper's git call). Unit tests: `shellcmd/write_tests.rs::no_content_is_in_any_write_command_and_the_pwsh_one_fits_a_windows_command_line` (the pwsh `-EncodedCommand` line stays under 6 KiB for a 200 KiB file), `backend/shell_git_runner_tests.rs::a_200_kib_patch_stages_and_never_appears_in_the_command_line` and `a_commit_message_is_stdin_not_argv` (real git through a recording `sh`), `backend/contract_tests.rs::a_shell_write_keeps_the_file_content_out_of_every_command_line` (200 KiB write, byte-exact, no command line holds raw or base64 content). `ops_tests.rs` now expects `commit -F -`. Lab: `lab_diff_apply_remote` starts a detached process sampler on the host (patterns in a file, plus a control process so a blind sampler is caught) and fails if a command line ever held the written content raw or base64; skipped (unverifiable) on a pwsh login shell. `run_over_master` now feeds stdin concurrently with collecting output. Not run yet: nothing here has been compiled or run.
+
+## Remote feature parity: no-helper gaps closed (#1871-#1881, #1872, #1874, #1875)
+
+The no-helper (shell) arm is the primary design; this round removed the gaps the 2026-11-09 audit (`docs/design/remote-backend-parity-audit.md`) found between it and the helper.
+
+| issue | change | where | tests |
+|---|---|---|---|
+| #1871 | the codebase scan is paged (2000 files per command) | `shellcmd/index.rs`, `backend/shell/index.rs` | `shellcmd::index_tests` |
+| #1872 | branch picker and PR file list go through `RoutedBackend`; shell arm answers with `for-each-ref` / `diff --numstat` against the merge base via the shared `shellcmd::git::{get_all_branches, get_committed_branch_file_entries}` | `app/src/code_review/{diff_state_remote.rs,git_dialog/pr.rs}`, `backend/shell/git_read.rs` | `ops_tests` (3), `contract_tests::assert_git_read_contract` (both arms), `router_tests::git_reads_with_no_helper_are_served_by_the_shell_arm` |
+| #1873 | files over 7 MiB are read in 4 MiB `dd skip/count` sections (`read_file_bytes`: unbounded like the helper; `open_buffer`: up to 64 MiB on BOTH arms, the helper limit was raised from 7 MiB to match) | `shellcmd/read.rs` (`posix_range_section`, `pwsh_range_section`), `backend/shell/read_bytes.rs` | `read_tests`, `contract_tests::assert_big_file_read` (9 MiB, both arms) |
+| #1874 | PowerShell: git/gh through `System.Diagnostics.Process` with raw byte streams and stdin forwarded from the ssh channel; index scan, host store, skills, rules and home; ranged reads are byte-exact (no UTF-8 re-encode, BOM kept) | `shellcmd/git/pwsh.rs`, `backend/shell_git_runner/pwsh_run.rs`, `shellcmd/{index,index_store,agent_context,read}.rs` | `shellcmd::git::pwsh::tests`, `index_tests`, `agent_context_tests`, `read_tests`; script text checked by hand against a local `pwsh` 7 on the laptop (scan page, put/append, ranged read, git run/apply, skills) |
+| #1875 | the shell channel's give-up net is 120 s (the helper's request budget; `PHOSPHOR_SSH_LEGACY_COMMAND_TIMEOUT_SECS` still overrides, 0 = none); a timeout says the command was cancelled and a push/pull may have been interrupted | `remote_command_executor.rs` | `remote_command_executor_tests::shell_mode_timeout_matches_the_helper_budget` |
+| #1878 | `ListDirectory` carries kinds (symlinks), sizes of regular files and mtimes | `shellcmd/tree.rs` (`list_dir_stat_command`), `backend/shell/tree.rs` | `tree_tests`, `contract_tests::assert_list_directory` (both arms) |
+| #1880 | an old nushell without raw strings falls back to an escaped double-quoted wrapping (`ShellKind::NuLegacy`, remembered per backend); a login shell that cannot parse the POSIX script (csh/tcsh) is `Unavailable` with the reason, never "unreadable output" | `shellcmd/shell_kind.rs`, `backend/shell/mod.rs` | `shell_kind_tests`, `backend::shell::tests` |
+| #1881 | see "No-helper store on the host" above | | |
+
+Still `Unavailable`/unsupported by design: `resolve_path`, `create_directory` and ripgrep search on the shell arm; csh/tcsh hosts (needs the helper); PowerShell hosts have no helper to fall back on, so a PowerShell arm that fails (no `git`, no `Get-FileHash`) says so per call.
+
+Lab (`script/realapp/appci/cases_lab_*.py`; the users `u_dash`, `u_ash`, `u_nu`, `u_pwsh` already existed in `sshlab/users.tsv` and the image, what was missing was cases that used them): the GitHub chip, file tree, remote edit (buffers), diff panel, skills, codebase index and git write cases now also run on `u_dash` and `u_ash`; the diff panel, skills, codebase index and git write cases also on `u_pwsh` (git, index and skills over PowerShell source, #1874). `nu` was already in every quick-matrix case. Arm counts are pinned in `selftest.py` (`lab_file_tree_remote_pieces`, `lab_diff_panel_and_gh_chip_pieces`, `lab_skills_remote_pieces`, `lab_git_write_remote_mirrors_the_rust_scripts`). These arms have NOT been run yet (no lab on the laptop): the first lab run on the box decides whether the PowerShell and dash/ash arms pass; the branch picker and PR file list have no lab case (no keyboard path to open them), only the contract and router tests above.

@@ -17,7 +17,7 @@ import cases_lab as CL  # noqa: E402
 SYNC = re.compile(r"hop=remote_index_sync done files=(\d+) fragments=(\d+) embedded=(\d+) already=(\d+) stale=(\d+)")
 EMBED = re.compile(r"hop=remote_index_embed texts=(\d+) via=network_gate purpose=ai_endpoint")
 ROUTE = re.compile(r"hop=backend_route family=codebase_chunks backend=(helper|shell|unavailable) reason=(\w+)")
-SHELLS = ("bash", "zsh", "fish", "nu")
+SHELLS = ("bash", "zsh", "fish", "nu", "dash", "ash", "pwsh")
 
 
 def syncs(text):

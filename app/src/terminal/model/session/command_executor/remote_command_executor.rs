@@ -44,6 +44,11 @@ const DEFAULT_MAX_INFLIGHT: usize = 4;
 /// (0 = no timeout).
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The shell-mode channel's give-up net. The remote helper allows a request 120 s
+/// (`client::REQUEST_TIMEOUT`); a no-helper `git push`, `git pull` or codebase scan must get the
+/// same budget, or it fails only without the helper (#1875).
+const SHELL_MODE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Bounds how many requests run at once; a waiter dropped before its turn (a superseded
 /// generator) leaves the queue with its future.
 #[derive(Clone, Debug)]
@@ -283,7 +288,9 @@ async fn run_over_master(
             Ok(result) => result,
             // The timed-out future is dropped with its ssh child (`kill_on_drop`).
             Err(_) => Err(anyhow!(
-                "remote command over the ControlMaster timed out after {timeout:?}"
+                "remote command over the ControlMaster timed out after {timeout:?} and was cancelled; \
+                 a git push, pull or write it was running may have been interrupted, so check \
+                 the repository on the host"
             )),
         },
         None => run.await,
@@ -293,7 +300,7 @@ async fn run_over_master(
 /// The shell backend's out-of-band channel for a legacy ssh session: a fresh mux client on the
 /// session's ControlMaster per command (parity design R1). It never touches the session's pty.
 ///
-/// The 60 s command timeout is the same give-up net the generator executor has: it fails the
+/// The command timeout (120 s, the helper's request budget) is a give-up net like the generator executor's: it fails the
 /// call (the caller reports the error); nothing is decided or retried on it. At most
 /// [`DEFAULT_MAX_INFLIGHT`] commands run at once per master (shared with
 /// [`RemoteCommandExecutor`]); more wait their turn.
@@ -317,12 +324,21 @@ impl ControlMasterChannel {
             control_socket_path,
             wsl_distro,
             shell_kind,
-            command_timeout: command_timeout_from_env(
+            command_timeout: shell_mode_timeout_from_env(
                 std::env::var("PHOSPHOR_SSH_LEGACY_COMMAND_TIMEOUT_SECS")
                     .ok()
                     .as_deref(),
             ),
         }
+    }
+}
+
+/// [`command_timeout_from_env`] with the shell-mode default ([`SHELL_MODE_COMMAND_TIMEOUT`]).
+pub(crate) fn shell_mode_timeout_from_env(value: Option<&str>) -> Option<Duration> {
+    match value.map(str::trim).and_then(|v| v.parse::<u64>().ok()) {
+        Some(0) => None,
+        Some(secs) => Some(Duration::from_secs(secs)),
+        None => Some(SHELL_MODE_COMMAND_TIMEOUT),
     }
 }
 

@@ -26,10 +26,14 @@ use crate::shellcmd::read::{self, FileProbe, GatherPlan};
 use crate::shellcmd::write::{Expect, HexDigest};
 use crate::shellcmd::{Frame, Script, StderrMode};
 
+/// The most a buffer opens in shell mode: bigger files are read in chunks, up to this size
+/// (#1873; the helper uses the same limit).
+const MAX_BUFFER_BYTES: u64 = 64 * 1024 * 1024;
+
 /// The `server_version` every shell-mode open reports.
 const SHELL_SERVER_VERSION: u64 = 1;
 
-/// The most a buffer opens (the helper's limit too).
+/// The first section's read cap: what base64 of it still fits one command's output.
 const READ_BYTES_CAP: usize = 7 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
@@ -170,10 +174,15 @@ impl ShellBackend {
                 return Err(op_failed(format!("Failed to load buffer {path}: {reason}")));
             }
             FileProbe::Loaded(file) if file.complete => file.bytes,
-            FileProbe::Loaded(_) => {
-                return Err(op_failed(format!(
-                    "Failed to load buffer {path}: the file is too large to edit remotely"
-                )));
+            FileProbe::Loaded(file) => {
+                self.read_remaining_bytes(
+                    &path,
+                    file.bytes,
+                    file.size,
+                    MAX_BUFFER_BYTES,
+                    "load buffer",
+                )
+                .await?
             }
         };
         let content = String::from_utf8(bytes).map_err(|_| {

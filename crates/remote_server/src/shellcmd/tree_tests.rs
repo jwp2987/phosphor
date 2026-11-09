@@ -245,3 +245,50 @@ fn a_refresh_diffs_shared_directories_and_drops_removed_subtrees() {
     let (removed, updates) = apply_refresh(&mut old, &new);
     assert!(removed.is_empty() && updates.is_empty());
 }
+
+#[test]
+fn stat_listing_builders_ask_for_size_and_mtime() {
+    let posix = list_dir_stat_command(ShellKind::Posix, "/a b");
+    assert!(posix.contains("cd -- '/a b'"), "{posix}");
+    assert!(posix.contains("-printf '%y%Y %s %T@ %f\\0'"), "{posix}");
+    assert!(posix.contains("stat -c '%s %Y'"), "{posix}");
+    assert!(posix.contains("stat -f '%z %m'"), "{posix}");
+    let pwsh = list_dir_stat_command(ShellKind::Pwsh, "C:\\r");
+    assert!(pwsh.contains("LastWriteTimeUtc"), "{pwsh}");
+    assert!(pwsh.contains(".Length"), "{pwsh}");
+}
+
+#[test]
+fn stat_records_carry_kind_size_and_mtime() {
+    let records = b"ff 12 1700000000.5000000000 a b.txt\0dd 4096 1700000001 src\0lf 7 1700000002.25 link\0cc 0 0 tty\0bad\0";
+    let parsed = parse_stat_records(records);
+    assert_eq!(
+        parsed,
+        vec![
+            StatEntry {
+                name: "a b.txt".into(),
+                kind: 'f',
+                size: 12,
+                modified_epoch_millis: Some(1_700_000_000_500),
+            },
+            StatEntry {
+                name: "src".into(),
+                kind: 'd',
+                size: 4096,
+                modified_epoch_millis: Some(1_700_000_001_000),
+            },
+            StatEntry {
+                name: "link".into(),
+                kind: 'l',
+                size: 7,
+                modified_epoch_millis: Some(1_700_000_002_250),
+            },
+            StatEntry {
+                name: "tty".into(),
+                kind: 'c',
+                size: 0,
+                modified_epoch_millis: Some(0),
+            },
+        ]
+    );
+}

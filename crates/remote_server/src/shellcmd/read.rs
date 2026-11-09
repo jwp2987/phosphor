@@ -566,10 +566,29 @@ pub fn pwsh_file_section(path: &str, plan: &GatherPlan) -> String {
         Some(line) => (
             "([System.IO.File]::ReadLines($f) | Measure-Object).Count".to_string(),
             format!(
-                "$t = (([System.IO.File]::ReadLines($f) | Select-Object -First {line}) -join \"`n\") + \"`n\"\n\
-                 $b = [System.Text.Encoding]::UTF8.GetBytes($t)\n\
-                 if ($b.Length -gt {cap}) {{ $b = $b[0..({cap} - 1)] }}\n\
-                 [Convert]::ToBase64String($b)",
+                // Byte-exact, like `sed -n 1,Np | head -c`: scan for the Nth LF in the raw bytes,
+                // never decode and re-encode (that altered non-UTF-8 files and dropped a BOM).
+                "$fs = [System.IO.File]::OpenRead($f)\n\
+                 $ms = New-Object System.IO.MemoryStream\n\
+                 $buf = New-Object byte[] 65536\n\
+                 $nl = 0\n\
+                 $done = $false\n\
+                 while (-not $done -and $ms.Length -lt {cap}) {{\n\
+                 $r = $fs.Read($buf, 0, $buf.Length)\n\
+                 if ($r -le 0) {{ break }}\n\
+                 $p = 0\n\
+                 while ($p -lt $r) {{\n\
+                 $k = [Array]::IndexOf($buf, [byte]10, $p, $r - $p)\n\
+                 if ($k -lt 0) {{ break }}\n\
+                 $nl++\n\
+                 $p = $k + 1\n\
+                 if ($nl -ge {line}) {{ $done = $true; break }}\n\
+                 }}\n\
+                 if ($done) {{ $ms.Write($buf, 0, $p) }} else {{ $ms.Write($buf, 0, $r) }}\n\
+                 }}\n\
+                 $fs.Dispose()\n\
+                 $b = $ms.ToArray()\n\
+                 [Convert]::ToBase64String($b, 0, [Math]::Min($b.Length, {cap}))",
                 cap = plan.prefix_bytes
             ),
         ),
@@ -602,6 +621,88 @@ pub fn pwsh_file_section(path: &str, plan: &GatherPlan) -> String {
          {payload}\n\
          }}"
     )
+}
+
+/// The most one range read returns (a multiple of [`RANGE_BLOCK_BYTES`]). Its base64 stays well
+/// under [`super::MAX_OUTPUT_BYTES`].
+pub const RANGE_CHUNK_BYTES: u64 = 4 * RANGE_BLOCK_BYTES;
+/// The `dd` block size of a range read; offsets are multiples of it.
+pub const RANGE_BLOCK_BYTES: u64 = 1024 * 1024;
+
+/// The POSIX section that reads `len` bytes of the file from `offset` (a multiple of
+/// [`RANGE_BLOCK_BYTES`]; `len` at most [`RANGE_CHUNK_BYTES`]) with `dd skip/count`: `OK` then the
+/// bytes encoded with `encoder`, or `NOTFOUND`, `DIR`, `DENIED`. Used to read what the first
+/// section's prefix cap left behind, in sections that each fit one command's output (#1873).
+pub fn posix_range_section(path: &str, offset: u64, len: u64, encoder: &str) -> String {
+    let skip = offset / RANGE_BLOCK_BYTES;
+    let count = len.div_ceil(RANGE_BLOCK_BYTES).max(1);
+    format!(
+        "{assign}\n\
+         if [ ! -e \"$f\" ]; then echo NOTFOUND\n\
+         elif [ -d \"$f\" ]; then echo DIR\n\
+         elif [ ! -r \"$f\" ]; then echo DENIED\n\
+         else\n\
+         echo OK\n\
+         dd if=\"$f\" bs={RANGE_BLOCK_BYTES} skip={skip} count={count} 2>/dev/null | head -c {len} | {encoder}\n\
+         fi",
+        assign = posix_assign_path(path),
+    )
+}
+
+/// The PowerShell form of [`posix_range_section`]: seek, read `len` bytes, one line of base64.
+pub fn pwsh_range_section(path: &str, offset: u64, len: u64) -> String {
+    let assign = if path == "~" {
+        "$f = $HOME".to_string()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        format!("$f = Join-Path $HOME '{}'", rest.replace('\'', "''"))
+    } else {
+        format!("$f = '{}'", path.replace('\'', "''"))
+    };
+    format!(
+        "{assign}\n\
+         if (-not (Test-Path -LiteralPath $f)) {{ 'NOTFOUND' }}\n\
+         elseif (Test-Path -LiteralPath $f -PathType Container) {{ 'DIR' }}\n\
+         else {{\n\
+         'OK'\n\
+         $fs = [System.IO.File]::OpenRead($f)\n\
+         [void]$fs.Seek({offset}, [System.IO.SeekOrigin]::Begin)\n\
+         $b = New-Object byte[] {len}\n\
+         $n = 0\n\
+         while ($n -lt {len}) {{ $r = $fs.Read($b, $n, {len} - $n); if ($r -le 0) {{ break }}; $n += $r }}\n\
+         $fs.Dispose()\n\
+         [Convert]::ToBase64String($b, 0, $n)\n\
+         }}"
+    )
+}
+
+/// Reads a range section back: the decoded bytes, or why the host could not read them.
+pub fn parse_range_section(
+    section: &ParsedSection,
+    tool: Option<Base64Tool>,
+) -> Result<Vec<u8>, String> {
+    let mut lines = section.output.splitn(2, |&b| b == b'\n');
+    let status = lines
+        .next()
+        .map(|l| String::from_utf8_lossy(l).trim().to_string())
+        .unwrap_or_default();
+    match status.as_str() {
+        "OK" => {}
+        "NOTFOUND" => return Err("File does not exist".to_string()),
+        "DIR" => return Err("Is a directory (os error 21)".to_string()),
+        "DENIED" => return Err("Permission denied (os error 13)".to_string()),
+        _ => {
+            return Err(format!(
+                "the host's read command printed nothing usable (exit {})",
+                section.exit
+            ));
+        }
+    }
+    let payload = lines.next().unwrap_or_default();
+    let decoded = match tool {
+        Some(tool) => tool.decode(payload),
+        None => super::base64::decode(payload),
+    };
+    decoded.map_err(|e| format!("unreadable transfer from the host: {e}"))
 }
 
 impl Base64Tool {

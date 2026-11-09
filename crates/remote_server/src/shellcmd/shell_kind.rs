@@ -14,6 +14,9 @@ pub enum ShellKind {
     Posix,
     Fish,
     Nu,
+    /// nushell too old for raw strings (`r#'..'#`, added in 0.74): the script goes in an escaped
+    /// double-quoted string instead. Chosen by the shell backend after the raw form fails (#1880).
+    NuLegacy,
     /// PowerShell (`pwsh` / `powershell`), on Windows hosts.
     Pwsh,
 }
@@ -56,6 +59,7 @@ impl ShellKind {
                 let hashes = "#".repeat(raw_string_hashes(script));
                 format!("^sh -c r{hashes}'{script}'{hashes}")
             }
+            Self::NuLegacy => format!("^sh -c \"{}\"", nu_double_quote_body(script)),
             Self::Pwsh => {
                 let utf16: Vec<u8> = script
                     .encode_utf16()
@@ -73,6 +77,23 @@ impl ShellKind {
 /// The inside of a fish single-quoted string: only `\` and `'` are special there.
 fn fish_single_quote_body(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+/// The inside of a nushell double-quoted string: `\\`, `"` and the control characters are
+/// escaped; nothing else is special there (`$` only interpolates in `$"..."`).
+fn nu_double_quote_body(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// How many `#` a nushell raw string needs so that `'` followed by that many `#` does not occur

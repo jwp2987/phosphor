@@ -15,6 +15,8 @@ use crate::shellcmd::git::{
 };
 use crate::shellcmd::{sh_quote, sh_quote_path};
 
+mod pwsh_run;
+
 /// Runs git/gh by handing the host's login shell one POSIX script per call.
 #[derive(Clone, Debug)]
 pub struct ShellGitRunner {
@@ -92,6 +94,9 @@ impl ShellGitRunner {
     pub fn probe_operation(&self, git_dir: PathBuf) -> BoxFuture<'static, Result<bool>> {
         let this = self.clone();
         Box::pin(async move {
+            if this.is_pwsh() {
+                return this.probe_operation_pwsh(git_dir).await;
+            }
             let script = operation_probe_script(&git_dir.to_string_lossy());
             let output = this.exec(script, Vec::new()).await?;
             Ok(parse_operation_probe(&output.stdout_lossy()))
@@ -103,6 +108,9 @@ impl ShellGitRunner {
     pub async fn remove_files(&self, repo: &Path, relative_paths: &[String]) -> Result<()> {
         if relative_paths.is_empty() {
             return Ok(());
+        }
+        if self.is_pwsh() {
+            return self.remove_files_pwsh(repo, relative_paths).await;
         }
         let files: Vec<String> = relative_paths.iter().map(|p| sh_quote(p)).collect();
         let script = format!(
@@ -153,6 +161,9 @@ impl GitRunner for ShellGitRunner {
         cwd: &'a Path,
     ) -> BoxFuture<'a, Result<GitOutput>> {
         Box::pin(async move {
+            if self.is_pwsh() {
+                return self.run_git_pwsh(args, stdin, cwd).await;
+            }
             self.exec(
                 self.git_script(args, stdin, cwd),
                 stdin.map(<[u8]>::to_vec).unwrap_or_default(),
@@ -166,7 +177,12 @@ impl GitRunner for ShellGitRunner {
         args: &'a [&'a str],
         cwd: &'a Path,
     ) -> BoxFuture<'a, Result<GitOutput>> {
-        Box::pin(async move { self.exec(self.gh_script(args, cwd), Vec::new()).await })
+        Box::pin(async move {
+            if self.is_pwsh() {
+                return self.run_gh_pwsh(args, cwd).await;
+            }
+            self.exec(self.gh_script(args, cwd), Vec::new()).await
+        })
     }
 }
 
