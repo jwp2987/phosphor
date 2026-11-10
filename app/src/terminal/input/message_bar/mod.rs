@@ -79,6 +79,46 @@ impl Message {
             item.set_color(color);
         }
     }
+
+    /// Everything a message bar draws for this message, as text, so that two messages can be
+    /// compared: equal fingerprints render the same row (#1962). `None` when the message holds an
+    /// item whose behaviour is not in what it shows (a link, a clickable group or a chip carries
+    /// a click handler; an image an asset): such a message never compares equal to anything.
+    pub fn display_fingerprint(&self) -> Option<String> {
+        self.display_fingerprint_with(&[])
+    }
+
+    /// [`Self::display_fingerprint`] for a bar that vouches for some of its clickable groups: a
+    /// group whose mouse state is one of `static_click_slots` always carries the same click
+    /// handler (one that captures nothing), so it is compared by its slot, its disabled flag and
+    /// the items it shows. Every other clickable group still makes the message incomparable.
+    pub fn display_fingerprint_with(
+        &self,
+        static_click_slots: &[&MouseStateHandle],
+    ) -> Option<String> {
+        let mut out = String::new();
+        for item in &self.items {
+            item.write_display_fingerprint(&mut out, static_click_slots)?;
+        }
+        Some(out)
+    }
+}
+
+/// Whether an event that may have changed a message bar's row needs the bar rendered: only if
+/// the row it would draw now (`now`) differs from the row its last render drew (`rendered`), both
+/// as fingerprints (#1962). An unknown side (never rendered, a row that cannot be compared, state
+/// that could not be read) renders. With the skips off (`skip_enabled` false) every such event
+/// renders, as it did before.
+pub fn row_event_needs_render(
+    rendered: Option<&str>,
+    now: Option<&str>,
+    skip_enabled: bool,
+) -> bool {
+    !skip_enabled
+        || match (rendered, now) {
+            (Some(rendered), Some(now)) => rendered != now,
+            _ => true,
+        }
 }
 
 pub type ClickHandler = Arc<dyn Fn(&mut EventContext) + 'static>;
@@ -167,6 +207,42 @@ pub enum MessageItem {
 }
 
 impl MessageItem {
+    /// Appends this item to a [`Message::display_fingerprint`]; `None` for an item that cannot
+    /// be compared by what it shows.
+    fn write_display_fingerprint(
+        &self,
+        out: &mut String,
+        static_click_slots: &[&MouseStateHandle],
+    ) -> Option<()> {
+        use std::fmt::Write as _;
+        match self {
+            Self::Keystroke {
+                keystroke,
+                color,
+                background_color,
+            } => write!(out, "K{keystroke:?}|{color:?}|{background_color:?};").ok(),
+            Self::Text { content, color } => write!(out, "T{content:?}|{color:?};").ok(),
+            Self::Icon { icon, color } => write!(out, "I{icon:?}|{color:?};").ok(),
+            Self::Clickable {
+                items,
+                mouse_state,
+                disabled,
+                ..
+            } => {
+                let slot = static_click_slots
+                    .iter()
+                    .position(|slot| Arc::ptr_eq(*slot, mouse_state))?;
+                write!(out, "C{slot}|{disabled}[").ok()?;
+                for item in items {
+                    item.write_display_fingerprint(out, static_click_slots)?;
+                }
+                out.push_str("];");
+                Some(())
+            }
+            Self::Hyperlink { .. } | Self::Chip { .. } | Self::Image { .. } => None,
+        }
+    }
+
     /// Creates a keystroke item from a `Keystroke`.
     pub fn keystroke(keystroke: Keystroke) -> Self {
         Self::Keystroke {
