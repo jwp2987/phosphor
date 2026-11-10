@@ -4584,3 +4584,17 @@ defects, five are faults of the harness or the job. Everything below is worked, 
   nu no-helper arms past the connect (terminal `lab_fam_agent_context.{fish,nu}` then NOREF like bash / zsh, "no scripted app driver"; the agent-mode nu
   arms expected to FAIL at their first remote tool call, see the owner question above); `lab_agent_remote_flow.bash`, `lab_agent_remote_drop.bash`,
   `lab_fam_agent_delete_conflict.bash` and `lab_fam_agent_edit_endings.bash` judged on the new oracles / the app change; the eight `.helper` rows NOREF.
+
+## Round 11: the Windows failures of round 10 (build/r10a, pipeline 3048440714, job app-test-windows)
+
+Design note with the per-case evidence: `docs/design/r11-win.md`. Nothing here was compiled or run; every row is "worked, unproven" until the next
+Windows run.
+
+- **APP, #2024: `giveup_keys_reach_shell` (PowerShell pane, terminal 6/20 and agent 7/20, KEEP-TOGETHER broken).** A ready signal handled after the model
+  had parsed the Preexec of a typed-ahead line was only remembered, and the cycle that Preexec ended was counted as a missed signal: the session was
+  demoted and the next prompt handed input to the editor unproven, with the first typed characters of the next line left in the shell's line
+  (`handoff_request_skipped reason=line_editor_not_proven`, `decision=Committed`). `LineEditorStatus::set_line_editor_inactive` no longer records a miss
+  when a signal was remembered. Unit tests `line_editor_status_tests.rs`: `a_remembered_signal_is_not_a_missed_signal_when_a_typed_ahead_line_ends_the_cycle`
+  (the next prompt still waits for its signal, no unproven decision at the Precmd) and `a_cycle_with_no_signal_at_all_is_still_a_miss` (#1825 unchanged).
+  The case is unchanged. Next Windows run: 20/20 in both modes, no `handoff_request_skipped reason=line_editor_not_proven` in the case's log slice, every
+  second prompt of a round ends in `decision=SendRequest` (or `Committed` with nothing typed).

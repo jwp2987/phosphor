@@ -38,8 +38,9 @@ pub struct LineEditorStatus {
     /// shell's ready signal (the session is known to signal). Cleared by the signal, by a command
     /// start (`signal_missed` then records the miss).
     awaiting_signal: bool,
-    /// A prompt cycle ended (a command started) while its decision still awaited the signal: the
-    /// session did not signal for it, and is demoted at its next prompt event.
+    /// A prompt cycle ended (a command started) while its decision still awaited the signal and
+    /// no signal had arrived (a remembered one, `signal_activation_pending`, is a signal: #2024):
+    /// the session did not signal for it, and is demoted at its next prompt event.
     signal_missed: bool,
     /// The signal arrived but could not start the decision itself (a typeahead line is queued
     /// ahead of the hand-off, or the keys held for it are not counted yet): the next hand-off
@@ -306,8 +307,12 @@ impl LineEditorStatus {
 
     fn set_line_editor_inactive(&mut self, ctx: &mut ModelContext<Self>) {
         self.proven_reading = false;
-        if self.awaiting_signal {
-            // The cycle ended (a command started) with no signal for its decision.
+        if self.awaiting_signal && !self.signal_activation_pending {
+            // The cycle ended (a command started) with no signal for its decision. Not when the
+            // signal arrived and was only remembered (`expedite_pending_activation`: a typeahead
+            // line was queued ahead, and that line's Preexec is what ends the cycle here): the
+            // shell DID signal, so it stays a signalling session (#2024: demoted, its next prompt
+            // decided unproven at the Precmd and left typed-ahead keys in the shell's line).
             self.signal_missed = true;
         }
         self.awaiting_signal = false;

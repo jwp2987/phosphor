@@ -189,6 +189,76 @@ fn a_remembered_signal_starts_the_decision_only_when_asked() {
     });
 }
 
+/// #2024 (round 10 Windows, PowerShell, `giveup_keys_reach_shell`): the ready signal of a prompt
+/// arrives while a typed-ahead line is queued ahead of the hand-off, so it is only remembered
+/// (`expedite_pending_activation`); that line's Preexec then ends the cycle. The shell signalled:
+/// the cycle is no miss, the session stays a signalling one, and its next prompt's decision waits
+/// for the signal (the request then collects the keys typed meanwhile). Before, the session was
+/// demoted, the next prompt decided unproven at the Precmd, and input went to the editor with
+/// the first characters of the next line left in the shell's line.
+#[test]
+fn a_remembered_signal_is_not_a_missed_signal_when_a_typed_ahead_line_ends_the_cycle() {
+    App::test((), |mut app| async move {
+        let (status, _events) = new_status(&mut app);
+        let log = event_log(&mut app, &status);
+
+        status.update(&mut app, |status, ctx| {
+            status.set_ready_signal_seen_for_test(true, ctx);
+            // Prompt 1: the gate opens, the decision waits for the signal.
+            status.prompt_hook_for_test(ctx);
+            assert!(status.decision_awaits_signal());
+            // The signal arrives but a typeahead line is queued ahead: remembered only.
+            status.expedite_pending_activation(ctx);
+            assert!(status.signal_activation_pending());
+            // That line starts (its Preexec): the cycle ends.
+            status.did_execute_command(ctx);
+            assert!(!status.is_line_editor_active());
+            // Prompt 2: still a signalling session, its decision waits for its own signal.
+            status.prompt_hook_for_test(ctx);
+            assert!(
+                status.active_session_signals_for_test(ctx),
+                "a session whose signal arrived is not demoted"
+            );
+            assert!(
+                status.decision_awaits_signal(),
+                "the decision of the next prompt waits for its signal"
+            );
+            assert!(!status.is_proven_reading());
+        });
+        assert_eq!(
+            counts(&log, &app),
+            (2, 0),
+            "two GateOpened, no unproven decision at the Precmd"
+        );
+
+        // The signal of prompt 2 proves the reader and starts the decision.
+        status.update(&mut app, |status, ctx| {
+            status.note_shell_reading_line(ctx);
+            assert!(status.is_proven_reading());
+        });
+        assert_eq!(counts(&log, &app), (2, 1));
+    });
+}
+
+/// The other half of #2024's rule: a cycle that ends with NO signal at all is still a miss (the
+/// #1825 demotion is unchanged).
+#[test]
+fn a_cycle_with_no_signal_at_all_is_still_a_miss() {
+    App::test((), |mut app| async move {
+        let (status, _events) = new_status(&mut app);
+        status.update(&mut app, |status, ctx| {
+            status.set_ready_signal_seen_for_test(true, ctx);
+            status.prompt_hook_for_test(ctx);
+            assert!(status.decision_awaits_signal());
+            assert!(!status.signal_activation_pending());
+            status.did_execute_command(ctx);
+            status.prompt_hook_for_test(ctx);
+            assert!(!status.active_session_signals_for_test(ctx), "demoted");
+            assert!(!status.decision_awaits_signal());
+        });
+    });
+}
+
 /// ConPTY prompt hold (#1349): the hold's wait makes the request decision wait for the signal like
 /// a learned session's, while the gate still opens on the prompt event.
 #[test]
