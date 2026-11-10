@@ -165,6 +165,7 @@ fn hotkey_for_keystroke(
             "delete" => Code::Delete,
             "escape" => Code::Escape,
             "numpadenter" => Code::NumpadEnter,
+            "pause" => Code::Pause,
             "f1" => Code::F1,
             "f2" => Code::F2,
             "f3" => Code::F3,
