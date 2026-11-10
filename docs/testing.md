@@ -5255,3 +5255,12 @@ Everything below is worked, unproven: nothing was compiled or run against a buil
     and without a final newline.
   - unit, `app/src/code/global_buffer_model_tests.rs`: `a_save_of_a_mixed_ending_file_keeps_each_line_ending` (what is remembered, two saves
     in a row, a uniform file untouched, the record forgotten once the text has one ending).
+  - appci `editor_save_mixed_endings` (both modes, in `cases.PROVING`; Linux and both Windows panes, skips on macOS like `editor_edit_save`):
+    a file `alpha one\r\n beta two\n gamma three\r\n delta four\n last five\r\n` is opened in the code editor, a token typed at the start of
+    line 1 and saved with Ctrl-S; the file must be the token plus the original bytes. Then a token typed at the very end (a new last line
+    with no line break) and saved, again byte-exact. A failure says which it is: line endings rewritten (names the first line, `#1956`) or
+    the text itself. Metric `mixed_endings_after_save`. Self-test `editor_save_mixed_endings_1956`. The accept of an agent edit on a mixed
+    file is `agent_edit_endings` (`mixed`, `mixed_no_eol`, already there); an accept after the user edited the proposal has no app case
+    (the harness cannot edit inside the diff view), only the unit test.
+  **Next run:** `editor_save_mixed_endings` PASS with `mixed_endings_after_save = [CRLF, LF, CRLF, LF, CRLF]`; before this change the
+  metric would read five CRLF and the case names line 2.

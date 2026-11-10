@@ -7163,6 +7163,38 @@ def gitbash_bootstrap_in_command_2051():
 
 
 @check
+def editor_save_mixed_endings_1956():
+    """#1956 (owner 2026-11-10): the editor's save of a file that mixes CRLF and LF lines is judged byte for byte, and a failure says whether line endings
+    or the text itself differ"""
+    import inspect
+    import cases_robust as rb
+    le, v = rb.line_endings, rb.mixed_save_verdict
+    assert le(rb.MIXED_ORIG) == ["CRLF", "LF", "CRLF", "LF", "CRLF"] and le(b"") == [] and le(b"a") == ["none"] and le(b"a\rb\r\n\nc") == ["CR", "CRLF", "LF", "none"]
+    want = b"HEAD_" + rb.MIXED_ORIG
+    assert v(want, want, "x") == []
+    all_crlf = want.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")         # what the buffer's one line ending wrote before #1956
+    msgs = v(all_crlf, want, "x")
+    assert len(msgs) == 1 and "#1956" in msgs[0] and "line 2 is CRLF on disk, expected LF" in msgs[0], msgs
+    msgs = v(want.replace(b"\r\n", b"\n"), want, "x")
+    assert len(msgs) == 1 and "line 1 is LF on disk, expected CRLF" in msgs[0], msgs
+    msgs = v(want + b"\n", want, "x")                                           # one more (empty) line: text differs, not an ending
+    assert len(msgs) == 1 and "TEXT" in msgs[0], msgs
+    msgs = v(rb.MIXED_ORIG, want, "x")                                          # nothing saved
+    assert len(msgs) == 1 and "TEXT" in msgs[0]
+    msgs = v(want[:-2], want, "x")                                              # the final line break lost: not byte-exact either way
+    assert len(msgs) == 1 and "TEXT" in msgs[0], msgs
+    n = "editor_save_mixed_endings"
+    reg = {c["name"]: c for c in cases.CASES}
+    assert n in reg and n in cases.PROVING and n not in cases.SMOKE and n in winmap.BOTH
+    assert winmap.skip_reason(n, "powershell") is None and winmap.skip_reason(n, "gitbash") is None
+    body = inspect.getsource(rb.c_editor_save_mixed_endings)
+    for needle in ("f.write(MIXED_ORIG)", "want1 = t1.encode() + MIXED_ORIG", "mixed_save_verdict(got1, want1", "finally:", "ctx.be.key(CLOSE_PANE"):
+        assert needle in body, needle
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md"), encoding="utf-8").read()
+    assert ("`%s`" % n) in doc and "editor_save_mixed_endings_1956" in doc
+
+
+@check
 def lab_plain_session_limit_2019():
     """#2019 (owner 2026-11-10): an agent-mode lab arm on a host whose login shell gets a plain ssh session by decision (fish, nu) is UNVERIFIABLE with the
     DECLINED reference, on the app log's own evidence; bash / zsh / dash / ash / pwsh arms are judged in full whatever the log says, and so is a fish / nu
