@@ -4349,7 +4349,7 @@ def pid_of(name):
 def c_lat_paint(ctx, r):
     """key -> first changed pixel in the terminal window, measured with kl3 (ScreenCaptureKit, 240 Hz frame times; macOS only), for
     Phosphor AND for the reference terminal (Terminal.app) with the same kl3 command in the same session. The verdict is on OVERHEAD
-    (Phosphor median - reference median) against the owner's 2 ms key->paint budget; both include the same capture/injection cost
+    (Phosphor median - reference median) against the owner's key->paint budget (10 ms since 2026-11-10, APPCI_PAINT_BUDGET_MS; it was 2 ms); both include the same capture/injection cost
     (kl3 post + 240 Hz quantisation), which cancels. No reference -> 'no reference: absolute only' note."""
     if ctx.be.name != "mac" or not hasattr(ctx.be, "kl_start"):
         r.skip("kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare")
@@ -4420,7 +4420,7 @@ def c_lat_paint(ctx, r):
     else:
         r.note("no reference: absolute only (key->paint): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
     if ds:
-        rec = lat.evaluate("%s/latency_paint/key_to_paint" % ctx.label, ds, rs, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
+        rec = lat.evaluate("%s/latency_paint/key_to_paint" % ctx.label, ds, rs, float(os.environ.get("APPCI_PAINT_BUDGET_MS", "10")), "overhead", plat(),
                            remeasure=lambda: paint_samples(ctx, rect, n + warm)[warm:], ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms,
                            expected=n, resolution_ms=KL3_QUANTUM_MS, mode=mode,
                            notes=["kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; " +
