@@ -28,6 +28,18 @@ pub fn endpoint_url(api_key: Option<&str>) -> String {
     }
 }
 
+/// `text` with every occurrence of the API key (as typed and as it appears in the URL) replaced.
+/// For text that goes back to the model or into a log: an error body may echo the key (#1929).
+pub fn scrub_api_key(text: &str, api_key: Option<&str>) -> String {
+    const PLACEHOLDER: &str = "[exa-api-key]";
+    let Some(key) = api_key.map(str::trim).filter(|k| !k.is_empty()) else {
+        return text.to_owned();
+    };
+    let encoded: String = url::form_urlencoded::byte_serialize(key.as_bytes()).collect();
+    text.replace(key, PLACEHOLDER)
+        .replace(&encoded, PLACEHOLDER)
+}
+
 /// `web_search_exa` input args (sent directly to Exa).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SearchArgs {

@@ -309,6 +309,65 @@ fn search_output_carries_byop_sentinel() {
     assert_eq!(v["_byop_intercepted"], true);
 }
 
+// #1929: the Exa key rides in the URL query, and a tool error is what the model reads next. No
+// error of a failing call carries the key: not the transport error (reqwest's `Display` names
+// the URL), not an HTTP error whose body echoes the key.
+const FAKE_EXA_KEY: &str = "exa-fake+key/0123456789";
+
+fn assert_error_has_no_key(err: &anyhow::Error) {
+    let encoded: String = url::form_urlencoded::byte_serialize(FAKE_EXA_KEY.as_bytes()).collect();
+    for text in [format!("{err}"), format!("{err:#}"), format!("{err:?}")] {
+        assert!(!text.contains(FAKE_EXA_KEY), "{text}");
+        assert!(!text.contains(&encoded), "{text}");
+        assert!(!text.contains("exaApiKey"), "{text}");
+    }
+}
+
+#[tokio::test]
+async fn a_refused_exa_connection_reports_no_key() {
+    let encoded: String = url::form_urlencoded::byte_serialize(FAKE_EXA_KEY.as_bytes()).collect();
+    // Nothing listens on port 1: the send fails with a transport error for this URL.
+    let url = format!("http://127.0.0.1:1/mcp?exaApiKey={encoded}");
+    let err = run_websearch(
+        &build_client(),
+        search_args("q"),
+        Some(FAKE_EXA_KEY),
+        Some(&url),
+    )
+    .await
+    .expect_err("connection refused");
+    assert_error_has_no_key(&err);
+    assert!(format!("{err:#}").contains("Exa POST failed"), "{err:#}");
+}
+
+#[tokio::test]
+async fn an_exa_http_error_that_echoes_the_key_reports_no_key() {
+    let encoded: String = url::form_urlencoded::byte_serialize(FAKE_EXA_KEY.as_bytes()).collect();
+    let mut server = Server::new_async().await;
+    let _m = server
+        .mock("POST", Matcher::Any)
+        .with_status(401)
+        .with_body(format!(
+            "invalid key {FAKE_EXA_KEY} in /mcp?exaApiKey={encoded}"
+        ))
+        .create_async()
+        .await;
+    let url = format!("{}/mcp?exaApiKey={encoded}", server.url());
+    let err = run_websearch(
+        &build_client(),
+        search_args("q"),
+        Some(FAKE_EXA_KEY),
+        Some(&url),
+    )
+    .await
+    .expect_err("401");
+    let text = format!("{err:#}");
+    assert!(!text.contains(FAKE_EXA_KEY), "{text}");
+    assert!(!text.contains(&encoded), "{text}");
+    assert!(text.contains("HTTP 401"), "{text}");
+    assert!(text.contains("[exa-api-key]"), "{text}");
+}
+
 #[test]
 fn search_tool_args_overrides_defaults() {
     let a = SearchToolArgs {
