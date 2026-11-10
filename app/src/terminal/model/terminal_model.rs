@@ -511,6 +511,11 @@ pub struct TerminalModel {
     /// How many setup-line markers have arrived, ever: tells a repeat of the same marker from a
     /// fresh one (#1372).
     setup_line_marker_count: u64,
+    /// Whether printable text (not the setup's own swallowed echo) was output since the latest
+    /// setup-line marker arrived. A prompt the shell draws after a marker sets it; the cursor's
+    /// position cannot tell, because the filtered echo leaves it where the old prompt ended and a
+    /// redrawn prompt of the same length lands on the same cell (#1905).
+    text_since_setup_marker: bool,
     /// The command the user should see for an agent command typed into the shell in a wrapped
     /// form, by the action that requested it (#904). Consumed at preexec.
     agent_display_commands: HashMap<AIAgentActionId, String>,
@@ -1300,6 +1305,7 @@ impl TerminalModel {
             pty_stream_barrier: Arc::default(),
             setup_echo_filter: SetupEchoFilter::default(),
             last_setup_line_marker: None,
+            text_since_setup_marker: false,
             setup_line_marker_count: 0,
             agent_display_commands: HashMap::new(),
             command_display_overrides: HashMap::new(),
@@ -2146,9 +2152,16 @@ impl TerminalModel {
         self.setup_line_marker_count
     }
 
+    /// Whether printable text was output since the latest setup-line marker (#1905): the shell
+    /// drew something (its next prompt) after the marker.
+    pub fn text_since_setup_marker(&self) -> bool {
+        self.text_since_setup_marker
+    }
+
     /// Forgets the setup-line marker, when a new setup starts.
     pub fn clear_setup_line_marker(&mut self) {
         self.last_setup_line_marker = None;
+        self.text_since_setup_marker = false;
     }
 
     /// Stops hiding the setup echo. A new setup starts its echo counts afresh.
@@ -3622,6 +3635,7 @@ impl ansi::Handler for TerminalModel {
         if self.swallow_setup_echo(c) {
             return;
         }
+        self.text_since_setup_marker = true;
         self.input_unfiltered(c);
     }
 
@@ -4420,6 +4434,7 @@ impl ansi::Handler for TerminalModel {
     fn setup_line_consumed(&mut self, token: u64, index: usize) {
         self.last_setup_line_marker = Some((token, index));
         self.setup_line_marker_count += 1;
+        self.text_since_setup_marker = false;
     }
 
     fn sourced_rc_file(&mut self, data: SourcedRcFileForWarpValue) {
