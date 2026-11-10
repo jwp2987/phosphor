@@ -5443,6 +5443,10 @@ impl ansi::Handler for BlockList {
         if matches!(mode, Mode::BracketedPaste) {
             // The shell's line editor took the terminal; the tty no longer echoes (#1033).
             self.typed_echo.set_line_editor_active(true);
+            // #2006 measurement, decides nothing: when DECSET 2004 arrives relative to the prompt, the Enter and the readiness look,
+            // so one Windows Git Bash run can show whether it can serve as a "a line editor is reading" fact on ConPTY (readline
+            // sets it when it starts a line; `read -p` does not).
+            warpui::input_order::log_hop("decset_2004", || "on=true".to_string());
         }
         delegate!(self.set_mode(mode));
     }
@@ -5450,6 +5454,7 @@ impl ansi::Handler for BlockList {
     fn unset_mode(&mut self, mode: Mode) {
         if matches!(mode, Mode::BracketedPaste) {
             self.typed_echo.set_line_editor_active(false);
+            warpui::input_order::log_hop("decset_2004", || "on=false".to_string());
         }
         delegate!(self.unset_mode(mode));
     }

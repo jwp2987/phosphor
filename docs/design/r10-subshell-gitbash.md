@@ -158,3 +158,20 @@ there.
 2. Measure on Windows whether DECSET 2004 from Git Bash's readline reaches the app in stream order
    through the bundled ConPTY; if so, make it the probe-less "line editor reads" fact (and the
    Written judge's), which would also close the `read -s` hole above for bash 5.1+.
+
+## Owner delegation 2026-11-10: decisions on the two open questions
+
+Owner: "Do what you think is right for 1 and 2." Decided by the coordinator (Claude), recorded here so it is not re-litigated.
+
+1. **Should a probe-less pane (Windows Git Bash/PowerShell) write the setup on screen shape at all? Yes: keep the #1886 behaviour.**
+   The owner decision of 2026-11-09 is that subshell setup stays automatic; turning it off on Windows would remove a feature to avoid a narrow
+   case. The narrow case is a rc `read` whose prompt is not question-shaped (for example `read -s -p "pin> "`) receiving the first setup
+   write before any user byte. Its consequence is bounded: the secret typed next is held and never reaches the editor, the model or the
+   suggestion provider (#1973, #1923, #1926), and the attempt ends at the existing 60 s ceiling with its toast. The fix in 1297b106f removes
+   the common case (the echo of the user's own line taken for a prompt). The residual case is listed as a known limitation of Windows
+   auto-setup; revisit only if a Windows run shows it happening.
+2. **A Windows "a line editor is reading" fact from DECSET 2004: do not build blind; measure first.** The app now logs
+   `input_order hop=decset_2004 on=true|false t=...` (app/src/terminal/model/blocks.rs, lazy, nothing decides on it). In the next Windows Git
+   Bash run read the per-case app-log slices of `subshell_ready_rc_questions` and `subshell_ready_rc_clear`: if `decset_2004 on=true` arrives in
+   stream order before the prompt that follows a line editor start, and does NOT arrive before a `read -p` prompt, the fact can be built from
+   it; if it arrives late, never, or in the same chunk as the prompt, drop the idea. Needs `WARP_INPUT_ORDER_LOG` (the usual input-order log) on.
