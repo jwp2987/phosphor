@@ -5428,6 +5428,17 @@ def windows_handover_secret_cases_pure_parts():
     assert winmap.skip_reason("gitbash_precmd_secret", "gitbash") is None and winmap.skip_reason("gitbash_precmd_secret", "powershell")
     assert winmap.skip_reason("agent_lrc_no_false_takeover", "powershell") is None and winmap.skip_reason("agent_lrc_no_false_takeover", "gitbash") is None
     assert {"ps_read_host_secure", "gitbash_precmd_secret"} <= set(cases.PROVING) and not {"ps_read_host_secure", "gitbash_precmd_secret"} & set(cases.SMOKE)
+    # #1393 gitbash_typeahead_reps: the issue's count, half of the reps behind a slow precmd, Git Bash pane only, both modes
+    assert (WH.TYPEAHEAD_REPS, WH.TYPEAHEAD_LINES, WH.SLOW_PRECMD_S) == (24, 10, 0.25)
+    plan = WH.typeahead_rep_plan(24)
+    assert len(plan) == 24 and len({t for t, _ in plan}) == 24 and [s_ for _, s_ in plan] == [False] * 12 + [True] * 12
+    assert [s_ for _, s_ in WH.typeahead_rep_plan(5)] == [False, False, False, True, True] and WH.typeahead_rep_plan(2) == [("tr00", False), ("tr01", True)]
+    assert winmap.skip_reason("gitbash_typeahead_reps", "gitbash") is None and winmap.skip_reason("gitbash_typeahead_reps", "powershell")
+    assert "gitbash_typeahead_reps" in cases.PROVING and "gitbash_typeahead_reps" not in cases.SMOKE
+    tr = [c for c in cases.CASES if c["name"] == "gitbash_typeahead_reps"]
+    assert len(tr) == 1 and set(tr[0]["modes"]) == {"terminal", "agent"}, "both session modes (the issue lost lines in agent mode too)"
+    wh_src = open(os.path.join(HERE, "cases_win_handover.py"), encoding="utf-8").read()
+    assert "cases.effect_run(ctx, r, tag, TYPEAHEAD_LINES, 0.0)" in wh_src and "precmd_functions+=(__tr_slow)" in wh_src
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     src = lambda p: open(os.path.join(root, p), encoding="utf-8").read()
     assert 'log_hop("tty_read_marker"' in src("app/src/terminal/view.rs"), "the hop the cases read must exist in the app"

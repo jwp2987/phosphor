@@ -5203,3 +5203,9 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
   read from the socket and never inferred from a time. What a result means: FAIL on the paired median = sharing the connection costs
   time by some other path than the class (new finding, file it); FAIL on CS1 = the pin of 124ff6485 is not in effect on that client;
   `tos_app` 0x0 next to `tos_plain` 0xb8 in a `helper` arm = OpenSSH 10.1 or later, the state the design note leaves to the owner.
+- **#1393, appci, `gitbash_typeahead_reps` (`cases_win_handover.py`, `PROVING`, Windows Git Bash pane only, terminal and agent mode).**
+  The issue's protocol: 24 reps of 10 lines typed back to back at 10-25 ms/key with an instant Enter (`cases.effect_run`, gap 0), the
+  second 12 with a precmd function that sleeps 250 ms; every rep's effect file and rec.log must be the typed lines, in order (a late
+  line within effect_run's wait is not a lost one). Metric `typeahead_reps` lists the reps with a bad line. `winmap` skips it in the
+  PowerShell pane with the reason. Estimated +4 min per mode on `app-test-windows`, not measured. The plain-ssh connect window from the
+  Git Bash pane stays with `ssh_connect_typing` and `ssh_nested_typeahead` (SMOKE), whose Git Bash result after #2051 no run has yet.

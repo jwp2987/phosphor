@@ -66,6 +66,8 @@ PROVING = (
     "gitbash_long_osc_reaches_app",
     # Windows handover and secrets (#1882, #1883, #1891): Read-Host marker, Git Bash precmd `read -s`
     "ps_read_host_secure", "gitbash_precmd_secret",
+    # #1393: the issue's own protocol (24 reps of 10 back-to-back lines, half with a 250 ms precmd function); skips itself off the Git Bash pane
+    "gitbash_typeahead_reps",
     # #1923 with the shell's own prompt (honor PS1 on), and the app-prompt control arm: a bash precmd function's `read -s` on every platform with a bash pane
     "precmd_secret_honor_ps1",
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
