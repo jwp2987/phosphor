@@ -24173,6 +24173,17 @@ impl TerminalView {
                 self.give_up_setup_gates_to_editor(cancel_reason(kind), ctx);
             }
         }
+        if matches!(kind, WrittenCancel::Secret | WrittenCancel::Question) {
+            // The shell asks for input (a password, an answer) and the toast says "answer it
+            // first": what the user types next is for the tty's reader. The hand-back above left
+            // the held line in the editor, and keys typed after a kept line follow it there
+            // (#1658): the password went into the input editor, shown in clear behind the
+            // handed-back line, and never reached the `read -s` (rounds 7 and 9,
+            // `subshell_ready_secret_after_prompt` / `_after_probe`: the pw file empty or
+            // `<the line>hunter2`). The line stays in the editor under its Enter guard; the keys
+            // go to the pty again, as `on_tty_read_marker` does on ConPTY.
+            self.end_keys_follow_editor(cancel_reason(kind), ctx);
+        }
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();
         });

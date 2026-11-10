@@ -33640,6 +33640,83 @@ fn e_secret_hands_the_held_keys_back_in_the_same_wakeup_and_re_arms() {
     }
 }
 
+/// Rounds 7 and 9 (`subshell_ready_secret_after_prompt` / `_after_probe`: the password never
+/// reached the `read -s`; round 7's pw file held `<the handed-back line>hunter2`). The E-SECRET
+/// hand-back leaves the held line in the editor, and keys typed after a kept line follow it into
+/// the editor while the hand-off is pty-owned (#1658): the password the toast asks for went into
+/// the input, in clear. After a Secret hand-back keys do NOT follow the editor: they are the
+/// tty reader's. The control leg is the setup net's give-up on the same state, where #1658 still
+/// applies (the user goes on typing their line): it proves the premise (pty-owned hand-off, text
+/// handed back) the first leg's assertion needs. Legacy and Table.
+#[test]
+fn keys_typed_after_a_secret_hand_back_are_the_readers_not_the_editors() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for secret in [true, false] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                app.add_singleton_model(|_| crate::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let _written = subshell_pty_writes(&mut app, &terminal);
+                let tty = terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().simulate_long_running_block("sudo -s", "");
+                    // The subshell's command is running: the pty owns input.
+                    view.model
+                        .lock()
+                        .typeahead_handoff_mut()
+                        .on_command_written();
+                    let tty = install_subshell_tty_for_test(view, sudo_relay(false));
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::Banner { shell_type: None },
+                        ctx,
+                    );
+                    view.model.lock().process_bytes("# ");
+                    output_wakeup(view, ctx);
+                    assert_eq!(readiness_state(view), "written", "{mode:?}");
+                    for key in [b"sec".to_vec(), b"ret".to_vec()] {
+                        assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                    }
+                    assert_ne!(held_for_subshell_setup(view), (0, 0), "{mode:?}: held");
+                    assert!(
+                        view.model.lock().typeahead_handoff().is_pty_owned(),
+                        "{mode:?}: premise: the pty owns input while the subshell runs"
+                    );
+                    tty
+                });
+                terminal.update(&mut app, |view, ctx| {
+                    if secret {
+                        *tty.lock() = secret_read();
+                        output_wakeup(view, ctx);
+                        assert_eq!(readiness_state(view), "armed", "{mode:?}: re-armed");
+                    } else {
+                        view.give_up_subshell_setup("quiet_net", ctx);
+                        assert_eq!(readiness_state(view), "idle", "{mode:?}: given up");
+                    }
+                    assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+                });
+                terminal.read(&app, |view, ctx| {
+                    assert_eq!(
+                        view.input.as_ref(ctx).buffer_text(ctx),
+                        "secret",
+                        "{mode:?} secret={secret}: the held line is in the editor"
+                    );
+                    let model = view.model.lock();
+                    let handoff = model.typeahead_handoff();
+                    assert_eq!(
+                        handoff.keys_follow_editor_active(),
+                        !secret,
+                        "{mode:?} secret={secret}: after a secret hand-back the next keys are the \
+                         password's and go to the pty; after the net's give-up they follow the line"
+                    );
+                });
+            })
+        }
+    }
+}
+
 /// #1679 step 3, E-QUESTION (parity test (b), Legacy and Table): the first line is out, no marker
 /// came, and new output ends in `Continue? [y/N]`: the attempt is cancelled (Idle, a click re-arms),
 /// the held keys come back, and the keys typed next reach the pty in order with the SAME write list

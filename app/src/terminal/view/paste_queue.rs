@@ -2232,7 +2232,11 @@ impl TerminalView {
                 self.show_error_toast(toast.to_string(), ctx);
             }
         }
-        if inserted {
+        // Not when the setup was cancelled because the shell asks for input (a secret read, a
+        // question): the keys typed next are the answer and belong to the tty's reader, never
+        // behind the handed-back line in the editor (`end_written_subshell_setup` ends a flag
+        // already set; this covers the hand-back that was retried because the queue was busy).
+        if inserted && !matches!(why, "subshell_secret" | "subshell_question") {
             self.note_keys_follow_editor();
         }
         self.note_editor_took_over();
