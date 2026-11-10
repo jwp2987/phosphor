@@ -668,8 +668,8 @@ def c_altgr_bash(ctx, r):
         altgr_check(ctx, r, "AltGr string in Git Bash (LC_ALL=C.UTF-8)", f)
         with unicode_keys(ctx):
             if ctx.pane == "powershell":
-                ctx.be.type("exit", 12, enter=True)
-                time.sleep(1)
+                ctx.exit_nested(None, r, "Git Bash from the PowerShell pane")     # audit #2
+                time.sleep(0.5)
                 ctx.be.type("Remove-Item Env:LC_ALL, Env:CHERE_INVOKING -ErrorAction SilentlyContinue", 12, enter=True)
             else:
                 ctx.be.type("unset LC_ALL", 12, enter=True)

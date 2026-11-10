@@ -923,7 +923,7 @@ def audit1_shell_pid_counts_only_tokens_appended_after_its_snapshot():
             if state["answer"]:
                 open(f, "a").write("pSTALE:%s\n" % state["answer"])
         c = types.SimpleNamespace(be=types.SimpleNamespace(type=type_, guard=lambda: None), pane=None, prof=types.SimpleNamespace(local_prompts=False, prompts=lambda remote=False: 0),
-                                  ptok=lambda n: "STALE", where_homes=lambda: [d], lines=lambda name, remote=False: [])
+                                  ptok=lambda n: "STALE", where_homes=lambda: [d], lines=lambda name, remote=False: [], log_path=None, precmds_since=lambda t0: None)
         c.until = lambda pred, timeout=10, step=0.02: cases.Ctx.until(c, pred, timeout, step)
         c.probe = lambda *a, **k: cases.Ctx.probe(c, *a, **k)
         assert cases.Ctx.shell_pid(c, timeout=0.3) is None, "a stale token before the snapshot was taken as the shell's pid"
@@ -984,6 +984,63 @@ def audit3_probe_waits_for_its_own_prompt_and_exit_waits_for_the_next():
         assert probes[1][1] == 2, "the next probe was typed before the exit's prompt: %r" % st["typed"]
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def audit2_raw_exit_is_banned_outside_ctx_and_the_root_pid_is_recorded_once_per_launch():
+    """harness audit #2/B: a raw `be.type("exit"` after an unchecked wait ran at the ROOT shell when the subshell never started (pane closed, app quit).
+    Every case leaves a shell through Ctx.exit_nested, which types `exit` only on proof; the raw call survives only inside Ctx, in
+    cases_caseremote.leave and for a reference terminal (marked on the line). run.py records the root pid once per (re)launch through one
+    relaunch() helper, and refuses when the process tree shows more than one shell."""
+    import glob, re
+    allowed = {("cases.py", "Ctx"), ("cases_caseremote.py", "leave")}
+    bad = []
+    for path in sorted(glob.glob(os.path.join(HERE, "cases*.py"))):
+        lines = open(path, errors="replace").read().splitlines()
+        enclosing = None
+        for i, l in enumerate(lines):
+            m = re.match(r"(?:def|class)\s+(\w+)", l)
+            if m:
+                enclosing = m.group(1)
+            if re.search(r"""\.type\(\s*['"]exit['"]""", l) and "reference terminal" not in l and (os.path.basename(path), enclosing) not in allowed:
+                bad.append("%s:%d (%s)" % (os.path.basename(path), i + 1, enclosing))
+    assert not bad, "raw `exit` outside Ctx.exit_nested / leave / a reference terminal: %s" % bad
+    src = open(os.path.join(HERE, "run.py")).read()
+    assert src.count("await_shell(") == 3, "every relaunch goes through relaunch(): await_shell is called from the first launch and relaunch() only"
+    assert "time.sleep(4)" not in src, "the fixed first-run settle is settle_first_run (view_mode hop)"
+    import run as runmod
+    # exit_nested: the PID probe decides first, then the where probe, then the shell count; no proof, no exit
+    typed = []
+    st = {"pid": None, "where": "local", "count": 1}
+    c = types.SimpleNamespace(be=types.SimpleNamespace(type=lambda t, *a, **k: typed.append(t)), root_pid="100", prof=types.SimpleNamespace(prompts=lambda remote=False: 0),
+                              shell_pid=lambda: st["pid"], where_now=lambda: st["where"], shell_count=lambda: st["count"],
+                              wait_prompt_after_exit=lambda *a, **k: True)
+    c.in_subshell = lambda base: cases.Ctx.in_subshell(c, base)
+    r = cases.Result("t", "terminal")
+    st["pid"] = "100"
+    assert cases.Ctx.exit_nested(c, 1, r, "x") is False and typed == [] and "ROOT shell" in r.notes[-1]
+    st["pid"] = "900"
+    assert cases.Ctx.exit_nested(c, 1, r, "x") is True and typed == ["exit"]
+    typed.clear(); st["pid"] = None; st["where"] = "remote"
+    assert cases.Ctx.exit_nested(c, None, r, "x") is True and typed == ["exit"]            # remote shell in front: exit (one level)
+    typed.clear(); st["where"] = "local"; st["count"] = 1
+    assert cases.Ctx.exit_nested(c, 1, r, "x") is False and typed == [] and "did not rise" in r.notes[-1]       # the subshell never started
+    assert cases.Ctx.exit_nested(c, None, r, "x") is False and typed == [] and "unknown" in r.notes[-1]        # no base either: no proof, no exit
+    st["where"] = "none"; st["count"] = 2
+    assert cases.Ctx.exit_nested(c, 1, r, "x") is True and typed == ["exit"]              # a `su` shell: answers in root's home, but one more shell
+    typed.clear(); c.root_pid = None; st["where"] = "local"; st["count"] = 2
+    assert cases.Ctx.exit_nested(c, 1, r, "x") is True and typed == ["exit"]              # no root pid: the shell count proves the nesting
+    # record_root_pid: once per launch, refused unless exactly one shell runs under the app
+    cx = types.SimpleNamespace(win=False, pane=None, be=types.SimpleNamespace(guard=lambda: None), shell_count=lambda: 2, shell_pid=lambda: "77")
+    app = types.SimpleNamespace(pid=lambda: 4242)
+    msg = runmod.record_root_pid(cx, app, "launch")
+    assert cx.root_pid is None and cx.root_app_pid == 4242 and "2 shells" in msg, (cx.root_pid, msg)
+    cx.shell_count = lambda: 1
+    assert runmod.record_root_pid(cx, app, "launch") is None and cx.root_pid == "77"
+    cx.shell_pid = lambda: None
+    assert "no answer" in runmod.record_root_pid(cx, app, "launch") and cx.root_pid is None
+    cx.win, cx.pane = True, "cmd"
+    assert runmod.record_root_pid(cx, app, "launch") is None and cx.root_pid is None       # cmd.exe: no probe, no row
 
 
 @check

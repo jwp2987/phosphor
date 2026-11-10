@@ -3966,3 +3966,19 @@ false fails. Each fix below names its finding (1-12) / cross-cutting letter (A-F
   Pins: `audit1_shell_pid_counts_only_tokens_appended_after_its_snapshot` (a stale `tok:pid` before the snapshot is not an answer; tokens
   differ between contexts), `audit3_probe_waits_for_its_own_prompt_and_exit_waits_for_the_next` (a prompt logged 100 ms after the effect file:
   `exit` is typed only after it, the next probe only after a further one).
+- **B / #1b / #2 — root pid once per launch, `Ctx.exit_nested`, one `relaunch()`.** `run.relaunch()` is the only relaunch path inside a pass
+  (six copies before): keep the dying instance's log, stop, start, `await_shell`, `settle_first_run` (the pane's `hop=view_mode` line plus 0.5 s
+  instead of a fixed 4 s), then `record_root_pid` behind `be.guard()` while the pane is provably clean -- on POSIX only when the process tree shows
+  exactly ONE shell under the app, else the depth check stays off and a `depth_check_off_after_<why>` skip row says so; Windows records it in
+  `prove_keys` after the key proof put the pane in the case dir. The lazy capture at "the first checked case" is gone (it typed before
+  `be.guard()`/`reset()` and once named a leaked nested shell as the root). A case that relaunches the app itself gets a fresh record before the
+  next case, under the same one-shell rule. `Ctx.exit_nested(base, r, label)` is the only way a case leaves a shell it started: `exit` is typed
+  when the PID probe names a pid other than `root_pid`, or the where probe lands REMOTE, or it lands local/nowhere and the shell count rose above
+  `base` (a `su` shell answers in root's home); otherwise `exit` is NOT typed and the row notes why. Every former raw `exit` (subshells,
+  subshell_sh_probe, remote_heredoc's inner shells, shell_nu's nested nu, palette and split panes, the scripted zero-network ssh, tmux, sudo/su,
+  AltGr Git Bash, editor-memory Git Bash, the lab's nohelper bash, `leave_inner`'s fallback) goes through it. The PowerShell pane (no rc hook)
+  gets its prompt event from the app's own `hop=precmd_seen` line (`Ctx.precmds_since`): `probe()`, `wait_prompt_after_exit`, `await_shell`
+  (first prompt report + 1 s instead of a flat 12 s; the 12 s stay as the give-up net) and `set_ps_pane_state` use it. Pin:
+  `audit2_raw_exit_is_banned_outside_ctx_and_the_root_pid_is_recorded_once_per_launch` (source lint: `.type("exit"` only inside `Ctx`,
+  `cases_caseremote.leave` or a line marked `reference terminal`; `await_shell` called from two places only; `exit_nested` decision table;
+  `record_root_pid` refuses with 2 shells).

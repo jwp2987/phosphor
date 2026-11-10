@@ -693,6 +693,7 @@ class Ctx:
         local_hook = bool(getattr(self.prof, "local_prompts", True))
         p0 = self.prof.prompts() if local_hook else None
         rp0 = self.prof.prompts(remote=True) if remote else None
+        t_typed = time.time()
 
         def hits(toks):
             return [t for t in toks if t == token or t.startswith(token + ":")]
@@ -718,6 +719,8 @@ class Ctx:
         # the probe's own prompt (bounded: a pane without a hook never counts up, and the wait is skipped where the harness knows there is none)
         if where == "local" and p0 is not None:
             self.until(lambda: self.prof.prompts() > p0, 3)
+        elif where == "local" and self.precmds_since(t_typed) is not None:
+            self.until(lambda: self.precmds_since(t_typed) >= 1, 3)        # no rc hook (PowerShell pane): the app logs the shell's prompt report
         elif where == "remote" and rp0 is not None:
             self.until(lambda: self.prof.prompts(remote=True) > rp0, 3)
         return where, toks
@@ -739,8 +742,54 @@ class Ctx:
         if remote_before is not None and got != "remote":
             self.wait_ssh_gone(t_exit, max(timeout, 8.0))
         if got is None and not hook and remote_before is None:
-            time.sleep(1.0)
+            if self.precmds_since(t_exit) is not None:       # no rc hook (PowerShell pane): the app's own `precmd_seen` hop is the shell's prompt report
+                got = "app" if self.until(lambda: self.precmds_since(t_exit) >= 1, timeout) else None
+                time.sleep(0.3)
+            else:
+                time.sleep(1.0)
         return got is not None
+
+    def precmds_since(self, t0):
+        """how many shell prompt reports (`hop=precmd_seen`, logged by the app's typeahead hand-off for every shell with the app's hooks, the
+        PowerShell pane included) the app log holds since wall time t0; None without an app log. The hook-less pane's prompt event."""
+        if not self.log_path:
+            return None
+        return sum(1 for l in self.app_log_window(t0) if "hop=precmd_seen" in l)
+
+    def exit_nested(self, base=None, r=None, label="", timeout=10):
+        """The ONLY way a case leaves a shell it started (harness audit #2/B): `exit` is typed when, and only when, a probe proves a shell other than
+        the pane's root is in front -- the PID probe names a pid other than root_pid; or the where probe lands REMOTE; or it lands local / nowhere
+        and the shell count under the app rose above `base` (a shell_count() taken before the subshell command; a `su` shell answers in root's
+        home, 'nowhere', yet it is one more shell). Otherwise (the subshell never started: agent routing, a lost Enter, a missing binary) `exit`
+        is NOT typed -- it would have ended the root shell, closed the only pane and quit the app -- and the reason is noted. True when typed;
+        the wait after it is for the shell behind to draw its prompt (wait_prompt_after_exit)."""
+        why, remote = None, False
+        root = getattr(self, "root_pid", None)
+        pid = self.shell_pid() if root is not None else None
+        if pid is not None and pid == root:
+            why = "the PID probe names the pane's ROOT shell (%s)" % root
+        elif pid is None:
+            where = self.where_now()
+            if where == "remote":
+                remote = True
+            else:
+                nested = self.in_subshell(base)
+                if nested is not True:
+                    why = "the probe ran in %s and the shell count under the app %s (base %s, now %s)" % (
+                        "the local shell" if where == "local" else "no shell",
+                        "did not rise" if nested is False else "is unknown", base, self.shell_count() if base is not None else None)
+        if why:
+            msg = "%s: `exit` NOT typed: %s%s" % (label or "exit_nested", why, "" if root is not None or pid is not None else "; no root pid recorded")
+            print("[appci] " + msg, flush=True)
+            if r is not None:
+                r.note(msg)
+            return False
+        before = self.prof.prompts()
+        rbefore = self.prof.prompts(remote=True) if remote else None
+        t_exit = time.time()
+        self.be.type("exit", 12, enter=True)
+        self.wait_prompt_after_exit(before, t_exit, timeout, remote_before=rbefore)
+        return True
 
     def until(self, pred, timeout=10, step=0.05):
         t = time.time()
@@ -2489,6 +2538,7 @@ def c_sub(ctx, r):
         f = "sub_%s_%d.txt" % (sh, int(gap * 100))
         ctx.rm(f)
         tok = ctx.tok(6)
+        base = ctx.shell_count()
         ctx.be.type(sh, 12, enter=True)
         time.sleep(gap)
         ctx.be.type(ctx.append_cmd(sh, tok, f), 12, enter=True)
@@ -2496,8 +2546,7 @@ def c_sub(ctx, r):
         # r18u8 (Mac nu): `>>` is not nushell redirection (it is a parse error there); nu appends external output with `| save --append`
         ctx.be.type(("^sh -c 'ps -o comm= -p $PPID' | save --append " + f) if sh == "nu" else ("sh -c 'ps -o comm= -p $PPID' >> " + f), 12, enter=True)
         ctx.until(lambda: len(ctx.lines(f)) >= 2, 6)
-        ctx.be.type("exit", 12, enter=True)
-        time.sleep(2.0)
+        ctx.exit_nested(base, r, "%s subshell" % sh)           # audit #2: never a raw `exit` after an unchecked wait (it ran at the ROOT shell and quit the app)
         ctx.be.type(ctx.append_cmd("bash", "back_" + tok, f), 12, enter=True)
         ctx.until(lambda: len(ctx.lines(f)) >= 3, 6)
         l = ctx.lines(f)
@@ -2541,6 +2590,7 @@ def c_sub_sh_probe(ctx, r):
         ctx.rm(f)
         tok = ctx.tok(6)
         off = ctx.log_size()
+        base = ctx.shell_count()
         ctx.be.type(cmd, 12, enter=True)
         time.sleep(1.6)                    # the Phosphorize banner comes 1 s after the command starts
         ctx.shot("%s_banner" % label)
@@ -2568,8 +2618,7 @@ def c_sub_sh_probe(ctx, r):
         for t in toks:
             ctx.be.type(ctx.append_cmd("sh", t, f), 12, enter=True)
         ctx.until(lambda: len(ctx.lines(f)) >= 2 + len(toks), 8)
-        ctx.be.type("exit", 12, enter=True)
-        time.sleep(1.0)
+        ctx.exit_nested(base, r, label)
         ctx.be.type(ctx.append_cmd("bash", "back_" + tok, f), 12, enter=True)
         ctx.until(lambda: len(ctx.lines(f)) >= 3 + len(toks), 6)
         l = ctx.lines(f)
@@ -3057,7 +3106,7 @@ def ref_terminal_windows(ctx, rcfile=None):
 
     def close():
         try:
-            ctx.be.type("exit", 12, enter=True)
+            ctx.be.type("exit", 12, enter=True)        # reference terminal (guard_override aims the keys at it), never the pane
         except Exception:
             pass
         time.sleep(1.0)
@@ -3175,7 +3224,7 @@ def ref_terminal(ctx):
             # launched is quit by exact PID right here at the end of the reference block (#1826: one window per probe piled up to ~250 per run), which
             # also removes a shell whose exit was lost. A Terminal.app that was already running is never quit. Measurements are taken before close().
             try:
-                ctx.be.type("exit", 12, enter=True)
+                ctx.be.type("exit", 12, enter=True)        # reference terminal (guard_override aims the keys at it), never the pane
             except Exception:
                 pass
             time.sleep(0.8)
@@ -5423,8 +5472,8 @@ def c_gitbash_subshell(ctx, r):
         if ctx.until(lambda: len(rl("gb_cc.txt")) >= 2 * (i + 1), 8):
             c += 1
     r.check(c == 3, "Git Bash Ctrl-C: the trap and the next line ran %d/3 times: %s" % (c, ",".join(rl("gb_cc.txt"))))
-    ctx.be.type("exit", 12, enter=True)
-    time.sleep(2)
+    ctx.exit_nested(None, r, "Git Bash from the PowerShell pane")
+    time.sleep(1.0)
     tok = ctx.tok(8).lower()
     ctx.be.type("Add-Content gb_back.txt %s" % tok, 12, enter=True)
     ctx.until(lambda: rl("gb_back.txt"), 8)
