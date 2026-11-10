@@ -2403,6 +2403,17 @@ pub struct Input {
     /// When an Enter was deferred behind the typeahead hand-off (or a young Enter held), to log a
     /// long hold (#1192).
     handoff_enter_started: Option<Instant>,
+    /// #2012: where the shell's next report of its line goes when it is NOT the front of the
+    /// buffer: the text that was in front of the cursor when a command the shell started itself
+    /// took input from the editor ([`Self::anchor_handoff_report_at_cursor`]). The keys typed
+    /// while that command ran were typed after this text, so their report goes behind it. Not
+    /// used yet by a report. Ends on events only: a fresh report takes it, the editor empties, or
+    /// the editor owns input again with no report on its way.
+    handoff_report_anchor_pending: Option<String>,
+    /// #2012: the anchor the current run of reports was placed behind (a later report of the same
+    /// line replaces the earlier one at the same place). Replaced by every fresh report (`None`
+    /// when that report had no anchor: the front, as always) and dropped when the editor empties.
+    handoff_report_anchor: Option<String>,
     /// The waiting Enter is being run right now (#1016): its own `input_enter` is the submit, not
     /// an Enter typed behind a pending replay, so it must not queue itself.
     running_deferred_enter: bool,
@@ -4311,6 +4322,8 @@ impl Input {
             pending_multiline_dialog_answer: None,
             deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_started: None,
+            handoff_report_anchor_pending: None,
+            handoff_report_anchor: None,
             running_deferred_enter: false,
             tab_waits_for_report: false,
             announce_report_tab_settled: false,
@@ -8874,6 +8887,8 @@ impl Input {
     pub fn clear_buffer_and_reset_undo_stack(&mut self, ctx: &mut ViewContext<Self>) {
         // #1666: a cleared buffer no longer holds the line a glue guard was armed over.
         self.disarm_glue_enter_guard();
+        // #2012: an emptied buffer has no text for a report to go behind.
+        self.clear_handoff_report_anchor();
         self.bump_input_generation();
         self.clear_cached_hint_text();
         self.editor.update(ctx, |view, ctx| {
@@ -8943,6 +8958,125 @@ impl Input {
         });
     }
 
+    /// #2012: [`Self::replace_typeahead_prefix`] for a report that belongs BEHIND `prefix`, the
+    /// text the editor held in front of its cursor when the keys of the report started going to
+    /// the pty: the `num_typeahead_chars_inserted` characters an earlier report put behind
+    /// `prefix` are replaced by `typeahead`, as one buffer edit. The caller has checked that the
+    /// buffer starts with `prefix`. A cursor at or behind the replaced text (the user's later
+    /// keys, or none) keeps its place relative to the text behind the report; one in front of it
+    /// or inside an earlier report is left to the buffer's anchors.
+    fn replace_typeahead_behind_prefix(
+        &mut self,
+        prefix: &str,
+        num_typeahead_chars_inserted: CharOffset,
+        typeahead: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let prefix_bytes = prefix.len();
+        let prefix_chars = CharOffset::from(prefix.chars().count());
+        self.editor.update(ctx, |view, ctx| {
+            let cursor_before = view
+                .is_single_cursor_only(&*ctx)
+                .then(|| view.start_byte_index_of_first_selection(&*ctx).as_usize());
+            let buffer = view.buffer_text(ctx);
+            let replaced_bytes = typeahead_prefix_byte_len(
+                buffer.get(prefix_bytes..).unwrap_or_default(),
+                num_typeahead_chars_inserted.as_usize(),
+            );
+            view.replace_n_characters_at(
+                prefix_chars,
+                num_typeahead_chars_inserted,
+                typeahead,
+                ctx,
+            );
+            if let Some(cursor) = cursor_before
+                && let Some(cursor_after) = cursor_after_typeahead_behind_prefix(
+                    cursor,
+                    prefix_bytes,
+                    replaced_bytes,
+                    typeahead.len(),
+                )
+            {
+                let cursor_after = ByteOffset::from(cursor_after);
+                view.select_ranges_by_byte_offset([cursor_after..cursor_after], ctx);
+            }
+        });
+    }
+
+    /// #2012: a command the shell started itself took input from the editor (the view's Preexec
+    /// event, before focus moves). The keys typed from now on go to the pty and come back in the
+    /// shell's report of its line; they were typed AFTER the text in front of the cursor, so the
+    /// report goes behind that text instead of to the front of the buffer. Remembers that text
+    /// (nothing for an empty one, a selection or several cursors: the report then goes to the
+    /// front as always). Returns whether an anchor was recorded.
+    pub(crate) fn anchor_handoff_report_at_cursor(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let prefix = self.editor.update(ctx, |view, ctx| {
+            if !view.is_single_cursor_only(&*ctx) {
+                return None;
+            }
+            let cursor = view.start_byte_index_of_first_selection(&*ctx).as_usize();
+            let buffer = view.buffer_text(ctx);
+            buffer
+                .get(..cursor)
+                .filter(|prefix| !prefix.is_empty())
+                .map(str::to_owned)
+        });
+        warpui::input_order::log_hop("handoff_report_anchor_set", || {
+            format!(
+                "anchor_chars={}",
+                prefix.as_deref().map_or(0, |prefix| prefix.chars().count())
+            )
+        });
+        self.handoff_report_anchor_pending = prefix;
+        self.handoff_report_anchor_pending.is_some()
+    }
+
+    /// #2012: whether a report anchor is recorded (pending, or in use by a run of reports).
+    pub(crate) fn has_handoff_report_anchor(&self) -> bool {
+        self.handoff_report_anchor_pending.is_some() || self.handoff_report_anchor.is_some()
+    }
+
+    /// #2012: the editor emptied: neither a pending nor a used anchor has text to stand behind.
+    pub(crate) fn clear_handoff_report_anchor(&mut self) {
+        self.handoff_report_anchor_pending = None;
+        self.handoff_report_anchor = None;
+    }
+
+    /// #2012: the editor owns input again and no report is on its way: the keys typed while the
+    /// shell-started command ran were not left in the shell's line (the command read them, or
+    /// none were typed), so nothing will be placed behind the remembered text. A later report is
+    /// about later keys and goes to the front as always.
+    pub(crate) fn drop_pending_handoff_report_anchor(&mut self) {
+        if self.handoff_report_anchor_pending.take().is_some() {
+            warpui::input_order::log_hop("handoff_report_anchor_dropped", || {
+                "why=no_report_pending".to_owned()
+            });
+        }
+    }
+
+    /// #2012: the text the report being inserted goes behind, or `None` for the front of the
+    /// buffer. A fresh report (`fresh`: it replaces nothing of an earlier one) takes the pending
+    /// anchor; a later report of the same line uses the one its run started with. An anchor the
+    /// buffer no longer starts with (the user edited that text) is dropped, logged.
+    fn handoff_report_anchor_for_insert(
+        &mut self,
+        fresh: bool,
+        ctx: &AppContext,
+    ) -> Option<String> {
+        if fresh {
+            self.handoff_report_anchor = self.handoff_report_anchor_pending.take();
+        }
+        let prefix = self.handoff_report_anchor.clone()?;
+        if self.buffer_text(ctx).starts_with(&prefix) {
+            return Some(prefix);
+        }
+        warpui::input_order::log_hop("handoff_report_anchor_dropped", || {
+            "why=prefix_edited".to_owned()
+        });
+        self.handoff_report_anchor = None;
+        None
+    }
+
     /// Tells input-type detection the buffer now starts with shell typeahead (#886): typed at the
     /// shell, so a prose-free piece of it is decided Shell rather than classified as prose.
     fn note_typeahead_inserted(&mut self, typeahead: &str, ctx: &mut ViewContext<Self>) {
@@ -8961,13 +9095,21 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         let text_before = warpui::input_order::enabled().then(|| self.buffer_text(ctx));
+        // #2012: the text this report goes behind (the editor held it before the report's keys
+        // went to the pty), or `None`: the front of the buffer, as for every other report.
+        let anchor = self
+            .handoff_report_anchor_for_insert(num_typeahead_chars_inserted.as_usize() == 0, ctx);
+        let anchor_bytes = anchor.as_deref().map_or(0, str::len);
         // #1569: a report that replaces the front of the buffer must extend what is there (a
         // second report of the same line). One that does not is another line's text; splicing it
         // in made the editor run `echo t91_echo t94... >> 8hr_...`. Refused and logged, the
-        // buffer is left exactly as the user's keys built it.
+        // buffer is left exactly as the user's keys built it. (#2012: with an anchor, "the
+        // front" is the text behind the anchor, where the earlier report was put.)
         if num_typeahead_chars_inserted.as_usize() > 0
             && !typeahead_extends_buffer_prefix(
-                &self.buffer_text(ctx),
+                self.buffer_text(ctx)
+                    .get(anchor_bytes..)
+                    .unwrap_or_default(),
                 num_typeahead_chars_inserted.as_usize(),
                 typeahead,
             )
@@ -9016,7 +9158,21 @@ impl Input {
                 format!("report_chars={}", typeahead.chars().count())
             });
         }
-        self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
+        match anchor.as_deref() {
+            Some(prefix) => {
+                // #2012: logged as its own hop so the `handoff_insert` line keeps its shape.
+                warpui::input_order::log_hop("handoff_insert_anchor", || {
+                    format!("anchor_chars={}", prefix.chars().count())
+                });
+                self.replace_typeahead_behind_prefix(
+                    prefix,
+                    num_typeahead_chars_inserted,
+                    typeahead,
+                    ctx,
+                );
+            }
+            None => self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx),
+        }
         // #1393: the report's insertion into the editor, before and after, with the count of
         // characters of an earlier report it replaced.
         warpui::input_order::log_hop("handoff_insert", || {
@@ -11441,6 +11597,11 @@ impl Input {
             }
             EditorEvent::UpdatePeers { operations } => {
                 self.latest_buffer_operations.extend(operations.to_vec());
+                // #2012: the editor emptied (cleared, submitted, reinitialized): the text a
+                // report was to go behind is gone.
+                if self.has_handoff_report_anchor() && self.editor.as_ref(ctx).is_empty(ctx) {
+                    self.clear_handoff_report_anchor();
+                }
 
                 // TODO (suraj): we might want to push down the buffer ID to the buffer
                 // and have it returned as part of the event. That way, we aren't subject
@@ -18941,6 +19102,21 @@ pub(crate) fn cursor_after_typeahead_prefix(
     inserted_bytes: usize,
 ) -> Option<usize> {
     (cursor >= replaced_bytes).then(|| cursor - replaced_bytes + inserted_bytes)
+}
+
+/// #2012: [`cursor_after_typeahead_prefix`] for a report placed behind the first `start` bytes
+/// of the buffer: `replaced_bytes` bytes at `start` were replaced by `inserted_bytes` bytes of
+/// typeahead. A cursor at or behind the replaced text keeps its place relative to the text
+/// behind the report (a cursor exactly where a first report goes in ends up behind it: the
+/// report's keys were typed before anything typed next); `None` for one in front of `start` or
+/// inside an earlier report, which the edit leaves where the user put it.
+pub(crate) fn cursor_after_typeahead_behind_prefix(
+    cursor: usize,
+    start: usize,
+    replaced_bytes: usize,
+    inserted_bytes: usize,
+) -> Option<usize> {
+    (cursor >= start + replaced_bytes).then(|| cursor - replaced_bytes + inserted_bytes)
 }
 
 /// Where a completion's replacement range should end. The editor auto-pairs quotes, so

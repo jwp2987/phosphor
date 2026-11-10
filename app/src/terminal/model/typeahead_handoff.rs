@@ -735,6 +735,13 @@ pub struct TypeaheadHandoff {
     /// becoming interactive, a program owning the tty, a signal key, the user clicking the
     /// terminal, or the session ending.
     keys_follow_editor: bool,
+    /// #2012: a Preexec of a command the shell started itself (a typed-ahead line, on PowerShell
+    /// an empty one too) took input from the editor ([`Self::on_preexec`]). The editor may hold
+    /// text typed before it; keys typed from now on go to the pty and come back in the shell's
+    /// report, which belongs BEHIND that text, not in front of it. The view takes this once, on
+    /// its Preexec event, and has the input remember where the report goes
+    /// ([`Self::take_shell_took_input_from_editor`]).
+    shell_took_input_from_editor: bool,
     /// A key applied within that window moved focus to the editor itself; the resulting focus
     /// event must not end the window.
     focus_moved_by_takeover_key: bool,
@@ -2972,9 +2979,17 @@ impl TypeaheadHandoff {
                 enters_written: 1,
                 precmds_seen: 0,
             };
+            // #2012: the editor may hold text typed before this command started.
+            self.shell_took_input_from_editor = true;
             return true;
         }
         false
+    }
+
+    /// #2012: takes the "a shell-started command took input from the editor" mark of
+    /// [`Self::on_preexec`]; `true` once per such Preexec.
+    pub fn take_shell_took_input_from_editor(&mut self) -> bool {
+        mem::take(&mut self.shell_took_input_from_editor)
     }
 
     /// The user is about to write keys to a running command the hand-off does not own (one the

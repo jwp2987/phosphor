@@ -13237,6 +13237,174 @@ fn a_handoff_report_that_does_not_extend_the_editors_typeahead_is_refused() {
     });
 }
 
+/// #2012: the cursor after a report placed behind the first `start` bytes of the buffer.
+#[test]
+fn cursor_after_a_report_behind_a_prefix_keeps_its_place_in_the_later_text() {
+    // `Ad|` + report `d-`: the cursor is where the report goes in; it ends up behind it.
+    assert_eq!(cursor_after_typeahead_behind_prefix(2, 2, 0, 2), Some(4));
+    // `AdCo|`: the cursor is behind text typed after the report's keys; it moves by the growth.
+    assert_eq!(cursor_after_typeahead_behind_prefix(4, 2, 0, 2), Some(6));
+    // A second report replaces the two bytes of the first with three.
+    assert_eq!(cursor_after_typeahead_behind_prefix(6, 2, 2, 3), Some(7));
+    // In front of the anchor, or inside the earlier report: left where the user put it.
+    assert_eq!(cursor_after_typeahead_behind_prefix(1, 2, 0, 2), None);
+    assert_eq!(cursor_after_typeahead_behind_prefix(3, 2, 2, 3), None);
+}
+
+/// #2012 (round 9 Windows: `Add-Co` became `d-AdCo`): a report of keys typed AFTER the text the
+/// editor already held goes behind that text, in front of what the editor took later; the cursor
+/// keeps its place in the later text. The anchor is the text in front of the cursor when it was
+/// recorded; a later report of the same line replaces the earlier one in place; a report that
+/// does not extend it is refused there too (#1569).
+#[test]
+fn a_handoff_report_goes_behind_the_text_the_editor_held_when_it_was_anchored() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        // The round 9 sequence: `Ad`, anchor, `Co`, report `d-`.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.replace_buffer_content("Ad", ctx);
+        });
+        place_cursor(&input, &mut app, 2);
+        input.update(&mut app, |input, ctx| {
+            assert!(input.anchor_handoff_report_at_cursor(ctx));
+            input.system_insert("Co", ctx);
+            assert_eq!(input.buffer_text(ctx), "AdCo");
+            assert!(input.insert_handoff_typeahead_text(CharOffset::from(0), "d-", ctx));
+            assert_eq!(input.buffer_text(ctx), "Add-Co");
+        });
+        assert_eq!(cursor_byte_offset(&input, &app), "Add-Co".len());
+
+        // A second report of the same line replaces the first one where it was put.
+        input.update(&mut app, |input, ctx| {
+            assert!(input.insert_handoff_typeahead_text(CharOffset::from(2), "d-x", ctx));
+            assert_eq!(input.buffer_text(ctx), "Add-xCo");
+        });
+        assert_eq!(cursor_byte_offset(&input, &app), "Add-xCo".len());
+        // Another line's text claiming to replace it is refused; the buffer is untouched.
+        input.update(&mut app, |input, ctx| {
+            assert!(!input.insert_handoff_typeahead_text(CharOffset::from(3), "zzzz", ctx));
+            assert_eq!(input.buffer_text(ctx), "Add-xCo");
+        });
+
+        // Nothing reached the editor after the anchor: the report lands at the cursor and the
+        // cursor ends up behind it, so the next key follows the report.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.replace_buffer_content("Ad", ctx);
+        });
+        place_cursor(&input, &mut app, 2);
+        input.update(&mut app, |input, ctx| {
+            assert!(input.anchor_handoff_report_at_cursor(ctx));
+            assert!(input.insert_handoff_typeahead_text(CharOffset::from(0), "d-", ctx));
+            assert_eq!(input.buffer_text(ctx), "Add-");
+        });
+        assert_eq!(cursor_byte_offset(&input, &app), 4);
+
+        // The cursor was inside the editor's text: the report goes in there, where its keys
+        // would have been typed.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.replace_buffer_content("echo  > f", ctx);
+        });
+        place_cursor(&input, &mut app, 5);
+        input.update(&mut app, |input, ctx| {
+            assert!(input.anchor_handoff_report_at_cursor(ctx));
+            assert!(input.insert_handoff_typeahead_text(CharOffset::from(0), "hi", ctx));
+            assert_eq!(input.buffer_text(ctx), "echo hi > f");
+        });
+        assert_eq!(cursor_byte_offset(&input, &app), "echo hi".len());
+    });
+}
+
+/// #2012: the anchor is used only while it is true. An empty prefix records nothing; an emptied
+/// editor, a dropped anchor, or a buffer that no longer starts with the anchored text send the
+/// report to the front, exactly as before; and an anchor is used by one run of reports only.
+#[test]
+fn a_handoff_report_anchor_that_no_longer_holds_sends_the_report_to_the_front() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        // An empty editor, or a cursor at the start: no text to stand behind.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.replace_buffer_content("", ctx);
+            assert!(!input.anchor_handoff_report_at_cursor(ctx));
+            assert!(!input.has_handoff_report_anchor());
+            input.replace_buffer_content("-la", ctx);
+        });
+        place_cursor(&input, &mut app, 0);
+        input.update(&mut app, |input, ctx| {
+            assert!(!input.anchor_handoff_report_at_cursor(ctx));
+            assert!(input.insert_handoff_typeahead_text(CharOffset::from(0), "ls ", ctx));
+            assert_eq!(input.buffer_text(ctx), "ls -la");
+        });
+
+        // The editor emptied after the anchor: a line typed later that happens to start with the
+        // same text is not the anchored text.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.replace_buffer_content("Ad", ctx);
+        });
+        place_cursor(&input, &mut app, 2);
+        input.update(&mut app, |input, ctx| {
+            assert!(input.anchor_handoff_report_at_cursor(ctx));
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            assert!(!input.has_handoff_report_anchor());
+            input.replace_buffer_content("Ad", ctx);
+            assert!(input.insert_handoff_typeahead_text(CharOffset::from(0), "ls ", ctx));
+            assert_eq!(input.buffer_text(ctx), "ls Ad");
+        });
+
+        // The editor owns input again with no report on its way: the pending anchor is dropped.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.replace_buffer_content("Ad", ctx);
+        });
+        place_cursor(&input, &mut app, 2);
+        input.update(&mut app, |input, ctx| {
+            assert!(input.anchor_handoff_report_at_cursor(ctx));
+            input.drop_pending_handoff_report_anchor();
+            assert!(!input.has_handoff_report_anchor());
+            assert!(input.insert_handoff_typeahead_text(CharOffset::from(0), "ls ", ctx));
+            assert_eq!(input.buffer_text(ctx), "ls Ad");
+        });
+
+        // The user rewrote the anchored text: the report goes to the front.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.replace_buffer_content("Ad", ctx);
+        });
+        place_cursor(&input, &mut app, 2);
+        input.update(&mut app, |input, ctx| {
+            assert!(input.anchor_handoff_report_at_cursor(ctx));
+            input.replace_buffer_content("Xd", ctx);
+            assert!(input.insert_handoff_typeahead_text(CharOffset::from(0), "ls ", ctx));
+            assert_eq!(input.buffer_text(ctx), "ls Xd");
+            assert!(!input.has_handoff_report_anchor());
+        });
+
+        // One run of reports per anchor: the next fresh report goes to the front.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.replace_buffer_content("Ad", ctx);
+        });
+        place_cursor(&input, &mut app, 2);
+        input.update(&mut app, |input, ctx| {
+            assert!(input.anchor_handoff_report_at_cursor(ctx));
+            assert!(input.insert_handoff_typeahead_text(CharOffset::from(0), "d-", ctx));
+            assert_eq!(input.buffer_text(ctx), "Add-");
+            assert!(input.insert_handoff_typeahead_text(CharOffset::from(0), "x ", ctx));
+            assert_eq!(input.buffer_text(ctx), "x Add-");
+        });
+    });
+}
+
 /// #1574: a shell report reaching an input locked in AI mode (autodetection will not re-decide it)
 /// is inserted, never dropped (the shell already cleared its own line), and the input is switched to
 /// shell, locked, so the line is visibly a shell command and never an agent prompt (#1566

@@ -15071,6 +15071,17 @@ impl TerminalView {
         if has_stashed_report {
             self.insert_typeahead_from_handoff(ctx);
         }
+        // #2012: the editor owns input again and no report is on its way: nothing is left to
+        // place behind the text the editor held when the shell started a command by itself.
+        let no_report_coming = {
+            let handoff = self.handoff.read();
+            handoff.editor_owns_input() && !handoff.report_pending_before_editor_text()
+        };
+        if no_report_coming && self.input.as_ref(ctx).has_handoff_report_anchor() {
+            self.input.update(ctx, |input, _| {
+                input.drop_pending_handoff_report_anchor();
+            });
+        }
         // #1659: a Tab that waited for the shell's report and whose report will not come (the
         // state left the wait without one) completes what the editor holds, as it always did.
         if self
@@ -15142,6 +15153,36 @@ impl TerminalView {
         if committed || still_pty_owned {
             ctx.emit(Event::RetryTypeaheadHandoffRequest);
         }
+    }
+
+    /// The view's part of a Preexec under the typeahead hand-off (main thread, after the model
+    /// applied it).
+    fn on_preexec_event_with_handoff(&mut self, ctx: &mut ViewContext<Self>) {
+        // #1614: a young hold the Preexec ended (the shell started a command after it
+        // opened) is applied to the queue now: its keys are that command's typeahead.
+        self.drain_young_hold_ends(ctx);
+        // #2012: before focus leaves the editor, so the text it holds now is the text typed
+        // before the keys that go to the pty from here on.
+        self.anchor_report_behind_editor_text(ctx);
+        self.focus_terminal_if_typeahead_handoff_wants_it(ctx);
+        // #1661: the shell started the command: the keys typed after its Enter follow it.
+        self.settle_enter_queue(ctx);
+    }
+
+    /// #2012 (round 9 Windows, PowerShell: `Add-Co` was submitted as `d-AdCo`): the shell started
+    /// a command by itself (a typed-ahead line; PowerShell sends a Preexec for an empty one too)
+    /// while the editor owned input and may hold unsent text. The pty takes input for that
+    /// command, so the keys typed next go to it and come back in the shell's report of its line.
+    /// They were typed AFTER the editor's text: the input remembers that text so the report is
+    /// placed behind it, not at the front of the buffer. Routing is not changed and nothing is
+    /// held; the anchor ends on events (`Input::anchor_handoff_report_at_cursor`).
+    fn anchor_report_behind_editor_text(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.handoff.write().take_shell_took_input_from_editor() {
+            return;
+        }
+        self.input.update(ctx, |input, ctx| {
+            input.anchor_handoff_report_at_cursor(ctx);
+        });
     }
 
     /// The shell started a command; if it was a typeahead line, the pty now owns input.
@@ -20393,12 +20434,7 @@ impl TerminalView {
             ModelEvent::Handler(AnsiHandlerEvent::Preexec)
                 if FeatureFlag::TypeaheadHandoff.is_enabled() =>
             {
-                // #1614: a young hold the Preexec ended (the shell started a command after it
-                // opened) is applied to the queue now: its keys are that command's typeahead.
-                self.drain_young_hold_ends(ctx);
-                self.focus_terminal_if_typeahead_handoff_wants_it(ctx);
-                // #1661: the shell started the command: the keys typed after its Enter follow it.
-                self.settle_enter_queue(ctx);
+                self.on_preexec_event_with_handoff(ctx);
             }
             ModelEvent::Handler(AnsiHandlerEvent::Preexec) => {
                 // #1661: as above, without the hand-off.
