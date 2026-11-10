@@ -22,6 +22,10 @@ PORT, KEYDIR, RHOME, BASH, LOGF = int(sys.argv[1]), sys.argv[2], sys.argv[3], sy
 PW = os.environ.get("FAKE_PASSWORD", "")
 PWU = os.environ.get("FAKE_PW_USER", "pwuser")
 LAT = float(os.environ.get("FAKE_LAT", "0"))        # artificial connect delay before auth (s)
+# #1992 / #1960: the SSH identification string. The app's Git Bash wrapper manages only servers that name POSIX OpenSSH (read by ssh-keyscan), and this
+# server IS one functionally (the remote shell is Git Bash), so it says so. FAKE_SSH_ID=<other> presents another banner (the wrapper must then run
+# plain ssh); FAKE_SSH_ID= (empty) keeps paramiko's own "SSH-2.0-paramiko_<version>".
+SSH_ID = os.environ.get("FAKE_SSH_ID", "SSH-2.0-OpenSSH_9.6 fakesshd")
 LOG = open(LOGF, "a", buffering=1)
 
 
@@ -209,6 +213,8 @@ def serve(sock):
     chans = 0
     try:
         t = paramiko.Transport(sock)
+        if SSH_ID:
+            t.local_version = SSH_ID
         t.add_server_key(HK)
         if LAT:
             time.sleep(LAT)
@@ -242,10 +248,20 @@ def handle(ch, srv):
     env = remote_env(spty[0] if spty else "dumb", srv.envs.get(ch.chanid, {}))
     log("session", kind, cmd, "pty" if spty else "nopty")
     try:
-        if spty and kind == "shell":
-            cp = ConPty('"%s" --rcfile "%s" -i' % (BASH, os.path.join(RHOME, ".bashrc")), env, RHOME, spty[1], spty[2])
+        if spty and kind in ("shell", "exec"):
+            if kind == "shell":
+                cl = '"%s" --rcfile "%s" -i' % (BASH, os.path.join(RHOME, ".bashrc"))
+            else:
+                # #1992: exec WITH a pty (`ssh -t fake '<cmd>'`, which is what a managed ssh session is: the bootstrap command) gets a pseudo console
+                # like a shell does; on pipes the remote bash had no terminal. The command goes through a file (a Windows command line cannot carry a
+                # multi-line script with quotes intact); bash runs it with the pseudo console as its stdin, as sshd's `$SHELL -c` would.
+                script = os.path.join(RHOME, ".fakesshd-exec-%d.sh" % time.time_ns())
+                with open(script, "w", encoding="utf-8", newline="\n") as f:
+                    f.write((cmd or "true") + "\n")
+                cl = '"%s" "%s"' % (BASH, script)
+            cp = ConPty(cl, env, RHOME, spty[1], spty[2])
             srv.pty[ch.chanid] = cp
-            log("conpty shell pid", cp.pid)
+            log("conpty %s pid" % kind, cp.pid)
 
             def pump_out():
                 t_open, sent = time.time(), 0
