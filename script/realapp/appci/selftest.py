@@ -555,6 +555,35 @@ def ctrl_c_flood_ab_pure_parts_1838():
 
 
 @check
+def keyframe_ab_pure_parts_1848():
+    """#1848 A/B (latency_paint_ab): the arm environment, the per-arm summary from kl3 samples + the app's hops, the delta, and the WARNs about the A/B itself
+    (kill switch not applied, path never ran, most key frames not sent out)"""
+    import cases_keyframe_ab as kab
+    import render_hops as rh
+    assert kab.arm_env("off") == {"PHOSPHOR_MAC_KEY_FRAME_NOW": "0"} and kab.arm_env("on") == {}
+    ON = ["input_order hop=key_frame_now drawn=1 ms=4.10 t=1000000.0", "input_order hop=key_frame_now drawn=1 ms=4.30 t=1000100.0",
+          "input_order hop=key_frame_now drawn=0 ms=3.90 t=1000200.0",
+          "input_order hop=key_frame_sched ms=0.02 t=1000000.0", "input_order hop=key_frame_sched ms=0.04 t=1000100.0",
+          "input_order hop=key_presented submit_to_presented_ms=24.00 key_to_presented_ms=28.50 sync=0 wait_ms=0.10 t=1000030.0"]
+    OFF = ["input_order hop=key_frame_sched ms=7.80 t=1000000.0", "input_order hop=key_frame_sched ms=0.60 t=1000100.0",
+           "input_order hop=key_presented submit_to_presented_ms=24.00 key_to_presented_ms=32.20 sync=0 wait_ms=0.10 t=1000030.0"]
+    on = kab.ab_summary([30.0, 31.0, 32.0], rh.render_hop_metrics(ON))
+    off = kab.ab_summary([34.0, 35.0, 36.0], rh.render_hop_metrics(OFF))
+    assert on["key_frames_now"] == 3 and on["key_frames_now_drawn"] == 2 and on["key_frame_sched_p50"] == 0.03 and on["key_to_presented_p50"] == 28.5, on
+    assert off["key_frames_now"] == 0 and off["key_frame_sched_p50"] == 4.2 and off["p50"] == 35.0, off
+    d, w = kab.ab_verdict(on, off)
+    assert d == -4.0 and w == [], (d, w)
+    d, w = kab.ab_verdict(off, on)                                   # the arms swapped: the "off" arm drew key frames, the "on" arm none
+    assert d == 4.0 and len(w) == 2 and "did not reach the app" in w[0] and "no hop=key_frame_now" in w[1], w
+    mostly_missed = kab.ab_summary([30.0], rh.render_hop_metrics(ON[2:3] * 3 + ON[:1]))
+    d, w = kab.ab_verdict(mostly_missed, off)
+    assert len(w) == 1 and "3 of 4 key frames" in w[0], w
+    empty = kab.ab_summary([], {})
+    assert kab.ab_verdict(empty, empty) == (None, [])                # no samples: no delta, nothing claimed
+    assert "latency_paint_ab" in cases.PROVING and "latency_paint_ab" in winmap.NOT_WINDOWS and "latency_paint_ab" not in cases.SMOKE
+
+
+@check
 def render_latency_step_a_hops_parse():
     """render-latency step A: the new hop fields parse (key_presented, key_frame_sched, frame_skip_run key_frame_skipped, frame_drawn present_ms), the
     old frame_drawn line without present_ms still parses, a window filters by t=, an old build gives {}, and the present-mode arm helpers are right"""

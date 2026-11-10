@@ -491,6 +491,8 @@ pub struct WindowState {
     draw_owed: frame_latency::DrawOwed,
     /// Consecutive frames skipped because `nextDrawable` would have blocked (#1838).
     pub(super) frame_skip_run: frame_latency::SkipRun,
+    /// Numbered redraw requests, so a key press's own frame can stand in for them (#1848).
+    pub(super) redraw_requests: frame_latency::RedrawRequests,
     device: Option<Device>,
     renderer_manager: Option<Rc<RefCell<RendererManager>>>,
     synthetic_drag_counter: Cell<usize>,
@@ -623,6 +625,7 @@ impl Window {
                 next_scene: Default::default(),
                 draw_owed: Default::default(),
                 frame_skip_run: Default::default(),
+                redraw_requests: Default::default(),
                 renderer_manager: Some(renderer_manager),
                 device,
                 synthetic_drag_counter: Cell::new(0),
@@ -1130,12 +1133,20 @@ impl WindowState {
         }
     }
 
+    /// Posts a display request for the window to the main queue. The request is numbered so that
+    /// a key frame drawn before the posted block runs can stand in for it (#1848, see
+    /// [`frame_latency::RedrawRequests`]); otherwise it ends in `setNeedsDisplay:` as it always did.
+    fn set_needs_display_async(&self) {
+        let request = self.redraw_requests.note_request();
+        // `setNeedsDisplayAsyncForRequest:` is a custom WarpWindow / WarpPanel selector.
+        // SAFETY: messaging a valid window.
+        let _: () = unsafe { msg_send![self.window(), setNeedsDisplayAsyncForRequest: request] };
+    }
+
     /// Asks AppKit to run another draw pass on the next runloop turn, keeping any cached scene
     /// (unlike `request_redraw`, which discards it and forces a rebuild).
     pub fn schedule_redraw(&self) {
-        // `setNeedsDisplayAsync` is a custom WarpWindow selector.
-        // SAFETY: messaging a valid window.
-        let _: () = unsafe { msg_send![self.window(), setNeedsDisplayAsync] };
+        self.set_needs_display_async();
     }
 
     /// Returns the window's backing `CAMetalLayer`.
@@ -1221,17 +1232,13 @@ impl platform::WindowContext for WindowState {
     fn render_scene(&self, scene: Rc<Scene>) {
         *self.next_scene.borrow_mut() = Some(scene);
         self.note_key_frame_request();
-        // `setNeedsDisplayAsync` is a custom WarpWindow selector.
-        // SAFETY: messaging a valid window.
-        let _: () = unsafe { msg_send![self.window(), setNeedsDisplayAsync] };
+        self.set_needs_display_async();
     }
 
     fn request_redraw(&self) {
         let _ = self.next_scene.borrow_mut().take();
         self.note_key_frame_request();
-        // `setNeedsDisplayAsync` is a custom WarpWindow selector.
-        // SAFETY: messaging a valid window.
-        let _: () = unsafe { msg_send![self.window(), setNeedsDisplayAsync] };
+        self.set_needs_display_async();
     }
 
     fn request_frame_capture(
@@ -1239,9 +1246,7 @@ impl platform::WindowContext for WindowState {
         callback: Box<dyn FnOnce(platform::CapturedFrame) + Send + 'static>,
     ) {
         *self.capture_callback.borrow_mut() = Some(callback);
-        // `setNeedsDisplayAsync` is a custom WarpWindow selector.
-        // SAFETY: messaging a valid window.
-        let _: () = unsafe { msg_send![self.window(), setNeedsDisplayAsync] };
+        self.set_needs_display_async();
     }
 }
 
@@ -1511,6 +1516,48 @@ extern "C-unwind" fn warp_update_layer(this: &Object) {
             .for_window(&Window(window.clone()))
             .frame_drawn();
     }
+}
+
+/// #1848, start of a key press (`keyDownImpl`): the number of the window's latest redraw request,
+/// which [`warp_key_frame_begin`] compares against when the press has been handled.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_key_frame_mark(this: &Object) -> u64 {
+    // SAFETY: `this` is a WarpHostView whose window state is set (`readyForWarp`).
+    unsafe { get_window_state(this) }.redraw_requests.latest()
+}
+
+/// #1848, end of a key press: whether the press invalidated this window, in which case the view
+/// draws the frame now (`displayLayer:`) and then calls [`warp_key_frame_finish`].
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_key_frame_begin(this: &Object, at_key_start: u64) -> bool {
+    // SAFETY: as above.
+    unsafe { get_window_state(this) }
+        .redraw_requests
+        .begin_key_frame(frame_latency::key_frame_now_enabled(), at_key_start)
+}
+
+/// #1848: the draw started after [`warp_key_frame_begin`] returned. Records whether a frame was
+/// handed to the compositor (then the press's posted requests are dropped when they run) and logs
+/// `input_order hop=key_frame_now drawn=<0|1> ms=<draw time>`.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_key_frame_finish(this: &Object, elapsed_ms: f64) {
+    // SAFETY: as above.
+    let drawn = unsafe { get_window_state(this) }
+        .redraw_requests
+        .finish_key_frame();
+    warpui_core::input_order::log_hop("key_frame_now", || {
+        frame_latency::key_frame_now_detail(drawn, elapsed_ms)
+    });
+}
+
+/// #1848: whether the posted redraw request `request` was already shown by a key frame, so the
+/// block that carries it skips its `setNeedsDisplay:`.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_redraw_request_already_drawn(this: &Object, request: u64) -> bool {
+    // SAFETY: as above; the caller checks `readyForWarp` first.
+    unsafe { get_window_state(this) }
+        .redraw_requests
+        .already_drawn(request)
 }
 
 /// Logs one stage of a Return/Enter key press as seen by the Objective-C layer (#1482), as

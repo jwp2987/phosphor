@@ -1132,6 +1132,9 @@ impl super::super::Renderer for Renderer {
         unsafe {
             warp_frame_track_drawable(Retained::as_ptr(&drawable) as *mut c_void, drawable_wait_ns)
         };
+        // #1848: a frame is on its way to the compositor (what lets a key frame stand in for the
+        // redraw requests made before it).
+        window.redraw_requests.note_frame_submitted();
 
         let ctx = &MetalDrawContext {
             device: metal_device,

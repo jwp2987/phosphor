@@ -52,6 +52,18 @@ dispatch_once_t fullscreenQueueOnce;
 }
 @end
 
+// Marks `contentView` dirty from the main queue. A WarpHostView drops a numbered request that a
+// key frame has already drawn (#1848); any other view is marked as before.
+static void warpSetNeedsDisplayAsync(NSView *contentView, uint64_t request) {
+    if ([contentView isKindOfClass:[WarpHostView class]]) {
+        [(WarpHostView *)contentView setNeedsDisplayAsyncForRequest:request];
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [contentView setNeedsDisplay:YES];
+    });
+}
+
 @protocol WarpWindowProtocol
 
 @property BOOL testMode;
@@ -60,6 +72,10 @@ dispatch_once_t fullscreenQueueOnce;
 
 // Asynchronously marks the content view as being dirty.
 - (void)setNeedsDisplayAsync;
+
+// The same for a numbered redraw request (#1848): a key frame drawn before the posted block runs
+// stands in for it. Sent from `WindowState::set_needs_display_async` (window.rs).
+- (void)setNeedsDisplayAsyncForRequest:(uint64_t)request;
 
 // Configures the titlebar height and traffic light button constraints.
 - (void)configureTitlebarHeight:(CGFloat)height;
@@ -516,10 +532,11 @@ void init_warp_nswindow(NSWindow<WarpWindowProtocol> *window, bool testMode, boo
 }
 
 - (void)setNeedsDisplayAsync {
-    NSView *contentView = [self contentView];
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [contentView setNeedsDisplay:YES];
-    });
+    [self setNeedsDisplayAsyncForRequest:0];
+}
+
+- (void)setNeedsDisplayAsyncForRequest:(uint64_t)request {
+    warpSetNeedsDisplayAsync([self contentView], request);
 }
 
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
@@ -727,10 +744,11 @@ void init_warp_nswindow(NSWindow<WarpWindowProtocol> *window, bool testMode, boo
 }
 
 - (void)setNeedsDisplayAsync {
-    NSView *contentView = [self contentView];
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [contentView setNeedsDisplay:YES];
-    });
+    [self setNeedsDisplayAsyncForRequest:0];
+}
+
+- (void)setNeedsDisplayAsyncForRequest:(uint64_t)request {
+    warpSetNeedsDisplayAsync([self contentView], request);
 }
 
 - (void)closeWindowAsync:(BOOL)forceTermination {
