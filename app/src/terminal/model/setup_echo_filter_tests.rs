@@ -199,3 +199,49 @@ fn the_echo_counts_say_when_our_line_was_taken() {
     assert!(filter.started());
     assert_eq!(filter.lines_ended(), 0);
 }
+
+/// Round 9 (macOS `subshell_sh_probe`): the lines of a paced setup are expected ONE AT A TIME, each
+/// when it is written. Every setup line begins with a space; with the next line already expected,
+/// the space that ends the shell's own prompt (`$ `) after a line's marker was swallowed as the
+/// start of that next line's echo: the prompt lost its space and the filter said "mid line" about a
+/// line nobody had written yet. The first half pins what the old up-front expectation did (the
+/// reason the view no longer does it), the second the paced order.
+#[test]
+fn a_prompt_between_two_paced_lines_is_not_the_next_lines_echo() {
+    // Both lines expected up front: the prompt's trailing space is taken for line 1's first.
+    let mut filter = SetupEchoFilter::default();
+    filter.expect_line_clear_prefix();
+    filter.expect_line(" first");
+    filter.expect_line(" second");
+    let line0 = format!("{CAPTURED_LINE_CLEAR_ECHO} first\r\n");
+    assert_eq!(visible(&mut filter, &line0), "");
+    assert_eq!(visible(&mut filter, "$ "), "$");
+    assert!(
+        filter.is_mid_line(),
+        "the hazard: a prompt read as our echo"
+    );
+
+    // Paced: line 1 is expected only once it is written, after the prompt was drawn.
+    let mut filter = SetupEchoFilter::default();
+    filter.expect_line_clear_prefix();
+    filter.expect_line(" first");
+    assert_eq!(visible(&mut filter, &line0), "");
+    assert!(
+        !filter.is_armed(),
+        "nothing is expected between two paced lines"
+    );
+    assert_eq!(
+        visible(&mut filter, "$ "),
+        "$ ",
+        "the prompt is the shell's, whole"
+    );
+    assert!(!filter.is_mid_line());
+    filter.expect_line(" second");
+    assert_eq!(
+        visible(&mut filter, " second\r\n"),
+        "",
+        "its echo is still hidden"
+    );
+    assert_eq!(filter.lines_ended(), 2);
+    assert!(!filter.is_mid_line());
+}

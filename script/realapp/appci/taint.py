@@ -50,7 +50,10 @@ def case_taint(run, case, label, t0, t1, app_pids, slice_text, alive=None):
         ktap = os.path.join(os.path.dirname(os.path.abspath(run)), "ktap.log")
         if not os.path.exists(ktap):
             return None, None
-        c = classify(tap_returns(ktap, t0 - 0.5, t1 + 1.0), set(app_pids or ()), slice_text)
+        # From the case's start, not 0.5 s before it (rounds 8 and 9): the slice starts at the case's log offset, so the Return of the harness's own
+        # previous line (the PID probe typed after the case before) was tapped inside the window with its app_send_event before the slice: every
+        # macOS row was TAINTED with exactly "1 LOST".
+        c = classify(tap_returns(ktap, t0, t1 + 1.0), set(app_pids or ()), slice_text)
         bad = c["lost"] + c["uncovered"]
         if not bad:
             return None, dict(taps=c["taps"], lost=0, uncovered=0, elsewhere=c["elsewhere"])

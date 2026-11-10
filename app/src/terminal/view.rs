@@ -3145,6 +3145,12 @@ struct ArmedSubshellSetup {
     /// #1941: the text of a line typed ahead of the line editor, while it is outstanding
     /// (`ledger.typed_ahead`), for `row_shows_typed_line`. In memory only; never logged.
     typed_ahead_line: Option<String>,
+    /// #1941: the output row the typed-ahead line was ended on (the last look's row at its
+    /// Enter). "It already ran" is measured from HERE. It was measured from `line_end_baseline`,
+    /// which every later line end re-takes: `:wq` + Enter typed into the vim that line started
+    /// moved it, the prompt after vim was then "0 rows below", the line read as not yet accepted
+    /// and the attempt waited for good (round 9 macOS, `subshell_ready_vim_typeahead`).
+    typed_ahead_row: usize,
     /// R4 hop binding: a shell leader was seen; a relay after it is an unpredicted hop.
     seen_shell_leader: bool,
 }
@@ -22691,8 +22697,17 @@ impl TerminalView {
                 if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
                     model.expect_setup_line_clear_echo();
                 }
-                for line in &all_lines {
-                    model.expect_setup_echo(line);
+                // Only the line written NOW is expected; each later line is expected when it is
+                // written (`write_subshell_bootstrap_line`). With every line expected up front,
+                // the filter waited for line 1 while line 1 was still unwritten: every setup line
+                // begins with a space, so the space that ends the shell's own prompt (`$ `) after
+                // line 0's marker was swallowed as the start of line 1's echo. That hid the
+                // prompt's space, read as "half a setup line echoed" (`is_setup_echo_mid_line`),
+                // and so vetoed the write of line 1 for good (`stage_two_may_follow`): the probe
+                // of a dash at a `$ ` prompt stalled until the quiet net (round 9 macOS,
+                // `subshell_sh_probe`).
+                if let Some(first) = all_lines.first() {
+                    model.expect_setup_echo(first);
                 }
             }
         }
@@ -23271,12 +23286,19 @@ impl TerminalView {
         if in_flight.generation != generation {
             return;
         }
+        // PowerShell redraws its lines itself: no echo filter (`after_prompt` is "not PowerShell").
+        let expects_echo = in_flight.after_prompt;
         let block_unchanged =
             self.model.lock().block_list().active_block().id() == &in_flight.block_id;
         if !block_unchanged {
             self.model.lock().clear_setup_echo();
             self.finish_subshell_bootstrap(ctx);
             return;
+        }
+        // The tty echoes this line from now on: expected now, not before (see
+        // `write_init_subshell_bytes_to_pty`).
+        if expects_echo {
+            self.model.lock().expect_setup_echo(&line);
         }
         self.write_to_pty(line.into_bytes(), ctx);
         self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
@@ -23443,6 +23465,7 @@ impl TerminalView {
             line_started: false,
             no_tty_probe: false,
             typed_ahead_line: None,
+            typed_ahead_row: 0,
             seen_shell_leader: false,
         });
         self.judge_armed_subshell_setup("armed", ctx);
@@ -23517,7 +23540,9 @@ impl TerminalView {
                 look.cursor_row_continues,
                 armed.typed_ahead_line.as_deref(),
             );
-            let rows = look.position.1.saturating_sub(armed.line_end_baseline.1);
+            // Rows below the typed-ahead line's own end, whatever was typed since (to a program
+            // that line started, say).
+            let rows = look.position.1.saturating_sub(armed.typed_ahead_row);
             let before = armed.ledger.typed_ahead;
             let after = subshell_ready::typed_ahead_after_look(
                 before, &look.tty, look.tail, line_shown, rows,
@@ -24010,6 +24035,7 @@ impl TerminalView {
         if typed_ahead {
             armed.ledger.typed_ahead = subshell_ready::TypedAhead::Unread;
             armed.typed_ahead_line = last_line;
+            armed.typed_ahead_row = armed.last_position.1;
             warpui::input_order::log_hop("subshell_ready_typed_ahead", || {
                 "from=None to=Unread at=line_end".to_owned()
             });
@@ -24165,6 +24191,17 @@ impl TerminalView {
                 // history), with a count-only toast (R8, owner Q9).
                 self.give_up_setup_gates_to_editor(cancel_reason(kind), ctx);
             }
+        }
+        if matches!(kind, WrittenCancel::Secret | WrittenCancel::Question) {
+            // The shell asks for input (a password, an answer) and the toast says "answer it
+            // first": what the user types next is for the tty's reader. The hand-back above left
+            // the held line in the editor, and keys typed after a kept line follow it there
+            // (#1658): the password went into the input editor, shown in clear behind the
+            // handed-back line, and never reached the `read -s` (rounds 7 and 9,
+            // `subshell_ready_secret_after_prompt` / `_after_probe`: the pw file empty or
+            // `<the line>hunter2`). The line stays in the editor under its Enter guard; the keys
+            // go to the pty again, as `on_tty_read_marker` does on ConPTY.
+            self.end_keys_follow_editor(cancel_reason(kind), ctx);
         }
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();

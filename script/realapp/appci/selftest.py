@@ -2118,6 +2118,15 @@ def audit5_accounting_window_runs_to_case_end_and_a_loss_outside_loss_cases_is_n
         open(log, "w").write(kd("a", 200.01, 1) + kd("b", 200.02, 2) + kd("c", 201.01, 3) + hop(200.15) + hop(206.2))     # the 2nd Enter: wall1 + 5 s
         assert injacct.window(be.calls) == (199.5, 204.2) and injacct.window(be.calls, 210.0) == (199.5, 210.0)
         assert injacct.window(be.calls, 202.0) == (199.5, 204.2), "a case that ends at once keeps the 3 s tail"
+        # rounds 8/9: the window never starts before the case does; the tail of the harness's previous line (typed after the case before) is not this case's
+        assert injacct.window(be.calls, 210.0, 199.9) == (199.9, 210.0) and injacct.window(be.calls, 210.0, 150.0) == (199.5, 210.0)
+        assert injacct.window(be.calls, 210.0, 205.0) == (200.0, 210.0), "a floor past the first call never cuts the case's own keys"
+        log2 = os.path.join(d, "p2.log")
+        open(log2, "w").write(kd("z", 199.70, 7) + kd("Return", 199.75, 8) + open(log).read())      # the previous probe's last key and its Enter
+        _, slack = injacct.account(be.calls, log2, "x", t_end=210.0)
+        assert (slack["extra"], slack["enters_seen"]) == (2, 3), slack                                 # the artifact: +2 keys, +1 Enter
+        _, floored = injacct.account(be.calls, log2, "x", t_end=210.0, t_floor=199.9)
+        assert (floored["sent"], floored["seen"], floored["extra"], floored["enters_seen"]) == (5, 5, 0, 2), floored
         _, old = injacct.account(be.calls, log, "x")
         assert (old["enters_seen"], old["lost"]) == (1, 1), old                    # the old fixed window: the late Enter reads as lost
         _, j = injacct.account(be.calls, log, "x", t_end=210.0)
@@ -2368,6 +2377,9 @@ def r18e9_enter_taint_splits_lost_from_uncovered():
         assert note is None and m["lost"] == 0, (note, m)
         note, m = taint.case_taint(os.path.join(d, "run"), "c", "terminal", 99.0, 101.0, {5}, "")
         assert note and "TAINTED" in note and m["uncovered"] == 1 and os.path.exists(os.path.join(d, "run", "logs", "enter_taint.jsonl"))
+        # rounds 8/9: a Return tapped BEFORE the case started (the harness's previous probe line) is not this case's: no taint, not counted
+        note, m = taint.case_taint(os.path.join(d, "run"), "c", "terminal", 100.3, 101.0, {5}, "")
+        assert note is None and m["taps"] == 0, (note, m)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
