@@ -400,7 +400,9 @@ def stream_keys(ctx, r, fm, need, per=30):
 def present_mode_ab(ctx, r, fm, n):
     """design option F (docs/design/render-latency.md), zero code: the streaming key -> frame of this case again with PHOSPHOR_PRESENT_MODE=mailbox and
     PHOSPHOR_FRAME_LATENCY=1, relaunching per block (render_hops.arm_schedule, like cases_ctrlc_ab) next to a relaunched default arm. Linux only (the launcher
-    that takes App.extra_env; macOS and Windows have no such present-mode switch). METRICS and a note only: the judged run is the default one above."""
+    that takes App.extra_env; macOS and Windows have no such present-mode switch). METRICS and a note only: the judged run is the default one above.
+    #1843 (docs/design/1843-1848-latency.md): the same blocks also run PHOSPHOR_KEY_FRAME_NOW=0 (arm keynow_off), the kill switch of the key frame drawn
+    ahead of the compositor's frame callback, so the fix (default arm) and the old behaviour are measured in one run."""
     if ctx.win or ctx.be.name == "mac" or not hasattr(ctx.app, "extra_env"):
         return
     if os.environ.get("APPCI_RENDER_AB", "1") == "0":
@@ -441,6 +443,15 @@ def present_mode_ab(ctx, r, fm, n):
         r.note("present-mode A/B %s vs default (streaming key->frame p50, negative = faster): raw %s ms, slot-adjusted %s ms; present_ms p50 %s vs default %s (n %s / %s)" % (
             a, d["raw_p50_delta"], d["adjusted_p50_delta"], (arms[a]["present_ms"] or {}).get("p50"), (arms["default"]["present_ms"] or {}).get("p50"),
             (arms[a]["streaming"] or {}).get("n"), (arms["default"]["streaming"] or {}).get("n")))
+    # #1843: the key frame drawn ahead of the compositor's frame callback, ON (default arm) against its kill switch (keynow_off), relaunched in the same run
+    off = arms.get("keynow_off") or {}
+    r.note("#1843 key-frame-now A/B (streaming key->frame p50): on %s ms / off %s ms (n %s / %s); key frames drawn ahead of the frame callback: on %s, off %s; "
+           "their acquire+present wait p95 %s ms" % (
+               (arms["default"]["streaming"] or {}).get("p50"), (off.get("streaming") or {}).get("p50"), (arms["default"]["streaming"] or {}).get("n"),
+               (off.get("streaming") or {}).get("n"), arms["default"].get("key_frames_now"), off.get("key_frames_now"),
+               (arms["default"].get("key_frame_now_wait_ms") or {}).get("p95")))
+    for w in render_hops.key_frame_now_warns(arms):
+        r.note("WARN #1843 key-frame-now A/B: " + w)
 
 
 # ---------------------------------------------------------------- Enter in the agent input

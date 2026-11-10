@@ -1,5 +1,6 @@
 mod draw_retry;
 mod key_events;
+mod key_frame;
 
 #[cfg(test)]
 mod drag_drop_tests;
@@ -190,6 +191,8 @@ struct WindowState {
     owed_redraw: draw_retry::OwedRedraw,
     /// Skips redraws while the window is minimized; see [`MinimizedRedrawGate`].
     minimized_gate: MinimizedRedrawGate,
+    /// A key dispatched in this loop iteration that has had no frame yet; see [`key_frame`].
+    key_frame_now: key_frame::KeyFrameNow,
 }
 
 impl WindowState {
@@ -213,6 +216,7 @@ impl WindowState {
             redraw_retry_at: None,
             owed_redraw: Default::default(),
             minimized_gate: MinimizedRedrawGate::default(),
+            key_frame_now: Default::default(),
         }
     }
 
@@ -768,6 +772,21 @@ impl EventLoop {
         self.service_redraw_retries(window_target);
         self.flush_owed_redraws(false);
 
+        // #1843: a key press (or committed IME text) is owed a frame by the end of this loop
+        // iteration; see `draw_key_frames_now`.
+        if let Event::WindowEvent { window_id, event } = &evt {
+            let is_key = match event {
+                WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+                WindowEvent::Ime(ImeEvent::Commit(_)) => true,
+                _ => false,
+            };
+            if is_key {
+                if let Some(state) = self.state.windows.get_mut(window_id) {
+                    state.key_frame_now.note_key();
+                }
+            }
+        }
+
         match evt {
             Event::NewEvents(StartCause::Init) => {
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -1212,6 +1231,7 @@ impl EventLoop {
                 }
             }
             Event::WindowEvent { window_id, event } => self.handle_window_event(window_id, event),
+            Event::AboutToWait => self.draw_key_frames_now(window_target),
             Event::LoopExiting => self.run_exit_sequence(),
 
             _ => {}
@@ -1264,6 +1284,85 @@ impl EventLoop {
         // On web, it's not possible to exit cleanly, so just return from the event loop
         // instead.
         std::process::exit(0);
+    }
+
+    /// #1843, end of a loop iteration (`AboutToWait`): a window that handled a key in this
+    /// iteration and is still invalidated gets its frame now. That is the case on Wayland while
+    /// a frame callback is outstanding (winit holds `RedrawRequested` back until the compositor
+    /// answers, up to a whole refresh interval while a reply streams). Every other frame keeps
+    /// that throttle; see [`key_frame`] for the conditions and the kill switch. The withheld
+    /// `RedrawRequested` still arrives with the callback and re-presents the scene built here
+    /// (no second layout), exactly as an expose would.
+    fn draw_key_frames_now(&mut self, window_target: &ActiveEventLoop) {
+        let redraw_is_throttled = {
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            {
+                matches!(
+                    super::app::WINDOWING_SYSTEM.get(),
+                    Some(super::app::WindowingSystem::Wayland)
+                )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+            {
+                false
+            }
+        };
+        let enabled = key_frame::enabled();
+        let can_borrow_app = self.callbacks.can_borrow_mut();
+        let mut due = Vec::new();
+        for (winit_window_id, state) in self.state.windows.iter_mut() {
+            // Every pending key is consumed here, drawn or not: it is offered once.
+            let window_id = state.window_id;
+            // The window is only looked up when the cheap facts already say yes.
+            let (scene_invalid, present_never_waits) =
+                if enabled && redraw_is_throttled && can_borrow_app {
+                    self.ui_app
+                        .read(|ctx| ctx.windows().platform_window(window_id))
+                        .map(|window| {
+                            let window = downcast_window(window.as_ref());
+                            (!window.has_scene(), window.present_never_waits())
+                        })
+                        .unwrap_or((false, false))
+                } else {
+                    (false, false)
+                };
+            if state.key_frame_now.take_decision(key_frame::Facts {
+                enabled,
+                redraw_is_throttled,
+                scene_invalid,
+                present_never_waits,
+                can_borrow_app,
+            }) {
+                due.push(*winit_window_id);
+            }
+        }
+        for winit_window_id in due {
+            self.redraw_window(winit_window_id, window_target);
+            let Some(state) = self.state.windows.get_mut(&winit_window_id) else {
+                continue;
+            };
+            let window_id = state.window_id;
+            let Some(window) = self
+                .ui_app
+                .read(|ctx| ctx.windows().platform_window(window_id))
+            else {
+                continue;
+            };
+            let window = downcast_window(window.as_ref());
+            let wait = window.last_acquire_wait().unwrap_or_default()
+                + window.last_present_time().unwrap_or_default();
+            crate::input_order::log_hop("key_frame_now", || key_frame::now_frame_detail(wait));
+            if state.key_frame_now.note_now_frame(wait) {
+                log::warn!(
+                    "A key frame drawn ahead of the compositor's frame callback blocked for \
+                     {:.1} ms again; drawing key frames early is off for this window (#1843)",
+                    wait.as_secs_f64() * 1e3
+                );
+                crate::input_order::log_hop("key_frame_now_off", || {
+                    key_frame::now_frame_detail(wait)
+                });
+            }
+        }
     }
 
     fn redraw_window(
@@ -1397,6 +1496,7 @@ impl EventLoop {
                 if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
                     state.draw_retry.on_frame_drawn();
                     state.owed_redraw.note_draw_ran();
+                    state.key_frame_now.note_frame_drawn();
                 }
                 self.callbacks.for_window(window).frame_drawn()
             }

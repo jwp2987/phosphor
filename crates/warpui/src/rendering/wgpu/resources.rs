@@ -78,6 +78,9 @@ pub struct Resources {
     /// How long `surface_texture.present()` took in the most recent frame (zero when the frame did
     /// not present). Diagnostic only (render-latency step A).
     last_present_time: Cell<Duration>,
+    /// Whether `present()` with the configured mode never waits for vsync or a frame callback
+    /// (see [`present_never_waits`]); decided once, when the surface is configured.
+    present_never_waits: bool,
 }
 
 impl Resources {
@@ -120,14 +123,13 @@ impl Resources {
                 adapter_info.name,
             );
 
+            let supported_present_modes = surface.get_capabilities(&adapter).present_modes;
             log::info!(
                 "{}",
-                surface_config_summary(
-                    &adapter_info,
-                    &surface_config,
-                    &surface.get_capabilities(&adapter).present_modes,
-                )
+                surface_config_summary(&adapter_info, &surface_config, &supported_present_modes)
             );
+            let present_never_waits =
+                present_never_waits(surface_config.present_mode, &supported_present_modes);
 
             on_gpu_device_selected(device_info_from_adapter_info(adapter_info));
 
@@ -156,6 +158,7 @@ impl Resources {
                 quad,
                 last_acquire_wait: Cell::new(Duration::ZERO),
                 last_present_time: Cell::new(Duration::ZERO),
+                present_never_waits,
             })
         })
     }
@@ -168,6 +171,12 @@ impl Resources {
     /// How long the most recent `present()` call took; zero when the frame did not present.
     pub fn last_present_time(&self) -> Duration {
         self.last_present_time.get()
+    }
+
+    /// Whether a frame can be presented at any time without the main thread waiting for the
+    /// display (#1843: the condition for drawing a key's frame ahead of the frame callback).
+    pub fn present_never_waits(&self) -> bool {
+        self.present_never_waits
     }
 
     /// Records the duration of this frame's `present()` call.
@@ -969,6 +978,17 @@ fn resolve_auto_no_vsync(supported: &[PresentMode]) -> PresentMode {
     .into_iter()
     .find(|mode| supported.contains(mode))
     .unwrap_or(PresentMode::Fifo)
+}
+
+/// Whether `present()` in `mode` returns without waiting for vsync or a compositor frame
+/// callback: only Immediate and Mailbox, after resolving `AutoNoVsync` the way wgpu does. Fifo and
+/// its relatives (and `AutoVsync`, which resolves to one of them) queue behind the display.
+fn present_never_waits(mode: PresentMode, supported: &[PresentMode]) -> bool {
+    let resolved = match mode {
+        PresentMode::AutoNoVsync => resolve_auto_no_vsync(supported),
+        mode => mode,
+    };
+    matches!(resolved, PresentMode::Immediate | PresentMode::Mailbox)
 }
 
 /// `PHOSPHOR_PRESENT_MODE` (immediate, mailbox, fifo, auto_vsync, auto_no_vsync): a present mode to

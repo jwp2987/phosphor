@@ -211,6 +211,24 @@ fn test_present_mode_override_parses_and_checks_support() {
 }
 
 #[test]
+fn present_never_waits_only_for_immediate_and_mailbox() {
+    use wgpu::PresentMode::*;
+    // #1843: a key's frame is drawn ahead of the compositor's frame callback only when the
+    // present cannot park the main thread.
+    let all = [Mailbox, Fifo, Immediate];
+    assert!(present_never_waits(Immediate, &all));
+    assert!(present_never_waits(Mailbox, &all));
+    assert!(!present_never_waits(Fifo, &all));
+    assert!(!present_never_waits(FifoRelaxed, &all));
+    assert!(!present_never_waits(AutoVsync, &all));
+    // AutoNoVsync resolves the way wgpu does: Immediate, else Mailbox, else Fifo.
+    assert!(present_never_waits(AutoNoVsync, &all));
+    assert!(present_never_waits(AutoNoVsync, &[Fifo, Mailbox]));
+    assert!(!present_never_waits(AutoNoVsync, &[Fifo]));
+    assert!(!present_never_waits(AutoNoVsync, &[]));
+}
+
+#[test]
 fn test_frame_latency_override_accepts_only_1_to_3() {
     assert_eq!(frame_latency_override(None), None);
     assert_eq!(frame_latency_override(Some("1")), Some(1));
