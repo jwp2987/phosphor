@@ -7,7 +7,7 @@ use super::{
 };
 use crate::features::FeatureFlag;
 use crate::terminal::cli_agent_sessions::plugin_manager::CliAgentPluginManager;
-use crate::terminal::cli_agent_sessions::plugin_manager::tests::FakeRunner;
+use crate::terminal::cli_agent_sessions::plugin_manager::tests::{FakeRunner, without_local_path};
 
 #[test]
 fn can_auto_install_is_true() {
@@ -675,9 +675,12 @@ fn warp_registered_codex_home(version: &str) -> tempfile::TempDir {
 }
 
 /// No command Phosphor runs may touch the network: no git, no remote URL, no upgrade.
-fn assert_all_local(runner: &FakeRunner) {
+/// The folder argument is `bundle`, a temp folder this test made: it is cut out before the scan,
+/// so the name of the temp directory (`/home/gitlab-runner/...` on the CI box) is not read as a
+/// remote.
+fn assert_all_local(runner: &FakeRunner, bundle: &Path) {
     for call in runner.calls() {
-        let lower = call.to_lowercase();
+        let lower = without_local_path(&call, bundle).to_lowercase();
         assert!(call.starts_with("codex plugin "), "{call}");
         for remote in ["http", "github", "gitlab", "git@", "ls-remote", "upgrade"] {
             assert!(!lower.contains(remote), "{call}");
@@ -700,7 +703,7 @@ fn fresh_install_adds_the_bundled_folder_then_the_plugin() {
         runner.calls(),
         vec![add_command(&bundle), PLUGIN_ADD.to_owned()]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
 }
 
 #[test]
@@ -735,7 +738,7 @@ fn install_over_a_remote_registration_replaces_it_with_the_bundle() {
             PLUGIN_ADD.to_owned()
         ]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
 }
 
 #[test]
@@ -786,7 +789,7 @@ fn update_re_registers_a_remote_marketplace_from_the_bundle_with_no_network_step
             PLUGIN_ADD.to_owned()
         ]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
     assert!(!needs_move, "the move chip is no longer needed");
 }
 
@@ -878,7 +881,7 @@ fn a_failed_add_never_re_fetches_a_remote_previous_source() {
         runner.calls(),
         vec![REMOVE.to_owned(), add_command(&bundle)]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
     assert!(!needs_move, "a completed attempt is not re-offered");
 }
 
@@ -901,7 +904,7 @@ fn move_re_registers_from_the_bundle_and_clears_the_offer() {
             PLUGIN_ADD.to_owned()
         ]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
     assert!(!needs_move);
 }
 

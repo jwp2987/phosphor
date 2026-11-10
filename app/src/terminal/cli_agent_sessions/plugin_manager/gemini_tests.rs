@@ -7,7 +7,7 @@ use super::{
     MINIMUM_PLUGIN_VERSION, check_installed, compare_versions, install_source, installed_version,
     plugin_is_outdated, plugin_needs_source_migration, reset_source_move_attempt,
 };
-use crate::terminal::cli_agent_sessions::plugin_manager::tests::FakeRunner;
+use crate::terminal::cli_agent_sessions::plugin_manager::tests::{FakeRunner, without_local_path};
 
 #[test]
 fn can_auto_install_is_true() {
@@ -430,9 +430,12 @@ fn cli_effects(extensions_dir: PathBuf, bundle: PathBuf) -> impl Fn(&str) + Send
 }
 
 /// No command Phosphor runs may touch the network: no remote URL, no `extensions update`.
-fn assert_all_local(runner: &FakeRunner) {
+/// The folder argument is `bundle`, a temp folder this test made: it is cut out before the scan,
+/// so the name of the temp directory (`/home/gitlab-runner/...` on the CI box) is not read as a
+/// remote.
+fn assert_all_local(runner: &FakeRunner, bundle: &Path) {
     for call in runner.calls() {
-        let lower = call.to_lowercase();
+        let lower = without_local_path(&call, bundle).to_lowercase();
         assert!(call.starts_with("gemini extensions "), "{call}");
         for remote in ["http", "github", "gitlab", "git@", " update "] {
             assert!(!lower.contains(remote), "{call}");
@@ -452,7 +455,7 @@ fn fresh_install_installs_the_bundled_folder() {
 
     assert_eq!(result, Ok(()));
     assert_eq!(runner.calls(), vec![install_command(&bundle)]);
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
 }
 
 #[test]
@@ -483,7 +486,7 @@ fn update_replaces_a_remote_install_with_the_bundle_and_clears_the_offer() {
         runner.calls(),
         vec![UNINSTALL.to_owned(), install_command(&bundle)]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
     assert_eq!(
         install_source(&extensions_dir),
         InstallSource::Bundle(bundle.to_string_lossy().into_owned())
@@ -583,7 +586,7 @@ fn move_reinstalls_from_the_bundle() {
         runner.calls(),
         vec![UNINSTALL.to_owned(), install_command(&bundle)]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
     assert!(!needs_move);
 }
 
