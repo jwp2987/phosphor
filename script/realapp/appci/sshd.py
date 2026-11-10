@@ -1,7 +1,8 @@
 # appci/sshd.py: a local ssh server on 127.0.0.1 so the ssh cases need no external host.
 # Preferred: the system OpenSSH sshd run as the CI user (no root: pubkey only, ForceCommand starts bash with
 # HOME = the scratch "remote" home so the real home is never touched). Fallback: script/realapp/linux/bin/fakesshd.py
-# when python3-paramiko is importable. Neither available -> start() returns None and the ssh cases SKIP.
+# when python3-paramiko is importable. Neither available -> start() returns None and the ssh cases SKIP in a local run; where the host is
+# required (required(): CI, or APPCI_REQUIRE_SSH=1) run.py emits a FAIL row `ssh_test_host` and the ssh cases are NOREF (#2043).
 import os, shutil, socket, subprocess, sys, time
 
 PW_PASSPHRASE = "ppCI-7431-test"       # protects ONLY the throw-away key below; it exists to give the ssh cases a real tty prompt (cases_caseremote.py)
@@ -64,6 +65,36 @@ def _start_pty_host(d, rhome, bash, clientkey, hostkey):
         return None, "Git for Windows' sshd.exe did not listen on 127.0.0.1:%d (%s)" % (port, tail or "no output")
     except Exception as e:
         return None, "the pty host could not be set up: %r" % (e,)
+
+
+def stderr_tail(path, lines=3, cap=500):
+    """the last non-empty lines of a server's stderr file as one line (the exception line of a traceback is the last one); "" when unreadable"""
+    try:
+        ls = [l.strip() for l in open(path, errors="replace").read().splitlines() if l.strip()]
+    except OSError:
+        return ""
+    return " | ".join(ls[-lines:])[-cap:]
+
+
+def required(env=None):
+    """#2043: must this run have a usable ssh test host? Yes in CI (GitLab sets CI) and with APPCI_REQUIRE_SSH=1: every CI test machine is set up
+    to have one, so a host that does not start there is a harness or machine fault that took a whole test area with it, and run.py reports it as
+    a FAIL row (`ssh_test_host`) with the ssh cases NOREF. A local run on a machine without sshd keeps the plain skip."""
+    env = os.environ if env is None else env
+    return env.get("APPCI_REQUIRE_SSH") == "1" or bool(env.get("CI"))
+
+
+def host_missing_row(label, why, stderr_path=None):
+    """#2043: the FAIL row of a pass that has no usable ssh test host where one is required. A TEST / machine verdict, never an app one."""
+    tail = stderr_tail(stderr_path) if stderr_path else ""
+    detail = ["TEST HOST MISSING (harness or test machine, not an app verdict): the %s pass has no usable ssh test host, so none of its ssh cases "
+              "was judged (each is NOREF): %s" % (label, why or NO_HOST)]
+    if tail and tail not in detail[0]:
+        detail.append("ssh/fakesshd.stderr: " + tail)
+    return dict(name="ssh_test_host", mode=label, status="fail", seconds=0, metrics={}, shots=[], detail=detail)
+
+
+NO_HOST = "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, i.e. apt package openssh-server; or python3-paramiko for fakesshd.py)"
 
 
 def _kill_tree(p):
@@ -163,7 +194,8 @@ def _start_windows(prof, run, d, port, app_bin=None):
     p.kill()
     if host:
         _kill_tree(host["popen"])
-    WHY = "fakesshd_win.py did not listen on 127.0.0.1:%d (see ssh/fakesshd.stderr)" % port
+    # #2043: the reason itself goes into the row (rounds 10 and 11 said only "see ssh/fakesshd.stderr", and the cause was one line in that file)
+    WHY = "fakesshd_win.py did not listen on 127.0.0.1:%d (ssh/fakesshd.stderr: %s)" % (port, stderr_tail(os.path.join(d, "fakesshd.stderr")) or "empty")
     return None
 
 

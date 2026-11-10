@@ -97,6 +97,26 @@ class Skip(Exception):
     pass
 
 
+class HostMissing(Skip):
+    """#2043: the case could not run because a test host the run REQUIRES did not start (Ctx.ssh_required). run.py turns it into status 'noref'
+    (not judged, listed by the trend report), never a plain skip: a skip reads as "does not apply here" and hid the loss of every Windows ssh
+    case for two rounds. Code that handles Skip (cleanup that re-raises it) handles this the same way."""
+
+
+NO_SSH_HOST = "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, i.e. apt package openssh-server; or python3-paramiko for fakesshd.py)"
+
+
+def need_ssh(ctx, r):
+    """every case that needs the harness's ssh test host calls this first. With a host: returns. Without: a plain skip in a local run, HostMissing
+    (NOREF) where the host is required (CI; sshd.required)."""
+    if ctx.ssh:
+        return
+    why = getattr(ctx, "ssh_why", None) or NO_SSH_HOST
+    if getattr(ctx, "ssh_required", False):
+        raise HostMissing("TEST HOST MISSING: the ssh test host of this pass did not start, so this case was not judged (see the ssh_test_host row): %s" % why)
+    r.skip(why)
+
+
 class Result:
     def __init__(self, name, mode):
         self.name, self.mode = name, mode
@@ -752,6 +772,7 @@ class Ctx:
         self.probe_rng = random.Random()
         self.ssh, self.ollama, self.log_path = ssh, ollama, log_path
         self.ssh_why = ssh_why     # why there is no usable ssh test host (sshd missing, or the setup probe `ssh fake true` failed); None when ctx.ssh is set
+        self.ssh_required = False  # run.py: True when this pass has no ssh test host although the run requires one (#2043): need_ssh then raises HostMissing (NOREF), not Skip
         self.W = prof.home + "/w"
         self.reprove = None           # Windows (run.py): callable() -> None | reason; re-proves key delivery + the PowerShell pane state after a case relaunched the app
         self.opts = {}                # tier options of this pass (winmap.tier_plan): ref, ft_gaps, cc_short; empty = the full tier
@@ -2997,8 +3018,7 @@ def ssh_trial_summary(r, verdicts):
 
 @case("ssh_connect_typing", order=30)
 def c_ssh(ctx, r):
-    if not ctx.ssh:
-        r.skip(ctx.ssh_why or "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
+    need_ssh(ctx, r)
     plan = ssh_trial_plan(SSH_GAPS, int(os.environ.get("APPCI_SSH_TRIALS", "3")), int(os.environ.get("APPCI_SSH_TOTAL_TRIALS", "0") or 0))
     ctx.rm("rl.txt")
     for f in ("rl.txt",):
@@ -3045,8 +3065,7 @@ def c_ssh_enter_immediate(ctx, r):
     """#1415: `ssh <host>` Enter immediately followed by `echo <tok>` Enter, no pause at all. The
     second line is typed while the first Enter still waits at its gate; released into the new
     connect it must be held for the remote shell (it used to be dropped with a log line)."""
-    if not ctx.ssh:
-        r.skip(ctx.ssh_why or "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
+    need_ssh(ctx, r)
     trials = int(os.environ.get("APPCI_SSH_TRIALS", "3"))
     try:
         os.remove(os.path.join(ctx.prof.rhome, "rh.txt"))
@@ -3098,8 +3117,7 @@ def c_ssh_nested(ctx, r):
     """#1421: `ssh fake` Enter, then `ssh fake` Enter and `echo <tok>` Enter typed during that first
     connect. At the hand-over the nested ssh is submitted; the echo behind it is held for the
     SECOND connect, so it runs exactly once, remotely, and never locally."""
-    if not ctx.ssh:
-        r.skip(ctx.ssh_why or "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
+    need_ssh(ctx, r)
     try:
         os.remove(os.path.join(ctx.prof.rhome, "rn.txt"))
     except FileNotFoundError:

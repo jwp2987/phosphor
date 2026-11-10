@@ -23,7 +23,11 @@ from ctypes import wintypes as wt
 
 import paramiko
 
-import ptyhost
+# #2043: this file runs as its own process (sshd.py), and the Windows test machine's Python is the python.org embeddable layout
+# (python312._pth), where the folder of the script being run is NOT on sys.path. Without this line `import ptyhost` raised
+# ModuleNotFoundError and no Windows ssh case ran in rounds 10 and 11 (selftest: appci_programs_find_their_siblings).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ptyhost  # noqa: E402
 
 PORT, KEYDIR, RHOME, BASH, LOGF = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 PW = os.environ.get("FAKE_PASSWORD", "")

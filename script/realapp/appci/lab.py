@@ -8,7 +8,11 @@
 #   SSHLAB_TOKEN is read through ci_env.get and is NEVER printed, logged or written to an artifact.
 #   APPCI_LAB_MATRIX=quick|full|<spec>   which arms of a lab case run (see matrix_selection)
 import base64, secrets, fnmatch, hashlib, hmac, io, itertools, json, os, re, shutil, socket, statistics, struct, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request, urllib.error
-import ci_env
+
+# #2043: `lab.py stop <run dir>` runs as its own process (windows/ci/after_job.ps1), and the Windows machine's embeddable Python does not put the
+# script's folder on sys.path: without this line the sibling import raised ModuleNotFoundError there (as fakesshd_win.py's did).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ci_env  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SSHLAB_DIR = os.path.normpath(os.path.join(HERE, "..", "sshlab"))

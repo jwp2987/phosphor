@@ -227,8 +227,7 @@ def c_agent_ssh(ctx, r):
     """#1829 (c): the agent runs `ssh -tt fake '<remote tty read>'` against the local test sshd. The typed text must reach the REMOTE program exactly (~/ai_ssh.txt on the
     remote side, and `got:` in the model's next request), never the local shell or the agent input. Skips with the reason when no local ssh test host exists."""
     need_fake(ctx, r)
-    if not ctx.ssh:
-        r.skip(ctx.ssh_why or "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
+    cases.need_ssh(ctx, r)
     AG.fresh_conversation(ctx, r)
     try:
         try:

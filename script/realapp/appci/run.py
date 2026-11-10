@@ -19,6 +19,10 @@ def skip_status(r, why):
     if r.fails:
         r.notes.insert(0, "ALSO SKIPPED after the failed check(s) above: %s" % why)
         return "fail"
+    if isinstance(why, cases.HostMissing):      # #2043: a required test host did not start: not judged (NOREF, the trend report lists it), never a plain skip
+        r.noref.append(str(why))
+        r.notes.insert(0, "NO-REFERENCE: " + str(why))
+        return "noref"
     r.notes.insert(0, str(why))
     return "skip"
 
@@ -330,7 +334,7 @@ def main():
             ssh_info = None if sim else sshd.start(prof, run, app_bin=a.bin)
             if ssh_info is None and win and sshd.WHY:
                 ssh_why = sshd.WHY
-                print("no ssh test host on Windows, ssh cases will skip: %s" % ssh_why, flush=True)
+                print("no ssh test host on Windows, the ssh cases cannot run: %s" % ssh_why, flush=True)
             if ssh_info:
                 prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b', ssh_port=ssh_info["port"], ssh_ident=ssh_info["ident"], ssh_pw=ssh_info.get("pwhost"))
                 ssh_why = prof.ssh_probe()
@@ -338,6 +342,14 @@ def main():
                     print("ssh probe failed, ssh cases will skip: %s" % ssh_why, flush=True)
                     sshd.stop(ssh_info)
                     ssh_info = None
+            ssh_missing = ssh_info is None and not sim and sshd.required()
+            if ssh_missing:
+                # #2043: rounds 10 and 11 lost every Windows ssh case to a quiet SKIP. Where the host is required its absence is a FAIL row of its
+                # own (the job goes red, the reason and the server's stderr are in the row) and the ssh cases of the pass are NOREF.
+                row = sshd.host_missing_row(label, ssh_why, os.path.join(run, "ssh", "fakesshd.stderr") if win else None)
+                print("SSH TEST HOST MISSING [%s]: %s" % (label, " ;; ".join(row["detail"])), flush=True)
+                emit(row)
+                exit_fail = True
             if any(c.get("lab") and mode in c["modes"] and (not win or not winmap.skip_reason(c["name"], pane)) for c in psel):
                 lab_obj, lab_why = labmod.Lab.start(run)
                 if lab_obj:
@@ -371,6 +383,7 @@ def main():
                 if a.backend in ("mac", "windows", "wayland"):
                     be.pid_fn = app.pid           # the guard compares the frontmost PID with THIS pid before every injection
             ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path, ssh_why, pane=pane, variant=variant)
+            ctx.ssh_required = ssh_missing
             ctx.lab, ctx.lab_why = lab_obj, lab_why
             if win:       # #1540/#1541: a case that relaunches the app by itself re-proves the keys and re-sets the pane state exactly as the relaunch branch below does
                 ctx.reprove = lambda: prove_keys(ctx, be, pane, label)

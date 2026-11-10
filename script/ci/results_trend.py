@@ -63,6 +63,8 @@ def load_runs(dirs):
 
 
 def noref_kind(detail):
+    if "TEST HOST MISSING" in detail:      # #2043: a case lost to a test host that did not start is never filed under the injector explanation
+        return "other"
     return "injector" if "injector accounting" in detail and ("never reached" in detail or "UNVERIFIABLE" in detail) else "other"
 
 
@@ -192,6 +194,12 @@ def self_test():
     fx, rg = compare(runs[0], runs[1], "macos")
     assert fx == [("x", "terminal")] and sorted(rg) == [("key_loss_control", "terminal"), ("y", "terminal")], (fx, rg)
     assert counts(runs[0], "macos")["noref_inj"] == 1 and counts(runs[1], "macos")["noref_other"] == 1
+    # #2043: a case lost to a missing test host is listed by name, whatever the injector accounting appended to its row
+    lost = "NO-REFERENCE: TEST HOST MISSING: the ssh test host of this pass did not start; injector accounting: UNVERIFIABLE: no key trace"
+    assert noref_kind(lost) == "other" and noref_kind("injector accounting: UNVERIFIABLE: no key trace") == "injector"
+    h = load_runs([mk("h", "2026-11-03", [("ssh_connect_typing", "terminal", "noref", lost), ("ssh_test_host", "terminal", "fail", "TEST HOST MISSING")])])
+    hm = render(h, 5)
+    assert "NOREF without the injector explanation (1):** `ssh_connect_typing` (terminal)" in hm and "`ssh_test_host` (terminal)" in hm, hm
     assert streak(runs, ("macos", "y", "terminal")) == 1 and streak(runs, ("macos", "new", "terminal")) == 1 and streak(runs, ("macos", "x", "terminal")) == 0
     md = render(runs, 5)
     assert "[DANGER]" in md and "key_loss_control" in md and "`mod::t`" in md and "Regressions in `" in md, md

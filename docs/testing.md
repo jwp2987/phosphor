@@ -494,7 +494,7 @@ product and every pair of fact dimensions). `python3 script/realapp/appci/selfte
 Session handling (Linux): own short `XDG_RUNTIME_DIR` (falls back to `/tmp/pa-*` when the job dir is too long for the 108-byte socket
 limit), private `HOME` per mode with an owner-like scratch config and **no credentials**, app under its own `dbus-run-session`, a local ssh
 server on 127.0.0.1 (system `sshd` as the CI user with a `ForceCommand` into a scratch remote home; else `fakesshd.py` when paramiko
-exists; else the ssh cases SKIP). OpenSSH reads `~/.ssh/config` from the passwd home, not `$HOME` (#1481), so `profile.py` writes `ssh`/`scp`/`sftp` wrappers into `<home>/bin` (first on PATH in the rc files) that exec the real binary (absolute path resolved at setup) with `-F $HOME/.ssh/config`; after the profile is built `run.py` probes `ssh fake true` in that environment and, if it fails or hangs, every ssh case SKIPs with ssh's stderr as the reason. The ssh cases type `exit` only after the token reached the REMOTE file (`Ctx.leave_remote`; it also fails fast when the count of shells under the app, from `ps`, drops, since the app logs nothing when the local shell exits); otherwise they record the miss, reset the pane and stop their trials, so a missed connect can never exit the local shell. In a pane with no local prompt hook (Windows PowerShell) `leave_remote` settles 2 s after `exit` and then `wait_ssh_gone` waits (<= 8 s) for the app's own `hop=ssh_pty_owner ssh=false`, because fakesshd-win can hold the channel open ~2.5 s after the remote shell's output ends and keys typed by the next trial reach the dying ssh.exe (r18w5, agent-mode PowerShell `ssh_connect_typing`; the app log shows plain pass-through, no hold, nothing dropped). Every process is recorded in `pids` and torn down by exact PID / process group, never by name.
+exists; else the ssh cases SKIP in a local run, and in CI the pass gets a FAIL row `ssh_test_host` with its ssh cases NOREF, #2043). OpenSSH reads `~/.ssh/config` from the passwd home, not `$HOME` (#1481), so `profile.py` writes `ssh`/`scp`/`sftp` wrappers into `<home>/bin` (first on PATH in the rc files) that exec the real binary (absolute path resolved at setup) with `-F $HOME/.ssh/config`; after the profile is built `run.py` probes `ssh fake true` in that environment and, if it fails or hangs, every ssh case SKIPs with ssh's stderr as the reason (in CI: the `ssh_test_host` FAIL row and NOREF cases, #2043). The ssh cases type `exit` only after the token reached the REMOTE file (`Ctx.leave_remote`; it also fails fast when the count of shells under the app, from `ps`, drops, since the app logs nothing when the local shell exits); otherwise they record the miss, reset the pane and stop their trials, so a missed connect can never exit the local shell. In a pane with no local prompt hook (Windows PowerShell) `leave_remote` settles 2 s after `exit` and then `wait_ssh_gone` waits (<= 8 s) for the app's own `hop=ssh_pty_owner ssh=false`, because fakesshd-win can hold the channel open ~2.5 s after the remote shell's output ends and keys typed by the next trial reach the dying ssh.exe (r18w5, agent-mode PowerShell `ssh_connect_typing`; the app log shows plain pass-through, no hold, nothing dropped). Every process is recorded in `pids` and torn down by exact PID / process group, never by name.
 Scratch config: `general.default_session_mode` = `terminal` or `agent`; agent mode adds autodetect + natural-language detection; a
 provider is configured only when the endpoint is known (then `approval_card_pause` runs; otherwise it skips).
 
@@ -4965,9 +4965,46 @@ Gaps, in the order they matter for the fix tier:
 1. **macOS and Windows have no remote but themselves.** Every ssh case there is loopback to the same machine and the same OS: no Linux host, no
    zsh / fish / nu remote, no latency, no helper. `app-test-lab-macos` and `app-test-lab-windows` exist (the box keeps one lab container per
    platform, `APPCI_LAB=fixed`) and have never been played; no tier plays them. What it takes on the Mac is in the design note (section 4).
-2. **Windows ran no ssh case at all in round 11** (`fakesshd_win.py did not listen on 127.0.0.1:<port>`, every pass). A SKIP is not red, so the
-   row count hid it.
+2. **Windows ran no ssh case at all in rounds 10 and 11** (`fakesshd_win.py did not listen on 127.0.0.1:<port>`, every pass). A SKIP is not red,
+   so the row count hid it. Cause and repair: the next section (#2043).
 3. **The lab has two recorded Linux runs and no clean one**; its harness repairs of rounds 10 and 11 are unproven.
 4. `agent_interactive_ssh` is NOREF on every platform that runs it.
 5. Trial counts in the fix tier are small by design (12 / 3 / 1 per mode): `ssh_connect_typing` says so in its own note ("this n cannot exclude a
    1/40 rate: needs 119 clean trials"). That note never changes a status.
+
+## Round 12: the Windows ssh cases were a quiet SKIP for two rounds (design `docs/design/r12-winssh.md`; #2043; nothing run on Windows when written)
+
+**What happened.** From round 10 (build/r10a) on, every Windows ssh case in every pass (`ssh_connect_typing`, `ssh_enter_then_immediate_command`,
+`ssh_nested_typeahead`, `ssh_gitbash_managed`, `ssh_gitbash_typeahead_managed`, `ssh_gitbash_kill_switch`; 22 rows in round 11) was SKIP with
+`fakesshd_win.py did not listen on 127.0.0.1:<port> (see ssh/fakesshd.stderr)`. Round 9 (build/r18w9) had the server running.
+
+**Verdict: TEST fault.** Not the app, and nothing is missing on the Windows machine. `ssh/fakesshd.stderr` of every pass of both rounds is
+`import ptyhost` / `ModuleNotFoundError: No module named 'ptyhost'`. The Windows machine's Python is the python.org embeddable layout
+(`python312._pth`, `script/ci/nodes/windows.ps1`): `sys.path` is exactly what the `._pth` file lists and the folder of the script being run is
+not added. `run.py` and the case modules insert their own folder; `fakesshd_win.py` runs as its own process and got its first sibling import with
+the #2007 change (1766c6a2b) without that line. So the #2007 repair (`exec` + pty on a measured terminal) has not run on Windows yet either.
+`lab.py stop <run dir>` (called by `windows/ci/after_job.ps1`) had the same fault, unseen because no Windows lab job has been played.
+
+**Repairs.**
+
+- `fakesshd_win.py` and `lab.py` put their own folder on `sys.path` before the sibling import. Selftest `appci_programs_find_their_siblings`
+  holds every appci file that is run as a program (shebang or `__main__` block) to that rule, and checks that every program `sshd.py` starts
+  is in the scan.
+- The skip reason now quotes the last lines of `ssh/fakesshd.stderr` itself (`sshd.stderr_tail`) instead of pointing at the file.
+
+**A required test host that does not start is loud (decision).** `sshd.required()`: the ssh test host is required when `CI` is set (every GitLab
+job) or with `APPCI_REQUIRE_SSH=1`; never for the `sim` backend, which has no ssh by design. In a pass where it is required and there is none
+(the server did not start, or the setup probe `ssh fake true` failed):
+
+| row | status | why this status |
+|---|---|---|
+| `ssh_test_host` (one per pass, a harness row like `harness_crash`) | **FAIL** | the run exits non-zero, the release gate and the trend report's failing list show it; the detail starts with `TEST HOST MISSING (harness or test machine, not an app verdict)` and carries the reason and the server's stderr tail |
+| every ssh case of the pass (all go through `cases.need_ssh`) | **NOREF** (`cases.HostMissing`, a `Skip` subclass; `run.skip_status`) | "not judged", listed by name under the trend report's "NOREF without the injector explanation" (`results_trend.noref_kind` files a `TEST HOST MISSING` row under `other` whatever else the row says); a SKIP reads as "does not apply here" and is what hid the loss |
+
+A check that failed before the host check still makes the row a FAIL (#1498). A local run on a machine without sshd keeps the plain SKIP with the
+same reason text. No existing expectation changed: the same cases run the same checks wherever the host starts. Selftest
+`ssh_test_host_missing_is_loud` covers the rule, the row, the status mapping and the wiring; `results_trend.py --self-test` covers the listing.
+
+**What the next Windows run should show.** The job log line `ssh test host: ...` (the measured `exec` + pty arm) in every pass, no
+`ssh_test_host` row, and the six ssh cases with real verdicts in both panes and both modes. Their verdicts are the first evidence for the #2007
+repair on Windows: failures there are new information, not regressions of this change. If the server fails for another reason, the row says which.

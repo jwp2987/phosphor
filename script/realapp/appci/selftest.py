@@ -6795,6 +6795,116 @@ def precmd_secret_honor_ps1_pure_parts():
     assert "precmd_secret_honor_ps1" in doc and "r12-ps1case.md" in doc
 
 
+@check
+def appci_programs_find_their_siblings():
+    """#2043: the Windows test machine's Python is the embeddable layout (python312._pth): the folder of the script being run is NOT on sys.path.
+    fakesshd_win.py got `import ptyhost` without putting its own folder there, raised ModuleNotFoundError at start, and every Windows ssh case
+    was a SKIP in rounds 10 and 11. Rule: an appci file that is run as a program (shebang or a __main__ block) and imports a sibling module
+    anywhere must insert its own folder into sys.path BEFORE the first such import."""
+    import ast
+    stems = {f[:-3] for f in os.listdir(HERE) if f.endswith(".py")}
+
+    def first_sibling_import_and_insert(src):
+        tree = ast.parse(src)
+        sib = []
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                sib += [n.lineno for a in n.names if a.name.split(".")[0] in stems]
+            elif isinstance(n, ast.ImportFrom) and n.level == 0 and (n.module or "").split(".")[0] in stems:
+                sib.append(n.lineno)
+        ins = [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func) == "sys.path.insert"]
+        return (min(sib) if sib else None), (min(ins) if ins else None)
+
+    programs, bad = [], []
+    for f in sorted(os.listdir(HERE)):
+        if not f.endswith(".py"):
+            continue
+        src = open(os.path.join(HERE, f), encoding="utf-8").read()
+        if not (src.startswith("#!") or "__main__" in src):
+            continue
+        programs.append(f)
+        sib, ins = first_sibling_import_and_insert(src)
+        if sib is not None and (ins is None or ins > sib):
+            bad.append("%s: sibling import at line %s, sys.path.insert(0, <own folder>) at %s" % (f, sib, ins))
+    assert "fakesshd_win.py" in programs and "run.py" in programs and "report.py" in programs, programs
+    assert not bad, "started as its own process this cannot import its neighbours under an embeddable Python: " + "; ".join(bad)
+    # the rule itself: the round 10 form is caught, the repaired form is not, a program with no sibling import needs nothing
+    r10 = "#!/usr/bin/env python3\nimport os, sys\nimport paramiko\n\nimport ptyhost\n"
+    assert first_sibling_import_and_insert(r10) == (5, None)
+    assert first_sibling_import_and_insert(r10.replace("import ptyhost", "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\nimport ptyhost")) == (6, 5)
+    assert first_sibling_import_and_insert("import os\n\ndef f():\n    import winapi\n") == (4, None)      # a late import inside a function counts too
+    assert first_sibling_import_and_insert("import os, json\n") == (None, None)
+    # every program sshd.py starts with this Python is covered by the scan
+    import re as _re
+    started = set(_re.findall(r'os\.path\.join\(HERE, "(\w+\.py)"\)', open(os.path.join(HERE, "sshd.py"), encoding="utf-8").read()))
+    assert "fakesshd_win.py" in started and started <= set(programs), started
+
+
+@check
+def ssh_test_host_missing_is_loud():
+    """#2043: where the run requires an ssh test host (CI, or APPCI_REQUIRE_SSH=1) a pass without one gets a FAIL row `ssh_test_host` and its ssh
+    cases are NOREF, never SKIP; a local run without sshd keeps the plain skip; a failed check before the skip still wins (#1498)."""
+    import run as runmod, sshd
+    assert sshd.required({"CI": "true"}) and sshd.required({"APPCI_REQUIRE_SSH": "1"}) and sshd.required({"CI": "true", "APPCI_REQUIRE_SSH": "0"})
+    assert not sshd.required({}) and not sshd.required({"APPCI_REQUIRE_SSH": "0"}) and not sshd.required({"CI": ""})
+    why = "fakesshd_win.py did not listen on 127.0.0.1:49956 (ssh/fakesshd.stderr: import ptyhost | ModuleNotFoundError: No module named 'ptyhost')"
+    # the case side: every ssh case goes through cases.need_ssh
+    have = types.SimpleNamespace(ssh={"port": 1}, ssh_why=None, ssh_required=False)
+    assert cases.need_ssh(have, cases.Result("x", "terminal")) is None
+    local = types.SimpleNamespace(ssh=None, ssh_why=None, ssh_required=False)
+    r = cases.Result("ssh_connect_typing", "terminal")
+    try:
+        cases.need_ssh(local, r)
+        raise AssertionError("no host: the case must not run")
+    except cases.HostMissing:
+        raise AssertionError("a local run without sshd is a plain skip")
+    except cases.Skip as e:
+        assert "no local ssh server" in str(e) and runmod.skip_status(r, e) == "skip" and not r.noref
+    ci = types.SimpleNamespace(ssh=None, ssh_why=why, ssh_required=True)
+    r = cases.Result("ssh_connect_typing", "terminal")
+    try:
+        cases.need_ssh(ci, r)
+        raise AssertionError("no host: the case must not run")
+    except cases.HostMissing as e:
+        assert isinstance(e, cases.Skip) and "TEST HOST MISSING" in str(e) and "ModuleNotFoundError" in str(e)
+        assert runmod.skip_status(r, e) == "noref" and r.noref and r.notes[0].startswith("NO-REFERENCE: TEST HOST MISSING"), (r.noref, r.notes)
+        assert "UNVERIFIABLE" not in r.notes[0] and "never reached" not in r.notes[0], "results_trend.noref_kind must not file this under the injector"
+    r = cases.Result("ssh_connect_typing", "terminal")
+    r.check(False, "a real failure before the host check")
+    assert runmod.skip_status(r, cases.HostMissing("TEST HOST MISSING: x")) == "fail", "a FAIL is never downgraded (#1498)"
+    for mod, n in (("cases.py", 3), ("cases_agent_interactive.py", 1), ("cases_caseremote.py", 1)):
+        src = open(os.path.join(HERE, mod), encoding="utf-8").read()
+        assert "if not ctx.ssh:" not in src.replace("def need_ssh(ctx, r):", ""), "%s: an ssh case with its own host check bypasses the rule" % mod
+        assert src.count("need_ssh(ctx, r)") >= n, mod
+    # the pass side
+    d = tempfile.mkdtemp(prefix="hostrow_")
+    try:
+        err = os.path.join(d, "fakesshd.stderr")
+        open(err, "w").write('Traceback (most recent call last):\n  File "fakesshd_win.py", line 26, in <module>\n    import ptyhost\nModuleNotFoundError: No module named \'ptyhost\'\n\n')
+        assert sshd.stderr_tail(err).endswith("import ptyhost | ModuleNotFoundError: No module named 'ptyhost'"), sshd.stderr_tail(err)
+        assert sshd.stderr_tail(os.path.join(d, "absent")) == "" and len(sshd.stderr_tail(err, cap=20)) == 20
+        row = sshd.host_missing_row("agent@gitbash", "fakesshd_win.py did not listen on 127.0.0.1:1 (see the log)", err)
+        assert row["name"] == "ssh_test_host" and row["status"] == "fail" and row["mode"] == "agent@gitbash", row
+        assert "TEST HOST MISSING" in row["detail"][0] and "not an app verdict" in row["detail"][0] and "ModuleNotFoundError" in row["detail"][1], row
+        quoted = "fakesshd_win.py did not listen on 127.0.0.1:1 (ssh/fakesshd.stderr: %s)" % sshd.stderr_tail(err)      # the form sshd._start_windows writes
+        assert len(sshd.host_missing_row("terminal", quoted, err)["detail"]) == 1, "a reason that already quotes the stderr is not repeated"
+        wsrc = open(os.path.join(HERE, "sshd.py"), encoding="utf-8").read()
+        assert '(ssh/fakesshd.stderr: %s)" % (port, stderr_tail(os.path.join(d, "fakesshd.stderr")) or "empty")' in wsrc, "the skip reason carries the server's last stderr lines"
+        assert "no local ssh server" in sshd.host_missing_row("terminal", None)["detail"][0]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    # wiring in run.py: the row is emitted, fails the run, and the pass's Ctx is told
+    src = open(os.path.join(HERE, "run.py"), encoding="utf-8").read()
+    i = src.index("ssh_missing = ssh_info is None and not sim and sshd.required()")
+    blk = src[i:i + 900]
+    assert "emit(row)" in blk and "exit_fail = True" in blk and "sshd.host_missing_row(label, ssh_why" in blk, blk
+    assert "ctx.ssh_required = ssh_missing" in src
+    assert "ssh_test_host" not in cases.SMOKE and not [c for c in cases.CASES if c["name"] == "ssh_test_host"], "a harness row, not a case"
+    root = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    assert "ssh_test_host" in doc and "APPCI_REQUIRE_SSH" in doc and "#2043" in doc
+
+
 def main():
     failed = 0
     for f in CHECKS:
