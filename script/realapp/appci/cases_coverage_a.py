@@ -207,7 +207,7 @@ def c_alt_programs(ctx, r):
         ctx.rm("ap_tmux.txt")
         tok = ctx.tok(6).lower()
         mark = ctx.cmd_mark()
-        before = ctx.prompts()
+        before, base = ctx.prompts(), ctx.shell_count()
         ctx.be.type("tmux -f /dev/null new-session -s appci_%s" % tok, ctx.rng.randint(10, 25), enter=True)
         ctx.until(lambda: ctx.prompts() > before, 15, step=0.2)
         time.sleep(1.0)
@@ -217,9 +217,9 @@ def c_alt_programs(ctx, r):
         ctx.until(lambda: ctx.lines("ap_tmux.txt"), 8)
         exact_lines(r, "the shell inside tmux ran the typed line once", [tok], ctx.lines("ap_tmux.txt"))
         if ctx.prof.commands():
+            ctx.await_commands(mark, lambda cs: line in cs)
             r.check(line in ctx.cmds_since(mark), "the shell inside tmux received %r, not %r" % (ctx.cmds_since(mark)[:3], line))
-        ctx.be.type("exit", 15, enter=True)
-        time.sleep(1.0)
+        ctx.exit_nested(base, r, "tmux")                 # the shell inside tmux is not a descendant of the app: the PID probe (root_pid) is what proves it (audit #2)
         ctx.shot("ap_tmux_exited")
         local_cmd_exact(ctx, r, "ap_after_tmux")
     else:
@@ -306,6 +306,7 @@ def nested_root_lines(ctx, r, label, start_cmd, n, wanted_uid):
     f = "ca_%s.txt" % label
     ctx.rm(f)
     abs_f = os.path.join(ctx.W, f)
+    base = ctx.shell_count()
     ctx.be.type(start_cmd, ctx.rng.randint(10, 25), enter=True)
     time.sleep(2.5)
     ctx.shot("%s_inner" % label)
@@ -318,9 +319,7 @@ def nested_root_lines(ctx, r, label, start_cmd, n, wanted_uid):
         ctx.be.type("echo %s >> %s" % (t, abs_f), ctx.rng.randint(10, 25), enter=True)
     ctx.until(lambda: len(ctx.lines(f)) >= n + 1, 15)
     exact_lines(r, "%s: lines typed into the privileged shell" % label, [str(wanted_uid)] + toks, ctx.lines(f))
-    before = ctx.prompts()
-    ctx.be.type("exit", 15, enter=True)
-    ctx.until(lambda: ctx.prompts() > before, 15)
+    ctx.exit_nested(base, r, label, timeout=15)          # the privileged shell answers probes in ROOT's home ('nowhere'); the shell count proves it (audit #2)
     ctx.shot("%s_exited" % label)
     uid = str(os.geteuid())
     f2 = "ca_%s_back.txt" % label

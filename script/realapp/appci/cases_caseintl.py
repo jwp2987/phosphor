@@ -98,7 +98,7 @@ def check_file(ctx, r, name, text, label, timeout=12):
 
 def check_cmd(ctx, r, mark, want_cmd, label):
     """the shell's own record of the command line it received (rec.log); rec.log empty => note only"""
-    have = ctx.cmds_since(mark)
+    have = ctx.await_commands(mark, lambda cs: want_cmd in cs)       # the C line arrives with the prompt, after the effect file (audit #7)
     if not have:
         r.note("%s: rec.log empty (hook not run), effect file checked only" % label)
         return
@@ -668,8 +668,8 @@ def c_altgr_bash(ctx, r):
         altgr_check(ctx, r, "AltGr string in Git Bash (LC_ALL=C.UTF-8)", f)
         with unicode_keys(ctx):
             if ctx.pane == "powershell":
-                ctx.be.type("exit", 12, enter=True)
-                time.sleep(1)
+                ctx.exit_nested(None, r, "Git Bash from the PowerShell pane")     # audit #2
+                time.sleep(0.5)
                 ctx.be.type("Remove-Item Env:LC_ALL, Env:CHERE_INVOKING -ErrorAction SilentlyContinue", 12, enter=True)
             else:
                 ctx.be.type("unset LC_ALL", 12, enter=True)

@@ -75,9 +75,9 @@ def leave_inner(ctx, r, label):
     ctx.left_inner = True
     state = ctx.leave_nested(getattr(ctx, "root_pid", None))
     if state == "unprobed":
-        r.note("%s: no root shell pid recorded or no PID probe in this pane; left the inner shell with one `exit`, unproven" % label)
-        ctx.be.type("exit", 12, enter=True)
-        time.sleep(1.0)
+        # no root pid / PID probe: the shell count under the app (taken by guarded() before the case) decides; never a blind `exit` (audit #2)
+        typed = ctx.exit_nested(getattr(ctx, "sub_base", None), r, label)
+        r.note("%s: no root shell pid recorded or no PID probe in this pane; `exit` %s by the shell-count proof" % (label, "typed" if typed else "NOT typed"))
         return
     r.check(state == "root", "%s: the shell in front after leaving is the pane's ROOT shell (got %s)" % (label, state))
 
@@ -88,6 +88,7 @@ def guarded(fn):
     @functools.wraps(fn)
     def run(ctx, r):
         ctx.left_inner = False
+        ctx.sub_base = ctx.shell_count()        # leave_inner's fallback proof when no root pid is known
         try:
             return fn(ctx, r)
         finally:

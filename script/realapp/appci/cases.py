@@ -212,16 +212,19 @@ _SSH_FINISH_RE = re.compile(r"hop=kh_finish_begin\b.*?\bheld_bytes=(\d+)")
 _SSH_HANDED_BACK_RE = re.compile(r"hop=ssh_handed_back\b.*?chars=(\d+) dest=(\w+)")
 
 
-def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
+def ssh_trial_facts(lines, expected, remote_new, enters_before=1, effect_seen=None):
     """Pure: one ssh typeahead trial from its app-log window `lines` (raw, oldest first), the line typed during the connect (`expected`) and
     the commands the remote shell logged in the trial (`remote_new`). `enters_before`: Enters typed before that line (`ssh fake` = 1; a nested
-    `ssh fake` twice = 2). Names the hop where the line went wrong, by issue:
+    `ssh fake` twice = 2). `effect_seen`: whether the line's EFFECT (its token in the remote file) was observed; when the remote rec.log is
+    silent but the effect is there, the trial is exact (audit #4: the hook logs the C line at the NEXT prompt, after the effect file, so a verdict
+    read in between said "logged nothing" under a passing check). Names the hop where the line went wrong, by issue:
     #1614 the ssh Enter itself handed back (ssh never ran: the hold was not exercised); #1292 keys not held / line lost whole;
     #1332 the held Enter refused (HistoryNotAppendable); #1345/#1394 one key lost at the hand-over (index vs held count);
     #1400 a run of keys lost between the hold window and the hand-over; #1596 the held text kept, invisibly, until the ssh session ends."""
     import difflib
     f = dict(exact=False, typed="", app_saw_line=None, enter_handed_back=None, hold_seen=False, held_keys=0, held_bytes=0, deferred_busy=0,
-             handovers=[], finish=[], give_ups=0, refused=0, discards=0, table_drops=0, handed_back=[], remote=None, missing=[], extra=[])
+             handovers=[], finish=[], give_ups=0, refused=0, discards=0, table_drops=0, handed_back=[], remote=None, missing=[], extra=[],
+             effect_seen=effect_seen, rec_silent=False)
     enters, typed, core_pending, after_handover = 0, [], False, False
     for l in lines:
         # a physical Enter: the window's dispatch (`core_enter stage=handle_window_event`, every platform) and, when no binding took it, the
@@ -291,6 +294,8 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
     if expected in got:
         f["exact"] = True
         f["remote"] = expected
+    elif not got and effect_seen:
+        f["exact"], f["remote"], f["rec_silent"] = True, expected, True
     elif got:
         best = max(got, key=lambda c: difflib.SequenceMatcher(None, expected, c, autojunk=False).ratio())
         f["remote"] = best
@@ -309,7 +314,7 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
     else:
         saw = "the app's typed keys %r lack the line (injector/OS loss, or a key dropped before typed_characters)" % f["typed"][:60]
     if f["exact"]:
-        why = "exact"
+        why = "exact" + (" (by its effect in the remote file; the remote rec.log logged no line for it)" if f["rec_silent"] else "")
     elif f["enter_handed_back"]:
         if f.get("handed_back_enter_no", 0) <= enters_before and not f.get("handed_back_after_hold"):
             why = ("#1614: the `ssh` Enter was HANDED BACK to the editor (why=%s) before any ssh hold, so ssh never ran and the ssh typeahead "
@@ -620,6 +625,11 @@ class Ctx:
         self.label = mode if (pane in (None, "powershell") and not variant) else "%s@%s" % (mode, variant or pane)
         self.t_case0 = time.time()
         self.rng = random.Random(seed)
+        # harness audit #1/E (2026-11-09): the SEEDED rng is for the cases (cases_replay generates its scenario from it); the harness's own probe
+        # tokens (`~/.appci_where`, `~/.appci_pid`, alive_*.txt) come from an UNSEEDED rng, so no earlier run, pass or relaunch can have left this
+        # probe's token in a file that nobody clears (the PowerShell pane's real home). Seeded tokens made a stale `pT3_xxx:4711` of an earlier run
+        # the "root pid" of this one, and every later leave_nested typed `exit` at the root shell.
+        self.probe_rng = random.Random()
         self.ssh, self.ollama, self.log_path = ssh, ollama, log_path
         self.ssh_why = ssh_why     # why there is no usable ssh test host (sshd missing, or the setup probe `ssh fake true` failed); None when ctx.ssh is set
         self.W = prof.home + "/w"
@@ -665,6 +675,126 @@ class Ctx:
     def tok(self, n=8):
         self.n += 1
         return "T%d_%s" % (self.n, "".join(self.rng.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(n)))
+
+    def ptok(self, n=8):
+        """a token for the harness's OWN probes: unseeded (see probe_rng), never repeated by another run or pass"""
+        self.n += 1
+        return "T%d_%s" % (self.n, "".join(self.probe_rng.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(n)))
+
+    def probe(self, cmd, token, name, dirs=None, remote=False, timeout=8):
+        """The one probe primitive (harness audit A): guard, snapshot the size of every file the probe can land in, type `cmd`, then wait for `token`
+        appended AFTER the snapshot and, when the shell in front has a prompt hook, for its prompt count to advance past the pre-probe count (the
+        hook logs the probe's own prompt a few ms after the effect file: an `exit` typed in that window counted the probe's prompt as its own and
+        the next probe's first keys went to the dying ssh / subshell -- the `tac` incident). -> (where, tokens): where is "remote" (the token is in
+        the REMOTE file `name`; only looked at with remote=True), "local" (one of `dirs`, default where_homes()) or "none"; tokens are the
+        whitespace tokens the probe appended that start with `token` (`tok` or `tok:pid`), [] for "none"."""
+        try:
+            self.be.guard()
+        except AttributeError:
+            pass
+        dirs = list(self.where_homes() if dirs is None else dirs)
+        skip = {d: where_file_size(os.path.join(d, name)) for d in dirs}
+        r0 = len(self.lines(name, remote=True)) if remote else 0
+        local_hook = bool(getattr(self.prof, "local_prompts", True))
+        p0 = self.prof.prompts() if local_hook else None
+        rp0 = self.prof.prompts(remote=True) if remote else None
+        t_typed = time.time()
+
+        def hits(toks):
+            return [t for t in toks if t == token or t.startswith(token + ":")]
+
+        def local_new():
+            out = []
+            for d in dirs:
+                out += where_tokens(os.path.join(d, name), skip[d])
+            return hits(out)
+
+        def remote_new():
+            return hits(" ".join(self.lines(name, remote=True)[r0:]).split()) if remote else []
+
+        def seen():
+            if remote and remote_new():
+                return "remote"
+            return "local" if local_new() else None
+        self.be.type(cmd, 12, enter=True)
+        where = self.until(seen, timeout)
+        if not where:
+            return "none", []
+        toks = remote_new() if where == "remote" else local_new()
+        # the probe's own prompt (bounded: a pane without a hook never counts up, and the wait is skipped where the harness knows there is none)
+        if where == "local" and p0 is not None:
+            self.until(lambda: self.prof.prompts() > p0, 3)
+        elif where == "local" and self.precmds_since(t_typed) is not None:
+            self.until(lambda: self.precmds_since(t_typed) >= 1, 3)        # no rc hook (PowerShell pane): the app logs the shell's prompt report
+        elif where == "remote" and rp0 is not None:
+            self.until(lambda: self.prof.prompts(remote=True) > rp0, 3)
+        return where, toks
+
+    def wait_prompt_after_exit(self, before, t_exit, timeout=10, remote_before=None):
+        """after a typed `exit`: the shell behind it drew a prompt newer than `before` (a LOCAL count taken AFTER the probe's own prompt, see probe()).
+        remote_before: the REMOTE prompt count when a remote level was left (the shell behind it may be an outer remote shell, whose prompt is logged
+        remotely); when the LOCAL shell is back, also until the app's own 'ssh gone' hop (wait_ssh_gone). Without a local prompt hook (Windows
+        PowerShell pane) and no remote level: a short settle (no event exists for a local nested shell there). True when a prompt event was seen."""
+        hook = bool(getattr(self.prof, "local_prompts", True))
+
+        def back():
+            if hook and self.prof.prompts() > before:
+                return "local"
+            if remote_before is not None and self.prof.prompts(remote=True) > remote_before:
+                return "remote"
+            return None
+        got = self.until(back, timeout) if (hook or remote_before is not None) else None
+        if remote_before is not None and got != "remote":
+            self.wait_ssh_gone(t_exit, max(timeout, 8.0))
+        if got is None and not hook and remote_before is None:
+            if self.precmds_since(t_exit) is not None:       # no rc hook (PowerShell pane): the app's own `precmd_seen` hop is the shell's prompt report
+                got = "app" if self.until(lambda: self.precmds_since(t_exit) >= 1, timeout) else None
+                time.sleep(0.3)
+            else:
+                time.sleep(1.0)
+        return got is not None
+
+    def precmds_since(self, t0):
+        """how many shell prompt reports (`hop=precmd_seen`, logged by the app's typeahead hand-off for every shell with the app's hooks, the
+        PowerShell pane included) the app log holds since wall time t0; None without an app log. The hook-less pane's prompt event."""
+        if not self.log_path:
+            return None
+        return sum(1 for l in self.app_log_window(t0) if "hop=precmd_seen" in l)
+
+    def exit_nested(self, base=None, r=None, label="", timeout=10):
+        """The ONLY way a case leaves a shell it started (harness audit #2/B): `exit` is typed when, and only when, a probe proves a shell other than
+        the pane's root is in front -- the PID probe names a pid other than root_pid; or the where probe lands REMOTE; or it lands local / nowhere
+        and the shell count under the app rose above `base` (a shell_count() taken before the subshell command; a `su` shell answers in root's
+        home, 'nowhere', yet it is one more shell). Otherwise (the subshell never started: agent routing, a lost Enter, a missing binary) `exit`
+        is NOT typed -- it would have ended the root shell, closed the only pane and quit the app -- and the reason is noted. True when typed;
+        the wait after it is for the shell behind to draw its prompt (wait_prompt_after_exit)."""
+        why, remote = None, False
+        root = getattr(self, "root_pid", None)
+        pid = self.shell_pid() if root is not None else None
+        if pid is not None and pid == root:
+            why = "the PID probe names the pane's ROOT shell (%s)" % root
+        elif pid is None:
+            where = self.where_now()
+            if where == "remote":
+                remote = True
+            else:
+                nested = self.in_subshell(base)
+                if nested is not True:
+                    why = "the probe ran in %s and the shell count under the app %s (base %s, now %s)" % (
+                        "the local shell" if where == "local" else "no shell",
+                        "did not rise" if nested is False else "is unknown", base, self.shell_count() if base is not None else None)
+        if why:
+            msg = "%s: `exit` NOT typed: %s%s" % (label or "exit_nested", why, "" if root is not None or pid is not None else "; no root pid recorded")
+            print("[appci] " + msg, flush=True)
+            if r is not None:
+                r.note(msg)
+            return False
+        before = self.prof.prompts()
+        rbefore = self.prof.prompts(remote=True) if remote else None
+        t_exit = time.time()
+        self.be.type("exit", 12, enter=True)
+        self.wait_prompt_after_exit(before, t_exit, timeout, remote_before=rbefore)
+        return True
 
     def until(self, pred, timeout=10, step=0.05):
         t = time.time()
@@ -771,13 +901,9 @@ class Ctx:
     def where_now(self, timeout=8):
         """Which shell is in front, proven by an effect: a fresh token written to ~/.appci_where lands in the REMOTE home ("remote"), the local
         scratch home ("local"), or nowhere ("none")."""
-        probe = "w" + self.tok(8)
-        self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
-        local_where = self.local_where
-        self.until(lambda: probe in self.lines(".appci_where", remote=True) or probe in local_where(), timeout)
-        if probe in self.lines(".appci_where", remote=True):
-            return "remote"
-        return "local" if probe in local_where() else "none"
+        probe = "w" + self.ptok(8)
+        where, _ = self.probe("echo %s >> ~/.appci_where" % probe, probe, ".appci_where", remote=True, timeout=timeout)
+        return where
 
     def where_homes(self):
         """the homes whose `~/.appci_where` a LOCAL probe can land in: the scratch home, and in a Windows PowerShell pane also the user's real home"""
@@ -807,29 +933,23 @@ class Ctx:
                 where = self.where_now()
             if where != "remote":
                 return where
-            before = self.prof.prompts()
+            before, rbefore = self.prof.prompts(), self.prof.prompts(remote=True)    # taken AFTER the probe's own prompt was counted (probe()): the next is the `exit`'s
+            t_exit = time.time()
             self.be.type("exit", 12, enter=True)
-            self.until(lambda: self.prof.prompts() > before, 10)
-            time.sleep(0.5)
+            self.wait_prompt_after_exit(before, t_exit, 10, remote_before=rbefore)
         return "remote"
 
     def shell_pid(self, timeout=8):
         """The PID of the shell in front, proven by an effect (a fresh `tok:PID` appended to `~/.appci_pid`), or None when nothing answered or the
         pane has no PID probe (cmd.exe). `where_now` cannot tell a LOCAL nested shell from the pane's root shell (same HOME); a PID can."""
-        probe = "p" + self.tok(8)
+        probe = "p" + self.ptok(8)
         cmd = depth_probe_cmd(getattr(self, "pane", None), probe)
         if cmd is None:
             return None
-        self.be.type(cmd, 12, enter=True)
-        homes = self.where_homes()
-
-        def seen():
-            toks = []
-            for h in homes:
-                toks += where_tokens(os.path.join(h, ".appci_pid"))
-            return parse_depth_probe(toks, probe)
-        self.until(seen, timeout)
-        return seen()
+        # only what THIS probe appended counts (probe() snapshots the file size first): a `pT3_xxx:4711` an earlier run left in the real home's
+        # ~/.appci_pid once became the "root pid" of a later run, and every leave_nested after it typed `exit` at the root shell (audit #1)
+        _where, toks = self.probe(cmd, probe, ".appci_pid", timeout=timeout)
+        return parse_depth_probe(toks, probe)
 
     def leave_nested(self, root_pid, max_exits=3):
         """After a case: leave every LOCAL nested shell until the shell in front is the pane's ROOT shell (`root_pid`). `exit` is typed only while a
@@ -856,10 +976,10 @@ class Ctx:
                 if again == root_pid:
                     return "root"
                 continue
-            before = self.prof.prompts()
+            before = self.prof.prompts()         # after the second probe's own prompt (probe()): the next prompt is the `exit`'s
+            t_exit = time.time()
             self.be.type("exit", 12, enter=True)
-            self.until(lambda: self.prof.prompts() > before, 10)
-            time.sleep(0.5)
+            self.wait_prompt_after_exit(before, t_exit, 10)
         return "nested"
 
     def leave_remote(self, r, label, rfile, tok, base, timeout=10, level=False):
@@ -882,7 +1002,7 @@ class Ctx:
         count = (lambda: self.prof.prompts(remote=True)) if level else self.prompts
         prompts_before_probe = count()
         for attempt in range(3):
-            probe = "w" + self.tok(8)
+            probe = "w" + self.ptok(8)
             self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
             self.until(lambda: probe in self.lines(".appci_where", remote=True) or probe in local_where(), timeout + 8 * attempt)
             if probe in self.lines(".appci_where", remote=True):
@@ -902,13 +1022,14 @@ class Ctx:
         if level:
             self.until(lambda: count() > prompts_before_probe, 5)
         before = count()
+        t_exit = time.time()
         self.be.type("exit", 12, enter=True)
-        if not level and not self.prof.local_prompts:
-            t_exit = time.time()
-            time.sleep(min(timeout, 2.0))        # no local prompt hook in this pane (Windows PowerShell): fixed settle ...
-            self.wait_ssh_gone(t_exit, max(timeout, 8.0))       # ... then until the app itself saw the ssh block end (r18w5)
-        else:
+        if level or self.prof.local_prompts:
             self.until(lambda: count() > before, timeout)
+        if not level:
+            # audit #11: the fixed 2 s settle of the hook-less pane is gone; on EVERY platform the app's own `ssh_pty_owner ssh=false` hop says the ssh
+            # client is out of the foreground (r18w5: ssh.exe stayed in front ~2.5 s after the remote shell ended; without an app trace this returns at once)
+            self.wait_ssh_gone(t_exit, max(timeout, 8.0))
         if self.shell_gone(base):
             r.check(False, "%s: the LOCAL shell exited after `exit` (fewer shells under the app than at case start); stopping" % label)
             return False
@@ -936,8 +1057,9 @@ class Ctx:
         A wedged pane (a command that ignores Ctrl-C) fails every later case for a reason that is not theirs, so run.py checks after a failing case and
         relaunches the app. NOT judged by a prompt: the PowerShell pane has no prompt hook (the app starts it with -NoProfile), r18co's 'no prompt came back'
         wording was wrong, and the probe's file went to the real home because the pane was not in the case dir (local_lines also looks there)."""
+        dirs = [self.W] + ([os.path.expanduser("~")] if self.pane == "powershell" else [])      # local_lines(): the case dir, PowerShell also the real home
         for tries, wait in ((0, first), (1, second)):
-            tok = self.tok(8).lower()
+            tok = self.ptok(8).lower()
             fname = "alive_%s.txt" % tok
             mark = self.cmd_mark()
             try:
@@ -952,12 +1074,12 @@ class Ctx:
                     self.be.key("ctrl+c")
                     time.sleep(0.3)
                 self.be.key("ctrl+u")
-                self.be.type(self.append_cmd(self.pane_shell(), tok, fname), 12, enter=True)
+                where, _ = self.probe(self.append_cmd(self.pane_shell(), tok, fname), tok, fname, dirs=dirs, timeout=wait)
             except Exception:
                 return None
-            if self.until(lambda: tok in self.local_lines(fname), wait):
-                # the shell's own rec.log (Git Bash pane) logs the command AFTER it ran: wait for that line, or it lands in the NEXT case's cmds_since(mark)
-                # (r18co: paste_instant_enter 'first mismatch' was this probe's `echo t147... >> alive_...`)
+            if where == "local":
+                # the shell's own rec.log (Git Bash pane) logs the command AFTER it ran: probe() waited for the prompt that carries it; make sure of the line
+                # itself too, or it lands in the NEXT case's cmds_since(mark) (r18co: paste_instant_enter 'first mismatch' was this probe's `echo t147... >> alive_...`)
                 if self.prof.commands():
                     self.until(lambda: any(tok in c for _, c in self.prof.commands()[mark:]), 5)
                 return tries
@@ -1133,14 +1255,14 @@ class Ctx:
                     out.append(l)
         return out
 
-    def ssh_trial_verdict(self, t0, expected, remote_before, enters_before=1, t1=None):
+    def ssh_trial_verdict(self, t0, expected, remote_before, enters_before=1, t1=None, effect_seen=None):
         """#1292/#1332/#1345/#1394/#1400/#1596/#1614: what ONE ssh typeahead trial did, from the app's own log between t0 and t1 and the remote
         shell's rec.log lines logged after index `remote_before`. -> ssh_trial_facts() dict; its "text" is the one-line verdict."""
         try:
             remote_new = [c for _, c in self.prof.commands(remote=True)[remote_before:] if ".appci_where" not in c]
         except Exception:
             remote_new = []
-        return ssh_trial_facts(self.app_log_window(t0, t1), expected, remote_new, enters_before)
+        return ssh_trial_facts(self.app_log_window(t0, t1), expected, remote_new, enters_before, effect_seen)
 
     def ssh_client_probe(self):
         """r18d8: what the ssh CLIENT says for the same host alias, run now in the app's environment: exit status and the last stderr lines of `ssh -vv fake true`
@@ -1299,16 +1421,29 @@ class Ctx:
             return None
         return p
 
-    HARNESS_MARKER_RE = re.compile(r"(?:alive|proof)_[\w@.-]*\.txt")
+    # audit #6 (#1913): the where / pid probes (`echo tok >> ~/.appci_where`, `sh -c 'echo tok:$PPID >> ~/.appci_pid'`, `Add-Content ~/.appci_pid ...`) are the
+    # harness's own lines too; the rc hook logs them at the NEXT prompt, which on msys bash / a loaded Mac is after the next case took its mark
+    HARNESS_MARKER_RE = re.compile(r"(?:alive|proof)_[\w@.-]*\.txt|~/\.appci_(?:pid|where)\b")
     # r18u8 (Mac session_restore / crash_kill9_restore): a RESTORED zsh pane gets Phosphor's own bootstrap line typed into it, which the harness's history hook logs
     # as a "command received before any key was sent". That is the app initialising the shell, not a replayed user command, so it is not one of the lines the
     # RE-RUN check is about. Matched on the exact start of the app's init line only.
     APP_BOOTSTRAP_RE = re.compile(r"^command -p stty -echo; WARP_BOOTSTRAP_VAR=")
 
     def cmds_since(self, mark):
-        """what the shell logged after `mark`, minus the harness's OWN marker lines (the key-proof and wedge-probe `echo tok >> proof_*/alive_*.txt`): rec.log can
-        log one of those late, after a case took its mark (r18d2 agent@gitbash fast_typing: 31 commands for 30 typed, every line shifted by that one)"""
+        """what the shell logged after `mark`, minus the harness's OWN marker lines (the key-proof and wedge-probe `echo tok >> proof_*/alive_*.txt`, the where
+        and pid probes): rec.log can log one of those late, after a case took its mark (r18d2 agent@gitbash fast_typing: 31 commands for 30 typed, every
+        line shifted by that one)"""
         return [c for _, c in self.prof.commands()[mark:] if not self.HARNESS_MARKER_RE.search(c) and not self.APP_BOOTSTRAP_RE.search(c)]
+
+    def await_commands(self, mark, n=1, timeout=5.0):
+        """audit #7 / D (#1914): cmds_since(mark), read only once the shell has LOGGED what the case is about to compare. The rc hook writes a command's C line
+        with its prompt, after the command's effect file exists, so a comparison made a fixed 0.5 s after the effect said "shell received n-1 commands"
+        under load. `n`: how many commands are expected, or a predicate over the list. `timeout` is the give-up net (a real loss never reaches n: the
+        comparison then reports it). No wait at all when the pane's shell keeps no rec.log (PowerShell pane, hook not run)."""
+        want = n if callable(n) else (lambda cs: len(cs) >= n)
+        if self.prof.commands():
+            self.until(lambda: want(self.cmds_since(mark)), timeout)
+        return self.cmds_since(mark)
 
     def cmd_mark(self):
         return len(self.prof.commands())
@@ -1672,7 +1807,7 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
     merged = False
     if ctx.prof.commands():
         want0 = [ctx.append_cmd(shell, t, fname) for t in exp]
-        have0 = ctx.cmds_since(mark)
+        have0 = ctx.await_commands(mark, n)        # the n-th C line arrives with its prompt, after the effect file (audit #7)
         merged = any(sum(1 for w in want0 if w in h) >= 2 for h in have0)
     elif not ok:
         merged = len(got) != n
@@ -2114,7 +2249,7 @@ def ctrlc_samples(ctx, n, fname, budget_s=None, flood=False, bail_after=None):
     after = [l for l in ctx.lines(fname) if l.startswith("AFTER")]
     if ctx.prof.commands():
         # a sample that never fired is either a Ctrl-C that did not arrive or a typed LINE that arrived corrupted (no trap, no stamp): tell them apart
-        have = ctx.cmds_since(mark)
+        have = ctx.await_commands(mark, len(typed))
         pairs = [(w, h) for w, h in zip(typed, have) if w != h]
         ctx.cc_integrity[fname] = dict(n=len(typed), got=len(have), bad=len(pairs), examples=[line_evidence(ctx, w, h, t_start, None) for w, h in pairs[:2]])
     if pw and misses:
@@ -2421,6 +2556,7 @@ def c_sub(ctx, r):
         f = "sub_%s_%d.txt" % (sh, int(gap * 100))
         ctx.rm(f)
         tok = ctx.tok(6)
+        base = ctx.shell_count()
         ctx.be.type(sh, 12, enter=True)
         time.sleep(gap)
         ctx.be.type(ctx.append_cmd(sh, tok, f), 12, enter=True)
@@ -2428,8 +2564,7 @@ def c_sub(ctx, r):
         # r18u8 (Mac nu): `>>` is not nushell redirection (it is a parse error there); nu appends external output with `| save --append`
         ctx.be.type(("^sh -c 'ps -o comm= -p $PPID' | save --append " + f) if sh == "nu" else ("sh -c 'ps -o comm= -p $PPID' >> " + f), 12, enter=True)
         ctx.until(lambda: len(ctx.lines(f)) >= 2, 6)
-        ctx.be.type("exit", 12, enter=True)
-        time.sleep(2.0)
+        ctx.exit_nested(base, r, "%s subshell" % sh)           # audit #2: never a raw `exit` after an unchecked wait (it ran at the ROOT shell and quit the app)
         ctx.be.type(ctx.append_cmd("bash", "back_" + tok, f), 12, enter=True)
         ctx.until(lambda: len(ctx.lines(f)) >= 3, 6)
         l = ctx.lines(f)
@@ -2473,6 +2608,7 @@ def c_sub_sh_probe(ctx, r):
         ctx.rm(f)
         tok = ctx.tok(6)
         off = ctx.log_size()
+        base = ctx.shell_count()
         ctx.be.type(cmd, 12, enter=True)
         time.sleep(1.6)                    # the Phosphorize banner comes 1 s after the command starts
         ctx.shot("%s_banner" % label)
@@ -2500,8 +2636,7 @@ def c_sub_sh_probe(ctx, r):
         for t in toks:
             ctx.be.type(ctx.append_cmd("sh", t, f), 12, enter=True)
         ctx.until(lambda: len(ctx.lines(f)) >= 2 + len(toks), 8)
-        ctx.be.type("exit", 12, enter=True)
-        time.sleep(1.0)
+        ctx.exit_nested(base, r, label)
         ctx.be.type(ctx.append_cmd("bash", "back_" + tok, f), 12, enter=True)
         ctx.until(lambda: len(ctx.lines(f)) >= 3 + len(toks), 6)
         l = ctx.lines(f)
@@ -2567,17 +2702,26 @@ def loss_report(lost, n, conf=0.95):
     return dict(lost=lost, n=n, rate=round(lost / n, 4) if n else None, upper_bound=round(ub, 4) if ub is not None else None, conf=conf, text=text)
 
 
-def ssh_trial_note(ctx, r, verdicts, label, t0, line, r0, enters_before=1):
+def ssh_trial_note(ctx, r, verdicts, label, t0, line, r0, enters_before=1, effect_seen=None):
     """one ssh typeahead trial's verdict from the app log (ssh_trial_facts): every trial that was not exact is noted with the hop that went
-    wrong; diagnostics never break the case"""
+    wrong; diagnostics never break the case. effect_seen: whether the line's token reached the remote file (the case's own check). Audit #4: the
+    remote rec.log C line is written by the hook at the next prompt, after the effect file, so the verdict first waits (bounded) for the remote log
+    to grow past `r0`; and a trial whose EFFECT succeeded but whose verdict is still not exact (the log holds a different line) is UNVERIFIABLE
+    (status noref), never a pass with a contradicting note."""
     try:
-        v = ctx.ssh_trial_verdict(t0, line, r0, enters_before)
+        if effect_seen:
+            # a where/pid probe's line is not the trial's line: wait for a command the verdict will actually read
+            ctx.until(lambda: any(".appci_" not in c for _, c in ctx.prof.commands(remote=True)[r0:]), 3)
+        v = ctx.ssh_trial_verdict(t0, line, r0, enters_before, effect_seen=effect_seen)
     except Exception as e:
         r.note("%s: trial verdict failed: %r" % (label, e))
         return None
     verdicts.append(v)
     if not v["exact"]:
-        r.note("%s: %s" % (label, v["text"]))
+        if effect_seen:
+            r.unverifiable("%s: the line's effect is in the remote file, yet the trial verdict disagrees: %s" % (label, v["text"]))
+        else:
+            r.note("%s: %s" % (label, v["text"]))
     return v
 
 
@@ -2616,9 +2760,10 @@ def c_ssh(ctx, r):
             ctx.be.type("ssh fake", 12, enter=True)
             time.sleep(gap)
             ctx.be.type(line, 15, enter=True)
-            if not ctx.until(lambda: tok in ctx.lines("rl.txt", remote=True), 20):
+            seen = bool(ctx.until(lambda: tok in ctx.lines("rl.txt", remote=True), 20))
+            if not seen:
                 miss += 1
-            ssh_trial_note(ctx, r, verdicts, "ssh_connect_typing gap %.1f s trial %d" % (gap, i + 1), t0, line, r0)
+            ssh_trial_note(ctx, r, verdicts, "ssh_connect_typing gap %.1f s trial %d" % (gap, i + 1), t0, line, r0, effect_seen=seen)
             if not ctx.leave_remote(r, "ssh_connect_typing (gap %.1f s)" % gap, "rl.txt", tok, base):
                 stop = True
                 break
@@ -2660,8 +2805,8 @@ def c_ssh_enter_immediate(ctx, r):
         t0, r0 = time.time(), len(ctx.prof.commands(remote=True))
         ctx.be.type("ssh fake", 12, enter=True)
         ctx.be.type(line, 12, enter=True)
-        ctx.until(lambda: tok in ctx.lines("rh.txt", remote=True), 20)
-        ssh_trial_note(ctx, r, verdicts, "ssh_enter_then_immediate_command trial %d" % (n + 1), t0, line, r0)
+        seen = bool(ctx.until(lambda: tok in ctx.lines("rh.txt", remote=True), 20))
+        ssh_trial_note(ctx, r, verdicts, "ssh_enter_then_immediate_command trial %d" % (n + 1), t0, line, r0, effect_seen=seen)
         if not ctx.leave_remote(r, "ssh_enter_then_immediate_command", "rh.txt", tok, base):
             break
     ssh_trial_summary(r, verdicts)
@@ -2725,7 +2870,8 @@ def c_ssh_nested(ctx, r):
         give_ups += 1
         r.note("ssh_nested_typeahead: trial %d: the app gave up on an Enter whose shell-or-chat verdict missed its compute cap (50 ms of classifier CPU since #1651; #1577, by design: nothing ran); "
                "leaving the remote shell on a proven `exit` and running the trial again" % (attempt + 1))
-        ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead (given-up trial %d)" % (attempt + 1), t0, line, r0, enters_before=2)
+        ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead (given-up trial %d)" % (attempt + 1), t0, line, r0, enters_before=2,
+                       effect_seen=tok in ctx.lines("rn.txt", remote=True))
         ctx.reset()
         pt = ctx.tok(6)
         for _ in range(2):
@@ -2742,8 +2888,7 @@ def c_ssh_nested(ctx, r):
         except FileNotFoundError:
             pass
     r.metric("verdict_give_up_retries", give_ups)
-    time.sleep(1.0)
-    ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead", t0, line, r0, enters_before=2)
+    ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead", t0, line, r0, enters_before=2, effect_seen=tok in ctx.lines("rn.txt", remote=True))
     ssh_trial_summary(r, verdicts)
     got = ctx.lines("rn.txt", remote=True)
     r.check(got == [tok], "the line typed behind a nested ssh ran exactly once remotely: %r" % got)
@@ -2989,7 +3134,7 @@ def ref_terminal_windows(ctx, rcfile=None):
 
     def close():
         try:
-            ctx.be.type("exit", 12, enter=True)
+            ctx.be.type("exit", 12, enter=True)        # reference terminal (guard_override aims the keys at it), never the pane
         except Exception:
             pass
         time.sleep(1.0)
@@ -3107,7 +3252,7 @@ def ref_terminal(ctx):
             # launched is quit by exact PID right here at the end of the reference block (#1826: one window per probe piled up to ~250 per run), which
             # also removes a shell whose exit was lost. A Terminal.app that was already running is never quit. Measurements are taken before close().
             try:
-                ctx.be.type("exit", 12, enter=True)
+                ctx.be.type("exit", 12, enter=True)        # reference terminal (guard_override aims the keys at it), never the pane
             except Exception:
                 pass
             time.sleep(0.8)
@@ -3361,7 +3506,7 @@ def run_enter_control(ctx, r, n):
             exact_bad = None
             if ctx.prof.commands():
                 want = [ctx.append_cmd(ctx.pane_shell(), t, fname) for t in exp]
-                have = ctx.cmds_since(mark)
+                have = ctx.await_commands(mark, len(want))
                 exact_bad = sum(1 for w, h in zip(want, have) if w != h) + abs(len(want) - len(have))
             posted = None
             if k0 is not None:
@@ -4444,7 +4589,7 @@ def c_keydown_count(ctx, r):
     r.check(got == exp, "received text not exact: %d/%d lines; first mismatch %s" % (
         len(got), n, next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), None)))
     if ctx.prof.commands():
-        have = ctx.cmds_since(mark)
+        have = ctx.await_commands(mark, len(cmds))
         r.check(have == cmds, "shell rec.log: %d/%d commands exact; first mismatch %s" % (
             sum(1 for a, b in zip(cmds, have) if a == b), n, next(((a, b) for a, b in zip(cmds + [None], have + [None]) if a != b), None)))
 
@@ -5355,8 +5500,8 @@ def c_gitbash_subshell(ctx, r):
         if ctx.until(lambda: len(rl("gb_cc.txt")) >= 2 * (i + 1), 8):
             c += 1
     r.check(c == 3, "Git Bash Ctrl-C: the trap and the next line ran %d/3 times: %s" % (c, ",".join(rl("gb_cc.txt"))))
-    ctx.be.type("exit", 12, enter=True)
-    time.sleep(2)
+    ctx.exit_nested(None, r, "Git Bash from the PowerShell pane")
+    time.sleep(1.0)
     tok = ctx.tok(8).lower()
     ctx.be.type("Add-Content gb_back.txt %s" % tok, 12, enter=True)
     ctx.until(lambda: rl("gb_back.txt"), 8)

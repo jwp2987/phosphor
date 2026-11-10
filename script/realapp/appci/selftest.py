@@ -741,12 +741,13 @@ def r18u22_probe_ctrl_c_waits_out_the_exit_window():
         ctx = types.SimpleNamespace(ctrlc_ts=[], mode="agent", be=be, EXIT_WINDOW_S=cases.Ctx.EXIT_WINDOW_S, pane="gitbash")
         cases.Ctx._wrap_ctrlc(ctx, be)
         ctx.wait_out_exit_window = lambda: cases.Ctx.wait_out_exit_window(ctx)
-        ctx.tok = lambda n: "abcdefgh"[:n]
+        ctx.tok = ctx.ptok = lambda n: "abcdefgh"[:n]
         ctx.cmd_mark = lambda: 0
         ctx.pane_shell = lambda: "bash"
         ctx.append_cmd = lambda shell, tok, fname: "echo %s >> %s" % (tok, fname)
         ctx.until = lambda pred, timeout=10, step=0.05: pred()
-        ctx.local_lines = lambda fname: ["abcdefgh"]
+        ctx.W = "/nonexistent"
+        ctx.probe = lambda cmd, tok, fname, **k: (be.type(cmd), ("local", [tok]))[1]       # the probe primitive itself is pinned by audit1_/audit3_
         ctx.prof = types.SimpleNamespace(commands=lambda: [])
         be.key("ctrl+c")                      # the case's own reset() Ctrl-C at t=200.0
         t[0] += 0.8                           # the runner calls the probe 0.8 s later
@@ -865,7 +866,7 @@ def shell_depth_probe_pure_parts():
     # leave_nested: exits only while a probe proves a different shell, never at the root
     typed, pids = [], iter(["900", "900", "100"])
     c = types.SimpleNamespace(prof=types.SimpleNamespace(prompts=lambda: 0), pane=None, be=types.SimpleNamespace(type=lambda t, *a, **k: typed.append(t)),
-                              shell_pid=lambda: next(pids), until=lambda *a, **k: None, reset=lambda: None)
+                              shell_pid=lambda: next(pids), until=lambda *a, **k: None, reset=lambda: None, wait_prompt_after_exit=lambda *a, **k: True)
     typed.clear(); pids = iter(["900", "900", "900", "900", "100"]); c.shell_pid = lambda: next(pids)
     assert cases.Ctx.leave_nested(c, "100") == "root" and typed == ["exit", "exit"], typed
     typed.clear(); c.shell_pid = lambda: "100"
@@ -904,6 +905,142 @@ def r18u19_windows_where_probe_ignores_earlier_runs():
         assert cases.Ctx.local_where(c) == ["wT236_bpz32gdl"]
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def audit1_shell_pid_counts_only_tokens_appended_after_its_snapshot():
+    """harness audit #1a/E (2026-11-09): a `tok:pid` of the same token that sat in ~/.appci_pid BEFORE the probe was typed (an earlier run's, the tokens
+    were seeded) is not an answer; only a token appended after the per-probe size snapshot is. Probe tokens are unseeded: two contexts never agree."""
+    import random
+    d = tempfile.mkdtemp()
+    try:
+        f = os.path.join(d, ".appci_pid")
+        open(f, "w").write("pSTALE:4711\n")               # an earlier run's probe with THIS probe's token (same seed, same sequence) and a dead pid
+        typed, state = [], {"answer": None}
+
+        def type_(text, ms, enter=False):
+            typed.append(text)
+            if state["answer"]:
+                open(f, "a").write("pSTALE:%s\n" % state["answer"])
+        c = types.SimpleNamespace(be=types.SimpleNamespace(type=type_, guard=lambda: None), pane=None, prof=types.SimpleNamespace(local_prompts=False, prompts=lambda remote=False: 0),
+                                  ptok=lambda n: "STALE", where_homes=lambda: [d], lines=lambda name, remote=False: [], log_path=None, precmds_since=lambda t0: None)
+        c.until = lambda pred, timeout=10, step=0.02: cases.Ctx.until(c, pred, timeout, step)
+        c.probe = lambda *a, **k: cases.Ctx.probe(c, *a, **k)
+        assert cases.Ctx.shell_pid(c, timeout=0.3) is None, "a stale token before the snapshot was taken as the shell's pid"
+        assert typed == [cases.depth_probe_cmd(None, "pSTALE")]
+        state["answer"] = "77"
+        assert cases.Ctx.shell_pid(c, timeout=1) == "77"
+        # the Windows PowerShell pane: `exit` only when BOTH probes name the same non-root pid; a stale-file answer cannot do that any more because
+        # neither probe reads anything appended before itself
+        a, b = types.SimpleNamespace(n=0, probe_rng=random.Random()), types.SimpleNamespace(n=0, probe_rng=random.Random())
+        assert cases.Ctx.ptok(a) != cases.Ctx.ptok(b), "probe tokens are seeded"
+        import inspect
+        src = inspect.getsource(cases.Ctx.__init__)
+        assert "self.probe_rng = random.Random()" in src and "self.rng = random.Random(seed)" in src
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def audit3_probe_waits_for_its_own_prompt_and_exit_waits_for_the_next():
+    """harness audit #3 (the `tac` incident): the rc hook logs the probe's prompt a few ms AFTER the effect file; `before = prompts()` sampled in that
+    window let the probe's prompt pass as the `exit`'s and the next probe was typed into the dying ssh. probe() returns only after the prompt
+    advanced, return_to_local types `exit` with that prompt counted, and types the next probe only after a FURTHER prompt."""
+    import threading
+    d = tempfile.mkdtemp()
+    try:
+        rhome, home = os.path.join(d, "rhome"), os.path.join(d, "home")
+        os.makedirs(rhome); os.makedirs(home)
+        st = {"prompts": 0, "remote": True, "typed": []}
+
+        def bump():
+            st["prompts"] += 1
+
+        def type_(text, ms, enter=False):
+            st["typed"].append((text, st["prompts"]))
+            if text.startswith("echo w"):
+                tok = text.split()[1]
+                open(os.path.join(rhome if st["remote"] else home, ".appci_where"), "a").write(tok + "\n")
+                threading.Timer(0.1, bump).start()              # the hook logs the probe's prompt 100 ms after the effect file
+            elif text == "exit":
+                st["remote"] = False
+                threading.Timer(0.1, bump).start()              # the local shell's prompt after the remote level ended
+        c = types.SimpleNamespace(be=types.SimpleNamespace(type=type_, guard=lambda: None), pane=None, W=home, log_path=None,
+                                  prof=types.SimpleNamespace(local_prompts=True, prompts=lambda remote=False: st["prompts"], rhome=rhome, home=home),
+                                  reset=lambda: None, n=0)
+        import random
+        c.probe_rng = random.Random()
+        c.ptok = lambda n=8: cases.Ctx.ptok(c, n)
+        c.until = lambda pred, timeout=10, step=0.01: cases.Ctx.until(c, pred, timeout, step)
+        c.lines = lambda name, remote=False: cases.Ctx.lines(c, name, remote)
+        c.where_homes = lambda: [home]
+        for name in ("probe", "where_now", "wait_prompt_after_exit", "return_to_local", "wait_ssh_gone"):
+            setattr(c, name, (lambda _n: (lambda *a, **k: getattr(cases.Ctx, _n)(c, *a, **k)))(name))
+        assert cases.Ctx.return_to_local(c) == "local", st["typed"]
+        probes = [x for x in st["typed"] if x[0].startswith("echo w")]
+        exits = [x for x in st["typed"] if x[0] == "exit"]
+        assert len(exits) == 1 and len(probes) == 2, st["typed"]
+        assert exits[0][1] == 1, "exit typed before the probe's own prompt was counted: %r" % st["typed"]
+        assert probes[1][1] == 2, "the next probe was typed before the exit's prompt: %r" % st["typed"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def audit2_raw_exit_is_banned_outside_ctx_and_the_root_pid_is_recorded_once_per_launch():
+    """harness audit #2/B: a raw `be.type("exit"` after an unchecked wait ran at the ROOT shell when the subshell never started (pane closed, app quit).
+    Every case leaves a shell through Ctx.exit_nested, which types `exit` only on proof; the raw call survives only inside Ctx, in
+    cases_caseremote.leave and for a reference terminal (marked on the line). run.py records the root pid once per (re)launch through one
+    relaunch() helper, and refuses when the process tree shows more than one shell."""
+    import glob, re
+    allowed = {("cases.py", "Ctx"), ("cases_caseremote.py", "leave")}
+    bad = []
+    for path in sorted(glob.glob(os.path.join(HERE, "cases*.py"))):
+        lines = open(path, errors="replace").read().splitlines()
+        enclosing = None
+        for i, l in enumerate(lines):
+            m = re.match(r"(?:def|class)\s+(\w+)", l)
+            if m:
+                enclosing = m.group(1)
+            if re.search(r"""\.type\(\s*['"]exit['"]""", l) and "reference terminal" not in l and (os.path.basename(path), enclosing) not in allowed:
+                bad.append("%s:%d (%s)" % (os.path.basename(path), i + 1, enclosing))
+    assert not bad, "raw `exit` outside Ctx.exit_nested / leave / a reference terminal: %s" % bad
+    src = open(os.path.join(HERE, "run.py")).read()
+    assert src.count("await_shell(") == 3, "every relaunch goes through relaunch(): await_shell is called from the first launch and relaunch() only"
+    assert "time.sleep(4)" not in src, "the fixed first-run settle is settle_first_run (view_mode hop)"
+    import run as runmod
+    # exit_nested: the PID probe decides first, then the where probe, then the shell count; no proof, no exit
+    typed = []
+    st = {"pid": None, "where": "local", "count": 1}
+    c = types.SimpleNamespace(be=types.SimpleNamespace(type=lambda t, *a, **k: typed.append(t)), root_pid="100", prof=types.SimpleNamespace(prompts=lambda remote=False: 0),
+                              shell_pid=lambda: st["pid"], where_now=lambda: st["where"], shell_count=lambda: st["count"],
+                              wait_prompt_after_exit=lambda *a, **k: True)
+    c.in_subshell = lambda base: cases.Ctx.in_subshell(c, base)
+    r = cases.Result("t", "terminal")
+    st["pid"] = "100"
+    assert cases.Ctx.exit_nested(c, 1, r, "x") is False and typed == [] and "ROOT shell" in r.notes[-1]
+    st["pid"] = "900"
+    assert cases.Ctx.exit_nested(c, 1, r, "x") is True and typed == ["exit"]
+    typed.clear(); st["pid"] = None; st["where"] = "remote"
+    assert cases.Ctx.exit_nested(c, None, r, "x") is True and typed == ["exit"]            # remote shell in front: exit (one level)
+    typed.clear(); st["where"] = "local"; st["count"] = 1
+    assert cases.Ctx.exit_nested(c, 1, r, "x") is False and typed == [] and "did not rise" in r.notes[-1]       # the subshell never started
+    assert cases.Ctx.exit_nested(c, None, r, "x") is False and typed == [] and "unknown" in r.notes[-1]        # no base either: no proof, no exit
+    st["where"] = "none"; st["count"] = 2
+    assert cases.Ctx.exit_nested(c, 1, r, "x") is True and typed == ["exit"]              # a `su` shell: answers in root's home, but one more shell
+    typed.clear(); c.root_pid = None; st["where"] = "local"; st["count"] = 2
+    assert cases.Ctx.exit_nested(c, 1, r, "x") is True and typed == ["exit"]              # no root pid: the shell count proves the nesting
+    # record_root_pid: once per launch, refused unless exactly one shell runs under the app
+    cx = types.SimpleNamespace(win=False, pane=None, be=types.SimpleNamespace(guard=lambda: None), shell_count=lambda: 2, shell_pid=lambda: "77")
+    app = types.SimpleNamespace(pid=lambda: 4242)
+    msg = runmod.record_root_pid(cx, app, "launch")
+    assert cx.root_pid is None and cx.root_app_pid == 4242 and "2 shells" in msg, (cx.root_pid, msg)
+    cx.shell_count = lambda: 1
+    assert runmod.record_root_pid(cx, app, "launch") is None and cx.root_pid == "77"
+    cx.shell_pid = lambda: None
+    assert "no answer" in runmod.record_root_pid(cx, app, "launch") and cx.root_pid is None
+    cx.win, cx.pane = True, "cmd"
+    assert runmod.record_root_pid(cx, app, "launch") is None and cx.root_pid is None       # cmd.exe: no probe, no row
 
 
 @check
@@ -1430,6 +1567,32 @@ def ssh_trial_facts_name_the_issue():
     # #1292: held, then the line never reached the remote
     v = cases.ssh_trial_facts(ok, line, [])
     assert v["text"].startswith("#1292: the line never reached"), v["text"]
+    # audit #4: a silent remote rec.log with the EFFECT seen is exact (the hook logs the C line after the effect file), never "logged nothing"
+    v = cases.ssh_trial_facts(ssh, line, [], effect_seen=True)
+    assert v["exact"] and v["rec_silent"] and "logged nothing" not in v["text"] and "never reached" not in v["text"], v["text"]
+    assert not cases.ssh_trial_facts(ssh, line, [], effect_seen=False)["exact"]
+    v = cases.ssh_trial_facts(ok, line, [line[:10] + line[11:]], effect_seen=True)        # the log holds a DIFFERENT line: not exact, the effect does not override it
+    assert not v["exact"]
+    # ssh_trial_note: waits for the remote log past r0 when the effect was seen; a verdict/effect disagreement is UNVERIFIABLE (noref), not a note
+    st = {"cmds": [(0.0, "echo w1 >> ~/.appci_where")], "verdict": dict(exact=False, text="#1345/#1394: ONE key lost")}
+    c = types.SimpleNamespace(prof=types.SimpleNamespace(commands=lambda remote=False: st["cmds"]),
+                              ssh_trial_verdict=lambda *a, **k: (st.__setitem__("kw", k), st["verdict"])[1])
+    c.until = lambda pred, timeout=10, step=0.01: cases.Ctx.until(c, pred, timeout, step)
+    import threading
+    threading.Timer(0.1, lambda: st["cmds"].append((1.0, line[:10] + line[11:]))).start()
+    r = cases.Result("t", "terminal")
+    vs = []
+    t = time.time()
+    assert cases.ssh_trial_note(c, r, vs, "trial 1", 0.0, line, 1, effect_seen=True) is st["verdict"]
+    assert time.time() - t >= 0.09 and len(st["cmds"]) == 2, "the verdict did not wait for the remote log to grow past r0"
+    assert st["kw"].get("effect_seen") is True and r.noref and "UNVERIFIABLE" in r.notes[-1] and not r.fails, (r.noref, r.notes)
+    r2 = cases.Result("t", "terminal")
+    cases.ssh_trial_note(c, r2, vs, "trial 2", 0.0, line, 1, effect_seen=False)
+    assert not r2.noref and r2.notes == ["trial 2: #1345/#1394: ONE key lost"], r2.notes
+    st["verdict"] = dict(exact=True, text="exact")
+    r3 = cases.Result("t", "terminal")
+    cases.ssh_trial_note(c, r3, vs, "trial 3", 0.0, line, 1, effect_seen=True)
+    assert not r3.noref and not r3.notes
     # the window reader: a line with no t= takes the t= of the line before it
     d = tempfile.mkdtemp()
     try:
@@ -1481,7 +1644,8 @@ def leave_remote_level_waits_for_the_probes_own_prompt_before_exit():
     c = types.SimpleNamespace(
         prof=types.SimpleNamespace(prompts=lambda remote=False: state["prompts"], local_prompts=True),
         be=types.SimpleNamespace(type=type_),
-        tok=lambda n: next(toks), local_where=lambda: [], reset=lambda: None, shell_gone=lambda base: False,
+        tok=lambda n: next(toks), ptok=lambda n: next(toks), local_where=lambda: [], reset=lambda: None, shell_gone=lambda base: False,
+        log_path=None, wait_ssh_gone=lambda *a, **k: False,
         until=lambda pred, timeout=10, step=0.02: cases.Ctx.until(c, pred, timeout, step), prompts=lambda: 0)
     c.lines = lambda name, remote=False: (["tok"] if name == "rn.txt" else list(state["file"]))
     c.deadline = None
@@ -1609,6 +1773,205 @@ def injector_accounting_parse_and_join():
     assert j3["na"] and "n/a" in txt3, (j3, txt3)
     assert injacct.account(be.calls, None, "x")[1]["seen"] is None                 # no trace: reported, not compared
     assert injacct.account([], log, "x") == (None, None)
+
+
+@check
+def audit6_7_harness_probe_lines_are_not_the_cases_commands_and_comparisons_wait_for_the_log():
+    """harness audit #6 (#1913): the where / pid probe lines never count as a case's commands. #7 (#1914): a rec.log that fills 800 ms after the effect
+    file is still read whole (await_commands), and the sites the audit names use it instead of a fixed sleep."""
+    import threading
+    cmds = [(0.0, "echo wAAAA_xyz >> ~/.appci_where"), (0.0, "sh -c 'echo pBBBB_xyz:$PPID >> ~/.appci_pid'"), (0.0, "Add-Content ~/.appci_pid pCCCC_xyz:$PID"),
+            (0.0, "echo t1 >> alive_x.txt"), (0.0, "echo k >> proof_a@b.txt"), (0.0, "echo real >> r_ft10.txt"), (0.0, "cat notes.appci_where.md")]
+    c = types.SimpleNamespace(prof=types.SimpleNamespace(commands=lambda remote=False: list(cmds)),
+                              HARNESS_MARKER_RE=cases.Ctx.HARNESS_MARKER_RE, APP_BOOTSTRAP_RE=cases.Ctx.APP_BOOTSTRAP_RE)
+    c.cmds_since = lambda mark: cases.Ctx.cmds_since(c, mark)
+    c.until = lambda pred, timeout=10, step=0.02: cases.Ctx.until(c, pred, timeout, step)
+    assert c.cmds_since(0) == ["echo real >> r_ft10.txt", "cat notes.appci_where.md"], c.cmds_since(0)      # a user's own line that merely contains the word stays
+    assert all(cases.Ctx.HARNESS_MARKER_RE.search(cases.depth_probe_cmd(p, "pX")) for p in ("bash", "powershell")), "the pid probe's own line is not matched"
+    # #7: three typed commands; the third C line lands 0.8 s after the effect: the comparison must see 3, and must not have slept a fixed time when they are there
+    del cmds[:]
+    cmds += [(0.0, "a"), (0.0, "b")]
+    threading.Timer(0.8, lambda: cmds.append((0.0, "c"))).start()
+    t = time.time()
+    assert cases.Ctx.await_commands(c, 0, 3) == ["a", "b", "c"] and 0.7 <= time.time() - t < 3.0, time.time() - t
+    t = time.time()
+    assert cases.Ctx.await_commands(c, 0, 3) == ["a", "b", "c"] and time.time() - t < 0.2, "await_commands slept although the log was complete"
+    assert cases.Ctx.await_commands(c, 0, lambda cs: "c" in cs) == ["a", "b", "c"]
+    t = time.time()
+    assert cases.Ctx.await_commands(c, 0, 4, timeout=0.3) == ["a", "b", "c"] and 0.25 <= time.time() - t < 1.5        # a real loss: bounded, the caller's comparison reports it
+    del cmds[:]
+    t = time.time()
+    assert cases.Ctx.await_commands(c, 0, 2, timeout=5) == [] and time.time() - t < 0.2, "no rec.log at all (PowerShell pane): no wait"
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "cases.py")).read()
+    er = src[src.index("def effect_run("):src.index("def ", src.index("def effect_run(") + 10)]
+    assert "ctx.await_commands(mark, n)" in er and er.index("ctx.await_commands(mark, n)") < er.index("have = ctx.cmds_since(mark)"), "effect_run compares rec.log without waiting for it"
+    assert "ctx.await_commands(mark, len(cmds))" in src and "ctx.await_commands(mark, len(typed))" in src and "ctx.await_commands(mark, len(want))" in src
+    assert "ctx.await_commands(mark, lambda cs: want_cmd in cs)" in open(os.path.join(here, "cases_caseintl.py")).read()
+    assert "ctx.await_commands(mark, lambda cs: line in cs)" in open(os.path.join(here, "cases_coverage_a.py")).read()
+
+
+@check
+def audit10_case_log_slice_on_every_platform_follows_the_log_across_a_rotation():
+    """harness audit #10 (#1917): the per-case app-log slice is written on every backend, starts at the case's LogOffset, and still holds the case's
+    first half after the app rotated the log in the middle of the case."""
+    import run as runmod
+    d = tempfile.mkdtemp()
+    try:
+        log = os.path.join(d, "phosphor.log")
+        open(log, "w").write("2026-01-01T00:00:00Z before the case\n")
+        c = _ctx(d, log)
+        c.extra_logs = []
+        off = c.log_size()
+        open(log, "a").write("2026-01-01T00:00:01Z case first half\n")
+        os.rename(log, log + ".in_session.0")                                  # the app's in-session rotation, mid-case
+        open(log, "w").write("2026-01-01T00:00:02Z case second half\n")
+        txt = runmod.case_log_text(c, off, log, 0)
+        assert "case first half" in txt and "case second half" in txt and "before the case" not in txt, txt
+        assert txt.index("first half") < txt.index("second half")
+        prof = types.SimpleNamespace(home=d)
+        for be_name in ("x11", "wayland", "mac", "windows"):
+            run_dir = os.path.join(d, "run_" + be_name)
+            runmod.save_case_log(run_dir, "terminal", "some_case", 0, prof, c, types.SimpleNamespace(find_log=lambda: log), None, cap=1_000_000, log_off=off, backend_name=be_name)
+            got = open(os.path.join(run_dir, "logs", "terminal", "case_some_case.log")).read()
+            assert "case first half" in got and "case second half" in got and "before the case" not in got, (be_name, got)
+        # a case that relaunched the app itself: the instance it began on is read from the case's offset, a later launch whole
+        snap = os.path.join(d, "launch0_1.log")
+        open(snap, "w").write("2026-01-01T00:00:00Z before the case\n2026-01-01T00:00:01Z old instance in the case\n")
+        c.extra_logs = [snap]
+        txt = runmod.case_log_text(c, off, log, 0)
+        assert "old instance in the case" in txt and txt.count("before the case") == 0, txt
+        # no offset (no log path when the case began): the timestamp cut, as before
+        txt = runmod.case_log_text(c, None, log, __import__("calendar").timegm(time.strptime("2026-01-01T00:00:02", "%Y-%m-%dT%H:%M:%S")) + 1)
+        assert "case second half" in txt and "before the case" not in txt, txt
+        # the run loop saves the slice without asking which platform it is on
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")).read()
+        loop = src[src.index("def main("):src.index("def account_case(")]
+        assert loop.count("save_case_log(") == 3 and "if win:     # the rotating app log" not in loop and "log_off=log_off, backend_name=a.backend" in loop
+        for ln in loop.splitlines():
+            assert "save_case_log(" not in ln or "log_off=log_off" in ln, "a save_case_log call without the case's LogOffset: " + ln.strip()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def audit8_9_12_profile_read_retries_and_post_case_invariants_reset_leaked_state():
+    """harness audit #8 (#1915): Profile.read survives a PermissionError (Windows: the shell has the log open). #9 / F (#1916): reference-terminal and
+    lab-arm state a case left behind is reset and named. #12 (#1919): the wedged-pane probe runs after a failing case on every platform."""
+    import builtins
+    import lab as L
+    import profile as P
+    import run as runmod
+    d = tempfile.mkdtemp()
+    real_open = builtins.open
+    try:
+        open(os.path.join(d, "prompt.log"), "w").write("P\t1\nP\t2\n")
+        open(os.path.join(d, "rec.log"), "w").write("C\t1.0\techo hi\n")
+        pr = types.SimpleNamespace(ctl=d, rctl=d, refctl=d, ref_active=False, remote=None)
+        pr.read = lambda which, remote=False: P.Profile.read(pr, which, remote)
+        n = {"left": 1, "calls": 0}
+
+        def flaky(path, *a, **k):
+            if str(path).endswith((".log",)) and str(path).startswith(d):
+                n["calls"] += 1
+                if n["left"] > 0:
+                    n["left"] -= 1
+                    raise PermissionError(13, "sharing violation")
+            return real_open(path, *a, **k)
+        builtins.open = flaky
+        try:
+            assert P.Profile.prompts(pr) == 2 and n["calls"] == 2, n                       # one PermissionError, then the read
+            n.update(left=3, calls=0)
+            assert P.Profile.commands(pr) == [(1.0, "echo hi")] and n["calls"] == 4, n
+            n.update(left=99, calls=0)
+            try:
+                P.Profile.read(pr, "rec.log")
+                raise AssertionError("an unreadable log read as empty: 'no commands' would be a false verdict")
+            except PermissionError:
+                assert n["calls"] == 5, n
+        finally:
+            builtins.open = real_open
+        assert P.Profile.read(pr, "nope.log") == []
+        # #9: the invariants
+        refocused = []
+        be = types.SimpleNamespace(guard_override=None, refocus=lambda verify=False: refocused.append(1))
+        c = types.SimpleNamespace(arm=None, remote=L.LocalRemote(pr), _lab_prev=None)
+        assert runmod.post_case_invariants(c, pr, be) == [] and not refocused, "a clean case tripped the invariant"
+        pr.ref_active, be.guard_override = True, dict(pids={1})
+        out = runmod.post_case_invariants(c, pr, be)
+        assert len(out) == 2 and "ref_active" in out[0] and "guard_override" in out[1] and pr.ref_active is False and be.guard_override is None and refocused == [1], out
+        lab_rem = object()
+        c.arm, c.remote, pr.remote, c._lab_prev = dict(name="u_dash/nohelper"), lab_rem, lab_rem, (None, None)
+        out = runmod.post_case_invariants(c, pr, be)
+        assert len(out) == 1 and "u_dash/nohelper" in out[0] and c.arm is None and isinstance(c.remote, L.LocalRemote) and pr.remote is None, out
+        c.remote = lab_rem                                                              # arm cleared by the case, the remote not restored
+        assert len(runmod.post_case_invariants(c, pr, be)) == 1 and isinstance(c.remote, L.LocalRemote)
+        assert runmod.post_case_invariants(c, pr, be) == []
+        be.refocus = lambda verify=False: (_ for _ in ()).throw(RuntimeError("no window"))
+        pr.ref_active = True
+        out = runmod.post_case_invariants(c, pr, be)                                    # never raises
+        assert pr.ref_active is False and any("refocus after the reset failed" in o for o in out), out
+        # the run loop: the invariant runs right after the case (before the screenshot / probes), emits a row, and the wedge probe is not Windows-only
+        src = real_open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")).read()
+        loop = src[src.index("def main("):src.index("def post_case_invariants(")]
+        assert loop.index("leaks = post_case_invariants(ctx, prof, be)") < loop.index('shot = None if sim else ctx.shot(c["name"]')
+        assert '"harness_state_reset_after_" + c["name"]' in loop
+        assert 'ctx.pane_responsive() if (not sim and (status == "fail" or (win and c["name"] in ("ctrl_c_d", "cadence"))))' in loop, "the wedged-pane probe is platform-gated again"
+    finally:
+        builtins.open = real_open
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def audit5_accounting_window_runs_to_case_end_and_a_loss_outside_loss_cases_is_noref():
+    """harness audit #5 (#1912): a held / slow-classifier Enter processed more than 3 s after the last injector call is still the case's Enter when the
+    window ends at the case's end; lost > 0 (or an Enter short) on a case that is not a loss case and has no failure is noref, never a pass."""
+    import backend
+    import injacct
+    import run as runmod
+    d = tempfile.mkdtemp()
+    try:
+        def kd(k, t, seq):
+            return "input_order keydown key=%s ctrl=false alt=false shift=false cmd=false t=%.3f seq=%d\n" % (k, t * 1000, seq)
+        def hop(t):
+            return "input_order hop=enter_begin deferred=false buffer=x input_type=Shell t=%.3f\n" % (t * 1000)
+        be = backend.X11Backend()
+        be.record_injection(["xdotool", "type", "--", "ab", "key", "Return"], 200.0, 200.2)
+        be.record_injection(["xdotool", "type", "--", "c", "key", "Return"], 201.0, 201.2)
+        log = os.path.join(d, "p.log")
+        open(log, "w").write(kd("a", 200.01, 1) + kd("b", 200.02, 2) + kd("c", 201.01, 3) + hop(200.15) + hop(206.2))     # the 2nd Enter: wall1 + 5 s
+        assert injacct.window(be.calls) == (199.5, 204.2) and injacct.window(be.calls, 210.0) == (199.5, 210.0)
+        assert injacct.window(be.calls, 202.0) == (199.5, 204.2), "a case that ends at once keeps the 3 s tail"
+        _, old = injacct.account(be.calls, log, "x")
+        assert (old["enters_seen"], old["lost"]) == (1, 1), old                    # the old fixed window: the late Enter reads as lost
+        _, j = injacct.account(be.calls, log, "x", t_end=210.0)
+        assert (j["sent"], j["seen"], j["lost"], j["enters_sent"], j["enters_seen"]) == (5, 5, 0, 2, 2), j
+        assert injacct.loss_verdict(j, "x") is None
+        # the verdict: lost keys / a short Enter outside the loss cases
+        assert "1 of 5" in injacct.loss_verdict(old, "x") and injacct.loss_verdict(old, "fast_typing") is None
+        assert injacct.loss_verdict(dict(sent=3, seen=3, lost=0, enters_sent=2, enters_seen=1), "x")           # extra keys hid the count: the Enter gap still shows
+        assert injacct.loss_verdict(dict(sent=3, seen=None, lost=None, enters_sent=1, enters_seen=None), "x") is None      # no key trace: nothing to compare
+        assert injacct.loss_verdict(dict(sent=0, seen=1, lost=None, enters_sent=1, enters_seen=1, na=True), "x") is None and injacct.loss_verdict(None, "x") is None
+        # run.account_case: no fails + lost -> noref; a failing case keeps its failure; a loss case and a clean case stay as they are
+        r = cases.Result("x", "terminal")
+        runmod.account_case(r, be.calls, log, "x", 204.0)
+        assert r.noref and not r.fails and any("UNVERIFIABLE" in n and "never reached the app" in n for n in r.notes) and r.metrics["injector"]["lost"] == 1, r.notes
+        assert ("fail" if r.fails else ("noref" if r.noref else "pass")) == "noref"
+        r = cases.Result("x", "terminal")
+        r.fails.append("its own failure")
+        runmod.account_case(r, be.calls, log, "x", 204.0)
+        assert not r.noref and r.fails == ["its own failure"] and any(n.startswith("injector accounting: injector sent 5") for n in r.notes), r.notes
+        r = cases.Result("fast_typing", "terminal")
+        runmod.account_case(r, be.calls, log, "fast_typing", 204.0)
+        assert not r.noref and r.notes[0].startswith("injector accounting: WARN loss case"), r.notes
+        r = cases.Result("x", "terminal")
+        runmod.account_case(r, be.calls, log, "x", 210.0)
+        assert not r.noref and not r.fails and r.metrics["injector"]["lost"] == 0
+        # Windows is accounted like every other backend: the run loop no longer names backends
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")).read()
+        assert 'a.backend in ("wayland", "x11", "mac") and not sim' not in src and src.count("account_case(") == 2, "the accounting gate names backends again"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 @check

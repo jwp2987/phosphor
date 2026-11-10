@@ -3952,3 +3952,86 @@ Still `Unavailable`/unsupported by design: `resolve_path`, `create_directory` an
 Lab (`script/realapp/appci/cases_lab_*.py`; the users `u_dash`, `u_ash`, `u_nu`, `u_pwsh` already existed in `sshlab/users.tsv` and the image, what was missing was cases that used them): the GitHub chip, file tree, remote edit (buffers), diff panel, skills, codebase index and git write cases now also run on `u_dash` and `u_ash`; the diff panel, skills, codebase index and git write cases also on `u_pwsh` (git, index and skills over PowerShell source, #1874). `nu` was already in every quick-matrix case. Arm counts are pinned in `selftest.py` (`lab_file_tree_remote_pieces`, `lab_diff_panel_and_gh_chip_pieces`, `lab_skills_remote_pieces`, `lab_git_write_remote_mirrors_the_rust_scripts`). These arms have NOT been run yet (no lab on the laptop): the first lab run on the box decides whether the PowerShell and dash/ash arms pass; the branch picker and PR file list have no lab case (no keyboard path to open them), only the contract and router tests above.
 
 **Real-network unit tests (round 8).** `websearch_tests::real_exa_anonymous_search` calls the real anonymous Exa endpoint; `WARP_SKIP_WEB_INTEGRATION=1` skips it. The anonymous tier is rate limited per source address and the runners share one, so an HTTP 429 is now an explicit SKIP printed to stderr (`SKIPPED real_exa_anonymous_search: Exa rate limit (HTTP 429)`); any other error still fails. Keyboard: `Keystroke::parse` accepts `pause` (Pause/Break, the name the winit layer emits for Pause and Cancel). `remote_server` contract test `the_shell_arm_handles_..._tilde_targets` looks for the `~` write under the scratch `$HOME` the local-sh executor gives the shell arm, not the runner's real home.
+
+## Harness reliability audit fixes (`docs/design/harness-reliability-audit.md`, 2026-11-09)
+
+The read-only audit of `script/realapp/appci` found three ways the harness could QUIT the app it was testing, two false passes and a family of
+false fails. Each fix below names its finding (1-12) / cross-cutting letter (A-F) and its selftest pin.
+
+- **A / E / #1a / #3 / #11 — one probe primitive, unseeded tokens, per-probe snapshot.** `Ctx.probe(cmd, token, name, dirs=None, remote=False, timeout)`
+  guards first, snapshots the size of every file the probe can land in, types, waits for the token appended AFTER the snapshot and then for the
+  prompt count (local or remote, where a hook exists) to advance past the pre-probe count; it returns `(where, tokens)`. `where_now`, `shell_pid`
+  and `pane_responsive` are built on it. Probe tokens come from `Ctx.ptok()` (an UNSEEDED `probe_rng`; `ctx.tok()` stays seeded for the replay
+  cases), so no earlier run or pass can have left this probe's token in a file nobody clears (the PowerShell pane's real-home `~/.appci_pid`, which
+  once supplied a dead process as the "root pid" and had every later `leave_nested` type `exit` at the root shell). `return_to_local` and
+  `leave_nested` sample `before = prompts()` after the probe's own prompt was counted, type `exit`, and wait for the NEXT prompt
+  (`Ctx.wait_prompt_after_exit`: local or outer-remote prompt, then the app's `ssh_pty_owner ssh=false` hop when the local shell is back; the
+  fixed `sleep(0.5)` settles are gone). `leave_remote` uses `wait_ssh_gone` on every platform instead of the hook-less pane's fixed 2 s settle.
+  Pins: `audit1_shell_pid_counts_only_tokens_appended_after_its_snapshot` (a stale `tok:pid` before the snapshot is not an answer; tokens
+  differ between contexts), `audit3_probe_waits_for_its_own_prompt_and_exit_waits_for_the_next` (a prompt logged 100 ms after the effect file:
+  `exit` is typed only after it, the next probe only after a further one).
+- **B / #1b / #2 — root pid once per launch, `Ctx.exit_nested`, one `relaunch()`.** `run.relaunch()` is the only relaunch path inside a pass
+  (six copies before): keep the dying instance's log, stop, start, `await_shell`, `settle_first_run` (the pane's `hop=view_mode` line plus 0.5 s
+  instead of a fixed 4 s), then `record_root_pid` behind `be.guard()` while the pane is provably clean -- on POSIX only when the process tree shows
+  exactly ONE shell under the app, else the depth check stays off and a `depth_check_off_after_<why>` skip row says so; Windows records it in
+  `prove_keys` after the key proof put the pane in the case dir. The lazy capture at "the first checked case" is gone (it typed before
+  `be.guard()`/`reset()` and once named a leaked nested shell as the root). A case that relaunches the app itself gets a fresh record before the
+  next case, under the same one-shell rule. `Ctx.exit_nested(base, r, label)` is the only way a case leaves a shell it started: `exit` is typed
+  when the PID probe names a pid other than `root_pid`, or the where probe lands REMOTE, or it lands local/nowhere and the shell count rose above
+  `base` (a `su` shell answers in root's home); otherwise `exit` is NOT typed and the row notes why. Every former raw `exit` (subshells,
+  subshell_sh_probe, remote_heredoc's inner shells, shell_nu's nested nu, palette and split panes, the scripted zero-network ssh, tmux, sudo/su,
+  AltGr Git Bash, editor-memory Git Bash, the lab's nohelper bash, `leave_inner`'s fallback) goes through it. The PowerShell pane (no rc hook)
+  gets its prompt event from the app's own `hop=precmd_seen` line (`Ctx.precmds_since`): `probe()`, `wait_prompt_after_exit`, `await_shell`
+  (first prompt report + 1 s instead of a flat 12 s; the 12 s stay as the give-up net) and `set_ps_pane_state` use it. Pin:
+  `audit2_raw_exit_is_banned_outside_ctx_and_the_root_pid_is_recorded_once_per_launch` (source lint: `.type("exit"` only inside `Ctx`,
+  `cases_caseremote.leave` or a line marked `reference terminal`; `await_shell` called from two places only; `exit_nested` decision table;
+  `record_root_pid` refuses with 2 shells).
+- **#4 (#1911) — the ssh trial verdict waits for the remote log and knows the effect.** The remote rc hook writes a command's `C` line at the
+  NEXT prompt, after the command's effect file exists, so a verdict read right after `until(tok in file)` said "#1292: ... the remote shell logged
+  nothing for the line" under a passing check. `ssh_trial_note(..., effect_seen=)` now takes the case's own effect observation: when the effect
+  was seen it first waits (3 s give-up net) for the remote `rec.log` to hold a non-probe command past the trial's start index; `ssh_trial_facts`
+  treats a SILENT remote log with the effect seen as exact (`rec_silent`, text "exact (by its effect ...)"); and a trial whose effect succeeded
+  while the log holds a DIFFERENT line is `r.unverifiable` (status `noref`), never a pass with a contradicting note. `ssh_connect_typing`,
+  `ssh_enter_then_immediate_command` and `ssh_nested_typeahead` pass their effect; the nested case's fixed 1 s sleep before the verdict is gone.
+  Pin: the audit #4 block of `ssh_trial_facts_name_the_issue`.
+
+- **#5 / C (#1912) — injector accounting reads to the case's end, on Windows too, and a loss outside the loss cases is `noref`.**
+  `injacct.window(calls, t_end)` ends at the moment of accounting (the case's end) when that is later than the old "last injector call + 3 s"
+  (a held ssh-typeahead Enter or a slow-classifier Enter is processed later than 3 s and read as "Enter: sent 2, app saw 0"). `run.account_case`
+  runs on every backend that records its calls (the Windows backend always did; the run loop excluded it) against `ctx.log_path`. The row is no
+  longer only informational (this supersedes the "informational note" wording of the #1509 paragraph above): `injacct.loss_verdict` — lost-before-app
+  > 0, or fewer Enters seen than posted, on a case that is NOT in `injacct.LOSS_CASES`, with an app key trace present and no failure of its own —
+  makes the row `UNVERIFIABLE` (status `noref`): the case passed on its effect check while keys never reached the app. A failing case keeps its
+  failure, loss cases keep their `WARN loss case` note, paste-only rows and trace-less runs are not judged. Pin:
+  `audit5_accounting_window_runs_to_case_end_and_a_loss_outside_loss_cases_is_noref`. **Not yet run on a real build**: the first Windows pass
+  decides whether its call records and the app's key trace line up (a systematic mismatch there would show as many `noref` rows with the same count).
+- **#6 / #7 / D (#1913, #1914) — the harness's probe lines are not a case's commands; comparisons wait for the log.** `Ctx.HARNESS_MARKER_RE`
+  also matches the where / pid probes (the `>> ~/.appci_where` echo, the `sh -c` pid probe into `~/.appci_pid`, PowerShell's `Add-Content ~/.appci_pid`), so
+  `cmds_since(mark)` drops one that the rc hook logged after the next case took its mark ("shell received 31 commands for 30 typed, first
+  mismatch: echo wT... >> ~/.appci_where"). `Ctx.await_commands(mark, n_or_predicate, timeout=5)` returns `cmds_since(mark)` once the shell has
+  logged what the case compares (the `C` line is written with the prompt, after the effect file); the timeout is the give-up net and a pane with no
+  rec.log is not waited on. Used where a count or an exact list is compared: `effect_run` (fast_typing, rollover), the Ctrl-C integrity read, the
+  reference-shell exact count, the cadence audit, `cases_caseintl.check_cmd`, the tmux line of `cases_coverage_a`. Negative checks ("nothing
+  reached the shell") keep their settle time: there is no event for something that must not happen. Pin:
+  `audit6_7_harness_probe_lines_are_not_the_cases_commands_and_comparisons_wait_for_the_log`.
+- **#10 / C (#1917) — the per-case app-log slice is saved on every platform.** `run.save_case_log` was called under `if win`; Linux and macOS
+  kept only the end-of-pass `phosphor.log` plus the retained `.in_session.N` chunks, so a long pass rotated a failing case's lines away. Every
+  non-skipped case on every backend now writes `logs/<label>/case_<case>.log`: a failing or `noref` case keeps its start (12 MB cap) plus the
+  tail of `ssh/sshd.log`, a passing one its newest 1 MB; a case that ends in the app's death is saved before the relaunch. The slice is
+  `run.case_log_text`: everything after the case's `LogOffset` (`ctx.log_size()` taken before the case; `Ctx.log_since` follows the file across
+  the app's in-session rotation), preceded by the case's own earlier launches (`ctx.extra_logs`, the first read from the case's offset), and on
+  Windows followed by the timestamp cut of a log file the case's own relaunch created. With no offset it is the old timestamp cut. Artifacts grow
+  by at most 1 MB per passing case on Linux/macOS (as on Windows since r18e9). Pin:
+  `audit10_case_log_slice_on_every_platform_follows_the_log_across_a_rotation`.
+- **#8 / #9 / #12 / F (#1915, #1916, #1919) — `Profile.read` retries, post-case invariants, wedge probe everywhere.** `Profile.read` (under
+  `prompts()` / `commands()`, polled inside `until` lambdas) retries a `PermissionError` five times like `Ctx.lines` (Windows: the shell has the log
+  open); a log that stays unreadable RAISES rather than reading as "no prompts, no commands". `run.post_case_invariants(ctx, prof, be)` runs right
+  after every case returns or raises, before the screenshot and any probe: `prof.ref_active` must be False, `be.guard_override` None, and with no
+  lab arm `ctx.remote` a `LocalRemote` and `prof.remote` None. Anything else is reset (then `be.refocus()`) and reported in a
+  `harness_state_reset_after_<case>` row: `pass` when the case itself failed (the leak is that failure's debris), **`fail` when the case passed or
+  was `noref`** (its cleanup has a hole: a TEST defect to fix, the later cases are protected either way). Before this a case that raised between
+  switching to the reference terminal and closing it made every later case read the reference shell's logs and guard against a closed window.
+  The wedged-pane probe (`ctx.pane_responsive()`, an effect probe) now runs after ANY failing case on every platform, not only on Windows: a
+  program left in the foreground that ignores Ctrl-C gets a `pane_wedged_after_<case>` row and a relaunch instead of failing every later case.
+  A failing case therefore costs one extra marker command (about a second) on Linux/macOS. Pin:
+  `audit8_9_12_profile_read_retries_and_post_case_invariants_reset_leaked_state`.

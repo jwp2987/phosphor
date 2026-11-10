@@ -165,8 +165,7 @@ def scripted_session(ctx, r):
     if getattr(ctx, "ssh", None):
         secs = CR.connect(ctx, "fake", 60)
         r.check(secs is not None, "the scripted ssh connect to the fake host did not reach a remote prompt")
-        ctx.be.type("exit", 12, enter=True)
-        time.sleep(1.0)
+        ctx.exit_nested(None, r, "scripted ssh")           # audit #2: `exit` only while a probe proves the remote shell is in front (never when the connect failed)
     else:
         r.note("no local ssh server: the ssh part of the scripted session was skipped (%s)" % (getattr(ctx, "ssh_why", None) or "unavailable"))
     r.check(ctx.app.alive(), "the app exited during the scripted session")

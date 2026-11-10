@@ -629,7 +629,7 @@ def c_palette(ctx, r):
     ctx.be.type("split pane right", 15)
     time.sleep(0.8)
     ctx.shot("palette_filtered")
-    n0 = len(prompt_times(ctx))
+    n0, base = len(prompt_times(ctx)), ctx.shell_count()
     ctx.be.key("Return")
     new = ctx.until(lambda: len(prompt_times(ctx)) > n0, 12)
     r.check(bool(new), "palette 'split pane right' + Enter: no new shell prompt (no new pane) within 12 s (see shots/*palette_filtered.png)")
@@ -637,8 +637,8 @@ def c_palette(ctx, r):
     ctx.shot("palette_split_done")
     if new:
         exact_burst(ctx, r, "palette_pane", 4)
-        ctx.be.type("exit", 15, enter=True)
-        time.sleep(1.0)
+        ctx.exit_nested(base, r, "palette pane")            # closes the new pane only when a probe proves its shell is in front (audit #2)
+        time.sleep(0.5)
     r.check(ctx.app.alive(), "app not alive after the palette action")
     ctx.shot("palette_after_close")
 
@@ -870,7 +870,7 @@ def c_split(ctx, r):
     +1); typing in the new pane is exact; the pane-switch keys move focus to the other pane and typing there is exact and lands in that
     pane's shell (one rec.log: all commands in order); `exit` closes the new pane."""
     for dirn in ("split_right", "split_down"):
-        n0 = len(prompt_times(ctx))
+        n0, base = len(prompt_times(ctx)), ctx.shell_count()
         ctx.be.key(K(ctx, dirn))
         up = ctx.until(lambda: len(prompt_times(ctx)) > n0, 12)
         if not r.check(bool(up), "%s: no new shell prompt within 12 s (no new pane?)" % dirn):
@@ -886,8 +886,8 @@ def c_split(ctx, r):
         time.sleep(0.5)
         exact_burst(ctx, r, "%s_new2" % dirn, 3)                     # and back
         ctx.shot("split_focus_back_" + dirn)
-        ctx.be.type("exit", 15, enter=True)                          # closes the focused (new) pane
-        time.sleep(1.0)
+        ctx.exit_nested(base, r, dirn)                               # closes the focused (new) pane, only when a probe proves it is not the root (audit #2)
+        time.sleep(0.5)
         ctx.shot("split_closed_" + dirn)
         exact_burst(ctx, r, "%s_after_close" % dirn, 3)
     r.check(ctx.app.alive(), "app not alive after the pane cases")

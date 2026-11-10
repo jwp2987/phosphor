@@ -391,9 +391,9 @@ def main():
                     ctx.shot("launch_fail")
                     exit_fail = True
                     continue
-                time.sleep(4)   # let the first-run overlay settle; mode_proof sends Escape
                 if win:
                     ctx.log_path = os.environ.get("APPCI_APP_LOG") or app.find_log() or ""      # now that the app has written one
+                settle_first_run(ctx)      # the first-run overlay: the pane's view_mode hop, then a short margin (mode_proof sends Escape)
                 if a.backend == "mac":
                     d = be.system_dialog(ocr=True)       # BEFORE the first key: a Local Network / TCC prompt would take it
                     if d:
@@ -401,6 +401,10 @@ def main():
                     if app.instance_count() != 1:
                         raise RuntimeError("expected exactly ONE app instance for this job's bundle, found %d: %s" % (app.instance_count(), app.warn))
                 be.calibrate()
+                if not win:        # Windows records it in prove_keys, after the key proof put the pane in the case dir (audit #1b/B)
+                    bad = record_root_pid(ctx, app, "launch")
+                    if bad:
+                        emit(dict(name="depth_check_off_after_launch", mode=label, status="skip", seconds=0, detail=[bad], metrics={}, shots=[]))
             else:
                 ctx.until(lambda: prof.prompts() > 0, 10)
             proved = not win
@@ -452,13 +456,15 @@ def main():
                     pid_start = app.pid() if app is not None and hasattr(app, "pid") else None
                 except Exception:
                     pid_start = None
-                depth_check = (not sim) and cases.wants_depth_check(c["name"], cases.PROVING) and not (win and pane == "cmd")
-                if depth_check:
-                    # the pane's ROOT shell pid, recorded at the first checked case after a (re)launch (the pane is clean there: the previous checked case left it at the root)
-                    if getattr(ctx, "root_pid", None) is None or getattr(ctx, "root_app_pid", None) != pid_start:
-                        ctx.root_pid, ctx.root_app_pid = ctx.shell_pid(), pid_start
-                        if ctx.root_pid is None:
-                            print("[appci] %s: root shell pid probe got no answer; the depth check is off for this case" % c["name"], flush=True)
+                # the pane's ROOT shell pid was recorded right after await_shell of this (re)launch (record_root_pid, audit #1b): a probe typed here, before
+                # be.guard() and ctx.reset(), once named a previous case's leaked nested shell as the root, and two consistent probes then `exit`ed the real root.
+                # Only when a CASE relaunched the app itself (ui_startup_time, remote_session_ext: the pane is a fresh terminal session) is it recorded here, and
+                # record_root_pid still refuses unless exactly one shell runs under the app.
+                if not sim and not win and pid_start and getattr(ctx, "root_app_pid", None) != pid_start:
+                    bad = record_root_pid(ctx, app, "relaunch_by_case")
+                    if bad:
+                        emit(dict(name="depth_check_off_before_" + c["name"], mode=label, status="skip", seconds=0, detail=[bad], metrics={}, shots=[]))
+                depth_check = (not sim) and cases.wants_depth_check(c["name"], cases.PROVING) and not (win and pane == "cmd") and ctx.root_app_pid == pid_start
                 # r18d8: soak runs APPCI_SOAK_MIN (60) minutes, longer than the 1500 s default: it hit CaseTimeout at 25 min. It gets its own length + 10 min.
                 disarm = arm_case_timeout(case_limit(c["name"]))
                 try:
@@ -482,6 +488,14 @@ def main():
                     traceback.print_exc()
                 finally:
                     disarm()
+                # audit #9 / F (#1916): state a case must have put back before anything else is typed (the screenshot, the probes, the next case)
+                leaks = post_case_invariants(ctx, prof, be)
+                if leaks:
+                    emit(dict(name="harness_state_reset_after_" + c["name"], mode=label, status="fail" if status in ("pass", "noref") else "pass", seconds=0, metrics={}, shots=[],
+                              detail=["after %s the harness's own state was not put back and was reset so later cases are not judged against it: %s%s" % (
+                                  c["name"], "; ".join(leaks), "" if status not in ("pass", "noref") else " -- the case did not fail, so its cleanup has a hole (TEST defect)")]))
+                    if status in ("pass", "noref"):
+                        exit_fail = True
                 if a.backend == "mac" and not sim:      # #1826: a case that left a harness-started Terminal.app (with windows) running names itself in its row
                     try:
                         import refterm_mac
@@ -491,14 +505,10 @@ def main():
                             print("LEAK " + leak, flush=True)
                     except Exception as e:
                         r.note("terminal leak guard failed: %r" % (e,))
-                if k_start is not None and a.backend in ("wayland", "x11", "mac") and not sim:
-                    try:       # informational (#1509): injector sent N; app saw M; lost-before-app K
-                        txt, acct = injacct.account(be.calls[k_start:], list(ctx.extra_logs) + [log_path] if ctx.extra_logs else log_path, c["name"])
-                        if txt:
-                            r.note("injector accounting: " + txt)
-                            r.metrics["injector"] = acct
-                    except Exception as e:
-                        r.note("injector accounting failed: %r" % e)
+                if k_start is not None and not sim:       # every backend that records its calls, Windows included (audit #5)
+                    account_case(r, be.calls[k_start:], list(ctx.extra_logs) + [ctx.log_path or log_path] if ctx.extra_logs else (ctx.log_path or log_path), c["name"], time.time())
+                    if status == "pass" and r.noref:
+                        status = "noref"
                 if log_off is not None:       # r18e9: did the pty write carry '\r'? (an Enter the editor accepted whose write lacked the CR = dropped/held Enter, ssh_* on Windows)
                     try:
                         pw = pty_write_cr(ctx.log_since(log_off))
@@ -531,25 +541,24 @@ def main():
                     status = "fail"
                     dead = classify_death(dead, ctx, t0, log_off)
                     r.fails.append(dead)
+                    if not sim:        # the dying instance's lines of THIS case, before the relaunch moves the log (audit #10)
+                        save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, log_off=log_off, backend_name=a.backend)
                     emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                               detail=r.fails + r.notes, metrics=r.metrics, shots=[shot] if shot else []))
                     exit_fail = True
-                    keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)   # the relaunch overwrites phosphor.log (#1457)
-                    instance += 1
-                    nb = prof.prompts()      # prompt.log is never cleared: count only a prompt the NEW instance logs (r18cz: the relaunch awaited an OLD prompt, Ctrl-C hit the bootstrap)
-                    app.start()          # relaunch so the remaining cases still run
-                    if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
-                        time.sleep(4)      # the same first-run settle as the first launch
-                    if win:
-                        be.guard()
-                        proved = False       # a relaunched Windows pane needs its keys proven again (and its cwd set)
+                    instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "death_of_" + c["name"], stop=False)
                     continue
-                if status != "fail" and win:       # r18e9: a PASSING case's app-log slice too (capped), so a validator can check a pass against the app's own hops
-                    save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, cap=1_000_000)
+                # audit #10 (#1917): EVERY platform keeps the case's own app-log slice (it was Windows-only; a long Linux/Mac pass rotated the failing case's
+                # lines away before the end-of-pass copy). The slice starts at the case's LogOffset, which follows the log across in-session rotations.
+                # r18e9: a PASSING case's slice too (capped to its newest 1 MB), so a validator can check a pass against the app's own hops; a failing or
+                # unverifiable case keeps its start (12 MB) plus the ssh server log (r18cj: the evidence was gone).
+                if not sim and status not in ("skip",):
+                    if status in ("fail", "noref"):
+                        save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, log_off=log_off, backend_name=a.backend)
+                    else:
+                        save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, cap=1_000_000, log_off=log_off, backend_name=a.backend)
                 if status == "fail":
                     exit_fail = True
-                    if win:     # the rotating app log keeps only its newest part: save this failing case's lines now, plus the ssh logs (r18cj: the evidence was gone)
-                        save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url)
                 emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
                 if c["name"].startswith(("ssh_", "remote_")):
@@ -560,16 +569,7 @@ def main():
                         emit(dict(name="pane_not_local_after_" + c["name"], mode=label, status="fail", seconds=0,
                                   shots=[ctx.shot("not_local_after_" + c["name"]) or ""],
                                   detail=["after %s the pane could not be proven back in the local shell (%s); the app is relaunched so later cases start clean" % (c["name"], where)]))
-                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
-                        instance += 1
-                        app.stop()
-                        nb = prof.prompts()      # prompt.log is never cleared: count only a prompt the NEW instance logs (r18cz: the relaunch awaited an OLD prompt, Ctrl-C hit the bootstrap)
-                        app.start()
-                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
-                            time.sleep(4)      # the same first-run settle as the first launch
-                        if win:
-                            be.guard()
-                            proved = False
+                        instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "pane_not_local_after_" + c["name"])
                         continue
                 if depth_check and ctx.root_pid is not None:
                     try:
@@ -586,16 +586,7 @@ def main():
                         emit(dict(name="pane_not_local_after_" + c["name"], mode=label, status="fail", seconds=0,
                                   shots=[ctx.shot("not_local_after_" + c["name"]) or ""],
                                   detail=["after %s the pane's shell was not the root shell (%s; root pid %s); the app is relaunched so later cases start clean" % (c["name"], nest, ctx.root_pid)]))
-                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
-                        instance += 1
-                        app.stop()
-                        nb = prof.prompts()
-                        app.start()
-                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
-                            time.sleep(4)
-                        if win:
-                            be.guard()
-                            proved = False
+                        instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "pane_not_root_after_" + c["name"])
                         continue
                 if ctx.mode == "agent" and c["name"] != "mode_proof":
                     # every agent-pass case must END in agent mode, or the cases after it measure a terminal session under the agent label
@@ -612,16 +603,7 @@ def main():
                                   shots=[os.path.relpath(p, run) for p in [ctx.shot("left_agent_after_" + c["name"])] if p],
                                   detail=["%s relaunched the app itself (pid %s -> %s); a relaunched app starts in a terminal session, so this is not an app finding. "
                                           "The app is relaunched again (fresh agent session) so the cases after it run in agent mode." % (c["name"], pid_start, pid_now)]))
-                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
-                        instance += 1
-                        app.stop()
-                        nb = prof.prompts()
-                        app.start()
-                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
-                            time.sleep(4)
-                        if win:
-                            be.guard()
-                            proved = False
+                        instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "agent_view_not_restored_after_" + c["name"])
                         continue
                     if seen == "terminal" and ctx.double_ctrlc_since(t0):
                         # r18d2: two Ctrl-C within the 1 s confirmation window of an empty agent conversation leave agent view BY DESIGN
@@ -631,16 +613,7 @@ def main():
                                   shots=[os.path.relpath(p, run) for p in [ctx.shot("left_agent_after_" + c["name"])] if p],
                                   detail=["after %s the pane is a terminal session, and the case sent two Ctrl-C within the 1 s exit-confirmation window: that exits an empty "
                                           "agent conversation by design, so this is not an app finding; the app is relaunched (fresh agent session)" % c["name"]]))
-                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
-                        instance += 1
-                        app.stop()
-                        nb = prof.prompts()
-                        app.start()
-                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
-                            time.sleep(4)
-                        if win:
-                            be.guard()
-                            proved = False
+                        instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "double_ctrl_c_after_" + c["name"])
                         continue
                     if seen == "terminal":
                         emit(dict(name="left_agent_mode_after_" + c["name"], mode=label, status="fail", seconds=0,
@@ -648,18 +621,11 @@ def main():
                                   detail=["after %s the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later "
                                           "agent cases measure agent mode. Candidate APP finding if the case typed no Escape." % c["name"]]))
                         exit_fail = True
-                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
-                        instance += 1
-                        app.stop()
-                        nb = prof.prompts()      # prompt.log is never cleared: count only a prompt the NEW instance logs (r18cz: the relaunch awaited an OLD prompt, Ctrl-C hit the bootstrap)
-                        app.start()
-                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
-                            time.sleep(4)      # the same first-run settle as the first launch
-                        if win:
-                            be.guard()
-                            proved = False
+                        instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "left_agent_mode_after_" + c["name"])
                         continue
-                alive = ctx.pane_responsive() if (win and (status == "fail" or c["name"] in ("ctrl_c_d", "cadence"))) else 0
+                # audit #12 (#1919): after ANY failing case on every platform (Windows-only before): on POSIX a program left in the foreground that ignores
+                # Ctrl-C (vim, less, cat) silently failed every later case. pane_responsive is an effect probe and platform-neutral.
+                alive = ctx.pane_responsive() if (not sim and (status == "fail" or (win and c["name"] in ("ctrl_c_d", "cadence")))) else 0
                 if alive == 1:
                     # typing took effect only after the retry's Ctrl-C x3: not wedged, but the NEXT case would have typed into a pane that eats Enter (r18co Git Bash
                     # pane after cadence: keys written to the pty, Enter taken by the empty input editor, fast_typing 0/30). Visible row, not a failure here.
@@ -672,15 +638,7 @@ def main():
                     emit(dict(name="pane_wedged_after_" + c["name"], mode=label, status="fail", seconds=0, shots=[ctx.shot("wedged_after_" + c["name"]) or ""],
                               detail=["the %s pane did not run a marker command (no effect file) after %s, twice: the app is relaunched so the remaining cases measure something" % (pane or "default", c["name"])]))
                     exit_fail = True
-                    keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
-                    instance += 1
-                    app.stop()
-                    nb = prof.prompts()      # prompt.log is never cleared: count only a prompt the NEW instance logs (r18cz: the relaunch awaited an OLD prompt, Ctrl-C hit the bootstrap)
-                    app.start()
-                    if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
-                        time.sleep(4)      # the same first-run settle as the first launch
-                    be.guard()
-                    proved = False
+                    instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "pane_wedged_after_" + c["name"])
         except backend.NeedsOwner as e:
             msg = "NEEDS OWNER: %s" % e
             print(msg, flush=True)
@@ -766,6 +724,55 @@ def main():
 
 
 PTY_WRITE_RX = re.compile(r'hop=pty_write_bytes .*?bytes="((?:[^"\\]|\\.)*)"')
+
+
+def post_case_invariants(ctx, prof, be):
+    """audit #9 / F (#1916): harness state that must be back to its resting value when a case returns, however it returned. A case that raised between
+    switching to the reference terminal and closing it left prof.ref_active / be.guard_override set: every later prompts()/commands() then read the
+    REFERENCE shell's logs and every injection was guarded against the (closed) reference window, a cascade of false fails to the end of the pass. A
+    lab arm that did not reach its cleanup left ctx.remote / prof.remote on the lab user. Each is reset here and named. -> [what was reset] (empty =
+    clean). Never raises."""
+    import lab as labmod_
+    out = []
+    try:
+        if getattr(prof, "ref_active", False):
+            prof.ref_active = False
+            out.append("prof.ref_active was still True (shell logs were being read from the reference terminal)")
+        if be is not None and getattr(be, "guard_override", None):
+            be.guard_override = None
+            out.append("be.guard_override was still set (keys were still aimed at the reference terminal)")
+        arm = getattr(ctx, "arm", None)
+        if arm is not None or not isinstance(getattr(ctx, "remote", None), labmod_.LocalRemote) or getattr(prof, "remote", None) is not None:
+            ctx.arm = None
+            ctx._lab_prev = None
+            ctx.remote = labmod_.LocalRemote(prof)
+            prof.remote = None
+            who = (arm.get("name") or arm.get("user")) if isinstance(arm, dict) else None
+            out.append("the remote side still pointed at a lab arm (%s)" % (who or ("arm set" if arm is not None else "ctx.arm unset, but ctx.remote / prof.remote was not the same-machine remote")))
+        if out and be is not None and hasattr(be, "refocus"):
+            try:
+                be.refocus()
+            except Exception as e:
+                out.append("refocus after the reset failed: %r" % (e,))
+    except Exception as e:
+        out.append("post-case invariant check itself failed: %r" % (e,))
+    return out
+
+
+def account_case(r, calls, log_path, name, t_end):
+    """injector accounting for one case (#1509): the note + metric, read over the window that ends at the case's end (`t_end`), and (audit #5,
+    #1912) a case with no failure whose injected keys or Enters never reached the app's key trace, outside the loss cases, becomes UNVERIFIABLE
+    (noref): it passed on its effect check while keys were lost. A case that already failed keeps its own verdict. Never raises."""
+    try:
+        txt, acct = injacct.account(calls, log_path, name, t_end)
+        if txt:
+            r.note("injector accounting: " + txt)
+            r.metrics["injector"] = acct
+        bad = injacct.loss_verdict(acct, name)
+        if bad and not r.fails:
+            r.unverifiable(bad)
+    except Exception as e:
+        r.note("injector accounting failed: %r" % e)
 
 
 def pty_write_cr(text):
@@ -854,19 +861,45 @@ def classify_death(dead, ctx, t0, log_off, exit_evidence=None):
         return "%s (death classification failed: %r)" % (dead, e)
 
 
-def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None, cap=12_000_000):
-    """Windows: after a FAILED case, write the app-log lines since the case began (the log rotates and keeps only its newest part, so the
-    failing case's key trace was gone by the end of the pass), plus the ssh server's log, to logs/<label>/case_<case>.log (#1488, r18cj)."""
-    import ci_env
-    try:
-        src = log_src(prof, "windows", app)
+def case_log_text(ctx, log_off, src, t0):
+    """the app-log lines of ONE case. With the case's LogOffset (ctx.log_size() taken before the case): everything logged after it, across the
+    app's in-session rotations (Ctx.log_since), plus the logs of instances the case itself replaced (ctx.extra_logs). Without one (no log path
+    when the case began): the old timestamp cut of the whole session log from one second before the case."""
+    def ts_cut(path):
         keep = []
-        if src and os.path.exists(src):
+        if path and os.path.exists(path):
             cut = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 - 1))
-            for l in app_log_text(src).splitlines():
+            for l in app_log_text(path).splitlines():
                 if l[:20] >= cut or not l[:2] == "20":       # non-timestamped continuation lines ride with their neighbour
                     keep.append(l)
-        txt = "\n".join(keep)
+        return "\n".join(keep)
+    if log_off is not None and getattr(ctx, "log_path", None):
+        parts = []
+        for k, p in enumerate(getattr(ctx, "extra_logs", None) or []):
+            # a case that relaunched the app: its earlier launches' log copies, oldest first. The first is the instance the case began on, so it is read
+            # from the case's offset; the later ones were launched inside the case and are the case's whole.
+            try:
+                with open(p, "rb") as f:
+                    if k == 0 and int(log_off) <= os.path.getsize(p):
+                        f.seek(int(log_off))
+                    parts.append("=== %s (an earlier launch within this case) ===\n" % os.path.basename(p) + f.read().decode(errors="replace"))
+            except OSError:
+                pass
+        parts.append(ctx.log_since(log_off) or "")
+        if src and os.path.exists(src) and os.path.abspath(src) != os.path.abspath(ctx.log_path):
+            # Windows: the case's own relaunch writes a NEW log file that ctx.log_path does not name yet (re-resolved before the next case)
+            parts.append("=== %s (the instance this case relaunched) ===\n" % os.path.basename(src) + ts_cut(src))
+        return "\n".join(parts)
+    return ts_cut(src)
+
+
+def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None, cap=12_000_000, log_off=None, backend_name="windows"):
+    """Every platform (audit #10; Windows-only before): write the app-log lines of this case (the log rotates and keeps only its newest part, so a
+    failing case's key trace was gone by the end of the pass), plus the ssh server's log for a failing case, to logs/<label>/case_<case>.log
+    (#1488, r18cj). `log_off`: the case's LogOffset (rotation-aware slice); see case_log_text."""
+    import ci_env
+    try:
+        txt = case_log_text(ctx, log_off, log_src(prof, backend_name, app), t0)
         txt = txt[:cap] if cap >= 12_000_000 else txt[-cap:]       # a failing case keeps its start; a passing one its newest part
         sl = os.path.join(run, "ssh", "sshd.log")
         if os.path.exists(sl) and cap >= 12_000_000:        # the ssh server log rides with FAILING cases only
@@ -936,15 +969,84 @@ def log_src(prof, backend_name, app=None):
 
 def await_shell(ctx, app, prof, win, timeout, base=0):
     """True once the pane's shell is up. POSIX / Git Bash pane: the first prompt.log line from the scratch rc. Windows PowerShell pane (no rc hook):
-    the app's main window exists, then a fixed settle for PowerShell + the app's bootstrap (12 s, as the PowerShell harness)."""
+    the app's main window exists, then the app's own log shows the shell's first prompt report (`hop=precmd_seen`; the pane's PowerShell runs the
+    app's hooks) plus a 1 s margin for PSReadLine; the old fixed 12 s settle remains the give-up net when the log shows nothing (audit #11)."""
     if not win:
         return ctx.until(lambda: prof.prompts() > base, timeout, step=0.5)
     if not app.wait_window(60):
         return False
     if prof.local_prompts:
         return ctx.until(lambda: prof.prompts() > base, timeout, step=0.5)
-    time.sleep(12)
+    t0 = time.time()
+    lp = os.environ.get("APPCI_APP_LOG") or app.find_log() or ""
+    if lp:
+        ctx.log_path = lp
+    seen = lp and ctx.until(lambda: ctx.precmds_since(t0 - 5) >= 1, min(timeout, 12), step=0.25)
+    time.sleep(1.0 if seen else max(0.0, 12 - (time.time() - t0)))
     return app.alive()
+
+
+def settle_first_run(ctx, timeout=4.0):
+    """the first-run settle after a (re)launch: the pane's `hop=view_mode` line (logged when the pane is first shown, #1568) plus a 0.5 s margin for the
+    overlay, instead of a fixed 4 s (audit #11); the 4 s stay the give-up net when the log shows none (an older build, no log yet)."""
+    if ctx.log_path and ctx.until(lambda: ctx.log_view_mode() is not None, timeout, step=0.2):
+        time.sleep(0.5)
+        return True
+    if not ctx.log_path:
+        time.sleep(timeout)
+    return False
+
+
+def record_root_pid(ctx, app, why):
+    """audit #1b/B: the pane's ROOT shell pid, ONCE per (re)launch, right after await_shell while nothing else has been typed, behind be.guard(). On
+    POSIX the process tree must show exactly ONE shell under the app, else the recorded pid could be a leaked shell's and the depth check would
+    `exit` the real root later: the check is then left OFF (root_pid None) and the reason returned for a visible row. None when recorded."""
+    try:
+        ctx.root_app_pid = app.pid() if app is not None and hasattr(app, "pid") else None
+    except Exception:
+        ctx.root_app_pid = None
+    ctx.root_pid = None
+    if ctx.win and ctx.pane == "cmd":
+        return None                      # no PID probe in cmd.exe: the depth check never runs there
+    try:
+        ctx.be.guard()
+    except RuntimeError as e:
+        return "root shell pid not recorded after %s: the injection guard refused (%s); the depth check is off until the next relaunch" % (why, e)
+    if not ctx.win:
+        n = ctx.shell_count()
+        if n is not None and n != 1:
+            return "root shell pid not recorded after %s: %d shells under the app where exactly 1 was expected; the depth check is off until the next relaunch" % (why, n)
+    pid = ctx.shell_pid()
+    if pid is None:
+        return "root shell pid not recorded after %s: the PID probe got no answer; the depth check is off until the next relaunch" % why
+    ctx.root_pid = pid
+    return None
+
+
+def relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, why, stop=True):
+    """EVERY relaunch inside a pass (audit B; run.py used to repeat this six times): keep the dying instance's log, stop, start, await the shell
+    (counting only a prompt the NEW instance logs: prompt.log is never cleared, r18cz), settle, then on POSIX record the pane's root shell pid
+    while the pane is provably clean (Windows records it in prove_keys). -> (instance + 1, proved): a relaunched Windows pane needs its keys
+    proven again (and its cwd set)."""
+    keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
+    if stop:
+        app.stop()
+    nb = prof.prompts()
+    app.start()
+    if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
+        if win and not os.environ.get("APPCI_APP_LOG"):
+            try:
+                ctx.log_path = app.find_log() or ctx.log_path
+            except Exception:
+                pass
+        settle_first_run(ctx)
+    if win:
+        be.guard()
+        return instance + 1, False
+    bad = record_root_pid(ctx, app, why)
+    if bad:
+        emit(dict(name="depth_check_off_after_" + why, mode=label, status="skip", seconds=0, detail=[bad], metrics={}, shots=[]))
+    return instance + 1, True
 
 
 def set_ps_pane_state(ctx, be):
@@ -956,7 +1058,13 @@ def set_ps_pane_state(ctx, be):
     cases failed, then the wedge probe failed too). So: settle, type, and verify by an effect (a relative marker file must appear in the case dir); retry."""
     wd = ctx.W.replace("\\", "/")
     for attempt in range(3):
-        time.sleep(1.5 + attempt)
+        # the proof's command must have returned to the prompt first: the app's own `precmd_seen` hop for it (the pane has no rc hook) plus a margin,
+        # the old fixed settle when the log shows none (audit #11)
+        t_wait = time.time()
+        if ctx.log_path and ctx.until(lambda: ctx.precmds_since(t_wait - 2.0) >= 1, 1.5 + attempt, step=0.1):
+            time.sleep(0.4)
+        else:
+            time.sleep(max(0.0, 1.5 + attempt - (time.time() - t_wait)))
         for _ in range(attempt + 1):
             be.key("ctrl+c")
             time.sleep(ctx.EXIT_WINDOW_S + 0.4 if ctx.mode == "agent" else 0.8)      # r18u8 (H16): two Ctrl-C < 1 s apart exit an empty agent view
@@ -1006,6 +1114,9 @@ def prove_keys(ctx, be, pane, label):
                 if bad:
                     return bad
             print("keys: delivered via SendInput %s" % method, flush=True)
+            off = record_root_pid(ctx, ctx.app, "key_proof")      # audit #1b: the pane is provably at its prompt and in the case dir now
+            if off:
+                print("[appci] " + off, flush=True)
             return None
         log.append("%s: marker not in the file" % method)
     h, fp_ = winapi.foreground()

@@ -1147,9 +1147,9 @@ def c_remote_heredoc(ctx, r):
                 break
         r.check(ready, "remote %s never executed a probe line" % key)
         if not ready:
-            # leave the inner shell (if it started at all) so leave() below talks to the remote bash
-            ctx.be.type("exit", 12, enter=True)
-            time.sleep(1.5)
+            # leave the inner shell only when a probe proves a shell other than the pane's root is in front (audit #2: a raw `exit` after an inner
+            # shell that never started ended the remote session, or the LOCAL shell); leave() below then talks to whatever is in front
+            ctx.exit_nested(None, r, "remote %s (inner shell did not start)" % key)
             break
         name = "hd_%s.txt" % key
         if key == "fish":
@@ -1159,8 +1159,7 @@ def c_remote_heredoc(ctx, r):
         rec = step("remote %s: %d-line payload" % (key, len(lines2k)), name, cmd, expect(lines2k), 120)
         if rec is not None and rec["got"] is None:
             continue            # the session (with the inner shell) was ended
-        ctx.be.type("exit", 12, enter=True)
-        time.sleep(1.5)
+        ctx.exit_nested(None, r, "remote %s" % key)
     # LAST: on a bash without bracketed paste its ~800 KB wrapper line can keep the remote shell busy far past the budget (r18u22 macOS: bash 3.2 at
     # 100 % cpu), and that must not take the steps above with it
     step("bash: %d-line here-doc (%d bytes, wrapper path)" % (len(big), len(expect(big))), "hd_big.txt", heredoc("hd_big.txt", big), expect(big), 180)
@@ -1236,7 +1235,7 @@ def c_lat_enter_ssh(ctx, r):
                     ds, rs, blocks = [], [], None
                     fallback = "interleaving failed: %s" % str(e)[:160]
                 ref.switch("reference")
-                ctx.be.type("exit", 12, enter=True)       # leave the reference's ssh (its window is closed below)
+                ctx.be.type("exit", 12, enter=True)       # reference terminal: leave the reference's ssh (its window is closed below)
                 time.sleep(1.0)
         except RuntimeError as e:
             fallback = fallback or "reference focus failed: %s" % str(e)[:160]
@@ -1617,8 +1616,7 @@ def make_shell_case(key):
             t2 = ctx.tok(8).lower()
             ctx.be.type(app(t2, x), 12, enter=True)
             ctx.until(lambda: len(ctx.lines(x)) >= 2, 8)
-            ctx.be.type("exit", 12, enter=True)
-            time.sleep(1.5)
+            ctx.exit_nested(shells0, r, "nu: nested nu")
             t3 = ctx.tok(8).lower()
             ctx.be.type(app(t3, x), 12, enter=True)
             ctx.until(lambda: len(ctx.lines(x)) >= 3, 8)
