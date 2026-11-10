@@ -2741,6 +2741,12 @@ Real gaps that remain (each checked against `.gitlab-ci.yml` and `script/realapp
 Owner rule (2026-11-02): every test result is kept in the repo for regression review. `test-results/` is that archive; it is
 append-only history, **retained forever** (it is small by design, see the size rules).
 
+**Unit suites first, on every machine, in every tier (owner 2026-11-05; the fix tier broke it until 2026-11-10).** On the Linux box `ci_seq.py` waits for the box
+unit suites (`test-linux`, and `test-warpui-core` / `test-workspace-rest` when selected) to finish before it plays the Linux app tests, so a logic regression shows
+in minutes and compile load never overlaps the latency cases. A red unit suite does not stop the app tests (their results are still wanted); it only goes
+first. Mac and Windows have no unit suites in the fix tier; in candidate/release their unit suites run before that platform's app tests. A `--self-test` check
+fails if the Linux wait is ever limited to the candidate/release tiers again.
+
 **Trend report (owner, 2026-11-10): `script/ci/results_trend.py` -> `test-results/TREND.md` (generated, never edited).** The measure of progress is the set of
 failing cases, not the issue count. Per platform and run it shows PASS / FAIL / NOREF (split into `injector`: the harness says keys were lost between the
 injector and the app, so no pass can be trusted; and `other`) / SKIP, and compares only (case, mode) pairs judged pass/fail in BOTH runs (fixed and

@@ -5,6 +5,7 @@
 #                               [--tests '<nextest filterset>'] [--base <git ref>] [--skip job ...] [--dry-run]
 #   (legacy positional job names after the ref still mean --skip)
 #
+#   (every tier: on the Linux box the unit suites run FIRST, the app tests wait for them, owner 2026-11-05; Mac/Windows have no unit suites in the fix tier)
 #   fix       (~1 h)   check-linux; test-linux with a nextest filter (--tests, or derived from the git diff);
 #                      test-warpui-core only when its crate changed, test-workspace-rest on every code change (#1496); builds for --platforms
 #                      (default: derived from the diff); app tests in SMOKE mode (APPCI_TIER=smoke). A platform whose
@@ -377,6 +378,7 @@ def self_test():
         print("%s %s" % ("ok  " if ok else "FAIL", what))
     # owner rule 2026-11-09: the fix tier plays the Linux lab job with the PROVING lab cases, the quick matrix and the fake model
     yml = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".gitlab-ci.yml")).read()
+    _src = open(os.path.abspath(__file__)).read()
     globs = proving_lab_globs()
     lv = lab_fix_vars()
     for ok, what in (
@@ -388,6 +390,9 @@ def self_test():
         (verdict(LAB_FIX_JOB, LAB_IMAGE_FAIL) == "FAIL", "a lab job that could not run for a missing image is a FAIL"),
         (verdict(LAB_IMAGE_JOB, "failed") == "FAIL", "a red sshlab-image job fails the tier"),
         (re.search(r"^%s:" % LAB_IMAGE_JOB, yml, re.M) is not None, "the sshlab-image job exists in .gitlab-ci.yml (ci_seq plays it before every lab job)"),
+        # owner 2026-11-05 (violated in the fix tier 2026-11-10): the Linux box's unit suites run first in EVERY tier; the app tests wait
+        ('elif tier != "fix":\n            box_units_done.wait()' not in _src and "elif p_of[b] not in PLAT_SUFFIX:\n            box_units_done.wait()" in _src,
+         "the Linux app tests wait for the box unit suites in every tier, not only candidate/release"),
         (lab_image_skipped({"cases": [{"status": "skip", "detail": ["labctl start failed (1): image localhost/phosphor-sshlab:full-ab12 is not built: run the sshlab-image job"]}]}), "all-skip rows for a missing image are recognised"),
         (not lab_image_skipped({"cases": [{"status": "skip", "detail": ["no card"]}, {"status": "pass"}]}), "an ordinary skip is not a missing-image skip"),
         # #1921: pending behind this pipeline's own jobs is queued, not offline
@@ -844,8 +849,8 @@ def main():
             return
         if tier != "fix" and p_of[b] in PLAT_SUFFIX:
             run_suites(plat_suites(p_of[b], False))     # unit suites first, on the same machine, before its app tests
-        elif tier != "fix":
-            box_units_done.wait()                       # the Linux box: its unit suites first, never alongside the app tests
+        elif p_of[b] not in PLAT_SUFFIX:
+            box_units_done.wait()                       # the Linux box: its unit suites first, never alongside the app tests (ALL tiers, owner 2026-11-05; the fix tier used to start them alongside, 2026-11-10)
         for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
             if tier == "fix" and n == "app-test-linux-x11":
                 timeline[n] = (TIER_SKIP, None)
