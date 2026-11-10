@@ -35138,3 +35138,117 @@ fn without_a_tty_probe_an_answer_or_typeahead_re_arms_the_setup() {
         }
     }
 }
+
+/// One step of a readiness test: output the pane receives, the look at it, and the attempt is
+/// still armed (nothing was written, nothing cancelled).
+fn still_armed_after_output(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+    output: &str,
+    what: &str,
+) {
+    view.model.lock().process_bytes(output);
+    output_wakeup(view, ctx);
+    assert_eq!(readiness_state(view), "armed", "{what}");
+}
+
+/// #2006 (round 9, Windows Git Bash, no tty probe). The echo of the user's own line comes back
+/// after its Enter went out; that look (`Name: me`: no question, the cursor moved, the line no
+/// longer dirty) read as "a prompt drawn since the user's last line end" and the setup was
+/// written into the rc's next `read`.
+/// * `subshell_ready_rc_questions`: nothing is written at the echo of either answer nor at the
+///   second question; the setup goes out at the prompt drawn on a later row.
+/// * `subshell_ready_rc_clear`: a line typed while the rc still runs: nothing at its cooked echo,
+///   nothing at the line editor's redisplay of it (`LAB$ echo hi`, about to be run); the setup
+///   goes out at the prompt after the line ran.
+/// Legacy and Table.
+#[test]
+fn without_a_tty_probe_the_echo_of_the_users_line_is_not_a_prompt() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for questions in [true, false] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let written = subshell_pty_writes(&mut app, &terminal);
+                let typed: &str = if questions { "me\rops\r" } else { "echo hi\r" };
+                terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().simulate_long_running_block("bash", "");
+                    assert!(!view.model.lock().has_subshell_tty_probe());
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::Banner {
+                            shell_type: Some(ShellType::Bash),
+                        },
+                        ctx,
+                    );
+                    assert_eq!(readiness_state(view), "armed", "{mode:?}");
+                    if questions {
+                        still_armed_after_output(view, ctx, "Name: ", "the first question");
+                        for key in [b"me".to_vec(), b"\r".to_vec()] {
+                            assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                        }
+                        assert_eq!(readiness_state(view), "armed", "{mode:?}: ReArm");
+                        still_armed_after_output(
+                            view,
+                            ctx,
+                            "me",
+                            "the late echo of the first answer",
+                        );
+                        still_armed_after_output(view, ctx, "\r\nTeam: ", "the second question");
+                        for key in [b"ops".to_vec(), b"\r".to_vec()] {
+                            assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                        }
+                        assert_eq!(readiness_state(view), "armed", "{mode:?}: ReArm");
+                        still_armed_after_output(
+                            view,
+                            ctx,
+                            "ops",
+                            "the late echo of the second answer",
+                        );
+                        still_armed_after_output(view, ctx, "\r\n", "its newline");
+                    } else {
+                        for key in [b"echo hi".to_vec(), b"\r".to_vec()] {
+                            assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                        }
+                        assert_eq!(readiness_state(view), "armed", "{mode:?}: ReArm");
+                        still_armed_after_output(
+                            view,
+                            ctx,
+                            "echo hi",
+                            "the cooked echo while the rc runs",
+                        );
+                        still_armed_after_output(view, ctx, "\r\n", "its newline");
+                        still_armed_after_output(
+                            view,
+                            ctx,
+                            "LAB$ echo hi",
+                            "the line editor shows the typed-ahead line it is about to run",
+                        );
+                        still_armed_after_output(view, ctx, "\r\nhi\r\n", "the line ran");
+                    }
+                });
+                assert_eq!(
+                    String::from_utf8_lossy(&written.borrow()),
+                    typed,
+                    "{mode:?} questions={questions}: only the user's keys so far"
+                );
+                terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().process_bytes("LAB$ ");
+                    output_wakeup(view, ctx);
+                    assert_eq!(
+                        readiness_state(view),
+                        "written",
+                        "{mode:?} questions={questions}: the prompt on a later row"
+                    );
+                });
+                assert!(
+                    written.borrow().len() > typed.len(),
+                    "{mode:?} questions={questions}: the setup's first line went out"
+                );
+            })
+        }
+    }
+}

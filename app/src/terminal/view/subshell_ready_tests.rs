@@ -5,11 +5,12 @@
 use std::time::Duration;
 
 use super::{
-    CancelKind, Decision, HeldKeysDest, LineEnd, LineEndVerdict, LineTracker, PRE_READY_CEILING,
-    ReadinessSample, StageTwoPending, Tail, TypedAhead, UserLedger, WaitWhy, WrittenCancel,
-    WrittenSample, WrittenVerdict, cancel_flushes_unread_setup, held_keys_destination,
-    judge_written, line_end_is_typed_ahead, on_user_line_ended, row_shows_typed_line,
-    stage_two_pending, subshell_ready, typed_ahead_after_look,
+    CancelKind, Decision, HeldKeysDest, LastUserLine, LineEnd, LineEndVerdict, LineTracker,
+    PRE_READY_CEILING, ReadinessSample, StageTwoPending, Tail, TypedAhead, UserLedger, WaitWhy,
+    WrittenCancel, WrittenSample, WrittenVerdict, cancel_flushes_unread_setup,
+    held_keys_destination, judge_written, last_user_line_after_ends, line_end_is_typed_ahead,
+    on_user_line_ended, row_shows_typed_line, stage_two_pending, subshell_ready,
+    typed_ahead_after_look, user_line_may_be_at_cursor,
 };
 use crate::terminal::model::subshell_tty::{LeaderKind, SubshellTtyKind, SubshellTtySample};
 use crate::terminal::shell::ShellType;
@@ -37,6 +38,7 @@ fn sample(tty: SubshellTtySample) -> ReadinessSample {
         newline_since_line_end: false,
         elapsed: Duration::from_secs(1),
         no_tty_probe: false,
+        user_line_may_be_at_cursor: false,
     }
 }
 
@@ -758,6 +760,7 @@ fn every_sample() -> Vec<ReadinessSample> {
                                                 newline_since_line_end: false,
                                                 elapsed,
                                                 no_tty_probe: false,
+                                                user_line_may_be_at_cursor: false,
                                             });
                                         }
                                     }
@@ -1215,6 +1218,20 @@ fn no_probe_judges_from_screen_facts() {
         Decision::Write(None),
         "a prompt drawn since the user's last line end proves the bytes were read"
     );
+    // #2006: the cursor's row may still show the user's own line (its late echo, the line
+    // editor's redisplay): no proof that a prompt was drawn after the line was consumed.
+    let mut echo = s.clone();
+    echo.user_line_may_be_at_cursor = true;
+    assert_eq!(
+        subshell_ready(&echo, &typed(), None),
+        Decision::Wait(WaitWhy::UserLineAtCursor),
+        "`Name: me` after the Enter is the user's echo, not a prompt"
+    );
+    assert_eq!(
+        subshell_ready(&echo, &no_bytes(), None),
+        Decision::Write(None),
+        "nothing typed: there is no user line to mistake"
+    );
     let mut probed = s.clone();
     probed.no_tty_probe = false;
     assert_eq!(
@@ -1481,4 +1498,159 @@ fn d4_a_line_typed_ahead_of_the_line_editor_blocks_the_write_until_it_was_accept
         );
     }
     assert_eq!(subshell_ready(&s, &typed(), None), Decision::Write(None));
+}
+
+/// #2006 (round 9, Windows Git Bash, `subshell_ready_rc_questions`): on a pane with no tty probe
+/// the user's own line on the cursor's row is never "a prompt drawn since the line end". Every
+/// combination of the screen facts: with user bytes passed, a Write needs the fact false; the
+/// fact never turns a Wait or a Cancel into a Write.
+#[test]
+fn no_probe_never_writes_on_the_users_own_line_sweep() {
+    for tail in [Tail::None, Tail::ShellPrompt, Tail::InputPrompt] {
+        for moved in [true, false] {
+            for moved_since_end in [true, false] {
+                for line_dirty in [true, false] {
+                    for ledger in [no_bytes(), typed()] {
+                        let mut clean = unknown(LeaderKind::Unreadable, "");
+                        clean.no_tty_probe = true;
+                        clean.tail = tail;
+                        clean.prompt_moved_since_baseline = moved;
+                        clean.prompt_moved_since_line_end = moved_since_end;
+                        clean.line_dirty = line_dirty;
+                        let mut shown = clean.clone();
+                        shown.user_line_may_be_at_cursor = true;
+                        let without = subshell_ready(&clean, &ledger, Some(ShellType::Bash));
+                        let with = subshell_ready(&shown, &ledger, Some(ShellType::Bash));
+                        let what = format!(
+                            "{tail:?} moved={moved} since_end={moved_since_end} \
+                             dirty={line_dirty} bytes={}",
+                            ledger.bytes_since_arm
+                        );
+                        if ledger.bytes_since_arm > 0 {
+                            assert!(!matches!(with, Decision::Write(_)), "{what}");
+                        } else {
+                            assert_eq!(with, without, "{what}");
+                        }
+                        if !matches!(without, Decision::Write(_)) {
+                            assert_eq!(with, without, "{what}: only a Write is vetoed");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// #2006: which rows may show the user's last line. The rows are those of the round 9 cases.
+#[test]
+fn user_line_may_be_at_cursor_rows() {
+    let me = LastUserLine::Text("me".to_owned());
+    // The late echo on the row the line was ended on, whatever it reads as.
+    assert!(user_line_may_be_at_cursor(
+        &me, false, false, "Name: me", false
+    ));
+    assert!(user_line_may_be_at_cursor(
+        &me, false, false, "Name: m", false
+    ));
+    assert!(user_line_may_be_at_cursor(&me, false, false, "LAB$", false));
+    // Another row: the next question, the next prompt.
+    assert!(!user_line_may_be_at_cursor(
+        &me, false, true, "Team:", false
+    ));
+    assert!(!user_line_may_be_at_cursor(&me, false, true, "LAB$", false));
+    // A typed-ahead line the line editor redisplays at its prompt (a `clear` moved the row).
+    let echo = LastUserLine::Text("echo T1 >> f.txt".to_owned());
+    assert!(user_line_may_be_at_cursor(
+        &echo,
+        true,
+        true,
+        "LAB$ echo T1 >> f.txt",
+        false
+    ));
+    assert!(user_line_may_be_at_cursor(
+        &echo,
+        true,
+        true,
+        "LAB$ echo T",
+        false
+    ));
+    assert!(!user_line_may_be_at_cursor(
+        &echo, true, true, "LAB$", false
+    ));
+    // Its echo wrapped onto the next row.
+    assert!(user_line_may_be_at_cursor(
+        &echo, false, true, ">> f.txt", true
+    ));
+    // An empty line has no echo to mistake, on any row.
+    for row_changed in [true, false] {
+        assert!(!user_line_may_be_at_cursor(
+            &LastUserLine::None,
+            true,
+            row_changed,
+            "LAB$",
+            true
+        ));
+    }
+    // An unpredictable line: the row it was ended on and a wrapped row may show it; typed
+    // before any prompt was drawn it is never proof.
+    let opaque = LastUserLine::Opaque;
+    assert!(user_line_may_be_at_cursor(
+        &opaque, false, false, "LAB$", false
+    ));
+    assert!(user_line_may_be_at_cursor(
+        &opaque, false, true, "LAB$", true
+    ));
+    assert!(!user_line_may_be_at_cursor(
+        &opaque, false, true, "LAB$", false
+    ));
+    assert!(user_line_may_be_at_cursor(
+        &opaque, true, true, "LAB$", false
+    ));
+}
+
+/// #2006: what a ReArm's line ends leave for the screen to show.
+#[test]
+fn last_user_line_after_ends_rows() {
+    let none = LastUserLine::None;
+    let text = |s: &str| LastUserLine::Text(s.to_owned());
+    // One answer, predictable: its text, trimmed.
+    assert_eq!(
+        last_user_line_after_ends(&none, false, 1, true, Some(" me ")),
+        text("me")
+    );
+    // Unpredictable (a control byte, a paste).
+    assert_eq!(
+        last_user_line_after_ends(&none, false, 1, true, None),
+        LastUserLine::Opaque
+    );
+    // Blanks only run nothing.
+    assert_eq!(
+        last_user_line_after_ends(&none, false, 1, true, Some("  ")),
+        none
+    );
+    // A bare Enter / ^C / ^U: nothing to show; it replaces an answered line.
+    assert_eq!(
+        last_user_line_after_ends(&text("me"), false, 0, false, Some("")),
+        none
+    );
+    // ... but not a line typed before any prompt that is still outstanding.
+    assert_eq!(
+        last_user_line_after_ends(&text("vim f"), true, 0, false, Some("")),
+        text("vim f")
+    );
+    // A second line behind one typed before any prompt, or two lines in one chunk: only the
+    // last text is kept, so the pair is unprovable.
+    assert_eq!(
+        last_user_line_after_ends(&text("vim f"), true, 1, true, Some("ls")),
+        LastUserLine::Opaque
+    );
+    assert_eq!(
+        last_user_line_after_ends(&none, false, 2, true, Some("ls")),
+        LastUserLine::Opaque
+    );
+    assert_eq!(
+        last_user_line_after_ends(&none, false, 1, false, Some("")),
+        LastUserLine::Opaque,
+        "a non-empty line and then an empty one in one chunk"
+    );
 }

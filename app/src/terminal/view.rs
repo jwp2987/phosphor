@@ -3151,6 +3151,12 @@ struct ArmedSubshellSetup {
     /// moved it, the prompt after vim was then "0 rows below", the line read as not yet accepted
     /// and the attempt waited for good (round 9 macOS, `subshell_ready_vim_typeahead`).
     typed_ahead_row: usize,
+    /// #2006: on a pane with no tty probe, what the user's last line end left for the screen to
+    /// show (`subshell_ready::user_line_may_be_at_cursor`). In memory only; never logged.
+    user_line: subshell_ready::LastUserLine,
+    /// #2006: a non-empty line typed before any prompt or question was drawn is outstanding (no
+    /// tty probe: nothing says who took it).
+    user_line_before_prompt: bool,
     /// R4 hop binding: a shell leader was seen; a relay after it is an unpredicted hop.
     seen_shell_leader: bool,
 }
@@ -23505,6 +23511,8 @@ impl TerminalView {
             no_tty_probe: false,
             typed_ahead_line: None,
             typed_ahead_row: 0,
+            user_line: subshell_ready::LastUserLine::None,
+            user_line_before_prompt: false,
             seen_shell_leader: false,
         });
         self.judge_armed_subshell_setup("armed", ctx);
@@ -23549,6 +23557,16 @@ impl TerminalView {
             _ => {}
         }
         let moved = |base: (usize, usize, usize)| look.position != base && look.position.2 > 0;
+        // #2006: without a tty probe the echo of the user's own line (arriving after its Enter)
+        // and the line editor's redisplay of a typed-ahead line are told from a prompt by the row.
+        let user_line_may_be_at_cursor = no_tty_probe
+            && subshell_ready::user_line_may_be_at_cursor(
+                &armed.user_line,
+                armed.user_line_before_prompt,
+                look.position.1 != armed.line_end_baseline.1,
+                &look.cursor_line,
+                look.cursor_row_continues,
+            );
         let sample = subshell_ready::ReadinessSample {
             tty: look.tty.clone(),
             block_unchanged: look.block_id == armed.block_id,
@@ -23563,6 +23581,7 @@ impl TerminalView {
                 && !armed.tracker.line_has_content(),
             elapsed: armed.armed_at.elapsed(),
             no_tty_probe,
+            user_line_may_be_at_cursor,
         };
         let relay = look.tty.kind == SubshellTtyKind::Relay;
         armed.last_tty = Some(look.tty.clone());
@@ -23607,7 +23626,7 @@ impl TerminalView {
             format!(
                 "source={source} decision={decision:?} kind={:?} leader={:?} comm={:?} tail={:?} \
                  queue_empty={:?} reader_blocked={:?} newline_since_line_end={} bytes={} lines={} \
-                 age_ms={}",
+                 age_ms={} user_line_at_cursor={}",
                 look.tty.kind,
                 look.tty.leader,
                 look.tty.leader_comm.as_deref().unwrap_or("-"),
@@ -23617,7 +23636,8 @@ impl TerminalView {
                 sample.newline_since_line_end,
                 armed.ledger.bytes_since_arm,
                 armed.ledger.lines_ended,
-                sample.elapsed.as_millis()
+                sample.elapsed.as_millis(),
+                sample.user_line_may_be_at_cursor
             )
         });
         match decision {
@@ -24017,6 +24037,9 @@ impl TerminalView {
             });
         armed.line_started = armed.tracker.line_has_content();
         let last_line = armed.tracker.take_last_line();
+        // #2006: what these line ends leave for the screen to show on a pane with no tty probe.
+        let non_empty_ends = ends.iter().filter(|end| end.non_empty).count();
+        let last_end_non_empty = ends.last().is_some_and(|end| end.non_empty);
         let mut cancel = false;
         let mut typed_ahead = false;
         for end in ends {
@@ -24071,6 +24094,24 @@ impl TerminalView {
         // that carries a fresh prompt) compares against where the output was before the Enter.
         armed.baseline = armed.last_position;
         armed.line_end_baseline = armed.last_position;
+        if armed.no_tty_probe {
+            // A line that answers a question on screen: whatever was typed ahead before any
+            // prompt went to a `read` (that one or an earlier one), not to the line editor.
+            let outstanding_before_prompt =
+                armed.user_line_before_prompt && tail_at_enter != subshell_ready::Tail::InputPrompt;
+            armed.user_line = subshell_ready::last_user_line_after_ends(
+                &armed.user_line,
+                outstanding_before_prompt,
+                non_empty_ends,
+                last_end_non_empty,
+                last_line.as_deref(),
+            );
+            armed.user_line_before_prompt = if non_empty_ends > 0 {
+                typeahead_before_prompt
+            } else {
+                outstanding_before_prompt
+            };
+        }
         if typed_ahead {
             armed.ledger.typed_ahead = subshell_ready::TypedAhead::Unread;
             armed.typed_ahead_line = last_line;
