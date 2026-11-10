@@ -2967,3 +2967,23 @@ work to race and nothing drains the main queue, so such a read runs in place.
   through a host the user never chose; a redirect from a provider endpoint can leave the
   configured origin. A re-pin diff that restores env-proxy reading or a raw
   `reqwest::Client::new()` is drift to reject.
+- **A managed secret is never rendered into an MCP server's `command` or `args`**
+  (`#1931`, 2026-11-09, `app/src/ai/mcp/templatable_installation.rs` `apply_secrets`,
+  `variables_placed_in_argv`).
+  **Upstream:** `apply_secrets` renders a secret into any template variable, by explicit
+  `{{secret}}` reference or by key-name match, wherever the template uses that variable.
+  **We do instead:** a variable whose placeholder appears in the template's `command` or
+  `args` is skipped (its value keeps the placeholder) and a warning names the variable;
+  `env` and `headers` are unchanged.
+  **Evidence:** `args` becomes the child's argv (`cmd.args(args)` in
+  `templatable_manager/native.rs`), which every process on the machine can read (`ps`,
+  audit logs): the #1864 class. A re-pin diff that removes the argv skip is drift to reject.
+  <!-- markers: keep:variables_placed_in_argv -->
+- **An AI-endpoint redirect stays on the origin of its first request** (`#1928`, 2026-11-09,
+  `crates/network_gate` `check_redirect_from`, `lib/rust-genai` `RedirectGuard`).
+  **Upstream:** reqwest's default policy follows up to 10 hops anywhere and strips only
+  `Authorization`/`Cookie`/`Proxy-Authorization` across hosts. **We do instead:** a hop of a
+  provider request is followed only to the first URL's host and port (or the same host from
+  `http` to `https`). **Evidence:** `x-api-key`, `api-key` and user `extra_headers` are not
+  on reqwest's strip list, so a 30x from one provider to another handed over the key.
+  <!-- markers: keep:check_redirect_from -->

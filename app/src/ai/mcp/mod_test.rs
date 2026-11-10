@@ -1070,6 +1070,71 @@ mod tests {
         );
     }
 
+    // #1931: a variable the template puts in `args` (or `command`) becomes the server process's
+    // argv, readable by every process on the machine. A managed secret is never rendered into
+    // it, by explicit `{{secret}}` reference or by key-name match: the value keeps its
+    // placeholder and the resolved JSON carries no secret. The same secret still reaches `env`.
+    #[test]
+    fn test_apply_secrets_never_renders_a_secret_into_args() {
+        let template = r#"{"test-server":{"command":"npx","args":["-y","server","--token","{{TOKEN}}","--key={{API_KEY}}"],"env":{"ENV_TOKEN":"{{ENV_TOKEN}}"}}}"#;
+        let mut installation = create_test_installation(
+            "test-server",
+            template,
+            vec![
+                ("TOKEN", "{{secret_one}}"),
+                ("API_KEY", "plain-placeholder"),
+                ("ENV_TOKEN", "{{secret_one}}"),
+            ],
+        );
+
+        let secrets = make_secrets(vec![
+            ("secret_one", "s3cr3t-explicit"),
+            ("API_KEY", "s3cr3t-by-key-name"),
+        ]);
+        installation.apply_secrets(&secrets);
+
+        assert_eq!(
+            installation.variable_values()["TOKEN"].value,
+            "{{secret_one}}"
+        );
+        assert_eq!(
+            installation.variable_values()["API_KEY"].value,
+            "plain-placeholder"
+        );
+        assert_eq!(
+            installation.variable_values()["ENV_TOKEN"].value,
+            "s3cr3t-explicit"
+        );
+
+        let resolved: serde_json::Value =
+            serde_json::from_str(&resolve_json(&installation)).unwrap();
+        let args = resolved["test-server"]["args"].to_string();
+        assert!(!args.contains("s3cr3t"), "{args}");
+        assert_eq!(
+            resolved["test-server"]["env"]["ENV_TOKEN"],
+            "s3cr3t-explicit"
+        );
+    }
+
+    // #1931: the command itself is argv[0]; a variable used in both `env` and `args` is still an
+    // argv variable.
+    #[test]
+    fn test_apply_secrets_never_renders_a_secret_into_the_command() {
+        let mut installation = create_test_installation(
+            "test-server",
+            r#"{"test-server":{"command":"{{BIN}}","args":["{{SHARED}}"],"env":{"SHARED":"{{SHARED}}"}}}"#,
+            vec![("BIN", "{{secret_bin}}"), ("SHARED", "{{secret_shared}}")],
+        );
+
+        let secrets = make_secrets(vec![
+            ("secret_bin", "s3cr3t-a"),
+            ("secret_shared", "s3cr3t-b"),
+        ]);
+        installation.apply_secrets(&secrets);
+
+        assert!(!resolve_json(&installation).contains("s3cr3t"));
+    }
+
     #[test]
     fn test_apply_secrets_missing_secret_leaves_placeholder() {
         // If the referenced secret doesn't exist, the {{...}} placeholder

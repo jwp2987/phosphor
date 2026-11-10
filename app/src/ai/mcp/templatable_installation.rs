@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use handlebars::{get_arguments, render_template};
 use lazy_static::lazy_static;
@@ -13,6 +13,31 @@ use std::collections::BTreeMap;
 
 lazy_static! {
     static ref HASHER: SipHasher = SipHasher::new_with_keys(0, 0);
+}
+
+/// The template variables whose `{{key}}` placeholder appears in a server's `command` or
+/// `args` in `template_json` (`{"<server name>": {"command": .., "args": [..], ..}}`), i.e.
+/// whose value becomes part of the server process's argv. Empty for JSON that does not parse.
+fn variables_placed_in_argv(template_json: &str) -> HashSet<String> {
+    let Ok(serde_json::Value::Object(servers)) =
+        serde_json::from_str::<serde_json::Value>(template_json)
+    else {
+        return HashSet::new();
+    };
+    let mut variables = HashSet::new();
+    for server in servers.values() {
+        let command = server.get("command").and_then(|value| value.as_str());
+        let args = server
+            .get("args")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|arg| arg.as_str());
+        for text in command.into_iter().chain(args) {
+            variables.extend(get_arguments(text));
+        }
+    }
+    variables
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,7 +135,16 @@ impl TemplatableMCPServerInstallation {
     ///
     /// Variables with no matching explicit refs and no matching secret are left
     /// unchanged.
+    ///
+    /// A variable the template places in the server's `command` or `args` never
+    /// receives a secret (#1931): the rendered value would be the child process's
+    /// argv, which every other process on the machine can read (`ps`, audit logs).
+    /// Such a variable keeps its value as it is, placeholder included, so the
+    /// server starts without the secret instead of exposing it; secrets belong in
+    /// `env` or `headers`. Deliberately stricter than upstream, which renders them.
     pub fn apply_secrets(&mut self, secrets: &HashMap<String, ManagedSecretValue>) {
+        let argv_variables = variables_placed_in_argv(&self.templatable_mcp_server.template.json);
+
         let secret_strings: HashMap<String, String> = secrets
             .iter()
             .filter_map(|(k, v)| {
@@ -128,6 +162,17 @@ impl TemplatableMCPServerInstallation {
                 .variable_values
                 .get(&variable.key)
                 .is_some_and(|v| !get_arguments(&v.value).is_empty());
+
+            if argv_variables.contains(&variable.key) {
+                if has_explicit_refs || secrets.contains_key(&variable.key) {
+                    log::warn!(
+                        "MCP: not placing a managed secret in the server's command line \
+                         (template variable {}); put it in env or headers instead",
+                        variable.key
+                    );
+                }
+                continue;
+            }
 
             if has_explicit_refs {
                 let rendered =
