@@ -2968,6 +2968,17 @@ impl TypeaheadHandoff {
             warpui::input_order::log_hop("commit_deferred_committed_delivery", String::new);
             return false;
         }
+        // #1923 (Windows round 8): on a ConPTY session whose shell signals, the prompt's Precmd
+        // does not hand input to the editor: the shell is not at its line editor until the ready
+        // signal, and a precmd function may be reading (`read -s` for a PIN) right now. Committing
+        // here moved the keys into the editor, which submitted the secret. Input stays with the
+        // pty, so keys typed meanwhile are held by the prompt hold and reach whatever reads; the
+        // line editor's signal commits (`on_line_editor_active`), and the hold's give-up net is
+        // unchanged. No timer decides.
+        if self.prompt_hold_armed() && self.awaiting_line_editor_since.is_some() {
+            warpui::input_order::log_hop("commit_deferred_awaiting_line_editor", String::new);
+            return false;
+        }
         match self.owner() {
             Owner::Pty {
                 wrote_user_bytes: false,

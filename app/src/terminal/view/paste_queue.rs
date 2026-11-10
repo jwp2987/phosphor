@@ -1085,6 +1085,14 @@ impl TerminalView {
             // they stay held for the prompt's signal and go to the pty in typed order.
             let can_hand_back =
                 clean_prompt && (never_signalled || !self.prompt_hold_segment_has_enter(key));
+            // #1923: the line editor never signalled, but the screen ends in a question for input
+            // (`pin: `, `Password:`): something other than the line editor is reading (a precmd
+            // function's `read -s`). Those keys are its answer, not editor text and not a command:
+            // a screen fact, not the clock, sends them to the pty, in typed order.
+            if self.screen_tail_asks_for_input() {
+                self.release_queued_prompt_hold(key, PromptHoldEnd::GaveUp, ctx);
+                return;
+            }
             if can_hand_back {
                 self.hand_back_prompt_hold_keys(key, token, false, ctx);
             } else {
@@ -2231,6 +2239,19 @@ impl TerminalView {
                 } => text.bytes().any(|byte| is_enter(&byte)),
                 _ => false,
             })
+    }
+
+    /// Whether the unterminated text at the end of the output asks for input (`pin: `, `[y/N]`,
+    /// `Password:`): the same classification the subshell readiness look uses.
+    fn screen_tail_asks_for_input(&self) -> bool {
+        use crate::terminal::model::key_facts::{OUTPUT_TAIL_ROWS, output_tail_is_input_prompt};
+        let model = self.model.lock();
+        let block = model.block_list().active_block();
+        let grid = block.output_grid();
+        if grid.grid_handler().cursor_point().col == 0 {
+            return false;
+        }
+        output_tail_is_input_prompt(&grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS)))
     }
 
     /// #1584: the give-up of prompt hold `hold_id` with keys that may go back to the editor: the

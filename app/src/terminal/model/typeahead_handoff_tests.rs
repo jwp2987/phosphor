@@ -2156,6 +2156,31 @@ fn keys_between_precmd_and_active_are_held_and_released_in_order() {
     assert_eq!(handoff.on_user_bytes(b"y"), UserBytesRoute::WriteCounted);
 }
 
+/// #1923: on a ConPTY session whose shell signals, the prompt's Precmd does not hand input to the
+/// editor while the line editor's ready signal is awaited (a precmd function may be reading a
+/// secret); keys typed meanwhile are held for the pty, and the signal ends the wait.
+#[test]
+fn the_precmd_does_not_commit_to_the_editor_before_the_line_editor_signals() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert!(handoff.awaiting_line_editor_signal());
+    assert!(
+        !handoff.try_commit_at_prompt(),
+        "no commit while the signal is awaited"
+    );
+    assert!(handoff.is_pty_owned());
+    // A key typed now is held for the pty, not routed to the editor.
+    assert_eq!(handoff.on_user_bytes(b"p"), UserBytesRoute::Held);
+    assert!(handoff.is_pty_owned());
+}
+
+#[test]
+fn the_signal_ends_the_wait_that_deferred_the_precmd_commit() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert!(!handoff.try_commit_at_prompt());
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert!(!handoff.awaiting_line_editor_signal());
+}
+
 #[test]
 fn the_hold_expiry_releases_the_keys_in_order() {
     let mut handoff = conpty_awaiting_line_editor();

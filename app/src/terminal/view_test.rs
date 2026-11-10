@@ -26911,6 +26911,54 @@ fn conpty_prompt_hold_releases_on_the_signal_through_the_queue() {
     });
 }
 
+/// #1923 (Windows round 8, Git Bash): a precmd function runs `read -s` right after the prompt's
+/// Precmd, so the line editor never signals. The Precmd must not hand input to the editor: the PIN
+/// typed meanwhile is held for the pty (never editor text, never a submitted prompt), and reaches
+/// the pty whole and in typed order when the hold ends. Legacy and Table.
+#[test]
+fn a_precmd_does_not_commit_input_to_the_editor_so_a_precmd_read_gets_the_pin() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                conpty_prompt_hold_setup(view);
+                view.commit_typeahead_handoff_at_prompt(ctx);
+                assert!(
+                    !view.handoff.read().editor_owns_input(),
+                    "the Precmd must not hand input to the editor before the line editor signals"
+                );
+                for key in [&b"p"[..], b"i", b"n", b"\r"] {
+                    view.write_user_bytes_to_pty(key.to_vec(), ctx);
+                }
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "the PIN is held, not written ahead of the signal"
+                );
+                assert!(prompt_gate_open(view));
+                // The hold ends (the signal, or the give-up net's release to the pty): in order.
+                let hold_id = view
+                    .model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .release_queued_prompt_hold_on_signal()
+                    .expect("a hold is live");
+                view.on_prompt_hold_released(hold_id, ctx);
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"p".to_vec(), b"i".to_vec(), b"n".to_vec(), b"\r".to_vec()],
+                "the PIN reaches the pty whole and in typed order ({mode:?})"
+            );
+        });
+    }
+}
+
 /// No model lock per key while the hold is open: after the key that started it, the queue takes
 /// every key without locking the terminal model (the pty reader holds that lock while it parses).
 #[test]
