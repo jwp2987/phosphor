@@ -3145,6 +3145,12 @@ struct ArmedSubshellSetup {
     /// #1941: the text of a line typed ahead of the line editor, while it is outstanding
     /// (`ledger.typed_ahead`), for `row_shows_typed_line`. In memory only; never logged.
     typed_ahead_line: Option<String>,
+    /// #1941: the output row the typed-ahead line was ended on (the last look's row at its
+    /// Enter). "It already ran" is measured from HERE. It was measured from `line_end_baseline`,
+    /// which every later line end re-takes: `:wq` + Enter typed into the vim that line started
+    /// moved it, the prompt after vim was then "0 rows below", the line read as not yet accepted
+    /// and the attempt waited for good (round 9 macOS, `subshell_ready_vim_typeahead`).
+    typed_ahead_row: usize,
     /// R4 hop binding: a shell leader was seen; a relay after it is an unpredicted hop.
     seen_shell_leader: bool,
 }
@@ -23440,6 +23446,7 @@ impl TerminalView {
             line_started: false,
             no_tty_probe: false,
             typed_ahead_line: None,
+            typed_ahead_row: 0,
             seen_shell_leader: false,
         });
         self.judge_armed_subshell_setup("armed", ctx);
@@ -23514,7 +23521,9 @@ impl TerminalView {
                 look.cursor_row_continues,
                 armed.typed_ahead_line.as_deref(),
             );
-            let rows = look.position.1.saturating_sub(armed.line_end_baseline.1);
+            // Rows below the typed-ahead line's own end, whatever was typed since (to a program
+            // that line started, say).
+            let rows = look.position.1.saturating_sub(armed.typed_ahead_row);
             let before = armed.ledger.typed_ahead;
             let after = subshell_ready::typed_ahead_after_look(
                 before, &look.tty, look.tail, line_shown, rows,
@@ -24007,6 +24016,7 @@ impl TerminalView {
         if typed_ahead {
             armed.ledger.typed_ahead = subshell_ready::TypedAhead::Unread;
             armed.typed_ahead_line = last_line;
+            armed.typed_ahead_row = armed.last_position.1;
             warpui::input_order::log_hop("subshell_ready_typed_ahead", || {
                 "from=None to=Unread at=line_end".to_owned()
             });

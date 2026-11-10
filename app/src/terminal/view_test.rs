@@ -33466,6 +33466,90 @@ fn a_line_typed_ahead_of_readline_is_not_written_over_while_the_editor_runs_it()
     }
 }
 
+/// Round 9 (macOS `subshell_ready_vim_typeahead`: the setup was never written after vim). `vim f`
+/// + Enter typed ahead of a bash whose rc sleeps; readline's prompt, its echo of the line, the
+/// accept and vim's start all reach the app before ONE look is taken, so the first look after the
+/// rc already has vim in front and the typed-ahead line is still "unread" for the judge. The user
+/// then types `:wq` + Enter into vim: a line end, which re-takes the line-end baseline (inside
+/// vim). At the prompt after vim the typed-ahead line has run: its row is two rows above and the
+/// prompt row does not show it. That was measured from the baseline `:wq` had just moved (0 rows),
+/// so the line read as "the editor is about to run it" and the attempt waited for good; the rows
+/// are now counted from the typed-ahead line's own end. Legacy and Table.
+#[test]
+fn a_line_typed_into_the_program_does_not_hide_that_the_typed_ahead_line_already_ran() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let tty = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("bash", "");
+                let tty = install_subshell_tty_for_test(view, bash_cooked());
+                view.arm_subshell_setup(SubshellPromptTrigger::Banner { shell_type: None }, ctx);
+                assert_eq!(readiness_state(view), "armed", "{mode:?}: the rc runs");
+                for key in [b"vim f".to_vec(), b"\r".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                }
+                assert_eq!(readiness_state(view), "armed", "{mode:?}: ReArm");
+                tty
+            });
+            terminal.update(&mut app, |view, ctx| {
+                // The cooked echo; the line sits unread while the rc sleeps.
+                let mut unread = bash_cooked();
+                unread.queue_empty = Some(false);
+                *tty.lock() = unread;
+                view.model.lock().process_bytes("vim f\r\n");
+                output_wakeup(view, ctx);
+                assert_eq!(readiness_state(view), "armed", "{mode:?}");
+                // One burst: readline's prompt, its echo, the accept, vim on the alt screen. The
+                // look finds vim in front; no look ever saw the line editor with the line.
+                *tty.lock() = vim_in_front();
+                view.model
+                    .lock()
+                    .process_bytes("bash-5.1$ vim f\r\n\x1b[?1049h~\r\n~\r\n");
+                output_wakeup(view, ctx);
+                assert_eq!(readiness_state(view), "armed", "{mode:?}: vim");
+            });
+            let before_wq = written.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                // A line typed INTO vim: a line end with a program in front (ReArm).
+                for key in [b":wq".to_vec(), b"\r".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                }
+                assert_eq!(
+                    readiness_state(view),
+                    "armed",
+                    "{mode:?}: the line is vim's"
+                );
+            });
+            assert_eq!(
+                &written.borrow()[before_wq..],
+                b":wq\r",
+                "{mode:?}: passed through to vim, nothing of the setup"
+            );
+            let before_prompt = written.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().process_bytes("\x1b[?1049l");
+                *tty.lock() = bash_reading();
+                view.model.lock().process_bytes("bash-5.1$ ");
+                output_wakeup(view, ctx);
+                assert_eq!(
+                    readiness_state(view),
+                    "written",
+                    "{mode:?}: the typed-ahead line ran (vim came and went): the setup follows"
+                );
+            });
+            assert!(
+                written.borrow().len() > before_prompt,
+                "{mode:?}: the setup was written at the prompt after vim"
+            );
+        })
+    }
+}
+
 /// #1679 step 3, E-SECRET (parity test (a), Legacy and Table): the first line is out and the user
 /// typed `secret` (held). A secret read opens (the rc ran `sudo`): in the SAME wakeup the attempt
 /// is cancelled with ZERO further pty writes, the held text comes back to the editor as plain text
