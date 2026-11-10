@@ -1567,9 +1567,9 @@ fn a_restored_turn_with_an_unanswered_tool_call_is_cancelled_not_successful() {
     assert_eq!(conversation.status(), &ConversationStatus::Cancelled);
 }
 
-/// #1951, the other side: answered calls, a turn that moved on after its calls, and calls that
-/// never get a client result (a subagent call, a carrier with no tool) all still restore as a
-/// finished turn.
+/// #1951, the other side: answered calls, a turn that moved on after its calls, and a turn whose
+/// only unanswered calls are ones that never get a client result (a subagent call, a carrier
+/// with no tool) all still restore as a finished turn.
 #[allow(deprecated)]
 #[test]
 fn a_restored_turn_with_every_tool_call_answered_is_successful() {
@@ -1587,7 +1587,32 @@ fn a_restored_turn_with_every_tool_call_answered_is_successful() {
     ]);
     assert_eq!(moved_on.status(), &ConversationStatus::Success);
 
+    // The client call is answered; the subagent call and the carrier call between it and its
+    // result never get a client result and must not count as unanswered. (Counting them would
+    // make this `Cancelled`.)
     let not_client_calls = restored_with_root_messages(vec![
+        user_query_message("user-1", "request-1", "run it"),
+        tool_call_message_with_tool("tool-call-1", "call-1", run_shell_command_tool()),
+        tool_call_message_with_tool(
+            "subagent-call-1",
+            "subagent-call-1",
+            cli_subagent_tool("cli-task-1", "block-1"),
+        ),
+        tool_call_message("carrier-1", "call-9"),
+        finished_echo_result("tool-result-1", "call-1"),
+    ]);
+    assert_eq!(not_client_calls.status(), &ConversationStatus::Success);
+}
+
+/// A turn whose LAST message is a tool call of any kind restores as `Cancelled`: the exchange
+/// conversion marks it so before the #1951 rule is asked (`into_exchanges`: "if the last message
+/// is a tool call, assume it was cancelled"), also for a subagent call and a carrier call with
+/// no tool. The first version of the test above expected `Success` for that shape, which it
+/// never was, before or after #1951 (found in the first run that showed the test, round 10).
+#[allow(deprecated)]
+#[test]
+fn a_restored_turn_that_ends_in_a_subagent_or_carrier_call_is_cancelled() {
+    let ends_in_carrier = restored_with_root_messages(vec![
         user_query_message("user-1", "request-1", "run it"),
         tool_call_message_with_tool(
             "subagent-call-1",
@@ -1596,7 +1621,17 @@ fn a_restored_turn_with_every_tool_call_answered_is_successful() {
         ),
         tool_call_message("carrier-1", "call-9"),
     ]);
-    assert_eq!(not_client_calls.status(), &ConversationStatus::Success);
+    assert_eq!(ends_in_carrier.status(), &ConversationStatus::Cancelled);
+
+    let ends_in_subagent = restored_with_root_messages(vec![
+        user_query_message("user-1", "request-1", "run it"),
+        tool_call_message_with_tool(
+            "subagent-call-1",
+            "subagent-call-1",
+            cli_subagent_tool("cli-task-1", "block-1"),
+        ),
+    ]);
+    assert_eq!(ends_in_subagent.status(), &ConversationStatus::Cancelled);
 }
 
 /// The passive code diff's own request: a system query, not something the user typed.
