@@ -1812,6 +1812,49 @@ def audit6_7_harness_probe_lines_are_not_the_cases_commands_and_comparisons_wait
 
 
 @check
+def audit10_case_log_slice_on_every_platform_follows_the_log_across_a_rotation():
+    """harness audit #10 (#1917): the per-case app-log slice is written on every backend, starts at the case's LogOffset, and still holds the case's
+    first half after the app rotated the log in the middle of the case."""
+    import run as runmod
+    d = tempfile.mkdtemp()
+    try:
+        log = os.path.join(d, "phosphor.log")
+        open(log, "w").write("2026-01-01T00:00:00Z before the case\n")
+        c = _ctx(d, log)
+        c.extra_logs = []
+        off = c.log_size()
+        open(log, "a").write("2026-01-01T00:00:01Z case first half\n")
+        os.rename(log, log + ".in_session.0")                                  # the app's in-session rotation, mid-case
+        open(log, "w").write("2026-01-01T00:00:02Z case second half\n")
+        txt = runmod.case_log_text(c, off, log, 0)
+        assert "case first half" in txt and "case second half" in txt and "before the case" not in txt, txt
+        assert txt.index("first half") < txt.index("second half")
+        prof = types.SimpleNamespace(home=d)
+        for be_name in ("x11", "wayland", "mac", "windows"):
+            run_dir = os.path.join(d, "run_" + be_name)
+            runmod.save_case_log(run_dir, "terminal", "some_case", 0, prof, c, types.SimpleNamespace(find_log=lambda: log), None, cap=1_000_000, log_off=off, backend_name=be_name)
+            got = open(os.path.join(run_dir, "logs", "terminal", "case_some_case.log")).read()
+            assert "case first half" in got and "case second half" in got and "before the case" not in got, (be_name, got)
+        # a case that relaunched the app itself: the instance it began on is read from the case's offset, a later launch whole
+        snap = os.path.join(d, "launch0_1.log")
+        open(snap, "w").write("2026-01-01T00:00:00Z before the case\n2026-01-01T00:00:01Z old instance in the case\n")
+        c.extra_logs = [snap]
+        txt = runmod.case_log_text(c, off, log, 0)
+        assert "old instance in the case" in txt and txt.count("before the case") == 0, txt
+        # no offset (no log path when the case began): the timestamp cut, as before
+        txt = runmod.case_log_text(c, None, log, __import__("calendar").timegm(time.strptime("2026-01-01T00:00:02", "%Y-%m-%dT%H:%M:%S")) + 1)
+        assert "case second half" in txt and "before the case" not in txt, txt
+        # the run loop saves the slice without asking which platform it is on
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")).read()
+        loop = src[src.index("def main("):src.index("def account_case(")]
+        assert loop.count("save_case_log(") == 3 and "if win:     # the rotating app log" not in loop and "log_off=log_off, backend_name=a.backend" in loop
+        for ln in loop.splitlines():
+            assert "save_case_log(" not in ln or "log_off=log_off" in ln, "a save_case_log call without the case's LogOffset: " + ln.strip()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
 def audit5_accounting_window_runs_to_case_end_and_a_loss_outside_loss_cases_is_noref():
     """harness audit #5 (#1912): a held / slow-classifier Enter processed more than 3 s after the last injector call is still the case's Enter when the
     window ends at the case's end; lost > 0 (or an Enter short) on a case that is not a loss case and has no failure is noref, never a pass."""

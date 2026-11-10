@@ -533,17 +533,24 @@ def main():
                     status = "fail"
                     dead = classify_death(dead, ctx, t0, log_off)
                     r.fails.append(dead)
+                    if not sim:        # the dying instance's lines of THIS case, before the relaunch moves the log (audit #10)
+                        save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, log_off=log_off, backend_name=a.backend)
                     emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                               detail=r.fails + r.notes, metrics=r.metrics, shots=[shot] if shot else []))
                     exit_fail = True
                     instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "death_of_" + c["name"], stop=False)
                     continue
-                if status != "fail" and win:       # r18e9: a PASSING case's app-log slice too (capped), so a validator can check a pass against the app's own hops
-                    save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, cap=1_000_000)
+                # audit #10 (#1917): EVERY platform keeps the case's own app-log slice (it was Windows-only; a long Linux/Mac pass rotated the failing case's
+                # lines away before the end-of-pass copy). The slice starts at the case's LogOffset, which follows the log across in-session rotations.
+                # r18e9: a PASSING case's slice too (capped to its newest 1 MB), so a validator can check a pass against the app's own hops; a failing or
+                # unverifiable case keeps its start (12 MB) plus the ssh server log (r18cj: the evidence was gone).
+                if not sim and status not in ("skip",):
+                    if status in ("fail", "noref"):
+                        save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, log_off=log_off, backend_name=a.backend)
+                    else:
+                        save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, cap=1_000_000, log_off=log_off, backend_name=a.backend)
                 if status == "fail":
                     exit_fail = True
-                    if win:     # the rotating app log keeps only its newest part: save this failing case's lines now, plus the ssh logs (r18cj: the evidence was gone)
-                        save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url)
                 emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
                 if c["name"].startswith(("ssh_", "remote_")):
@@ -811,19 +818,45 @@ def classify_death(dead, ctx, t0, log_off, exit_evidence=None):
         return "%s (death classification failed: %r)" % (dead, e)
 
 
-def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None, cap=12_000_000):
-    """Windows: after a FAILED case, write the app-log lines since the case began (the log rotates and keeps only its newest part, so the
-    failing case's key trace was gone by the end of the pass), plus the ssh server's log, to logs/<label>/case_<case>.log (#1488, r18cj)."""
-    import ci_env
-    try:
-        src = log_src(prof, "windows", app)
+def case_log_text(ctx, log_off, src, t0):
+    """the app-log lines of ONE case. With the case's LogOffset (ctx.log_size() taken before the case): everything logged after it, across the
+    app's in-session rotations (Ctx.log_since), plus the logs of instances the case itself replaced (ctx.extra_logs). Without one (no log path
+    when the case began): the old timestamp cut of the whole session log from one second before the case."""
+    def ts_cut(path):
         keep = []
-        if src and os.path.exists(src):
+        if path and os.path.exists(path):
             cut = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 - 1))
-            for l in app_log_text(src).splitlines():
+            for l in app_log_text(path).splitlines():
                 if l[:20] >= cut or not l[:2] == "20":       # non-timestamped continuation lines ride with their neighbour
                     keep.append(l)
-        txt = "\n".join(keep)
+        return "\n".join(keep)
+    if log_off is not None and getattr(ctx, "log_path", None):
+        parts = []
+        for k, p in enumerate(getattr(ctx, "extra_logs", None) or []):
+            # a case that relaunched the app: its earlier launches' log copies, oldest first. The first is the instance the case began on, so it is read
+            # from the case's offset; the later ones were launched inside the case and are the case's whole.
+            try:
+                with open(p, "rb") as f:
+                    if k == 0 and int(log_off) <= os.path.getsize(p):
+                        f.seek(int(log_off))
+                    parts.append("=== %s (an earlier launch within this case) ===\n" % os.path.basename(p) + f.read().decode(errors="replace"))
+            except OSError:
+                pass
+        parts.append(ctx.log_since(log_off) or "")
+        if src and os.path.exists(src) and os.path.abspath(src) != os.path.abspath(ctx.log_path):
+            # Windows: the case's own relaunch writes a NEW log file that ctx.log_path does not name yet (re-resolved before the next case)
+            parts.append("=== %s (the instance this case relaunched) ===\n" % os.path.basename(src) + ts_cut(src))
+        return "\n".join(parts)
+    return ts_cut(src)
+
+
+def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None, cap=12_000_000, log_off=None, backend_name="windows"):
+    """Every platform (audit #10; Windows-only before): write the app-log lines of this case (the log rotates and keeps only its newest part, so a
+    failing case's key trace was gone by the end of the pass), plus the ssh server's log for a failing case, to logs/<label>/case_<case>.log
+    (#1488, r18cj). `log_off`: the case's LogOffset (rotation-aware slice); see case_log_text."""
+    import ci_env
+    try:
+        txt = case_log_text(ctx, log_off, log_src(prof, backend_name, app), t0)
         txt = txt[:cap] if cap >= 12_000_000 else txt[-cap:]       # a failing case keeps its start; a passing one its newest part
         sl = os.path.join(run, "ssh", "sshd.log")
         if os.path.exists(sl) and cap >= 12_000_000:        # the ssh server log rides with FAILING cases only

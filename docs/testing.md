@@ -4010,3 +4010,12 @@ false fails. Each fix below names its finding (1-12) / cross-cutting letter (A-F
   reference-shell exact count, the cadence audit, `cases_caseintl.check_cmd`, the tmux line of `cases_coverage_a`. Negative checks ("nothing
   reached the shell") keep their settle time: there is no event for something that must not happen. Pin:
   `audit6_7_harness_probe_lines_are_not_the_cases_commands_and_comparisons_wait_for_the_log`.
+- **#10 / C (#1917) — the per-case app-log slice is saved on every platform.** `run.save_case_log` was called under `if win`; Linux and macOS
+  kept only the end-of-pass `phosphor.log` plus the retained `.in_session.N` chunks, so a long pass rotated a failing case's lines away. Every
+  non-skipped case on every backend now writes `logs/<label>/case_<case>.log`: a failing or `noref` case keeps its start (12 MB cap) plus the
+  tail of `ssh/sshd.log`, a passing one its newest 1 MB; a case that ends in the app's death is saved before the relaunch. The slice is
+  `run.case_log_text`: everything after the case's `LogOffset` (`ctx.log_size()` taken before the case; `Ctx.log_since` follows the file across
+  the app's in-session rotation), preceded by the case's own earlier launches (`ctx.extra_logs`, the first read from the case's offset), and on
+  Windows followed by the timestamp cut of a log file the case's own relaunch created. With no offset it is the old timestamp cut. Artifacts grow
+  by at most 1 MB per passing case on Linux/macOS (as on Windows since r18e9). Pin:
+  `audit10_case_log_slice_on_every_platform_follows_the_log_across_a_rotation`.
