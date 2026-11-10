@@ -847,6 +847,10 @@ impl Input {
             if !buffer.is_empty() {
                 self.clear_buffer_and_reset_undo_stack(ctx);
             }
+        } else if self.given_up_unready_after.is_some() {
+            // An Enter that met the gate gone already took the line and what was typed after it
+            // out of the editor ([`Self::give_up_unready_enter_met_by_enter`]): what the editor
+            // shows now was typed since and stays.
         } else {
             log::warn!(
                 "input: the editor changed while an Enter was held for an unready shell; the \
@@ -854,6 +858,70 @@ impl Input {
             );
         }
         Some(line)
+    }
+
+    /// With [`Self::take_given_up_unready_line`], after it: the text typed into the editor after
+    /// the held line, and the Enter that found the line's gate gone and gave it up
+    /// ([`Self::give_up_unready_enter_met_by_enter`]). `Some(text)` (possibly empty) means that
+    /// text and then an Enter follow the held line and its Enter to the pty; `None` for every
+    /// other give-up of an unready shell's Enter.
+    pub(crate) fn take_given_up_enter_after_unready_line(&mut self) -> Option<String> {
+        self.given_up_unready_after.take()
+    }
+
+    /// #1571 / owner decision 2026-11-09 (the Enter is not absorbed): an Enter met the gate of an
+    /// Enter held for an unready shell GONE from the queue. Nothing can release that gate any
+    /// more, so the held line is given up: it goes to the pty with its Enter
+    /// ([`Self::give_up_unready_enter`]). Until this decision the Enter that found this was
+    /// consumed by the give-up. It is a key the user typed and it acts, in typed order:
+    ///
+    /// * The editor shows the held line, alone or with text typed after it (with the gate gone
+    ///   nothing held that text back, so it was appended to the line). The line is sent, then
+    ///   its Enter, then that text (this Enter's own line), then this Enter: one write, in typed
+    ///   order, by the same give-up, and the editor is left empty. With nothing typed after the
+    ///   line this Enter is a bare Enter behind it. Returns true: the Enter is accounted for.
+    /// * The editor no longer starts with the held line (it was changed some other way). The
+    ///   requested line still goes to the pty with its Enter (#1435) and the editor keeps what
+    ///   it shows. Returns false: the caller lets this Enter take the normal path on that text,
+    ///   after the give-up (the unready state is cleared, so it is not caught here again).
+    ///
+    /// Also false, with nothing done, when no unready Enter is held.
+    pub(super) fn give_up_unready_enter_met_by_enter(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !self.unready_enter_gate_open() {
+            return false;
+        }
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        let line = self
+            .pending_command_text
+            .clone()
+            .unwrap_or_else(|| buffer.clone());
+        let after = buffer.strip_prefix(line.as_str()).map(str::to_owned);
+        warpui::input_order::log_hop("enter_met_held_gate_gone", || {
+            format!(
+                "line_chars={} after_chars={} editor_shows_line={}",
+                line.chars().count(),
+                after.as_ref().map_or(0, |text| text.chars().count()),
+                u8::from(after.is_some())
+            )
+        });
+        let Some(after) = after else {
+            self.give_up_unready_enter("gate_gone", ctx);
+            return false;
+        };
+        // The line and what was typed after it leave for the shell, as after any submit. Before
+        // the give-up, so an edit that waited behind the line and is applied by it is not wiped.
+        if !buffer.is_empty() {
+            self.clear_buffer_and_reset_undo_stack(ctx);
+        }
+        self.give_up_unready_enter("gate_gone", ctx);
+        // The view writes these when it handles the give-up (an event, or the busy queue's
+        // deferred take): the requested line, then what followed it and this Enter.
+        self.given_up_unready_line = Some(line);
+        self.given_up_unready_after = Some(after);
+        true
     }
 
     /// The input's part of what happens to the entries `taken` out of a voided Enter gate, as

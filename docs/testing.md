@@ -1628,6 +1628,25 @@ it and a non-empty held line is the old bug. Not compiled or run on the authorin
 | view, Legacy and Table (new) | `view_test.rs`: `a_line_typed_behind_a_deferred_enter_never_reaches_the_pty_before_that_enters_held_line` | `cd build`, Enter (deferred), `make clean⏎` on the terminal, report with the shell unready: nothing at the pty, nothing run, the `HandoffReport` gate closed, one entry behind the held Enter's gate; at the net `cd build⏎make clean⏎` in that order, editor empty, queue idle |
 | view, Legacy and Table (new) | `view_test.rs`: `a_line_typed_behind_a_deferred_enter_follows_that_enters_held_line_at_readiness` | the same typing with a session that becomes ready: nothing at the pty or run before; the readiness event runs `cd build` alone with `make clean` nowhere yet; after the pty took the command `make clean` is delivered exactly once (pty, a command or the editor, wherever keys typed at that moment belong) |
 
+**#1996 follow-up (owner decision 2026-11-09): an Enter that finds the held line's gate gone is NOT absorbed.** A defect
+path: the input holds an Enter for an unready shell but its gate is no longer on the queue, so nothing can release it and
+nothing holds later keys back. The next Enter gives the held line up (`give_up_unready_enter("gate_gone")`: the line and
+its Enter go to the pty). Until this decision that Enter was consumed. Now (`Input::give_up_unready_enter_met_by_enter`):
+when the editor shows the held line, alone or with text typed after it, the one give-up write is the line, its Enter, that
+text, then this Enter, in typed order, and the editor is left empty (the text and the Enter travel in
+`Input::given_up_unready_after`, taken by `write_unready_line_and_keys_to_pty` right after the line); when the editor no
+longer starts with the held line, the requested line and its Enter are written alone (#1435) and this Enter takes the
+normal Enter path on what the editor shows. In an appci log: `hop=enter_met_held_gate_gone line_chars= after_chars=
+editor_shows_line=`, then `hop=enter_held_give_up by=gate_gone` and `hop=give_up_keys_to_pty why=unready_enter`.
+Decisions 2 and 3 of the keep-together report stay as built (a voided Enter keeps its keys in the editor; the untracked
+gate rule). Not compiled or run on the authoring machine.
+
+| layer | test | asserts |
+|---|---|---|
+| view, Legacy and Table (new) | `give_up_to_pty_tests.rs`: `an_enter_that_finds_the_held_lines_gate_gone_sends_the_line_then_its_own_line_and_itself` | `cd build` held, its gate dropped from the queue, `make clean` typed into the editor behind it, Enter: `cd build⏎make clean⏎` at the pty, once; editor empty, the editor runs nothing, queue idle |
+| view, Legacy and Table (new) | `give_up_to_pty_tests.rs`: `a_bare_enter_that_finds_the_held_lines_gate_gone_is_written_behind_the_line` | nothing typed after the held line: `cd build⏎⏎`; a later give-up writes nothing more |
+| view, Legacy and Table (new) | `give_up_to_pty_tests.rs`: `an_enter_that_finds_the_gate_gone_over_other_text_sends_only_the_held_line_and_then_acts` | the editor was replaced with `ls`: only `cd build⏎` reaches the pty (no raw `ls`, no stray Enter); `ls` is still in the editor or was run by it, exactly once |
+
 **#1996 follow-up (owner decision 2026-11-09, second ruling): KEEP THEM TOGETHER.** A later line never runs without the line
 typed before it (`cd build⏎ make clean⏎` must never run `make clean` alone). This narrows the #1996 paragraph below in one
 point: where it says "only the line typed BEFORE an Enter that did not run stays in the editor" and the keys after it go to
