@@ -1,0 +1,126 @@
+{
+  "v": 1,
+  "seed": 24453300887473729,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "literal",
+              "id": "call_fixed"
+            },
+            "name": "not_a_real_tool",
+            "args": {
+              "kind": "empty_object"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "websearch",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "literal",
+              "id": "call_fixed"
+            },
+            "name": "read_shell_command_output",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      },
+      "chaos": {
+        "delay_ms": 0,
+        "context_overflow": false,
+        "never_end": true
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "mixed",
+        "text": "日fée✓\n yw k\"日  \"😀p日pz\n\nodu✓ é\nt ",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "file_glob",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "file_glob",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "env": {
+    "commands": {}
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "wait",
+        "ms": 1
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "give_back"
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "answer_question",
+        "choice": 1
+      },
+      "timing": "fast"
+    },
+    {
+      "op": {
+        "kind": "answer_question",
+        "choice": 1
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "on_card"
+    }
+  ],
+  "name": "i4_reply_closed_without_end_is_committed"
+}
