@@ -69,7 +69,7 @@ def c_ps_ctrl_break(ctx, r):
     with open(os.path.join(ctx.W, probe), "w") as f:
         f.write(BREAK_PROBE)
     py = sys.executable.replace("\\", "/")
-    trials, got = 3, []
+    trials, got, wrote = 3, [], []
     for i in range(trials):
         ctx.rm(out)
         ctx.be.type("& '%s' '%s' '%s'" % (py, os.path.join(ctx.W, probe).replace("\\", "/"), os.path.join(ctx.W, out).replace("\\", "/")), 10, enter=True)
@@ -78,15 +78,20 @@ def c_ps_ctrl_break(ctx, r):
             ctx.be.key("ctrl+c")
             time.sleep(1.0)
             continue
+        off = ctx.log_size()
         ctx.be.key("ctrl+break")
         ctx.until(lambda: any(t in ctx.lines(out) for t in ("BREAK", "INT")), 6)
         seen = ctx.lines(out)
         got.append(seen)
+        wrote.append("3;70" in ctx.log_since(off))
         if "BREAK" not in seen and "INT" not in seen:
             ctx.be.key("ctrl+c")           # leave the pane usable
             time.sleep(1.0)
         time.sleep(0.5)
     r.metric("ctrl_break_runs", got)
+    # round 8: 0/3 with NO ConPTY write in the app log = the key never became the win32-input sequence (injection or key mapping), not a ConPTY/console fault
+    r.check(all(wrote) and len(wrote) == trials,
+            "the app wrote the Ctrl+Break win32-input sequence (CSI 3;70;...) to the pty in %d/%d runs (the app log's pty_write_bytes)" % (sum(wrote), trials))
     r.check(all("BREAK" in g for g in got) and len(got) == trials,
             "Ctrl+Break reached the program as SIGBREAK in %d/%d runs: %r" % (sum("BREAK" in g for g in got), trials, got))
     r.check(not any("INT" in g for g in got), "Ctrl+Break was not turned into a Ctrl-C: %r" % got)
