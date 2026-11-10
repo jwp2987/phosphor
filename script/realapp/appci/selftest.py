@@ -1562,10 +1562,10 @@ def prompt_sample_audit_counts_samples_and_lookup_paths():
     s = lambda what, us: "input_order hop=prompt_fact_sample what=%s answer=NotAtPrompt us=%d t=1\n" % (what, us)
     g = lambda path, reads, us, members="1": "input_order hop=fg_group_lookup for=plain_program path=%s reads=%d members=%s us=%d t=1\n" % (path, reads, members, us)
     a = cases.prompt_sample_audit("junk\n" + g("walk", 4, 31) + s("prompt_fact", 40) + g("leader", 1, 9, "none") + s("prompt_fact", 12)
-                                  + g("list_after_walk", 36, 1400, "2") + s("plain_program", 1500)
+                                  + g("list_confirm", 36, 1400, "2") + s("plain_program", 1500)
                                   + "input_order hop=hand_route reason=unheld state=pty_owned prompt_fact=unsampled t=1\n")
     assert (a["samples"], a["max_us"], a["p50_us"], a["over_1ms"]) == (3, 1500, 40, 1), a
-    assert a["lookups"] == {"walk": [1, 31, 4], "leader": [1, 9, 1], "list_after_walk": [1, 1400, 36]}, a
+    assert a["lookups"] == {"walk": [1, 31, 4], "leader": [1, 9, 1], "list_confirm": [1, 1400, 36]}, a
     assert cases.prompt_sample_audit("input_order hop=hand_route prompt_fact=NotAtPrompt t=1\n") == dict(samples=0, max_us=0, p50_us=0, over_1ms=0, lookups={})
 
 

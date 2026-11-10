@@ -111,9 +111,9 @@ pub(super) fn tcgetattr_raw(fd: RawFd) -> Result<Termios> {
 /// master is `fd`. A pager is almost never the group leader: `git log` and `man` are, and
 /// `less` is a member of their group, so the leader alone cannot identify it.
 ///
-/// Linux finds the processes whose group (field 5 of `/proc/<pid>/stat`) is `tcgetpgrp`'s answer
-/// by walking the shell's own process tree (#1958, `fg_group`; never a read of every process's
-/// `stat`). macOS has no cheap equivalent here and reports the leader only (`proc_pidpath`);
+/// Linux finds the processes whose group is `tcgetpgrp`'s answer by asking `getpgid` for every
+/// pid in `/proc` and reading the `stat` of the members only (#1958, `fg_group`; never a read of
+/// every process's `stat`). macOS has no cheap equivalent here and reports the leader only (`proc_pidpath`);
 /// callers then see no pager and hand the command to the user. `None` on any failure -- a pty
 /// with no foreground group, an unsupported platform, no readable process.
 pub fn foreground_process_names(fd: RawFd) -> Option<Vec<String>> {
@@ -124,7 +124,7 @@ pub fn foreground_process_names(fd: RawFd) -> Option<Vec<String>> {
     }
     #[cfg(target_os = "linux")]
     {
-        let names: Vec<String> = process_group_members(fd, pgid)?
+        let names: Vec<String> = process_group_members(pgid)?
             .into_iter()
             .map(|(_pid, comm)| comm)
             .collect();
@@ -226,7 +226,10 @@ pub fn foreground_is_plain_program(fd: RawFd, shell_pid: i32) -> bool {
     {
         // #1958: the same verdict as "no member's name is a shell or login hop", found without
         // reading every process's `stat`: the leader's name first (one read decides for `ssh`,
-        // an inner shell, `sudo -i`), then the members from the shell's own process tree.
+        // an inner shell, `sudo -i`), then a walk of the shell's own process tree for a shell or
+        // hop among the members. "Plain program" (the verdict that delivers a key) is never the
+        // walk's to give, since it cannot see a member whose parent died: the `getpgid` list of
+        // the whole group gives it.
         let started = warpui::input_order::enabled().then(std::time::Instant::now);
         let lookup = super::fg_group::group_is_plain_program(
             &super::fg_group::RealProc,
@@ -250,9 +253,9 @@ pub fn foreground_is_plain_program(fd: RawFd, shell_pid: i32) -> bool {
     }
 }
 
-/// The pty's session leader (the shell the pty was opened for): the root of the #1958 walk for the
-/// foreground group's members. `tcgetsid` answers on the master as `tcgetpgrp` does; `None` when it
-/// does not (the members are then listed, not walked).
+/// The pty's session leader (the shell the pty was opened for): the root of the #1958 walk that
+/// looks for a shell or login hop in the foreground group. `tcgetsid` answers on the master as
+/// `tcgetpgrp` does; `None` when it does not (the group is then listed, not walked).
 #[cfg(target_os = "linux")]
 fn session_leader(fd: RawFd) -> Option<libc::pid_t> {
     // SAFETY: `tcgetsid` only reads the terminal's session id.
@@ -262,8 +265,8 @@ fn session_leader(fd: RawFd) -> Option<libc::pid_t> {
 
 /// #1958: one `input_order hop=fg_group_lookup` line per look at the foreground group's members
 /// (only with input-order logging on, which is where `started` comes from): who asked, which way
-/// answered (`leader`, `walk`, `list`, `list_after_walk`, `scan`), how many `/proc` reads it took,
-/// how many members it found and how long it took, so a latency run shows what a sample costs.
+/// answered (`leader`, `walk`, `list`, `list_confirm`, `scan`), how many `/proc` reads it took,
+/// how many members it counted and how long it took, so a latency run shows what a sample costs.
 /// Counts and times only, never a process name.
 #[cfg(target_os = "linux")]
 fn log_group_lookup(
@@ -437,7 +440,7 @@ pub fn tty_read_probe_works() -> bool {
 /// be listed, a sleeping task's `syscall` or fd link cannot be read (ptrace restrictions such as
 /// Yama `ptrace_scope` >= 2, a member owned by another user, e.g. root under `sudo`), or the walk
 /// hit its task cap; otherwise `NotReading`. The group's members as [`foreground_process_names`]
-/// finds them (#1958: the shell's process tree, not every process on the machine), plus three
+/// finds them (#1958: `getpgid` per pid, not the `stat` of every process), plus three
 /// small reads per sleeping task of the group; the
 /// #1641 per-key ssh probe ([`foreground_reads_tty`]) stays on the leader alone because it runs
 /// on the key path.
@@ -450,7 +453,7 @@ pub fn foreground_group_tty_read(fd: RawFd) -> ForegroundTtyRead {
     if pgid <= 0 {
         return ForegroundTtyRead::Unknown;
     }
-    group_tty_read(fd, pgid)
+    group_tty_read(pgid)
 }
 
 /// The most tasks (threads, across the whole group) [`foreground_group_tty_read`] inspects; past
@@ -459,8 +462,8 @@ pub fn foreground_group_tty_read(fd: RawFd) -> ForegroundTtyRead {
 const MAX_GROUP_TASKS: usize = 512;
 
 #[cfg(target_os = "linux")]
-fn group_tty_read(fd: RawFd, pgid: libc::pid_t) -> ForegroundTtyRead {
-    let Some(members) = process_group_members(fd, pgid) else {
+fn group_tty_read(pgid: libc::pid_t) -> ForegroundTtyRead {
+    let Some(members) = process_group_members(pgid) else {
         return ForegroundTtyRead::Unknown;
     };
     let mut tasks = 0usize;
@@ -494,7 +497,7 @@ fn group_tty_read(fd: RawFd, pgid: libc::pid_t) -> ForegroundTtyRead {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn group_tty_read(_fd: RawFd, _pgid: libc::pid_t) -> ForegroundTtyRead {
+fn group_tty_read(_pgid: libc::pid_t) -> ForegroundTtyRead {
     ForegroundTtyRead::Unknown
 }
 
@@ -756,15 +759,14 @@ pub(crate) fn parse_proc_stat(stat: &str) -> Option<(String, i32)> {
 /// skipped.
 ///
 /// #1958: this was a read of EVERY process's `stat` (4-16 ms on the main thread per call). It is
-/// now the walk of the pty's own session tree, or the `getpgid` list where the walk cannot vouch
-/// for its answer; see `fg_group`. `fd` is the pty master, asked for its session leader.
+/// now the `getpgid` list: the same members, the `stat` of the members only. Never the walk of
+/// the shell's tree, which cannot know it has seen every member; see `fg_group`.
 #[cfg(target_os = "linux")]
-fn process_group_members(fd: RawFd, pgid: libc::pid_t) -> Option<Vec<(libc::pid_t, String)>> {
+fn process_group_members(pgid: libc::pid_t) -> Option<Vec<(libc::pid_t, String)>> {
     let started = warpui::input_order::enabled().then(std::time::Instant::now);
     let lookup = super::fg_group::group_members(
         &super::fg_group::RealProc,
         super::fg_group::lookup_mode(),
-        session_leader(fd),
         pgid,
     );
     log_group_lookup(
