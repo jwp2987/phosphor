@@ -5441,6 +5441,27 @@ impl EditorView {
         );
     }
 
+    /// Replaces the `n` characters that start at character `start` with `text`, as one buffer
+    /// edit (see [`Self::replace_first_n_characters`], which is this for `start` 0).
+    pub fn replace_n_characters_at(
+        &mut self,
+        start: CharOffset,
+        n: CharOffset,
+        text: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.edit(
+            ctx,
+            Edits::new().with_update_buffer(
+                PlainTextEditorViewAction::ReplaceBuffer,
+                EditOrigin::UserInitiated,
+                |editor_model, ctx| {
+                    editor_model.replace_n_characters_at(start, n, text, ctx);
+                },
+            ),
+        );
+    }
+
     pub fn replace_last_n_characters(
         &mut self,
         n: CharOffset,

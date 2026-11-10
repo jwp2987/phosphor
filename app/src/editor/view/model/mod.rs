@@ -2126,6 +2126,26 @@ impl EditorModel {
         });
     }
 
+    /// Replaces the `n` characters that start at character `start` with the given text, while
+    /// keeping any existing selections untouched (as [`Self::replace_first_n_characters`] does
+    /// for `start` 0). A range that reaches past the end of the buffer is cut at the end.
+    pub fn replace_n_characters_at(
+        &mut self,
+        start: CharOffset,
+        n: CharOffset,
+        text: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.buffer_handle().update(ctx, |buffer, ctx| {
+            let len = buffer.len();
+            let start = std::cmp::min(start, len);
+            let end = std::cmp::min(start + n, len);
+            if let Err(error) = buffer.edit(Some(start..end), text, ctx) {
+                log::error!("error replacing n chars at an offset: {error}");
+            };
+        });
+    }
+
     /// Replaces the last `n` characters in the buffer with the given text, while
     /// keeping any existing selections untouched (but consolidating in case
     /// the existing selections are no longer valid after the replacement).

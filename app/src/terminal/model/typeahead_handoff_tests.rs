@@ -6399,6 +6399,34 @@ fn a_state_change_ends_keys_follow_editor_and_a_new_pty_owned_state_does_not_inh
     );
 }
 
+/// #2012 (round 9 Windows, PowerShell: `Add-Co` became `d-AdCo`): a Preexec of a command the shell
+/// started itself takes input from the editor, which may hold text typed before it. That
+/// transition, and only that one, is marked for the view (once), so the report of the keys typed
+/// while that command runs is placed behind the editor's text. A Preexec of the editor's own
+/// command, or one that changes no owner, marks nothing.
+#[test]
+fn a_shell_started_preexec_that_takes_input_from_the_editor_is_marked_once() {
+    let mut handoff = TypeaheadHandoff::default();
+    assert!(!handoff.take_shell_took_input_from_editor());
+    assert!(handoff.on_preexec(true), "the pty takes input over");
+    assert!(handoff.is_pty_owned());
+    assert!(handoff.take_shell_took_input_from_editor());
+    assert!(!handoff.take_shell_took_input_from_editor(), "taken once");
+    // The pty already owns input: a second shell-started line changes no owner.
+    assert!(!handoff.on_preexec(true));
+    assert!(!handoff.take_shell_took_input_from_editor());
+
+    // The editor's own command: the editor was emptied by its submit.
+    let mut own = after_submit();
+    assert!(!own.on_preexec(false));
+    assert!(!own.take_shell_took_input_from_editor());
+
+    // A Preexec the app's own command caused while the editor owns input changes nothing.
+    let mut editor_owned = TypeaheadHandoff::default();
+    assert!(!editor_owned.on_preexec(false));
+    assert!(!editor_owned.take_shell_took_input_from_editor());
+}
+
 /// A session that has never emitted a Preexec (a shell or program without our hooks) must not hold
 /// an Enter for "the written command's own Preexec": that event cannot come, the 2 s cap would hand
 /// the Enter back and the running program would never get it (Mac terminal-mode run, 2026-11-09).

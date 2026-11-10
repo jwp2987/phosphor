@@ -32424,6 +32424,11 @@ mod keys_follow_editor_tests;
 #[path = "view/route_parity_a_tests.rs"]
 mod route_parity_a_tests;
 
+// #2012 (a shell-started command took input from an editor that holds text: the report goes
+// behind that text). Declared here for the same reason as group 1.
+#[path = "view/report_anchor_tests.rs"]
+mod report_anchor_tests;
+
 // Review follow-ups F6 / F10. Declared here for the same reason as group 1.
 #[path = "view/followup_tests.rs"]
 mod followup_tests;
