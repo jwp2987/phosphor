@@ -399,11 +399,14 @@ class Profile:
                 if p.returncode != 0:
                     # NOT a skip (r18co skipped all three ssh cases here): the app's bash wrapper runs exactly this on every ssh from a Git Bash pane, so a real Git Bash
                     # user gets the same failure. The cases run and report what the user gets; this text is added to their failure messages as the lead.
-                    self.ssh_hint = ("Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (%s cannot start a ControlMaster, exit %d: %s); "
-                                     "the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way "
-                                     "(candidate APP finding: no fallback to plain ssh when the master cannot start)" % (client, p.returncode, " ".join((p.stderr or "").split())[:200]))
+                    # #2007: this text used to say the wrapper starts a ControlMaster on every ssh and name that as the candidate app finding. Not since
+                    # #1551 / #1933: under msys the wrapper never multiplexes (one connection, or plain ssh). Round 9's failing rows still carried the old
+                    # lead. The probe result stays as a fact about the client; it explains no failure of a Git Bash ssh case.
+                    self.ssh_hint = ("Git Bash pane: %s cannot start a ControlMaster (exit %d: %s). Background only: since #1551 / #1933 the app's bash ssh wrapper "
+                                     "never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case"
+                                     % (client, p.returncode, " ".join((p.stderr or "").split())[:200]))
             except (subprocess.TimeoutExpired, OSError) as e:
-                self.ssh_hint = "Git Bash pane: the ControlMaster probe with the wrapper's options did not finish (%s); candidate APP finding, see above" % e
+                self.ssh_hint = "Git Bash pane: the ControlMaster probe did not finish (%s). Background only: the wrapper never multiplexes under msys (#1551 / #1933)" % e
             finally:
                 shutil.rmtree(d, ignore_errors=True)
         return None

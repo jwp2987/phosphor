@@ -5635,6 +5635,134 @@ def wrapped_copy_and_vertical_tabs_pure_parts_1976_1990():
     assert all(("`%s`" % n) in src for n in names), "docs/testing.md does not describe every new case"
 
 
+@check
+def fakesshd_exec_pty_arms_2007():
+    """#2007: the Windows fake sshd's exec + pty (a managed ssh session) is served by a measured arm: the pure parts of ptyhost.py, the probe's
+    remote command run for real on a pty (POSIX), and the wiring in fakesshd_win.py / sshd.py / ssh_diag"""
+    import hashlib
+    import inspect
+    import re
+    import ptyhost as PH
+    import sshd
+    assert PH.ARMS == ("msys", "app", "inbox") and set(PH.ARM_TEXT) == set(PH.ARMS)
+    # paths and the pty host's files
+    assert PH.msys_path("C:\\gl\\b\\run\\ssh") == "/c/gl/b/run/ssh" and PH.msys_path("d:/x y/z") == "/d/x y/z" and PH.msys_path("/usr/bin") == "/usr/bin"
+    conf = PH.sshd_config(2222, "/c/r/hostkey", "/c/r/ak", "/c/r/pid", "/c/r it's/force.sh")
+    for line in ("Port 2222", "ListenAddress 127.0.0.1", "HostKey /c/r/hostkey", "AuthorizedKeysFile /c/r/ak", "PasswordAuthentication no", "StrictModes no",
+                 "PermitTTY yes", "ForceCommand /usr/bin/bash '/c/r it'\\''s/force.sh'"):
+        assert line in conf.split("\n"), (line, conf)
+    assert "UsePAM" not in conf
+    force = PH.force_script("/c/r h/rhome")
+    assert "export HOME='/c/r h/rhome' SHELL=/usr/bin/bash" in force and 'exec "$SHELL" -c "$SSH_ORIGINAL_COMMAND"' in force and '--rcfile "$HOME/.bashrc" -i' in force
+    # which arm serves a request: a pinned arm is served or refused, never replaced; the measured one first, the rest behind it
+    assert PH.arm_order(["msys", "app", "inbox"], "app", "msys") == (["app"], True)
+    assert PH.arm_order(["inbox"], "msys", "") == ([], True)
+    assert PH.arm_order(["msys", "app", "inbox"], "", "app") == (["app", "msys", "inbox"], False)
+    assert PH.arm_order(["app", "inbox"], "", "msys") == (["app", "inbox"], False) and PH.arm_order(["inbox"], "", "") == (["inbox"], False)
+    # the output half: whole, cut the way kernel32's pseudo console cut round 9's hooks (only the tail past the 256-byte pieces), nothing at all
+    assert len(PH.PROBE_OSC) > 2 * 256 + 64
+    ok, text = PH.judge_output(b"\x1b[2J\x1b[HPRB1" + PH.PROBE_OSC + b"PRB2\r\nRDY\r\n")
+    assert ok and "arrived whole" in text
+    ok, text = PH.judge_output(b"\x1b[2J\x1b[HPRB1" + PH.PROBE_OSC[512:] + b"PRB2\r\nRDY\r\n")
+    assert not ok and "did NOT arrive whole" in text and "the longest piece of its 600 payload characters is 80 " in text, text
+    ok, text = PH.judge_output(b"fakesshd: no exec pty arm could serve this request\r\n")
+    assert not ok and "printed nothing" in text
+    # the input half
+    payload = PH.probe_payload()
+    assert 3000 < len(payload) < 8192 and payload.count(b"\n") == 70 and any(b > 0x7f for b in payload) and b"\r" not in payload and b"\x1b" not in payload
+    md5 = hashlib.md5(payload).hexdigest().encode()
+    assert PH.judge_input(b"RDY\r\nMD5=" + md5 + b"=\r\n", payload)[0] is True
+    assert PH.judge_input(b"RDY\r\nMD5=" + b"0" * 32 + b"=\r\n", payload) == (False, "a counted raw read of %d bytes got other bytes than were sent (md5 differs)" % len(payload))
+    ok, text = PH.judge_input(b"RDY\r\n", payload)
+    assert not ok and "did not finish" in text
+    # which arm, and the line for the job log / ssh_diag
+    good = dict(arm="msys", out_ok=True, in_ok=True, out="o", inp="i")
+    half = dict(arm="app", out_ok=True, in_ok=False, out="o", inp="i")
+    bad = dict(arm="inbox", out_ok=False, in_ok=True, out="o", inp="i")
+    assert PH.choose_arm([dict(good, arm="inbox"), half]) == "inbox" and PH.choose_arm([bad, half]) == "app" and PH.choose_arm([bad]) is None and PH.choose_arm([]) is None
+    assert PH.choose_arm([good, dict(good, arm="app"), dict(good, arm="inbox")]) == "msys"
+    s = PH.summary([good, bad], "msys", ["n1"])
+    assert s.startswith("exec+pty of the test sshd is served by a real msys pty") and "inbox: out BROKEN, in ok" in s and s.endswith("; n1"), s
+    assert PH.summary([half, bad], "app").startswith("TEST HOST FAULT: no exec+pty arm of the test sshd is byte-exact both ways; using a pseudo console of the app's own conpty.dll")
+    s = PH.summary([bad], None)
+    assert s.startswith("TEST HOST FAULT: no exec+pty arm of the test sshd passes a long escape sequence whole") and "#2007" in s
+    assert "not measured" in PH.summary([], None, ["no probe"]) and "no probe" in PH.summary([], None, ["no probe"])
+    # the probe's remote command, for real: bash on a pty prints the OSC whole and reads the payload exactly (the same judges as on Windows)
+    cmd = PH.probe_command(len(payload))
+    if os.name != "nt" and shutil.which("bash") and shutil.which("md5sum") and shutil.which("stty"):
+        import pty
+        import select
+        assert subprocess.run(["bash", "-n", "-c", cmd], capture_output=True).returncode == 0
+        assert subprocess.run(["bash", "-n"], input=force.encode(), capture_output=True).returncode == 0
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execvp("bash", ["bash", "-c", cmd])
+        data, sent, end = b"", False, time.time() + 20
+        try:
+            while time.time() < end and not re.search(rb"MD5=[0-9a-f]{32}=", data):
+                if select.select([fd], [], [], 0.25)[0]:
+                    try:
+                        d = os.read(fd, 65536)
+                    except OSError:
+                        break
+                    if not d:
+                        break
+                    data += d
+                if not sent and b"RDY" in data:
+                    os.write(fd, payload)
+                    sent = True
+        finally:
+            os.close(fd)
+            os.waitpid(pid, 0)
+        assert PH.judge_output(data)[0] is True, PH.judge_output(data)
+        assert sent and PH.judge_input(data, payload)[0] is True, PH.judge_input(data, payload)
+    # wiring: the server takes its arm from the pin / the measured file, never sends paramiko's banner tracebacks to stderr, and the shell request
+    # keeps kernel32's pseudo console; sshd.py starts the pty host, measures, and stops what it started; a failing ssh row carries the measurement
+    fs = open(os.path.join(HERE, "fakesshd_win.py")).read()
+    compile(fs, "fakesshd_win.py", "exec")           # it cannot be imported off Windows (kernel32); it must at least parse
+    for needle in ("ptyhost.arm_order(arms_available(), requested, chosen)", "ptyhost.BackendPty(PTY_PORT, PTY_USER, CK,", "api=APPCON if arm == \"app\" else k32",
+                   "client_env.get(ptyhost.ARM_ENV, \"\")", "logging.getLogger(\"paramiko\").propagate = False", "ch.send_exit_status(97)",
+                   "exec output carried %d OSC 9278 sequence start(s)", "FAKE_PTY_PORT", "FAKE_CONPTY_DLL", "FAKE_ARM_FILE"):
+        assert needle in fs, needle
+    assert "cp = ConPty('\"%s\" --rcfile \"%s\" -i' % (BASH, os.path.join(RHOME, \".bashrc\")), env, RHOME, spty[1], spty[2])" in fs
+    ss = inspect.getsource(sshd)
+    assert "app_bin" in inspect.signature(sshd.start).parameters and "_start_pty_host(" in ss and "_measure_exec_pty(d, port, ident, arms, notes)" in ss
+    assert '"exec_pty": exec_pty' in ss and "_kill_tree(host[\"popen\"])" in inspect.getsource(sshd.stop)
+    assert "sshd.start(prof, run, app_bin=a.bin)" in open(os.path.join(HERE, "run.py")).read()
+    assert 'info.get("exec_pty")' in inspect.getsource(cases.Ctx.ssh_diag)
+    # the stale lead of round 9's rows is gone: under msys the wrapper never multiplexes
+    ps = inspect.getsource(profile.Profile.ssh_probe)
+    assert "candidate APP finding" not in ps and "does NOT explain a failing case" in ps
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
+    assert "#2007" in doc and "`ptyhost.py`" in doc and "exec_pty_arm" in doc
+    # the local leg as an app case: a short control hook and a long one (the size of the remote's SSH hook), refused by the app with their ids logged
+    import cases_win_input as wi
+    short, long_ = wi.long_osc_hook(123456789012345, 0), wi.long_osc_hook(999999999999999, 480)
+    assert len(short) < 256 < 2 * 256 - 64 < len(long_) == 480 and short.startswith(b"\x1b]9278;d;") and long_.endswith(b"\x07")
+    for seq, n in ((short, 123456789012345), (long_, 999999999999999)):
+        assert json.loads(bytes.fromhex(seq[9:-1].decode())) == {"hook": "Clear", "value": {"session_id": n}}
+    script = wi.long_osc_script(short, long_, "long_osc.txt", "TOK")
+    assert script.count("\n") == 3 and "\x1b" not in script and script.endswith("echo TOK >> long_osc.txt\n")
+    if os.name != "nt" and shutil.which("bash"):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "s.sh"), "w").write(script)
+            assert subprocess.run(["bash", "s.sh"], capture_output=True, cwd=d).stdout == short + long_
+            assert open(os.path.join(d, "long_osc.txt")).read() == "TOK\n"
+    both = "WARN Rejected DCS hook 'Clear' with unrecognized session_id 123456789012345\nWARN Rejected DCS hook 'Clear' with unrecognized session_id 999999999999999\n"
+    assert wi.long_osc_verdict(both, 123456789012345, 999999999999999)[0] is True
+    ok, text = wi.long_osc_verdict(both.split("\n")[0], 123456789012345, 999999999999999)
+    assert not ok and text.startswith("APP side: the short hook reached the app, the long one")
+    ok, text = wi.long_osc_verdict("", 123456789012345, 999999999999999)
+    assert not ok and text.startswith("TEST: the short control hook was not logged either")
+    # the text the oracle reads is the app's own (a rename there must fail here, not turn the case into a silent TEST verdict)
+    rs = open(os.path.join(HERE, "..", "..", "..", "app", "src", "terminal", "model", "ansi", "mod.rs")).read()
+    assert "\"Rejected DCS hook '{}' with unrecognized session_id {}\"" in rs
+    reg = {c["name"]: c for c in cases.CASES}
+    n = "gitbash_long_osc_reaches_app"
+    assert n in cases.PROVING and n not in cases.SMOKE and reg[n]["order"] < reg["ssh_connect_typing"]["order"] and n in winmap.GITBASH_ONLY
+    assert winmap.skip_reason(n, "gitbash") is None and winmap.skip_reason(n, "powershell") and ("`%s`" % n) in doc
+
+
 def main():
     failed = 0
     for f in CHECKS:

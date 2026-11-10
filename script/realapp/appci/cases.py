@@ -59,6 +59,8 @@ PROVING = (
     "ssh_connect_typing_wrapper", "ssh_nested_typeahead_wrapper", "ps_ctrl_break", "ps_ctrl_scrolllock_break", "ps_fast_command_young_enter",
     # managed ssh from Windows Git Bash on one connection (#1933): each skips itself off the Git Bash pane
     "ssh_gitbash_managed", "ssh_gitbash_typeahead_managed", "ssh_gitbash_kill_switch",
+    # #2007: the local leg of that session (a long escape sequence from an msys program reaches the app whole); skips itself off the Git Bash pane
+    "gitbash_long_osc_reaches_app",
     # Windows handover and secrets (#1882, #1883, #1891): Read-Host marker, Git Bash precmd `read -s`
     "ps_read_host_secure", "gitbash_precmd_secret",
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
@@ -1368,6 +1370,8 @@ class Ctx:
                 except OSError as e:
                     out.append("test sshd (%s) NOT listening on 127.0.0.1:%d (%s)%s" % (info.get("kind"), port, e,
                                "; process EXITED rc=%s" % info["popen"].poll() if info.get("popen") is not None and info["popen"].poll() is not None else ""))
+            if info.get("exec_pty"):        # #2007: which terminal the Windows fake sshd gives exec + pty (a managed session), as measured at start
+                out.append(info["exec_pty"])
             if getattr(self, "lab", None) is not None:
                 out.append(self.lab.diag())
             if not self.win:
