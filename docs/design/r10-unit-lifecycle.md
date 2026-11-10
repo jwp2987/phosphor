@@ -12,6 +12,8 @@ had their job log cut at GitLab's 4 MB cap, so only the first 3,600 to 4,400 tes
 sorts after the cut. This is the first run in which the matrix, the stop tests and the restore
 tests were visible at all; "it passed before" is not known for any of them.
 
+Issues: #2009 (the app bug), #2010 (the eleven test, oracle and stale-expectation verdicts).
+
 ## One app bug
 
 ### `stop_tests::a_reject_after_a_finished_result_tells_the_model_at_once_and_the_agent_continues` -- APP

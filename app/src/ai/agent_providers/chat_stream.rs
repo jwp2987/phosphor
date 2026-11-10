@@ -1917,10 +1917,11 @@ fn rekey_live_tool_calls_to_projection(
         if exact.contains(key) {
             continue;
         }
-        if let Some(projected) =
-            newest_by_id.get(&(key.task_id.as_str(), key.tool_call_id.as_str()))
-        {
-            live_tool_call.tool_call.key = (*projected).clone();
+        let projected: Option<ToolCallKey> = newest_by_id
+            .get(&(key.task_id.as_str(), key.tool_call_id.as_str()))
+            .map(|projected| ToolCallKey::clone(projected));
+        if let Some(projected) = projected {
+            live_tool_call.tool_call.key = projected;
         }
     }
 }
