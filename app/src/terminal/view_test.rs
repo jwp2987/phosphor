@@ -32351,13 +32351,18 @@ fn an_idle_dash_prompt_drawn_around_the_users_enter_is_judged_moved() {
                 let written = subshell_pty_writes(&mut app, &terminal);
                 terminal.update(&mut app, |view, ctx| {
                     view.model.lock().simulate_long_running_block("dash", "");
-                    install_subshell_tty_for_test(view, dash_cooked());
+                    // #1935 (review r8 D2): an idle dash with nothing typed is written to at the
+                    // arming look even with no prompt drawn, so this scenario (the baselines a
+                    // ReArm takes) is armed while the facts are still unknown; dash is the
+                    // reader from the user's Enter on.
+                    let tty = install_subshell_tty_for_test(view, SubshellTtySample::unknown());
                     view.model.lock().process_bytes("some banner\r\n");
                     view.arm_subshell_setup(
                         SubshellPromptTrigger::Banner { shell_type: None },
                         ctx,
                     );
                     assert_eq!(readiness_state(view), "armed", "{mode:?} {name}");
+                    *tty.lock() = dash_cooked();
                 });
                 terminal.update(&mut app, |view, ctx| {
                     for piece in before {
@@ -32446,6 +32451,64 @@ fn an_idle_dash_prompt_with_nothing_typed_is_written_on_the_look() {
     }
 }
 
+/// #1935 (review r8 D2 and addendum 4): a dash that inherited an EMPTY PS1 draws no prompt, ever:
+/// the cursor stays at column 0. Armed with nothing typed it is written to on the arming look (the
+/// probe's prelude; it used to wait for a prompt shape until the 60 s ceiling), and the probe's
+/// second line follows the prelude's marker with no prompt asked for (it used to stall for the
+/// quiet net), once the queue shows nothing unread. Legacy and Table.
+#[test]
+fn a_dash_with_an_empty_ps1_is_written_at_once_and_its_probe_line_follows_the_marker() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            let (token, tty) = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("dash", "");
+                let tty = install_subshell_tty_for_test(view, dash_cooked());
+                // Nothing is drawn: no prompt bytes at all.
+                view.arm_subshell_setup(SubshellPromptTrigger::Banner { shell_type: None }, ctx);
+                assert_eq!(
+                    readiness_state(view),
+                    "written",
+                    "{mode:?}: the idle reader is written to with no prompt"
+                );
+                (readiness_token(view), tty)
+            });
+            assert_eq!(setup_lines_written(&pty_writes), 1, "{mode:?}: the prelude");
+            // The prelude's marker while the probe's own bytes are not yet all read: not yet.
+            terminal.update(&mut app, |view, ctx| {
+                let mut unread = dash_cooked();
+                unread.queue_empty = Some(false);
+                *tty.lock() = unread;
+                view.model
+                    .lock()
+                    .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+                output_wakeup(view, ctx);
+            });
+            assert_eq!(
+                setup_lines_written(&pty_writes),
+                1,
+                "{mode:?}: unread bytes and no prompt: the probe line waits"
+            );
+            // Nothing unread, still no prompt: the probe line goes out, once.
+            terminal.update(&mut app, |view, ctx| {
+                *tty.lock() = dash_cooked();
+                output_wakeup(view, ctx);
+                output_wakeup(view, ctx);
+            });
+            assert_eq!(
+                setup_lines_written(&pty_writes),
+                2,
+                "{mode:?}: the probe line follows the marker without a prompt"
+            );
+        })
+    }
+}
+
 /// #1679 step 3 (R2): a non-empty line typed while no answer was asked for is the user driving the
 /// shell: the attempt is cancelled, nothing is written, and a later proof does not revive it.
 #[test]
@@ -32531,6 +32594,12 @@ fn vim_typeahead_waits_through_the_alt_screen_and_the_setup_follows_it() {
             "the typeahead passed through"
         );
         terminal.update(&mut app, |view, ctx| {
+            // #1941: the stream as a real pty shows it (the judge now reads it): the cooked echo
+            // of the typed-ahead line, then readline's prompt with its own echo of the line and
+            // the newline of its accept, then vim.
+            view.model
+                .lock()
+                .process_bytes("vim f\r\nbash-5.1$ vim f\r\n");
             *tty.lock() = vim_in_front();
             view.model.lock().process_bytes("\x1b[?1049h~\r\n~\r\n");
             output_wakeup(view, ctx);
@@ -32543,6 +32612,97 @@ fn vim_typeahead_waits_through_the_alt_screen_and_the_setup_follows_it() {
         });
         assert!(written.borrow().len() > typed_len, "the setup followed vim");
     })
+}
+
+/// #1941 (review r8 D4; round 8 agent pass, `subshell_ready_vim_typeahead`): `vim f` + Enter typed
+/// ahead of a bash whose rc sleeps. Readline comes up, reads the line, and for an instant the
+/// facts are "line editor, prompt shape at the cursor, queue empty" while it is about to RUN the
+/// line: the probe written there went into vim. Nothing is written on that look, nor on the
+/// accept's newline; the setup follows the program, at the next prompt. A second leg: the line was
+/// a builtin whose accept, run and next prompt arrive as ONE burst: written on that look (the
+/// prompt row no longer shows the line and sits two rows below the Enter). Legacy and Table.
+#[test]
+fn a_line_typed_ahead_of_readline_is_not_written_over_while_the_editor_runs_it() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for one_burst in [false, true] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let written = subshell_pty_writes(&mut app, &terminal);
+                let tty = terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().simulate_long_running_block("bash", "");
+                    let tty = install_subshell_tty_for_test(view, bash_cooked());
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::Banner { shell_type: None },
+                        ctx,
+                    );
+                    assert_eq!(readiness_state(view), "armed", "{mode:?}: the rc runs");
+                    for key in [b"vim f".to_vec(), b"\r".to_vec()] {
+                        assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                    }
+                    assert_eq!(readiness_state(view), "armed", "{mode:?}: ReArm");
+                    tty
+                });
+                let typed_len = written.borrow().len();
+                terminal.update(&mut app, |view, ctx| {
+                    // The cooked echo; the line sits unread while the rc sleeps.
+                    let mut unread = bash_cooked();
+                    unread.queue_empty = Some(false);
+                    *tty.lock() = unread;
+                    view.model.lock().process_bytes("vim f\r\n");
+                    output_wakeup(view, ctx);
+                    assert_eq!(readiness_state(view), "armed", "{mode:?}");
+                    if one_burst {
+                        // (as if the line were a builtin) accept, run and next prompt in one burst
+                        *tty.lock() = bash_reading();
+                        view.model
+                            .lock()
+                            .process_bytes("bash-5.1$ vim f\r\nbash-5.1$ ");
+                        output_wakeup(view, ctx);
+                        assert_eq!(readiness_state(view), "written", "{mode:?}: it ran already");
+                        return;
+                    }
+                    // Readline is up and has read the whole line: the round-8 sample.
+                    *tty.lock() = bash_reading();
+                    view.model.lock().process_bytes("bash-5.1$ vim f");
+                    output_wakeup(view, ctx);
+                    assert_eq!(
+                        readiness_state(view),
+                        "armed",
+                        "{mode:?}: the editor is about to run the typed-ahead line"
+                    );
+                    // Its accept: the newline, still raw for an instant.
+                    view.model.lock().process_bytes("\r\n");
+                    output_wakeup(view, ctx);
+                    assert_eq!(readiness_state(view), "armed", "{mode:?}: no prompt");
+                    *tty.lock() = vim_in_front();
+                    view.model.lock().process_bytes("\x1b[?1049h~\r\n");
+                    output_wakeup(view, ctx);
+                    assert_eq!(readiness_state(view), "armed", "{mode:?}: vim");
+                });
+                assert_eq!(
+                    written.borrow().len() > typed_len,
+                    one_burst,
+                    "{mode:?} one_burst={one_burst}: nothing of the setup before the line ran"
+                );
+                if one_burst {
+                    return;
+                }
+                terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().process_bytes("\x1b[?1049l");
+                    *tty.lock() = bash_reading();
+                    view.model.lock().process_bytes("bash-5.1$ ");
+                    output_wakeup(view, ctx);
+                    assert_eq!(readiness_state(view), "written", "{mode:?}: after vim");
+                });
+                assert!(written.borrow().len() > typed_len, "{mode:?}");
+            })
+        }
+    }
 }
 
 /// #1679 step 3, E-SECRET (parity test (a), Legacy and Table): the first line is out and the user
@@ -33345,5 +33505,317 @@ fn a_shell_that_never_draws_a_prompt_after_the_marker_is_given_up_by_the_quiet_n
                 });
             });
         })
+    }
+}
+
+fn pty_bytes_written(writes: &Rc<RefCell<Vec<Vec<u8>>>>) -> usize {
+    writes.borrow().iter().map(Vec::len).sum()
+}
+
+/// #1905's first line (review r8 D3 and addendum 1): a judged banner attempt on a reading bash,
+/// driven through the probe to its `InitSubshell`. Stage 2's first line is NOT written on that
+/// event: it waits, the keys still held, for what follows the probe's hook.
+/// * `prompt`: a prompt drawn after the hook: exactly ONE more line, once; the typed keys stay
+///   held for the setup's end; no 7 s bootstrap give-up was armed for the setup (#1939, I7).
+/// * `secret`: a `PROMPT_COMMAND` `read -s` opens after the hook: nothing of stage 2 is written,
+///   the held keys come back to the editor, the attempt is re-armed KNOWING the shell (no second
+///   probe), the password passes through alone, and the prompt that follows gets the bash script.
+/// * `question`: a question drawn after the hook: handed back and re-armed likewise.
+/// Legacy and Table.
+#[test]
+fn stage_two_first_line_waits_for_what_follows_the_probes_hook() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for scenario in ["prompt", "secret", "question"] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = collect_pty_writes(&mut app, &terminal);
+                let (token, tty, timer_generation) = terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().simulate_long_running_block("bash", "");
+                    let tty = install_subshell_tty_for_test(view, bash_reading());
+                    view.model.lock().process_bytes("bash-5.1$ ");
+                    let timer_generation = view.bootstrap_timer_generation;
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::Banner { shell_type: None },
+                        ctx,
+                    );
+                    assert_eq!(readiness_state(view), "written", "{mode:?} {scenario}");
+                    (readiness_token(view), tty, timer_generation)
+                });
+                // The prelude's marker and the prompt after it release the probe line (#1905).
+                terminal.update(&mut app, |view, ctx| {
+                    view.model
+                        .lock()
+                        .process_bytes(format!("\x1b]7771;{token};0\x07\r\nbash-5.1$ ").as_str());
+                    output_wakeup(view, ctx);
+                    output_wakeup(view, ctx);
+                    assert!(
+                        view.write_user_bytes_to_pty(b"ls".to_vec(), ctx),
+                        "{mode:?}"
+                    );
+                });
+                assert_eq!(
+                    setup_lines_written(&pty_writes),
+                    2,
+                    "{mode:?} {scenario}: the prelude and the probe"
+                );
+                let after_probe = pty_bytes_written(&pty_writes);
+                // The probe's hook (the model resets its "text since" at it, then the event).
+                terminal.update(&mut app, |view, ctx| {
+                    ansi::Handler::init_subshell(
+                        &mut *view.model.lock(),
+                        crate::terminal::model::ansi::InitSubshellValue {
+                            shell: "bash".to_owned(),
+                            uname: None,
+                            session_id: None,
+                        },
+                    );
+                    view.handle_terminal_event(
+                        &ModelEvent::InitSubshell(crate::terminal::event::InitSubshellEvent {
+                            shell_type: ShellType::Bash,
+                            uname: None,
+                        }),
+                        ctx,
+                    );
+                    output_wakeup(view, ctx);
+                    assert!(
+                        matches!(
+                            &view.subshell_setup_state,
+                            SubshellSetupState::Written(w)
+                                if w.stage_two_pending == Some(ShellType::Bash)
+                        ),
+                        "{mode:?} {scenario}: stage 2 waits"
+                    );
+                    assert!(view.subshell_bootstrap_in_flight.is_none(), "{mode:?}");
+                });
+                assert_eq!(
+                    pty_bytes_written(&pty_writes),
+                    after_probe,
+                    "{mode:?} {scenario}: the hook alone writes nothing of stage 2"
+                );
+                if scenario == "prompt" {
+                    terminal.update(&mut app, |view, ctx| {
+                        view.model.lock().process_bytes("\r\nbash-5.1$ ");
+                        output_wakeup(view, ctx);
+                        output_wakeup(view, ctx);
+                        assert!(
+                            matches!(
+                                &view.subshell_setup_state,
+                                SubshellSetupState::Written(w)
+                                    if w.stage_two_pending.is_none()
+                                        && w.shell_type == Some(ShellType::Bash)
+                            ),
+                            "{mode:?}: stage 2 is out"
+                        );
+                        assert_ne!(held_for_subshell_setup(view), (0, 0), "{mode:?}: held");
+                        // #1939 (I7): the setup net is the one give-up of a judged setup.
+                        assert_eq!(view.bootstrap_timer_generation, timer_generation);
+                        assert!(
+                            view.subshell_setup_net
+                                .as_ref()
+                                .is_some_and(|net| net.bootstrap_failed_after.is_none()),
+                            "{mode:?}: no 7 s give-up beside the net"
+                        );
+                    });
+                    assert_eq!(
+                        setup_lines_written(&pty_writes),
+                        3,
+                        "{mode:?}: one stage-2 line, once"
+                    );
+                    return;
+                }
+                // A secret read, or a question, opens after the hook.
+                terminal.update(&mut app, |view, ctx| {
+                    if scenario == "secret" {
+                        *tty.lock() = secret_read();
+                        view.model.lock().process_bytes("\r\n");
+                    } else {
+                        *tty.lock() = bash_cooked();
+                        view.model.lock().process_bytes("\r\nContinue? [y/N] ");
+                    }
+                    output_wakeup(view, ctx);
+                    match &view.subshell_setup_state {
+                        SubshellSetupState::Armed(armed) => assert_eq!(
+                            armed.trigger.shell_type(),
+                            Some(ShellType::Bash),
+                            "{mode:?} {scenario}: re-armed knowing the shell"
+                        ),
+                        _ => panic!(
+                            "{mode:?} {scenario}: not re-armed: {}",
+                            readiness_state(view)
+                        ),
+                    }
+                    assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?} {scenario}");
+                });
+                assert_eq!(
+                    pty_bytes_written(&pty_writes),
+                    after_probe,
+                    "{mode:?} {scenario}: no byte of stage 2 reached the read"
+                );
+                terminal.read(&app, |view, ctx| {
+                    view.input.read(ctx, |input, ctx| {
+                        assert_eq!(input.buffer_text(ctx), "ls", "{mode:?} {scenario}");
+                    });
+                });
+                // The answer passes through alone; the prompt that follows gets the bash script.
+                terminal.update(&mut app, |view, ctx| {
+                    for key in [b"pw".to_vec(), b"\r".to_vec()] {
+                        assert!(
+                            view.write_user_bytes_to_pty(key, ctx),
+                            "{mode:?} {scenario}"
+                        );
+                    }
+                    assert_eq!(readiness_state(view), "armed", "{mode:?} {scenario}: ReArm");
+                });
+                let all: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+                assert_eq!(&all[after_probe..], b"pw\r", "{mode:?} {scenario}");
+                terminal.update(&mut app, |view, ctx| {
+                    *tty.lock() = bash_reading();
+                    view.model.lock().process_bytes("\r\nbash-5.1$ ");
+                    output_wakeup(view, ctx);
+                    assert!(
+                        matches!(
+                            &view.subshell_setup_state,
+                            SubshellSetupState::Written(w)
+                                if w.shell_type == Some(ShellType::Bash)
+                        ),
+                        "{mode:?} {scenario}: written for the known shell, no second probe"
+                    );
+                });
+            })
+        }
+    }
+}
+
+/// #1936 (review r8 D5, invariant I6): a line end is judged with the tty facts AT THE KEY. No
+/// look happens between keys while the program is silent, so the last look's facts can be those
+/// of another reader.
+/// * the last look showed the rc's cooked bash keeping up with its reads; by the Enter the line
+///   editor reads: the line is the user's own command (cancel). It was a ReArm.
+/// * the last look showed the line editor; by the Enter a program (vim) owns the tty: the line
+///   is the program's (ReArm). It was Cancel(UserDrove).
+/// Legacy and Table.
+#[test]
+fn a_line_end_is_judged_with_the_tty_facts_at_the_key_not_the_last_look() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for program_at_the_key in [false, true] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let written = subshell_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().simulate_long_running_block("bash", "");
+                    // Nothing is drawn, so neither fact writes at the arming look.
+                    let at_the_look = if program_at_the_key {
+                        bash_reading()
+                    } else {
+                        bash_cooked()
+                    };
+                    let tty = install_subshell_tty_for_test(view, at_the_look);
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::Banner {
+                            shell_type: Some(ShellType::Bash),
+                        },
+                        ctx,
+                    );
+                    assert_eq!(readiness_state(view), "armed", "{mode:?}");
+                    // The reader changes with no output, so no look sees it.
+                    *tty.lock() = if program_at_the_key {
+                        vim_in_front()
+                    } else {
+                        bash_reading()
+                    };
+                    for key in [b":wq".to_vec(), b"\r".to_vec()] {
+                        assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                    }
+                    assert_eq!(
+                        readiness_state(view),
+                        if program_at_the_key { "armed" } else { "idle" },
+                        "{mode:?} program_at_the_key={program_at_the_key}"
+                    );
+                });
+                assert_eq!(
+                    String::from_utf8_lossy(&written.borrow()),
+                    ":wq\r",
+                    "{mode:?}: the user's keys pass through, nothing else is written"
+                );
+            })
+        }
+    }
+}
+
+/// #1924 (Windows / ConPTY: no tty probe, every fact is Unknown, the screen is the evidence).
+/// * an rc question: the answer's own echo turns `Name: ` into `Name: me`, which is no input
+///   prompt; the line end is judged against the tail from BEFORE the line's first key, so the
+///   answer re-arms (it cancelled the attempt as UserDrove).
+/// * a line typed while nothing is drawn (the rc still runs): typeahead for a shell that is not
+///   reading yet: it re-arms.
+/// Legacy and Table.
+#[test]
+fn without_a_tty_probe_an_answer_or_typeahead_re_arms_the_setup() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for question in [true, false] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let written = subshell_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().simulate_long_running_block("bash", "");
+                    assert!(!view.model.lock().has_subshell_tty_probe());
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::Banner {
+                            shell_type: Some(ShellType::Bash),
+                        },
+                        ctx,
+                    );
+                    assert_eq!(readiness_state(view), "armed", "{mode:?}");
+                    if question {
+                        view.model.lock().process_bytes("Name: ");
+                        output_wakeup(view, ctx);
+                        assert_eq!(readiness_state(view), "armed", "{mode:?}: a question");
+                    }
+                    assert!(
+                        view.write_user_bytes_to_pty(b"me".to_vec(), ctx),
+                        "{mode:?}"
+                    );
+                    if question {
+                        // The echo of the user's own typing: the tail is `Name: me` now, and that
+                        // is what the look at the echo records as the last tail (set here as
+                        // that look does, so the test does not hang on the dirty-line wait that
+                        // keeps the judge from writing meanwhile).
+                        view.model.lock().process_bytes("me");
+                        if let SubshellSetupState::Armed(armed) = &mut view.subshell_setup_state {
+                            armed.last_tail = subshell_ready::Tail::ShellPrompt;
+                        }
+                    }
+                    assert!(
+                        view.write_user_bytes_to_pty(b"\r".to_vec(), ctx),
+                        "{mode:?}"
+                    );
+                    assert_eq!(
+                        readiness_state(view),
+                        "armed",
+                        "{mode:?} question={question}: a ReArm, not UserDrove"
+                    );
+                });
+                assert_eq!(
+                    String::from_utf8_lossy(&written.borrow()),
+                    "me\r",
+                    "{mode:?}: the answer passes through, nothing of the setup"
+                );
+            })
+        }
     }
 }

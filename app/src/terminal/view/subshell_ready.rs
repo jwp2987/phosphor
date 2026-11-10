@@ -5,9 +5,10 @@
 //! differ; the rule numbers below are its (R1-R10).
 //!
 //! The principle: a setup line is written only on a sample that proves WHO reads it (the shell's
-//! own line editor AT A PROMPT IT DREW, #1934; an editor-less shell at a prompt it drew; the first
-//! new prompt behind a relay) and that NOTHING the user passed through is still unread (R1: the
-//! slave input queue is empty).
+//! own line editor AT A PROMPT IT DREW, #1934; an editor-less shell that is the tty's idle reader,
+//! review r8 D2; the first new prompt behind a relay) and that NOTHING the user passed through is
+//! still unread (R1: the slave input queue is empty) or about to be RUN by the shell (review r8 D4:
+//! a line typed ahead of the line editor).
 //! An Enter never writes. A secret read, a question, a changed block, the user driving the shell
 //! and the 60 s ceiling end the attempt instead.
 
@@ -70,6 +71,95 @@ pub struct UserLedger {
     /// setup waited. Unpredicted: the rc file (or the user) ran a hop; nothing is written on that
     /// relay's shape.
     pub hop_changed_shell_to_relay: bool,
+    /// #1941: what the looks say about a line the user ended before the shell's line editor read.
+    pub typed_ahead: TypedAhead,
+}
+
+/// #1941 (review r8 D4, as the round-8 agent-mode log showed it): a non-empty line the user ended
+/// while a line-editor shell was NOT reading (its rc sleeps: a cooked tty, no question on screen)
+/// sits in the tty until someone reads it. A `read` builtin that takes it leaves nothing behind;
+/// the shell's LINE EDITOR that takes it RUNS it as a command. Between the editor reading the
+/// line's Enter and the command owning the tty, the facts are "line editor, prompt shape at the
+/// cursor, queue empty": the old proof of readiness, and the probe written there went into the
+/// user's `vim` (round 8: the write came 0.7 ms before the tty left the editor). So the editor
+/// taking a typed-ahead line is tracked, and nothing is written until the looks show that line
+/// was accepted and the editor is back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TypedAhead {
+    /// Nothing typed ahead is outstanding.
+    #[default]
+    None,
+    /// A line was ended on a cooked tty under a line-editor shell with no question on screen: not
+    /// yet known who reads it.
+    Unread,
+    /// The line editor came up with that line outstanding: it reads it and runs it.
+    EditorRuns,
+}
+
+/// #1941: what one look does to [`TypedAhead`]. `Unread`: a cooked look with the queue empty says
+/// a `read` builtin took the line (nothing will run); a line-editor look says the editor takes it.
+/// `EditorRuns` ends when a look shows the line was accepted: the tty left the editor (the
+/// command, or the editor's own cooked gap around it), the cursor is on a finished line (the
+/// newline the editor prints at accept), or the accept, the command and its next prompt came in
+/// one burst: the cursor's row no longer shows the typed line (`line_shown == Some(false)`, see
+/// [`row_shows_typed_line`]) AND sits at least two rows below where the line was ended (the
+/// Enter's own echo is one row, the editor's accept another). Both, because either alone has a
+/// hole: the prompt can be parsed before the editor's echo of the line, and an rc can print rows.
+/// A line whose echo cannot be predicted (`None`) is never judged by its text.
+pub fn typed_ahead_after_look(
+    prev: TypedAhead,
+    tty: &SubshellTtySample,
+    tail: Tail,
+    line_shown: Option<bool>,
+    rows_since_line_end: usize,
+) -> TypedAhead {
+    let ran_already = line_shown == Some(false) && rows_since_line_end >= 2;
+    match prev {
+        TypedAhead::None => TypedAhead::None,
+        TypedAhead::Unread => match tty.kind {
+            SubshellTtyKind::Cooked if tty.queue_empty == Some(true) => TypedAhead::None,
+            SubshellTtyKind::LineReader if ran_already => TypedAhead::None,
+            SubshellTtyKind::LineReader => TypedAhead::EditorRuns,
+            _ => TypedAhead::Unread,
+        },
+        TypedAhead::EditorRuns => {
+            if tty.kind != SubshellTtyKind::LineReader || tail == Tail::None || ran_already {
+                TypedAhead::None
+            } else {
+                TypedAhead::EditorRuns
+            }
+        }
+    }
+}
+
+/// #1941: whether the cursor's row shows (the echo of) the line the user typed ahead: the row ends
+/// with the line or with a part of it from its start (the echo still arriving), or the row
+/// continues the row above (`row_continues`: a soft wrap) and is the end of the line. `None` when
+/// the line's echo cannot be predicted (`typed` is `None`: it held control bytes, an escape
+/// sequence, a paste, or was too long to keep).
+pub fn row_shows_typed_line(row: &str, row_continues: bool, typed: Option<&str>) -> Option<bool> {
+    let typed = typed?.trim();
+    if typed.is_empty() {
+        return None;
+    }
+    let row = row.trim_end();
+    let shows = typed
+        .char_indices()
+        .map(|(i, c)| &typed[..i + c.len_utf8()])
+        .any(|prefix| row.ends_with(prefix))
+        || (row_continues && !row.trim().is_empty() && typed.ends_with(row.trim()));
+    Some(shows)
+}
+
+/// #1941: whether a line the user just ended is typed AHEAD of a line editor: non-empty, ended on
+/// a cooked tty whose foreground is a shell that has a line editor, with no question on screen
+/// (an answer to a question is the `read`'s, R2). Judged with the facts at the key (#1936).
+pub fn line_end_is_typed_ahead(non_empty: bool, tty: &SubshellTtySample, tail: Tail) -> bool {
+    non_empty
+        && tty.kind == SubshellTtyKind::Cooked
+        && tty.leader == LeaderKind::Shell
+        && tail != Tail::InputPrompt
+        && leader_has_line_editor(tty.leader_comm.as_deref().unwrap_or_default())
 }
 
 /// Why an attempt ended before or after its first line.
@@ -106,6 +196,9 @@ pub enum WaitWhy {
     /// editor's raw tty alone is no proof of WHO reads; the shell's prompt on the cursor's row is
     /// the shape evidence asked for. A line editor with an empty PS1 is the accepted loss.
     NoPrompt,
+    /// #1941: the line editor took a line the user typed ahead of it and has not been seen to
+    /// accept it: the prompt shape and the empty queue prove nothing until then.
+    TypedLineRuns,
     /// A cooked shell with a line editor (bash/zsh/fish/nu/pwsh): a `read` builtin (R3).
     CookedReadBuiltin,
     /// An editor-less shell, cooked, with no new prompt drawn yet.
@@ -193,6 +286,8 @@ pub fn subshell_ready(
                 // idle prompt (the common path) and a ^U (the editor redraws its line, not its
                 // prompt) leave it where it was, and the queue is their consumption proof.
                 Decision::Wait(WaitWhy::NoPrompt)
+            } else if user.typed_ahead != TypedAhead::None {
+                Decision::Wait(WaitWhy::TypedLineRuns)
             } else if consumed_by_line_editor(sample, user) {
                 Decision::Write(write_shell_type(trigger, Some(comm)))
             } else {
@@ -204,12 +299,13 @@ pub fn subshell_ready(
                 // R3: bash/zsh/fish/nu/pwsh at a cooked tty is a `read` builtin (or the gap before
                 // its editor): the editor's raw tty is the proof, never a cooked one.
                 Decision::Wait(WaitWhy::CookedReadBuiltin)
-            } else if !new_prompt && !idle_at_prompt_untouched(sample, user) {
-                Decision::Wait(WaitWhy::CookedNoPrompt)
-            } else if idle_at_prompt_untouched(sample, user) || consumed_behind_prompt(sample, user)
-            {
+            } else if idle_reader_untouched(sample, user, new_prompt) {
                 // An editor-less shell has no script of its own: the probe names it, and its
                 // `InitSubshell` ends the setup as unsupported (#1710) or starts stage 2.
+                Decision::Write(None)
+            } else if !new_prompt {
+                Decision::Wait(WaitWhy::CookedNoPrompt)
+            } else if user.bytes_since_arm > 0 && consumed_behind_prompt(sample, user) {
                 Decision::Write(None)
             } else {
                 Decision::Wait(WaitWhy::NotConsumed)
@@ -237,15 +333,21 @@ fn consumed_by_line_editor(sample: &ReadinessSample, user: &UserLedger) -> bool 
     user.bytes_since_arm == 0 || sample.tty.queue_empty == Some(true)
 }
 
-/// Owner decision 2026-11-09 (#1847): an editor-less shell that is idle at its prompt with nothing
-/// typed since arming is written to without a "moved" prompt (no event will ever move it). Only
-/// these facts: a shell-shaped tail, the shell itself is the tty's reader (leader Shell), nothing
-/// unread in the queue, and no user byte passed through (so R1 holds trivially).
-fn idle_at_prompt_untouched(sample: &ReadinessSample, user: &UserLedger) -> bool {
-    sample.tail == Tail::ShellPrompt
-        && user.bytes_since_arm == 0
+/// An editor-less shell (dash, ash, ksh) that is the tty's idle reader with nothing typed since
+/// arming. Owner decision 2026-11-09 (#1847): written to without a "moved" prompt (no event will
+/// ever move it). Review r8 D2: and without ANY prompt: a dash that inherited an empty PS1 draws
+/// nothing, its cursor sits at column 0 for good, and the old "shell-shaped tail" requirement left
+/// it armed until the ceiling. The facts that remain are the OS's: the shell itself is the
+/// foreground (leader Shell), the tty is cooked, nothing is unread in the queue, and no user byte
+/// passed through (R1 holds trivially). An input prompt at the tail was vetoed before this runs
+/// (the shell's own `read`; D7: termios cannot tell dash's prompt from dash's `read`, accepted as
+/// what a plain terminal does). Where the queue cannot be probed the old proof stands: a new
+/// prompt.
+fn idle_reader_untouched(sample: &ReadinessSample, user: &UserLedger, new_prompt: bool) -> bool {
+    user.bytes_since_arm == 0
         && sample.tty.leader == LeaderKind::Shell
-        && sample.tty.queue_empty == Some(true)
+        && (sample.tty.queue_empty == Some(true)
+            || (sample.tty.queue_empty.is_none() && new_prompt))
 }
 
 /// R1 for a cooked shell or a relay (owner Q8: "line ended + new prompt" counts only ALONGSIDE the
@@ -314,7 +416,18 @@ pub struct LineTracker {
     in_paste: bool,
     /// A partial `ESC [ 20x ~` at the end of the previous chunk.
     pending: Vec<u8>,
+    /// #1941: the text of the line being typed, kept only while its echo can be predicted (plain
+    /// printable bytes, at most [`TYPED_LINE_KEPT`]). In memory only; never logged.
+    line: Vec<u8>,
+    /// The line holds something whose echo cannot be predicted (a control byte, an escape
+    /// sequence, a paste) or outgrew the buffer.
+    line_opaque: bool,
+    /// The text of the last line ended by Enter, when it was predictable.
+    last_line: Option<String>,
 }
+
+/// The longest typed line whose text is kept for [`row_shows_typed_line`].
+const TYPED_LINE_KEPT: usize = 512;
 
 /// One line end the tracker saw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,6 +470,7 @@ impl LineTracker {
             i += 1;
             if self.in_paste {
                 self.content_bytes += 1;
+                self.line_opaque = true;
                 continue;
             }
             match byte {
@@ -365,16 +479,37 @@ impl LineTracker {
                         non_empty: self.content_bytes > 0,
                     });
                     self.content_bytes = 0;
+                    let line = std::mem::take(&mut self.line);
+                    self.last_line = (!std::mem::take(&mut self.line_opaque))
+                        .then(|| String::from_utf8(line).ok())
+                        .flatten();
                 }
                 // ^U kills the line, ^C abandons it: both leave an empty line behind.
                 0x15 | 0x03 => {
                     ends.push(LineEnd { non_empty: false });
                     self.content_bytes = 0;
+                    self.line.clear();
+                    self.line_opaque = false;
+                    self.last_line = None;
                 }
-                _ => self.content_bytes += 1,
+                _ => {
+                    self.content_bytes += 1;
+                    if byte < 0x20 || byte == 0x7f || self.line.len() >= TYPED_LINE_KEPT {
+                        self.line_opaque = true;
+                        self.line.clear();
+                    } else if !self.line_opaque {
+                        self.line.push(byte);
+                    }
+                }
             }
         }
         ends
+    }
+
+    /// #1941: the text of the last line ended by Enter, taken (so it is kept no longer than the
+    /// caller needs it); `None` when its echo cannot be predicted.
+    pub fn take_last_line(&mut self) -> Option<String> {
+        self.last_line.take()
     }
 
     /// Whether the line holds content the shell has not been told to end.
@@ -465,25 +600,83 @@ pub fn judge_written(s: &WrittenSample) -> WrittenVerdict {
 /// prompt AFTER that marker (`text_since_marker`, a shell-shaped unterminated `tail`, our own echo
 /// not half matched) and the tty does not say a secret or a `read` builtin owns it. A secret read
 /// that runs before the prompt (a `PROMPT_COMMAND` / rc `read -s`) therefore meets the written-
-/// state judge first and cancels, instead of being fed the setup. `Unknown` / `Relay` / editor-less
-/// facts add no objection (no OS fact exists: ConPTY, tmux control mode); the quiet net is the
-/// give-up for a shell that never draws a prompt.
+/// state judge first and cancels, instead of being fed the setup. `Unknown` / `Relay` facts with no
+/// program named in front add no objection (no OS fact exists: ConPTY, tmux control mode); the quiet
+/// net is the give-up for a shell that never draws a prompt.
+///
+/// Review r8 addendum 3: a PROGRAM in front (`LeaderKind::Other`: vim, fzf, a REPL the rc started
+/// between two setup lines) is never written to, whatever its last line looks like. Addendum 4
+/// (#1935): an editor-less cooked shell (dash, ash: the probe's reader) may draw no prompt at all
+/// (an empty PS1), so its proof is the queue, as in the armed judge: nothing unread and no
+/// question at the tail. Asking it for a prompt stalled the probe's second line until the quiet
+/// net.
 pub fn stage_two_may_follow(
     tail: Tail,
     echo_mid_line: bool,
     text_since_marker: bool,
     tty: &SubshellTtySample,
 ) -> bool {
-    if echo_mid_line || !text_since_marker || tail != Tail::ShellPrompt {
+    if echo_mid_line || tty.leader == LeaderKind::Other {
         return false;
     }
+    let prompt_after_marker = text_since_marker && tail == Tail::ShellPrompt;
     match tty.kind {
         SubshellTtyKind::Secret => false,
-        // A cooked tty under a shell with a line editor is a `read` builtin (R3).
         SubshellTtyKind::Cooked => {
-            !leader_has_line_editor(tty.leader_comm.as_deref().unwrap_or_default())
+            if leader_has_line_editor(tty.leader_comm.as_deref().unwrap_or_default()) {
+                // A cooked tty under a shell with a line editor is a `read` builtin (R3).
+                false
+            } else {
+                prompt_after_marker || (tail != Tail::InputPrompt && tty.queue_empty == Some(true))
+            }
         }
-        SubshellTtyKind::LineReader | SubshellTtyKind::Relay | SubshellTtyKind::Unknown => true,
+        SubshellTtyKind::LineReader | SubshellTtyKind::Relay | SubshellTtyKind::Unknown => {
+            prompt_after_marker
+        }
+    }
+}
+
+/// What a look says about a stage 2 that waits for its first line (#1905).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StageTwoPending {
+    /// Write stage 2's first line now.
+    Write,
+    Wait,
+    /// A secret read opened after the probe's hook: hand the held keys back, re-arm with the shell
+    /// the probe named.
+    Secret,
+    /// A question was drawn after the probe's hook: hand back, re-arm likewise.
+    Question,
+}
+
+/// #1905's first line (review r8 D3 and addendum 1): the probe named the shell (`InitSubshell`);
+/// stage 2's FIRST line used to go out on that event with no look at the pane, so a
+/// `PROMPT_COMMAND` / rc `read -s` (or a question, or a program) that opened between the probe's
+/// hook and the next prompt was fed the bootstrap. It is judged like every later line: written on
+/// the look that shows a prompt drawn AFTER the hook (`text_since_hook`: the model counts the hook
+/// as a marker) on a tty its reader owns ([`stage_two_may_follow`]), never into the alt screen; a
+/// secret read or a question drawn after the hook ends the attempt with the held keys handed
+/// back, and the attempt is re-armed knowing the shell (no second probe).
+pub fn stage_two_pending(
+    tail: Tail,
+    echo_mid_line: bool,
+    text_since_hook: bool,
+    alt_screen: bool,
+    tty: &SubshellTtySample,
+) -> StageTwoPending {
+    if tty.kind == SubshellTtyKind::Secret {
+        return StageTwoPending::Secret;
+    }
+    if alt_screen {
+        return StageTwoPending::Wait;
+    }
+    if tail == Tail::InputPrompt && text_since_hook && !echo_mid_line {
+        return StageTwoPending::Question;
+    }
+    if stage_two_may_follow(tail, echo_mid_line, text_since_hook, tty) {
+        StageTwoPending::Write
+    } else {
+        StageTwoPending::Wait
     }
 }
 
