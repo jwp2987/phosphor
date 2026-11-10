@@ -19957,27 +19957,75 @@ fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
     })
 }
 
-/// #1494: if the shell is gone when the bootstrap timer fires, the held text goes nowhere: it is
-/// discarded (logged) and nothing is written or run locally.
+/// #1494: if the shell is gone when the bootstrap timer fires, nothing can read the held keys
+/// from the pty and nothing is run. They come back to the pane's input as text, in typed order,
+/// with the hand-back's Enter guard armed: visible, never discarded, never written, never kept
+/// out of sight for a block that will not end. Legacy and Table.
+///
+/// Expectation history (owner decision 2026-11-09, a changed decision and not a weakening): as
+/// `ssh_bootstrap_failure_with_a_dead_shell_discards_the_held_typeahead` this test expected the
+/// input EMPTY, i.e. the held `echo hi` + Enter discarded with a log line. It was the last drop
+/// on the give-up paths (#1996). What it still asserts unchanged: the hold is over, nothing
+/// reaches the pty.
 #[test]
-fn ssh_bootstrap_failure_with_a_dead_shell_discards_the_held_typeahead() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        app.add_singleton_model(|_| crate::workspace::ToastStack);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
-            ssh_pane_with_held_typeahead_for_test(view, ctx);
-            view.model
-                .lock()
-                .exit(crate::terminal::model::terminal_model::ExitReason::ShellProcessExited);
-            view.on_bootstrap_failed_timer_complete((), ctx);
-            assert!(!view.ssh_typeahead_holding);
-            assert!(view.ssh_held_is_empty());
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+fn ssh_bootstrap_failure_with_a_dead_shell_hands_the_held_typeahead_back_as_guarded_text() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let executed = count_executed_commands(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+                view.model
+                    .lock()
+                    .exit(crate::terminal::model::terminal_model::ExitReason::ShellProcessExited);
+            });
+            let executed_before = *executed.borrow();
+            terminal.update(&mut app, |view, ctx| {
+                view.on_bootstrap_failed_timer_complete((), ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold is over");
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+                let input = view.input.as_ref(ctx);
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "echo hi",
+                    "{mode:?}: the held keys are in the input as text, in typed order"
+                );
+                assert!(
+                    input.ssh_handover_enter_guard_armed(),
+                    "{mode:?}: the first Enter on the handed-back text is held"
+                );
+                assert!(
+                    input.handed_back_text_for_test().is_none(),
+                    "{mode:?}: not stashed for a block that will never end"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing is written to a dead shell: {:?}",
+                pty_writes.borrow()
+            );
+            assert_eq!(
+                *executed.borrow(),
+                executed_before,
+                "{mode:?}: nothing is run"
+            );
+            // A second expiry finds nothing held and changes nothing.
+            terminal.update(&mut app, |view, ctx| {
+                view.on_bootstrap_failed_timer_complete((), ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "echo hi",
+                    "{mode:?}"
+                );
+            });
+            assert!(pty_writes.borrow().is_empty(), "{mode:?}");
         });
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
-    })
+    }
 }
 
 /// #1085 (#983 window 5): the remote session is announced and finishes bootstrapping

@@ -12719,13 +12719,17 @@ impl TerminalView {
         // of #1571 asked for no loss). Whatever happens below, an Enter typed in the same burst
         // must not run what the user meant for the remote machine on this one: the hand-back's
         // Enter guard covers the text wherever it lands.
-        let long_running = self.is_long_running();
+        // #1494 (owner decision 2026-11-09): with the shell gone no block will end and no session
+        // can be typed into, so the text is never stashed "until the running block ends" (it
+        // would stay out of sight for good): it goes into the input now, guarded.
+        let shell_gone = self.model.lock().has_exited();
+        let long_running = !shell_gone && self.is_long_running();
         // #1596: where the handed-back text went and which end of the connect sent it there, so a
         // run tells "kept until the ssh session ends" (no visible holding area) from "in the
         // editor". Counts only, never the text.
         warpui::input_order::log_hop("ssh_handed_back", || {
             format!(
-                "chars={} dest={} remote_prompt_seen={} give_up={}",
+                "chars={} dest={} remote_prompt_seen={} give_up={} shell_gone={}",
                 text.chars().count(),
                 if long_running {
                     "stashed_until_block_end"
@@ -12733,7 +12737,8 @@ impl TerminalView {
                     "editor"
                 },
                 self.ssh_remote_prompt_seen,
-                self.ssh_give_up_in_progress
+                self.ssh_give_up_in_progress,
+                u8::from(shell_gone)
             )
         });
         if long_running {
@@ -12783,7 +12788,12 @@ impl TerminalView {
             input.arm_ssh_handover_enter_guard(restored.clone());
         });
         self.show_ssh_typing_toast(
-            "Text typed while the SSH session connected is in the input, not run; press Enter to run it",
+            if shell_gone {
+                "The shell exited while the SSH session connected; what you typed is in the \
+                 input, not run"
+            } else {
+                "Text typed while the SSH session connected is in the input, not run; press Enter to run it"
+            },
             ctx,
         );
     }
@@ -25737,16 +25747,29 @@ impl TerminalView {
     /// Will send telemetry if the current session is not bootstrapped and will show a banner to
     /// the user if this is the first bootstrap in the session.
     fn on_bootstrap_failed_timer_complete(&mut self, _: (), ctx: &mut ViewContext<Self>) {
-        // #1494: the session died while the keys were held: they can go nowhere. Dropped, with a
-        // log, never run here.
+        // #1494: the session died while the keys were held. Nothing reads the pty any more, so
+        // they cannot be written, and they are never run here. Owner decision 2026-11-09: they
+        // are not discarded either (this was the last drop on the give-up paths, #1996): they go
+        // back to this pane's input as text, in typed order, with the hand-back's Enter guard
+        // armed (`hand_back_unexecuted_ssh_text`; a busy queue does it as a deferred operation).
         if self.model.lock().is_read_only() {
             if self.ssh_typeahead_holding && !self.ssh_held_is_empty() {
                 log::warn!(
-                    "ssh typeahead: the shell is gone at the bootstrap timer; discarding {} \
-                     held byte(s), not running them (#1494)",
+                    "ssh typeahead: the shell is gone at the bootstrap timer; {} held byte(s) \
+                     go back to the input as text, not run, none discarded (#1494, owner \
+                     decision 2026-11-09)",
                     self.ssh_held_bytes()
                 );
-                self.reset_ssh_typeahead();
+                warpui::input_order::log_key_hop("kh_bootstrap_giveup", || {
+                    format!("shell_gone to_editor held_bytes={}", self.ssh_held_bytes())
+                });
+                self.ssh_release_held_locally = false;
+                self.set_ssh_typeahead_holding(false);
+                self.ssh_paste_to_hold = false;
+                self.ssh_typeahead_precmd_wait_since = None;
+                self.ssh_hold_hand_back_unexecuted_text(ctx);
+                // The hold is over: its overflow state goes with it (the gate is detached).
+                self.ssh_hold_clear();
             }
             return;
         }

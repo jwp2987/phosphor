@@ -2977,11 +2977,15 @@ plain terminal"). The owner saw it on macOS at an EMPTY remote prompt: a toast f
 - **Not changed (not give-ups, or not drops).** ^C / ^D void typeahead as the tty does (#1571,
   #1584); the multi-line submit dialog's answer discards what was typed over it (#1652, above); the
   subshell / PowerShell setup nets hand their keys back to the editor (#1711, #1679); the ConPTY
-  prompt hold keeps its rules (#1584, #1923); an ssh bootstrap timer that finds the shell already
-  gone still discards the held keys with a log (#1494: nothing can read them). Left as they are by
+  prompt hold keeps its rules (#1584, #1923). Left as they are by
   the owner (2026-11-09): an editor key with no byte form among given-up keys (a cursor motion, a
   selection) acts on the editor in its place; on ConPTY a give-up's write waits for the line editor
   only when no prompt hold is already queued.
+- **A dead shell at the ssh bootstrap timer hands the keys back, it does not discard them (#1494,
+  owner 2026-11-09).** Nothing can read them from the pty, so they are not written, and nothing is
+  run: they become text in the pane's input, in typed order, with the hand-back Enter guard, and
+  are never stashed for a block that will not end (`hand_back_unexecuted_ssh_text`). This was the
+  last drop on the give-up paths.
 - **Keep-together holds on the event path too (#1997, owner 2026-11-09).** A deferred Enter whose
   submit wrote no command because its own non-empty line now waits behind the input's Enter gate
   (an unready shell, a verdict wait) no longer has the complete lines typed behind it written to
