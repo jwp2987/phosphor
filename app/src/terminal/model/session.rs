@@ -738,8 +738,27 @@ pub enum IsLegacySSHSession {
         /// The remote reported it can take the bootstrap as a counted raw read (#1172); see
         /// `SSHValue::raw_bootstrap`.
         raw_bootstrap: bool,
+        /// The session runs on ONE ssh connection with no ControlMaster (#1933: Git Bash /
+        /// MSYS2); `socket_path` is empty and nothing may use it. See
+        /// `SSHValue::single_connection`.
+        single_connection: bool,
     },
     No,
+}
+
+impl IsLegacySSHSession {
+    /// Whether this ssh session has a ControlMaster socket: the channel the remote helper and the
+    /// ControlMaster side commands need. `false` for a non-ssh session and for a one-connection
+    /// session (#1933), whose side commands run in-band and which never gets the helper.
+    pub fn has_control_socket(&self) -> bool {
+        matches!(
+            self,
+            IsLegacySSHSession::Yes {
+                single_connection: false,
+                ..
+            }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -833,6 +852,7 @@ impl SessionInfo {
                 socket_path: ssh_value.socket_path,
                 external_control_master: ssh_value.external_control_master,
                 raw_bootstrap: ssh_value.raw_bootstrap,
+                single_connection: ssh_value.single_connection,
             },
             None => IsLegacySSHSession::No,
         };
@@ -1360,7 +1380,13 @@ impl Session {
     /// not the remote-server one (so repeated events log and swap only once).
     #[cfg(feature = "local_tty")]
     pub fn fall_back_to_control_master_executor(&self) -> bool {
-        let IsLegacySSHSession::Yes { socket_path, .. } = &self.info.is_legacy_ssh_session else {
+        let IsLegacySSHSession::Yes {
+            socket_path,
+            single_connection: false,
+            ..
+        } = &self.info.is_legacy_ssh_session
+        else {
+            // Not ssh, or one connection with no ControlMaster to fall back to (#1933).
             return false;
         };
         let mut executor = self.command_executor.write();
@@ -2496,6 +2522,22 @@ pub mod testing {
                 socket_path,
                 external_control_master: false,
                 raw_bootstrap: false,
+                single_connection: false,
+            };
+            self
+        }
+
+        /// Marks this session as an ssh session on one connection with no ControlMaster socket
+        /// (#1933, Git Bash / MSYS2).
+        pub fn with_single_connection_ssh(mut self) -> Self {
+            if let BootstrapSessionType::Local = self.session_type {
+                self.session_type = BootstrapSessionType::WarpifiedRemote;
+            }
+            self.is_legacy_ssh_session = IsLegacySSHSession::Yes {
+                socket_path: PathBuf::new(),
+                external_control_master: false,
+                raw_bootstrap: false,
+                single_connection: true,
             };
             self
         }

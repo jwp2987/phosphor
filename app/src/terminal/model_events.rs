@@ -27,7 +27,7 @@ use super::{
     event::BootstrappedEvent,
     model::{
         ansi,
-        session::{IsLegacySSHSession, SessionId, SessionInfo},
+        session::{SessionId, SessionInfo},
         terminal_model::{CommandType, HandlerEvent},
     },
 };
@@ -132,10 +132,12 @@ impl ModelEventDispatcher {
                 self.sessions.update(ctx, |sessions, ctx| {
                     sessions.register_pending_session(pending_session_info.as_ref(), ctx);
                 });
-                let is_legacy_ssh = matches!(
-                    pending_session_info.is_legacy_ssh_session,
-                    IsLegacySSHSession::Yes { .. }
-                );
+                // #1933: only an ssh session with a ControlMaster socket can get the helper; a
+                // one-connection session takes the plain InitShell path (bootstrap written at
+                // once, no binary check over a socket that does not exist).
+                let is_legacy_ssh = pending_session_info
+                    .is_legacy_ssh_session
+                    .has_control_socket();
                 if self.should_use_ssh_remote_server(is_legacy_ssh) {
                     ModelEvent::SshInitShell {
                         pending_session_info,
@@ -367,6 +369,17 @@ impl ModelEventDispatcher {
                 managed,
                 session_id,
             },
+            Event::SshWrapperSync {
+                stage,
+                nonce,
+                typeahead,
+                session_id,
+            } => ModelEvent::SshWrapperSync {
+                stage,
+                nonce,
+                typeahead,
+                session_id,
+            },
             Event::SSH(ssh) => ModelEvent::SSH(ssh),
             Event::SSHControlMasterError => ModelEvent::SSHControlMasterError,
             Event::InputBufferOverflow => ModelEvent::InputBufferOverflow,
@@ -450,11 +463,9 @@ impl ModelEventDispatcher {
             rcfiles_duration_seconds,
         } = event;
 
+        // #1933: as at InitShell, only an ssh session with a ControlMaster socket has the helper.
         let (is_legacy_ssh, session_id, shell_type_name, shell_path) = (
-            matches!(
-                session_info.is_legacy_ssh_session,
-                IsLegacySSHSession::Yes { .. }
-            ),
+            session_info.is_legacy_ssh_session.has_control_socket(),
             session_info.session_id,
             session_info.shell.shell_type().name().to_owned(),
             session_info.shell.shell_path().clone(),
@@ -544,6 +555,13 @@ pub enum ModelEvent {
     /// `ManagedSSHSessionStarting`, not for `PlainSSHFallback`.
     SshWrapperVerdict {
         managed: bool,
+        session_id: Option<SessionId>,
+    },
+    /// A stage of the one-connection managed ssh (#1933); see `Event::SshWrapperSync`.
+    SshWrapperSync {
+        stage: String,
+        nonce: String,
+        typeahead: String,
         session_id: Option<SessionId>,
     },
     /// An indication that a successful SSH connection was initiated via the

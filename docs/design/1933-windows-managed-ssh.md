@@ -70,7 +70,7 @@ printed before any session output exists, and in the LocalCommand's environment)
 |---|---|---|---|
 | 1 | wrapper | `PreInteractiveSSHSession` (existing) | `AwaitingVerdict`: hold (existing, #1641/#1884) |
 | 2 | wrapper, before `ssh` | `SSHWrapperSync stage=auth` | AUTH PASS-THROUGH: what was held since the Enter goes to the pty in typed order, later keys pass straight to `ssh.exe` (the plain console's rule). No ceiling runs: nothing is held |
-| 3 | LocalCommand | `SSHWrapperSync stage=auth_done` | pass-through ends BY THIS EVENT: keys are held again; the app then writes a sync token (`0x1e PHX<nonce> 0x1e`) to the pty |
+| 3 | LocalCommand | `SSHWrapperSync stage=auth_done` | pass-through ends BY THIS EVENT: keys are held again; the app then writes a sync token (`:PHX<nonce>:`) to the pty |
 | 4a | LocalCommand | `SSHWrapperSync stage=managed` | writes the mode byte `M`; then exactly the existing managed verdict (`ManagedSSHSessionStarting`): keys stay held to the remote shell's first prompt |
 | 4b | LocalCommand | `SSHWrapperSync stage=plain typeahead=<hex>` | writes `P` + the reported bytes; then exactly the existing plain verdict (`PlainSSHFallback`): held keys go to the pty in typed order, later keys pass through |
 
@@ -78,8 +78,13 @@ Between 3 and 4 the LocalCommand reads the console (raw, no echo) up to the toke
 reader: `ssh.exe` waits for it, the local shell waits for `ssh.exe`. Because the app holds from
 stage 3 and the token is written after that, FIFO order of the pty guarantees that everything in
 front of the token is every byte typed before the hold that no prompt consumed (call it T), and
-that nothing comes after the token until the app's verdict write. No clock is involved; the
-`read -t 5` on the token is a give-up net only (then 4b, with what was read).
+that nothing comes after the token until the app's verdict write. No clock is involved: the wait
+for the token has no deadline (the token is the answer of the very app that printed the script).
+After 10 s without it the LocalCommand prints a one-line notice once and keeps reading; Ctrl-C
+ends the ssh (the console is read verbatim but with `isig` left on) and the tty is restored.
+
+The token and the mode byte are printable ASCII (`:PHX<nonce>:`, `M`, `P`) so the console's input
+translation cannot change them.
 
 - T empty (nobody typed blind during the connect; the usual case, and the password prompt flushes
   earlier typeahead anyway): 4a. The remote reads `M` and runs the bootstrap; the session is
@@ -129,8 +134,11 @@ Unchanged machinery, now reached from Windows:
 Decided locally, BEFORE ssh starts (wrapper prints `PlainSSHFallback`, the existing verdict):
 `PHOSPHOR_MSYS_MANAGED_SSH=0` (kill switch), stdin or stdout not a terminal, a user
 `RemoteCommand` or `LocalCommand`, no nonce, a Windows OpenSSH server (3.6).
-Decided at stage 4: typed-ahead keys (4b), token give-up (4b).
-Decided remotely: no mode byte within 20 s.
+Decided at stage 4: typed-ahead keys (4b); the console ending (no terminal) while the token is
+awaited (4b with what was read).
+Decided remotely: no mode byte within 20 s (the one clock in the design, a give-up net on the
+REMOTE side for an app that never answered: the remote command then execs the plain login shell;
+it reads at most the one byte, and in that state the app has written none).
 ssh fails before authenticating (bad password, unreachable, Ctrl-C): no LocalCommand runs, the
 block ends, the window ends as a failed connect does today (held keys, if any, become editor text
 / run locally per the existing rules; in pass-through nothing is held).
@@ -190,19 +198,40 @@ takes the keyscan branch only for an empty control path, which only the msys pat
   prompt). Only the local, nonce-authenticated LocalCommand reports bytes, and they go to the pty.
 - A polyglot first line that also works in cmd.exe / PowerShell: cannot be verified here.
 
+## 4a. App side, as implemented
+
+- `SSHValue.single_connection` -> `IsLegacySSHSession::Yes { single_connection }`;
+  `has_control_socket()` gates everything that needs the socket: the helper setup
+  (`SshInitShell`, `notify_session_bootstrapped`), the ControlMaster executor, the shell-mode
+  out-of-band channel, the fall-back-to-ControlMaster swap. Such a session takes the in-band
+  executor and reports no "helper fallback" (nothing degraded: the helper was never possible).
+- `TerminalView::ssh_on_wrapper_sync` handles the stages on the existing connect window: `auth`
+  sets the window's `auth_pass_through` (an input to the existing `ssh_wrapper_secret_pass_through`,
+  so both routes, Legacy and Table, read it the way they read the Unix secret-read probe) and
+  delivers what was held; `auth_done` clears it, tells the phase machine (`TtyReclaimed`), and only
+  then writes the token; `managed` / `plain` write the mode byte (and the drained bytes) and call
+  the existing verdict handler. The window does not run its no-probe ceiling during the login.
+- A stage is honoured only in order, with the `auth` stage's nonce, from the announcing session,
+  and `auth` only on Windows (`SSH_SINGLE_CONNECTION_PLATFORM`).
+- The three raw writes are an allow-listed pty door (`script/check_pty_doors`).
+
 ## 5. Open points for the owner (none blocks the implementation)
 
 1. 4b makes "typed during the connect" a plain session for that connection. The alternative is to
    put T at the FRONT of the app's held keys and stay managed (then T goes through the first-prompt
    hand-over like on Unix). It needs a front insert into the one input queue behind the connect
-   gate; it was not attempted blind. Filed as a follow-up.
+   gate; it was not attempted blind. Filed as #1959.
 2. The keyscan guard is one extra TCP connect + banner per destination per 10 minutes.
 3. No banner tells the user the session has no helper; the log says so.
+4. msys zsh / fish panes keep plain ssh; a non-POSIX server that is not Win32-OpenSSH, or one
+   behind a jump host, is not recognised before the bootstrap is sent (as on Unix when the probe is
+   inconclusive). Points 2-4 are #1960.
 
 ## 6. Tests
 
-- `bootstrap_test.rs`: the msys branch with a fake `ssh` (options passed, LocalCommand script run
-  against a scripted tty is not possible there; the script text is asserted), fallbacks.
+- `bootstrap_test.rs`: the msys branch with a stub `ssh` and `ssh-keyscan` (options passed, the
+  nonce, the remote command's mode-byte prefix, every local fallback), and the LocalCommand script
+  itself in a real bash with a pipe standing in for the console.
 - `ansi/mod_test.rs`: the new hook parses; unknown stage is ignored.
 - `view_test.rs` (Legacy and Table): auth pass-through writes typed keys to the pty in order; the
   `auth_done` event writes the token and holds; `managed` writes `M` and holds to the first prompt;

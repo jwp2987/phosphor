@@ -733,6 +733,7 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
             Ok(DProtoHook::PlainSSHFallback { value }) => {
                 self.handler.ssh_wrapper_verdict(false, value.session_id)
             }
+            Ok(DProtoHook::SSHWrapperSync { value }) => self.handler.ssh_wrapper_sync(value),
             Ok(DProtoHook::SSH { value }) => self.handler.ssh(value),
             Ok(DProtoHook::InitShell { value }) => self.handler.init_shell(value),
             Ok(DProtoHook::InputBuffer { value }) => self.handler.input_buffer(value),

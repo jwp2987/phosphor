@@ -3519,6 +3519,9 @@ pub struct TerminalView {
         Option<crate::terminal::model::block::interactive_latch::SecretReadProbe>,
     /// #1641: the last `PreInteractiveSSHSession`, for a window that arms after it.
     ssh_wrapper_announced: Option<SshWrapperAnnouncement>,
+    /// #1933: the one-connection managed ssh in flight (Git Bash / MSYS2): its nonce and which
+    /// stage hook came last. `None` outside the stretch from the `auth` stage to the verdict.
+    ssh_single: Option<SshSingleConnection>,
     /// #1292: set from the first key held during an ssh connect until the held keys are
     /// delivered, discarded or turned into editor text. While set EVERY key is held, also in the
     /// stretches where the gate itself would let keys through (a banner printed before the
@@ -5486,6 +5489,7 @@ impl TerminalView {
             ssh_wrapper_secret_probe: None,
             ssh_wrapper_tty_read_probe: None,
             ssh_wrapper_announced: None,
+            ssh_single: None,
             ssh_typeahead_holding: false,
             fork_restore_persist: Default::default(),
             fullscreen_output_signal: None,
@@ -11833,6 +11837,8 @@ impl TerminalView {
             }
         };
         self.ssh_wrapper_announced = Some(announcement);
+        // #1933: a new wrapper invocation: an earlier one-connection sync is over.
+        self.ssh_single = None;
         // A window open now is this ssh's (the announcement follows its submit and preexec).
         self.ssh_apply_wrapper_announcement(true);
     }
@@ -11901,12 +11907,15 @@ impl TerminalView {
         session_id: Option<SessionId>,
         ctx: &mut ViewContext<Self>,
     ) {
+        // #1933: a verdict ends the one-connection sync, whichever hook carried it.
+        self.ssh_single = None;
         let Some(gate) = self.ssh_connect_gate.as_mut() else {
             if managed {
                 self.ssh_rearm_window_for_managed_session(session_id, ctx);
             }
             return;
         };
+        gate.auth_pass_through = false;
         let session_differs = gate.wrapper_session.is_some()
             && session_id.is_some()
             && gate.wrapper_session != session_id;
@@ -11940,6 +11949,196 @@ impl TerminalView {
             let block_id = block_id.unwrap_or_else(|| self.model.lock().active_block_id().clone());
             self.ssh_on_tty_owned(&block_id, ctx);
         }
+    }
+
+    /// #1933: a stage of the one-connection managed ssh (Git Bash / MSYS2, where `ssh.exe` cannot
+    /// multiplex; `docs/design/1933-windows-managed-ssh.md`). The stages are hooks printed on the
+    /// local side, by the wrapper (`auth`) and by ssh's own LocalCommand after the login succeeded
+    /// and before the session starts (`auth_done`, then `managed` or `plain`). Each is an event;
+    /// no clock and no screen text decides where a key goes.
+    ///
+    /// - `auth`: the one ssh starts. It asks its questions on the console and ConPTY has no probe
+    ///   for "ssh is reading", so the window (held since the announcement) lets every key through
+    ///   to ssh, in typed order, as a plain console does.
+    /// - `auth_done`: the login is over. Keys are held again from this event, and only then the
+    ///   sync token is written: the LocalCommand reads the console up to it, so it sees exactly
+    ///   the keys typed before the hold that no prompt consumed.
+    /// - `managed`: there were none. `M` tells the remote command to run the bootstrap; from here
+    ///   it is the managed verdict (`ssh_on_wrapper_verdict`): held to the first remote prompt.
+    /// - `plain`: there were some (`typeahead`, hex). `P` tells the remote command to exec a plain
+    ///   login shell; the drained bytes follow it, then the plain verdict delivers what was held
+    ///   since `auth_done`: one pty, typed order, nothing of Phosphor's in between.
+    ///
+    /// A stage is accepted only in order and with the nonce of the `auth` stage (minted locally,
+    /// never sent to the server), from the announcing shell's session, and `auth` only on a
+    /// platform whose wrapper prints it and for a window that waits for the wrapper's verdict.
+    fn ssh_on_wrapper_sync(
+        &mut self,
+        stage: &str,
+        nonce: &str,
+        typeahead: &str,
+        session_id: Option<SessionId>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let session_differs = self.ssh_connect_gate.as_ref().is_some_and(|gate| {
+            gate.wrapper_session.is_some()
+                && session_id.is_some()
+                && gate.wrapper_session != session_id
+        });
+        let known = self
+            .ssh_single
+            .as_ref()
+            .map(|single| (single.nonce == nonce, single.stage));
+        let in_order = match stage {
+            "auth" => SSH_SINGLE_CONNECTION_PLATFORM && known.is_none(),
+            "auth_done" => known == Some((true, SshSingleStage::Auth)),
+            "managed" | "plain" => known == Some((true, SshSingleStage::Draining)),
+            _ => false,
+        };
+        let accepted = in_order
+            && !nonce.is_empty()
+            && !session_differs
+            // The window is this ssh's and waits for the wrapper (armed here if it ended early).
+            && self.ssh_ensure_window_awaits_verdict(session_id, ctx);
+        if !accepted {
+            warpui::input_order::log_hop("ssh_wrapper", || {
+                format!(
+                    "sync_ignored stage={stage} in_order={in_order} \
+                     session_differs={session_differs}"
+                )
+            });
+            return;
+        }
+        warpui::input_order::log_hop("ssh_wrapper", || {
+            format!(
+                "sync stage={stage} holding={} held_bytes={} typeahead_bytes={}",
+                self.ssh_typeahead_holding,
+                self.ssh_held_bytes(),
+                typeahead.len() / 2
+            )
+        });
+        match stage {
+            "auth" => {
+                self.ssh_single = Some(SshSingleConnection {
+                    nonce: nonce.to_owned(),
+                    stage: SshSingleStage::Auth,
+                });
+                if let Some(gate) = self.ssh_connect_gate.as_mut() {
+                    // ssh is the console's reader from here (the wrapper runs it in the
+                    // foreground); the ownership is remembered for a plain verdict, not applied.
+                    gate.tty_owned = false;
+                    gate.tty_owned_by_event = false;
+                    gate.tty_owned_deferred = true;
+                    gate.auth_pass_through = true;
+                }
+                // The machine's window is the wrapper's too (a window born owned, or armed just
+                // now, counts ssh as the owner otherwise); the pass-through is an observation.
+                self.ssh_edge(input_queue::SshEdge::TtyReclaimed);
+                self.ssh_observe(ctx);
+                if self.ssh_typeahead_holding {
+                    self.deliver_held_ssh_typeahead_to_tty_owner(ctx);
+                }
+            }
+            "auth_done" => {
+                if let Some(single) = self.ssh_single.as_mut() {
+                    single.stage = SshSingleStage::Draining;
+                }
+                if let Some(gate) = self.ssh_connect_gate.as_mut() {
+                    gate.auth_pass_through = false;
+                    gate.tty_owned = false;
+                    gate.tty_owned_by_event = false;
+                    gate.tty_owned_deferred = true;
+                    // The verdict is one console round trip away; the ceiling counts from here.
+                    gate.armed_at = Instant::now();
+                }
+                // The hold is in force (the machine is told) BEFORE the token is written, so the
+                // token is behind every key that passed through and in front of every key held.
+                self.ssh_edge(input_queue::SshEdge::TtyReclaimed);
+                self.ssh_observe(ctx);
+                self.schedule_ssh_typeahead_give_up(ctx);
+                self.write_to_pty(ssh_single_sync_token(nonce), ctx);
+            }
+            "managed" => {
+                self.write_to_pty(vec![SSH_SINGLE_MODE_MANAGED], ctx);
+                self.ssh_on_wrapper_verdict(true, session_id, ctx);
+            }
+            "plain" => {
+                let mut bytes = vec![SSH_SINGLE_MODE_PLAIN];
+                match hex::decode(typeahead) {
+                    Ok(drained) => bytes.extend(drained),
+                    Err(_) => {
+                        log::error!(
+                            "ssh wrapper sync: the plain stage's typeahead is not hex ({} chars); \
+                             the keys it stood for cannot be written back",
+                            typeahead.len()
+                        );
+                    }
+                }
+                self.write_to_pty(bytes, ctx);
+                if let Some(gate) = self.ssh_connect_gate.as_mut() {
+                    gate.tty_owned_deferred = true;
+                }
+                self.ssh_on_wrapper_verdict(false, session_id, ctx);
+            }
+            _ => {}
+        }
+    }
+
+    /// #1933: makes sure the connect window is this ssh's and waits for the wrapper's verdict
+    /// (`AwaitingVerdict`), for a stage of the one-connection sync. A window that already does is
+    /// taken as is. A window the announcement did not take, or none at all (it ended early), is
+    /// set up / armed for the block the wrapper announced itself in, if that ssh still runs: by
+    /// this event, `armed_at` now. `false` when there is no such running ssh, another session
+    /// announced it, or the window is already managed: then the stage is ignored.
+    fn ssh_ensure_window_awaits_verdict(
+        &mut self,
+        session_id: Option<SessionId>,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        match self.ssh_connect_gate.as_ref().map(|gate| gate.wrapper) {
+            Some(SshWrapperHold::AwaitingVerdict) => return true,
+            Some(SshWrapperHold::Managed) => return false,
+            Some(SshWrapperHold::Off) | None => {}
+        }
+        let Some(announcement) = self.ssh_wrapper_announced.clone() else {
+            return false;
+        };
+        if announcement.session.is_some()
+            && session_id.is_some()
+            && announcement.session != session_id
+        {
+            return false;
+        }
+        let (still_running, tty_read_detectable) = {
+            let model = self.model.lock();
+            (
+                *model.active_block_id() == announcement.block_id
+                    && model.block_list().active_block().started(),
+                model.tty_read_probe().is_some(),
+            )
+        };
+        if !still_running {
+            return false;
+        }
+        let armed_now = self.ssh_connect_gate.is_none();
+        let user_submitted = self.running_block_user_submitted;
+        let gate = self.ssh_connect_gate.get_or_insert_with(|| {
+            let mut gate = SshConnectGate::new(Instant::now());
+            gate.user_submitted = user_submitted;
+            gate
+        });
+        gate.tty_read_detectable = tty_read_detectable;
+        gate.block_id = Some(announcement.block_id);
+        gate.wrapper = SshWrapperHold::AwaitingVerdict;
+        gate.wrapper_session = announcement.session;
+        warpui::input_order::log_hop("ssh_wrapper", || {
+            format!("window_for_sync armed_now={armed_now}")
+        });
+        if armed_now {
+            self.ssh_edge(input_queue::SshEdge::ConnectStart);
+            self.schedule_ssh_typeahead_give_up(ctx);
+        }
+        true
     }
 
     /// #1641: `ManagedSSHSessionStarting` arrived with no connect window. If it is for the block the
@@ -12020,9 +12219,16 @@ impl TerminalView {
             .as_ref()
             .is_some_and(|gate| gate.wrapper.defers_ownership() && gate.tty_owned_deferred)
             && (self
-                .ssh_wrapper_secret_probe
+                .ssh_connect_gate
                 .as_ref()
-                .is_some_and(|probe| probe())
+                // #1933: the one-connection login (the `auth` stage hook to `auth_done`): where no
+                // probe can tell that ssh is asking, every key goes to ssh, as a plain console
+                // gives it. Events open and close it, never the screen or a clock.
+                .is_some_and(|gate| gate.auth_pass_through)
+                || self
+                    .ssh_wrapper_secret_probe
+                    .as_ref()
+                    .is_some_and(|probe| probe())
                 || self
                     .ssh_wrapper_tty_read_probe
                     .as_ref()
@@ -12036,6 +12242,17 @@ impl TerminalView {
     /// pass to ssh while the read lasts.
     fn ssh_wrapper_secret_read_guard(&mut self, ctx: &mut ViewContext<Self>) {
         if self.ssh_typeahead_holding && self.ssh_wrapper_secret_pass_through() {
+            // #1933: the one-connection login's pass-through is not a detected secret read (no
+            // flush is known to have happened): what is held goes to ssh in typed order, as the
+            // console's input buffer would have given it, and is never discarded.
+            if self
+                .ssh_connect_gate
+                .as_ref()
+                .is_some_and(|gate| gate.auth_pass_through)
+            {
+                self.deliver_held_ssh_typeahead_to_tty_owner(ctx);
+                return;
+            }
             self.discard_held_ssh_typeahead_for_secret_read(ctx);
         }
     }
@@ -12521,6 +12738,7 @@ impl TerminalView {
         self.ssh_interrupt_held_gate_notified = false;
         // #1641: a new command: an earlier ssh's announcement is over.
         self.ssh_wrapper_announced = None;
+        self.ssh_single = None;
         if parse_interactive_ssh_command(command).is_some() {
             let block_id = self.model.lock().active_block_id().clone();
             let mut gate = SshConnectGate::new(Instant::now());
@@ -19466,6 +19684,14 @@ impl TerminalView {
                 session_id,
             } => {
                 self.ssh_on_wrapper_verdict(*managed, *session_id, ctx);
+            }
+            ModelEvent::SshWrapperSync {
+                stage,
+                nonce,
+                typeahead,
+                session_id,
+            } => {
+                self.ssh_on_wrapper_sync(stage, nonce, typeahead, *session_id, ctx);
             }
             ModelEvent::SSH(remote_shell) => {
                 if let Some(shell) = ShellType::from_name(remote_shell) {
@@ -40461,6 +40687,43 @@ struct SshConnectGate {
     /// during the master login reaches ssh and the wait for the verdict needs no clock. Without one
     /// (macOS, others) the silence ceiling stays: such an answer would otherwise wait forever.
     tty_read_detectable: bool,
+    /// #1933: the one-connection login runs (the `auth` stage hook was seen, `auth_done` not yet):
+    /// every key passes to ssh, so nothing is held and no ceiling runs. Set and cleared by those
+    /// events only.
+    auth_pass_through: bool,
+}
+
+/// #1933: the one-connection managed ssh between its `auth` stage and its verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SshSingleConnection {
+    /// The invocation's nonce, as the `auth` stage carried it. Never logged.
+    nonce: String,
+    stage: SshSingleStage,
+}
+
+/// #1933: the last accepted stage of the one-connection sync.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshSingleStage {
+    /// `auth`: the login runs; keys pass through to ssh.
+    Auth,
+    /// `auth_done`: keys are held, the token is written, the LocalCommand drains the console.
+    Draining,
+}
+
+/// #1933: only the Git Bash / MSYS2 wrapper prints the one-connection stages, so an `auth` stage
+/// is honoured only where that wrapper runs (and in this crate's tests, which drive it by hand):
+/// on the other platforms the multiplexed wrapper's own verdict hooks are the only ones.
+const SSH_SINGLE_CONNECTION_PLATFORM: bool = cfg!(any(windows, test));
+/// #1933: the byte the remote command reads first on the one-connection path: go on to the
+/// bootstrap. Keep in step with `warp_single_prefix` in `bootstrap/bash_body.sh`.
+const SSH_SINGLE_MODE_MANAGED: u8 = b'M';
+/// #1933: as [`SSH_SINGLE_MODE_MANAGED`], for a plain login (anything that is not `M`).
+const SSH_SINGLE_MODE_PLAIN: u8 = b'P';
+
+/// #1933: what the LocalCommand reads the console up to (`:PHX<nonce>:`, printable so the console
+/// passes it unchanged). Keep in step with `warp_ssh_msys_run_single` in `bootstrap/bash_body.sh`.
+fn ssh_single_sync_token(nonce: &str) -> Vec<u8> {
+    format!(":PHX{nonce}:").into_bytes()
 }
 
 /// #1641: a `PreInteractiveSSHSession` seen for a block, remembered so a connect window that arms
@@ -40513,6 +40776,7 @@ impl SshConnectGate {
             tty_owned_by_event: false,
             wrapper_session: None,
             tty_read_detectable: false,
+            auth_pass_through: false,
         }
     }
 
@@ -40621,7 +40885,9 @@ impl SshConnectGate {
 
     /// #1641: waiting for the wrapper's verdict where a tty read is detectable (no clock).
     fn awaits_verdict_without_clock(&self) -> bool {
-        self.wrapper == SshWrapperHold::AwaitingVerdict && self.tty_read_detectable
+        // #1933: nor while the one-connection login passes every key through (nothing is held).
+        self.wrapper == SshWrapperHold::AwaitingVerdict
+            && (self.tty_read_detectable || self.auth_pass_through)
     }
 
     /// The no-session half: hold keys until ssh owns the tty, for the whole post-block bootstrap

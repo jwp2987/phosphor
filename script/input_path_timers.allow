@@ -4,6 +4,7 @@
 # Everything above the PENDING-CONVERSION marker is a give-up net: it hands text back to the editor,
 # keeps it held, or only shows a notice / logs. It never writes to the pty, releases held keys,
 # routes, commits or re-asks. Adding a line means the code carries `give-up-net: ...` next to it.
+app/assets/bundled/bootstrap/bash_body.sh	__p_drain	one-connection ssh (#1933): prints a notice once after 10 s without the app's sync token; the console read goes on, no key is decided and nothing is written to the pty
 app/assets/bundled/bootstrap/bash_body.sh	warp_ssh_mux_command	kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
 app/assets/bundled/bootstrap/bash_body.sh	warp_ssh_remote_is_non_posix	kills a stuck ssh probe after 5 s; never touches the tty or typed keys
 app/assets/bundled/bootstrap/fish.sh	warp_ssh_mux_command	kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys

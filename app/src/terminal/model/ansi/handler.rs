@@ -313,6 +313,9 @@ pub trait Handler {
     /// ran the wrapper.
     fn ssh_wrapper_verdict(&mut self, _managed: bool, _session_id: Option<u64>) {}
 
+    /// Callback for a stage of the one-connection managed ssh (#1933, `SSHWrapperSync`).
+    fn ssh_wrapper_sync(&mut self, _data: SSHWrapperSyncValue) {}
+
     /// Callback for the Zap ssh hook - called once after successfully connecting to
     /// an SSH server
     fn ssh(&mut self, _data: SSHValue) {}

@@ -20737,6 +20737,289 @@ fn managed_ssh_plain_fallback_releases_the_held_keys_at_ownership() {
     }
 }
 
+/// #1933: a stage hook of the one-connection managed ssh (`SSHWrapperSync`) as the parser delivers
+/// it, with no session id.
+fn ssh_wrapper_sync_for_test(
+    view: &mut TerminalView,
+    stage: &str,
+    nonce: &str,
+    typeahead: &str,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    view.handle_terminal_event(
+        &ModelEvent::SshWrapperSync {
+            stage: stage.to_owned(),
+            nonce: nonce.to_owned(),
+            typeahead: typeahead.to_owned(),
+            session_id: None,
+        },
+        ctx,
+    );
+}
+
+/// #1933: the start the one-connection tests share (Git Bash / MSYS2: one `ssh.exe`, no master).
+/// `ssh host` is submitted, `ab` typed right after the Enter, ssh runs (preexec) and the wrapper
+/// announces itself: the window waits for the wrapper and holds `ab`. Returns the window's block.
+fn one_connection_ssh_announced_for_test(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) -> BlockId {
+    register_local_session_for_ssh_test(view, ctx);
+    submit_command(view, "ssh host", ctx);
+    view.typed_characters_on_terminal("ab", ctx);
+    view.model
+        .lock()
+        .simulate_long_running_block("ssh host", "");
+    view.warpify_state
+        .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+    view.handle_terminal_event(&ModelEvent::PreInteractiveSSHSession, ctx);
+    assert!(view.ssh_typeahead_holding, "held until the wrapper says");
+    assert_eq!(view.ssh_held_bytes(), 2);
+    let gate = view.ssh_connect_gate.as_ref().expect("the window is open");
+    gate.block_id.clone().expect("the window's block")
+}
+
+/// #1933 (owner 2026-11-09: managed ssh from Windows Git Bash, on one connection). The stages are
+/// events printed locally. `auth`: the login runs, so what was held goes to ssh in typed order and
+/// later keys pass straight through (the password). `auth_done` (ssh's LocalCommand): keys are held
+/// again and ONLY THEN the sync token is written. `managed`: `M` for the remote command, and the
+/// keys stay held to the remote shell's first prompt, where they are written once, in typed
+/// order. Nothing of the user's is ever written between the token and that prompt. Legacy and
+/// Table.
+#[test]
+fn one_connection_ssh_passes_the_login_through_and_holds_from_auth_done_to_the_first_prompt() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let written = {
+                let pty_writes = pty_writes.clone();
+                move || -> String {
+                    let bytes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+                    String::from_utf8_lossy(&bytes).into_owned()
+                }
+            };
+            let armed = terminal.update(&mut app, |view, ctx| {
+                one_connection_ssh_announced_for_test(view, ctx)
+            });
+            assert_eq!(written(), "", "{mode:?}: held until a stage says otherwise");
+            terminal.update(&mut app, |view, ctx| {
+                ssh_wrapper_sync_for_test(view, "auth", "42", "", ctx);
+                assert!(
+                    !view.ssh_typeahead_holding,
+                    "{mode:?}: the login gets the keys"
+                );
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+                assert_eq!(
+                    view.build_route_facts(
+                        crate::terminal::input_queue::QueueFacts::default(),
+                        ctx
+                    )
+                    .ssh,
+                    crate::terminal::input_queue::SshPhase::Idle,
+                    "{mode:?}: keys pass straight to ssh during the login"
+                );
+                view.typed_characters_on_terminal("pw", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: nothing is held");
+            });
+            assert_eq!(
+                written(),
+                "abpw\r",
+                "{mode:?}: typed order, straight through"
+            );
+            terminal.update(&mut app, |view, ctx| {
+                ssh_wrapper_sync_for_test(view, "auth_done", "42", "", ctx);
+                assert_eq!(
+                    view.build_route_facts(
+                        crate::terminal::input_queue::QueueFacts::default(),
+                        ctx
+                    )
+                    .ssh,
+                    crate::terminal::input_queue::SshPhase::Holding,
+                    "{mode:?}: held from the auth_done event"
+                );
+                view.typed_characters_on_terminal("ls", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}");
+                assert_eq!(view.ssh_held_bytes(), "ls\r".len(), "{mode:?}");
+            });
+            assert_eq!(
+                written(),
+                "abpw\r:PHX42:",
+                "{mode:?}: the token is the last thing written; the keys typed after it are held"
+            );
+            terminal.update(&mut app, |view, ctx| {
+                ssh_wrapper_sync_for_test(view, "managed", "42", "", ctx);
+                assert!(
+                    view.ssh_typeahead_holding,
+                    "{mode:?}: held for the bootstrap"
+                );
+                assert!(view.ssh_single.is_none(), "{mode:?}: the sync is over");
+            });
+            assert_eq!(written(), "abpw\r:PHX42:M", "{mode:?}: only the mode byte");
+            terminal.update(&mut app, |view, ctx| {
+                managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
+            });
+            assert_eq!(
+                written(),
+                "abpw\r:PHX42:Mls\r",
+                "{mode:?}: the held keys once, in typed order, at the remote shell's first prompt"
+            );
+        })
+    }
+}
+
+/// #1933: keys typed during the login that no prompt consumed were drained by the LocalCommand
+/// (it reports them, `typeahead`). They must not meet the bootstrap: the `plain` stage writes `P`
+/// (the remote command execs a plain login shell), then the drained bytes, then the keys held
+/// since `auth_done`: one pty, typed order, and the window behaves like an unmanaged one from
+/// there. Legacy and Table.
+#[test]
+fn one_connection_ssh_with_typeahead_stays_plain_and_keeps_typed_order() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                one_connection_ssh_announced_for_test(view, ctx);
+                ssh_wrapper_sync_for_test(view, "auth", "7", "", ctx);
+                view.typed_characters_on_terminal("ls", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                ssh_wrapper_sync_for_test(view, "auth_done", "7", "", ctx);
+                view.typed_characters_on_terminal("x", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held after auth_done");
+                // The LocalCommand found `ab`, `ls` and the Enter in front of the token.
+                ssh_wrapper_sync_for_test(view, "plain", "7", "61626c730d", ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+                assert!(view.ssh_single.is_none(), "{mode:?}");
+                assert_eq!(
+                    view.build_route_facts(
+                        crate::terminal::input_queue::QueueFacts::default(),
+                        ctx
+                    )
+                    .ssh,
+                    crate::terminal::input_queue::SshPhase::Idle,
+                    "{mode:?}: later keys pass straight through"
+                );
+                view.typed_characters_on_terminal("y", ctx);
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                String::from_utf8_lossy(&written),
+                "abls\r:PHX7:Pabls\rxy",
+                "{mode:?}: pass-through, token, P, the drained keys, the held key, the live key"
+            );
+        })
+    }
+}
+
+/// #1933: a stage is honoured only in order and with the nonce of the `auth` stage. A forged or
+/// stray `auth_done` (wrong nonce) leaves the login's pass-through as it is and writes no token;
+/// a verdict stage before `auth_done` writes no mode byte and changes nothing; an unknown stage is
+/// ignored. Legacy and Table.
+#[test]
+fn one_connection_ssh_ignores_a_stage_out_of_order_or_with_another_nonce() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                one_connection_ssh_announced_for_test(view, ctx);
+                // No `auth` yet: nothing else is accepted, the keys stay held.
+                ssh_wrapper_sync_for_test(view, "auth_done", "7", "", ctx);
+                ssh_wrapper_sync_for_test(view, "managed", "7", "", ctx);
+                ssh_wrapper_sync_for_test(view, "plain", "7", "6c73", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}");
+                assert_eq!(view.ssh_held_bytes(), 2, "{mode:?}");
+                // An `auth` without a nonce is not one.
+                ssh_wrapper_sync_for_test(view, "auth", "", "", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing written: {:?}",
+                pty_writes.borrow()
+            );
+            terminal.update(&mut app, |view, ctx| {
+                ssh_wrapper_sync_for_test(view, "auth", "7", "", ctx);
+                // Another nonce, a verdict before auth_done, an unknown stage: all ignored.
+                ssh_wrapper_sync_for_test(view, "auth_done", "8", "", ctx);
+                ssh_wrapper_sync_for_test(view, "managed", "7", "", ctx);
+                ssh_wrapper_sync_for_test(view, "plain", "7", "6c73", ctx);
+                ssh_wrapper_sync_for_test(view, "later", "7", "", ctx);
+                // A second `auth` does not replace the nonce.
+                ssh_wrapper_sync_for_test(view, "auth", "8", "", ctx);
+                ssh_wrapper_sync_for_test(view, "auth_done", "8", "", ctx);
+                assert_eq!(
+                    view.ssh_single.as_ref().map(|single| single.stage),
+                    Some(SshSingleStage::Auth),
+                    "{mode:?}: still the login"
+                );
+                view.typed_characters_on_terminal("c", ctx);
+                assert!(
+                    !view.ssh_typeahead_holding,
+                    "{mode:?}: still passing through"
+                );
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                String::from_utf8_lossy(&written),
+                "abc",
+                "{mode:?}: no token, no mode byte, no reported bytes"
+            );
+        })
+    }
+}
+
+/// #1933: the window ended while the login ran (here: released by hand, as a give-up net would).
+/// The `auth_done` event arms it again for the announced, still running ssh, so the keys typed
+/// from that event are held, never written between the token and the mode byte, where the remote
+/// command would read one of them as its mode. Legacy and Table.
+#[test]
+fn one_connection_ssh_auth_done_rearms_a_window_that_ended_during_the_login() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                one_connection_ssh_announced_for_test(view, ctx);
+                ssh_wrapper_sync_for_test(view, "auth", "9", "", ctx);
+                release_ssh_gate_for_test(view);
+                ssh_wrapper_sync_for_test(view, "auth_done", "9", "", ctx);
+                let gate = view.ssh_connect_gate.as_ref().expect("armed by the event");
+                assert_eq!(gate.wrapper, SshWrapperHold::AwaitingVerdict, "{mode:?}");
+                assert!(!gate.tty_owned, "{mode:?}: holds");
+                view.typed_characters_on_terminal("k", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                String::from_utf8_lossy(&written),
+                "ab:PHX9:",
+                "{mode:?}: the token is written, the key after it is not"
+            );
+        })
+    }
+}
+
 /// #1641 (owner, after r18u16 Mac `ssh_failing_not_local` / `ssh_hanging_host_not_local`): the
 /// master login fails (no verdict is ever printed) with keys held under the wrapper. As plain ssh
 /// in iTerm2 leaves the typeahead in the tty for the local shell when ssh exits, the held keys are

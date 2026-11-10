@@ -72,7 +72,7 @@ use crate::terminal::model::ansi::{
     ClearValue, CommandFileFailedValue, CommandFinishedValue, CompletionMetadata, ExitShellValue,
     InitShellValue, InitSshValue, InitSubshellValue, LineEditorMarkerValue,
     PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue, PromptMetadata, SSHValue,
-    SourcedRcFileForWarpValue, TtyReadValue,
+    SSHWrapperSyncValue, SourcedRcFileForWarpValue, TtyReadValue,
 };
 use crate::terminal::model::grid::IndexRegion;
 use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
@@ -4144,6 +4144,15 @@ impl ansi::Handler for TerminalModel {
             });
     }
 
+    fn ssh_wrapper_sync(&mut self, value: SSHWrapperSyncValue) {
+        self.event_proxy.send_terminal_event(Event::SshWrapperSync {
+            stage: value.stage,
+            nonce: value.nonce,
+            typeahead: value.typeahead,
+            session_id: value.session_id.map(SessionId::from),
+        });
+    }
+
     fn ssh(&mut self, value: SSHValue) {
         if !self.ignore_bootstrapping_messages {
             let remote_shell = value.remote_shell.clone();
@@ -4163,6 +4172,12 @@ impl ansi::Handler for TerminalModel {
             // validated against an ID this client chose, not one the far side asserted -- so no
             // trust-on-first-use window is needed for warpified SSH.
             self.register_session_id(remote_session_id);
+            if value.single_connection {
+                log::info!(
+                    "SSH wrapper runs this session on one connection (no ControlMaster, #1933): \
+                     no remote helper, side commands in-band"
+                );
+            }
             if value.external_control_master {
                 log::info!(
                     "SSH wrapper attached to an external ControlMaster at {}; \

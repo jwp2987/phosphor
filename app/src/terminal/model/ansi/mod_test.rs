@@ -237,6 +237,11 @@ impl Handler for MockHandler {
         })
     }
 
+    fn ssh_wrapper_sync(&mut self, data: SSHWrapperSyncValue) {
+        self.d_proto_hooks
+            .push(DProtoHook::SSHWrapperSync { value: data })
+    }
+
     fn ssh(&mut self, data: SSHValue) {
         self.d_proto_hooks.push(DProtoHook::SSH { value: data });
     }
@@ -644,6 +649,7 @@ fn parse_dcs_ssh() {
                 remote_session_id: Some(167303092612202),
                 external_control_master: false,
                 raw_bootstrap: false,
+                single_connection: false,
             }
         ),
         _ => panic!("incorrect dcs value"),
@@ -677,6 +683,7 @@ fn parse_dcs_ssh_with_external_control_master() {
                 remote_session_id: Some(167303092612202),
                 external_control_master: true,
                 raw_bootstrap: false,
+                single_connection: false,
             }
         ),
         _ => panic!("incorrect dcs value"),
@@ -2088,6 +2095,59 @@ fn parse_dcs_ssh_wrapper_verdict_hooks() {
             }
             other => panic!("{name}: unexpected hooks {other:?}"),
         }
+    }
+}
+
+/// #1933: the one-connection managed ssh's stage hook is a hex-encoded JSON hook like the verdict
+/// hooks: session id, stage, the nonce as a string of digits, and (for `plain`) the typed-ahead
+/// bytes as hex. Missing fields are empty, never an error.
+#[test]
+fn parse_dcs_ssh_wrapper_sync_hook() {
+    for (stage, typeahead) in [
+        ("auth", ""),
+        ("auth_done", ""),
+        ("managed", ""),
+        ("plain", "6c730d"),
+    ] {
+        let extra = if typeahead.is_empty() {
+            String::new()
+        } else {
+            format!(r#", "typeahead": "{typeahead}""#)
+        };
+        let payload = format!(
+            r#"{{"hook": "SSHWrapperSync", "value": {{"session_id": 7, "nonce": "18446744073709551615", "stage": "{stage}"{extra}}}}}"#
+        );
+        let (_, handler) = parse_bytes(&hex_encoded_dcs_string(&payload));
+        match handler.d_proto_hooks.as_slice() {
+            [DProtoHook::SSHWrapperSync { value }] => assert_eq!(
+                *value,
+                SSHWrapperSyncValue {
+                    session_id: Some(7),
+                    stage: stage.to_owned(),
+                    nonce: "18446744073709551615".to_owned(),
+                    typeahead: typeahead.to_owned(),
+                },
+                "{stage}"
+            ),
+            other => panic!("{stage}: unexpected hooks {other:?}"),
+        }
+    }
+}
+
+/// #1933: the SSH hook of a one-connection session says so and carries no socket.
+#[test]
+fn parse_dcs_ssh_single_connection() {
+    let bytes = hex_encoded_dcs_string(
+        r#"{"hook": "SSH", "value": {"socket_path": "", "remote_shell": "bash", "session_id": 1, "remote_session_id": 2, "external_control_master": false, "single_connection": true, "raw_bootstrap": true}}"#,
+    );
+    let (_, handler) = parse_bytes(&bytes);
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::SSH { value }] => {
+            assert!(value.single_connection);
+            assert!(value.raw_bootstrap);
+            assert_eq!(value.socket_path, PathBuf::new());
+        }
+        other => panic!("unexpected hooks {other:?}"),
     }
 }
 

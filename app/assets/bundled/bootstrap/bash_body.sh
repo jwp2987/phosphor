@@ -2114,13 +2114,21 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             fi
 
             # #1551: Git Bash / MSYS2: Git for Windows' ssh.exe cannot multiplex (the ControlMaster
-            # step fails with "Failed to connect to new control master"), and the managed session
-            # below depends on a control socket. Run the user's plain ssh, untouched.
+            # step fails with "Failed to connect to new control master"), so there is never a master
+            # here. #1933 (owner 2026-11-09): the session is managed on ONE connection instead
+            # (docs/design/1933-windows-managed-ssh.md): ssh's own LocalCommand is the event between
+            # the login and the session. Decided before any config is read: the kill switch
+            # (PHOSPHOR_MSYS_MANAGED_SSH=0) and an ssh whose stdin or stdout is not the terminal run
+            # the user's plain ssh, untouched, as #1551 did.
+            local warp_single=0
             if [ "${WARP_IN_MSYS2:-}" = true ]; then
-                # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
-                warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
-                command ssh "${@:1}"
-                return
+                if [[ "${PHOSPHOR_MSYS_MANAGED_SSH:-1}" == "0" ]] || ! warp_ssh_msys_has_terminal; then
+                    # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
+                    command ssh "${@:1}"
+                    return
+                fi
+                warp_single=1
             fi
 
             # If the user's SSH config sets a RemoteCommand for this destination,
@@ -2141,6 +2149,25 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 return
             fi
 
+            # #1933: the one-connection session needs ssh's LocalCommand for itself (a user's own is
+            # never overridden), a nonce the server never sees (it authenticates the local hooks of
+            # this invocation), and a POSIX remote: one connection cannot ask the remote first
+            # (#1035), so a Windows OpenSSH server is recognised by its SSH identification string
+            # (warp_ssh_msys_banner_probe, cached like the #1136 probe). Any "no" runs plain ssh.
+            local warp_sync_nonce=""
+            if [[ $warp_single -eq 1 ]]; then
+                local warp_user_local_command
+                warp_ssh_g_value warp_user_local_command localcommand "$warp_ssh_g"
+                warp_ssh_random_u64 warp_sync_nonce
+                if [[ -n "$warp_user_local_command" && "$warp_user_local_command" != "none" ]] \
+                    || [[ -z "$warp_sync_nonce" ]] \
+                    || warp_ssh_remote_is_non_posix_cached "" "${@:1}"; then
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
+                    command ssh "${@:1}"
+                    return
+                fi
+            fi
+
             # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
             # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
             # and use printf to convert back to plaintext
@@ -2158,7 +2185,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             local control_path="$SSH_SOCKET_DIR/$WARP_SESSION_ID"
             local control_master_mode="yes"
             local external_control_master="false"
-            if [[ "$WARP_SSH_REUSE_CONTROL_MASTER" == "1" ]]; then
+            local warp_single_json="false"
+            if [[ $warp_single -eq 1 ]]; then
+                # #1933: no socket at all. An empty path in the SSH hook plus single_connection tells
+                # the app there is no master (no helper, no ControlMaster side commands); "no" skips
+                # the master and the probe over it below.
+                control_path=""
+                control_master_mode="no"
+                warp_single_json="true"
+            fi
+            if [[ $warp_single -eq 0 && "$WARP_SSH_REUSE_CONTROL_MASTER" == "1" ]]; then
                 local user_control_path
                 warp_ssh_g_value user_control_path controlpath "$warp_ssh_g"
                 case "$user_control_path" in
@@ -2318,8 +2354,39 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # The remote script goes through a variable, not the ssh argument list: the job text
             # the shell prints for a stopped ssh (Ctrl-Z while connecting) is the command as written,
             # and the whole script in it was dumped into the scrollback (#995).
+            # #1933: on the one-connection path the remote command first reads ONE byte from its
+            # tty: the app writes `M` (managed: go on to the bootstrap) or `P` (plain: keys typed
+            # during the login follow, so nothing of Phosphor's may run) once the LocalCommand has
+            # drained the console (warp_ssh_msys_run_single). Read before the SSH hook is printed.
+            # give-up-net: `time 200` ends the read after 20 s without a byte (an app that never
+            # answered); the session is then a plain login. POSIX sh only: the login shell runs it.
+            local warp_single_prefix=""
+            if [[ $warp_single -eq 1 ]]; then
+                warp_single_prefix='warp_m=
+warp_o=$(command -p stty -g 2>/dev/null)
+command -p stty -icanon -echo min 0 time 200 2>/dev/null
+warp_m=$(command -p dd bs=1 count=1 2>/dev/null)
+test -n "$warp_o" && command -p stty "$warp_o" 2>/dev/null
+if test "$warp_m" != M; then
+  if test ! -e "$HOME/.hushlogin"; then
+    if test -r /etc/motd; then
+      command -p cat /etc/motd
+    elif test -r /run/motd; then
+      command -p cat /run/motd
+    elif test -r /run/motd.dynamic; then
+      command -p cat /run/motd.dynamic
+    elif test -r /usr/lib/motd; then
+      command -p cat /usr/lib/motd
+    elif test -r /usr/lib/motd.dynamic; then
+      command -p cat /usr/lib/motd.dynamic
+    fi
+  fi
+  exec "$SHELL" -l
+fi
+unset warp_m warp_o'
+            fi
             local warp_remote_bootstrap
-            warp_remote_bootstrap="
+            warp_remote_bootstrap="$warp_single_prefix
 export TERM_PROGRAM='WarpTerminal'
 # Mark the remote side of a Warp-managed SSH session so the bootstrap
 # body can distinguish it from local shells. Used to gate the ExitShell
@@ -2331,7 +2398,7 @@ test -n '$WARP_CLI_AGENT_PROTOCOL_VERSION' && export WARP_CLI_AGENT_PROTOCOL_VER
 
 warp_rb=false
 if test "'"${SHELL##*/}" = "bash"'" && printf x | command -p head -c 1 >/dev/null 2>&1; then warp_rb=true; fi
-hook="'$(printf "{\"hook\": \"SSH\", \"value\": {\"socket_path\": \"'$control_path'\", \"remote_shell\": \"%s\", \"session_id\": '"$WARP_SESSION_ID"', \"remote_session_id\": '"$remote_session_id"', \"external_control_master\": '"$external_control_master"', \"raw_bootstrap\": %s}}" "${SHELL##*/}" "$warp_rb" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
+hook="'$(printf "{\"hook\": \"SSH\", \"value\": {\"socket_path\": \"'$control_path'\", \"remote_shell\": \"%s\", \"session_id\": '"$WARP_SESSION_ID"', \"remote_session_id\": '"$remote_session_id"', \"external_control_master\": '"$external_control_master"', \"single_connection\": '"$warp_single_json"', \"raw_bootstrap\": %s}}" "${SHELL##*/}" "$warp_rb" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
 printf '$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR%s$OSC_END' "'$hook'"
 
 if test "'"${SHELL##*/}" != "bash" -a "${SHELL##*/}" != "zsh"'"; then
@@ -2394,6 +2461,11 @@ TMPPREFIX="'$HOME/.zshtmp-'" WARP_SSH_RCFILES="'${ZDOTDIR:-$HOME}'" ZDOTDIR="'$W
       ;;
 esac
 "
+            if [[ $warp_single -eq 1 ]]; then
+                # #1933: the login and the session are this one ssh (warp_ssh_msys_run_single).
+                warp_ssh_msys_run_single "$warp_sync_nonce" "$warp_remote_bootstrap" ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -- "${@:1}"
+                return
+            fi
             # #1641: the master login is over; the managed session starts. Held keys stay held until the
             # remote shell's first prompt (they must never reach the bootstrap payload).
             warp_send_json_message "{\"hook\": \"ManagedSSHSessionStarting\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
@@ -2409,6 +2481,178 @@ esac
             return $warp_session_rc
         }
 
+        # #1933: whether this ssh talks to the terminal on both ends (the LocalCommand reads the
+        # console, and a piped ssh is not an interactive login). A function of its own so a test
+        # can stand in for the terminal.
+        function warp_ssh_msys_has_terminal() {
+            [[ -t 0 && -t 1 ]]
+        }
+
+        # #1933: 64 unguessable bits as a decimal string into the variable named $1 (empty when no
+        # source gives a non-zero value), the way warp_ssh_helper mints the remote session id.
+        function warp_ssh_random_u64() {
+            local __r=""
+            if [[ -n "${SRANDOM-}" ]]; then
+                builtin printf -v __r '%u' "$(( (SRANDOM << 32) | SRANDOM ))"
+            fi
+            if [[ -z "$__r" || "$__r" == "0" ]]; then
+                __r=$(command -p od -An -N8 -tu8 /dev/urandom 2>/dev/null | command -p tr -d ' \n')
+            fi
+            [[ "$__r" == "0" ]] && __r=""
+            builtin printf -v "$1" '%s' "$__r"
+        }
+
+        # #1933: what ssh runs as its LocalCommand on the one-connection path: on THIS machine,
+        # after the login succeeded and before the session starts, with ssh's stdio (the console).
+        # A constant: everything that varies comes in PHOSPHOR_SSH_SYNC_* (hex-encoded hooks, the
+        # hex of the sync token, the escape sequence around a hook), set for that one ssh.
+        #  1. prints the auth_done hook: the app holds the keys from that event and then writes
+        #     the sync token to the pty;
+        #  2. reads the console, verbatim and without echo, up to the token. ssh waits for this command
+        #     and the shell waits for ssh, so nothing else reads: what is in front of the token is
+        #     every key typed before the hold that no login prompt consumed, in order;
+        #  3. none: the managed hook (the app answers `M` to the remote and keeps holding to the
+        #     remote shell's first prompt). Some: the plain hook with those bytes as hex (the app
+        #     writes `P`, then them, then what it held, to the pty: a plain login, in typed order).
+        # The wait for the token has no deadline: the token is the answer of the app that printed
+        # this script, and no clock may decide what happens to typed keys. After 10 s without it
+        # a notice is printed once and the wait goes on; Ctrl-C ends the ssh (the console stays in
+        # `isig` mode for that, everything else is read verbatim) and the tty is restored. Only
+        # the end of the input (no console) ends the read early: the plain hook then carries what
+        # was read.
+        WARP_SSH_MSYS_AUTH_DONE_SCRIPT='
+__p_emit() { builtin printf "%s%s%s" "$PHOSPHOR_SSH_SYNC_PRE" "$1" "$PHOSPHOR_SSH_SYNC_SUF"; }
+__p_drain() {
+  while :; do
+    # give-up-net: a notice only, once, after 10 s without the token; the read goes on and no key is decided by it
+    IFS= builtin read -r -d "" -n 1 -t 10 __p_c
+    __p_rc=$?
+    if (( __p_rc > 128 )); then
+      if [[ $__p_said == 0 ]]; then
+        __p_said=1
+        builtin printf "\r\nphosphor: waiting for the terminal to answer the ssh login; Ctrl-C cancels this ssh\r\n" >&2
+      fi
+      continue
+    fi
+    (( __p_rc == 0 )) || return 0
+    if [[ -z $__p_c ]]; then
+      __p_h+=00
+    else
+      builtin printf -v __p_x "%02x" "'"'"'$__p_c"
+      __p_h+=${__p_x: -2}
+    fi
+    if [[ $__p_h == *"$PHOSPHOR_SSH_SYNC_TOK" ]]; then
+      __p_ok=1
+      __p_h=${__p_h%"$PHOSPHOR_SSH_SYNC_TOK"}
+      return 0
+    fi
+  done
+}
+__p_emit "$PHOSPHOR_SSH_SYNC_DONE"
+__p_old=$(command stty -g 2>/dev/null)
+if [[ -n $__p_old ]]; then
+  trap "command stty $__p_old 2>/dev/null; exit 130" INT TERM HUP
+fi
+command stty raw isig -echo 2>/dev/null
+__p_h= __p_ok=0 __p_c= __p_x= __p_hh= __p_i=0 __p_rc=0 __p_said=0
+LC_ALL=C
+__p_drain
+[[ -n $__p_old ]] && command stty "$__p_old" 2>/dev/null
+trap - INT TERM HUP
+if [[ $__p_ok == 1 && -z $__p_h ]]; then
+  __p_emit "$PHOSPHOR_SSH_SYNC_MANAGED"
+else
+  for (( __p_i = 0; __p_i < ${#__p_h}; __p_i++ )); do
+    __p_c=${__p_h:__p_i:1}
+    case $__p_c in
+      [0-9]) __p_hh+=3$__p_c ;;
+      a) __p_hh+=61 ;; b) __p_hh+=62 ;; c) __p_hh+=63 ;;
+      d) __p_hh+=64 ;; e) __p_hh+=65 ;; f) __p_hh+=66 ;;
+    esac
+  done
+  __p_emit "$PHOSPHOR_SSH_SYNC_PLAIN_A$__p_hh$PHOSPHOR_SSH_SYNC_PLAIN_B"
+fi
+'
+
+        # #1933: the one-connection managed session of Git Bash / MSYS2. "$1" the nonce, "$2" the
+        # remote command, then extra ssh options, `--`, and the user's arguments. Prints the auth
+        # stage (the app lets the keys through to ssh's login prompts, as a plain console does) and
+        # runs the ONE ssh: no master, no control path (the user's ControlMaster/ControlPath config
+        # cannot make this ssh.exe try to multiplex), LocalCommand as the event between login and
+        # session. LocalCommand runs through $SHELL, so SHELL is this bash for that ssh only.
+        function warp_ssh_msys_run_single() {
+            local nonce="$1" remote_command="$2"
+            shift 2
+            local -a extra=()
+            while [[ $# -gt 0 && "$1" != "--" ]]; do
+                extra+=("$1")
+                shift
+            done
+            shift
+            local sid="${WARP_SESSION_ID:-}"
+            local head="{\"hook\": \"SSHWrapperSync\", \"value\": {\"session_id\": $sid, \"nonce\": \"$nonce\", \"stage\": "
+            local tok done_hex managed_hex plain_a plain_b pre suf
+            __warp_hex_encode_to ":PHX$nonce:"
+            tok=$__warp_hex
+            __warp_hex_encode_to "$head\"auth_done\"}}"
+            done_hex=$__warp_hex
+            __warp_hex_encode_to "$head\"managed\"}}"
+            managed_hex=$__warp_hex
+            __warp_hex_encode_to "$head\"plain\", \"typeahead\": \""
+            plain_a=$__warp_hex
+            __warp_hex_encode_to "\"}}"
+            plain_b=$__warp_hex
+            if [ "${WARP_USING_WINDOWS_CON_PTY:-}" = true ]; then
+                pre="$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR"
+                suf="$OSC_END"
+            else
+                pre="$DCS_START$DCS_JSON_MARKER"
+                suf="$DCS_END"
+            fi
+            warp_send_json_message "$head\"auth\"}}"
+            PHOSPHOR_SSH_AUTH_DONE="$WARP_SSH_MSYS_AUTH_DONE_SCRIPT" \
+            PHOSPHOR_SSH_SYNC_TOK="$tok" \
+            PHOSPHOR_SSH_SYNC_DONE="$done_hex" \
+            PHOSPHOR_SSH_SYNC_MANAGED="$managed_hex" \
+            PHOSPHOR_SSH_SYNC_PLAIN_A="$plain_a" \
+            PHOSPHOR_SSH_SYNC_PLAIN_B="$plain_b" \
+            PHOSPHOR_SSH_SYNC_PRE="$pre" \
+            PHOSPHOR_SSH_SYNC_SUF="$suf" \
+            SHELL="${BASH:-/usr/bin/bash}" \
+            command ssh ${extra[@]+"${extra[@]}"} -o ControlMaster=no -o ControlPath=none \
+                -o PermitLocalCommand=yes -o 'LocalCommand=eval "$PHOSPHOR_SSH_AUTH_DONE"' \
+                -t "$@" "$remote_command"
+        }
+
+        # #1933: the non-POSIX question without a master: the server's SSH identification string,
+        # read by ssh-keyscan from the host and port `ssh -G` resolved ($warp_ssh_g, the wrapper's
+        # capture, through dynamic scope). keyscan prints it as a comment before any key, never
+        # authenticates, never prompts and writes no known_hosts. Sets warp_ssh_probe_verdict:
+        # "nonposix" for Win32-OpenSSH (its default shells cannot run the bootstrap), "posix" for
+        # any other server that answered, empty (inconclusive, never cached, managed as on Unix)
+        # without ssh-keyscan, without an answer, or behind a ProxyJump / ProxyCommand, which
+        # keyscan cannot follow.
+        # give-up-net: `-T 5` ends a connect that does not answer; never touches the tty or typed keys
+        function warp_ssh_msys_banner_probe() {
+            warp_ssh_probe_verdict=""
+            command -v ssh-keyscan >/dev/null 2>&1 || return 0
+            local g="${warp_ssh_g-}" host="" port="" jump="" proxy="" out=""
+            warp_ssh_g_value host hostname "$g"
+            warp_ssh_g_value port port "$g"
+            warp_ssh_g_value jump proxyjump "$g"
+            warp_ssh_g_value proxy proxycommand "$g"
+            [[ -n "$host" ]] || return 0
+            if [[ -n "$jump" && "$jump" != "none" ]] || [[ -n "$proxy" && "$proxy" != "none" ]]; then
+                return 0
+            fi
+            out=$(command ssh-keyscan -T 5 -t ed25519 -p "${port:-22}" "$host" 2>&1 </dev/null)
+            case "$out" in
+                *SSH-2.0-OpenSSH_for_Windows* | *SSH-1.99-OpenSSH_for_Windows*) warp_ssh_probe_verdict="nonposix" ;;
+                *SSH-2.0-* | *SSH-1.99-*) warp_ssh_probe_verdict="posix" ;;
+            esac
+            return 0
+        }
+
         # #1035: 0 when the remote answers like a non-POSIX shell (cmd.exe or PowerShell), asked over
         # the already-authenticated master at "$1" (no new connection). POSIX shells print the
         # literal %COMSPEC% and an empty $PSVersionTable; cmd.exe expands %COMSPEC% and leaves
@@ -2418,6 +2662,12 @@ esac
         function warp_ssh_remote_is_non_posix() {
             local control_path="$1"
             shift
+            # #1933: no master (the one-connection path of Git Bash): the server's banner answers.
+            if [[ -z "$control_path" ]]; then
+                warp_ssh_msys_banner_probe
+                [[ "$warp_ssh_probe_verdict" == "nonposix" ]]
+                return
+            fi
             local out
             out=$( {
                 command ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$control_path" "$@" -T 'echo warp-probe-%COMSPEC%-$PSVersionTable' </dev/null 2>/dev/null &
