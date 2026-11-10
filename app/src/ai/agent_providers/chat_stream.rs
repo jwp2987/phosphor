@@ -6075,13 +6075,15 @@ fn build_client_uncached(
     if let Ok(value) = build_user_agent_header() {
         headers.insert(reqwest::header::USER_AGENT, value);
     }
-    // Every redirect hop is checked by the network gate; a denied hop stops the chain.
+    // Every redirect hop is checked by the network gate; a denied hop stops the chain. The gate
+    // gets the chain's first URL: the provider key and custom headers go to that origin only
+    // (#1928).
     let mut web_config = WebConfig {
         gzip: false,
         default_headers: Some(headers),
-        redirect_guard: Some(genai::RedirectGuard::new(|url, hops| {
+        redirect_guard: Some(genai::RedirectGuard::new(|first_url, url, hops| {
             http_client::gate::global()
-                .check_redirect(url, hops, &http_client::gate::AI_ENDPOINT)
+                .check_redirect_from(first_url, url, hops, &http_client::gate::AI_ENDPOINT)
                 .is_ok()
         })),
         ..WebConfig::default()

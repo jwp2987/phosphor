@@ -467,6 +467,38 @@ impl Gate {
         self.finish(url, purpose, result)
     }
 
+    /// [`Self::check_redirect`] for a hop of the chain that began at `first_url`.
+    ///
+    /// A purpose whose requests carry a credential for the first URL's origin
+    /// ([`redirects_stay_on_first_origin`]) follows a hop only to that origin. The allowlist
+    /// alone is not enough for it: every configured origin is allowed, so provider B's 30x to
+    /// provider A's host would hand A the key and custom headers meant for B (reqwest strips
+    /// only `Authorization`, `Cookie` and `Proxy-Authorization` across hosts, not `x-api-key`,
+    /// `api-key` or user headers). This rule protects a credential rather than limiting where
+    /// the app may connect, so it holds with the gate switched off, and the event carries no
+    /// host: allowing the target would not make the hop legal.
+    pub fn check_redirect_from(
+        &self,
+        first_url: &str,
+        url: &str,
+        hops_so_far: usize,
+        purpose: &'static Purpose,
+    ) -> Result<(), Denied> {
+        if redirects_stay_on_first_origin(purpose) && !same_origin_or_tls_upgrade(first_url, url) {
+            log::warn!(
+                "network gate: \"{}\" redirect leaves the origin of its first request; not followed",
+                purpose.name
+            );
+            let d = Denied {
+                purpose: purpose.name,
+                host_hash: 0,
+            };
+            self.emit(url, purpose.name, Outcome::Denied, Some(&d));
+            return Err(d);
+        }
+        self.check_redirect(url, hops_so_far, purpose)
+    }
+
     fn check_url_kind_automatic(&self, url: &str, p: &Purpose) -> Result<(), Denied> {
         let denied = |host: &str| Denied {
             purpose: p.name,
@@ -559,6 +591,35 @@ pub fn set_denial_listener(listener: impl Fn(&Denied) + Send + Sync + 'static) {
     }
 }
 
+/// Whether `purpose`'s requests carry a credential that belongs to the origin of the first
+/// request (the provider API key and the user's custom auth headers on [`AI_ENDPOINT`]), so a
+/// redirect may not leave that origin.
+fn redirects_stay_on_first_origin(purpose: &Purpose) -> bool {
+    purpose.name == AI_ENDPOINT.name
+}
+
+/// Whether `hop` is the same host and port as `first`, or the same host moving from `http` to
+/// `https` (the one port change that sends the credential to the same service over a safer
+/// channel). Anything unparseable is not the same origin.
+fn same_origin_or_tls_upgrade(first: &str, hop: &str) -> bool {
+    let (Ok(first), Ok(hop)) = (reqwest::Url::parse(first), reqwest::Url::parse(hop)) else {
+        return false;
+    };
+    let (Some(first_host), Some(hop_host)) = (first.host_str(), hop.host_str()) else {
+        return false;
+    };
+    if !first_host.eq_ignore_ascii_case(hop_host) {
+        return false;
+    }
+    let tls_upgrade = first.scheme() == "http"
+        && hop.scheme() == "https"
+        && first.port().is_none()
+        && hop.port().is_none();
+    tls_upgrade
+        || (first.scheme() == hop.scheme()
+            && first.port_or_known_default() == hop.port_or_known_default())
+}
+
 fn report_denial(d: &Denied) {
     log::warn!(
         "network gate: denied \"{}\" (host hash {:016x})",
@@ -625,7 +686,14 @@ pub fn apply_proxy_policy(builder: reqwest::ClientBuilder) -> reqwest::ClientBui
 /// STOPS the chain (the caller sees the 3xx response, not an error that would carry the URL).
 pub fn redirect_policy(purpose: &'static Purpose) -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(move |attempt| {
-        match global().check_redirect(attempt.url().as_str(), attempt.previous().len(), purpose) {
+        let hops = attempt.previous().len();
+        let result = match attempt.previous().first() {
+            Some(first) => {
+                global().check_redirect_from(first.as_str(), attempt.url().as_str(), hops, purpose)
+            }
+            None => global().check_redirect(attempt.url().as_str(), hops, purpose),
+        };
+        match result {
             Ok(()) => attempt.follow(),
             Err(d) => {
                 report_denial(&d);
