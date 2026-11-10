@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use parking_lot::FairMutex;
@@ -42,6 +43,7 @@ use crate::terminal::input::message_bar::common::{
 use crate::terminal::input::message_bar::misroute::misroute_recovery_message;
 use crate::terminal::input::message_bar::{
     ChipHorizontalAlignment, EmptyMessageProducer, Message, MessageItem, MessageProvider,
+    row_event_needs_render,
 };
 use crate::terminal::input::slash_command_model::{SlashCommandEntryState, SlashCommandModel};
 use crate::terminal::input::suggestions_mode_model::{
@@ -52,6 +54,7 @@ use crate::terminal::model::TerminalModel;
 use crate::terminal::view::TerminalAction;
 use crate::ui_components::blended_colors;
 use crate::util::bindings::keybinding_name_to_keystroke;
+use crate::util::key_view_skip;
 use crate::workspace::WorkspaceAction;
 use crate::workspace::tab_settings::{TabSettings, TabSettingsChangedEvent};
 
@@ -90,6 +93,9 @@ pub struct AgentMessageBar {
     /// Whether the word "figma" has been detected in the current input buffer or attached images.
     /// Only meaningful when `FeatureFlag::FigmaDetection` is enabled.
     figma_detected: bool,
+    /// The fingerprint ([`Self::row_fingerprint`]) of the row the last `render` drew; `None`
+    /// before the first render and for a row that cannot be compared (#1962).
+    rendered_fingerprint: RefCell<Option<String>>,
 }
 
 /// `PHOSPHOR_SKIP_REDUNDANT_AGENT_MSGBAR_RENDER=0` restores a re-render on every buffer event in
@@ -115,6 +121,13 @@ fn buffer_event_needs_render(
     skip_redundant: bool,
 ) -> bool {
     empty_state_changed || (in_shell_mode && !skip_redundant)
+}
+
+/// Whether an event of the slash-command model needs the bar rendered (#1962): always when the
+/// model's state changed, and otherwise only when the row the bar would draw differs from the
+/// row it drew (`row_needs_render`, asked only then).
+fn slash_event_needs_render(state_changed: bool, row_needs_render: impl FnOnce() -> bool) -> bool {
+    state_changed || row_needs_render()
 }
 
 impl Entity for AgentMessageBar {
@@ -196,8 +209,17 @@ impl AgentMessageBar {
                 ctx.notify();
             }
         });
-        ctx.subscribe_to_model(&slash_command_model, |_, _, _, ctx| {
-            ctx.notify();
+        // The slash-command model emits on every buffer change, also when its state stays what it
+        // was (plain text: `None` before and after), which re-rendered the bar for every typed
+        // character (#1962). Such an event renders only when the row would differ from the one
+        // drawn, so a row left stale by state that has no notification of its own is still
+        // corrected at the next key, as it was before.
+        ctx.subscribe_to_model(&slash_command_model, |me, model, event, ctx| {
+            let state_changed = event.old_state != *model.as_ref(ctx).state();
+            let app: &AppContext = ctx;
+            if slash_event_needs_render(state_changed, || me.row_needs_render(app)) {
+                ctx.notify();
+            }
         });
 
         let history_model = BlocklistAIHistoryModel::handle(ctx);
@@ -276,6 +298,7 @@ impl AgentMessageBar {
             terminal_model,
             mouse_states: AgentMessageBarMouseStates::default(),
             figma_detected: false,
+            rendered_fingerprint: RefCell::new(None),
         }
     }
 }
@@ -316,19 +339,64 @@ impl AgentMessageBar {
             None
         }
     }
-}
 
-impl View for AgentMessageBar {
-    fn ui_name() -> &'static str {
-        "AgentMessageBar"
+    /// The clickable groups whose click handler captures nothing (each dispatches one fixed
+    /// action), so two of them in the same slot that show the same items are the same element;
+    /// see [`Message::display_fingerprint_with`]. Not listed, and so never compared: the misroute
+    /// recovery offer, the attached-context items, the Figma chips and anything an ephemeral
+    /// message brings.
+    fn static_click_slots(&self) -> [&MouseStateHandle; 7] {
+        [
+            &self.mouse_states.resume_conversation,
+            &self.mouse_states.fork_from_last_known_good_state,
+            &self.mouse_states.toggle_shortcuts,
+            &self.mouse_states.toggle_slash_commands,
+            &self.mouse_states.toggle_plan,
+            &self.mouse_states.toggle_conversation_menu,
+            &self.mouse_states.toggle_code_review,
+        ]
     }
 
-    fn render(&self, app: &AppContext) -> Box<dyn Element> {
+    /// The fingerprint of the row `render` draws for `message` (`None`: it renders nothing), or
+    /// `None` when that row cannot be compared.
+    fn row_fingerprint(&self, message: Option<&Message>, app: &AppContext) -> Option<String> {
+        let Some(message) = message else {
+            return Some("nothing".to_owned());
+        };
+        let is_inline = self.agent_view_controller.as_ref(app).is_inline();
+        message
+            .display_fingerprint_with(&self.static_click_slots())
+            .map(|fingerprint| format!("inline={is_inline}:{fingerprint}"))
+    }
+
+    /// Whether the row the bar would draw now differs from the row its last render drew, or
+    /// cannot be told ([`row_event_needs_render`]).
+    fn row_needs_render(&self, app: &AppContext) -> bool {
+        let skip_enabled = key_view_skip::enabled();
+        if !skip_enabled {
+            return true;
+        }
+        // `try_lock`: this runs inside an event flush; a busy model means "unknown", which
+        // renders.
+        let now = self.terminal_model.try_lock().and_then(|terminal_model| {
+            let message = self.message(&terminal_model, app);
+            self.row_fingerprint(message.as_ref(), app)
+        });
+        row_event_needs_render(
+            self.rendered_fingerprint.borrow().as_deref(),
+            now.as_deref(),
+            skip_enabled,
+        )
+    }
+
+    /// The message the bar shows, with the Figma chip when one applies; `None` where the bar
+    /// renders nothing.
+    fn message(&self, terminal_model: &TerminalModel, app: &AppContext) -> Option<Message> {
         // If an inline menu is open, a 'message line' is rendered by the inline menu itself,
         // so defer to that.
         let input_suggestions_model = self.input_suggestions_model.as_ref(app);
         if input_suggestions_model.is_inline_menu_open() {
-            return Empty::new().finish();
+            return None;
         }
 
         let shortcut_view_model = self.shortcut_view_model.as_ref(app);
@@ -337,18 +405,15 @@ impl View for AgentMessageBar {
         let agent_view_controller = self.agent_view_controller.as_ref(app);
         let context_model = self.context_model.as_ref(app);
         let slash_command_model = self.slash_command_model.as_ref(app);
-        let terminal_model = self.terminal_model.lock();
 
         let appearance = Appearance::as_ref(app);
 
-        let Some(active_conversation) = agent_view_controller
+        // `None` here should never be hit, as the agent view requires there be an active
+        // conversation.
+        let active_conversation = agent_view_controller
             .agent_view_state()
             .active_conversation_id()
-            .and_then(|id| BlocklistAIHistoryModel::as_ref(app).conversation(&id))
-        else {
-            // This should never be hit, as the agent view requires there be an active conversation.
-            return Empty::new().finish();
-        };
+            .and_then(|id| BlocklistAIHistoryModel::as_ref(app).conversation(&id))?;
 
         let ephemeral_message_model = self.ephemeral_message_model.as_ref(app);
 
@@ -361,14 +426,14 @@ impl View for AgentMessageBar {
             input_model,
             slash_command_model,
             context_model,
-            terminal_model: &terminal_model,
+            terminal_model,
             appearance,
             app,
             mouse_states: &self.mouse_states,
         };
 
         // Ephemeral messages take highest priority.
-        let Some(mut message) = ephemeral_message_model
+        let mut message = ephemeral_message_model
             .produce_message(args)
             .or_else(|| MisrouteRecoveryMessageProducer.produce_message(args))
             .or_else(|| BootstrappingMessageProducer.produce_message(args))
@@ -379,15 +444,7 @@ impl View for AgentMessageBar {
             .or_else(|| ExitBashModeMessageProducer.produce_message(args))
             .or_else(|| HideShortcutsMessageProducer.produce_message(args))
             .or_else(|| ZeroStateMessageProducer.produce_message(args))
-            .or_else(|| EmptyMessageProducer.produce_message(args))
-        else {
-            return Empty::new().finish();
-        };
-
-        // Zap (Phase 3c A1): removed the ambient credits banner UI. After
-        // localization, `ambient_only_credits_remaining` is always None, so the
-        // original branch only ever takes the None path.
-        let right_element: Option<Box<dyn warpui::Element>> = None;
+            .or_else(|| EmptyMessageProducer.produce_message(args))?;
 
         // Append a Figma MCP chip to the message if applicable.
         match self.figma_button_status(app) {
@@ -417,6 +474,27 @@ impl View for AgentMessageBar {
             }
             Some(FigmaMcpStatus::Running) | None => {}
         }
+        Some(message)
+    }
+}
+
+impl View for AgentMessageBar {
+    fn ui_name() -> &'static str {
+        "AgentMessageBar"
+    }
+
+    fn render(&self, app: &AppContext) -> Box<dyn Element> {
+        let message = self.message(&self.terminal_model.lock(), app);
+        // #1962: remember the row drawn, for `row_needs_render`.
+        *self.rendered_fingerprint.borrow_mut() = self.row_fingerprint(message.as_ref(), app);
+        let Some(message) = message else {
+            return Empty::new().finish();
+        };
+
+        // Zap (Phase 3c A1): removed the ambient credits banner UI. After
+        // localization, `ambient_only_credits_remaining` is always None, so the
+        // original branch only ever takes the None path.
+        let right_element: Option<Box<dyn warpui::Element>> = None;
 
         let message_bar = render_standard_message_bar(message, right_element, app);
         if self.agent_view_controller.as_ref(app).is_inline() {

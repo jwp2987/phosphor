@@ -584,6 +584,50 @@ def keyframe_ab_pure_parts_1848():
 
 
 @check
+def viewskip_ab_pure_parts_1962():
+    """#1962 A/B (latency_key_views_ab): the arm environment, the switch values read from a launch's log, the lead key frames dropped per block, the per-arm
+    summary from hop=key_frame_build, the deltas, the one FAIL (more views re-rendered with the skips on) and the WARNs about the A/B itself"""
+    import cases_viewskip_ab as vab
+    import render_hops as rh
+    assert vab.arm_env("off") == {"PHOSPHOR_KEY_VIEW_SKIP": "0"} and vab.arm_env("on") == {}
+
+    def build(views, render, total, t):
+        return ("input_order hop=key_frame_build passes=1 layout_passes=1 views=%d mounted=57 render_ms=%.2f layout_ms=0.50 after_layout_ms=0.02 paint_ms=0.40 "
+                "hover_ms=0.10 total_ms=%.2f layout_top=Terminal:0.31 paint_top=- t=%d.0" % (views, render, total, t))
+    ON_FIRST = [build(1, 0.05, 1.10, 1000000 + i) for i in range(4)]
+    OFF_FIRST = [build(6, 0.45, 1.90, 1000000 + i) for i in range(4)]
+    ON_BURST = [build(1, 0.04, 0.60, 1000100 + i) for i in range(4)]
+    OFF_BURST = [build(2, 0.10, 0.70, 1000100 + i) for i in range(4)]
+    # the switch value the app logs once per launch; a log without the line (an old build) gives none
+    assert vab.skip_flags(["x", "input_order hop=key_view_skip enabled=1 t=1.0"]) == ["1"] and vab.skip_flags(["input_order hop=key_view_skip enabled=0 t=1.0"]) == ["0"]
+    assert vab.skip_flags(ON_FIRST) == [] and vab.skip_flags(["hop=key_view_skip enabled=1 t=1", "hop=key_view_skip enabled=0 t=2"]) == ["0", "1"]
+    # the lead keys of a block: only key-frame lines are dropped, in order, other lines stay
+    mixed = ["input_order keydown t=1"] + ON_FIRST[:1] + ["input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 t=2.0"] + ON_FIRST[1:]
+    assert vab.drop_lead_builds(mixed, 2) == [mixed[0], mixed[2]] + ON_FIRST[2:] and vab.drop_lead_builds(mixed, 0) == mixed and vab.drop_lead_builds([], 3) == []
+    on = vab.ab_summary(rh.render_hop_metrics(ON_FIRST), rh.render_hop_metrics(ON_BURST), [30.0, 31.0, 32.0], ["1"])
+    off = vab.ab_summary(rh.render_hop_metrics(OFF_FIRST), rh.render_hop_metrics(OFF_BURST), [31.0, 32.0, 33.0], ["0"])
+    assert on["first"]["key_frames"] == 4 and on["first"]["views"]["p50"] == 1 and off["first"]["views"]["p50"] == 6 and off["burst"]["render_ms"]["p50"] == 0.1, (on, off)
+    assert on["key_to_paint"]["p50"] == 31.0 and on["skip_flags"] == ["1"] and vab.ab_summary({}, {}, [], [])["key_to_paint"] is None
+    d, w, f = vab.ab_verdict(on, off)
+    assert d["first"] == dict(views=-5, render_ms=-0.4, total_ms=-0.8) and d["burst"] == dict(views=-1, render_ms=-0.06, total_ms=-0.1) and d["key_to_paint_p50"] == -1.0, d
+    assert w == [] and f == [], (w, f)
+    # the arms swapped: more views with the skips "on" is the FAIL, and both switch WARNs fire
+    d, w, f = vab.ab_verdict(off, on)
+    assert len(f) == 2 and "must never re-render more" in f[0] and "first keys" in f[0] and "burst keys" in f[1], f
+    assert len(w) == 2 and "did not reach the app" in w[0] and "default environment" in w[1], w
+    # no effect for a pattern: a WARN, not a failure; an old build (no switch line, no key-frame line): one WARN, no delta, nothing claimed
+    same = vab.ab_summary(rh.render_hop_metrics(ON_FIRST), rh.render_hop_metrics(OFF_BURST), [], ["1"])
+    d, w, f = vab.ab_verdict(same, off)
+    assert f == [] and len(w) == 1 and "burst keys: the same 2" in w[0] and d["key_to_paint_p50"] is None, (w, f, d)
+    old = vab.ab_summary({}, {}, [], [])
+    d, w, f = vab.ab_verdict(old, old)
+    assert f == [] and len(w) == 1 and "neither arm logged" in w[0] and d["first"] == dict(views=None, render_ms=None, total_ms=None), (d, w)
+    reg = {c["name"]: c for c in cases.CASES}
+    assert "latency_key_views_ab" in cases.PROVING and "latency_key_views_ab" in winmap.NOT_WINDOWS and "latency_key_views_ab" not in cases.SMOKE
+    assert reg["latency_key_views_ab"]["modes"] == ("terminal", "agent") and "latency_key_views_ab" not in cases.PROVING_FAKE      # both modes, no scripted model
+
+
+@check
 def render_latency_step_a_hops_parse():
     """render-latency step A: the new hop fields parse (key_presented, key_frame_sched, frame_skip_run key_frame_skipped, frame_drawn present_ms), the
     old frame_drawn line without present_ms still parses, a window filters by t=, an old build gives {}, and the present-mode arm helpers are right"""

@@ -43,6 +43,7 @@ use crate::editor::{
 use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, CLIAgentSessionsModelEvent};
 use crate::terminal::input::suggestions_mode_model::InputSuggestionsModeModel;
 use crate::ui_components::icons::Icon as TerminalIcon;
+use crate::util::key_view_skip;
 use crate::util::truncation::truncate_from_end;
 use crate::view_components::action_button::{ActionButton, ButtonSize, NakedTheme};
 
@@ -136,6 +137,18 @@ struct QueuedPromptRowState {
     draggable_state: DraggableState,
 }
 
+/// Whether an event that changes nothing but a hidden panel's inputs (the suggestions mode, the
+/// host input's emptiness) needs the panel rendered: not when it was hidden and stays hidden,
+/// because the host does not mount it then. A panel that is or was shown always renders, and so
+/// does every event with the #1962 skips off (`skip_enabled` false), as before.
+fn hidden_panel_event_needs_render(
+    shown_before: bool,
+    shown_now: bool,
+    skip_enabled: bool,
+) -> bool {
+    !skip_enabled || shown_before || shown_now
+}
+
 /// View for the multi-prompt queue panel.
 pub struct QueuedPromptsPanelView {
     view_id: EntityId,
@@ -165,6 +178,10 @@ pub struct QueuedPromptsPanelView {
     /// Last observed emptiness of `host_editor`; only damps re-render notifications to
     /// empty <-> non-empty transitions. Decisions always read the editor live.
     host_editor_was_empty: bool,
+    /// What [`Self::should_render`] answered when the panel last looked ([`Self::sync_shown`]).
+    /// While it is false the host does not mount the panel, so nothing it would render is on
+    /// screen (#1962).
+    shown: bool,
     header_mouse_state: MouseStateHandle,
     row_states: HashMap<QueuedQueryId, QueuedPromptRowState>,
     dragging_query_id: Option<QueuedQueryId>,
@@ -200,6 +217,10 @@ pub enum QueuedPromptsPanelEvent {
     RowDeleted,
     /// An inline edit was committed or cancelled. The host should refocus the input.
     EditEnded,
+    /// [`QueuedPromptsPanelView::should_render`] changed its answer. The host mounts the panel
+    /// only while it is true, so the host has to render again (#1962: until then the host learned
+    /// of it only through its own re-render on every edit).
+    ShownChanged,
 }
 
 impl Entity for QueuedPromptsPanelView {
@@ -250,8 +271,14 @@ impl QueuedPromptsPanelView {
             me.handle_cli_subagent_event(event, ctx);
         });
 
-        ctx.subscribe_to_model(&suggestions_mode_model, |_, _, _, ctx| {
-            ctx.notify();
+        // The panel reads the suggestions mode only in `should_render` (it hides while an inline
+        // menu is open). As-you-type completions change the mode on most typed characters, so a
+        // panel that was hidden and stays hidden is not re-rendered for them (#1962).
+        ctx.subscribe_to_model(&suggestions_mode_model, |me, _, _, ctx| {
+            let (shown_before, shown_now) = me.sync_shown(ctx);
+            if hidden_panel_event_needs_render(shown_before, shown_now, key_view_skip::enabled()) {
+                ctx.notify();
+            }
         });
 
         let host_editor_was_empty = host_editor.as_ref(ctx).is_empty(ctx);
@@ -267,6 +294,7 @@ impl QueuedPromptsPanelView {
             can_send_prompt: true,
             host_editor,
             host_editor_was_empty,
+            shown: false,
             header_mouse_state: MouseStateHandle::default(),
             row_states: HashMap::new(),
             dragging_query_id: None,
@@ -276,7 +304,22 @@ impl QueuedPromptsPanelView {
         if let Some(conv_id) = active_conversation_id {
             me.seed_row_states_for(conv_id, ctx);
         }
+        me.shown = me.should_render(ctx);
         me
+    }
+
+    /// Brings [`Self::shown`] up to date and returns `(before, now)`. A change re-renders the
+    /// panel (a hidden panel skips re-renders, so it may hold elements from before it was hidden)
+    /// and tells the host, which mounts the panel only while it is shown.
+    fn sync_shown(&mut self, ctx: &mut ViewContext<Self>) -> (bool, bool) {
+        let before = self.shown;
+        let now = self.should_render(ctx);
+        if before != now {
+            self.shown = now;
+            ctx.notify();
+            ctx.emit(QueuedPromptsPanelEvent::ShownChanged);
+        }
+        (before, now)
     }
 
     fn clear_drag_state(&mut self) {
@@ -337,7 +380,13 @@ impl QueuedPromptsPanelView {
         let is_empty = self.host_editor.as_ref(ctx).is_empty(ctx);
         if is_empty != self.host_editor_was_empty {
             self.host_editor_was_empty = is_empty;
-            ctx.notify();
+            // The emptiness only decides the header's "⏎ to send" hint. With no queue the panel
+            // is not shown at all, and the first character typed into an empty input re-rendered
+            // it for nothing (#1962).
+            let (shown_before, shown_now) = self.sync_shown(ctx);
+            if hidden_panel_event_needs_render(shown_before, shown_now, key_view_skip::enabled()) {
+                ctx.notify();
+            }
         }
     }
 
@@ -467,6 +516,7 @@ impl QueuedPromptsPanelView {
             }
             ctx.notify();
         }
+        self.sync_shown(ctx);
     }
 
     fn handle_queued_query_event(&mut self, event: &QueuedQueryEvent, ctx: &mut ViewContext<Self>) {
@@ -583,6 +633,7 @@ impl QueuedPromptsPanelView {
             | QueuedQueryEvent::DefaultModeChanged => {}
         }
         ctx.notify();
+        self.sync_shown(ctx);
     }
 
     fn handle_edit_editor_event(&mut self, event: &EditorEvent, ctx: &mut ViewContext<Self>) {
@@ -1266,3 +1317,7 @@ fn render_row(props: RenderRowProps<'_>, app: &AppContext) -> Box<dyn Element> {
 fn header_label_text(count: usize) -> String {
     format!("{count} queued")
 }
+
+#[cfg(test)]
+#[path = "queued_prompts_panel_tests.rs"]
+mod tests;

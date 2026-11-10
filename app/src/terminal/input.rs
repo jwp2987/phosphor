@@ -2419,6 +2419,9 @@ pub struct Input {
     /// [`FeatureFlag::QueueSlashCommand`] is enabled. Rendered between the warping indicator
     /// and the input editor; reads the `QueuedQueryModel` singleton for the active conversation.
     queued_prompts_panel: Option<ViewHandle<QueuedPromptsPanelView>>,
+    /// What the last `render` built the agent input from; `None` when the last render showed
+    /// another input (#1962, see [`agent::AgentInputDisplayFacts`]).
+    agent_input_rendered_facts: std::cell::Cell<Option<agent::AgentInputDisplayFacts>>,
 }
 
 #[derive(Clone)]
@@ -4282,6 +4285,7 @@ impl Input {
             input_contents_before_prompt_chip_command: None,
             handed_back_text: None,
             queued_prompts_panel,
+            agent_input_rendered_facts: std::cell::Cell::new(None),
         };
 
         #[cfg(feature = "local_fs")]
@@ -10827,7 +10831,12 @@ impl Input {
                             });
                         }
                     }
-                    ctx.notify();
+                    // This re-rendered the input for every edit in an agent view. The agent
+                    // input is now rendered again only when a fact it is built from changed
+                    // (#1962); `PHOSPHOR_KEY_VIEW_SKIP=0` restores the render on every edit.
+                    if self.agent_view_edit_needs_render(ctx) {
+                        ctx.notify();
+                    }
                 }
 
                 // We only sync on EditorEvent::Edited events because we're only
@@ -11027,6 +11036,8 @@ impl Input {
                 }
             }
             EditorEvent::BufferReplaced => {
+                // A replaced buffer can change the agent input's emptiness without an edit.
+                self.rerender_agent_input_if_facts_changed(ctx);
                 let ai_input_model = self.ai_input_model.as_ref(ctx);
                 if FeatureFlag::AgentMode.is_enabled()
                     && AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
@@ -16577,6 +16588,8 @@ impl Input {
             }
             QueuedPromptsPanelEvent::RowDeleted => self.focus_input_box(ctx),
             QueuedPromptsPanelEvent::EditEnded => self.focus_input_box(ctx),
+            // The agent input mounts the panel only while it has something to show.
+            QueuedPromptsPanelEvent::ShownChanged => ctx.notify(),
         }
     }
 
@@ -18812,6 +18825,9 @@ impl View for Input {
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
+        // #1962: `render_agent_input` records what it was built from; every other input leaves
+        // "not rendered as the agent input".
+        self.agent_input_rendered_facts.set(None);
         if CLIAgentSessionsModel::as_ref(app).is_input_open(self.terminal_view_id) {
             return self.render_cli_agent_input(app);
         }

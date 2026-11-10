@@ -324,6 +324,11 @@ impl Input {
         event: &UpdatedSlashCommandModel,
         ctx: &mut ViewContext<Self>,
     ) {
+        // The agent input's border reads "a slash command is detected". This model hears of an
+        // edit after the input's own handler has run, so the input is told here (#1962: until
+        // then its re-render on every edit covered it).
+        self.rerender_agent_input_if_facts_changed(ctx);
+
         // Refresh decorations if the slash command detection state changed, since
         // detected commands affect syntax highlighting.
         let new_state = self.slash_command_model.as_ref(ctx).state();

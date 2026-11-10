@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use parking_lot::FairMutex;
@@ -10,7 +11,7 @@ use warpui::{AppContext, Entity, ModelHandle, SingletonEntity, View, ViewContext
 use super::buffer_model::InputBufferModel;
 use super::message_bar::{
     Message, MessageItem, MessageProvider, common::render_terminal_message,
-    misroute::misroute_recovery_message, truncated_command_for_block,
+    misroute::misroute_recovery_message, row_event_needs_render, truncated_command_for_block,
 };
 use crate::ai::blocklist::{
     BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIInputModel,
@@ -27,6 +28,7 @@ use crate::terminal::input::suggestions_mode_model::{
 use crate::terminal::model::TerminalModel;
 use crate::terminal::view::init::SELECT_PREVIOUS_BLOCK_ACTION_NAME;
 use crate::util::bindings::keybinding_name_to_keystroke;
+use crate::util::key_view_skip;
 
 /// Renders contextual hint text at the bottom of the terminal input when `FeatureFlag::AgentView`
 /// is enabled.
@@ -40,6 +42,9 @@ pub struct TerminalInputMessageBar {
     misroute_mouse_state: MouseStateHandle,
     /// What the last buffer event told the bar about the buffer (#1491).
     last_buffer_signature: Option<BufferSignature>,
+    /// The [`Message::display_fingerprint`] of the row the last `render` drew; `None` before the
+    /// first render and for a row that cannot be compared (#1962).
+    rendered_fingerprint: RefCell<Option<String>>,
 }
 
 /// The only facts about the typed text that `render` reads: whether it is empty, and whether it
@@ -108,7 +113,7 @@ impl TerminalInputMessageBar {
                 skip_redundant_render_enabled(),
             );
             me.last_buffer_signature = Some(current);
-            if needs_render {
+            if needs_render && me.row_needs_render(ctx) {
                 ctx.notify();
             }
         });
@@ -117,9 +122,12 @@ impl TerminalInputMessageBar {
                 ctx.notify();
             }
         });
-        ctx.subscribe_to_model(&suggestions_mode_model, |_, _, event, ctx| {
+        // The row depends on the mode only through "is the inline history menu open".
+        ctx.subscribe_to_model(&suggestions_mode_model, |me, _, event, ctx| {
             let InputSuggestionsModeEvent::ModeChanged { .. } = event;
-            ctx.notify();
+            if me.row_needs_render(ctx) {
+                ctx.notify();
+            }
         });
         ctx.subscribe_to_model(&inline_history_model, |_, _, event, ctx| {
             if let InlineMenuModelEvent::UpdatedSelectedItem = event {
@@ -136,39 +144,53 @@ impl TerminalInputMessageBar {
             inline_history_model,
             misroute_mouse_state: MouseStateHandle::default(),
             last_buffer_signature: None,
+            rendered_fingerprint: RefCell::new(None),
         }
     }
-}
 
-impl View for TerminalInputMessageBar {
-    fn ui_name() -> &'static str {
-        "TerminalInputMessageBar"
+    /// [`row_event_needs_render`] for the row the bar would draw now. Used for the events that
+    /// may change the row but almost never do while typing: the buffer became empty or non-empty
+    /// (the first character typed into an empty input) and the suggestions mode changed (every
+    /// as-you-type completion result).
+    fn row_needs_render(&self, app: &AppContext) -> bool {
+        let skip_enabled = key_view_skip::enabled();
+        if !skip_enabled {
+            return true;
+        }
+        // `try_lock`: this runs inside an event flush; a busy model means "unknown", which
+        // renders.
+        let now = self
+            .terminal_model
+            .try_lock()
+            .and_then(|terminal_model| self.message(&terminal_model, app).display_fingerprint());
+        row_event_needs_render(
+            self.rendered_fingerprint.borrow().as_deref(),
+            now.as_deref(),
+            skip_enabled,
+        )
     }
 
-    fn render(&self, app: &AppContext) -> Box<dyn Element> {
+    /// The row the bar shows: the inline history menu's hint while that menu is open, else the
+    /// first applicable message with the attached-context and autodetection suffixes.
+    fn message(&self, terminal_model: &TerminalModel, app: &AppContext) -> Message {
         if self
             .suggestions_mode_model
             .as_ref(app)
             .is_inline_history_menu()
         {
             let selected = self.inline_history_model.as_ref(app).selected_item();
-            let message = InlineHistoryMessageProducer
+            return InlineHistoryMessageProducer
                 .produce_message(selected)
                 .unwrap_or_default();
-            return Container::new(render_terminal_message(message, app))
-                .with_padding_bottom(8.)
-                .with_padding_right(8.)
-                .finish();
         }
 
-        let terminal_model = self.terminal_model.lock();
         let current_buffer = self.input_buffer_model.as_ref(app).current_value();
         let context_model = self.context_model.as_ref(app);
         let input_model = self.ai_input_model.as_ref(app);
 
         let args = TerminalMessageArgs {
             current_input: current_buffer,
-            terminal_model: &terminal_model,
+            terminal_model,
             context_model,
             input_model,
             app,
@@ -193,6 +215,19 @@ impl View for TerminalInputMessageBar {
         for transformer in transformers {
             transformer.transform_message(&mut message, args);
         }
+        message
+    }
+}
+
+impl View for TerminalInputMessageBar {
+    fn ui_name() -> &'static str {
+        "TerminalInputMessageBar"
+    }
+
+    fn render(&self, app: &AppContext) -> Box<dyn Element> {
+        let message = self.message(&self.terminal_model.lock(), app);
+        // #1962: remember the row drawn, for `row_needs_render`.
+        *self.rendered_fingerprint.borrow_mut() = message.display_fingerprint();
 
         Container::new(render_terminal_message(message, app))
             .with_padding_bottom(8.)

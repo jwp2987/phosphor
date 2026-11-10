@@ -43,7 +43,7 @@ pub struct DetectedSkillCommand {
     pub argument: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommandEntryState {
     /// The input contents have nothing to do with a slash command.
     None,

@@ -1,9 +1,10 @@
 # The per-key frame build: where the time goes, and what an incremental build would take
 
-Status: **design + measurement only.** The measurement hop of section 5 is implemented on this branch
-(no behaviour change, **not built and not run**: no cargo on the authoring machine). No incremental
-build is implemented: section 6 says why and what the owner has to decide. Issues: #1961 (this work),
-#1962 (views re-rendered per key), #1848 / #1843 (the latency cases this serves).
+Status: **measurement hop merged (#1961); option A implemented (#1962, owner decision 2026-11-09),
+section 8.** Neither is built or run yet (no cargo on the authoring machine). Options B to E are not
+implemented: section 6 says why. Issues: #1961 (the measurement), #1962 (views re-rendered per key,
+option A), #1993 / #1994 (two missing notifications option A uncovered), #1995 (what option A left
+open), #1848 / #1843 (the latency cases this serves).
 
 Follows `docs/design/1843-1848-latency.md`, which ends with "the remainder is the per-key scene build,
 about 4 ms". **That figure is wrong**, and correcting it changes the recommendation, so it comes first.
@@ -207,6 +208,8 @@ arm is faster by more than the A/B's own noise and its unit tests cover the inva
    it changes nothing; say so if one is wanted anyway.)
 2. Schedule A (#1962) and B for v0.1.18 once the next run's numbers are in? B changes when a hover
    highlight follows a layout change (one frame later) and needs a yes before it is written.
+   **A: decided 2026-11-09, implemented ahead of the numbers (section 8); it is judged by its own
+   same-run A/B. B is still open.**
 3. C: agree that it waits for the numbers and is not v0.1.18 work?
 4. #1848 is expected to stay a FAIL after its own fix (about 3.3 ms against 2). No budget change is
    proposed; the question is only whether the release waits for A and B.
@@ -225,3 +228,128 @@ arm is faster by more than the A/B's own noise and its unit tests cover the inva
 * no change in any latency number from the hop itself: `latency_key_log` key -> frame within its
   baseline. If it moves by more than the baseline's noise, the per-view clock is too expensive and
   should be dropped from the hop (the stage times alone are six clock reads).
+
+With option A in the build (section 8), `key_frame_build_views` is no longer expected to stay at 6 /
+2-4: section 8.5 gives the expected numbers per arm.
+
+## 8. Option A as implemented (#1962)
+
+Owner decision 2026-11-09: implement option A. Branch `perf/1962-key-view-skip`. Kill switch
+`PHOSPHOR_KEY_VIEW_SKIP=0` (read once; `app/src/util/key_view_skip.rs`), default ON. Only
+notifications are skipped: no key is read, held or routed differently, and no model changes what it
+stores or emits.
+
+### 8.1 Why each view was notified, and whether it showed anything new
+
+Line numbers are those of `main` at `127332d33` (before the change).
+
+| view | notified per key by | does its output depend on that change? |
+|---|---|---|
+| `AcceptAutosuggestionKeybinding` | `app/src/editor/view/mod.rs:8440`: every `EditorModelEvent::Edited` calls `close_menu` on the hint, and `close_menu` (`accept_autosuggestion_keybinding_view.rs:142`) notified whether or not the menu was open | no. The hint draws the keystroke, the menu and hover state; an edit changes none of them unless the menu was open. (It is not notified when an autosuggestion appears: the editor element mounts it then.) |
+| `Input` (agent view) | `app/src/terminal/input.rs:10830`: an unconditional `ctx.notify()` at the end of the shell-prefix (`!`) check of the `EditorEvent::Edited` handler, reached for every edit in an agent view unless the input is locked to shell mode or the agent holds the command | almost never. `render_agent_input` branches on the buffer only through "is it empty" (the border color) and "is a slash command detected"; everything else it reads has its own notification |
+| `AgentMessageBar` | `agent_message_bar.rs:199`: it notified on every event of the slash-command model, and that model emits on every buffer change, also when its state stays `None` (`slash_command_model.rs:460`). This also made #1491's shell-mode fix ineffective for this bar | no for plain text: the row reads the buffer only as "empty or not" |
+| `TerminalInputMessageBar` | `terminal_message_bar.rs:103`: a buffer event whose `BufferSignature` changed, which includes empty <-> non-empty; `:120`: every suggestions-mode change (each as-you-type completion result) | rarely. Emptiness changes the row only with a misroute offer, a failed last block, an agent block last in the list, or an AI-autodetected buffer; the mode only through "is the inline history menu open" |
+| `UniversalDeveloperInputButtonBar` | `app/src/terminal/view.rs:32488` -> `universal_developer_input.rs:599` `update_input_empty_state` -> `notify_and_notify_children` on every empty <-> non-empty change | not the bar: only its segmented control's options read the empty state (the "Auto" label and its colors) |
+| `BlocklistAIStatusBar` | `status_bar.rs:293`: a shell-mode buffer changing between empty and non-empty | no: its `render` reads nothing of the buffer (the subscription predates the agent view) |
+| `QueuedPromptsPanelView` | `queued_prompts_panel.rs:333`: the host input changing between empty and non-empty; `:253`: every suggestions-mode event | only while it is shown (the "⏎ to send" hint). With no queue it renders nothing |
+
+**Why `latency_paint` re-renders six views.** It alternates a character and Delete
+(`cases.paint_samples`), so every key changes the buffer between empty and non-empty, and four of the
+six notifications above are keyed on exactly that. It measures the first character of a line, not
+typing in general; a burst re-renders two (terminal) or four (agent) views.
+
+### 8.2 The rule: compare with the last render, not with the last event
+
+A notified view is rendered from all the state it reads, so a notification that looks redundant may
+be the only thing that picks up a change that has no notification of its own. Two such cases were
+found and are fixed where they belong (#1993: a changed accept-autosuggestion keybinding was drawn
+only at the next edit; #1994: nothing told the input when the queued-prompts panel appeared or
+disappeared). Others certainly exist (the agent message bar reads the shell's bootstrap state, the
+plan count and the conversation length without a subscription for any of them).
+
+So no skip is of the form "this event cannot change the view". Each view records, **in `render`**,
+what it was built from, and an event that used to notify compares what the view would be built from
+**now** with that record. Equal means a render now would build the same elements, whatever happened
+in between; different or unknown means notify, as before. A change with no notification of its own is
+therefore still corrected at the next key, exactly as the per-key render did.
+
+| view | what is compared | unknown (= render) when |
+|---|---|---|
+| `AcceptAutosuggestionKeybinding` | "was the menu open" (closing a closed menu) | never |
+| `Input` (agent view) | `AgentInputDisplayFacts`: every fact `render_agent_input` branches on (empty buffer, detected slash command, input type and lock, kind of open menu, banner, attachments, workflow info, voltron, focus, x-ray, shortcuts, inline view, queued-prompts panel, pane height) | the last render showed another input |
+| `AgentMessageBar`, `TerminalInputMessageBar` | the row itself: `Message::display_fingerprint` (text, keystrokes, icons, colors; for the agent bar also its seven clickable hints, which dispatch fixed actions) | the row has a link, a chip, an image or any other clickable group (a click handler is not in what it shows); the terminal model is busy (`try_lock`) |
+| `UniversalDeveloperInputButtonBar` | what the bar's own `render` reads (viewer, model selector, prompt alert, compact threshold); the segmented control is still notified | never rendered; the terminal model is busy |
+| `BlocklistAIStatusBar` | "the last render drew nothing" and "a render now would draw nothing" (no agent view, no tagged-in block, no warping indicator) | anything else: the bar may draw something, so it renders |
+| `QueuedPromptsPanelView` | hidden before and hidden now (`should_render`); a change of that re-renders the panel and tells the input | never |
+
+Three facts of the agent input settle after the edit's own handler or change without an edit; each
+now asks for the render itself: the slash-command model's handler, a replaced buffer, and the panel's
+`ShownChanged` event. Those and the two fixes above are not behind the switch (they only add renders).
+
+Not changed: the slash-command model still emits on every buffer change (the input's handler closes
+the slash menu on those events), and every notification that reports a real change (input type, lock,
+mode, context, conversation status, settings).
+
+### 8.3 What a typed character is expected to re-render now
+
+| typing | before (round 8) | expected |
+|---|---|---|
+| terminal, a character in a non-empty buffer | `EditorView`, `AcceptAutosuggestionKeybinding` | `EditorView` |
+| terminal, with an as-you-type completion result in the frame | + `Input`, `InputSuggestions`, `QueuedPromptsPanelView`, `Terminal`, `TerminalInputMessageBar` | + `Input`, `InputSuggestions`, `Terminal` (the menu changed) |
+| agent view, a character in a non-empty buffer | `EditorView`, `AcceptAutosuggestionKeybinding`, `Input`, `AgentMessageBar` | `EditorView` |
+| terminal, the first character / Delete to empty (`latency_paint`) | six views | `EditorView` |
+| agent view, the first character / Delete to empty | six or seven views | `EditorView`, `Input` (border color), `AgentMessageBar` (the hints are enabled only for an empty buffer); `BlocklistAIStatusBar` where it was the seventh (a shell-mode buffer in an agent view: the bar draws something there, so its notification is kept) |
+
+These are the sets of the frame (`updated=[...]`, `views=`). A notified view that is not mounted and
+whose parent is not mounted either is rendered at once, outside the frame, and is not in the set
+(#805, `Presenter::render_unmounted_updates`): the button bar's segmented control and slash button
+are such views in both modes (the bar itself is a child of the mounted input, so it was in the set),
+and so is the agent message bar in terminal mode. Their render is then part of the key's handling
+rather than of its frame build; the skips remove it there as well, which no `key_frame_build` number
+shows. The segmented control and the slash button are still notified for empty <-> non-empty.
+
+### 8.4 Not done
+
+* **`Input` in terminal-mode typing (16-31 % of key frames in round 8), #1995.** None of the causes
+  above explains a key frame whose set is `EditorView`, `AcceptAutosuggestionKeybinding`, `Input`
+  and nothing else; the issue lists what was read and what would settle it.
+* The agent view's first character still re-renders `Input` and `AgentMessageBar`: both show
+  something different for an empty buffer.
+* The segmented control is still notified for empty <-> non-empty even when its label does not
+  change (a locked input). It is one small view.
+* No view-level test asserts "typing does not notify view X" on a running window: the test harness
+  builds no frames, and views that are not mounted are rendered and dropped from the set at once
+  (#805). The decisions are pure functions with unit tests, three state tests run on a real terminal
+  view, and the set itself is what `latency_key_views_ab` and `frame 1: updated=[...]` show.
+
+### 8.5 How it is judged, and what the next run should show
+
+`latency_key_views_ab` (PROVING; Linux and macOS; terminal and agent mode;
+`script/realapp/appci/cases_viewskip_ab.py`): blocks alternate between the default environment and
+`PHOSPHOR_KEY_VIEW_SKIP=0`, a relaunch per block, and `hop=key_frame_build` is read per arm for the
+`latency_paint` pattern (`first`) and for a typing burst (`burst`). On macOS the `first` keys go
+through kl3, which also gives key -> first changed pixel per arm. No verdict or budget is touched;
+`latency_paint` and `agent_latency_key` judge the default arm as before.
+
+Expected (`key_view_skip_on` against `key_view_skip_off`, medians):
+
+* `burst`, terminal: views 1 against 2. `burst`, agent: 1 against 4. The view count of the off arm
+  must match round 8; if it does not, the kill switch is not restoring the old notifications.
+* `first`, terminal: 1 against 6. `first`, agent: 3 against 6 (4 against 7 where the status bar is
+  in the set).
+* `render_ms` lower in the on arm in every pattern; `total_ms` lower by the skipped views' render
+  plus their cold layout. Section 1.3 puts that at about 0.3 ms (agent burst: `Input`) to 0.5 ms
+  (agent burst: `Input` + `AgentMessageBar`) on the Mac, and less for the terminal burst (one small
+  view). For `latency_paint` the round-8 gap between six views and a burst was 0.9 ms, of which an
+  unknown part is cache warmth after the idle gap, which this change does not touch.
+* macOS `key_to_paint` p50: lower in the on arm by about the `total_ms` difference, if that is above
+  the 4.17 ms kl3 quantum's noise; no difference visible there is not evidence against the change.
+* no WARN about the A/B itself, and never more views in the on arm (that is the case's one FAIL).
+* `frame 1: updated=[...]` of key frames names the sets of section 8.3.
+* every existing input, routing, completion and agent case unchanged: a stale label, hint, border or
+  panel anywhere near the input is this change's failure mode. With `PHOSPHOR_KEY_VIEW_SKIP=0` the
+  same case passing would confirm it.
+
+If the on arm is not faster by more than the A/B's own noise, the change is still correct (fewer
+renders of identical elements) but is not what closes #1848; option B and the key-handling share
+(section 6) are then next.
