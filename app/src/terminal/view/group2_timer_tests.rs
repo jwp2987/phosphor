@@ -586,7 +586,7 @@ fn a_key_typed_after_a_busy_young_hold_give_up_follows_the_held_keys_to_the_pty(
 }
 
 /// #1701 / #1702: an Enter deferred behind a report, with a key typed after it, is still held 3.5 s
-/// on (past the old 3 s patience, whose give-up now DISCARDS the keys after the Enter, #1661):
+/// on (past the old 3 s patience; the give-up writes the keys after the Enter to the pty, #1996):
 /// both patiences are the 10 s net, the text and the key behind the Enter are intact, and the late
 /// report is the event that releases the Enter. Two terminals: one waits on the hand-off's own
 /// outstanding report (#1215, `TYPEAHEAD_REPORT_PATIENCE`), the other on a report that must cover

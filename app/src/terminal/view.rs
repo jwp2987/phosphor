@@ -820,11 +820,11 @@ const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 /// by events: the pty controller taking the command (`TypeaheadHandoffChanged`, or the hand-off
 /// saying it will not engage), the shell's Preexec, the command's block starting, or that block
 /// completing. It was 300 ms, inside the stalls of a busy machine. When it fires the keys typed
-/// after the Enter are DISCARDED with a toast that gives the count (owner decision 2026-11-05),
-/// never handed back as editor text and never written. Together with the gate's own leak net
+/// after the Enter are WRITTEN TO THE PTY in typed order, with no toast (owner decision
+/// 2026-11-09, reversing #1661), never handed back as editor text. Together with the gate's own leak net
 /// (`enter_queue::ENTER_GATE_LEAK_NET`, 20 s from the Enter, so this net fires first) it means a
 /// hold always ends.
-// give-up-net: 10 s net for keys typed after a deferred Enter: discards them with a count toast; never routes or writes (#1661)
+// give-up-net: 10 s net for keys typed after a deferred Enter: writes them to the pty in typed order (owner decision 2026-11-09)
 const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_secs(10);
 
 /// [`AFTER_ENTER_REPLAY_PTY_WAIT`], or the calling thread's test override.
@@ -40690,9 +40690,10 @@ const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// request a program ate. #1577: the expiry does not run the Enter; the text stays in the editor.
 /// The report releases the Enter whenever it comes before this (an event, never a timer).
 ///
-/// #1701: since #1661 the give-up DISCARDS the keys typed after the Enter, so it is a give-up net
-/// of the 10 s class ([`YOUNG_HOLD_GIVE_UP`]), not 3 s: a report 3-9 s late (a loaded machine, a
-/// slow ssh link) still releases the Enter instead of losing what followed it.
+/// #1701: a give-up net of the 10 s class ([`YOUNG_HOLD_GIVE_UP`]), not 3 s: a report 3-9 s late
+/// (a loaded machine, a slow ssh link) still releases the Enter. (#1661 made the give-up discard
+/// the keys typed after the Enter; since the owner's decision of 2026-11-09 it writes them to the
+/// pty in typed order, and the Enter's line stays in the editor.)
 ///
 /// [`YOUNG_HOLD_GIVE_UP`]: crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP
 /// The give-up net of a deferred Enter waiting for the Tab that ran after the shell's report
@@ -40709,9 +40710,9 @@ const UNCOVERED_REPORT_PATIENCE: Duration =
 /// under a second over ssh); seconds without one mean a program consumed the request or the shell
 /// is not answering. The report releases the Enter whenever it comes before this.
 ///
-/// #1702: since #1661 the give-up DISCARDS the keys typed after the Enter, so it is a give-up net
-/// of the 10 s class ([`YOUNG_HOLD_GIVE_UP`]), not 3 s: a report 3-9 s late still releases the
-/// Enter.
+/// #1702: a give-up net of the 10 s class ([`YOUNG_HOLD_GIVE_UP`]), not 3 s: a report 3-9 s late
+/// still releases the Enter. (Its give-up writes the keys typed after the Enter to the pty in
+/// typed order since the owner's decision of 2026-11-09; #1661 discarded them.)
 ///
 /// [`YOUNG_HOLD_GIVE_UP`]: crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP
 const TYPEAHEAD_REPORT_PATIENCE: Duration =
