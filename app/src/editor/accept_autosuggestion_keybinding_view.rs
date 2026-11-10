@@ -10,6 +10,7 @@ use crate::ui_components::icons::Icon;
 use crate::util::bindings::{
     keybinding_name_to_keystroke, reset_keybinding_to_default, set_custom_keybinding,
 };
+use crate::util::key_view_skip;
 use crate::workspace::WorkspaceAction;
 use lazy_static::lazy_static;
 use pathfinder_geometry::vector::vec2f;
@@ -46,6 +47,13 @@ lazy_static! {
         ctrl: true,
         ..Default::default()
     };
+}
+
+/// Whether closing the menu changes what the hint renders: only an open menu is drawn (the
+/// overlay, the inverted colors and the suppressed tooltip all read `is_menu_open`). With the
+/// #1962 skips off (`skip_enabled` false) every close notifies, as before.
+fn close_menu_needs_render(was_open: bool, skip_enabled: bool) -> bool {
+    key_view_skip::display_changed(&was_open, &false, skip_enabled)
 }
 
 pub struct AcceptAutosuggestionKeybinding {
@@ -125,6 +133,9 @@ impl AcceptAutosuggestionKeybinding {
                 if binding_name == ACCEPT_AUTOSUGGESTION_KEYBINDING_NAME {
                     me.accept_autosuggestion_keybinding = new_trigger.clone();
                     me.update_menu_selected_item(ctx);
+                    // The hint draws this keystroke. Until #1962 the re-render on every edit
+                    // picked a change up at the next typed character; now it is asked for here.
+                    ctx.notify();
                 }
             }
         });
@@ -139,9 +150,14 @@ impl AcceptAutosuggestionKeybinding {
         me
     }
 
+    /// Closes the keybinding menu. The editor calls this on every edit, so it re-renders the hint
+    /// only when the menu was open: closing a closed menu changes nothing the hint shows, and
+    /// notifying anyway re-rendered this view for every typed character (#1962).
     pub fn close_menu(&mut self, ctx: &mut ViewContext<Self>) {
-        self.is_menu_open = false;
-        ctx.notify();
+        let was_open = std::mem::replace(&mut self.is_menu_open, false);
+        if close_menu_needs_render(was_open, key_view_skip::enabled()) {
+            ctx.notify();
+        }
     }
 
     /// Updates the menu selected item based on the current accept autosuggestion keybinding.
@@ -367,3 +383,7 @@ impl View for AcceptAutosuggestionKeybinding {
         .finish()
     }
 }
+
+#[cfg(test)]
+#[path = "accept_autosuggestion_keybinding_view_tests.rs"]
+mod tests;
