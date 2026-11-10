@@ -1377,101 +1377,39 @@ not passed somewhere (fail / skip / no-reference): agent_edit_accept, agent_edit
 - NEW failures (unit): 
   - `warp terminal::model::key_facts::tests::a_question_printed_after_the_precmd_is_seen_on_the_grid_the_block_writes_to [test-linux]`
 - FIXED failures (unit): 
-  - `warp ai::agent::conversation::tests::a_restored_turn_with_every_tool_call_answered_is_successful [test-linux]`
-  - `warp ai::blocklist::agent_fuzz::matrix::pairs_hung_command::off [test-linux]`
-  - `warp ai::blocklist::agent_fuzz::matrix::pairs_hung_command::on [test-linux]`
-  - `warp ai::blocklist::agent_fuzz::matrix::triples_hung_command::off [test-linux]`
-  - `warp ai::blocklist::agent_fuzz::matrix::triples_hung_command::on [test-linux]`
-  - `warp ai::blocklist::agent_fuzz::matrix::triples_read_files::off [test-linux]`
-  - `warp ai::blocklist::agent_fuzz::matrix::triples_read_files::on [test-linux]`
-  - `warp ai::blocklist::agent_fuzz::stop_tests::a_reject_after_a_finished_result_tells_the_model_at_once_and_the_agent_continues [test-linux]`
-  - `warp ai::blocklist::agent_fuzz::stop_tests::a_stop_after_a_finished_result_opens_no_request_and_the_results_ride_on_the_next_message [test-linux]`
-  - `warp terminal::bootstrap::tests::bash_body_does_not_trap_sighup [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::claude::tests::a_failed_add_never_re_fetches_a_remote_previous_source [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::claude::tests::fresh_install_adds_the_bundled_folder_then_installs [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::claude::tests::install_over_a_remote_registration_replaces_it_with_the_bundle [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::claude::tests::move_re_registers_from_the_bundle_and_clears_the_offer [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::claude::tests::update_re_registers_the_bundle_with_no_network_step [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::codex::tests::a_failed_add_never_re_fetches_a_remote_previous_source [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::codex::tests::fresh_install_adds_the_bundled_folder_then_the_plugin [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::codex::tests::install_over_a_remote_registration_replaces_it_with_the_bundle [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::codex::tests::move_re_registers_from_the_bundle_and_clears_the_offer [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::codex::tests::update_re_registers_a_remote_marketplace_from_the_bundle_with_no_network_step [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::gemini::tests::fresh_install_installs_the_bundled_folder [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::gemini::tests::move_reinstalls_from_the_bundle [test-linux]`
-  - `warp terminal::cli_agent_sessions::plugin_manager::gemini::tests::update_replaces_a_remote_install_with_the_bundle_and_clears_the_offer [test-linux]`
-  - `warp terminal::input::tests::editing_the_buffer_during_a_secret_read_never_requests_a_query_prediction [test-linux]`
-  - `warp terminal::model::typeahead_handoff::tests::a_command_the_latch_calls_interactive_gets_its_enter_and_releases_a_live_hold [test-linux]`
-  - `warp terminal::model::typeahead_handoff::tests::an_unengaged_user_command_makes_a_young_hold_follow_not_drop [test-linux]`
-  - `warp terminal::model::typeahead_handoff::tests::keys_a_hold_gave_up_on_never_start_another_young_hold [test-linux]`
-  - `warp terminal::model::typeahead_handoff::tests::the_prompt_commits_to_the_editor_when_no_keys_are_held [test-linux]`
-  - `warp terminal::view::tests::a_users_own_command_cancels_the_armed_setup_and_nothing_is_written [test-linux]`
-  - `warp terminal::view::tests::a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive [test-linux]`
-  - `warp terminal::view::tests::an_idle_dash_prompt_with_nothing_typed_is_written_on_the_look [test-linux]`
-  - `warp terminal::view::tests::keys_behind_a_run_enter_are_written_to_the_pty_at_the_net_in_both_modes [test-linux]`
+  - `warp terminal::view::tests::a_line_typed_behind_a_deferred_enter_follows_that_enters_held_line_at_readiness [test-linux]`
+  - `warp terminal::view::tests::give_up_to_pty_tests::an_enter_that_finds_the_gate_gone_over_other_text_sends_only_the_held_line_and_then_acts [test-linux]`
   - `warp terminal::view::tests::open_pane_mid_batch_cancel_sends_the_follow_up [test-linux]`
-  - `warp terminal::view::tests::paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes [test-linux]`
-  - `warp terminal::view::tests::pty_paste_backstop_gives_up_then_the_late_result_is_ignored [test-linux]`
-  - `warp terminal::view::tests::route_parity_a_tests::suspend_and_quit_do_not_void_a_waiting_enter_interrupt_does [test-linux]`
-  - `warp terminal::view::tests::stalled_pty_paste_hands_held_keys_back_in_order_at_the_backstop [test-linux]`
-  - `warp terminal::view::tests::the_readiness_tail_is_the_cursor_row_not_the_blank_rows_below_a_clear [test-linux]`
 - NEW failures (app): 
-  - `lab-wayland/terminal/lab_enter_start.nu.150.nohelper (case not in previous run)`
-  - `lab-wayland/terminal/lab_enter_no_network_wait.nu.150.nohelper (case not in previous run)`
-  - `lab-wayland/terminal/lab_ctrl_c_no_esc_i.fish.lan.nohelper (case not in previous run)`
-  - `lab-wayland/terminal/lab_ctrl_c_no_esc_i.fish.150.nohelper (case not in previous run)`
-  - `lab-wayland/terminal/lab_ctrl_c_no_esc_i.nu.lan.nohelper (case not in previous run)`
-  - `lab-wayland/terminal/lab_ctrl_c_no_esc_i.nu.150.nohelper (case not in previous run)`
-  - `lab-wayland/agent/lab_enter_start.nu.150.nohelper (case not in previous run)`
-  - `lab-wayland/agent/lab_enter_no_network_wait.nu.150.nohelper (case not in previous run)`
-  - `lab-wayland/agent/lab_ctrl_c_no_esc_i.fish.lan.nohelper (case not in previous run)`
-  - `lab-wayland/agent/lab_ctrl_c_no_esc_i.fish.150.nohelper (case not in previous run)`
-  - `lab-wayland/agent/lab_ctrl_c_no_esc_i.nu.lan.nohelper (case not in previous run)`
-  - `lab-wayland/agent/lab_ctrl_c_no_esc_i.nu.150.nohelper (case not in previous run)`
   - `lab-wayland/agent/lab_fam_agent_edit_conflict.bash.lan.nohelper`
   - `macos/terminal/latency_key_log`
 - FIXED failures (app): 
+  - `lab-wayland/terminal/lab_enter_start.bash.150.nohelper`
+  - `lab-wayland/terminal/lab_enter_start.zsh.150.nohelper`
+  - `lab-wayland/terminal/lab_ctrl_c_no_esc_i.bash.150.nohelper`
+  - `lab-wayland/agent/lab_enter_start.bash.150.nohelper`
+  - `lab-wayland/agent/lab_enter_start.zsh.150.nohelper`
+  - `lab-wayland/agent/lab_ctrl_c_no_esc_i.bash.150.nohelper`
   - `lab-wayland/agent/lab_agent_remote_flow.bash.lan.nohelper`
   - `lab-wayland/agent/lab_fam_agent_delete_conflict.bash.lan.nohelper`
   - `lab-wayland/agent/lab_fam_agent_edit_endings.bash.lan.nohelper`
+  - `macos/terminal/ui_vertical_tabs_many`
   - `macos/agent/mode_proof`
-  - `wayland/terminal/subshell_sh_probe`
-  - `wayland/terminal/subshell_ready_secret_after_prompt`
+  - `macos/agent/ui_vertical_tabs_many`
   - `wayland/terminal/subshell_ready_secret_after_probe`
-  - `wayland/terminal/ssh_nested_typeahead`
-  - `wayland/agent/mode_proof`
-  - `wayland/agent/subshell_sh_probe`
-  - `wayland/agent/subshell_ready_secret_after_prompt`
+  - `wayland/terminal/subshell_sh_probe_empty_ps1`
   - `wayland/agent/subshell_ready_secret_after_probe`
-  - `wayland/agent@fake/network_gate_notice`
-  - `wayland/agent@fake/agent_gate_off_live`
-  - `wayland/agent@fake/agent_gate_key_never_leaves`
-  - `windows/terminal/ps_ctrl_break`
+  - `wayland/agent/subshell_sh_probe_empty_ps1`
+  - `wayland/agent/ui_vertical_tabs_many`
+  - `wayland/agent@fake/agent_question_empty`
   - `windows/terminal/giveup_keys_reach_shell`
   - `windows/terminal@gitbash/subshell_ready_rc_questions`
   - `windows/terminal@gitbash/subshell_ready_rc_clear`
-  - `windows/agent/ps_ctrl_break`
-  - `windows/agent/agent_lrc_no_false_takeover`
   - `windows/agent/giveup_keys_reach_shell`
   - `windows/agent@gitbash/subshell_ready_rc_questions`
   - `windows/agent@gitbash/subshell_ready_rc_clear`
-  - `windows/agent@gitbash/agent_lrc_no_false_takeover`
-  - `windows/agent@fake/agent_interactive_password`
-  - `windows/agent@fake/agent_question_answer`
-  - `windows/agent@fake/agent_question_nodone`
-  - `windows/agent@fake/agent_question_slow`
-  - `windows/agent@fake/agent_question_after_command`
-  - `windows/agent@fake/agent_question_steer_at_end`
-  - `windows/agent@gitbash+fake/agent_question_answer`
-  - `windows/agent@gitbash+fake/agent_question_nodone`
-  - `windows/agent@gitbash+fake/agent_question_slow`
-  - `windows/agent@gitbash+fake/agent_question_after_command`
-  - `windows/agent@gitbash+fake/agent_question_steer_at_end`
+  - `windows/agent@fake/agent_fault_queued_rows`
+  - `windows/agent@gitbash+fake/agent_fault_queued_rows`
 - Latency regressions > 5%: 
-  - `macos/terminal/latency_key_log key_to_frame: 6.50 -> 7.28 ms (+12.0%)`
-  - `macos/agent/latency_key_log key_to_frame: 6.29 -> 7.47 ms (+18.8%)`
-  - `macos/agent/latency_paint key_to_paint: 32.41 -> 34.21 ms (+5.6%)`
-  - `wayland/terminal/ctrl_c_d ctrl_c: 30.21 -> 41.38 ms (+37.0%)`
-  - `wayland/terminal/latency_enter enter_to_start: 33.61 -> 43.56 ms (+29.6%)`
-  - `windows/terminal/latency_enter enter_to_start: 45.20 -> 48.34 ms (+6.9%)`
-- compared against: test-linux: build/r18w9b (3048013125); test-warpui-core: build/r18w9b (3048013125); test-workspace-rest: build/r18w9b (3048013125); app lab-wayland: build/r18w9b (3048013125); app macos: build/r18w9 (3047937983); app wayland: build/r18w9b (3048013125); app windows: build/r18w9 (3047937983)
+  - `macos/agent@fake/agent_latency_key streaming: 3.05 -> 3.74 ms (+22.6%)`
+- compared against: test-linux: build/r10a (3048440714); test-warpui-core: build/r10a (3048440714); test-workspace-rest: build/r10a (3048440714); app lab-wayland: build/r10a (3048440714); app macos: build/r10a (3048440714); app wayland: build/r10a (3048440714); app windows: build/r10a (3048440714)
