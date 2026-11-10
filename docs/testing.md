@@ -4834,3 +4834,21 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   `a_question_printed_after_a_precmd_that_carries_the_prompt_is_seen` (the app-prompt Precmd, a started grid), with the test helper
   `TerminalModel::finish_block_with_ps1`. No appci case runs with honor PS1 on: `gitbash_precmd_secret` proves the app-prompt mode only, the unit
   tests are the proof for the other. Next unit run: both tests pass.
+
+## Round 12: honor PS1 and the precmd secret (design `docs/design/r12-ps1case.md`; #1923; nothing compiled or run when written)
+
+- **APP, #1923 (rounds 10 to 12 read the wrong block): where a precmd function's question is written.** Read from the code, not yet from a run.
+  What the shell prints between a prompt's Precmd and the command's start is EARLY OUTPUT: the block list's own handler (`blocks.rs` `delegate!`,
+  `is_early_output`) sends it to a background block (`EarlyOutput`), in either prompt mode, and that block's output grid is what the pane draws
+  (the round 10 screenshot's `pin: `). The fresh active block gets none of it. The screen fact at the prompt hold's cap read the ACTIVE block in
+  every round (its output grid, then its prompt-and-command grid, then that grid's cells when unstarted), so it was false with the question on
+  screen and the PIN stayed held (`prompt_hold_kept_overdue`). The round 12 reading ("the grid is unstarted with honor PS1") explains the failing
+  unit test wrongly: `TerminalModel::mock` is past its bootstrap Precmd, so the test's `pin: ` went to a background block too. Now:
+  `BlockList::block_receiving_output` (the block the stream is written to, by the handler's own rule) and `key_facts::block_tail_asks_for_input`
+  (renamed from `active_block_tail_asks_for_input`; the view passes it that block). Unit tests `key_facts_tests.rs`:
+  `a_question_printed_after_the_precmd_is_seen_on_the_block_the_stream_writes_to` (the round 11 test; its last assertion now reads the block
+  the stream writes to, and it also pins that the active block holds nothing of the question: an EXPECTATION CHANGE of an uncompiled round 12
+  assertion, because its premise was wrong, not a weaker test), `a_question_printed_after_a_precmd_that_carries_the_prompt_is_seen` (the same
+  with the app's prompt), `a_fresh_prompt_with_nothing_printed_asks_nothing`, `a_question_in_an_unstarted_grid_is_read_from_its_cells` (the
+  round 12 arm, kept for a block written directly). Next unit run: all four pass; if the first fails at `written.is_background()` this reading
+  is wrong and the round 12 one stands.

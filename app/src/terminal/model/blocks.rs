@@ -4917,6 +4917,23 @@ impl BlockList {
         &self.early_output
     }
 
+    /// The block whose grid the shell's next printed character is written to, by the rule this
+    /// list's own handler follows (`delegate!`): between a prompt's Precmd and the command's
+    /// start (early output) that is the background block, in the list or still pending;
+    /// otherwise the active block. What a precmd function prints before the prompt (the `pin: `
+    /// of a `read -s -p`) is early output, in either prompt mode: it is never in the fresh active
+    /// block, whose grids hold a command and its output (#1923).
+    pub fn block_receiving_output(&self) -> &Block {
+        if self.is_early_output()
+            && let Some(block) = self
+                .background_block()
+                .or_else(|| self.early_output.pending_background_block())
+        {
+            return block;
+        }
+        self.active_block()
+    }
+
     pub fn early_output_mut(&mut self) -> &mut EarlyOutput {
         &mut self.early_output
     }

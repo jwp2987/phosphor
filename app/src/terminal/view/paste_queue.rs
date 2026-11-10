@@ -2180,12 +2180,14 @@ impl TerminalView {
     }
 
     /// Whether the unterminated text the shell wrote last asks for input (`pin: `, `[y/N]`,
-    /// `Password:`): the same classification the subshell readiness look uses, on the grid the
-    /// active block is writing to (`active_block_tail_asks_for_input`).
+    /// `Password:`): the same classification the subshell readiness look uses, on the block and
+    /// grid the stream is written to now (`BlockList::block_receiving_output`,
+    /// `block_tail_asks_for_input`). At a prompt that is the early-output block, not the fresh
+    /// active block: reading the active block saw nothing of a precmd function's question.
     fn screen_tail_asks_for_input(&self) -> bool {
         let model = self.model.lock();
-        crate::terminal::model::key_facts::active_block_tail_asks_for_input(
-            model.block_list().active_block(),
+        crate::terminal::model::key_facts::block_tail_asks_for_input(
+            model.block_list().block_receiving_output(),
         )
     }
 
