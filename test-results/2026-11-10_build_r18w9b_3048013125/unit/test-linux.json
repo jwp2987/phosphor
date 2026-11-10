@@ -1,0 +1,302 @@
+{
+ "summary_line": "Summary [1054.804s] 11818 tests run: 11778 passed (5 slow), 40 failed, 29 skipped",
+ "duration_s": 1054.804,
+ "run": 11818,
+ "passed": 11778,
+ "failed": 40,
+ "timed_out": 0,
+ "skipped": 29,
+ "slow": 5,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::agent::conversation::tests::a_restored_turn_with_every_tool_call_answered_is_successful",
+   "seconds": 0.02
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::fuzz_tests::paced_random_sequences_hold_the_invariants",
+   "seconds": 112.201
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::fuzz_tests::paced_random_sequences_hold_the_invariants_with_the_allowlist_on",
+   "seconds": 112.5
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::pairs_hung_command::off",
+   "seconds": 77.864
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::pairs_hung_command::on",
+   "seconds": 77.955
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::triples_hung_command::off",
+   "seconds": 146.611
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::triples_hung_command::on",
+   "seconds": 146.337
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::triples_read_files::off",
+   "seconds": 132.801
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::triples_read_files::on",
+   "seconds": 133.201
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::stop_tests::a_reject_after_a_finished_result_tells_the_model_at_once_and_the_agent_continues",
+   "seconds": 0.577
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::stop_tests::a_stop_after_a_finished_result_opens_no_request_and_the_results_ride_on_the_next_message",
+   "seconds": 1.094
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::bootstrap::tests::bash_body_does_not_trap_sighup",
+   "seconds": 0.024
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::claude::tests::a_failed_add_never_re_fetches_a_remote_previous_source",
+   "seconds": 0.018
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::claude::tests::fresh_install_adds_the_bundled_folder_then_installs",
+   "seconds": 0.018
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::claude::tests::install_over_a_remote_registration_replaces_it_with_the_bundle",
+   "seconds": 0.021
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::claude::tests::move_re_registers_from_the_bundle_and_clears_the_offer",
+   "seconds": 0.018
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::claude::tests::update_re_registers_the_bundle_with_no_network_step",
+   "seconds": 0.019
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::codex::tests::a_failed_add_never_re_fetches_a_remote_previous_source",
+   "seconds": 0.019
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::codex::tests::fresh_install_adds_the_bundled_folder_then_the_plugin",
+   "seconds": 0.019
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::codex::tests::install_over_a_remote_registration_replaces_it_with_the_bundle",
+   "seconds": 0.018
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::codex::tests::move_re_registers_from_the_bundle_and_clears_the_offer",
+   "seconds": 0.018
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::codex::tests::update_re_registers_a_remote_marketplace_from_the_bundle_with_no_network_step",
+   "seconds": 0.019
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::gemini::tests::fresh_install_installs_the_bundled_folder",
+   "seconds": 0.018
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::gemini::tests::move_reinstalls_from_the_bundle",
+   "seconds": 0.019
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::gemini::tests::update_replaces_a_remote_install_with_the_bundle_and_clears_the_offer",
+   "seconds": 0.019
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::input::tests::editing_the_buffer_during_a_secret_read_never_requests_a_query_prediction",
+   "seconds": 0.177
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::model::typeahead_handoff::tests::a_command_the_latch_calls_interactive_gets_its_enter_and_releases_a_live_hold",
+   "seconds": 0.03
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::model::typeahead_handoff::tests::an_unengaged_user_command_makes_a_young_hold_follow_not_drop",
+   "seconds": 0.021
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::model::typeahead_handoff::tests::keys_a_hold_gave_up_on_never_start_another_young_hold",
+   "seconds": 0.02
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::model::typeahead_handoff::tests::the_prompt_commits_to_the_editor_when_no_keys_are_held",
+   "seconds": 0.02
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::a_users_own_command_cancels_the_armed_setup_and_nothing_is_written",
+   "seconds": 0.119
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive",
+   "seconds": 0.152
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::an_idle_dash_prompt_with_nothing_typed_is_written_on_the_look",
+   "seconds": 0.163
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::keys_behind_a_run_enter_are_written_to_the_pty_at_the_net_in_both_modes",
+   "seconds": 2.158
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::open_pane_mid_batch_cancel_sends_the_follow_up",
+   "seconds": 0.126
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes",
+   "seconds": 0.103
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::pty_paste_backstop_gives_up_then_the_late_result_is_ignored",
+   "seconds": 0.212
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::route_parity_a_tests::suspend_and_quit_do_not_void_a_waiting_enter_interrupt_does",
+   "seconds": 0.216
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::stalled_pty_paste_hands_held_keys_back_in_order_at_the_backstop",
+   "seconds": 0.216
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::the_readiness_tail_is_the_cursor_row_not_the_blank_rows_below_a_clear",
+   "seconds": 0.101
+  }
+ ],
+ "regressions": [
+  "ai::agent::conversation::tests::a_restored_turn_with_every_tool_call_answered_is_successful",
+  "ai::blocklist::agent_fuzz::fuzz_tests::paced_random_sequences_hold_the_invariants",
+  "ai::blocklist::agent_fuzz::fuzz_tests::paced_random_sequences_hold_the_invariants_with_the_allowlist_on",
+  "ai::blocklist::agent_fuzz::matrix::pairs_hung_command::off",
+  "ai::blocklist::agent_fuzz::matrix::pairs_hung_command::on",
+  "ai::blocklist::agent_fuzz::matrix::triples_hung_command::off",
+  "ai::blocklist::agent_fuzz::matrix::triples_hung_command::on",
+  "ai::blocklist::agent_fuzz::matrix::triples_read_files::off",
+  "ai::blocklist::agent_fuzz::matrix::triples_read_files::on",
+  "ai::blocklist::agent_fuzz::stop_tests::a_reject_after_a_finished_result_tells_the_model_at_once_and_the_agent_continues",
+  "ai::blocklist::agent_fuzz::stop_tests::a_stop_after_a_finished_result_opens_no_request_and_the_results_ride_on_the_next_message",
+  "terminal::bootstrap::tests::bash_body_does_not_trap_sighup",
+  "terminal::cli_agent_sessions::plugin_manager::claude::tests::a_failed_add_never_re_fetches_a_remote_previous_source",
+  "terminal::cli_agent_sessions::plugin_manager::claude::tests::fresh_install_adds_the_bundled_folder_then_installs",
+  "terminal::cli_agent_sessions::plugin_manager::claude::tests::install_over_a_remote_registration_replaces_it_with_the_bundle",
+  "terminal::cli_agent_sessions::plugin_manager::claude::tests::move_re_registers_from_the_bundle_and_clears_the_offer",
+  "terminal::cli_agent_sessions::plugin_manager::claude::tests::update_re_registers_the_bundle_with_no_network_step",
+  "terminal::cli_agent_sessions::plugin_manager::codex::tests::a_failed_add_never_re_fetches_a_remote_previous_source",
+  "terminal::cli_agent_sessions::plugin_manager::codex::tests::fresh_install_adds_the_bundled_folder_then_the_plugin",
+  "terminal::cli_agent_sessions::plugin_manager::codex::tests::install_over_a_remote_registration_replaces_it_with_the_bundle",
+  "terminal::cli_agent_sessions::plugin_manager::codex::tests::move_re_registers_from_the_bundle_and_clears_the_offer",
+  "terminal::cli_agent_sessions::plugin_manager::codex::tests::update_re_registers_a_remote_marketplace_from_the_bundle_with_no_network_step",
+  "terminal::cli_agent_sessions::plugin_manager::gemini::tests::fresh_install_installs_the_bundled_folder",
+  "terminal::cli_agent_sessions::plugin_manager::gemini::tests::move_reinstalls_from_the_bundle",
+  "terminal::cli_agent_sessions::plugin_manager::gemini::tests::update_replaces_a_remote_install_with_the_bundle_and_clears_the_offer",
+  "terminal::input::tests::editing_the_buffer_during_a_secret_read_never_requests_a_query_prediction",
+  "terminal::model::typeahead_handoff::tests::a_command_the_latch_calls_interactive_gets_its_enter_and_releases_a_live_hold",
+  "terminal::model::typeahead_handoff::tests::an_unengaged_user_command_makes_a_young_hold_follow_not_drop",
+  "terminal::model::typeahead_handoff::tests::keys_a_hold_gave_up_on_never_start_another_young_hold",
+  "terminal::model::typeahead_handoff::tests::the_prompt_commits_to_the_editor_when_no_keys_are_held",
+  "terminal::view::tests::a_users_own_command_cancels_the_armed_setup_and_nothing_is_written",
+  "terminal::view::tests::a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive",
+  "terminal::view::tests::an_idle_dash_prompt_with_nothing_typed_is_written_on_the_look",
+  "terminal::view::tests::keys_behind_a_run_enter_are_written_to_the_pty_at_the_net_in_both_modes",
+  "terminal::view::tests::open_pane_mid_batch_cancel_sends_the_follow_up",
+  "terminal::view::tests::paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes",
+  "terminal::view::tests::pty_paste_backstop_gives_up_then_the_late_result_is_ignored",
+  "terminal::view::tests::route_parity_a_tests::suspend_and_quit_do_not_void_a_waiting_enter_interrupt_does",
+  "terminal::view::tests::stalled_pty_paste_hands_held_keys_back_in_order_at_the_backstop",
+  "terminal::view::tests::the_readiness_tail_is_the_cursor_row_not_the_blank_rows_below_a_clear"
+ ],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures.txt:"
+ ],
+ "job": "test-linux",
+ "status": "failed",
+ "duration": 1396.00023
+}
