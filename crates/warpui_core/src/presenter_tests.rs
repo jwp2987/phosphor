@@ -1285,3 +1285,60 @@ fn test_raster_completion_for_a_closed_window_is_dropped() {
         app.update(|ctx| assert!(!ctx.is_window_open(window_id)));
     })
 }
+
+/// Measurement only (docs/design/key-scene-build.md): a build with view timing on records one
+/// self time per view each pass visited (a view is recorded when the pass leaves it, so the
+/// innermost comes first); a build with it off records none, only the stage times; a paint-only
+/// build visits no view in layout. What the frame mounts and paints is the same either way.
+#[test]
+fn test_view_timing_records_each_visited_view_and_nothing_when_off() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let (frames, tab, child) = root.update(app, |root, _ctx| {
+            (root.counts.clone(), root.tab.clone(), root.child.clone())
+        });
+        let presenter = app.presenter(window_id).unwrap();
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let size = Vector2F::new(800., 600.);
+        let ids = |times: &[(EntityId, Duration)]| -> Vec<EntityId> {
+            times.iter().map(|(view_id, _)| *view_id).collect()
+        };
+        let inner_first = vec![child.id(), tab.id(), root.id()];
+
+        presenter.borrow_mut().set_view_timing(false);
+        app.update(|ctx| {
+            presenter.borrow_mut().build_scene(size, 1., None, ctx);
+        });
+        let off = presenter.borrow().last_build_split().clone();
+        assert!(off.layout_views.is_empty() && off.paint_views.is_empty());
+        assert_eq!(off.mounted, 3);
+
+        let (layouts_before, paints_before) = (frames.layout_calls.get(), frames.paint_calls.get());
+        presenter.borrow_mut().set_view_timing(true);
+        app.update(|ctx| {
+            presenter.borrow_mut().build_scene(size, 1., None, ctx);
+        });
+        let on = presenter.borrow().last_build_split().clone();
+        assert_eq!(ids(&on.layout_views), inner_first);
+        assert_eq!(ids(&on.paint_views), inner_first);
+        assert_eq!(on.mounted, 3);
+        // the timed build is one ordinary build: one layout and one paint of the root, all mounted
+        assert_eq!(frames.layout_calls.get(), layouts_before + 1);
+        assert_eq!(frames.paint_calls.get(), paints_before + 1);
+        for view_id in &inner_first {
+            assert!(presenter.borrow().is_view_mounted(*view_id));
+        }
+
+        app.update(|ctx| {
+            presenter
+                .borrow_mut()
+                .build_scene_skip_layout_if(size, 1., None, ctx, true);
+        });
+        let paint_only = presenter.borrow().last_build_split().clone();
+        assert!(paint_only.layout_views.is_empty());
+        assert_eq!(paint_only.mounted, 0);
+        assert_eq!(ids(&paint_only.paint_views), inner_first);
+        assert_eq!(frames.layout_calls.get(), layouts_before + 1);
+    })
+}
