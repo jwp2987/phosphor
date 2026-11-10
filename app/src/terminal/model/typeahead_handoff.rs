@@ -342,6 +342,17 @@ pub fn secret_reader_env_enabled() -> bool {
     std::env::var(SECRET_READER_ENV).map_or(true, |value| value.trim() != "0")
 }
 
+/// Environment variable that, set to `0`, keeps the question of a reader ahead of the line editor
+/// out of an agent conversation (#2053): the background block that holds it stays hidden there,
+/// as before. The keys still go to the reader (#2038 / #2050).
+pub const READER_QUESTION_IN_AGENT_VIEW_ENV: &str = "PHOSPHOR_READER_QUESTION_IN_AGENT_VIEW";
+
+/// Whether an agent conversation shows the question of a reader ahead of the line editor: it
+/// does, unless the kill switch says `0`.
+pub fn reader_question_in_agent_view_env_enabled() -> bool {
+    std::env::var(READER_QUESTION_IN_AGENT_VIEW_ENV).map_or(true, |value| value.trim() != "0")
+}
+
 /// The wait of a young Enter held by an event ([`TypeaheadHandoff::young_hold_wait`]): the
 /// prompt's Precmd, or the report, normally releases it within milliseconds, so reaching this
 /// means the signal is not coming. Logged by the view when it fires. It stays the cap of the

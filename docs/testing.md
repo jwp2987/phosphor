@@ -4910,7 +4910,8 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   the file back and relaunches once more at the end. Each arm first proves its premise from the pane itself (a typed line records
   `$WARP_HONOR_PS1` and whether the shell is bash); an arm whose premise is not met is UNVERIFIABLE. Oracles per arm: the function reached its
   `read` (a file it writes first); the question is on screen (OCR for `vault`, which no typed line contains: a failing check in terminal mode,
-  a metric `question_on_screen_<arm>` in agent mode, where a block that belongs to no command of the conversation may be hidden by design); the
+  a metric `question_on_screen_<arm>` in agent mode, where a block that belongs to no command of the conversation may be hidden by design;
+  since #2053 it is judged in agent mode too, see "Round 13: the question of a precmd function in an agent conversation"); the
   `read` got the PIN whole and in order (effect file); no `hop=enter_begin` line of the app log shows the PIN or a half of it in the input
   editor's buffer (needs `WARP_INPUT_ORDER_LOG_TEXT=1`, which the harness sets; without it a note says the check was not judged); no command in
   `rec.log` holds it; the line typed after it runs. Platforms: Linux (the pane's bash), Windows (Git Bash pane only, `winmap.GITBASH_ONLY`),
@@ -5123,3 +5124,31 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
 - **Not covered, filed:** an echoing question from a precmd function on Unix (#2052); an agent conversation does not show the question
   (#2053, the case's `question_on_screen_*` metric: false in the agent pass); an Enter as the very first key while the editor still has
   focus (design note section 5).
+
+## Round 13: the question of a precmd function in an agent conversation (design `docs/design/r13-secretui.md`; #2053; nothing compiled or run when written)
+
+- **Why.** Round 12 agent pass, `precmd_secret_honor_ps1`: `question_on_screen_hp0 = false`, `_hp1 = false`. The question is early output in a
+  background block that belongs to no conversation, and a conversation's scope hides such a block. Owner decision 2026-11-10: the conversation
+  shows it ONLY WHILE something reads the tty. The fact is the hand-off's noted reader (`prompt_reader_asks`: #2050 on Unix, #2038 on ConPTY).
+- **Unit, `model/blocks_test.rs`** (fixture `block_list_with_a_precmd_question`: a command, its Precmd, `vault pin: ` printed, the list in a
+  conversation's scope): `a_tty_readers_question_is_shown_in_a_conversation_only_while_the_reader_waits` (hidden before; shown and in the cached
+  heights while waiting; asking twice changes nothing; hidden and the old height when the reader is over),
+  `a_tty_readers_question_changes_nothing_in_the_terminal_scope`,
+  `a_finished_question_block_is_hidden_in_the_conversation_and_not_reported` (the next command finishes the block: the flag is dropped before the
+  emptiness test, so no `AfterBlockCompleted` of a background block is sent for it, as before).
+- **View, `terminal/view_test.rs`:** `a_precmd_question_is_shown_in_an_agent_conversation_while_its_reader_has_the_keys` (the #2050 fixture
+  `sampled_prompt_the_editor_owns` with the block list in a conversation's scope: not shown while no reader is noted, shown at the look after
+  the reader is noted, kept while the PIN is typed, hidden at the look after the line editor's signal; the control arm is the kill switch; the
+  pty writes are the PIN's keys in both arms, read after the update).
+- **appci, `precmd_secret_honor_ps1` (PROVING), expectation made stricter by the owner decision:** the agent arm judges the question. Before a
+  key (`question_on_screen_<arm>`): judged in terminal mode everywhere, as before, and now in agent mode where the app samples the tty (Linux,
+  macOS; `asked_look_is_judged`); recorded in agent mode on ConPTY, where the reader is noted from the screen at the first key or the hold's cap.
+  After the first half of the PIN and the pause (`question_on_screen_typing_<arm>`, OCR of the shot `pp_<arm>_after_pause`): judged in agent
+  mode on every platform. Self-test: `precmd_secret_honor_ps1_pure_parts` (`question_in`, `asked_look_is_judged`, and that the case no longer
+  says "recorded, not judged").
+- **Hops.** `reader_question_in_conversation site=output|key|cap shown=true` after `prompt_reader_asks`, and `shown=false` at the wakeup after
+  `prompt_reader_end`. A noted reader with no `shown=true` line: the block was not found (not early output, or still pending).
+- **Kill switch.** `PHOSPHOR_READER_QUESTION_IN_AGENT_VIEW=0`: the block stays hidden in a conversation as in round 12; the keys still go to the
+  reader.
+- **Not covered:** an echoing question (`read -p`) on Unix is not a noted reader yet (#2052: design only, `docs/design/r13-secretui.md`
+  section 2); on ConPTY the question appears in the conversation at the first key, not at its output.

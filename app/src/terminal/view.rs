@@ -511,8 +511,8 @@ use crate::terminal::model::terminal_model::{
 };
 use crate::terminal::model::typeahead_handoff::{
     InterruptOutcome, PaneHandoff, ReportDisposition, SshEscapeLineStart, UserBytesRoute,
-    YoungSubmit, forces_shell_submit, is_signal_byte, text_for_editor, young_detection_cap_for,
-    young_submit_decision_for,
+    YoungSubmit, forces_shell_submit, is_signal_byte, reader_question_in_agent_view_env_enabled,
+    text_for_editor, young_detection_cap_for, young_submit_decision_for,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -3308,6 +3308,14 @@ pub struct TerminalView {
     /// next wakeup (the key never waits for the parser, #1411).
     global_focus_redetermine_deferred: bool,
     terminal_focus_redetermine_deferred: bool,
+    /// #2053: whether an agent conversation shows the question of a reader ahead of the line
+    /// editor (the kill switch `PHOSPHOR_READER_QUESTION_IN_AGENT_VIEW=0`, read once per pane).
+    reader_question_in_agent_view: bool,
+    /// #2053: a reader was noted at the last look, so the block list may show its question: the
+    /// look that finds the reader gone tells the block list once.
+    reader_question_looked_for: bool,
+    /// #2053: the block list shows a block for the noted reader (as of the last look).
+    reader_question_shown: bool,
     /// Depth of user-key handling on this thread; see [`KeyPathScope`].
     key_path_depth: Rc<Cell<u32>>,
     /// The last answer of `active_output_ends_in_unterminated_text`, given to a key that finds the
@@ -5608,6 +5616,9 @@ impl TerminalView {
             key_model,
             global_focus_redetermine_deferred: false,
             terminal_focus_redetermine_deferred: false,
+            reader_question_in_agent_view: reader_question_in_agent_view_env_enabled(),
+            reader_question_looked_for: false,
+            reader_question_shown: false,
             key_path_depth: Rc::new(Cell::new(0)),
             unterminated_text_at_last_look: Cell::new(false),
             setup_echo_mid_line_at_last_look: Cell::new(false),
@@ -13513,6 +13524,8 @@ impl TerminalView {
         {
             facts.editor_focused = false;
             facts.terminal_focused = true;
+            // #2053: the question's wakeup found the model busy: show it now.
+            self.show_question_of_tty_reader("key", ctx);
         }
         // #1552: in a focus gap (neither the editor nor the terminal focused) the log names what
         // does have focus, so a run shows which view kept it after a long-running command: the
@@ -14652,6 +14665,10 @@ impl TerminalView {
         // routes this key. One read of the hand-off on any other key.
         if FeatureFlag::TypeaheadHandoff.is_enabled() && !facts.alt_screen {
             self.note_prompt_reader_if_the_screen_asks();
+            // #2053: on ConPTY this key is where the reader is noted, and a silent read prints
+            // nothing after it: its question is shown in an agent conversation from here. (No
+            // model look once a block is shown; none at all with no reader noted.)
+            self.show_question_of_tty_reader("key", ctx);
         }
         let handoff_route = if FeatureFlag::TypeaheadHandoff.is_enabled() {
             let mut handoff = self.handoff.write();
@@ -16266,6 +16283,10 @@ impl TerminalView {
         // function's `read -s -p`): the pty takes input back from the editor before a key is
         // typed. One read of the hand-off on any other wakeup.
         self.hand_keys_to_a_secret_reader("output", ctx);
+        // #2053: while a reader ahead of the line editor has the keys, the question it printed is
+        // shown in an agent conversation too; the wakeup after the event that ends the reader
+        // hides it there again. One read of the hand-off on any other wakeup.
+        self.show_question_of_tty_reader("output", ctx);
         // #1384 P5: the first output after the alt screen was entered re-sends the window size.
         #[cfg(feature = "local_tty")]
         if self.alt_screen_resend_pending {

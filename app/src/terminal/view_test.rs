@@ -28194,6 +28194,109 @@ fn a_secret_question_at_a_prompt_takes_input_back_at_its_output() {
     })
 }
 
+/// #2053 (owner decision 2026-11-10; round 12 agent pass: `question_on_screen_hp0 = false`): an
+/// agent conversation shows the question a precmd function asks only while its reader has the
+/// keys. The question is early output in a background block that belongs to no conversation, so
+/// the conversation's scope hides it. The wakeup's look (`show_question_of_tty_reader`) shows it
+/// there once the hand-off notes the reader, keeps it while the PIN is typed, and hides it again
+/// at the look after the line editor's signal ended the reader. Before the reader is noted
+/// nothing is shown (printed text alone is no reader).
+///
+/// The control arm is the kill switch (`PHOSPHOR_READER_QUESTION_IN_AGENT_VIEW=0`, the pane's
+/// `reader_question_in_agent_view`): the keys still go to the reader, the block stays hidden.
+#[test]
+fn a_precmd_question_is_shown_in_an_agent_conversation_while_its_reader_has_the_keys() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::terminal::model::block::TranscriptScope;
+    for enabled in [true, false] {
+        App::test((), move |mut app| async move {
+            let what = format!("enabled={enabled}");
+            let what = what.as_str();
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            let secret = Arc::new(AtomicBool::new(false));
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                sampled_prompt_the_editor_owns(view, &secret);
+                view.reader_question_in_agent_view = enabled;
+                // The pane shows an agent conversation: only blocks attached to it are drawn.
+                let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+                let scope = TranscriptScope::Conversation(AIConversationId::new());
+                view.model
+                    .lock()
+                    .block_list_mut()
+                    .set_transcript_scope(scope);
+
+                // The precmd function sets the tty (canonical, echo off) and prints its question.
+                secret.store(true, Ordering::SeqCst);
+                view.model.lock().process_bytes("vault pin: ");
+                let question = {
+                    let model = view.model.lock();
+                    let block = model.block_list().block_receiving_output();
+                    assert!(
+                        block.is_background(),
+                        "{what}: the question is early output"
+                    );
+                    block.id().clone()
+                };
+                let on_screen = |view: &TerminalView| {
+                    let model = view.model.lock();
+                    model
+                        .block_list()
+                        .block_with_id(&question)
+                        .expect("the question's block")
+                        .is_visible(&scope)
+                };
+                view.show_question_of_tty_reader("output", ctx);
+                assert!(
+                    !on_screen(view),
+                    "{what}: no reader is noted yet: the conversation hides the block"
+                );
+
+                // The wakeup of the question's output: the reader is noted, then its question shown.
+                assert!(view.hand_keys_to_a_secret_reader("output", ctx), "{what}");
+                view.show_question_of_tty_reader("output", ctx);
+                assert_eq!(on_screen(view), enabled, "{what}: while the reader waits");
+                assert_eq!(view.reader_question_shown, enabled, "{what}");
+
+                for key in [&b"4"[..], b"2"] {
+                    view.write_user_bytes_to_pty(key.to_vec(), ctx);
+                    view.show_question_of_tty_reader("key", ctx);
+                }
+                assert_eq!(on_screen(view), enabled, "{what}: while the PIN is typed");
+                view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+
+                // The read returned; the line editor's signal ends the reader, and the wakeup
+                // that follows hides the block in the conversation again.
+                secret.store(false, Ordering::SeqCst);
+                line_editor_signal(view, ctx);
+                assert!(!view.handoff.read().prompt_reader_asks(), "{what}");
+                view.show_question_of_tty_reader("output", ctx);
+                assert!(!on_screen(view), "{what}: the reader is over");
+                assert!(!view.reader_question_shown, "{what}");
+                assert!(!view.reader_question_looked_for, "{what}");
+                assert!(
+                    view.model
+                        .lock()
+                        .block_list()
+                        .tty_reader_question_block()
+                        .is_none(),
+                    "{what}"
+                );
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                [&b"4"[..], b"2", b"\r"].map(|key| key.to_vec()).to_vec(),
+                "{what}: the keys are the reader's with or without the question on screen"
+            );
+        })
+    }
+}
+
 /// No model lock per key while the hold is open: after the key that started it, the queue takes
 /// every key without locking the terminal model (the pty reader holds that lock while it parses).
 #[test]

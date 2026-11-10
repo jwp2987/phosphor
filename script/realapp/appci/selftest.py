@@ -6890,6 +6890,12 @@ def precmd_secret_honor_ps1_pure_parts():
     assert PS.pin_in_editor_enters(log.replace('buffer="2cd"', 'buffer="b12cd"'), pin) == ["AI", "Shell"], "the second half alone, run as a command"
     assert PS.pin_in_editor_enters('x hop=enter_begin deferred=false buffer=<9 chars> input_type=AI\n', pin) == [] and PS.pin_in_editor_enters("", pin) == [] and PS.pin_in_editor_enters(None, pin) == []
     assert PS.enter_text_logged(log) is True and PS.enter_text_logged('x hop=enter_begin deferred=false buffer=<9 chars> input_type=AI\n') is False and PS.enter_text_logged("no enters") is None
+    # #2053: the agent arm judges the question. Before a key where the tty is sampled; on ConPTY the look before a key is recorded and the one after half the PIN judged
+    assert PS.question_in("touch pp_hp0_go.txt\nVault  PIN:\n") and not PS.question_in("touch pp_hp0_go.txt\n") and not PS.question_in(None) and not PS.question_in("")
+    assert PS.asked_look_is_judged("terminal", False)[0] and PS.asked_look_is_judged("terminal", True)[0], "terminal mode: judged on every platform, as before"
+    assert PS.asked_look_is_judged("agent", False)[0] and not PS.asked_look_is_judged("agent", True)[0]
+    _ps_src = open(PS.__file__, encoding="utf-8").read()
+    assert "recorded, not judged" not in _ps_src and "question_on_screen_typing_%s" in _ps_src, "the agent arm's question is judged (#2053), not only recorded"
     # wiring
     c = [x for x in cases.CASES if x["name"] == "precmd_secret_honor_ps1"]
     assert len(c) == 1 and set(c[0]["modes"]) == {"terminal", "agent"} and c[0]["gui"], "both session modes (owner: one mode = not tested)"

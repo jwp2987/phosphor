@@ -469,6 +469,10 @@ pub struct BlockList {
     /// [`TranscriptScope::Unfiltered`] -- a scope no `AgentViewState` can express.
     transcript_scope: TranscriptScope,
 
+    /// #2053: the block an agent conversation shows because something waits at the tty for the
+    /// answer to the question it holds ([`Self::show_question_of_tty_reader`]).
+    tty_reader_question_block: Option<BlockId>,
+
     /// The view ID of a rich content item that should always remain at the bottom
     /// of the blocklist. After any other insertion, this item is automatically
     /// removed and re-appended so it stays last.
@@ -1032,6 +1036,7 @@ impl BlockList {
             is_inverted,
             agent_view_state: AgentViewState::Inactive,
             transcript_scope: TranscriptScope::Terminal,
+            tty_reader_question_block: None,
             pinned_to_bottom: None,
             is_executing_oz_environment_startup_commands: false,
             deferred_restores: None,
@@ -4871,6 +4876,9 @@ impl BlockList {
     fn finish_background_block(&mut self) {
         // Before it is finished and saved (#1033).
         self.strip_typed_echo_from_background_block();
+        // #2053: a finished block is no question a reader waits at. Before the emptiness test
+        // below, so a block no conversation owns is saved (or not) exactly as it was before.
+        self.hide_question_of_tty_reader();
         let num_secrets_obfuscated = self
             .background_block_mut()
             .map(|block| block.num_secrets_obfuscated());
@@ -4900,6 +4908,56 @@ impl BlockList {
             // Now that the block is no longer active, its height may have changed.
             self.update_live_block_height(block_index);
         }
+    }
+
+    /// #2053: `waiting` says whether something reads the tty ahead of the shell's line editor (the
+    /// hand-off's reader of #2038 / #2050, noted from an OS fact or the screen). What it asks was
+    /// printed between a Precmd and the command's start, so it is early output in a background
+    /// block, and such a block belongs to no conversation: an agent conversation hides it
+    /// (`Block::should_hide_block`) and the user answered a question they could not see.
+    ///
+    /// While `waiting`, the background block receiving that output is shown in any conversation
+    /// scope; when the reader is over (`waiting == false`) or the block is finished it is hidden
+    /// there again, as every other block no command of the conversation produced. The terminal
+    /// scope shows the block either way; nothing changes there.
+    ///
+    /// Idempotent, no clock. Returns whether a block's visibility changed (its cached height is
+    /// refreshed here). `false` while `waiting` with nothing printed yet (a `read -s` with no
+    /// question, or the block is still pending): ask again at the next output.
+    pub fn show_question_of_tty_reader(&mut self, waiting: bool) -> bool {
+        if !waiting {
+            return self.hide_question_of_tty_reader();
+        }
+        if self.tty_reader_question_block.is_some() || !self.is_early_output() {
+            return false;
+        }
+        let Some(block) = self.background_block_mut() else {
+            return false;
+        };
+        block.set_shown_to_tty_reader(true);
+        let (id, index) = (block.id().clone(), block.index());
+        self.tty_reader_question_block = Some(id);
+        self.refresh_block_height(index);
+        true
+    }
+
+    /// #2053: the reader is over, or its block is: the block is a conversation's again only if
+    /// it is attached to it. Returns whether a block was shown for a reader.
+    fn hide_question_of_tty_reader(&mut self) -> bool {
+        let Some(id) = self.tty_reader_question_block.take() else {
+            return false;
+        };
+        if let Some(block) = self.mut_block_from_id(&id) {
+            block.set_shown_to_tty_reader(false);
+            let index = block.index();
+            self.refresh_block_height(index);
+        }
+        true
+    }
+
+    /// #2053: the block shown to a tty reader, if any (tests and the view's log).
+    pub fn tty_reader_question_block(&self) -> Option<&BlockId> {
+        self.tty_reader_question_block.as_ref()
     }
 
     /// Whether the block list is in a state where it could be receiving

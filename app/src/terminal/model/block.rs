@@ -527,6 +527,14 @@ pub struct Block {
     /// This is only used if `FeatureFlag::AgentView` is enabled.
     agent_view_visibility: AgentViewVisibility,
 
+    /// #2053: this block holds a question something is waiting at the tty for an answer to (a
+    /// precmd function's `read -s -p "pin: "`, printed between a Precmd and the line editor:
+    /// early output, so a background block that belongs to no conversation). While set, an agent
+    /// conversation shows the block although it is not attached to it: the keys typed go to that
+    /// reader, and the user must see what is asked. Set and cleared by
+    /// `BlockList::show_question_of_tty_reader`; never serialized.
+    shown_to_tty_reader: bool,
+
     /// Whether natural language detection (NLD) was overridden (i.e., the user had manually locked
     /// the input type) at the time this block's command was submitted.
     ///
@@ -1038,6 +1046,7 @@ impl Block {
             typed_during_secret_read: false,
             is_oz_environment_startup_command: false,
             visible_bootstrap_block_event_sent: false,
+            shown_to_tty_reader: false,
         }
     }
 
@@ -1105,6 +1114,17 @@ impl Block {
 
     pub fn agent_view_visibility(&self) -> &AgentViewVisibility {
         &self.agent_view_visibility
+    }
+
+    /// #2053: see the field. Only the block list sets it (it owns the cached heights).
+    pub(super) fn set_shown_to_tty_reader(&mut self, shown: bool) {
+        self.shown_to_tty_reader = shown;
+    }
+
+    /// #2053: whether an agent conversation shows this block because something waits at the tty
+    /// for the answer to the question it holds.
+    pub fn shown_to_tty_reader(&self) -> bool {
+        self.shown_to_tty_reader
     }
 
     /// Returns whether NLD was overridden (input type was manually locked) when this block's
@@ -1519,7 +1539,9 @@ impl Block {
                                 || other_conversation_ids.contains(active_id)
                         }
                     };
-                    if !visible_in_conversation {
+                    // #2053: a question something waits at the tty for is shown in whatever
+                    // conversation is on screen, for as long as the reader waits.
+                    if !visible_in_conversation && !self.shown_to_tty_reader() {
                         return true;
                     }
                 }
