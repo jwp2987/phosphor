@@ -506,7 +506,7 @@ def main():
                     except Exception as e:
                         r.note("terminal leak guard failed: %r" % (e,))
                 if k_start is not None and not sim:       # every backend that records its calls, Windows included (audit #5)
-                    account_case(r, be.calls[k_start:], list(ctx.extra_logs) + [ctx.log_path or log_path] if ctx.extra_logs else (ctx.log_path or log_path), c["name"], time.time())
+                    account_case(r, be.calls[k_start:], list(ctx.extra_logs) + [ctx.log_path or log_path] if ctx.extra_logs else (ctx.log_path or log_path), c["name"], time.time(), t0)
                     if status == "pass" and r.noref:
                         status = "noref"
                 if log_off is not None:       # r18e9: did the pty write carry '\r'? (an Enter the editor accepted whose write lacked the CR = dropped/held Enter, ssh_* on Windows)
@@ -759,12 +759,12 @@ def post_case_invariants(ctx, prof, be):
     return out
 
 
-def account_case(r, calls, log_path, name, t_end):
+def account_case(r, calls, log_path, name, t_end, t_floor=None):
     """injector accounting for one case (#1509): the note + metric, read over the window that ends at the case's end (`t_end`), and (audit #5,
     #1912) a case with no failure whose injected keys or Enters never reached the app's key trace, outside the loss cases, becomes UNVERIFIABLE
     (noref): it passed on its effect check while keys were lost. A case that already failed keeps its own verdict. Never raises."""
     try:
-        txt, acct = injacct.account(calls, log_path, name, t_end)
+        txt, acct = injacct.account(calls, log_path, name, t_end, t_floor)
         if txt:
             r.note("injector accounting: " + txt)
             r.metrics["injector"] = acct

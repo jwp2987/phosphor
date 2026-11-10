@@ -97,15 +97,21 @@ def join(calls, keys, enter_hops=0, slack_before=0.5, slack_after=3.0):
     return dict(sent=sent, enters_sent=sent_enter, seen=seen, lost=max(sent - seen, 0), extra=max(seen - sent, 0), enters_seen=enters_seen, errs=errs, pastes=pastes)
 
 
-def window(calls, t_end=None):
+def window(calls, t_end=None, t_floor=None):
     """the wall window the app's keys are read in: 0.5 s before the first injector call to 3 s after the last, or to `t_end` (the moment of accounting,
     i.e. the case's end) when that is later. Audit #5: a held ssh-typeahead Enter or a slow-classifier Enter is processed more than 3 s after the last
-    injector call, and the fixed 3 s cut it off ("Enter: sent 2, app saw 0")."""
+    injector call, and the fixed 3 s cut it off ("Enter: sent 2, app saw 0").
+    `t_floor` (the case's start): the window never starts before it. Rounds 8 and 9: the calls are sliced by index, the app's keys by time, so the
+    0.5 s before a case's first call took in the tail of the harness's OWN previous line (the PID probe typed after the case before): every row,
+    SKIP rows too, said "app logged 10-26 more than were injected" and "Enter: sent k, app saw k+1"."""
     mine = [c for c in calls if not c.get("ref")]
     if not mine:
         return None
     end = max(c["wall1"] for c in mine) + 3.0
-    return (min(c["wall0"] for c in mine) - 0.5, max(end, t_end) if t_end is not None else end)
+    start = min(c["wall0"] for c in mine) - 0.5
+    if t_floor is not None:
+        start = max(start, min(t_floor, start + 0.5))       # never past the first call itself
+    return (start, max(end, t_end) if t_end is not None else end)
 
 
 def loss_verdict(j, case_name=""):
@@ -121,9 +127,10 @@ def loss_verdict(j, case_name=""):
             "focus, or the injector)" % (max(lost, el), j["sent"], j["enters_sent"], j["enters_seen"]))
 
 
-def account(calls, log_path, case_name="", t_end=None):
-    """-> (note text or None, metric dict or None) for the calls one case made; t_end: wall time of the accounting (the case's end)"""
-    w = window(calls, t_end)
+def account(calls, log_path, case_name="", t_end=None, t_floor=None):
+    """-> (note text or None, metric dict or None) for the calls one case made; t_end: wall time of the accounting (the case's end);
+    t_floor: wall time the case started (keys the app logged before it are an earlier case's, see window())"""
+    w = window(calls, t_end, t_floor)
     if w is None:
         return None, None
     j = join(calls, app_keys(log_path, *w), app_enter_hops(log_path, *w))
