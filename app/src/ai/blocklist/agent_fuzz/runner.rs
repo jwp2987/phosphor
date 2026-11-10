@@ -193,7 +193,32 @@ async fn drive(
             if let Op::Wait { ms } = &step.op {
                 pump_for(app, knobs.scale(Duration::from_millis(*ms))).await;
             }
-            if matches!(step.op, Op::CtrlC | Op::Stop) {
+            // I2b / I2c. A Stop always ends the turn. So does a Ctrl-C, except one typed into
+            // a running command while later actions of the same reply still wait behind it:
+            // that Ctrl-C is the command's interrupt, the conversation continues (#850,
+            // DECLINED.md IMPROVED) and the next action's card comes up, which I2b would report
+            // as "not terminal, an action still held". There the interrupt itself is checked
+            // (I2c); the closing user answers the cards and I2a ends the turn. (Whether such a
+            // Ctrl-C should stop the turn too is an open owner question on #1942; if it is
+            // decided so, drop `interrupts_one_command` and I2b applies to every Ctrl-C again.)
+            let was_running: Vec<_> = obs
+                .snapshot
+                .iter()
+                .filter(|s| s.stage == PendingStage::Running)
+                .map(|s| s.action_id.clone())
+                .collect();
+            let interrupts_one_command = matches!(step.op, Op::CtrlC)
+                && !was_running.is_empty()
+                && obs.snapshot.len() > was_running.len();
+            if interrupts_one_command {
+                let interrupted = settle_until(app, knobs.terminal_after_stop, |app| {
+                    Oracle::interrupted(&rig.observe(app), &was_running).is_ok()
+                })
+                .await;
+                if !interrupted {
+                    Oracle::interrupted(&rig.observe(app), &was_running)?;
+                }
+            } else if matches!(step.op, Op::CtrlC | Op::Stop) {
                 let stopped = settle_until(app, knobs.terminal_after_stop, |app| {
                     Oracle::stopped(&rig.observe(app)).is_ok()
                 })

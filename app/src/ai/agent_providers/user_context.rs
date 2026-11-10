@@ -176,6 +176,12 @@ pub fn collect_user_attachments(ctx: &[AIAgentContext]) -> UserAttachments {
     out
 }
 
+/// The opening tag of the `<environment_context>` block. The block is sent as the LAST message
+/// of a request (`chat_stream::push_environment_context_message`), so anything that asks "what
+/// is the newest message of this request" has to know it to look past it (the fake stream
+/// seam's `RecordedRequest::newest_message`).
+pub(crate) const ENVIRONMENT_CONTEXT_OPEN_TAG: &str = "<environment_context>";
+
 /// Renders the `<environment_context>` block —— environment state that changes
 /// (cwd / git branch / date).
 ///
@@ -240,7 +246,8 @@ pub fn render_environment_context(ctx: &[AIAgentContext]) -> Option<String> {
     }
 
     let mut out = String::with_capacity(160);
-    out.push_str("<environment_context>\n");
+    out.push_str(ENVIRONMENT_CONTEXT_OPEN_TAG);
+    out.push('\n');
     if let Some(pwd) = cwd {
         out.push_str("  Working directory: ");
         out.push_str(pwd);

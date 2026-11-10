@@ -43,6 +43,58 @@ fn requests_are_recorded_with_their_tool_messages() {
     assert_eq!(requests[0].messages[1].tool_call_ids, vec!["call-1"]);
 }
 
+/// The app ends a request with the `<environment_context>` block as a user message of its own.
+/// The record looks past it: the newest message is the one before it, and it is never "the
+/// last user text". Built with the real renderer, so a change of the block's shape fails here.
+#[test]
+fn the_environment_tail_is_not_the_newest_message() {
+    use crate::ai::agent::AIAgentContext;
+    use crate::ai::agent_providers::user_context::render_environment_context;
+
+    let tail = render_environment_context(&[AIAgentContext::Directory {
+        pwd: Some("/work".to_owned()),
+        home_dir: None,
+        are_file_symbols_indexed: false,
+    }])
+    .expect("a directory renders the block");
+
+    // A user's submit: [user text][tail].
+    let submit = RecordedRequest::from_chat_request(
+        0,
+        "m",
+        &ChatRequest::from_messages(vec![
+            ChatMessage::user("carry on please"),
+            ChatMessage::user(tail.clone()),
+        ]),
+    );
+    assert!(submit.messages[1].is_environment_tail());
+    assert!(!submit.messages[0].is_environment_tail());
+    assert_eq!(submit.messages_without_environment_tail().len(), 1);
+    assert_eq!(
+        submit.newest_message().map(|m| m.text.as_str()),
+        Some("carry on please")
+    );
+    assert_eq!(submit.last_user_text(), Some("carry on please"));
+
+    // A tool step's follow-up: [user][assistant call][tool][tail]. The newest message is the
+    // tool message.
+    let mut with_tools = request_with_tool_round();
+    with_tools.messages.push(ChatMessage::user(tail));
+    let follow_up = RecordedRequest::from_chat_request(1, "m", &with_tools);
+    let newest = follow_up.newest_message().expect("a newest message");
+    assert_eq!(newest.role, RecordedRole::Tool);
+    assert_eq!(newest.tool_response_ids, vec!["call-1"]);
+    assert_eq!(follow_up.last_user_text(), Some("do it"));
+
+    // No tail: every message counts, as before.
+    let plain = RecordedRequest::from_chat_request(2, "m", &request_with_tool_round());
+    assert_eq!(plain.messages_without_environment_tail().len(), 3);
+    assert_eq!(
+        plain.newest_message().map(|m| m.role),
+        Some(RecordedRole::Tool)
+    );
+}
+
 #[test]
 fn dropping_the_handle_unregisters_the_model_id() {
     let request = ChatRequest::from_messages(vec![ChatMessage::user("hi")]);

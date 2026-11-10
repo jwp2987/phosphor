@@ -13,7 +13,9 @@
 //!
 //! What a script sees and the test reads back is a [`RecordedRequest`]: the tool messages and
 //! tool-call ids of each request (invariant I4: exactly one result per emitted call id), the last
-//! user text (so queued prompts can be matched, I3) and the tool names offered.
+//! user text (so queued prompts can be matched, I3) and the tool names offered. The
+//! `<environment_context>` block the app appends as the last message of every request is told
+//! apart from the conversation's own messages ([`RecordedRequest::newest_message`]).
 //!
 //! The registry is keyed by model id so parallel tests with their own ids never share a script.
 
@@ -115,6 +117,20 @@ pub struct RecordedMessage {
     pub tool_response_ids: Vec<String>,
 }
 
+impl RecordedMessage {
+    /// Whether this is the `<environment_context>` block the app appends as the last message
+    /// of a request: a user message that starts with the block's opening tag. (On the Anthropic
+    /// path the block is a further part of the user's own message, which starts with the
+    /// user's text and is not a tail.)
+    pub fn is_environment_tail(&self) -> bool {
+        self.role == RecordedRole::User
+            && self
+                .text
+                .trim_start()
+                .starts_with(super::user_context::ENVIRONMENT_CONTEXT_OPEN_TAG)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordedRole {
     System,
@@ -163,9 +179,31 @@ impl RecordedRequest {
         }
     }
 
-    /// The text of the last user message, if any.
+    /// The request's messages without the environment tail.
+    ///
+    /// On the OpenAI-compatible path the app ends every request with the
+    /// `<environment_context>` block as a user message of its own
+    /// (`chat_stream::push_environment_context_message`). It is not part of the conversation:
+    /// it is rebuilt for each request and never persisted. A check that asks what a request
+    /// ends with, or compares two requests, means the messages before it.
+    pub fn messages_without_environment_tail(&self) -> &[RecordedMessage] {
+        match self.messages.split_last() {
+            Some((last, rest)) if last.is_environment_tail() => rest,
+            _ => &self.messages[..],
+        }
+    }
+
+    /// The newest message of the conversation in this request: the last message that is not
+    /// the environment tail. A user's submit ends with their text, a tool step's follow-up with
+    /// a tool message.
+    pub fn newest_message(&self) -> Option<&RecordedMessage> {
+        self.messages_without_environment_tail().last()
+    }
+
+    /// The text of the last user message, if any (the environment tail is not one: see
+    /// [`Self::messages_without_environment_tail`]).
     pub fn last_user_text(&self) -> Option<&str> {
-        self.messages
+        self.messages_without_environment_tail()
             .iter()
             .rev()
             .find(|m| m.role == RecordedRole::User)

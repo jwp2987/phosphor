@@ -96,7 +96,9 @@ impl Player {
 fn matches(when: &Match, request: &RecordedRequest) -> bool {
     match when {
         Match::Nth { n } => request.index == *n as usize,
-        Match::LastToolResult { id } => request.messages.last().is_some_and(|m| {
+        // The newest message of the conversation: a request's very last message is the
+        // environment tail the app appends, never a tool message.
+        Match::LastToolResult { id } => request.newest_message().is_some_and(|m| {
             m.role == RecordedRole::Tool && m.tool_response_ids.iter().any(|r| r == id)
         }),
         Match::UserContains { token } => request
