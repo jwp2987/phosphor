@@ -1866,11 +1866,63 @@ pub(crate) fn classify_byop_controller_readiness_with_live_tool_calls(
     let mut live_tool_calls_for_context =
         cancellation_live_tool_calls(params, &skipped_cancellation_results);
     live_tool_calls_for_context.extend(live_tool_calls);
+    rekey_live_tool_calls_to_projection(&mut live_tool_calls_for_context, &projection);
     let context = ReadinessContext {
         repair_records: params.byop_repair_state.repair_records().to_vec(),
         live_tool_calls: live_tool_calls_for_context,
     };
     classify_projection(&projection, &context)
+}
+
+/// Gives each live tool call the key the projection uses for the same call.
+///
+/// The projection groups the adjacent tool calls of one reply and keys every call of the group
+/// by the id of the group's FIRST call message (`SerializerProjectionBuilder::push_tool_call`).
+/// The live calls are listed per message (`cancellation_live_tool_calls`, and the controller's
+/// `byop_unfinished_live_tool_calls`), keyed by each call's OWN message id. The classifier
+/// compares whole keys, so the second and later calls of a reply were never found live: a
+/// cancelled result in the input for one of them was not committed (the call got the synthesized
+/// "interrupted" placeholder instead, losing the real result and a Reject's "rejected by the
+/// user" wording, #1942), and one whose action was still pending or running did not make the
+/// request wait for it.
+///
+/// A live call that matches a projected call exactly is left alone. Otherwise it takes the key
+/// of the projected call with the same `(task_id, tool_call_id)`; when that id was used by more
+/// than one reply, the newest one, the only one that can still be live.
+fn rekey_live_tool_calls_to_projection(
+    live_tool_calls: &mut [LiveToolCall],
+    projection: &[ProjectionItem],
+) {
+    use crate::ai::byop_readiness::ProjectionItemKind;
+
+    let mut exact: HashSet<&ToolCallKey> = HashSet::new();
+    let mut newest_by_id: HashMap<(&str, &str), &ToolCallKey> = HashMap::new();
+    for item in projection {
+        let ProjectionItemKind::AssistantToolCalls(tool_calls) = &item.kind else {
+            continue;
+        };
+        for tool_call in tool_calls {
+            exact.insert(&tool_call.key);
+            newest_by_id.insert(
+                (
+                    tool_call.key.task_id.as_str(),
+                    tool_call.key.tool_call_id.as_str(),
+                ),
+                &tool_call.key,
+            );
+        }
+    }
+    for live_tool_call in live_tool_calls {
+        let key = &live_tool_call.tool_call.key;
+        if exact.contains(key) {
+            continue;
+        }
+        if let Some(projected) =
+            newest_by_id.get(&(key.task_id.as_str(), key.tool_call_id.as_str()))
+        {
+            live_tool_call.tool_call.key = (*projected).clone();
+        }
+    }
 }
 
 fn current_input_cancellation_result_keys(params: &RequestParams) -> HashSet<(String, String)> {
@@ -12577,6 +12629,93 @@ mod serializer_readiness_tests {
                 if tool_calls.len() == 1
                     && tool_calls[0].key.tool_call_id == "call-1"
         ));
+    }
+
+    /// A reply with two calls: the first finished (its result is in history), the second was
+    /// cancelled and its result is in the current input. The second call must be committed as
+    /// the real cancellation, whether the request is the automatic follow-up after a Reject
+    /// (no user message) or the user's next message after a Stop. It used to be classified as
+    /// having no result at all (and got the synthesized "interrupted" placeholder), because
+    /// the projection keys the second call by the first call's message id and the live list
+    /// keyed it by its own. Fails on the old code in both shapes.
+    #[test]
+    fn controller_readiness_commits_the_cancellation_of_a_later_call_of_the_reply() {
+        let first_call = make_tool_call_message("task-1", "req-1", "call-1", shell_tool());
+        let second_call = make_tool_call_message("task-1", "req-1", "call-2", shell_tool());
+        assert_ne!(
+            first_call.id, second_call.id,
+            "each call is its own message"
+        );
+        let first_result = make_tool_call_result_message(
+            "task-1",
+            "req-1",
+            "call-1".to_owned(),
+            r#"{"status":"completed","result":"ok"}"#.to_owned(),
+        );
+        let history = vec![first_call, second_call, first_result];
+
+        for input in [
+            vec![cancelled_action_result_input("call-2")],
+            vec![
+                cancelled_action_result_input("call-2"),
+                user_query_input("continue"),
+            ],
+        ] {
+            let with_user_message = input.len() == 2;
+            let report =
+                classify_byop_controller_readiness(&request_params(history.clone(), input));
+            assert!(
+                matches!(
+                    report.state,
+                    ReadinessState::NeedsCancellationCommit { ref tool_calls }
+                        if tool_calls.len() == 1
+                            && tool_calls[0].key.tool_call_id == "call-2"
+                ),
+                "with a user message: {with_user_message}; got {:?}",
+                report.state
+            );
+        }
+    }
+
+    /// The same reply while the second call's action is still pending or running: the request
+    /// waits for it (`PendingToolResults`) instead of inventing a cancelled result for a call
+    /// that is still alive. The controller lists a live call under its own message id.
+    #[test]
+    fn controller_readiness_waits_for_a_live_later_call_of_the_reply() {
+        let first_call = make_tool_call_message("task-1", "req-1", "call-1", shell_tool());
+        let second_call = make_tool_call_message("task-1", "req-1", "call-2", shell_tool());
+        let second_call_message_id = second_call.id.clone();
+        let first_result = make_tool_call_result_message(
+            "task-1",
+            "req-1",
+            "call-1".to_owned(),
+            r#"{"status":"completed","result":"ok"}"#.to_owned(),
+        );
+        let params = request_params(
+            vec![first_call, second_call, first_result],
+            vec![user_query_input("continue")],
+        );
+
+        let report = classify_byop_controller_readiness_with_live_tool_calls(
+            &params,
+            vec![LiveToolCall::new(
+                ToolCallRef::new(
+                    ToolCallKey::new("task-1", second_call_message_id, "call-2"),
+                    kind(),
+                ),
+                LiveToolCallState::Running,
+            )],
+        );
+
+        assert!(
+            matches!(
+                report.state,
+                ReadinessState::PendingToolResults { ref tool_calls }
+                    if tool_calls.len() == 1 && tool_calls[0].key.tool_call_id == "call-2"
+            ),
+            "got {:?}",
+            report.state
+        );
     }
 
     #[test]
