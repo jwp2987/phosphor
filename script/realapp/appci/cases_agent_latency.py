@@ -398,11 +398,10 @@ def stream_keys(ctx, r, fm, need, per=30):
 
 
 def present_mode_ab(ctx, r, fm, n):
-    """design option F (docs/design/render-latency.md), zero code: the streaming key -> frame of this case again with PHOSPHOR_PRESENT_MODE=mailbox and
-    PHOSPHOR_FRAME_LATENCY=1, relaunching per block (render_hops.arm_schedule, like cases_ctrlc_ab) next to a relaunched default arm. Linux only (the launcher
-    that takes App.extra_env; macOS and Windows have no such present-mode switch). METRICS and a note only: the judged run is the default one above.
-    #1843 (docs/design/1843-1848-latency.md): the same blocks also run PHOSPHOR_KEY_FRAME_NOW=0 (arm keynow_off), the kill switch of the key frame drawn
-    ahead of the compositor's frame callback, so the fix (default arm) and the old behaviour are measured in one run."""
+    """the streaming key -> frame of this case again, relaunching per block (render_hops.arm_schedule, like cases_ctrlc_ab): a default arm and
+    PHOSPHOR_KEY_FRAME_NOW=0 (arm keynow_off, #1843, docs/design/1843-1848-latency.md), the kill switch of the key frame drawn ahead of the compositor's frame
+    callback, so the fix and the old behaviour are measured in one run. (Design option F's mailbox and frame-latency-1 arms were dropped after round 8: they changed
+    nothing.) Linux only (the launcher that takes App.extra_env). METRICS and a note only: the judged run is the default one above."""
     if ctx.win or ctx.be.name == "mac" or not hasattr(ctx.app, "extra_env"):
         return
     if os.environ.get("APPCI_RENDER_AB", "1") == "0":

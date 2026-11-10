@@ -16,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "realapp", "appci"))
 import results_scrub
+import lat_evidence                            # the latency cases keep their input_order / frame hop lines
 import glapi                                    # every GitLab call: honours Retry-After / RateLimit-*
 try:
     import lat as appci_lat                       # the regression rule shared with the harness (5 % and 0.5 ms)
@@ -218,7 +219,28 @@ def collect_app(job, dest_root, notes):
             if "/shots/" in "/" + rel or rel.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".webm", ".mov")):
                 continue
             keep.append((n, rel))
+        # latency evidence (owner 2026-11-09): the per-case app log of a latency case, reduced to its hop lines (lat_evidence.py), scrubbed below
+        lat_logs = [(n, n[len(base):]) for n in names if n.startswith(base) and lat_evidence.case_of(n[len(base):])]
         keep += [("appci-out/reused_build.json", "reused_build.json")] if "appci-out/reused_build.json" in names and plat == plats[0] else []
+        budget = lat_evidence.PLATFORM_CAP                      # per platform, so three platforms stay well under check_test_results' 10 MB per run
+        for n, rel in sorted(lat_logs):
+            if budget <= 0:
+                notes.append("%s/%s: latency evidence skipped (platform budget %d KB spent)" % (plat, rel, lat_evidence.PLATFORM_CAP // 1024))
+                continue
+            kept, hits, nkept = lat_evidence.evidence(z.read(n).decode(errors="replace"), min(lat_evidence.CASE_CAP, budget))
+            if not kept:
+                continue
+            budget -= len(kept)
+            text = results_scrub.scrub(kept)
+            try:
+                import ci_env
+                text = ci_env.redact(text, ci_env.get("APPCI_OLLAMA_URL"))
+            except Exception:
+                pass
+            tp = os.path.join(pd, (rel.replace("run/", "", 1) if rel.startswith("run/") else rel)[:-len(".log")] + ".lat.txt")
+            os.makedirs(os.path.dirname(tp), exist_ok=True)
+            open(tp, "w").write(text)
+            info["files"].append(os.path.relpath(tp, dest_root))
         for n, rel in keep:
             raw = z.read(n)
             if len(raw) > 1024 * 1024:
