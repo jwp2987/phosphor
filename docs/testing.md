@@ -3250,6 +3250,7 @@ I5 (`prompt_tests.rs`): the rig has no pty, so I5 drives the real `PromptDetecto
 |---|---|
 | `controller_tests::finished_batch::a_user_stop_after_a_finished_result_sends_no_request` | #1942: `plan_finished_batch` for Stop / Delete / a user shell command / a submit elsewhere over `[completed, rejected]` plans no follow-up, ends `Cancelled`, shows no notice; the same batch with no reason still follows up (#1178) |
 | `response_stream_tests::an_offline_failure_parks_the_retry_and_the_dead_attempts_end_is_not_the_streams_end` | #1943: offline, a pre-action failure parks the retry; the failed attempt's transport ending emits no `AfterStreamFinished`; a Stop while parked emits exactly one |
+| `conversation_tests::a_restored_turn_with_an_unanswered_tool_call_is_cancelled_not_successful`, `..._with_every_tool_call_answered_is_successful` | #1951: a conversation restored with a trailing unanswered client tool call is `Cancelled`; answered calls, a turn that moved on, subagent calls and carrier calls stay `Success` |
 
 Expectation changed on purpose by the owner's "Stop means stop" decision: scenarios that stop (or reject) after an earlier result of the same batch finished used to end `Success` after an automatic follow-up; they now end `Cancelled` with one request fewer (matrix `pairs_*` / `triples_*` `StopAfterFirst`, `RejectLast`, corpus `appr_order_fail_cmd_stop_after_first`). No test asserted the old status.
 
