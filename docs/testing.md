@@ -5187,3 +5187,21 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
   positive of the check: read the scenario before changing an allowance. No appci case was added: the fake model cannot make the app
   lose a call, a batch or a card, which is what the heal is for.
 - **Kill switch.** `PHOSPHOR_AGENT_TURN_SELF_HEAL=0`: faults are logged (`healed=0`), nothing is healed.
+
+## Round 14: the open input-queue issues (design `docs/design/r14-queueres.md`; #1900 #1998 #2047; nothing compiled or run when written)
+
+Kill switches of the round, all in `app/src/terminal/input_queue/switches.rs` (read once per process; `0` / `off` / `false` / `no` turn
+the fix off; `input_queue/switches_tests.rs`: `a_kill_switch_is_off_only_for_the_off_words`, `the_switch_names_are_stable`):
+`PHOSPHOR_QUEUE_KEEP_SYNCED_ORIGIN` (#1900), `PHOSPHOR_SSH_DROP_ACCOUNTS_ENTRIES` (#1998), `PHOSPHOR_YOUNG_HOLD_READER_LOOK` (#2047).
+A switch is read once, so a unit test cannot flip it: each fix has a pure function that takes the switch as an argument, and the
+tests cover both values there.
+
+- **#1900, synced input held in the pane queue keeps `Origin::Synced`.** Unit, `terminal/input_queue/tests.rs`:
+  `a_follow_up_of_a_synced_entry_is_synced_input_too` (`follow_up_origin` for every origin and both switch values; through the queue, a
+  synced entry's re-offered key is `Synced`, a keyboard entry's is `Replay`). View, `terminal/view_test.rs`:
+  `synced_input_held_in_the_pane_queue_keeps_its_synced_origin` (`held_origin_for` for both switch values; behind an Enter that waits
+  for its verdict the user's key is a `Keyboard` entry and synced text and a synced Enter are `Synced` entries, in typed order, nothing
+  written; for an ssh connect a held key is `Keyboard` and a synced one `Synced`). Not covered: a synced pane's relay arriving through
+  `write_to_pty_for_syncing_long_running_commands` while an Enter gate is open (needs a long-running command and an Enter gate in one
+  pane; no fixture builds that today), and the delivery staying passive for such an entry (that half is #1893's
+  `synced_ness_at_delivery_is_the_entrys_not_the_enclosing_arrivals`). No appci case: synced panes are not driven by the harness.

@@ -2260,6 +2260,59 @@ fn a_follow_up_takes_the_stamp_of_the_entry_it_follows() {
     );
 }
 
+/// #1900: what the delivery of a SYNCED entry re-offers is synced input too (a delivery reads the
+/// entry's synced-ness to keep a relay from taking over an agent-run command; as a plain replay
+/// the re-offered part would). Every other origin's follow-up is a replay, as before, and the
+/// kill switch restores the replay for a synced one.
+#[test]
+fn a_follow_up_of_a_synced_entry_is_synced_input_too() {
+    let from = EntryId(3);
+    assert_eq!(follow_up_origin(from, Origin::Synced, true), Origin::Synced);
+    assert_eq!(
+        follow_up_origin(from, Origin::Synced, false),
+        Origin::Replay(from),
+        "PHOSPHOR_QUEUE_KEEP_SYNCED_ORIGIN=0"
+    );
+    for origin in [
+        Origin::Keyboard,
+        Origin::Editor,
+        Origin::Replay(EntryId(1)),
+        Origin::Synthesized,
+        Origin::Held,
+        Origin::Viewer,
+        Origin::CliSubmit,
+        Origin::Agent,
+        Origin::ReleasedFrom(GateKind::PromptSeen),
+    ] {
+        assert_eq!(
+            follow_up_origin(from, origin, true),
+            Origin::Replay(from),
+            "{origin:?}"
+        );
+    }
+
+    // Through the queue: the delivered synced entry re-offers a key and closes the queue behind
+    // itself, so the re-offered key stays queued and its origin can be read.
+    for (origin, expected) in [
+        (Origin::Synced, Origin::Synced),
+        (Origin::Keyboard, Origin::Replay(EntryId(1))),
+    ] {
+        let mut q = InputQueue::new();
+        let mut h = MockHost::new();
+        h.scripted.insert(
+            EntryId(1),
+            vec![
+                ScriptedFollow::Offer(text("follow")),
+                ScriptedFollow::OpenGate(GateSpec::new(GateKind::EnterVerdict, 5).with_cap(None)),
+            ],
+        );
+        q.offer_with_origin(&mut h, text("a"), origin);
+        assert_eq!(h.delivered_ids(), vec![1], "{origin:?}");
+        let queued: Vec<_> = q.entries().map(|entry| (entry.id, entry.origin)).collect();
+        assert_eq!(queued, vec![(EntryId(2), expected)], "{origin:?}");
+    }
+}
+
 #[test]
 fn a_guard_stamps_arrivals_from_the_panes_route_state_and_the_mailbox_keeps_its_stamp() {
     let pane = PaneQueue::new();

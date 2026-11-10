@@ -40280,6 +40280,15 @@ impl pane_key::TypedRouteProbes for TypedKeyProbes<'_, '_> {
             return false;
         }
         let characters = self.characters;
+        // #1900: synced input keeps its origin behind the Enter's gate (a relay must stay passive
+        // when it is delivered).
+        if self.view.held_input_origin() == input_queue::Origin::Synced {
+            return self.view.queue_synced_behind_enter(
+                AfterEnterInput::Text(characters.to_string()),
+                None,
+                self.ctx,
+            );
+        }
         self.view.input.update(self.ctx, |input, ctx| {
             input.queue_behind_enter(AfterEnterInput::Text(characters.to_string()), ctx)
         })

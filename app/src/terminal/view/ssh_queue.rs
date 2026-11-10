@@ -171,6 +171,8 @@ impl TerminalView {
         let (class, text) = input.into_parts();
         trace::hold(trace::legacy::SSH, len);
         let kind = EntryKind::Held { class, text };
+        // #1900: synced input held for the connect stays synced (passive at the hand-over).
+        let origin = self.held_input_origin();
         // `try_lock_ordered`: an offer recorded in the mailbox earlier (a key held while the queue
         // was busy) must not be overtaken by this one, so with anything deferred this key is
         // deferred behind it. Not flushed here: a deferred hand-over could run first and a gate it
@@ -179,13 +181,13 @@ impl TerminalView {
             // Held in order by the next operation (never dropped, never written as typed).
             queue.defer(Deferred::Offer {
                 kind,
-                origin: Origin::Keyboard,
+                origin,
                 stamp: queue.stamp_now(),
             });
             return SshTypeaheadPush::Held;
         };
         let mut host = PtyQueueHost::new(self, ctx);
-        guard.offer(&mut host, kind);
+        guard.offer_with_origin(&mut host, kind, origin);
         SshTypeaheadPush::Held
     }
 
@@ -211,7 +213,8 @@ impl TerminalView {
         });
         queue.defer(Deferred::Offer {
             kind: EntryKind::Held { class, text },
-            origin: Origin::Keyboard,
+            // #1900: synced input held for the connect stays synced.
+            origin: self.held_input_origin(),
             stamp: queue.stamp_now(),
         });
         SshTypeaheadPush::Held

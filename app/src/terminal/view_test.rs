@@ -30839,6 +30839,109 @@ fn synced_ness_at_delivery_is_the_entrys_not_the_enclosing_arrivals() {
     })
 }
 
+/// #1900: synced input that waits in the pane queue is still synced input when it is delivered.
+/// Behind an Enter's gate it was offered by the input's own route as a keyboard entry, and for an
+/// ssh connect as a keyboard `Held` entry; the delivery reads the entry's origin
+/// (`delivering_synced`), so the relay took over an agent-run command in the synced pane. The
+/// user's own keys are keyboard entries, as before, and so is everything with the kill switch
+/// off (`held_origin_for(_, false)`).
+#[test]
+fn synced_input_held_in_the_pane_queue_keeps_its_synced_origin() {
+    use crate::terminal::input_queue::{GateKind, Origin};
+    assert_eq!(dest_table::held_origin_for(true, true), Origin::Synced);
+    assert_eq!(dest_table::held_origin_for(false, true), Origin::Keyboard);
+    assert_eq!(
+        dest_table::held_origin_for(true, false),
+        Origin::Keyboard,
+        "PHOSPHOR_QUEUE_KEEP_SYNCED_ORIGIN=0"
+    );
+    assert_eq!(dest_table::held_origin_for(false, false), Origin::Keyboard);
+
+    // Behind an Enter that waits for its verdict.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            assert!(
+                !view.queue_synced_behind_enter(AfterEnterInput::Text("x".to_owned()), None, ctx),
+                "no Enter gate: nothing is queued, the caller goes on"
+            );
+            let queue = view.paste_queue.queue.clone();
+            assert!(queue.borrow().is_idle());
+            view.input.update(ctx, |input, ctx| {
+                input.open_waiting_enter_gate_for_test(ctx);
+                // The user's own key, by the input's route.
+                assert!(input.queue_behind_enter(AfterEnterInput::Text("u".to_owned()), ctx));
+            });
+            assert_eq!(view.held_input_origin(), Origin::Keyboard);
+            {
+                let _synced = dest_table::set_arrival_origin(Origin::Synced);
+                assert_eq!(view.held_input_origin(), Origin::Synced);
+                assert!(view.queue_synced_behind_enter(
+                    AfterEnterInput::Text("ab".to_owned()),
+                    None,
+                    ctx
+                ));
+                assert!(view.queue_synced_behind_enter(AfterEnterInput::Enter, None, ctx));
+            }
+            let held: Vec<_> = queue
+                .borrow()
+                .entries()
+                .map(|entry| (entry.kind.tag(), entry.kind.len(), entry.origin))
+                .collect();
+            assert_eq!(
+                held,
+                vec![
+                    ("text", 1, Origin::Keyboard),
+                    ("text", 2, Origin::Synced),
+                    ("enter", 0, Origin::Synced),
+                ],
+                "typed order, each with the origin it arrived with"
+            );
+            assert!(queue.borrow().has_gate_kind(GateKind::EnterVerdict));
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "held, not written: {:?}",
+            pty_writes.borrow()
+        );
+    });
+
+    // Held for an ssh connect.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(
+                view.ssh_hold_push(HeldInput::Typed("me".to_owned()), ctx),
+                SshTypeaheadPush::Held
+            );
+            {
+                let _synced = dest_table::set_arrival_origin(Origin::Synced);
+                assert_eq!(
+                    view.ssh_hold_push(HeldInput::Typed("them".to_owned()), ctx),
+                    SshTypeaheadPush::Held
+                );
+            }
+            let queue = view.paste_queue.queue.clone();
+            assert!(queue.borrow().has_gate_kind(GateKind::SshConnect));
+            let held: Vec<_> = queue
+                .borrow()
+                .entries()
+                .map(|entry| (entry.kind.tag(), entry.kind.len(), entry.origin))
+                .collect();
+            assert_eq!(
+                held,
+                vec![("held", 2, Origin::Keyboard), ("held", 4, Origin::Synced)]
+            );
+            // Nothing of this test's connect is left for another.
+            view.ssh_hold_clear();
+            assert!(queue.borrow().is_idle());
+        });
+    });
+}
+
 /// #1431: the agent's pty writes are refused while a subshell / PowerShell setup is in progress
 /// (they would land in the bootstrap); outside of one they go out as before.
 #[test]
