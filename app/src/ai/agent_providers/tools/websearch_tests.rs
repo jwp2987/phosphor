@@ -222,25 +222,42 @@ async fn handles_multiple_data_lines() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Real-endpoint smoke tests (enabled by default; set WARP_SKIP_WEB_INTEGRATION=1 when CI
-// network access is restricted)
+// Live check against the real endpoint. NOT a unit test: owner decision 2026-11-10, unit tests
+// never reach the real search endpoint (#2022). It is `#[ignore]`d, so no unit run (nextest or
+// `cargo test`, CI or local) executes it, and it also wants `WARP_RUN_WEB_INTEGRATION` set (the
+// switch of the live webfetch checks), so a `--run-ignored all` sweep sends nothing either.
+//
+// By hand, on a machine that may reach the network (never the unit job):
+//
+//     WARP_RUN_WEB_INTEGRATION=1 script/agent-cargo <name> nextest run -p warp -p warp_tui \
+//         --lib --features warp/gui --run-ignored only real_exa_anonymous_search
+//
+// (`cargo test`: `... -- --ignored real_exa_anonymous_search`.) docs/testing.md, "Live checks".
 // ---------------------------------------------------------------------------
 
-fn skip_real() -> bool {
-    std::env::var("WARP_SKIP_WEB_INTEGRATION").is_ok()
-}
+/// The opt-in of the live web checks (`webfetch_tests.rs` reads the same variable).
+const LIVE_WEB_ENV: &str = "WARP_RUN_WEB_INTEGRATION";
 
 #[tokio::test]
+#[ignore = "live network (the real Exa endpoint): never in a unit run (#2022). By hand: WARP_RUN_WEB_INTEGRATION=1 and --run-ignored only real_exa_anonymous_search, see docs/testing.md \"Live checks\""]
 async fn real_exa_anonymous_search() {
-    if skip_real() {
-        return;
-    }
+    // Asked for by name without the opt-in: say so instead of reporting a pass that checked
+    // nothing, and send nothing.
+    assert!(
+        std::env::var(LIVE_WEB_ENV).is_ok(),
+        "real_exa_anonymous_search is a live check of the real Exa endpoint: set {LIVE_WEB_ENV}=1 \
+         to run it (nothing was sent)"
+    );
     let client = build_client();
+    // The one place a test names the real endpoint. `run_websearch` refuses a unit test that
+    // passes no override (#2022), so the URL the app would use with no key is passed outright:
+    // the request, the network gate and the parser are the app's own.
+    let real_endpoint = exa::endpoint_url(None);
     let out = run_websearch(
         &client,
         search_args("rust async runtime tutorial"),
         None,
-        None,
+        Some(&real_endpoint),
     )
     .await;
     // The anonymous Exa tier is rate limited per source address, and the CI runners share one:

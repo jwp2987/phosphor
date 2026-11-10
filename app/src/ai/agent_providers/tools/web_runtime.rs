@@ -679,7 +679,10 @@ pub async fn run_websearch(
     // #2022: a unit test never reaches the real search endpoint. A test of this function passes
     // a loopback `endpoint_override` (mockito); a test that goes through the dispatcher is
     // answered by `search_test_hook` before it gets here. Anything else is refused before the
-    // request is built, so a new test cannot start sending queries by accident.
+    // request is built, so a new test cannot start sending queries by accident. The one test
+    // that names the real endpoint is the live check `websearch_tests::real_exa_anonymous_search`:
+    // `#[ignore]`d and behind `WARP_RUN_WEB_INTEGRATION`, so it is in no unit run (owner
+    // decision 2026-11-10).
     #[cfg(test)]
     {
         if endpoint_override.is_none() {
