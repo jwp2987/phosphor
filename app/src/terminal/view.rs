@@ -22672,8 +22672,17 @@ impl TerminalView {
                 if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
                     model.expect_setup_line_clear_echo();
                 }
-                for line in &all_lines {
-                    model.expect_setup_echo(line);
+                // Only the line written NOW is expected; each later line is expected when it is
+                // written (`write_subshell_bootstrap_line`). With every line expected up front,
+                // the filter waited for line 1 while line 1 was still unwritten: every setup line
+                // begins with a space, so the space that ends the shell's own prompt (`$ `) after
+                // line 0's marker was swallowed as the start of line 1's echo. That hid the
+                // prompt's space, read as "half a setup line echoed" (`is_setup_echo_mid_line`),
+                // and so vetoed the write of line 1 for good (`stage_two_may_follow`): the probe
+                // of a dash at a `$ ` prompt stalled until the quiet net (round 9 macOS,
+                // `subshell_sh_probe`).
+                if let Some(first) = all_lines.first() {
+                    model.expect_setup_echo(first);
                 }
             }
         }
@@ -23252,12 +23261,19 @@ impl TerminalView {
         if in_flight.generation != generation {
             return;
         }
+        // PowerShell redraws its lines itself: no echo filter (`after_prompt` is "not PowerShell").
+        let expects_echo = in_flight.after_prompt;
         let block_unchanged =
             self.model.lock().block_list().active_block().id() == &in_flight.block_id;
         if !block_unchanged {
             self.model.lock().clear_setup_echo();
             self.finish_subshell_bootstrap(ctx);
             return;
+        }
+        // The tty echoes this line from now on: expected now, not before (see
+        // `write_init_subshell_bytes_to_pty`).
+        if expects_echo {
+            self.model.lock().expect_setup_echo(&line);
         }
         self.write_to_pty(line.into_bytes(), ctx);
         self.write_to_pty(vec![escape_sequences::C0::CR], ctx);

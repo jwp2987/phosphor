@@ -33075,6 +33075,114 @@ fn a_dash_with_an_empty_ps1_is_written_at_once_and_its_probe_line_follows_the_ma
     }
 }
 
+/// Round 9 (macOS `subshell_sh_probe`, the first run of the #1905 pacing against a dash that draws
+/// a prompt): a dash at a `$ ` prompt. The probe's prelude goes out, the cooked tty echoes it, dash
+/// runs it (the marker) and draws `$ ` again. The probe's second line must follow on THAT look. It
+/// did not: both lines' echoes were expected from the first write, every setup line begins with a
+/// space, so the space ending `$ ` was swallowed as the start of the unwritten second line's echo;
+/// the filter said "mid line", `stage_two_may_follow` vetoed, dash printed nothing more, and the
+/// keys typed meanwhile stayed held until the 30 s quiet net handed them to the editor. Each line's
+/// echo is now expected when the line is written. One burst and two (the marker, then the prompt);
+/// the second line's own echo is still recognised. Legacy and Table.
+#[test]
+fn a_dash_prompt_drawn_after_the_preludes_marker_is_not_taken_for_the_probe_lines_echo() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for one_burst in [true, false] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = collect_pty_writes(&mut app, &terminal);
+                let (token, lines, tty) = terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().simulate_long_running_block("dash", "");
+                    let tty = install_subshell_tty_for_test(view, dash_cooked());
+                    view.model.lock().process_bytes("$ ");
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::Banner { shell_type: None },
+                        ctx,
+                    );
+                    assert_eq!(readiness_state(view), "written", "{mode:?}: idle dash");
+                    let token = readiness_token(view);
+                    let lines = init_subshell_command_lines_with_markers(
+                        None,
+                        &[],
+                        SessionId::from(token),
+                        true,
+                        ctx,
+                    );
+                    (token, lines, tty)
+                });
+                assert_eq!(lines.len(), 2, "{mode:?}: the prelude and the probe line");
+                assert_eq!(setup_lines_written(&pty_writes), 1, "{mode:?}: the prelude");
+                terminal.update(&mut app, |view, ctx| {
+                    // The cooked tty's echo of the prelude, through its line feed; dash has not
+                    // run it yet.
+                    let mut unread = dash_cooked();
+                    unread.queue_empty = Some(false);
+                    *tty.lock() = unread;
+                    let echo = format!(
+                        "{}{}\r\n",
+                        crate::terminal::model::setup_echo_filter::LINE_CLEAR_ECHO,
+                        lines[0]
+                    );
+                    view.model.lock().process_bytes(echo.as_str());
+                    output_wakeup(view, ctx);
+                    assert_eq!(view.model.lock().setup_echo_lines_ended(), 1, "{mode:?}");
+                });
+                assert_eq!(
+                    setup_lines_written(&pty_writes),
+                    1,
+                    "{mode:?}: no marker yet"
+                );
+                terminal.update(&mut app, |view, ctx| {
+                    // dash ran the prelude: its marker, then its prompt.
+                    *tty.lock() = dash_cooked();
+                    let marker = format!("\x1b]7771;{token};0\x07");
+                    if one_burst {
+                        view.model
+                            .lock()
+                            .process_bytes(format!("{marker}$ ").as_str());
+                    } else {
+                        // The marker alone, with the prelude's own bytes still counted unread:
+                        // nothing yet. Then the prompt.
+                        let mut unread = dash_cooked();
+                        unread.queue_empty = Some(false);
+                        *tty.lock() = unread;
+                        view.model.lock().process_bytes(marker.as_str());
+                        output_wakeup(view, ctx);
+                        *tty.lock() = dash_cooked();
+                        view.model.lock().process_bytes("$ ");
+                    }
+                    output_wakeup(view, ctx);
+                    assert!(
+                        !view.model.lock().is_setup_echo_mid_line(),
+                        "{mode:?} one_burst={one_burst}: the prompt is dash's, not our echo"
+                    );
+                });
+                assert_eq!(
+                    setup_lines_written(&pty_writes),
+                    2,
+                    "{mode:?} one_burst={one_burst}: the probe line follows the prompt after the marker"
+                );
+                terminal.update(&mut app, |view, _| {
+                    // The probe line's own echo is expected from its write on, and recognised.
+                    view.model
+                        .lock()
+                        .process_bytes(format!("{}\r\n", lines[1]).as_str());
+                    assert_eq!(
+                        view.model.lock().setup_echo_lines_ended(),
+                        2,
+                        "{mode:?} one_burst={one_burst}: the second line's echo was matched"
+                    );
+                });
+            })
+        }
+    }
+}
+
 /// #1935, "reader idle" (owner decision 2026-11-09): an empty-PS1 dash the user typed a line into
 /// before the setup was written. No prompt will ever prove the line was run, so the proof is the
 /// OS's: while dash runs the line (`reader_blocked == Some(false)`) nothing is written; at the look
