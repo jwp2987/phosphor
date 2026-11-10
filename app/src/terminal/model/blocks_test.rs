@@ -4272,3 +4272,145 @@ fn test_serialized_blocks_for_shell_restart_keeps_restored_and_run_commands() {
     assert_eq!(carried.len(), 3, "{carried:?}");
     assert!(carried[2].contains("ping example.com"), "{carried:?}");
 }
+
+/// The block list of `precmd_secret_honor_ps1` at its question, in an agent conversation: a
+/// command ran, its Precmd was parsed, and a precmd function printed `vault pin: ` ahead of the
+/// prompt. That is early output: a background block, which belongs to no conversation.
+/// Returns the list, the conversation's scope and the question's block.
+fn block_list_with_a_precmd_question(
+    channel_event_proxy: ChannelEventListener,
+) -> (BlockList, TranscriptScope, BlockIndex) {
+    let mut block_list = new_bootstrapped_block_list(None, None, channel_event_proxy);
+    command_finished_and_precmd(&mut block_list);
+    insert_block(&mut block_list, "touch go.txt", "");
+    let scope = TranscriptScope::Conversation(AIConversationId::new());
+    block_list.set_transcript_scope(scope);
+    assert!(
+        !block_list.show_question_of_tty_reader(true),
+        "nothing is printed yet: there is no block to show"
+    );
+    assert!(block_list.tty_reader_question_block().is_none());
+    input_string(&mut block_list, "vault pin: ");
+    let question = block_list
+        .background_block_mut()
+        .expect("the question is early output: a background block")
+        .index();
+    (block_list, scope, question)
+}
+
+/// #2053 (owner decision 2026-11-10): an agent conversation shows the question a precmd function
+/// asks ONLY WHILE something reads the tty. Round 12, agent pass: `question_on_screen_hp0 = false`,
+/// the background block that holds `vault pin: ` has height 0 in the conversation's scope. While
+/// the reader waits the block has its height there (and the cached heights follow at once, no
+/// frame-time rebuild); when the reader is over it is hidden again. Asking twice changes nothing.
+#[test]
+fn a_tty_readers_question_is_shown_in_a_conversation_only_while_the_reader_waits() {
+    let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+    let (mut block_list, scope, question) =
+        block_list_with_a_precmd_question(ChannelEventListener::new_for_test());
+    let visible =
+        |block_list: &BlockList| block_list.block_at(question).unwrap().is_visible(&scope);
+    let hidden_height = block_list.block_heights().summary().height;
+    assert!(
+        !visible(&block_list),
+        "the round 12 state: the conversation hides the question"
+    );
+
+    assert!(block_list.show_question_of_tty_reader(true));
+    assert!(
+        visible(&block_list),
+        "the reader waits: the question is shown"
+    );
+    assert!(block_list.block_at(question).unwrap().shown_to_tty_reader());
+    let shown_height = block_list.block_heights().summary().height;
+    assert!(
+        shown_height > hidden_height,
+        "the cached heights hold the question's block: {shown_height:?} vs {hidden_height:?}"
+    );
+    assert_eq!(
+        block_list.tty_reader_question_block(),
+        Some(block_list.block_at(question).unwrap().id())
+    );
+    assert!(
+        !block_list.show_question_of_tty_reader(true),
+        "asked again while it waits: nothing changes"
+    );
+    assert_eq!(block_list.block_heights().summary().height, shown_height);
+
+    // What the read's answer leaves (the function's `echo`) grows the same block.
+    block_list.carriage_return();
+    block_list.linefeed();
+    assert!(visible(&block_list));
+
+    assert!(block_list.show_question_of_tty_reader(false));
+    assert!(
+        !visible(&block_list),
+        "the reader is over: no command of the conversation produced this block"
+    );
+    assert!(!block_list.block_at(question).unwrap().shown_to_tty_reader());
+    assert!(block_list.tty_reader_question_block().is_none());
+    assert_eq!(block_list.block_heights().summary().height, hidden_height);
+    assert!(!block_list.show_question_of_tty_reader(false));
+}
+
+/// #2053: the terminal scope shows a background block with or without a reader; the look changes
+/// no height there, and leaving the conversation while a reader waits keeps the block on screen.
+#[test]
+fn a_tty_readers_question_changes_nothing_in_the_terminal_scope() {
+    let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+    let (mut block_list, _scope, question) =
+        block_list_with_a_precmd_question(ChannelEventListener::new_for_test());
+    block_list.set_transcript_scope(TranscriptScope::Terminal);
+    let terminal = TranscriptScope::Terminal;
+    assert!(block_list.block_at(question).unwrap().is_visible(&terminal));
+    let height = block_list.block_heights().summary().height;
+
+    assert!(block_list.show_question_of_tty_reader(true));
+    assert!(block_list.block_at(question).unwrap().is_visible(&terminal));
+    assert_eq!(block_list.block_heights().summary().height, height);
+    assert!(block_list.show_question_of_tty_reader(false));
+    assert!(block_list.block_at(question).unwrap().is_visible(&terminal));
+    assert_eq!(block_list.block_heights().summary().height, height);
+}
+
+/// #2053: a block that is finished is no question a reader waits at. The next command's end
+/// finishes the background block; if the view has not yet told the list that the reader is over,
+/// the list hides the block in the conversation itself, BEFORE it decides whether the block is
+/// saved: a block no conversation owns is not reported as completed there, exactly as before.
+/// A reader noted after that finds no block of the old question to show.
+#[test]
+fn a_finished_question_block_is_hidden_in_the_conversation_and_not_reported() {
+    let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let (mut block_list, scope, question) = block_list_with_a_precmd_question(
+        ChannelEventListener::builder_for_test()
+            .with_terminal_events_tx(events_tx)
+            .build(),
+    );
+    assert!(block_list.show_question_of_tty_reader(true));
+    while events_rx.try_recv().is_ok() {}
+
+    insert_block(&mut block_list, "echo next", "next");
+
+    let block = block_list.block_at(question).unwrap();
+    assert!(block.finished());
+    assert!(!block.shown_to_tty_reader());
+    assert!(!block.is_visible(&scope));
+    assert!(block_list.tty_reader_question_block().is_none());
+    let mut background_completed = 0;
+    while let Ok(event) = events_rx.try_recv() {
+        if let Event::AfterBlockCompleted(content) = event
+            && matches!(content.block_type, BlockType::Background(_))
+        {
+            background_completed += 1;
+        }
+    }
+    assert_eq!(
+        background_completed, 0,
+        "hidden in the conversation when it finished: not reported, as before #2053"
+    );
+    assert!(
+        !block_list.show_question_of_tty_reader(true),
+        "the old question's block is finished and nothing is printed at the new prompt"
+    );
+}

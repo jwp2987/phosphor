@@ -85,6 +85,22 @@ def enter_text_logged(log_text):
     return any('buffer="' in ln for ln in ls)
 
 
+def question_in(ocr_text):
+    """pure: is the question's word in an OCR text (case and line breaks ignored)?"""
+    return QUESTION_WORD in " ".join((ocr_text or "").lower().split())
+
+
+def asked_look_is_judged(mode, win):
+    """pure: (judged, why) for the look taken BEFORE a key is typed. Terminal mode: judged everywhere (a background block is drawn under the last command).
+    Agent mode (#2053): the conversation shows the question only while a reader ahead of the line editor is noted. Where the tty is sampled (not Windows) that
+    is at the question's output, so the look is judged; on ConPTY the reader is noted at the first key or the hold's cap, so this look is recorded only."""
+    if mode != "agent":
+        return True, "terminal mode"
+    if win:
+        return False, "agent mode on ConPTY: the reader is noted at the first key"
+    return True, "agent mode: the reader is noted from the tty at the question's output"
+
+
 def arm_plan(honor_now, is_bash, want_honor):
     """pure: does the arm need a relaunch before it runs? Only a bash pane already in the wanted prompt mode runs as it is."""
     return not (is_bash and honor_now is want_honor)
@@ -144,24 +160,43 @@ def pin_scenario(ctx, r, tag, n):
                    "[%s] the precmd function never reached its `read` after `touch %s` (no %s): the PIN was NOT typed" % (tag, n["go"], n["asked"])):
         return
     time.sleep(0.6)
-    # Is the question on screen? Read from the code it is, in either prompt mode: what is printed between the Precmd and the prompt is early output, drawn as its
-    # own block. In an agent conversation such a block belongs to no command of the conversation; whether the view shows it there is recorded, not judged.
+    # Is the question on screen? What is printed between the Precmd and the prompt is early output, drawn as its own block, in either prompt mode. In an agent
+    # conversation such a block belongs to no command of the conversation and was hidden (#2053, round 12: false in the agent pass); the app now shows it there
+    # while a reader ahead of the line editor has the keys. Where the app samples the tty (Linux, macOS: #2050) that reader is noted at the question's own
+    # output, so the question is judged here, before a key, in both modes. On ConPTY the reader is noted from the screen at the first key or at the prompt
+    # hold's cap (#2038): in the agent pass this first look is recorded and the look after the first half of the PIN (below) is the judged one.
+    judged, where = asked_look_is_judged(ctx.mode, ctx.win)
     txt = ctx.ocr("pp_%s_asked" % tag)
     if txt is None:
         ctx.shot("pp_%s_asked" % tag)
         r.note("[%s] no OCR engine: whether the question is drawn is in the screenshot pp_%s_asked only" % (tag, tag))
     else:
-        seen = QUESTION_WORD in " ".join(txt.lower().split())
+        seen = question_in(txt)
         r.metric("question_on_screen_%s" % tag, seen)
-        if ctx.mode == "agent":
-            if not seen:
-                r.note("[%s] the question %r was not found on screen by OCR in the agent conversation (shots/..pp_%s_asked): recorded, not judged" % (tag, QUESTION, tag))
-        else:
-            r.check(seen, "[%s] the question %r is not on screen while the shell waits for the PIN (OCR of pp_%s_asked): the user cannot see what is asked" % (tag, QUESTION, tag))
+        if judged:
+            r.check(seen, "[%s] the question %r is not on screen while the shell waits for the PIN (OCR of pp_%s_asked, %s): the user cannot see what is asked"
+                    % (tag, QUESTION, tag, where))
+        elif not seen:
+            r.note("[%s] the question %r was not found on screen by OCR before a key was typed (shots/..pp_%s_asked; %s): recorded here, judged after the first "
+                   "half of the PIN" % (tag, QUESTION, tag, where))
     off = ctx.log_size()
     ctx.be.type(pin[:half], ctx.rng.randint(10, 25))
     time.sleep(HOLD_GIVE_UP_S + 1.2)      # past the give-up cap the first key armed (ConPTY); elsewhere just a user who pauses in the middle of a PIN
-    ctx.shot("pp_%s_after_pause" % tag)
+    if ctx.mode == "agent":
+        # #2053: half of the PIN is typed and the `read` still waits. The question must be on screen in the conversation on every platform (the only judged
+        # look of the agent pass on ConPTY), and the keys must not be: a `read -s` echoes nothing, and the PIN in the input editor is the #2050 failure.
+        txt = ctx.ocr("pp_%s_after_pause" % tag)
+        if txt is None:
+            ctx.shot("pp_%s_after_pause" % tag)
+            r.note("[%s] no OCR engine: whether the question is drawn while the PIN is typed is in the screenshot pp_%s_after_pause only" % (tag, tag))
+        else:
+            seen = question_in(txt)
+            r.metric("question_on_screen_typing_%s" % tag, seen)
+            r.check(seen, "[%s] the question %r is not on screen in the agent conversation after half of the PIN was typed and while the `read` waits (OCR of "
+                    "pp_%s_after_pause): the user answers a question they cannot see (#2053; app log: no `hop=reader_question_in_conversation shown=true` "
+                    "means no reader was noted or no block was found)" % (tag, QUESTION, tag))
+    else:
+        ctx.shot("pp_%s_after_pause" % tag)
     ctx.be.type(pin[half:], ctx.rng.randint(10, 25), enter=True)
     ok = ctx.until(lambda: ctx.lines(n["pin"]) == [pin], 20, step=0.3)
     ctx.shot("pp_%s_done" % tag)
@@ -186,7 +221,8 @@ def pin_scenario(ctx, r, tag, n):
 def c_precmd_secret_honor_ps1(ctx, r):
     """#1923 with the shell's own prompt: a bash precmd function's `read -s -p "vault pin: "`, the PIN typed in two halves around a pause longer than the prompt
     hold's give-up. Arm hp0: honor PS1 off (the app's prompt). Arm hp1: honor PS1 on (settings.toml terminal.input.honor_ps1 = true, app relaunched; the pane
-    itself reports WARP_HONOR_PS1=1). Per arm: the question is on screen (terminal mode; recorded in agent mode), the `read` got the PIN whole and in order, no
+    itself reports WARP_HONOR_PS1=1). Per arm: the question is on screen (both modes; #2053: in an agent conversation while the read waits, judged before a key
+    where the tty is sampled and after the first half of the PIN everywhere), the `read` got the PIN whole and in order, no
     Enter found the PIN in the input editor, no command the shell received holds it, and the next typed line runs. The settings file is put back at the end."""
     if ctx.win and ctx.pane != "gitbash":
         r.skip("bash panes only (a precmd function's `read -s`): on Windows the Git Bash pane")

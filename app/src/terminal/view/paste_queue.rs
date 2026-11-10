@@ -1058,6 +1058,8 @@ impl TerminalView {
                 warpui::input_order::log_hop("prompt_hold_screen_asks", || {
                     format!("hold={key} reader_noted={noted}")
                 });
+                // #2053: the question is shown in an agent conversation from here.
+                self.show_question_of_tty_reader("cap", ctx);
                 self.release_queued_prompt_hold(key, PromptHoldEnd::GaveUp, ctx);
                 return;
             }
@@ -2274,6 +2276,58 @@ impl TerminalView {
             self.terminal_focus_redetermine_deferred = true;
         }
         true
+    }
+
+    /// #2053 (owner decision 2026-11-10): an agent conversation shows the question a reader ahead
+    /// of the shell's line editor asks, ONLY WHILE that reader has the keys. The question (a
+    /// precmd function's `vault pin: `) is printed between a Precmd and the line editor, so it is
+    /// early output in a background block; such a block belongs to no command of the
+    /// conversation and agent view hides it. With #2050 the keys reach the `read`, but the user
+    /// answered a question they could not see.
+    ///
+    /// The fact is the hand-off's noted reader (`prompt_reader_asks`): on Unix it is noted from
+    /// the tty (#2050: canonical, echo off) at the question's output, on ConPTY from the screen
+    /// (#2038) at a key or at the prompt hold's cap. While it is noted the block list shows the
+    /// background block receiving output in any conversation scope
+    /// (`BlockList::show_question_of_tty_reader`); the events that end the reader (the line
+    /// editor's signal, a Preexec, the next Precmd, a new session) are all parsed pty output, so
+    /// the wakeup that follows finds the reader gone and hides the block there again.
+    ///
+    /// Asked at a terminal wakeup (`site` "output": a question is output, and so is every event
+    /// that ends a reader), where the screen fact notes a reader at the prompt hold's cap (`site`
+    /// "cap", ConPTY) and at a key (`site` "key": the pane's sink giving it to a secret reader, or
+    /// the write path where ConPTY notes its reader; there only while a reader is noted and no
+    /// block is shown for it yet, e.g. the wakeup's look found the model busy). No clock, and the
+    /// model is never waited for. The terminal scope shows the block
+    /// either way. Kill switch: `PHOSPHOR_READER_QUESTION_IN_AGENT_VIEW=0`.
+    pub(super) fn show_question_of_tty_reader(
+        &mut self,
+        site: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let waiting =
+            self.reader_question_in_agent_view && self.handoff.read().prompt_reader_asks();
+        if !waiting && !self.reader_question_looked_for {
+            return;
+        }
+        if waiting && self.reader_question_shown && site == "key" {
+            return;
+        }
+        let Some(mut model) = self.model.try_lock() else {
+            return;
+        };
+        let block_list = model.block_list_mut();
+        let changed = block_list.show_question_of_tty_reader(waiting);
+        let shown = block_list.tty_reader_question_block().is_some();
+        drop(model);
+        self.reader_question_looked_for = waiting;
+        self.reader_question_shown = shown;
+        if changed {
+            warpui::input_order::log_hop("reader_question_in_conversation", || {
+                format!("site={site} shown={shown}")
+            });
+            ctx.notify();
+        }
     }
 
     /// #1584: the give-up of prompt hold `hold_id` with keys that may go back to the editor: the
