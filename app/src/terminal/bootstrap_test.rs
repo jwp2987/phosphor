@@ -4169,6 +4169,59 @@ fn a_plain_bash_subshell_of_an_msys2_session_sources_its_bootstrap() {
     ));
 }
 
+/// Owner decision 2026-11-10: a plain `bash` typed into a Windows-native pane shell (PowerShell,
+/// cmd) is a Windows bash unless it reports a WSL distribution, so its bootstrap is sourced like
+/// that of a Git Bash pane's subshell (#2025's uncovered case). The pane-shell half of the rule.
+#[test]
+fn a_plain_bash_under_a_windows_native_pane_shell_is_a_windows_bash() {
+    use crate::terminal::ShellLaunchData;
+
+    let msys2 = ShellLaunchData::MSYS2 {
+        executable_path: "C:\\Program Files\\Git\\bin\\bash.exe".into(),
+        shell_type: ShellType::Bash,
+    };
+    let pwsh = ShellLaunchData::Executable {
+        executable_path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe".into(),
+        shell_type: ShellType::PowerShell,
+    };
+    let wsl = ShellLaunchData::WSL {
+        distro: "Ubuntu".to_owned(),
+    };
+    // Git Bash pane: as before, on any platform the fact is reported from.
+    assert!(pane_shell_runs_windows_bash(Some(&msys2), false, true));
+    assert!(pane_shell_runs_windows_bash(Some(&msys2), false, false));
+    // PowerShell / cmd pane on Windows.
+    assert!(pane_shell_runs_windows_bash(Some(&pwsh), false, true));
+    // The same launch data off Windows is a unix shell: its `bash` reads no Windows path.
+    assert!(!pane_shell_runs_windows_bash(Some(&pwsh), false, false));
+    // A pane shell that says it is WSL, a WSL pane, and a session with no launch data (a
+    // subshell, an ssh session: the chain walk goes on past it or stops).
+    assert!(!pane_shell_runs_windows_bash(Some(&pwsh), true, true));
+    assert!(!pane_shell_runs_windows_bash(Some(&wsl), true, true));
+    assert!(!pane_shell_runs_windows_bash(Some(&wsl), false, true));
+    assert!(!pane_shell_runs_windows_bash(None, false, true));
+}
+
+/// The subshell half: the bash init script now reports `wsl_name` (as the zsh one does), which is
+/// what keeps the WSL launcher's bash, started by the same plain `bash` from a PowerShell pane,
+/// on the typed bootstrap. The script must carry the field, as valid JSON whatever the variable holds.
+#[test]
+fn the_bash_subshell_init_script_reports_wsl_name() {
+    let script = load_script("bundled/bootstrap/bash_init_subshell.sh", &crate::ASSETS);
+    assert!(
+        script.contains(r#"\"wsl_name\": \"%s\""#),
+        "bash_init_subshell.sh must report wsl_name in InitShell: {script}"
+    );
+    assert!(
+        script.contains("_jw=${WSL_DISTRO_NAME:-}; _jw=${_jw//[^A-Za-z0-9._-]/}"),
+        "nounset-safe read, filtered to a distribution name's characters"
+    );
+    assert!(script.contains(r#""$_ju" "$_jh" "$_jw""#));
+    // zsh already did.
+    let zsh = load_script("bundled/bootstrap/zsh_init_subshell.sh", &crate::ASSETS);
+    assert!(zsh.contains(r#"\"wsl_name\""#));
+}
+
 #[test]
 fn msys2_subshell_sourcing_is_on_unless_switched_off() {
     assert!(msys2_subshell_source_enabled_from_env(None));

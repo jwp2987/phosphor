@@ -160,10 +160,13 @@ pub(crate) fn msys2_subshell_source_enabled_from_env(value: Option<&str>) -> boo
 /// no `Bootstrapped` 15 s later, everything typed meanwhile held behind the setup).
 ///
 /// `spawned_from_msys2` is the caller's fact about the sessions: the chain of spawning sessions
-/// leads to an MSYS2 shell through plain-bash subshells only. A subshell has no launch data of
-/// its own to say so. Together with [`subshell_started_by_plain_bash`] for the pending subshell
-/// that makes it a bash of the same MSYS2 installation, which opens the same Windows path the
-/// pane's shell was given. Anything else keeps its way in.
+/// leads, through plain-bash subshells only, to a pane shell under which a plain `bash` is a
+/// Windows bash ([`pane_shell_runs_windows_bash`]: an MSYS2 shell, or since the owner decision of
+/// 2026-11-10 a Windows-native shell such as PowerShell). A subshell has no launch data of its
+/// own to say so. Together with [`subshell_started_by_plain_bash`] for the pending subshell and
+/// the `wsl_name` its InitShell reports (`bash_init_subshell.sh`; empty for a Windows bash, the
+/// distribution for the WSL launcher's bash) that makes it a bash that opens the Windows path
+/// the bootstrap file is written to. Anything else keeps its way in.
 #[cfg(feature = "local_fs")]
 pub(crate) fn msys2_bash_subshell_sources_file(
     shell_type: ShellType,
@@ -181,6 +184,31 @@ pub(crate) fn msys2_bash_subshell_sources_file(
             .subshell_info
             .as_ref()
             .is_some_and(subshell_started_by_plain_bash)
+}
+
+/// Whether a plain `bash` typed into the pane shell described by `launch_data` starts a Windows
+/// bash (Git Bash, MSYS2, Cygwin), one that reads a Windows path, unless that bash says it is WSL.
+///
+/// * An MSYS2 pane shell (Git Bash): yes (#2025).
+/// * A Windows-native pane shell (PowerShell, cmd: `Executable` launch data on Windows) that is
+///   not itself WSL: yes (owner decision 2026-11-10). `bash` there is either a Windows bash or
+///   the WSL launcher; the launcher's bash reports its distribution as `wsl_name` in InitShell
+///   and [`msys2_bash_subshell_sources_file`] refuses it.
+/// * A WSL pane, a sandbox, a session with no launch data (a subshell, an ssh session), and any
+///   pane shell off Windows: no.
+#[cfg(feature = "local_fs")]
+pub(crate) fn pane_shell_runs_windows_bash(
+    launch_data: Option<&super::ShellLaunchData>,
+    session_is_wsl: bool,
+    on_windows: bool,
+) -> bool {
+    use super::ShellLaunchData;
+
+    match launch_data {
+        Some(ShellLaunchData::MSYS2 { .. }) => true,
+        Some(ShellLaunchData::Executable { .. }) => on_windows && !session_is_wsl,
+        _ => false,
+    }
 }
 
 /// The line of the bash bootstrap (`bash.sh`) that opens the here-document holding `bash_body.sh`.

@@ -1988,8 +1988,10 @@ impl<T: EventLoopSender> PtyController<T> {
         self.paced_write_queue.len()
     }
 
-    /// #2025: whether the session `session_info` was spawned from is an MSYS2 shell (Git Bash), or
-    /// a subshell started by plain `bash` whose own spawning chain leads to one. A subshell's
+    /// #2025: whether the session `session_info` was spawned from is an MSYS2 shell (Git Bash) or,
+    /// since the owner decision of 2026-11-10, a Windows-native pane shell (PowerShell, cmd:
+    /// `bootstrap::pane_shell_runs_windows_bash`), or a subshell started by plain `bash` whose own
+    /// spawning chain leads to one without passing through a WSL session. A subshell's
     /// session has no launch data, so the pane's shell is found through the chain. Bounded like
     /// `Sessions::MAX_SPAWNING_CHAIN` (nothing prevents a cycle). `false` when the switch
     /// `PHOSPHOR_MSYS2_SUBSHELL_SOURCE` is off.
@@ -2016,13 +2018,19 @@ impl<T: EventLoopSender> PtyController<T> {
             let Some(session) = next.and_then(|id| sessions.get(id)) else {
                 return false;
             };
-            if session.is_msys2() {
+            if bootstrap::pane_shell_runs_windows_bash(
+                session.launch_data(),
+                session.is_wsl(),
+                cfg!(windows),
+            ) {
                 return true;
             }
-            let through_plain_bash = session
-                .subshell_info()
-                .as_ref()
-                .is_some_and(bootstrap::subshell_started_by_plain_bash);
+            // A plain bash on the way that says it is WSL: what it starts lives in WSL.
+            let through_plain_bash = !session.is_wsl()
+                && session
+                    .subshell_info()
+                    .as_ref()
+                    .is_some_and(bootstrap::subshell_started_by_plain_bash);
             if !through_plain_bash {
                 return false;
             }

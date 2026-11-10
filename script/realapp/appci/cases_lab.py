@@ -3,8 +3,9 @@
 # jobs pass 'lab_*'), only the arms APPCI_LAB_MATRIX selects (quick | full | spec), and need a lab (APPCI_LAB=local on the box, remote from the Mac/Windows
 # runners): without one they SKIP with the reason. Before each arm the harness sets the network fault, MEASURES the echo RTT, and a mismatch makes the arm
 # UNVERIFIABLE (never a pass). `nohelper` (no remote helper on the server) is the default and always the first arm; `helper` pre-installs the binary named by
-# APPCI_LAB_HELPER_BIN (a built phosphor-remote; the lab blocks outbound network, so nothing could be downloaded anyway) with never_install, and is UNVERIFIABLE
-# without it. The Wave H arms (#1804) use the same binary as the bundle the app uploads: `upload` (nothing on the server, always_install), `upgrade` (older
+# APPCI_LAB_HELPER_BIN (a built phosphor-remote; the lab blocks outbound network, so nothing could be downloaded anyway) with never_install; when that
+# variable is not set the binary is this checkout's entry in the machine-local helper cache (script/ci/lab_helper.py, filled by the manual `lab-helper` job:
+# resolve_helper_bin), and the arm is UNVERIFIABLE with the reason when there is neither. The Wave H arms (#1804) use the same binary as the bundle the app uploads: `upload` (nothing on the server, always_install), `upgrade` (older
 # versions pre-seeded), `never` (per-host policy never: nothing may be uploaded, the session still works). Scenario user p_noscp refuses scp/sftp.
 #
 # [hook] marks a check that rests on an app log line the Wave 0 code adds. The patterns below are the agreed names; until the app logs them the check is
@@ -57,14 +58,58 @@ SEED_VERSIONS = ("phosphor-remote-v0.0.1", "phosphor-remote-v0.0.2", "phosphor-o
 
 
 def helper_version_line(binary):
-    """first line of `<binary> --version`: `phosphor-remote <version> protocol <n>`; None when it does not run"""
+    """first line of `<binary> --version`: `phosphor-remote <version> protocol <n>`; None when it does not run. Where the binary cannot be STARTED at all (a
+    Linux helper on a macOS or Windows runner: the lab host runs it, not this machine) the line recorded next to it when it was built is read instead
+    (`<binary>.version`, written by script/ci/lab_helper.py). A helper that starts and fails is never excused by that file."""
     import subprocess
     try:
         out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
+    except subprocess.SubprocessError:
         return None
+    except OSError:
+        try:
+            line = open(binary + ".version", encoding="utf-8").readline().strip()
+        except OSError:
+            return None
+        return line if line.startswith("phosphor-remote ") and len(line.split()) == 4 else None
     line = (out.stdout.splitlines() or [""])[0]
     return line if out.returncode == 0 and line.startswith("phosphor-remote ") else None
+
+
+def lab_helper_cache():
+    """script/ci/lab_helper.py as a module (the cached lab helper, docs/design/r12-policy.md 3); None when the checkout has no such file"""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ci", "lab_helper.py")
+    if not os.path.isfile(path):
+        return None
+    spec = importlib.util.spec_from_file_location("appci_lab_helper_cache", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def resolve_helper_bin(env=None):
+    """-> (path, why). The helper the non-`nohelper` arms use: APPCI_LAB_HELPER_BIN when it is set (an explicit choice always wins, and a wrong one is not
+    papered over), else this checkout's entry in the machine-local cache the manual `lab-helper` job fills (script/ci/lab_helper.py: built once per set of
+    helper inputs, not in every dev build). ('' , reason) when neither names a file."""
+    env = os.environ if env is None else env
+    explicit = env.get("APPCI_LAB_HELPER_BIN", "")
+    if explicit:
+        return (explicit, None) if os.path.isfile(explicit) else ("", "APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary")
+    cache = lab_helper_cache()
+    if cache is None:
+        return "", "APPCI_LAB_HELPER_BIN is not set and this checkout has no script/ci/lab_helper.py"
+    entry, why = cache.cached_entry(cache.ROOT, env)
+    if entry is None:
+        return "", "APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: %s" % why
+    return os.path.join(entry, cache.BIN), None
+
+
+# Arms in which the APP uploads (or must refuse to upload) the helper. A bundled build with no pinned helper digest refuses EVERY upload by design
+# (setup::decide_helper_digest, INSTALL_REFUSED_NO_PINNED_DIGEST), which is what CI's dev builds are (.gitlab-ci.yml, "Build jobs"): there an `upload` /
+# `upgrade` arm can only fail and a `never` arm can only pass, whatever the app does. The job says so with APPCI_APP_PINNED_DIGESTS=0 and these arms are then
+# UNVERIFIABLE with the reason. Unset keeps the behaviour for a source build (it computes the digest of the asset it is handed); 1 is a build with pins.
+UPLOAD_ARMS = ("upload", "upgrade", "never")
 
 
 def helper_file_name(version_line):
@@ -117,16 +162,22 @@ def lab_prepare(ctx, r, arm):
     ctx.arm = arm
     rem = L.LabRemote(lab, arm["user"], arm["shell"])
     ctx.remote = ctx.prof.remote = rem
-    helper_bin = os.environ.get("APPCI_LAB_HELPER_BIN", "")
+    helper_bin = ""
     if arm["helper"] != "nohelper":
-        if not (helper_bin and os.path.isfile(helper_bin)):
-            r.unverifiable("%s arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary" % arm["helper"])
+        if arm["helper"] in UPLOAD_ARMS and os.environ.get("APPCI_APP_PINNED_DIGESTS") == "0":
+            r.unverifiable("%s arm: the app under test is a bundled build with no pinned helper digest (APPCI_APP_PINNED_DIGESTS=0), which refuses every helper "
+                           "upload by design; the arm would prove nothing about it. Needs a build that pins the lab helper's digest (docs/design/r12-policy.md 3)" % arm["helper"])
+            return False
+        helper_bin, why = resolve_helper_bin()
+        if not helper_bin:
+            r.unverifiable("%s arm: %s" % (arm["helper"], why))
             return False
         line = helper_version_line(helper_bin)
         if line is None:
             r.unverifiable("%s arm: `%s --version` did not print `phosphor-remote <version> protocol <n>`; APPCI_LAB_HELPER_BIN must be a built phosphor-remote" % (arm["helper"], helper_bin))
             return False
         arm["helper_file"] = helper_file_name(line)
+        os.environ["APPCI_LAB_HELPER_BIN"] = helper_bin      # the cases that restage the asset read it (cases_lab_helper.py)
     if arm["helper"] == "helper":
         # already-installed state; the file name carries the version, which must be the one the app under test computes (built from the same tree)
         lab.helper(arm["user"], {arm["helper_file"]: open(helper_bin, "rb").read()})
