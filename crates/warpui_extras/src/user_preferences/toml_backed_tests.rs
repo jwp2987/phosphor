@@ -1164,6 +1164,79 @@ fn test_foreign_edit_is_reloaded_and_discards_the_stale_pending_write() {
     assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "zoom = 9\n");
 }
 
+/// #2026 (round 10, appci `agent_gate_deny_allow`): the app writes the file, the user edits it
+/// by hand, then puts the old text back (an undo in the editor). The file then holds exactly
+/// our last write, and it was taken for the watcher's echo: the app kept the hand edit's values.
+#[test]
+fn test_our_last_write_put_back_by_hand_is_reloaded() {
+    use super::super::{ReloadOutcome, UserPreferences};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+    let prefs = prefs.with_background_writer_debounce(std::time::Duration::from_secs(60));
+
+    prefs.write_value("zoom", "1".to_string()).unwrap();
+    prefs.flush_pending_writes();
+    let ours = std::fs::read(&file_path).unwrap();
+    // The watcher's echo of that write: nothing to reload.
+    assert_eq!(
+        prefs.reload_from_disk_deferred().unwrap(),
+        ReloadOutcome::OwnWrite
+    );
+
+    std::fs::write(&file_path, "zoom = 9\n").unwrap(); // the hand edit
+    assert_eq!(
+        prefs.reload_from_disk_deferred().unwrap(),
+        ReloadOutcome::Reloaded
+    );
+    assert_eq!(prefs.read_value("zoom").unwrap(), Some("9".to_string()));
+
+    std::fs::write(&file_path, &ours).unwrap(); // the undo: our own bytes again
+    assert_eq!(
+        prefs.reload_from_disk_deferred().unwrap(),
+        ReloadOutcome::Reloaded,
+        "the undo of a hand edit is an edit, not an echo"
+    );
+    assert_eq!(prefs.read_value("zoom").unwrap(), Some("1".to_string()));
+}
+
+/// #2026, the same cause behind a syntax error: the broken file inhibits writes (by design),
+/// and the undo that puts our last write back must lift that again.
+#[test]
+fn test_our_last_write_put_back_after_a_syntax_error_is_reloaded() {
+    use super::super::{ReloadOutcome, UserPreferences};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+    let prefs = prefs.with_background_writer_debounce(std::time::Duration::from_secs(60));
+
+    prefs.write_value("zoom", "1".to_string()).unwrap();
+    prefs.flush_pending_writes();
+    let ours = std::fs::read(&file_path).unwrap();
+
+    std::fs::write(&file_path, "zoom = = 9\n").unwrap(); // saved with a typo
+    assert!(prefs.reload_from_disk_deferred().is_err());
+    assert!(
+        prefs.write_value("zoom", "2".to_string()).is_err(),
+        "a file with a syntax error is not written over"
+    );
+
+    std::fs::write(&file_path, &ours).unwrap(); // the undo
+    assert_eq!(
+        prefs.reload_from_disk_deferred().unwrap(),
+        ReloadOutcome::Reloaded
+    );
+    prefs.write_value("zoom", "3".to_string()).unwrap();
+    prefs.flush_pending_writes();
+    assert!(
+        std::fs::read_to_string(&file_path)
+            .unwrap()
+            .contains("zoom = 3")
+    );
+}
+
 /// A failed background write is reported through the #862 channel, once.
 #[test]
 fn test_background_write_failure_is_reported_asynchronously() {

@@ -367,7 +367,10 @@ impl TomlBackedUserPreferences {
     ///
     /// A file that is *not* ours was changed by someone else, and the reload replaces the
     /// in-memory document with it; a write still pending was rendered from the document
-    /// being replaced and would undo their edit, so it is discarded first.
+    /// being replaced and would undo their edit, so it is discarded first. From then on no
+    /// earlier write of ours is an echo (#2026): the writer forgets them, whether or not the
+    /// foreign file parses, so that putting our last write back by hand (an undo in the
+    /// editor) is reloaded like any other edit.
     fn load_and_apply_unless_own_write(&self) -> Result<bool, Error> {
         if let Some(writer) = &self.background {
             if let Ok(contents) = std::fs::read(&self.file_path) {
@@ -376,6 +379,7 @@ impl TomlBackedUserPreferences {
                 }
             }
             writer.discard_pending();
+            writer.forget_recent_after_foreign_content();
         }
         self.load_and_apply().map(|()| true)
     }

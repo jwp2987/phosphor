@@ -204,6 +204,25 @@ impl BackgroundWriter {
         state.retry_at = None;
     }
 
+    /// The file was seen holding something this writer did not write (a hand edit, a restored
+    /// backup) and the store is about to load it: no earlier write of ours can be an echo any
+    /// more. Without this the newest digest stayed "ours" for good, so a hand edit followed by
+    /// its undo in the editor (the file is byte for byte our last write again) was taken for an
+    /// echo and never reloaded: the app kept the values of the first hand edit (#2026).
+    ///
+    /// A write running right now is kept: its rename is still to come and the watcher will
+    /// report it. Everything older is gone from disk already.
+    #[allow(dead_code)] // only the TOML store needs this
+    pub(super) fn forget_recent_after_foreign_content(&self) {
+        let mut state = self.shared.lock();
+        let keep_from = if state.in_flight {
+            state.recent.len().saturating_sub(1)
+        } else {
+            state.recent.len()
+        };
+        state.recent.drain(..keep_from);
+    }
+
     /// Whether `contents` is byte-for-byte the file watcher's echo of our own write, which must
     /// not be reloaded: what this writer wrote last, or an older write of its own while a newer
     /// one is still pending or in flight (the file legitimately holds the older one until the

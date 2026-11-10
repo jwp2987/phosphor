@@ -205,3 +205,91 @@ fn an_older_own_write_is_an_echo_only_while_a_newer_one_is_pending() {
     assert!(!writer.is_recent_write(b"v = 1"));
     assert!(writer.is_recent_write(b"v = 3"));
 }
+
+/// #2026: once the store has seen content that is not ours, our earlier writes stop being
+/// echoes. The user edits the file by hand, then undoes the edit: the file is byte for byte our
+/// last write again and must be reloaded, not taken for the watcher's echo.
+#[test]
+fn our_last_write_put_back_by_hand_after_a_foreign_edit_is_not_an_echo() {
+    let (writer, _writes) = recording_writer(Duration::from_millis(10), Duration::ZERO);
+    writer.queue("v = 1".to_owned()).unwrap();
+    writer.flush().unwrap();
+    assert!(
+        writer.is_recent_write(b"v = 1"),
+        "the echo of our own write"
+    );
+
+    // The store read "v = 9" from disk (a hand edit) and is loading it.
+    assert!(!writer.is_recent_write(b"v = 9"));
+    writer.discard_pending();
+    writer.forget_recent_after_foreign_content();
+
+    assert!(
+        !writer.is_recent_write(b"v = 1"),
+        "the undo of the hand edit holds our last write's bytes: an edit to reload"
+    );
+
+    // The next write of ours is recognised as before.
+    writer.queue("v = 2".to_owned()).unwrap();
+    writer.flush().unwrap();
+    assert!(writer.is_recent_write(b"v = 2"));
+    assert!(!writer.is_recent_write(b"v = 1"));
+}
+
+/// #2026: a write that is running when foreign content is seen stays an echo, because its
+/// rename is still to come; whatever was written before it is forgotten.
+#[test]
+fn a_write_in_flight_survives_the_forgetting_and_older_ones_do_not() {
+    // The write of "v = 2" blocks until the test opens the gate, so "in flight" is a fact here,
+    // not a matter of timing.
+    let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let write_gate = gate.clone();
+    let write: WriteFn = Arc::new(move |_: &Path, data: &str| {
+        if data == "v = 2" {
+            let (open, changed) = &*write_gate;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = changed.wait(open).unwrap();
+            }
+        }
+        Ok(())
+    });
+    let on_failure: FailureFn = Arc::new(|_| {});
+    let writer = BackgroundWriter::new(
+        "settings.toml".into(),
+        Duration::from_millis(1),
+        write,
+        on_failure,
+    )
+    .expect("writer thread should start");
+
+    writer.queue("v = 1".to_owned()).unwrap();
+    writer.flush().unwrap();
+    writer.queue("v = 2".to_owned()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !writer.shared.lock().in_flight {
+        assert!(
+            Instant::now() < deadline,
+            "the write of v = 2 never started"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        writer.is_recent_write(b"v = 1"),
+        "while v = 2 is in flight the file still holds v = 1"
+    );
+
+    writer.forget_recent_after_foreign_content();
+
+    assert!(
+        writer.is_recent_write(b"v = 2"),
+        "the rename of v = 2 is still coming"
+    );
+    assert!(!writer.is_recent_write(b"v = 1"));
+
+    let (open, changed) = &*gate;
+    *open.lock().unwrap() = true;
+    changed.notify_all();
+    writer.flush().unwrap();
+    assert!(writer.is_recent_write(b"v = 2"));
+}
