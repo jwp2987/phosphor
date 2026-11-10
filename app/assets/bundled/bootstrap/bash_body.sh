@@ -2664,14 +2664,15 @@ __p_drain() {
 __p_emit "$PHOSPHOR_SSH_SYNC_DONE"
 __p_old=$(command stty -g 2>/dev/null)
 if [[ -n $__p_old ]]; then
-  trap "command stty $__p_old 2>/dev/null; exit 130" INT TERM HUP
+  # No HUP here (#960): a hang-up means the console is gone, nothing is left to restore, and the default action ends this script at once
+  trap "command stty $__p_old 2>/dev/null; exit 130" INT TERM
 fi
 command stty raw isig -echo 2>/dev/null
 __p_h= __p_ok=0 __p_c= __p_x= __p_hh= __p_i=0 __p_rc=0 __p_said=0
 LC_ALL=C
 __p_drain
 [[ -n $__p_old ]] && command stty "$__p_old" 2>/dev/null
-trap - INT TERM HUP
+trap - INT TERM
 if [[ $__p_ok == 1 && -z $__p_h ]]; then
   __p_emit "$PHOSPHOR_SSH_SYNC_MANAGED"
 else

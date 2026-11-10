@@ -11268,6 +11268,11 @@ fn partial_query_is_sent_only_for_locked_ai_input_outside_a_secret_read() {
 // which later ships the buffer to the provider) only when the buffer may leave the machine.
 // With the secret probe saying a secret is being read, or with autodetection's unlocked AI
 // guess, no edit sends on the channel; the locked AI input outside a secret read is the control.
+//
+// The sends are counted on a channel the test owns. The input's own receiver sits in a debounce
+// stream that a background thread polls (`spawn_stream_local`), so `tx.len()` on it raced that
+// thread: it read 0 after a send (the control failed on the first Linux run) and its zeroes
+// proved nothing.
 #[test]
 fn editing_the_buffer_during_a_secret_read_never_requests_a_query_prediction() {
     App::test((), |mut app| async move {
@@ -11275,6 +11280,10 @@ fn editing_the_buffer_during_a_secret_read_never_requests_a_query_prediction() {
         let _predict = FeatureFlag::PredictAMQueries.override_enabled(true);
         let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let (requests_tx, requests_rx) = async_channel::bounded::<()>(64);
+        input.update(&mut app, |input, _| {
+            input.debounce_ai_query_prediction_tx = requests_tx;
+        });
         let set_config = |app: &mut App, is_locked: bool| {
             input.update(app, |input, ctx| {
                 input.ai_input_model().update(ctx, |ai_input, ctx| {
@@ -11301,12 +11310,10 @@ fn editing_the_buffer_during_a_secret_read_never_requests_a_query_prediction() {
             input.update(app, |input, ctx| {
                 input.user_insert(text, ctx);
             });
-            input.read(&*app, |input, ctx| {
-                (
-                    input.debounce_ai_query_prediction_tx.len(),
-                    input.may_send_buffer_as_partial_query(ctx),
-                )
-            })
+            let may_send = input.read(&*app, |input, ctx| {
+                input.may_send_buffer_as_partial_query(ctx)
+            });
+            (requests_rx.len(), may_send)
         };
 
         set_config(&mut app, true);

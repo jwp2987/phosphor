@@ -26541,6 +26541,12 @@ fn the_readiness_look_reads_only_the_tail_of_the_output() {
 /// grid's last row. zsh-newuser-install runs `clear` before its menu, so blank rows sit below the
 /// footer: the footer (an input prompt) is the tail, and a shell prompt drawn there after the menu
 /// is a shell prompt; the blank rows below decide nothing.
+///
+/// The view tests' terminal is 7 columns by 10 rows (`TerminalView::new_for_test`), so the menu
+/// here is cut to what fits it: `(q)` is one row and the footer wraps to seven, which leaves two
+/// blank rows below the cursor. The real menu's three lines wrap to twenty rows there: the screen
+/// scrolled, the cursor ended on the grid's last row and the premise below failed (first Linux
+/// run of this test) before the look was asked anything.
 #[test]
 fn the_readiness_tail_is_the_cursor_row_not_the_blank_rows_below_a_clear() {
     App::test((), |mut app| async move {
@@ -26553,8 +26559,7 @@ fn the_readiness_tail_is_the_cursor_row_not_the_blank_rows_below_a_clear() {
             }
             // `clear`: home, erase to the end of the screen; then the menu and its footer.
             output.push_str("\x1b[H\x1b[J");
-            output.push_str("This is the Z Shell configuration function for new users,\r\n");
-            output.push_str("(q)  Quit and do nothing.\r\n");
+            output.push_str("(q)\r\n");
             output.push_str("--- Type one of the keys in parentheses --- ");
             view.model
                 .lock()
@@ -26566,12 +26571,15 @@ fn the_readiness_tail_is_the_cursor_row_not_the_blank_rows_below_a_clear() {
                 look.position
             );
             assert_eq!(look.tail, subshell_ready::Tail::InputPrompt);
-            // The user answered `q`; zle draws its prompt on the next row. Still blank rows below.
-            view.model.lock().process_bytes("\r\nme@host ~ % ");
-            assert_eq!(
-                view.take_subshell_pane_look().tail,
-                subshell_ready::Tail::ShellPrompt
+            // The user answered `q`; zle draws its prompt on the next row. Still a blank row below.
+            view.model.lock().process_bytes("\r\n% ");
+            let look = view.take_subshell_pane_look();
+            assert!(
+                look.position.1 + 1 < look.position.0,
+                "a blank row sits below the prompt: {:?}",
+                look.position
             );
+            assert_eq!(look.tail, subshell_ready::Tail::ShellPrompt);
             // Column 0 is no tail, whatever the rows above hold.
             view.model.lock().process_bytes("\r\n");
             assert_eq!(
@@ -33297,11 +33305,22 @@ fn an_idle_dash_prompt_with_nothing_typed_is_written_on_the_look() {
                         "{mode:?}: a typed byte and no moved prompt: today's rule"
                     );
                 });
-                assert_eq!(
-                    !written.borrow().is_empty(),
-                    !typed,
-                    "{mode:?} typed={typed}"
-                );
+                // `written` is everything the pty was sent. Bytes typed while a setup is armed pass
+                // through, so the typed leg holds the user's own `x`, once, and nothing of the
+                // setup; the untouched leg holds the probe. (The check used to read "nothing at
+                // all" for the typed leg and failed on the `x` on its first run.)
+                if typed {
+                    assert_eq!(
+                        String::from_utf8_lossy(&written.borrow()),
+                        "x",
+                        "{mode:?}: the user's byte, nothing of the setup"
+                    );
+                } else {
+                    assert!(
+                        !written.borrow().is_empty(),
+                        "{mode:?}: the probe is written"
+                    );
+                }
             })
         }
     }
@@ -33562,6 +33581,13 @@ fn an_empty_ps1_dash_the_user_typed_into_is_written_once_it_is_blocked_in_its_re
 
 /// #1679 step 3 (R2): a non-empty line typed while no answer was asked for is the user driving the
 /// shell: the attempt is cancelled, nothing is written, and a later proof does not revive it.
+///
+/// The attempt is armed while vim is in front (nothing may be written). vim is gone and bash's
+/// line editor reads by the time the user types: the tty says so AT THE KEY (#1936), with no
+/// output event in between, so no look could have written the setup first. The line used to be
+/// ended with vim still the tty's leader; since 37295f950 that line is the program's and re-arms
+/// (`a_line_typed_into_the_program_does_not_hide_that_the_typed_ahead_line_already_ran` holds
+/// that leg), which is not the scenario this test names.
 #[test]
 fn a_users_own_command_cancels_the_armed_setup_and_nothing_is_written() {
     App::test((), |mut app| async move {
@@ -33581,10 +33607,12 @@ fn a_users_own_command_cancels_the_armed_setup_and_nothing_is_written() {
             view.model.lock().process_bytes("bash-5.1$ ");
             output_wakeup(view, ctx);
             assert_eq!(readiness_state(view), "armed");
-            assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
             tty
         });
         terminal.update(&mut app, |view, ctx| {
+            *tty.lock() = bash_reading();
+            assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+            assert_eq!(readiness_state(view), "armed", "no line end yet");
             assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
             assert_eq!(readiness_state(view), "idle", "UserDrove");
         });
