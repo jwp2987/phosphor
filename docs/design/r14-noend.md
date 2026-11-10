@@ -110,4 +110,58 @@ I6: no new ERROR line (the two new lines are WARN).
 
 ## B. #1340 `editor_memory_7mb` and #1985 `flood_scrollback_find`
 
-See the section added below once the tier lists were read.
+Owner decision 2026-11-10: the opt-in open trim stays, as an experiment that does not fail the
+row; both cases are to run in the fix tier.
+
+### Why neither case has a row in rounds 10 to 12: tier placement only
+
+* `script/realapp/appci/cases.py` has two lists. `SMOKE` and `PROVING`; the fix tier
+  (`APPCI_TIER=smoke`, `run.py:244-246`) plays `SMOKE + PROVING` and nothing else. A case in
+  neither list runs only with no tier set (candidate / release: "full").
+* `editor_memory_7mb` (`cases.py`, `@case(..., modes=("terminal",), order=85, gui=True)`) and
+  `flood_scrollback_find` (`cases_robust.py`, `order=62`) are registered like every other case
+  and were in neither list. They predate the PROVING rule (2026-11-09), which only says where
+  NEW cases go.
+* Every committed run since is a fix-tier run: `test-results/2026-11-10_build_r10a_*`,
+  `_r11a_*`, `_r12a_*` all carry `"tier": "smoke"` in each platform's `results.json` and
+  `"tier": "fix"` in the manifest. No candidate run happened.
+* Skip conditions, read: the memory case skips when process memory is unreadable or the file
+  never opens (not strict); the flood case skips without an OCR engine (tesseract is on the
+  Linux box, `script/ci/nodes/linux-box.sh:81`, and on the Mac) and is `winmap.NOT_WINDOWS`
+  ("needs OCR (tesseract) and the Linux find flow"). `md_viewer_big` and `soak` skip themselves
+  in the smoke tier; these two have no such line. So nothing but the lists kept them out.
+
+### Change (harness only; no app code)
+
+* Both names are appended to `PROVING`. Not to `PROVING_FAKE` (no scripted model). On Windows
+  `editor_memory_7mb` is in `winmap.BOTH` (runs in both panes, terminal pass) and the flood case
+  SKIPs with its reason. Cost, estimated: about 8 minutes for the memory case (two 75 s
+  undo-close waits, four relaunches), about 3 minutes per mode for the flood case.
+* RSS against file size: `editor_cost_vs_file` records `<kind>_file_mb` and, per memory figure,
+  `<kind>_open_cost_x_file` (MB added by the open / MB of the file; the issue is stated as
+  "~120x file size"), plus one note. Reported; the verdict stays the absolute targets.
+* The open trim: `trim_experiment` writes a tagged note (`EXPERIMENT (the opt-in open trim ...`,
+  then `inside the budget` / `OUTSIDE the budget`) and the results go into the metric
+  `trim_open_experiment`. The three places that failed the row for the opt-in trim (it logged no
+  `heap_trim why=open`; a UI item over 4 ms and over the control while it ran; the load's layout
+  frame over the budget and the control) now report. The trim, its environment switch and its
+  A/B variant are all still there. The variant runs last, so losing its relaunch leaves the
+  judged close-trim A/B complete. The default close trim is judged exactly as before.
+* `flood_scrollback_find` itself is not changed. #1985 (app or harness) stays open until the
+  row exists: `find_verdict` already separates the OCR-blind case from a view that did not move.
+
+### Rejected
+
+* A fix-tier-only short form of the memory case (one cycle, no grace wait). It would measure
+  something else than the issue's figures; the cost is about 8 minutes once per platform.
+* `r.known(...)` for an over-budget experiment. KNOWN is for an accepted shortfall of something
+  judged; nothing of the experiment is judged.
+* Adding the cases to `SMOKE`. The owner rule sends unproven cases to `PROVING`.
+
+### Risk
+
+Harness only. The fix tier gets longer by the figures above. An `editor_memory_7mb` row can
+still FAIL on what is judged: memory held after close, cycle growth, the close trim's UI item
+on macOS and Windows, and the open cost against the #1340 targets once the app version passes
+0.1.17 (`ACCEPTED_FOR_RELEASE["editor_open_cost"]` reports it as KNOWN while `app/Cargo.toml`
+says 0.1.17, which it does today). Those are the issue's subject, not the experiment.

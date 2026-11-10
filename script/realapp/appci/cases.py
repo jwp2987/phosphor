@@ -77,6 +77,11 @@ PROVING = (
     "output_frames",
     # #1976: copy of soft-wrapped lines (keyboard block copy; pointer drag and triple click). #1990: the vertical tabs panel, the owner's layout
     "ui_copy_wrapped_output", "ui_copy_wrapped_drag", "ui_vertical_tabs_many", "ui_vertical_tabs_panel_click",
+    # owner 2026-11-10 (docs/design/r14-noend.md): two older cases that were in neither SMOKE nor PROVING, so no fix-tier run ever played them and no
+    # full-tier run has happened since they last changed (r13-recon: no row in rounds 10-12). Here until they have a row and the owner graduates them.
+    # #1340: memory of a 7 MB file in the code editor against the file's size (terminal mode only; about 8 minutes: two 75 s undo-close waits and
+    # four relaunches for the trim A/B). #1985: Find reaches a marker printed before a flood (needs OCR; Windows SKIPs with its winmap reason).
+    "editor_memory_7mb", "flood_scrollback_find",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -5591,6 +5596,25 @@ def ui_load_frame(items, t0, seconds=5.0, t_end=None):
 UI_BUDGET_MS = 4.0     # owner perf budget: UI work <= 4 ms (warn 16)
 
 
+def editor_cost_vs_file(r, kind, opened, pre, size_bytes):
+    """#1340 is stated as a ratio ('~850 MB of RSS, ~120x file size'), so the row carries it: <kind>_file_mb and, per memory figure of the sample,
+    <kind>_open_cost_x_file (RSS, the historical unsuffixed name) / <kind>_open_cost_<metric>_x_file = MB the open added over the pre-open sample,
+    divided by the file's MB. One note says it in words. Reported only: the verdict stays the absolute target (mem_judge_known). Returns {metric: ratio}."""
+    file_mb = size_bytes / 1048576.0
+    r.metric("%s_file_mb" % kind, file_mb)
+    out = {}
+    if file_mb <= 0:
+        return out
+    for k in sorted(opened):
+        if k in pre:
+            out[k] = (opened[k] - pre[k]) / file_mb
+            r.metric("%s_open_cost%s_x_file" % (kind, "" if k == "rss" else "_" + k), out[k])
+    if out:
+        r.note("%s: opening the %.1f MB file added %s" % (kind, file_mb, ", ".join(
+            "%.0f MB of %s (%.1fx the file)" % (opened[k] - pre[k], k, out[k]) for k in sorted(out))))
+    return out
+
+
 def editor_cycle_growth(close_mb):
     """MB the post-close figure grew from the first open/close cycle to the last (#1407: 'repeated open/close grows to ~2 GB')"""
     return (close_mb[-1] - close_mb[0]) if len(close_mb) >= 2 else 0.0
@@ -5636,10 +5660,24 @@ def editor_mem_relaunch(ctx, env):
     return bool(up)
 
 
+TRIM_EXPERIMENT = "EXPERIMENT (the opt-in open trim, PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1; owner 2026-11-10, #1340: reported, never a FAIL): "
+
+
+def trim_experiment(r, over, msg):
+    """one result of the opt-in open trim (off by default; a user's open never runs it). Owner 2026-11-10 (#1340): the trim stays as an experiment whose
+    result is REPORTED and does not fail the row. `over`: the result is outside what a judged check would accept. One note, tagged, with the verdict word
+    first so the summary reads without the numbers; never a check, never a KNOWN (nothing is accepted: nothing is judged). Returns not over."""
+    r.note("%s%s: %s" % (TRIM_EXPERIMENT, "OUTSIDE the budget" if over else "inside the budget", msg))
+    return not over
+
+
 def trim_ui_verdict(r, is_close_trim, over, msg):
-    """one trim A/B UI-budget verdict. Owner 2026-11-05 (#1607): the DEFAULT close trim's one-off pause is accepted on Linux (KNOWN with its numbers);
-    the opt-in open trim is not covered and still fails."""
-    acc = accepted_for_release("editor_close_trim_ui") if is_close_trim else None
+    """one trim A/B UI-budget verdict. Owner 2026-11-05 (#1607): the DEFAULT close trim's one-off pause is accepted on Linux (KNOWN with its numbers).
+    Owner 2026-11-10 (#1340): the opt-in open trim is an experiment, reported and never a FAIL (trim_experiment); before that it failed the row."""
+    if not is_close_trim:
+        trim_experiment(r, over, msg)
+        return
+    acc = accepted_for_release("editor_close_trim_ui")
     if over and acc and any(plat().startswith(p_) for p_ in acc.get("platforms", ("",))):
         r.known("%s [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (msg, acc["issue"], acc["release"], acc["why"]))
     else:
@@ -5676,12 +5714,14 @@ def editor_trim_ab(ctx, r, palette, path):
     """#1607 perf rule: UI-thread cost of the heap trims, A/B by relaunch. One open/close of the plain-text file per variant: default (trim on
     close only), PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 (opt-in trim after the load) and PHOSPHOR_HEAP_TRIM=0 (no trim at all, the control for the
     close-time trim, which is new on macOS). Per variant: the max hop=ui_item (main's log_ui_item_if_over_budget, items >= 4 ms; kind frame|event|action) in the 5 s after the load's layout frame and in the 5 s after the
-    close key, against the 4 ms budget. A trim variant fails only if it goes over the budget AND more than 1 ms over its control, so a build that
-    is already over budget there is reported (metrics, notes) without blaming the trim."""
+    close key, against the 4 ms budget. The close trim (on by default) fails only if it goes over the budget AND more than 1 ms over its control, so a
+    build that is already over budget there is reported (metrics, notes) without blaming the trim. The open trim is OPT-IN and an experiment (owner
+    2026-11-10, #1340): the same comparisons are made and REPORTED (trim_experiment notes, metric trim_open_experiment), none of them fails the row,
+    and its variant runs LAST so that a relaunch it loses cannot cost the judged close-trim A/B its control."""
     if not getattr(ctx, "log_path", None):
         r.note("trim A/B not run: no app log (hop=ui_item is read from it)")
         return
-    variants = (("default", {}), ("trim_after_open", {"PHOSPHOR_EDITOR_TRIM_AFTER_OPEN": "1"}), ("no_trim", {"PHOSPHOR_HEAP_TRIM": "0"}))
+    variants = (("default", {}), ("no_trim", {"PHOSPHOR_HEAP_TRIM": "0"}), ("trim_after_open", {"PHOSPHOR_EDITOR_TRIM_AFTER_OPEN": "1"}))
     res = {}
     try:
         for name, env in variants:
@@ -5718,8 +5758,14 @@ def editor_trim_ab(ctx, r, palette, path):
         if not editor_mem_relaunch(ctx, {}):
             r.check(False, "trim A/B: the app reached no prompt after relaunching with the default environment")
     r.metric("trim_ab", res)
-    if "trim_after_open" in res and not any(w == "open" for w, _ in res["trim_after_open"]["trims"]):
-        r.check(False, "trim A/B: PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 logged no 'heap_trim why=open' (the opt-in trim did not run, or the build predates it)")
+    exp = {"measured": "trim_after_open" in res and "default" in res}       # the open-trim experiment's results, as data (never a verdict)
+    if "trim_after_open" in res:
+        exp["trim_ran"] = any(w == "open" for w, _ in res["trim_after_open"]["trims"])
+        if not exp["trim_ran"]:
+            trim_experiment(r, True, "trim A/B: PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 logged no 'heap_trim why=open' (the opt-in trim did not run, or the "
+                            "build predates it), so the figures below are not the trim's")
+    else:
+        r.note(TRIM_EXPERIMENT + "not measured (its variant did not run, see the A/B notes above)")
     # each trim is judged by the UI items that ran DURING it, against the same phase of the variant without that trim
     for name, ctrl, key, ctrl_key, what in (("trim_after_open", "default", "trim_open_max_ms", "open_max_ms", "the open trim"),
                                            ("default", "no_trim", "trim_close_max_ms", "close_max_ms", "the close trim")):
@@ -5728,15 +5774,20 @@ def editor_trim_ab(ctx, r, palette, path):
         got, base = res[name][key], res[ctrl][ctrl_key]
         if base > UI_BUDGET_MS:
             r.note("trim A/B: the control %s is itself over the %.0f ms UI budget after %s (%.1f ms)" % (ctrl, UI_BUDGET_MS, ctrl_key.split("_")[0], base))
-        msg = "trim A/B: %s put a %.1f ms UI item on screen while it ran (> %.0f ms budget; control %s: %.1f ms)" % (what, got, UI_BUDGET_MS, ctrl, base)
+        msg = "trim A/B: %s put a %.1f ms UI item on screen while it ran (budget %.0f ms; control %s: %.1f ms)" % (what, got, UI_BUDGET_MS, ctrl, base)
         over = got > UI_BUDGET_MS and got > base + 1.0
+        if name == "trim_after_open":
+            exp.update(trim_item_ms=got, control_item_ms=base, trim_item_over_budget=over)
         trim_ui_verdict(r, name == "default", over, msg)
-    # the load's own layout frame, which spawns the open trim, against the control's load frame (same rule)
+    # the load's own layout frame, which spawns the open trim, against the control's load frame (same rule; part of the experiment, reported)
     if "trim_after_open" in res and "default" in res:
         got, base = res["trim_after_open"].get("load_frame_ms"), res["default"].get("load_frame_ms")
         if got is not None and base is not None:
-            r.check(not (got > UI_BUDGET_MS and got > base + 1.0), "trim A/B: the load's layout frame took %.1f ms with the open trim (> %.0f ms budget; "
-                    "control default: %.1f ms)" % (got, UI_BUDGET_MS, base))
+            over = got > UI_BUDGET_MS and got > base + 1.0
+            exp.update(load_frame_ms=got, control_load_frame_ms=base, load_frame_over_budget=over)
+            trim_experiment(r, over, "trim A/B: the load's layout frame took %.1f ms with the open trim (%.0f ms budget; control default: %.1f ms)" % (
+                got, UI_BUDGET_MS, base))
+    r.metric("trim_open_experiment", exp)
 
 
 @case("editor_memory_7mb", modes=("terminal",), order=85, gui=True)
@@ -5747,8 +5798,9 @@ def c_editor_mem(ctx, r):
     7 MB Rust <= ~150 MB, <= 60 MB held after close, APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB = 30 MB growth from the first to the last cycle).
     Judged: RSS on Linux; on Windows PRIVATE bytes (PrivateUsage) against a warm baseline, the working set only reported (#1340); on macOS the open cost is judged on RSS and phys_footprint (owner 2026-11-03), the
     after-close check on phys_footprint only (owner 2026-11-05: RSS keeps freed MADV_FREE_REUSABLE pages; reported, not judged). Both are reported. A close through the command palette must be followed by the app's buffer_dropped log line. The app's own breakdown (log target
-    editor_memory: buffer tree, render tree, parked chunks, hydrated frames) is attached as metrics. Then the heap-trim UI A/B (editor_trim_ab;
-    APPCI_EDITOR_MEM_TRIM_AB=0 skips it). Skips (APPCI_EDITOR_MEM_STRICT=1: fails) when the file does not open, since the palette / close key
+    editor_memory: buffer tree, render tree, parked chunks, hydrated frames) is attached as metrics, and so is the open cost against the file's size
+    (editor_cost_vs_file: <kind>_open_cost_x_file). Then the heap-trim UI A/B (editor_trim_ab; APPCI_EDITOR_MEM_TRIM_AB=0 skips it): the default close
+    trim is judged, the opt-in open trim is an experiment that is reported and never fails the row (owner 2026-11-10). Skips (APPCI_EDITOR_MEM_STRICT=1: fails) when the file does not open, since the palette / close key
     sequence is platform specific: APPCI_KEY_PALETTE (default ctrl+shift+p; mac cmd+p), APPCI_KEY_CLOSE (default ctrl+shift+w; empty on macOS)
     and, where the close key is empty, APPCI_KEY_CMD_PALETTE + APPCI_CLOSE_PALETTE_TEXT (mac: cmd+p, 'Close Current Session')."""
     try:
@@ -5808,6 +5860,7 @@ def c_editor_mem(ctx, r):
             opened_any = True
             opens.append(opened)
             if cyc == 0:
+                editor_cost_vs_file(r, kind, opened, pre, size)
                 mem_judge_known(r, opened, pre, limits[kind], "%s: opening a %d MB file cost %%.0f MB of %%s (> %.0f MB target)" % (kind, size >> 20, limits[kind]),
                                 "editor_open_cost")
             how = editor_close(ctx, r)

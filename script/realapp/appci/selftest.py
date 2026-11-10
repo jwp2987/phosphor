@@ -3165,6 +3165,40 @@ def editor_memory_close_trim_and_accepted_open_cost():
 
 
 @check
+def editor_memory_owner_2026_11_10():
+    """owner 2026-11-10 (#1340, #1985; docs/design/r14-noend.md): editor_memory_7mb and flood_scrollback_find run in the fix tier (PROVING: they were in
+    no tier list and had no row in rounds 10-12); the opt-in open trim's results are reported and never fail the row, on any platform and after any
+    release; the row carries the open cost against the file's size."""
+    reg = {c["name"]: c for c in cases.CASES}
+    for n in ("editor_memory_7mb", "flood_scrollback_find"):
+        assert n in cases.PROVING and n not in cases.SMOKE and n not in cases.PROVING_FAKE and n in reg, n
+    assert reg["editor_memory_7mb"]["modes"] == ("terminal",), "the memory case measures one app run: terminal mode only"
+    assert "flood_scrollback_find" in winmap.NOT_WINDOWS and winmap.skip_reason("editor_memory_7mb", "powershell") is None, "Windows: the flood case SKIPs with its reason, the memory case runs"
+    orig_v, orig_p = cases.app_version, cases.plat
+    try:
+        for ver in ("0.1.17", "0.1.18", "9.9.9"):
+            for plat_ in ("linux-wayland", "macos", "windows"):
+                cases.app_version, cases.plat = (lambda repo=None, v=ver: v), (lambda p=plat_: p)
+                r = cases.Result("t", "terminal")
+                assert cases.trim_experiment(r, True, "m1") is False and cases.trim_experiment(r, False, "m2") is True
+                cases.trim_ui_verdict(r, False, True, "m3")
+                assert not r.fails and not r.noref and r.skipped is None, (ver, plat_, r.fails, r.noref)
+                assert r.notes == [cases.TRIM_EXPERIMENT + "OUTSIDE the budget: m1", cases.TRIM_EXPERIMENT + "inside the budget: m2",
+                                   cases.TRIM_EXPERIMENT + "OUTSIDE the budget: m3"], r.notes
+                assert not any(n.startswith("KNOWN") for n in r.notes), "an experiment is not an accepted shortfall: nothing is judged"
+    finally:
+        cases.app_version, cases.plat = orig_v, orig_p
+    # the open cost against the file's size: one ratio per memory figure the sample has, RSS under the unsuffixed name
+    r = cases.Result("t", "terminal")
+    out = cases.editor_cost_vs_file(r, "txt", {"rss": 1265.0, "private": 500.0, "odd": 1.0}, {"rss": 415.0, "private": 430.0}, 7 * 1024 * 1024)
+    assert r.metrics["txt_file_mb"] == 7.0 and r.metrics["txt_open_cost_x_file"] == round(850.0 / 7, 3) and r.metrics["txt_open_cost_private_x_file"] == 10.0, r.metrics
+    assert set(out) == {"rss", "private"} and "txt_open_cost_odd_x_file" not in r.metrics and not r.fails
+    assert len(r.notes) == 1 and "850 MB of rss (121.4x the file)" in r.notes[0] and "70 MB of private (10.0x the file)" in r.notes[0], r.notes
+    r = cases.Result("t", "terminal")
+    assert cases.editor_cost_vs_file(r, "rs", {"rss": 10.0}, {"rss": 5.0}, 0) == {} and not r.notes and r.metrics == {"rs_file_mb": 0.0}, (r.notes, r.metrics)
+
+
+@check
 def editor_memory_owner_2026_11_05():
     """owner 2026-11-05 (#1607): macOS after-close judged on phys_footprint only (RSS reported); Linux/Windows keep every figure; the default close
     trim's UI pause is KNOWN on Linux only (the entry is Linux-scoped; the A/B routing is in editor_trim_ab)."""
@@ -3190,6 +3224,9 @@ def editor_memory_owner_2026_11_05():
                 cases.trim_ui_verdict(r, close, True, "trim A/B: put 9.0 ms")
                 if known:
                     assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("KNOWN: trim A/B: put 9.0 ms") and "ACCEPTED_FOR_RELEASE #1607 v0.1.17" in r.notes[0], (plat_, r.fails, r.notes)
+                elif not close:
+                    # owner 2026-11-10 (#1340): the opt-in open trim is an experiment, reported and never a FAIL (it failed the row before that decision)
+                    assert not r.fails and r.notes == [cases.TRIM_EXPERIMENT + "OUTSIDE the budget: trim A/B: put 9.0 ms"], (plat_, r.fails, r.notes)
                 else:
                     assert r.fails == ["trim A/B: put 9.0 ms"] and not r.notes, (plat_, close, r.fails, r.notes)
             cases.plat = lambda: "linux-x11"
