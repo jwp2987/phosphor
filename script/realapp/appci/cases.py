@@ -34,6 +34,7 @@ PROVING = (
     # agent file edits (#1835), agent interactive programs under hand-over (#1829), latency / steer (#1828), MCP faults, multi-tab streaming
     "agent_edit_accept", "agent_edit_reject", "agent_edit_conflict", "agent_edit_touch_only", "agent_edit_endings",
     "agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover",
+    "agent_interactive_ssh_takeover",        # #1972: the user's take-over after the notice (a remote read cannot be proven locally)
     "agent_latency_key", "agent_latency_enter", "agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming",
     # network gate (#1830): the provider key never leaves, deny / allow, gate off live, notice toast, settings page by keyboard
     "agent_gate_deny_allow", "agent_gate_off_live", "agent_gate_key_never_leaves", "network_gate_notice", "network_gate_switch",

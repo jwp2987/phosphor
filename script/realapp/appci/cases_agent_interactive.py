@@ -261,6 +261,80 @@ def c_agent_ssh(ctx, r):
         ctx.be.key("ctrl+c")
 
 
+# #1972: the user's own take-over of a waited agent command. The app's hop for the user's act (the notice's click and the palette entry dispatch the same action); the
+# hand-over itself is the same `hop=handover ... reason=blocked_on_input` line a proven tty read logs.
+TAKE_OVER_PALETTE_TEXT = "Take over the running agent command"
+
+
+def take_over_by_palette(ctx):
+    """the user's act, from the keyboard: the command palette entry 'Take over the running agent command' (the take-over notice's click does the same action)"""
+    ctx.be.key(os.environ.get("APPCI_KEY_PALETTE", "ctrl+shift+p"))
+    time.sleep(0.8)
+    ctx.be.type(TAKE_OVER_PALETTE_TEXT, 12)
+    time.sleep(0.8)
+    ctx.be.key("Return")
+
+
+def remote_read_arm(notice, handed_by_itself):
+    """pure: which arm agent_interactive_ssh_takeover takes. 'auto' = the app handed the command over by itself (a proven read: nothing for the user to do);
+    'user' = only the notice came, so the user takes over; 'none' = neither within the wait (the case cannot go on: the user was told nothing)"""
+    if handed_by_itself:
+        return "auto"
+    return "user" if notice else "none"
+
+
+@case("agent_interactive_ssh_takeover", modes=("agent",), order=54, gui=True)
+def c_agent_ssh_takeover(ctx, r):
+    """#1972: the agent runs `ssh -tt fake '<remote read -s>'`. The local OS cannot see a read made on the remote host, so the app may only show its 'may be waiting for
+    input -- Take over' notice (#1811: no hand-over without a proven read). This case is the user's side of that: after the notice the user takes the command over (the
+    palette entry; the notice's click dispatches the same action), the app must log the hand-over (`hop=handover ... reason=blocked_on_input`), the typed text must reach
+    the REMOTE program exactly, never a local file or the conversation, and the model's next request must carry the command's output (the turn was not cancelled).
+    agent_interactive_ssh stays as it is: it asks for a hand-over the app makes by itself."""
+    need_fake(ctx, r)
+    cases.need_ssh(ctx, r)
+    AG.fresh_conversation(ctx, r)
+    try:
+        try:
+            os.remove(os.path.join(ctx.prof.rhome, "ai_ssht.txt"))
+        except FileNotFoundError:
+            pass
+        ctx.rm("ai_ssht.txt")
+        tok = "SSHT" + ctx.tok(8).upper().replace("_", "")
+        cmd = "ssh -tt fake 'read -s -r -p \"rpw: \" x; echo; echo got:$x >> ~/ai_ssht.txt; echo got:$x'"
+        off, n0 = ask_run(ctx, r, cmd, "ai_ssht")
+        told = ctx.until(lambda: handed(ctx, off) or notice_seen(ctx.log_since(off)), 60, step=0.5)
+        arm = remote_read_arm(notice_seen(ctx.log_since(off)), handed(ctx, off))
+        ctx.shot("ai_ssht_told")
+        if not told or arm == "none":
+            if AG.lrc_awaited(ctx.log_since(off)) is False:
+                r.unverifiable("ai_ssht: agent_command_wait awaited=false: the tool call did not wait, so neither the detector nor the notice was armed")
+                return
+            r.check(False, "ai_ssht: the remote `read` sat at its prompt for 60 s and the user was told nothing: no hand-over and no take-over notice")
+            return
+        r.note("ai_ssht: arm=%s (auto = the app handed over by itself; user = notice, then the user's take-over)" % arm)
+        if arm == "user":
+            take_over_by_palette(ctx)
+            got = ctx.until(lambda: handed(ctx, off), 15, step=0.3)
+            ctx.shot("ai_ssht_taken")
+            r.check(bool(got), "ai_ssht: the user's 'Take over' after the notice did not hand the command over within 15 s (no hop=handover reason=blocked_on_input)")
+            if not got:
+                return
+        time.sleep(1.0)
+        ctx.shot("ai_ssht_prompt")
+        ctx.be.type(tok, ctx.rng.randint(10, 25), enter=True)
+        ctx.until(lambda: ctx.lines("ai_ssht.txt", remote=True), 20)
+        r.check(ctx.lines("ai_ssht.txt", remote=True) == ["got:" + tok], "ai_ssht: the remote program received %r, want %r" % (ctx.lines("ai_ssht.txt", remote=True), ["got:" + tok]))
+        r.check(not ctx.lines("ai_ssht.txt"), "ai_ssht: the typed text reached a LOCAL file: %r" % ctx.lines("ai_ssht.txt"))
+        after_checks(ctx, r, "ai_ssht", off, n0, tok, want_tool="got:" + tok)
+    finally:
+        try:
+            os.remove(os.path.join(ctx.prof.rhome, "ai_ssht.txt"))
+        except FileNotFoundError:
+            pass
+        AG.cleanup_tmp(ctx)
+        ctx.be.key("ctrl+c")
+
+
 @case("agent_interactive_less", modes=("agent",), order=55, gui=True)
 def c_agent_less(ctx, r):
     """#1829 (d): the agent runs `less ai_long.txt` (600 lines). Typed at 10-25 ms/key: `G` `g` `jjjjj`, a forward-search `/line 450` + Enter, then `!echo <tok> >> ai_less.txt`
