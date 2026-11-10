@@ -544,3 +544,41 @@ fn an_ssh_connect_give_up_writes_every_held_key_in_typed_order() {
         });
     }
 }
+
+/// Owner decision 3 of 2026-11-09: a BARE Enter on an empty line held for an unready shell is
+/// written at the net too, before the keys typed after it (`\r`, then `~.`: #1793's shape for
+/// this hold). Until then the keys after it were written and that Enter was not.
+#[test]
+fn an_unready_shells_give_up_writes_a_bare_enter_before_the_keys_after_it() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.input.update(ctx, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx);
+                    input.set_given_up_unready_line_for_test("");
+                });
+                let entries = vec![pty_key(1, b"~"), pty_key(2, b".")];
+                view.write_unready_line_and_keys_to_pty(entries, "unready_enter", ctx);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            assert_eq!(
+                written(&pty),
+                "\r~.",
+                "{mode:?}: the Enter first, then the keys"
+            );
+            // With nothing typed after it the bare Enter is still written.
+            pty.borrow_mut().clear();
+            terminal.update(&mut app, |view, ctx| {
+                view.input.update(ctx, |input, _| {
+                    input.set_given_up_unready_line_for_test("");
+                });
+                view.write_unready_line_and_keys_to_pty(Vec::new(), "unready_enter", ctx);
+            });
+            assert_eq!(written(&pty), "\r", "{mode:?}: the bare Enter alone");
+        });
+    }
+}

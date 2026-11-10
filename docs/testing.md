@@ -1660,6 +1660,18 @@ keys held for ssh. `GATE_GIVE_UP_TOAST` is now shown only by the setup-gate hand
 | view, Legacy and Table (expectation changed) | `group2_timer_tests.rs`: `paste_cap_writes_the_keys_behind_the_unread_paste_to_the_pty` (was `paste_cap_hands_the_keys_behind_the_unread_paste_back`, #1577 A3) | `b⏎` typed behind an unread pty paste is held, then at the cap reaches the pty byte for byte; the unread paste leaves no record; nothing in the editor, no guard, queue idle |
 | view, Legacy and Table (expectations changed) | `view_test.rs`: `ssh_bootstrap_failure_writes_held_typeahead_to_the_pty_without_stty_sane` (was `..._hands_held_typeahead_back_...`), `ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session` | `echo hi⏎` at the pty, once, and nothing else; nothing handed back or kept; the editor submits nothing |
 
+**#1996 follow-up, decision 3 (owner 2026-11-09): a bare Enter held for an unready shell IS written at the 60 s net.** An
+Enter on an EMPTY line that the shell could not take yet is held like any other (`hold_refused_unready_enter`, pending text
+`""`). At the net the keys typed after it were written and that Enter was not. It is now the first byte of the give-up's
+write: `\r`, then the keys after it, in typed order; with nothing typed after it, `\r` alone. No separate code path: the
+empty line is a line for `write_unready_line_and_keys_to_pty` (the keep-together commit), which writes nothing for the
+line itself and then its Enter.
+
+| layer | test | asserts |
+|---|---|---|
+| view, Legacy and Table (new) | `give_up_to_pty_tests.rs`: `an_unready_shells_give_up_writes_a_bare_enter_before_the_keys_after_it` | an empty held line with `~.` typed behind it: `⏎~.` at the pty, editor empty; with nothing typed behind it: `⏎` alone |
+| view (expectation changed, in the keep-together commit) | `view_test.rs`: `typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_writes_it` | end to end through `Input::give_up_unready_enter`: `⏎ls -l` at the pty (was `ls -l`: the bare Enter was not sent) |
+
 **#1996 (owner decision 2026-11-09, REVERSING #1661): a hold that gives up WRITES its keys to the pty.** This is the current
 rule (as narrowed by the follow-up above) and it supersedes every statement in this file that a give-up "discards" or "drops" the keys typed after an Enter, or
 hands a young Enter back to the editor at its cap (the #1661 paragraph below, the #1666 Tab-completion give-up, the
