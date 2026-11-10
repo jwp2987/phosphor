@@ -1660,7 +1660,9 @@ impl BlocklistAIActionModel {
 
     /// Gives actions that were never queued (the turn's stream was cancelled by a follow-up
     /// before `queue_actions`) a cancelled result, so the follow-up request carries a result
-    /// for every tool call and is never blocked on an unanswered one (#1861).
+    /// for every tool call and is never blocked on an unanswered one (#1861). Also used when the
+    /// stream was cancelled by a Stop / Ctrl-C / Delete in that same window (#1946): every call
+    /// of a reply gets exactly one result, at once, whoever cancelled it.
     pub(super) fn cancel_discarded_actions(
         &mut self,
         actions: Vec<AIAgentAction>,
@@ -1677,19 +1679,25 @@ impl BlocklistAIActionModel {
                 continue;
             }
             log::info!(
-                "hop=agent_action id={} status=discarded stream cancelled by a follow-up before the action was queued",
+                "hop=agent_action id={} status=discarded stream cancelled before the action was queued",
                 action.id
             );
             self.cancel_pending_action(conversation_id, action, reason, ctx);
         }
     }
 
+    /// Returns whether any action was given its cancelled result here, synchronously -- each one
+    /// emits a `FinishedAction`, so the controller's subscriber is about to decide the turn's end.
+    /// `false` with nothing left running means nothing will: the conversation held only batches
+    /// still preprocessing (dropped here; their late results are recorded silently by
+    /// `record_stale_cancelled`) or nothing at all, and the caller writes the final status
+    /// itself (#1944).
     pub(super) fn cancel_all_pending_actions(
         &mut self,
         conversation_id: AIConversationId,
         reason: Option<CancellationReason>,
         ctx: &mut ModelContext<Self>,
-    ) {
+    ) -> bool {
         self.executor.update(ctx, |executor, ctx| {
             executor.cancel_all_running_async_actions_for_conversation(conversation_id, reason, ctx)
         });
@@ -1702,6 +1710,7 @@ impl BlocklistAIActionModel {
             .get_mut(&conversation_id)
             .map(|batches| batches.abandon_all())
             .unwrap_or_default();
+        let mut cancelled_any = !parked_actions.is_empty();
         for action in parked_actions {
             log::warn!(
                 "hop=agent_action id={} status=parked cancelled while parked behind a preprocess batch",
@@ -1717,11 +1726,13 @@ impl BlocklistAIActionModel {
             .retain(|(conversation, _), _| *conversation != conversation_id);
 
         let Some(actions_to_cancel) = self.pending_actions.get_mut(&conversation_id) else {
-            return;
+            return cancelled_any;
         };
         for action in actions_to_cancel.drain(..).collect_vec() {
+            cancelled_any = true;
             self.cancel_pending_action(conversation_id, action, reason, ctx);
         }
+        cancelled_any
     }
 
     /// Removes and returns all pending RequestCommandOutput actions for a conversation.

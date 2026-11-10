@@ -2918,6 +2918,50 @@ mod finished_batch {
         assert_eq!(plan.silent_stop, None);
     }
 
+    /// #1942: Stop means stop. A batch stopped by the user after one of its results had already
+    /// finished (`read_files` done, the command card then stopped) sends NO follow-up request and
+    /// ends `Cancelled`, quietly: the finished result rides on the user's next request instead.
+    /// Fails on the old code, which planned `Auto` off the one non-cancelled result and opened a
+    /// request after the user had stopped the agent.
+    #[test]
+    fn a_user_stop_after_a_finished_result_sends_no_request() {
+        for reason in [
+            CancellationReason::ManuallyCancelled,
+            CancellationReason::Deleted,
+            CancellationReason::UserCommandExecuted,
+            CancellationReason::FollowUpSubmitted {
+                is_for_same_conversation: false,
+            },
+        ] {
+            let plan = plan_finished_batch(
+                Some(reason),
+                &[completed(0, false), rejected()],
+                false,
+                false,
+            );
+            assert_eq!(plan.follow_up, None, "{reason:?}");
+            assert_eq!(
+                plan.final_status,
+                ConversationStatus::Cancelled,
+                "{reason:?}"
+            );
+            assert_eq!(plan.silent_stop, None, "{reason:?}");
+        }
+        // Even a batch whose every result finished ends Cancelled when the user stopped it: the
+        // stop came after the last result and before its follow-up went out.
+        let plan = plan_finished_batch(
+            Some(CancellationReason::ManuallyCancelled),
+            &[completed(0, false)],
+            false,
+            false,
+        );
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Cancelled);
+        // The same mix with nobody stopping still follows up (the #1178 `None`-reason case).
+        let plan = plan_finished_batch(None, &[completed(0, false), rejected()], false, false);
+        assert_eq!(plan.follow_up, Some(FollowUpTrigger::Auto));
+    }
+
     /// A cancellation nobody asked for (a ^C into the command, a cancelled tool) ends the turn
     /// with a visible reason (#1178): never a finished-looking turn with no message.
     #[test]

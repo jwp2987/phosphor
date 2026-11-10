@@ -591,8 +591,8 @@ pub(crate) struct FinishedBatchPlan {
     /// Send the step's results back to the model, and why. `None`: the turn ends here.
     pub follow_up: Option<FollowUpTrigger>,
     /// Without a follow-up, the status the turn ends in. `Cancelled` for any mix of cancelled,
-    /// failed and successful results: an imperfect heuristic that practically speaking has no
-    /// effect, since a batch with a non-cancelled result sends a follow-up instead.
+    /// failed and successful results, and always for a batch the user stopped (#1942): a batch
+    /// with a non-cancelled result that nobody stopped sends a follow-up instead.
     pub final_status: ConversationStatus,
     /// Without a follow-up, the stop reason to show when nobody asked for the stop (#1178).
     pub silent_stop: Option<String>,
@@ -611,14 +611,21 @@ pub(crate) fn plan_finished_batch(
     // is itself the terminal result, so it neither triggers a follow-up nor counts as a
     // cancellation. Derived from `CancellationReason::conversation_outcome`, the single source
     // of truth for the reason -> status mapping, rather than re-tested per reason.
-    let treat_as_success = matches!(
-        cancellation_reason.map(|reason| reason.conversation_outcome()),
-        Some(CancellationOutcome::Succeeded)
-    );
+    let outcome = cancellation_reason.map(|reason| reason.conversation_outcome());
+    let treat_as_success = matches!(outcome, Some(CancellationOutcome::Succeeded));
+    // Stop means stop (#1942, owner decision 2026-11-09): a reason whose outcome is `Cancelled`
+    // (Stop, Ctrl-C, Delete, a shell command run by the user, a submit into another
+    // conversation) sends NO automatic follow-up, however many results of the batch finished
+    // before the stop. The finished results stay in `finished_action_results` and ride on the
+    // user's next request (`send_query` drains them, the BYOP preflight dedups). Before this,
+    // `[success, cancelled]` after a Stop opened a request, whose reply could queue
+    // auto-executable actions that then ran after the user had stopped the agent.
+    let stopped_by_user = matches!(outcome, Some(CancellationOutcome::Cancelled));
     let follow_up = if has_manual_follow_up {
         Some(FollowUpTrigger::UserRequested)
     } else if !is_passive_code_diff
         && !treat_as_success
+        && !stopped_by_user
         && results
             .iter()
             .any(|result| result.result.should_trigger_request_upon_completion())
@@ -629,10 +636,12 @@ pub(crate) fn plan_finished_batch(
     };
     // An interrupted exit 130 is "successful" by exit code (`ExitCode::was_successful` accepts
     // 130) but is a cancellation, so a turn ended by ^C must not read as a finished one (#1178).
-    let final_status = if treat_as_success
-        || results
-            .iter()
-            .all(|result| result.result.is_successful() && !result.result.is_cancelled())
+    // A user stop ends the turn `Cancelled` whatever the results say (#1942).
+    let final_status = if !stopped_by_user
+        && (treat_as_success
+            || results
+                .iter()
+                .all(|result| result.result.is_successful() && !result.result.is_cancelled()))
     {
         ConversationStatus::Success
     } else {
@@ -1280,6 +1289,30 @@ impl BlocklistAIController {
                 is_passive_code_diff,
                 has_manual_follow_up,
             );
+            // A BYOP request readiness stashed (it carries the user's own prompt, waiting for
+            // this step's live call to finish) goes out now that nothing is unfinished --
+            // whatever the plan says (#1948). It used to be flushed only when the plan had a
+            // follow-up, so a step whose last live call ended cancelled (plan `None`) dropped
+            // the stashed prompt on the floor. A user stop is the exception: Stop means stop
+            // (`cancel_conversation_progress` already dropped the stash for it; a Reject, which
+            // does not go through there, drops it here), and a shell exit ends the conversation
+            // as an error and sends nothing either. A user's own submit never waits behind a
+            // card the user can reject -- `send_query` cancels every pending action first -- so
+            // the stash a stop drops is an automatic request (a resume, a completion report).
+            let turn_was_stopped = matches!(
+                cancellation_reason.map(|reason| reason.conversation_outcome()),
+                Some(CancellationOutcome::Cancelled | CancellationOutcome::FinalizedExternally)
+            );
+            if turn_was_stopped {
+                if me.pending_byop_requests.remove(conversation_id).is_some() {
+                    log::info!(
+                        "[byop-readiness] dropping the request stashed for conversation \
+                         {conversation_id:?}: the turn it waited on was stopped"
+                    );
+                }
+            } else if me.flush_pending_byop_request_after_finished_action(*conversation_id, ctx) {
+                return;
+            }
             let Some(trigger) = plan.follow_up else {
                 // No follow-up carries this step's results, so a tool-loop compaction
                 // deferred to them (#1059) has nothing to ride on; drop it rather than let it
@@ -1370,12 +1403,8 @@ impl BlocklistAIController {
                 }
                 return;
             };
-            // Prefers resending a BYOP request that readiness stashed (it contains
-            // the user's original prompt); otherwise falls back to the original
-            // follow-up path (only sending finished_action_results).
-            if me.flush_pending_byop_request_after_finished_action(*conversation_id, ctx) {
-                return;
-            }
+            // A stashed BYOP request was flushed above; this is the plain follow-up path
+            // (only sending finished_action_results).
             me.send_follow_up_for_conversation(*conversation_id, trigger, ctx);
         });
 
@@ -5180,15 +5209,88 @@ impl BlocklistAIController {
                 .remove(&conversation_id);
         }
 
+        // Stop means stop (owner decision 2026-11-09): nothing this conversation had lined up
+        // sends a request after a Stop / Ctrl-C / Delete / submit elsewhere. A requested
+        // passive follow-up (#1950) used to survive here and turn a later Stop or Reject into
+        // a `UserRequested` follow-up; a BYOP request stashed for a live call (#1948) would be
+        // flushed by the stopped call's own `FinishedAction`. Both go.
+        let stopped_by_user = reason.conversation_outcome() == CancellationOutcome::Cancelled;
+        if stopped_by_user {
+            self.pending_passive_follow_ups.remove(&conversation_id);
+            if self
+                .pending_byop_requests
+                .remove(&conversation_id)
+                .is_some()
+            {
+                log::info!(
+                    "[byop-readiness] dropping the request stashed for conversation \
+                     {conversation_id:?}: the user stopped the conversation ({reason})"
+                );
+            }
+        }
+
         if !self
             .in_flight_response_streams
             .try_cancel_streams_for_conversation(conversation_id, reason, ctx)
         {
             // Otherwise, cancel pending actions and update the input state.
-            self.action_model.update(ctx, |action_model, ctx| {
-                action_model.cancel_all_pending_actions(conversation_id, Some(reason), ctx);
+            let finished_action_coming = self.action_model.update(ctx, |action_model, ctx| {
+                action_model.cancel_all_pending_actions(conversation_id, Some(reason), ctx)
             });
             self.set_input_mode_for_cancellation(ctx);
+
+            // No stream was in flight and, once the pending actions are cancelled, nothing may
+            // be left to write the turn's final status: a turn whose actions were all still
+            // preprocessing (a slow diff apply, #1894) yields no synchronous result and no
+            // `FinishedAction`, so the conversation stayed `InProgress` with nothing held until
+            // the user typed (#1944). The same holds for a turn `InProgress` with nothing at
+            // all (its submit was waiting on an attachment read, discarded above).
+            // An action cancelled just now emitted `FinishedAction`, and a cancelled running
+            // action winds down asynchronously and emits it then: in both cases the
+            // `FinishedAction` subscriber ends the turn (status, queued rows), so this write
+            // happens only when no `FinishedAction` is coming -- never both, which would
+            // release the queued prompts twice. Event-driven: decided here, at the stop, never
+            // by a timer.
+            if stopped_by_user
+                && !finished_action_coming
+                && !self
+                    .action_model
+                    .as_ref(ctx)
+                    .has_unfinished_actions_for_conversation(conversation_id)
+            {
+                let history_model = BlocklistAIHistoryModel::handle(ctx);
+                let is_in_progress = history_model
+                    .as_ref(ctx)
+                    .conversation(&conversation_id)
+                    .is_some_and(|conversation| conversation.status().is_in_progress());
+                if is_in_progress {
+                    log::info!(
+                        "conversation {conversation_id:?} stopped with nothing pending, running \
+                         or in flight: ending the turn as cancelled ({reason})"
+                    );
+                    history_model.update(ctx, |history_model, ctx| {
+                        history_model.update_conversation_status(
+                            self.terminal_view_id,
+                            conversation_id,
+                            ConversationStatus::Cancelled,
+                            ctx,
+                        );
+                    });
+                    // No request follows and no `FinishedAction` is coming, so nothing else
+                    // unlocks or restores this conversation's queued prompts (#790, #1026):
+                    // the same treatment the `FinishedAction` subscriber gives a Stop.
+                    QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                        model.unlock_pending_approval_rows(conversation_id, ctx)
+                    });
+                    if reason.is_manually_cancelled()
+                        && QueuedQueryModel::as_ref(ctx).has_queue(conversation_id)
+                    {
+                        ctx.emit(BlocklistAIControllerEvent::QueuedPromptsReleased {
+                            conversation_id,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -5684,11 +5786,19 @@ impl BlocklistAIController {
                     // stream carried. Without a result for them the follow-up could be held
                     // behind an unanswered tool call, leaving the ask placeholder as the last
                     // message and the turn InProgress (#1861).
-                    if stream_cancellation
+                    // #1946: the same for a Stop / Ctrl-C / Delete / submit elsewhere that
+                    // lands between the stream's `Finished` and this event. Its calls used to
+                    // be dropped with no result at all: their cards never settled (a question
+                    // card stayed on "Preparing question..."), and the turn's status was never
+                    // written by anything that knew about them. Each call now gets its
+                    // cancelled result at once; `plan_finished_batch` sends nothing for a stop
+                    // (#1942), so the results ride on the user's next request.
+                    let discards_actions = stream_cancellation
                         .reason
                         .is_follow_up_for_same_conversation()
-                        && !actions_to_queue.is_empty()
-                    {
+                        || stream_cancellation.reason.conversation_outcome()
+                            == CancellationOutcome::Cancelled;
+                    if discards_actions && !actions_to_queue.is_empty() {
                         let discarded = std::mem::take(&mut actions_to_queue);
                         let reason = stream_cancellation.reason;
                         self.action_model.update(ctx, |action_model, ctx| {
