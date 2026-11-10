@@ -22879,7 +22879,10 @@ impl TerminalView {
 
     /// One look at the pane for the judge, under one model lock (R10). The tail is classified
     /// here: no visible text or the cursor at column 0 is `None`; unterminated text that asks for
-    /// input is `InputPrompt`; any other unterminated text is `ShellPrompt`.
+    /// input is `InputPrompt`; any other unterminated text is `ShellPrompt`. The rows classified
+    /// END AT THE CURSOR'S ROW (#1934): after a `clear` (zsh-newuser-install clears before its
+    /// menu) the grid's last rows are blank, and classifying them read the menu's footer as a
+    /// shell prompt and wrote the probe into the menu.
     fn take_subshell_pane_look(&self) -> SubshellPaneLook {
         use subshell_ready::Tail;
         let model = self.model.lock();
@@ -22890,7 +22893,7 @@ impl TerminalView {
         let tail = if cursor.col == 0 {
             Tail::None
         } else {
-            let contents = grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
+            let contents = grid.contents_through_row_to_string(cursor.row, OUTPUT_TAIL_ROWS);
             if !output_has_visible_text(&contents) {
                 Tail::None
             } else if output_tail_is_input_prompt(&contents) {

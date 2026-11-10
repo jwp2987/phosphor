@@ -25797,6 +25797,51 @@ fn the_readiness_look_reads_only_the_tail_of_the_output() {
     })
 }
 
+/// #1934 (review r8 D1b): the tail is classified on the rows ending at the CURSOR's row, not the
+/// grid's last row. zsh-newuser-install runs `clear` before its menu, so blank rows sit below the
+/// footer: the footer (an input prompt) is the tail, and a shell prompt drawn there after the menu
+/// is a shell prompt; the blank rows below decide nothing.
+#[test]
+fn the_readiness_tail_is_the_cursor_row_not_the_blank_rows_below_a_clear() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _ctx| {
+            let mut output = String::new();
+            for i in 0..40 {
+                output.push_str(&format!("old screen {i}\r\n"));
+            }
+            // `clear`: home, erase to the end of the screen; then the menu and its footer.
+            output.push_str("\x1b[H\x1b[J");
+            output.push_str("This is the Z Shell configuration function for new users,\r\n");
+            output.push_str("(q)  Quit and do nothing.\r\n");
+            output.push_str("--- Type one of the keys in parentheses --- ");
+            view.model
+                .lock()
+                .simulate_long_running_block("zsh", output.as_str());
+            let look = view.take_subshell_pane_look();
+            assert!(
+                look.position.1 + 1 < look.position.0,
+                "blank rows sit below the cursor: {:?}",
+                look.position
+            );
+            assert_eq!(look.tail, subshell_ready::Tail::InputPrompt);
+            // The user answered `q`; zle draws its prompt on the next row. Still blank rows below.
+            view.model.lock().process_bytes("\r\nme@host ~ % ");
+            assert_eq!(
+                view.take_subshell_pane_look().tail,
+                subshell_ready::Tail::ShellPrompt
+            );
+            // Column 0 is no tail, whatever the rows above hold.
+            view.model.lock().process_bytes("\r\n");
+            assert_eq!(
+                view.take_subshell_pane_look().tail,
+                subshell_ready::Tail::None
+            );
+        });
+    })
+}
+
 /// #1384 P3: the ssh-warpify payload leaves the view as ONE event (the PTY controller owns the
 /// chunks and the pacing), and a ^C / ^D or a cancelled warpify emits the cut that replaced the
 /// view-side generation chain (#1354).
