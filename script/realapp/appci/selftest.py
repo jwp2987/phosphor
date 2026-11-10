@@ -2884,6 +2884,51 @@ def r12_macos_menu_key_equivalent_is_a_dispatched_key():
 
 
 @check
+def r12_lab_helper_bundle_is_named_after_the_helper_not_the_runner():
+    """#2042: stage_helper_asset named the bundle after platform.machine() of the machine the harness runs on. On the arm64 Mac runner that is
+    phosphor-remote-linux-aarch64.gz for an x86_64 helper and an x86_64 lab host, a name the app never asks for. The name now comes from the helper's
+    ELF header, whatever the runner is."""
+    import gzip
+    import platform
+    import cases_lab as CL
+    d = tempfile.mkdtemp()
+    saved, real_machine = os.environ.get(CL.HELPER_ASSET_ENV), platform.machine
+    try:
+        def elf(machine, data=1):
+            return b"\x7fELF" + bytes([2, data, 1, 0]) + b"\0" * 8 + (2).to_bytes(2, "little" if data == 1 else "big") + machine.to_bytes(2, "little" if data == 1 else "big") + b"\0" * 40
+        x86, arm, be = os.path.join(d, "x86"), os.path.join(d, "arm"), os.path.join(d, "be")
+        open(x86, "wb").write(elf(62)); open(arm, "wb").write(elf(183)); open(be, "wb").write(elf(183, data=2))
+        junk, short = os.path.join(d, "junk"), os.path.join(d, "short")
+        open(junk, "wb").write(b"#!/bin/sh\nexit 0\n" + b" " * 40); open(short, "wb").write(b"\x7fELF")
+        assert (CL.helper_arch(x86), CL.helper_arch(arm), CL.helper_arch(be)) == ("x86_64", "aarch64", "aarch64")
+        assert CL.helper_arch(junk) is None and CL.helper_arch(short) is None and CL.helper_arch(os.path.join(d, "absent")) is None
+        other = os.path.join(d, "riscv")
+        open(other, "wb").write(elf(243))
+        assert CL.helper_arch(other) is None
+        for runner in ("arm64", "x86_64", "AMD64"):         # the Mac runner, the box, the Windows VM: the same bundle name on all three
+            platform.machine = lambda runner=runner: runner
+            ctx = type("C", (), {"run": os.path.join(d, "run_" + runner)})()
+            os.makedirs(ctx.run)
+            out = CL.stage_helper_asset(ctx, x86)
+            assert os.listdir(out) == ["phosphor-remote-linux-x86_64.gz"] and os.environ[CL.HELPER_ASSET_ENV] == out, (runner, os.listdir(out))
+            assert gzip.open(os.path.join(out, "phosphor-remote-linux-x86_64.gz")).read() == open(x86, "rb").read()
+        platform.machine = lambda: "x86_64"
+        ctx = type("C", (), {"run": os.path.join(d, "run_arm")})()
+        os.makedirs(ctx.run)
+        assert os.listdir(CL.stage_helper_asset(ctx, arm)) == ["phosphor-remote-linux-aarch64.gz"]      # an aarch64 helper keeps its own name on an x86_64 runner
+        ctx = type("C", (), {"run": os.path.join(d, "run_junk")})()
+        os.makedirs(ctx.run)
+        assert os.listdir(CL.stage_helper_asset(ctx, junk)) == ["phosphor-remote-linux-%s.gz" % CL.LAB_HOST_ARCH]
+    finally:
+        platform.machine = real_machine
+        if saved is None:
+            os.environ.pop(CL.HELPER_ASSET_ENV, None)
+        else:
+            os.environ[CL.HELPER_ASSET_ENV] = saved
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
 def r18e9_injector_accounting_spans_relaunches():
     """r18e9: ui_startup_time relaunches 5 times and the app log is overwritten each time; accounting over [earlier copies..., live log] counts every launch, and the
     per-launch seq counters do not collide"""

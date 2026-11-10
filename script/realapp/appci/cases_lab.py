@@ -122,10 +122,29 @@ def host_label(arm):
     return "%s@%s" % (arm["user"], host_of(arm))
 
 
+ELF_MACHINES = {62: "x86_64", 183: "aarch64"}       # e_machine: EM_X86_64, EM_AARCH64 (the two the app has an asset name for)
+LAB_HOST_ARCH = "x86_64"                            # the lab image is built and run on the x86_64 box (script/ci/lab_helper.py TARGET)
+
+
+def helper_arch(helper_bin):
+    """the CPU the helper binary is built FOR, from its ELF header ('x86_64' | 'aarch64'); None when it is not an ELF file of one of the two.
+    #2042: the bundle has to carry the name the app asks for, which is the REMOTE's `uname -m` (remote_server::setup::helper_asset_name), and the
+    helper runs on the lab host. The machine the harness runs on has nothing to do with it: an arm64 Mac staged `linux-aarch64` for an x86_64 lab."""
+    try:
+        with open(helper_bin, "rb") as f:
+            head = f.read(20)
+    except OSError:
+        return None
+    if len(head) < 20 or head[:4] != b"\x7fELF" or head[5] not in (1, 2):
+        return None
+    return ELF_MACHINES.get(int.from_bytes(head[18:20], "little" if head[5] == 1 else "big"))
+
+
 def stage_helper_asset(ctx, helper_bin):
-    """gzip the helper into <run>/helper-asset/phosphor-remote-linux-<arch>.gz and point the app at it (the env is read at launch). Returns the directory."""
-    import gzip, platform, shutil
-    arch = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(platform.machine().lower(), "x86_64")
+    """gzip the helper into <run>/helper-asset/phosphor-remote-linux-<arch>.gz and point the app at it (the env is read at launch). Returns the directory.
+    <arch> is the helper's own (helper_arch); a file that is not such an ELF gets the lab host's, so a wrong file fails at the host, not by a missing name."""
+    import gzip, shutil
+    arch = helper_arch(helper_bin) or LAB_HOST_ARCH
     d = os.path.join(ctx.run, "helper-asset")
     os.makedirs(d, exist_ok=True)
     with open(helper_bin, "rb") as src, gzip.open(os.path.join(d, "phosphor-remote-linux-%s.gz" % arch), "wb", 9) as dst:

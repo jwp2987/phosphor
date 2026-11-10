@@ -4853,7 +4853,10 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   APPCI_APP_PINNED_DIGESTS=0 (see the variable table): the eight `.helper` arms of the first lab run become runnable, the `upload` / `upgrade` / `never`
   arms stay UNVERIFIABLE, now for the true reason. Order of play: `sshlab-image`, `lab-helper` (once per helper change), the build, `app-test-lab-linux`.
   `ci_seq.py` does not play `lab-helper` (it would queue a seconds-long no-op behind the box's cargo jobs; a coordinator decision). Mac and Windows lab
-  jobs: the file has to be carried to the runner and named with `APPCI_LAB_HELPER_BIN` (no transfer is automated). Self-tests:
+  jobs: the file has to be carried to the runner and named with `APPCI_LAB_HELPER_BIN` (no transfer is automated; `docs/design/r12-macssh.md`
+  section 4 proposes `needs: lab-helper`). The bundle the `upload` / `upgrade` / `never` arms stage is named after the HELPER's CPU, read from its
+  ELF header (`cases_lab.helper_arch`, #2042): it was named after the runner's, `linux-aarch64` on the arm64 Mac for an x86_64 helper and lab
+  host, a name the app never asks for (self-test `r12_lab_helper_bundle_is_named_after_the_helper_not_the_runner`). Self-tests:
   `python3 script/ci/lab_helper.py --self-test` (key, cache, prune, ELF and version checks, the `cargo tree` parser; also the job's first
   step) and appci `lab_helper_from_the_cache_r12`. First run on the box is the first compile of this recipe: expect to adjust it.
 - **`big_paste` budgets are the owner's** (1500 ms paste to Enter, 250 ms largest UI item): see the `big_paste` entry of round 10 group A above.
