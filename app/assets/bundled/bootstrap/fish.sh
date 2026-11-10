@@ -1218,37 +1218,100 @@ esac
     # #1035: succeeds when the remote answers like a non-POSIX shell (cmd.exe or PowerShell),
     # asked over the already-authenticated master at $argv[1] (no new connection). POSIX shells
     # print the literal %COMSPEC% and an empty $PSVersionTable; cmd.exe expands %COMSPEC% and
-    # leaves $PSVersionTable; PowerShell leaves %COMSPEC% and expands $PSVersionTable. Anything
-    # else (timeout after 5 s, failure, csh/fish errors) is inconclusive and fails, i.e. the
-    # managed session as before.
+    # leaves $PSVersionTable; PowerShell leaves %COMSPEC% and expands $PSVersionTable.
+    # Round 10 (lab): a unix LOGIN shell that cannot parse POSIX sh (fish, nu, csh, ...) answers
+    # neither way (fish prints an empty line, nu and csh an error). sshd hands the remote command
+    # to the login shell, so the POSIX bootstrap was refused by it as a whole and the session
+    # ended at once with the shell's syntax error. When the first answer is not definitive and
+    # the probe ended by itself, the login shell is asked for its name
+    # (warp_ssh_remote_login_shell) and a known non-POSIX one is answered like cmd.exe: success,
+    # the plain interactive session over the same master. Anything else (timeout after 5 s, a
+    # shell that is not on that list) is inconclusive and fails, i.e. the managed session as
+    # before.
     function warp_ssh_remote_is_non_posix
         set -l control_path $argv[1]
         set -e argv[1]
-        set -l probe_out (command mktemp 2>/dev/null)
-        or return 1
-        command ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$control_path" $argv -T 'echo warp-probe-%COMSPEC%-$PSVersionTable' </dev/null >$probe_out 2>/dev/null &
-        set -l probe_pid (jobs --last --pid)
-        for i in (seq 1 50)
-            if not kill -0 $probe_pid 2>/dev/null
-                break
-            end
-            # give-up-net: polls then kills an ssh probe (<=5 s); never touches the tty or typed keys
-            command sleep 0.1
-        end
-        kill $probe_pid 2>/dev/null
-        set -l out (command cat $probe_out 2>/dev/null | string collect)
-        command rm -f $probe_out
         # #1136: record a DEFINITIVE answer for warp_ssh_remote_is_non_posix_cached; anything else
         # leaves the verdict empty (inconclusive, never cached).
         set -g warp_ssh_probe_verdict ""
+        warp_ssh_probe_over_master "$control_path" 'echo warp-probe-%COMSPEC%-$PSVersionTable' $argv
+        set -l probe_ended $status
+        set -l out "$__warp_ssh_probe_out"
+        set -e __warp_ssh_probe_out
         if string match -q -r -i -- 'Hashtable|cmd\.exe-\$PSVersionTable' "$out"
             set -g warp_ssh_probe_verdict nonposix
             return 0
         end
         if test "$out" = 'warp-probe-%COMSPEC%-'
             set -g warp_ssh_probe_verdict posix
+            return 1
+        end
+        # No definitive answer. A probe that could not run or that the 5 s net killed says
+        # nothing about the login shell and is not asked again.
+        if test $probe_ended -ne 0
+            return 1
+        end
+        warp_ssh_remote_login_shell "$control_path" $argv
+        set -l login_shell "$warp_ssh_login_shell"
+        set -e warp_ssh_login_shell
+        switch "$login_shell"
+            case fish nu csh tcsh xonsh elvish
+                set -g warp_ssh_probe_verdict nonposix
+                return 0
+            case bash zsh
+                set -g warp_ssh_probe_verdict posix
         end
         return 1
+    end
+
+    # Runs the remote command $argv[2] over the already-authenticated master at $argv[1] (the
+    # user's ssh arguments follow) with no tty and stdin from /dev/null. What it printed goes
+    # into the global __warp_ssh_probe_out (the caller erases it); fails when the probe could
+    # not run or the 5 s net had to kill it.
+    function warp_ssh_probe_over_master
+        set -l control_path $argv[1]
+        set -l remote_command $argv[2]
+        set -e argv[1..2]
+        set -g __warp_ssh_probe_out ""
+        set -l probe_out (command mktemp 2>/dev/null)
+        or return 1
+        command ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$control_path" $argv -T $remote_command </dev/null >$probe_out 2>/dev/null &
+        set -l probe_pid (jobs --last --pid)
+        set -l timed_out 1
+        for i in (seq 1 50)
+            if not kill -0 $probe_pid 2>/dev/null
+                set timed_out 0
+                break
+            end
+            # give-up-net: polls then kills an ssh probe (<=5 s); never touches the tty or typed keys
+            command sleep 0.1
+        end
+        kill $probe_pid 2>/dev/null
+        set -g __warp_ssh_probe_out (command cat $probe_out 2>/dev/null | string collect)
+        command rm -f $probe_out
+        return $timed_out
+    end
+
+    # Round 10 (lab): the name of the remote LOGIN shell (the last path component of its $SHELL)
+    # into the global warp_ssh_login_shell (the caller erases it), empty when it did not answer.
+    # The question is one single-quoted word list with no backslash, quote or newline inside, so
+    # sh, bash, zsh, fish, nu, csh, tcsh, xonsh and elvish all parse it the same way and hand it
+    # to `sh`; sshd exports SHELL (the passwd entry) to the session, so `sh` reads the login shell
+    # from it. Lines an rc file printed in front are skipped: only a whole `warp-login-<path>-`
+    # line counts.
+    function warp_ssh_remote_login_shell
+        set -l control_path $argv[1]
+        set -e argv[1]
+        set -g warp_ssh_login_shell ""
+        warp_ssh_probe_over_master "$control_path" "sh -c 'echo warp-login-\$SHELL-'" $argv
+        set -l lines (string split \n -- "$__warp_ssh_probe_out")
+        set -e __warp_ssh_probe_out
+        for line in $lines
+            set -l answer (string match -r -- '^warp-login-(.*)-\r?$' $line)
+            if test (count $answer) -eq 2
+                set -g warp_ssh_login_shell (string replace -r -- '^.*/' '' $answer[2])
+            end
+        end
     end
 
     # #1136: the probe above costs a channel on the master plus a remote shell start on every

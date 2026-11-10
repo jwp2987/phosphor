@@ -4473,3 +4473,26 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   start on purpose. Worked, unproven: nothing was compiled or run. The next Linux run should show, in both modes, `ssh trial verdicts: exact=1`, hand-overs
   `precmd` then `finish` (`delivered=tty_owner`), and NO `ssh_gate_released how=other_command` between the nested `ssh_pty_owner ssh=true site=ssh_submit`
   and its `site=tty_owned`.
+
+## Round 10: the lab's first run (job 17885063245; design `docs/design/r10-lab.md`; #2019 #2020 #2021)
+
+The fix-tier lab job ran the PROVING lab cases for the first time (build `413cd4241`): 36 judged rows, 2 PASS, 21 FAIL, 13 NOREF. Two causes are app
+defects, five are faults of the harness or the job. Everything below is worked, unproven: nothing was compiled or run against a build.
+
+- **APP, #2019: a fish or nu LOGIN shell on the remote (8 FAIL rows, "no remote prompt after `ssh lab-u_fish` / `lab-u_nu`").** sshd runs the wrapper's
+  POSIX bootstrap as `<login shell> -c <script>`; fish and nu refuse the whole text (`warp_rb=false` is a syntax error), so the managed session ended
+  30 ms after `ManagedSSHSessionStarting`. The three wrappers (`bash_body.sh`, `zsh_body.sh`, `fish.sh`) now ask a second question over the same master
+  when the first probe answer is not definitive, `sh -c 'echo warp-login-$SHELL-'`, and run the plain session (`PlainSSHFallback`, as for a Windows
+  host) for fish, nu, csh, tcsh, xonsh and elvish. Unit tests (`terminal/bootstrap_test.rs`): `ssh_wrapper_decides_after_connecting_over_one_master`
+  gained the cases `fish-login`, `nu-login`, `tcsh-login-behind-jump`, `noisy-rc-bash`, `unlisted-login-shell` and `probe-ssh-failed`, and its stub
+  ssh answers the second question (`$LOGIN`) and can fail the first (`$PROBE_STATUS`); **expectation changed:** the `inconclusive` case now expects TWO
+  `-T` probes (it was one), because an answer that is not definitive is now followed by the login-shell question, and the test checks that question's
+  exact text. New test `ssh_login_shell_question_is_answered_by_every_login_shell` runs the question in the real sh, bash, zsh, dash and fish that are
+  installed. `script/test_ssh_probe_cache` (**expectation changed** the same way: its cumulative ssh-call counts for the `inconclusive` and `garbage`
+  cases went up by one per call, return codes unchanged) gained the login-shell cases: fish, nu and tcsh are remembered as non-POSIX, bash behind a
+  printing rc file as POSIX, an unlisted shell is never remembered. The timer guard entry moved with the 5 s net (`warp_ssh_probe_over_master`,
+  `script/input_path_timers.allow`). Run by hand on the laptop
+  with a stub ssh in real bash 5, zsh 5.9 and fish 4.2.1 (all cases as expected); nu could not be run there. The next lab run should show, for the
+  fish and nu arms, `Received PlainSSHFallback hook`, two `Starting session: command for u_<shell>` lines in the lab sshd log and a remote prompt.
+  **Owner question:** these hosts get a plain session with no remote features; the agent-mode `nu` arms are expected to get past the connect and then
+  fail on their first remote tool call until a managed session for such login shells is designed.
