@@ -5103,6 +5103,15 @@ def agent_resilience_pure_parts():
     assert any("AND is still held" in p for p in ar.judge_rows(["A1", "B1"], ["A1"], hops, ["A1 B1", "B1"]))
     assert any("fired" in p for p in ar.judge_rows(["A1", "B1"], [], [("r1", "queued"), ("r2", "queued"), ("r1", "fired")], ["A1", "B1"]))
     assert ar.row_hops("hop=queued_row id=x state=popped\n") == [("x", "popped")]
+    # round 11 (Windows, no OCR): the app's own record of the input after it put a popped row back is the proof that the row is held, not lost
+    rest = ('2026 [INFO] hop=queued_row id=r1 state=popped\n'
+            '2026 [DEBUG] input_order hop=queued_row_restored id=r1 buffer="please answer with the word A1 \\"x\\"" t=1.0\n')
+    assert ar.row_hops(rest) == [("r1", "popped")], "the restored hop is not a row state"
+    assert ar.restored_inputs(rest) == [("r1", 'please answer with the word A1 "x"')] and ar.tokens_in_input(["A1", "B1"], rest) == ("A1",)
+    assert ar.judge_rows(["A1", "B1"], [], [("r1", "queued"), ("r2", "queued"), ("r1", "popped")], ["B1"], ar.tokens_in_input(["A1", "B1"], rest)) == []
+    assert ar.restored_inputs(rest + '2026 [DEBUG] input_order hop=enter_begin deferred=false buffer="x" input_type=AI t=2.0\n') == [], "an Enter after the restore submitted the input"
+    assert ar.restored_inputs('hop=queued_row_restored id=r1 buffer=<40 chars> t=1.0\n') == [] and ar.tokens_in_input(["A1"], "") == ()
+    assert any("lost" in p for p in ar.judge_rows(["A1", "B1"], [], [("r1", "queued"), ("r2", "queued"), ("r1", "popped")], ["B1"], ())), "popped and not seen anywhere is still lost"
     import sqlite3
     d = tempfile.mkdtemp()
     try:

@@ -3605,6 +3605,7 @@ Info-level, written only when a state CHANGES, ids / kinds / states only, never 
 | `hop=action_card id= kind= shown=true` | `AIBlock` (`log_card_shown`) | a card came up: `run_shell_command`, `call_mcp_tool`, `action_buttons`, `ask_user_question` |
 | `hop=handover action= reason=` | `CLISubagentController::switch_control_to_user` | `manual`, `stop`, `transfer_from_agent`, `blocked_on_input` (`action=-` when the block has no requested command) |
 | `hop=queued_row id= state=` | `QueuedQueryModel` | `queued_locked`, `queued`, `unlocked`, `popped` (restored to the input), `fired`, `deleted` |
+| `input_order hop=queued_row_restored id= buffer=` | `QueuedQuery::log_restored_to_input` (called by `TerminalView` after a popped row was put into the input) | what the input editor holds after the restore, read back from the editor: the text with `WARP_INPUT_ORDER_LOG_TEXT=1`, else `<N chars>`. `agent_fault_queued_rows` counts a row as held in the input from this line when no `hop=enter_begin` follows it (round 11: the Windows VM has no OCR engine) |
 | `hop=turn conv= state=` | `AIConversation::update_status_with_error_message` | `in_progress`, `success`, `error`, `transient_error`, `cancelled`, `blocked`, `waiting_for_events` |
 
 Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.
@@ -4640,3 +4641,63 @@ All four rows were TEST faults; no app code changed. Self-test: `r11_mac_round10
   model chip; agent `mode_proof` failed "model chip not visible" on a screenshot that shows it. On macOS the Vision read now always comes
   first and tesseract's read is added to it (as the X11 2x read is added, never replacing). Other platforms are unchanged. The word-box
   helpers of `cases_ui` (pointer cases, tesseract TSV) are not touched.
+
+## Round 11: the Windows failures of round 10 (build/r10a, pipeline 3048440714, job app-test-windows)
+
+Design note with the per-case evidence: `docs/design/r11-win.md`. Nothing here was compiled or run; every row is "worked, unproven" until the next
+Windows run.
+
+- **APP, #2024: `giveup_keys_reach_shell` (PowerShell pane, terminal 6/20 and agent 7/20, KEEP-TOGETHER broken).** A ready signal handled after the model
+  had parsed the Preexec of a typed-ahead line was only remembered, and the cycle that Preexec ended was counted as a missed signal: the session was
+  demoted and the next prompt handed input to the editor unproven, with the first typed characters of the next line left in the shell's line
+  (`handoff_request_skipped reason=line_editor_not_proven`, `decision=Committed`). `LineEditorStatus::set_line_editor_inactive` no longer records a miss
+  when a signal was remembered. Unit tests `line_editor_status_tests.rs`: `a_remembered_signal_is_not_a_missed_signal_when_a_typed_ahead_line_ends_the_cycle`
+  (the next prompt still waits for its signal, no unproven decision at the Precmd) and `a_cycle_with_no_signal_at_all_is_still_a_miss` (#1825 unchanged).
+  The case is unchanged. Next Windows run: 20/20 in both modes, no `handoff_request_skipped reason=line_editor_not_proven` in the case's log slice, every
+  second prompt of a round ends in `decision=SendRequest` (or `Committed` with nothing typed).
+- **APP, #1923 (the fix did not work): `gitbash_precmd_secret` (Git Bash pane, the PIN never reached `read -s`).** At the prompt hold's cap the screen fact
+  (`screen_tail_asks_for_input`) read the active block's OUTPUT grid; a precmd function's `pin: ` is written after the Precmd, into the fresh block's
+  prompt-and-command grid, so the fact was false and the keys stayed held (`prompt_hold_kept_overdue hold=44 entries=6`, screenshot: `pin: ` on screen
+  under the "waiting for the shell" toast). The fact is now `key_facts::active_block_tail_asks_for_input`, on the grid the block writes to. Unit tests
+  `key_facts_tests.rs`: `a_question_printed_after_the_precmd_is_seen_on_the_grid_the_block_writes_to`,
+  `the_tail_fact_reads_a_running_commands_output_and_ignores_a_shell_prompt`. No view-level test of the cap with a fresh block was added (the existing
+  hold fixtures start the block themselves; a wrong fixture written without a compiler would prove nothing): the case is the proof. The case is unchanged.
+  Next Windows run: at the cap after the first half `hop=prompt_hold_expired precmd_wait=true` and the warning `typeahead prompt hold N gave up with no
+  line-editor signal: releasing 6 chunk(s) ... to the pty` (no `prompt_hold_kept_overdue`, no `prompt_hold_handed_back`); the second half and its Enter
+  as `hand_route reason=unheld state=pty_owned` writes (read from the code: the wait ended at the cap, so nothing holds them; if the log shows a second
+  hold instead, it must end the same way); `gbpin.txt` holds the PIN; the line typed after the read runs. The first half is written 1.5 s after its
+  first key (the cap), by design of #1923. To watch: the Enter that ended the `read` is counted as a line by the hand-off and no Precmd answers it;
+  the cases that follow in the same pane show whether the editor takes input again at the next prompt.
+- **TEST, no issue (the app kept the row): `agent_fault_queued_rows` (agent@fake and agent@gitbash+fake, "'QA...' was lost").** The app popped the
+  first row back into the input when the failing reply ended (`hop=queued_row id=... state=popped`, then `keystroke: Agent by request-shape
+  (AgentConversation, head "please", 40 bytes)`: 40 bytes is exactly `please answer with the word <token>`), and kept the second in the queue
+  (`queued_rows_stored`). The case's only eye for the input is OCR, and the Windows VM has no OCR engine, so the row counted as lost. The same case
+  passes on macOS (OCR). The app now logs what the input holds after such a restore (`hop=queued_row_restored`, table above) and the case counts a
+  token found there as held (`cases_agent_resilience.restored_inputs` / `tokens_in_input`; metric `queued_rows_in_input`). Not weakened: a row that
+  is neither sent, stored, on screen nor in that record is still "lost" (self-test), an Enter after the restore voids the record, and a count-only
+  line proves nothing. Self-test: the block after `row_hops` in the agent-resilience checks. Next Windows run: PASS with
+  `queued_rows_in_input` naming the first row and `queued_rows_stored` the second.
+- **APP, #2025 (second defect behind #2006): `subshell_ready_rc_questions` (terminal and agent) and `subshell_ready_rc_clear` (terminal), Git Bash pane.**
+  The #2006 change held (two `verdict=ReArm`, `Wait(UserLineAtCursor)` at each echo, one `subshell_setup_ready_write` after the answers, no cancel; the
+  answers file was right). The setup then reached `InitShell`, the controller typed the 83 KB bootstrap into the inner bash (41 `SetupChunked` writes) and
+  readline took it at 32-49 lines per second: no `Bootstrapped` 15 s later, the typed line held, the harness's probe unanswered, its Ctrl-C aborted the
+  setup. A bash started by plain `bash` from an MSYS2 session (through plain-bash subshells only) now gets `source '<temp file>'` like the pane's shell
+  (`bootstrap::msys2_bash_subshell_sources_file`, `PtyController::spawned_from_msys2_through_plain_bash`; switch `PHOSPHOR_MSYS2_SUBSHELL_SOURCE=0`).
+  Unit tests `bootstrap_test.rs`: `a_plain_bash_subshell_of_an_msys2_session_sources_its_bootstrap` (which commands, and never without an MSYS2 shell
+  up the chain, never for wsl / sudo / ssh / containers / another shell / a session that reports a WSL distribution),
+  `msys2_subshell_sourcing_is_on_unless_switched_off`. The chain walk over real sessions has no unit test (it needs a `Sessions` model with an MSYS2
+  session; the cases are its proof). The cases are unchanged. Next Windows Git Bash run: `hop=subshell_bootstrap_sourced why=msys2_bash_subshell` after
+  `subshell_setup_progress kind=InitShell`, no `class=SetupChunked` writes after that hop, `Bootstrapped` within a few seconds, the inner line and the
+  `back_` line run, the shell in front after leaving is the root shell.
+- **APP, #2006 (follow-up, owner decision 2 of 2026-11-10 now measured): `subshell_ready_rc_clear` (agent@gitbash, "the setup was written after the
+  clear").** The inner bash drew `LAB$ ` 32 ms BEFORE the setup was armed (`decset_2004 on=true`, then `subshell_setup_armed`, then
+  `decision=Wait(Unknown) ... tail=ShellPrompt ... bytes=0`): on a pane with no tty probe only a prompt drawn SINCE the baseline wrote, so the attempt
+  waited until the user's own line cancelled it (`verdict=Cancel`, `subshell_setup_cancelled why=UserDrove`). The terminal pass of the same case armed
+  20 ms before the prompt and wrote. Measurement asked for by the decision (`hop=decset_2004`, round 10 slices of both cases, both modes):
+  `on=true` arrives in stream order directly before every look that shows the inner shell's prompt, and never between the outer shell's `on=false`
+  and the `Name: ` / `Team: ` questions of `read -p`. So it is built, narrowly: `ReadinessSample::line_editor_announced` (no probe, bracketed paste on
+  in the running block) writes at a shell-shaped tail while NO user byte passed; after user bytes the #2006 rules are unchanged. Switch
+  `PHOSPHOR_SUBSHELL_READY_DECSET_2004=0`. The judged hop gained `line_editor_announced=`. Unit tests `subshell_ready_tests.rs`:
+  `no_probe_writes_at_a_prompt_drawn_before_arming_when_the_line_editor_announced_itself`, `the_line_editor_announcement_is_on_unless_switched_off`.
+  The case is unchanged. Next Windows Git Bash run, agent pass: `subshell_ready_judged source=armed decision=Write(None) ... line_editor_announced=true`
+  when the prompt was there first, the setup written, the inner line runs within 2 s only if the bootstrap is sourced (#2025 above).

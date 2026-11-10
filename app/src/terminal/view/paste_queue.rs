@@ -2179,17 +2179,14 @@ impl TerminalView {
             })
     }
 
-    /// Whether the unterminated text at the end of the output asks for input (`pin: `, `[y/N]`,
-    /// `Password:`): the same classification the subshell readiness look uses.
+    /// Whether the unterminated text the shell wrote last asks for input (`pin: `, `[y/N]`,
+    /// `Password:`): the same classification the subshell readiness look uses, on the grid the
+    /// active block is writing to (`active_block_tail_asks_for_input`).
     fn screen_tail_asks_for_input(&self) -> bool {
-        use crate::terminal::model::key_facts::{OUTPUT_TAIL_ROWS, output_tail_is_input_prompt};
         let model = self.model.lock();
-        let block = model.block_list().active_block();
-        let grid = block.output_grid();
-        if grid.grid_handler().cursor_point().col == 0 {
-            return false;
-        }
-        output_tail_is_input_prompt(&grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS)))
+        crate::terminal::model::key_facts::active_block_tail_asks_for_input(
+            model.block_list().active_block(),
+        )
     }
 
     /// #1584: the give-up of prompt hold `hold_id` with keys that may go back to the editor: the

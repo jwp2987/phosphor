@@ -25,6 +25,7 @@ use chrono::{DateTime, Local};
 use warpui_core::sync_shim::Mutex;
 use warpui_core::sync_shim::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use super::block::Block;
 use super::block::interactive_latch::InteractiveLatch;
 use super::block::interactive_prompt_candidate;
 use super::early_output::TypeaheadMode;
@@ -388,6 +389,23 @@ pub fn output_tail_is_input_prompt(output: &str) -> bool {
         || line_ends_in_choice_group(line)
         || lower.contains(ZSH_NEWUSER_INSTALL_FOOTER)
         || is_zsh_newuser_install_key_prompt(&lower)
+}
+
+/// Whether the unterminated text at the end of what `block` is writing asks for input, on the
+/// grid the block writes to NOW ([`Block::active_grid_type`]). Between a prompt's Precmd and the
+/// command's start that is the prompt-and-command grid: a precmd function's `read -s -p "pin: "`
+/// prints its question there, and the output grid of that block is empty. #1923's screen fact
+/// read the output grid only, so at the prompt hold's cap the `pin: ` on screen was not seen and
+/// the PIN stayed held (round 10 Windows, `gitbash_precmd_secret`: `prompt_hold_kept_overdue`).
+/// A cursor at column 0 is a finished line: no question.
+pub fn active_block_tail_asks_for_input(block: &Block) -> bool {
+    let Some(grid) = block.grid_of_type(block.active_grid_type()) else {
+        return false;
+    };
+    if grid.grid_handler().cursor_point().col == 0 {
+        return false;
+    }
+    output_tail_is_input_prompt(&grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS)))
 }
 
 /// #2017: the other prompts of `zsh-newuser-install`, each read as ONE key by the same raw zsh:

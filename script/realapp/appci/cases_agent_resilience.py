@@ -80,6 +80,32 @@ def row_hops(text):
     return ROW_RE.findall(text or "")
 
 
+# `hop=queued_row_restored id=<row> buffer=<Debug string | <N chars>>`: logged by the app right after it put a popped row back into the input, with what the
+# input editor then holds (read back from the editor, not the row's text). The one eye for the input on a host with no OCR (the Windows VM): round 10 judged
+# a row the app had popped into the input as lost there.
+RESTORED_RE = re.compile(r'hop=queued_row_restored\b[^\n]*?\bid=(\S+) buffer=("(?:[^"\\]|\\.)*"|<\d+ chars>)')
+ENTER_BEGIN_MARK = "hop=enter_begin"
+
+
+def restored_inputs(text):
+    """[(row id, input text)] for every `hop=queued_row_restored` of an app-log excerpt whose input was NOT submitted afterwards (no `hop=enter_begin` after
+    it: an Enter sends or runs what the input holds, and the model's own count then says whether it arrived). The text is exact when the app logs text
+    (the harness sets WARP_INPUT_ORDER_LOG_TEXT=1); a count-only line (`<N chars>`) proves nothing about which row it is and is left out."""
+    text = text or ""
+    out = []
+    for m in RESTORED_RE.finditer(text):
+        if m.group(2).startswith("<") or ENTER_BEGIN_MARK in text[m.end():]:
+            continue
+        out.append((m.group(1), AG.unescape_rust_debug(m.group(2))))
+    return out
+
+
+def tokens_in_input(tokens, text):
+    """the tokens that the app's own log shows in the input (see restored_inputs)"""
+    held = [buf for _rid, buf in restored_inputs(text)]
+    return tuple(t for t in tokens if any(t in b for b in held))
+
+
 def byop_errors(text):
     """(expected, unexpected): ERROR lines of an app-log excerpt split by the [byop] failure allowlist (RP.error_lines does the level filtering)"""
     allowed_re = re.compile(BYOP_ERR_ALLOW_RE, re.I)
@@ -386,7 +412,14 @@ def c_fault_queued_rows(ctx, r):
         ctx.shot("queued_after_failure")
         log = ctx.log_since(off)
         stored, _ = read_stored(CA.find_db(ctx))
-        on_screen = tuple(t for t in rows if AG.ocr_has(ctx, "queued_ocr_%s" % t, t))
+        # in the input: seen by OCR where an engine exists, and by the app's own record of what the input held after it put a popped row back
+        # (hop=queued_row_restored, read back from the editor; nothing was typed since). Round 10 Windows has no OCR engine and had no other eye.
+        in_input = tokens_in_input(rows, log)
+        on_screen = tuple(t for t in rows if t in in_input or AG.ocr_has(ctx, "queued_ocr_%s" % t, t))
+        r.metric("queued_rows_in_input", list(in_input))
+        popped = [rid for rid, st in row_hops(log) if st == "popped"]
+        if popped and not in_input and "hop=queued_row_restored" not in log:
+            r.note("the app popped %d row(s) back to the input but logs no hop=queued_row_restored (a build older than round 11): without OCR the input cannot be read" % len(popped))
         probs = judge_rows(rows, f.fresh, row_hops(log), stored, on_screen)
         for p in probs:
             r.check(False, p)

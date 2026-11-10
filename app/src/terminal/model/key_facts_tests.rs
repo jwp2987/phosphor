@@ -106,6 +106,53 @@ fn a_parse_publishes_the_alt_screen_the_key_path_reads() {
     assert!(!cell.load().alt_screen);
 }
 
+/// #1923 (round 10 Windows, `gitbash_precmd_secret`): a precmd function's `read -s -p "pin: "`
+/// runs after the prompt's Precmd, so its question is written to the fresh block's
+/// prompt-and-command grid and the block's output grid stays empty. The screen fact reads the
+/// grid the block writes to, so the question is seen (it read the output grid and saw nothing:
+/// the PIN stayed held at the prompt hold's cap).
+#[test]
+fn a_question_printed_after_the_precmd_is_seen_on_the_grid_the_block_writes_to() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_block("touch go", "");
+    model.process_bytes("pin: ");
+    let block = model.block_list().active_block();
+    assert!(
+        block.is_command_grid_active(),
+        "after the Precmd the fresh block writes to its prompt-and-command grid"
+    );
+    assert_eq!(
+        block.output_grid().grid_handler().cursor_point().col,
+        0,
+        "nothing of the question is in the output grid (what the fact used to read)"
+    );
+    assert!(active_block_tail_asks_for_input(block));
+}
+
+/// The same fact for a running command (the output grid, as before), and what is no question: a
+/// shell-shaped prompt, and a question whose line was ended.
+#[test]
+fn the_tail_fact_reads_a_running_commands_output_and_ignores_a_shell_prompt() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("sudo true", "Password: ");
+    assert!(active_block_tail_asks_for_input(
+        model.block_list().active_block()
+    ));
+    model.process_bytes("\r\n");
+    assert!(
+        !active_block_tail_asks_for_input(model.block_list().active_block()),
+        "a finished line asks nothing"
+    );
+
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_block("true", "");
+    model.process_bytes("$ ");
+    assert!(
+        !active_block_tail_asks_for_input(model.block_list().active_block()),
+        "a shell prompt is not a question"
+    );
+}
+
 #[test]
 fn the_inbox_marks_a_running_block_once_and_leaves_an_idle_one_alone() {
     let mut model = TerminalModel::mock(None, None);

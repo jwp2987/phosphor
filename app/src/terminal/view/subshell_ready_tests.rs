@@ -8,9 +8,10 @@ use super::{
     CancelKind, Decision, HeldKeysDest, LastUserLine, LineEnd, LineEndVerdict, LineTracker,
     PRE_READY_CEILING, ReadinessSample, StageTwoPending, Tail, TypedAhead, UserLedger, WaitWhy,
     WrittenCancel, WrittenSample, WrittenVerdict, cancel_flushes_unread_setup,
-    held_keys_destination, judge_written, last_user_line_after_ends, line_end_is_typed_ahead,
-    on_user_line_ended, row_shows_typed_line, stage_two_pending, subshell_ready,
-    typed_ahead_after_look, user_line_may_be_at_cursor,
+    held_keys_destination, judge_written, last_user_line_after_ends,
+    line_editor_announcement_enabled_from_env, line_end_is_typed_ahead, on_user_line_ended,
+    row_shows_typed_line, stage_two_pending, subshell_ready, typed_ahead_after_look,
+    user_line_may_be_at_cursor,
 };
 use crate::terminal::model::subshell_tty::{LeaderKind, SubshellTtyKind, SubshellTtySample};
 use crate::terminal::shell::ShellType;
@@ -39,6 +40,7 @@ fn sample(tty: SubshellTtySample) -> ReadinessSample {
         elapsed: Duration::from_secs(1),
         no_tty_probe: false,
         user_line_may_be_at_cursor: false,
+        line_editor_announced: false,
     }
 }
 
@@ -761,6 +763,7 @@ fn every_sample() -> Vec<ReadinessSample> {
                                                 elapsed,
                                                 no_tty_probe: false,
                                                 user_line_may_be_at_cursor: false,
+                                                line_editor_announced: false,
                                             });
                                         }
                                     }
@@ -1181,6 +1184,69 @@ fn d9_a_secret_cancel_or_user_bytes_since_the_write_never_flush() {
             }
         }
     }
+}
+
+/// #2006, round 10 Windows Git Bash (`subshell_ready_rc_clear`, agent pass): the inner bash drew
+/// its prompt before the setup was armed, so the cursor never moved "since the baseline" and
+/// the probe-less judge waited until the user's own line cancelled the attempt. A line editor
+/// that announced itself (bracketed paste on) under a shell-shaped tail is the positive fact:
+/// it writes, but only while no user byte passed, never at a question, never with a probe's
+/// sample, and the rules for user bytes are untouched.
+#[test]
+fn no_probe_writes_at_a_prompt_drawn_before_arming_when_the_line_editor_announced_itself() {
+    let mut s = unknown(LeaderKind::Unreadable, "");
+    s.no_tty_probe = true;
+    s.prompt_moved_since_baseline = false;
+    s.prompt_moved_since_line_end = false;
+    assert_eq!(
+        subshell_ready(&s, &no_bytes(), Some(ShellType::Bash)),
+        Decision::Wait(WaitWhy::Unknown),
+        "no movement and no announcement: nothing says a line editor reads"
+    );
+    s.line_editor_announced = true;
+    assert_eq!(
+        subshell_ready(&s, &no_bytes(), Some(ShellType::Bash)),
+        Decision::Write(None),
+        "the line editor announced itself at a shell-shaped tail"
+    );
+    assert_eq!(
+        subshell_ready(&s, &typed(), Some(ShellType::Bash)),
+        Decision::Wait(WaitWhy::Unknown),
+        "after user bytes the announcement proves nothing about THEIR line: the old rules"
+    );
+    let mut question = s.clone();
+    question.tail = Tail::InputPrompt;
+    assert_eq!(
+        subshell_ready(&question, &no_bytes(), None),
+        Decision::Wait(WaitWhy::InputPrompt)
+    );
+    let mut blank = s.clone();
+    blank.tail = Tail::None;
+    assert_eq!(
+        subshell_ready(&blank, &no_bytes(), None),
+        Decision::Wait(WaitWhy::Unknown),
+        "an announcement without a prompt on screen writes nothing"
+    );
+    let mut dirty = s.clone();
+    dirty.line_dirty = true;
+    assert_eq!(
+        subshell_ready(&dirty, &no_bytes(), None),
+        Decision::Wait(WaitWhy::LineDirty)
+    );
+    let mut alt = s.clone();
+    alt.alt_screen = true;
+    assert_eq!(
+        subshell_ready(&alt, &no_bytes(), None),
+        Decision::Wait(WaitWhy::AltScreen)
+    );
+}
+
+#[test]
+fn the_line_editor_announcement_is_on_unless_switched_off() {
+    assert!(line_editor_announcement_enabled_from_env(None));
+    assert!(line_editor_announcement_enabled_from_env(Some("1")));
+    assert!(!line_editor_announcement_enabled_from_env(Some("0")));
+    assert!(!line_editor_announcement_enabled_from_env(Some(" No ")));
 }
 
 /// #1886: with no tty probe (ConPTY) the screen facts decide: a shell prompt drawn since the

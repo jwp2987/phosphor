@@ -214,6 +214,21 @@ impl QueuedQuery {
         self.id
     }
 
+    /// `input_order hop=queued_row_restored id=<row> buffer=<what the input holds>`: this row was
+    /// popped and put back into the input. `input_text` reads the input editor AFTER the restore;
+    /// it is logged as text only when the tester opted in (`describe_text`), else as its length.
+    /// `hop=queued_row state=popped` alone says the row left the queue, not where it went.
+    pub fn log_restored_to_input(&self, input_text: impl FnOnce() -> String) {
+        let id = self.id;
+        warpui::input_order::log_hop("queued_row_restored", || {
+            format!(
+                "id={} buffer={}",
+                id.to_storage_string(),
+                warpui::input_order::describe_text(&input_text())
+            )
+        });
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }

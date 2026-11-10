@@ -4098,6 +4098,85 @@ fn subshell_of(command: &str) -> SessionInfo {
     info
 }
 
+/// #2025 (round 10 Windows, Git Bash, `subshell_ready_rc_questions` / `subshell_ready_rc_clear`):
+/// a bash started by plain `bash` from an MSYS2 session is sourced its bootstrap from a file.
+/// Everything whose bash may live on another machine or file system keeps the typed form, and so
+/// does every subshell when the spawning chain does not lead to an MSYS2 shell.
+#[test]
+fn a_plain_bash_subshell_of_an_msys2_session_sources_its_bootstrap() {
+    for command in [
+        "bash",
+        "bash --rcfile ~/w/lab_rcq.rc",
+        "FOO=1 bash -l",
+        "env -i bash",
+        "/usr/bin/bash",
+        "bash.exe",
+    ] {
+        assert!(
+            msys2_bash_subshell_sources_file(ShellType::Bash, &subshell_of(command), true),
+            "{command}"
+        );
+        assert!(
+            !msys2_bash_subshell_sources_file(ShellType::Bash, &subshell_of(command), false),
+            "{command}: not without an MSYS2 shell up the spawning chain"
+        );
+    }
+    for command in [
+        "wsl",
+        "wsl.exe -d Ubuntu",
+        "sudo -s",
+        "su -",
+        "ssh host",
+        "docker exec -it c bash",
+        "kubectl exec -it pod -- bash",
+        "poetry shell",
+        "zsh",
+        "sh",
+        "rbash",
+        "",
+    ] {
+        assert!(
+            !msys2_bash_subshell_sources_file(ShellType::Bash, &subshell_of(command), true),
+            "{command}"
+        );
+    }
+    // Only bash, only a subshell.
+    assert!(!msys2_bash_subshell_sources_file(
+        ShellType::Zsh,
+        &subshell_of("bash"),
+        true
+    ));
+    assert!(!msys2_bash_subshell_sources_file(
+        ShellType::Bash,
+        &SessionInfo::new_for_test(),
+        true
+    ));
+    // A `bash` that is really reached through ssh (the command was parsed as one).
+    let mut ssh_bash = subshell_of("bash");
+    ssh_bash.subshell_info.as_mut().unwrap().ssh_connection_info = Some(Default::default());
+    assert!(!msys2_bash_subshell_sources_file(
+        ShellType::Bash,
+        &ssh_bash,
+        true
+    ));
+    // WSL reports its distribution: its bash cannot open the pane shell's Windows path.
+    let mut wsl_bash = subshell_of("bash");
+    wsl_bash.wsl_name = Some("Ubuntu".to_owned());
+    assert!(!msys2_bash_subshell_sources_file(
+        ShellType::Bash,
+        &wsl_bash,
+        true
+    ));
+}
+
+#[test]
+fn msys2_subshell_sourcing_is_on_unless_switched_off() {
+    assert!(msys2_subshell_source_enabled_from_env(None));
+    assert!(msys2_subshell_source_enabled_from_env(Some("1")));
+    assert!(!msys2_subshell_source_enabled_from_env(Some("0")));
+    assert!(!msys2_subshell_source_enabled_from_env(Some(" Off ")));
+}
+
 #[cfg(unix)]
 #[test]
 fn local_counted_bootstrap_applies_to_local_bash_zsh_and_host_subshells_only() {
