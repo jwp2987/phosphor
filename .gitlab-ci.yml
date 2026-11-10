@@ -131,6 +131,9 @@ guards:
         ./script/check_large_deletions --require-base
     - ./script/macos/test_create_warpctrl_wrapper
     - ./script/test_warpctrl_early_dispatch
+    # #1907: the REAL assembled bash bootstrap in a pty; a child `sh` must see PS1 unset, never an
+    # empty exported one (python3 + bash + sh, ~12 s, no build). It was in docs/testing.md but run by nothing.
+    - ./script/test_child_ps1
 
 # cargo check on the build box. Every cargo call goes through script/agent-cargo,
 # the slot/memory governor: unbounded concurrent compiles OOM-reaped this host

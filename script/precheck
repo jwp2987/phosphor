@@ -355,8 +355,14 @@ fi
 # (hex encoding, JSON escaping, git branch, prompt runs) (#1170).
 # script/test_pwsh_hook_equivalence does the same for pwsh.ps1 against a golden
 # recording of its hook messages (#1231); it skips when pwsh is not installed.
+# script/test_child_ps1 (#1907: a child of a Phosphor bash never inherits an
+# EMPTY exported PS1; python3 + bash + sh in a pty, ~12 s) and
+# script/test_init_shell_escaping (#879: InitShell JSON with hostile user/host
+# values, ~3 s) were listed in docs/testing.md but run by nothing; the second
+# had silently stopped matching the bootstrap for that reason (repaired
+# 2026-11-10). Both need no build.
 step "shell tests (packaging and bootstrap scripts)"
-for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_pwsh_hook_equivalence ./script/test_nu_bootstrap_hook_equivalence ./script/test_nu_agent_pager_env ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive ./script/test_ssh_probe_cache ./script/test_ssh_wrapper_forks ./script/test_ssh_auth_once ./script/test_ssh_raw_bootstrap_hook ./script/test_local_counted_bootstrap ./script/test_native_completions ./script/test_cwd_listing; do
+for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_pwsh_hook_equivalence ./script/test_nu_bootstrap_hook_equivalence ./script/test_nu_agent_pager_env ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive ./script/test_ssh_probe_cache ./script/test_ssh_wrapper_forks ./script/test_ssh_auth_once ./script/test_ssh_raw_bootstrap_hook ./script/test_local_counted_bootstrap ./script/test_native_completions ./script/test_cwd_listing ./script/test_child_ps1 ./script/test_init_shell_escaping; do
     [[ -x "$shell_test" ]] || continue
     _shell_rc=0
     _shell_out="$("$shell_test" 2>&1)" || _shell_rc=$?
