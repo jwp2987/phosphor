@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases  # noqa: E402  (cases.py imports this module as its last line)
 from cases import case  # noqa: E402
 import cases_robust as R  # noqa: E402
+import ci_env  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
@@ -37,6 +38,27 @@ def outbound_attempts(trace_text, allow=()):
         if not HOST_ONLY.match(addr) and addr not in allow:
             out.append((m.group(1), addr, int(m.group(3))))
     return out
+
+
+def provider_addresses():
+    """addresses of the model endpoint the harness profile configures (the CI Ollama, machine-local): what the app may contact AFTER the user runs a command (prompt /
+    next-command suggestions use the configured model; the user configured it, so that is opt-in traffic). Empty when none is configured or it does not resolve."""
+    import socket
+    from urllib.parse import urlparse
+    url = ci_env.get("APPCI_OLLAMA_URL")
+    host = urlparse(url if "://" in url else "http://" + url).hostname if url else None
+    if not host:
+        return set()
+    try:
+        return {ai[4][0] for ai in socket.getaddrinfo(host, None)}
+    except OSError:
+        return {host}
+
+
+def fingerprint(addr, port):
+    """a short hash of 'addr:port' so a failing run's artifacts can say WHICH destination without carrying the address (owner endpoints never reach artifacts)"""
+    import hashlib
+    return hashlib.sha256(("%s:%d" % (addr, port)).encode()).hexdigest()[:10]
 
 
 def strace_works():
@@ -72,16 +94,27 @@ def c_zero_network_startup(ctx, r):
             r.check(ctx.app.alive(), "the app exited while idling")
             if not ctx.app.alive():
                 break
+        idle_end = len(open(trace, errors="replace").read().splitlines()) if os.path.exists(trace) else 0
         allow = scripted_session(ctx, r)
     finally:
         ctx.app.wrap = ""
         ctx.app.stop()
     text = open(trace, errors="replace").read() if os.path.exists(trace) else ""
     r.check(bool(text), "the trace is empty: strace did not follow the app (no socket call at all is implausible)")
-    bad = outbound_attempts(text, allow)
-    r.metric("network_syscalls_traced", len(text.splitlines()))
+    lines = text.splitlines()
+    # launch + idle: NOTHING beyond loopback, no allowance. The scripted session runs commands, and with a model configured the app sends prompt / next-command
+    # suggestions to THAT model (the user's own opt-in endpoint): the configured provider is allowed there and only there (r8: 4 connects to the CI Ollama).
+    bad = [b + ("idle",) for b in outbound_attempts("\n".join(lines[:idle_end]), ())]
+    prov = provider_addresses()
+    sess_all = outbound_attempts("\n".join(lines[idle_end:]), set(allow))
+    to_prov = [b for b in sess_all if b[1] in prov]
+    bad += [b + ("session",) for b in sess_all if b[1] not in prov]
+    r.metric("network_syscalls_traced", len(lines))
     r.metric("outbound_attempts", len(bad))
-    r.check(not bad, "the app tried to reach the network at startup/idle: %s" % "; ".join("%s %s:%d" % b for b in bad[:8]))
+    r.metric("provider_connects_in_session", len(to_prov))
+    if to_prov:
+        r.note("the scripted session's commands made %d connect/send to the configured model endpoint (destination hash %s): allowed, the user configured it" % (len(to_prov), fingerprint(to_prov[0][1], to_prov[0][2])))
+    r.check(not bad, "the app tried to reach the network at startup/idle: %s" % "; ".join("%s dest#%s port %d (%s)" % (b[0], fingerprint(b[1], b[2]), b[2], b[3]) for b in bad[:8]))
     R.start_app(ctx, r, "zns_restore")                      # leave a normally-launched app for the cases that follow
 
 

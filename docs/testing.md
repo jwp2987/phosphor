@@ -1904,7 +1904,7 @@ the shipped version equals `MINIMUM_PLUGIN_VERSION` (Codex also the version in `
 App cases (Linux only, `--cases 'zero_network_startup,claude_plugin_offline,agent_plugins_offline,network_gate_switch,network_gate_notice'`, terminal mode):
 
 - **`zero_network_startup`**: relaunches the app under `strace -f -e trace=network` (`App.wrap`), idles `APPCI_ZNS_IDLE_S` seconds (default 120), and fails on any
-  `connect`/`sendto`/`sendmsg` to a non-loopback inet address (`outbound_attempts`). The harness profile has no cloud account or provider key. SKIPS (not passes)
+  `connect`/`sendto`/`sendmsg` to a non-loopback inet address (`outbound_attempts`) during launch + idle, with no allowance. The harness profile has no cloud account; it DOES carry the machine-local CI Ollama provider when one is configured (see the session paragraph below). SKIPS (not passes)
   when `strace -f` does not work on the runner (ptrace denied); a `unshare -rn` launch was rejected because the app's D-Bus and X11 sockets are abstract and
   a new network namespace cannot reach them.
   The scripted session proves the shell is in front after Escape (probe line; Escape does not close the settings tab) and closes the tab with the platform's close when it is not, so the ssh connect reaches the shell.
@@ -1978,8 +1978,10 @@ Unit tests for the page's keyboard ring (`app/src/settings_view/network_page_tes
 
 `zero_network_startup` also drives a scripted session after the idle (`scripted_session`): the settings page is opened with its shortcut and walked with the keyboard
 (`APPCI_ZNS_PAGES` Down presses, default 12, the AI page among them; best effort, screenshots `zns_settings_*`), then an ssh connect to the fake host and `exit`. The
-trace must still contain no inet destination beyond loopback + the fake ssh host address (+ `APPCI_ZNS_ALLOW`, comma separated). The fake ssh host is on loopback
-unless the lab supplies another address.
+trace must still contain no inet destination beyond loopback + the fake ssh host address (+ `APPCI_ZNS_ALLOW`, comma separated) and, in the session only, the configured
+CI model endpoint: commands run there make the app send prompt / next-command suggestions to the configured model (active AI is on by default; the user configured the provider,
+so that is opt-in traffic, round 8 saw exactly that, 4 connects). Failure details name destinations by a 10-hex hash of addr:port plus port and phase (idle/session), never the
+address, so a committed result stays diagnosable. The fake ssh host is on loopback unless the lab supplies another address.
 
 `run.py --self-test` also runs `wn_agent_plugins_offline` (the fake CLIs refuse a remote source; all three bundles install and emit five events each without a namespace).
 
