@@ -1113,11 +1113,20 @@ fn on_shell_determined<S: TerminalSurface>(
             let mut model = model.lock();
             model.set_local_shell_pid(pid as i32);
             model.set_subshell_tty_probe(
-                Arc::new(move |parent| super::terminal_attributes::subshell_tty_fact(fd, parent)),
+                Arc::new(move |parent: i32, parent_comm: Option<String>| {
+                    super::terminal_attributes::subshell_tty_fact(
+                        fd,
+                        parent,
+                        parent_comm.as_deref(),
+                    )
+                }),
                 Some(Arc::new(move || {
                     super::terminal_attributes::flush_slave_input(fd)
                 })),
             );
+            // #1937: the comm a shell's pid has when the shell reports it, so an `exec zsh` in
+            // that shell (same pid, another comm) is not read as the parent at its prompt.
+            model.set_process_comm_probe(Arc::new(super::terminal_attributes::process_comm));
         }
         manager.pty_controller.update(ctx, |controller, _| {
             controller.set_foreground_sigint(Arc::new(move || {

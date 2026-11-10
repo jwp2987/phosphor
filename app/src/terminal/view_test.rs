@@ -32167,7 +32167,7 @@ fn install_subshell_tty_for_test(
     let probe = cell.clone();
     let mut model = view.model.lock();
     model.set_local_shell_pid(1);
-    model.set_subshell_tty_probe(Arc::new(move |_| probe.lock().clone()), None);
+    model.set_subshell_tty_probe(Arc::new(move |_, _| probe.lock().clone()), None);
     cell
 }
 

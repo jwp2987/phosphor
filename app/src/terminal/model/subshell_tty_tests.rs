@@ -68,6 +68,42 @@ fn the_leaders_shell_type_names_the_scripted_shells_only() {
     }
 }
 
+/// #1937 (review r8 D6): the parent's pid in front under ANOTHER comm than the one it had when the
+/// shell reported it is an `exec` (`exec zsh` from bash): the leader is then classified by its comm
+/// (a shell, a relay, a program) instead of reading as the parent. The same comm, or a comm that
+/// was never read / cannot be read now, is the parent as before.
+#[test]
+fn a_parent_pid_under_another_comm_was_replaced_by_an_exec() {
+    use super::parent_was_replaced;
+    for (at_report, now, replaced) in [
+        ("bash", "zsh", true),
+        ("bash", "fish", true),
+        ("zsh", "bash", true),
+        ("bash", "dash", true),
+        ("bash", "ssh", true),
+        ("bash", "vim", true),
+        // `exec bash` from bash: not told apart (stays the parent).
+        ("bash", "bash", false),
+        ("zsh", "zsh", false),
+        ("bash", " bash\n", false),
+        // Nothing to compare.
+        ("", "zsh", false),
+        ("bash", "", false),
+        ("", "", false),
+    ] {
+        assert_eq!(
+            parent_was_replaced(at_report, now),
+            replaced,
+            "{at_report:?} -> {now:?}"
+        );
+    }
+    // What the replaced leader is, by its comm: the sample the judge then gets.
+    assert_eq!(classify_leader("zsh"), LeaderKind::Shell);
+    assert_eq!(shell_type_of_leader("zsh"), Some(ShellType::Zsh));
+    assert_eq!(classify_leader("ssh"), LeaderKind::Relay);
+    assert_eq!(classify_leader("vim"), LeaderKind::Other);
+}
+
 #[test]
 fn the_comm_is_between_the_first_open_and_the_last_close_parenthesis() {
     assert_eq!(
