@@ -1776,6 +1776,58 @@ def injector_accounting_parse_and_join():
 
 
 @check
+def audit5_accounting_window_runs_to_case_end_and_a_loss_outside_loss_cases_is_noref():
+    """harness audit #5 (#1912): a held / slow-classifier Enter processed more than 3 s after the last injector call is still the case's Enter when the
+    window ends at the case's end; lost > 0 (or an Enter short) on a case that is not a loss case and has no failure is noref, never a pass."""
+    import backend
+    import injacct
+    import run as runmod
+    d = tempfile.mkdtemp()
+    try:
+        def kd(k, t, seq):
+            return "input_order keydown key=%s ctrl=false alt=false shift=false cmd=false t=%.3f seq=%d\n" % (k, t * 1000, seq)
+        def hop(t):
+            return "input_order hop=enter_begin deferred=false buffer=x input_type=Shell t=%.3f\n" % (t * 1000)
+        be = backend.X11Backend()
+        be.record_injection(["xdotool", "type", "--", "ab", "key", "Return"], 200.0, 200.2)
+        be.record_injection(["xdotool", "type", "--", "c", "key", "Return"], 201.0, 201.2)
+        log = os.path.join(d, "p.log")
+        open(log, "w").write(kd("a", 200.01, 1) + kd("b", 200.02, 2) + kd("c", 201.01, 3) + hop(200.15) + hop(206.2))     # the 2nd Enter: wall1 + 5 s
+        assert injacct.window(be.calls) == (199.5, 204.2) and injacct.window(be.calls, 210.0) == (199.5, 210.0)
+        assert injacct.window(be.calls, 202.0) == (199.5, 204.2), "a case that ends at once keeps the 3 s tail"
+        _, old = injacct.account(be.calls, log, "x")
+        assert (old["enters_seen"], old["lost"]) == (1, 1), old                    # the old fixed window: the late Enter reads as lost
+        _, j = injacct.account(be.calls, log, "x", t_end=210.0)
+        assert (j["sent"], j["seen"], j["lost"], j["enters_sent"], j["enters_seen"]) == (5, 5, 0, 2, 2), j
+        assert injacct.loss_verdict(j, "x") is None
+        # the verdict: lost keys / a short Enter outside the loss cases
+        assert "1 of 5" in injacct.loss_verdict(old, "x") and injacct.loss_verdict(old, "fast_typing") is None
+        assert injacct.loss_verdict(dict(sent=3, seen=3, lost=0, enters_sent=2, enters_seen=1), "x")           # extra keys hid the count: the Enter gap still shows
+        assert injacct.loss_verdict(dict(sent=3, seen=None, lost=None, enters_sent=1, enters_seen=None), "x") is None      # no key trace: nothing to compare
+        assert injacct.loss_verdict(dict(sent=0, seen=1, lost=None, enters_sent=1, enters_seen=1, na=True), "x") is None and injacct.loss_verdict(None, "x") is None
+        # run.account_case: no fails + lost -> noref; a failing case keeps its failure; a loss case and a clean case stay as they are
+        r = cases.Result("x", "terminal")
+        runmod.account_case(r, be.calls, log, "x", 204.0)
+        assert r.noref and not r.fails and any("UNVERIFIABLE" in n and "never reached the app" in n for n in r.notes) and r.metrics["injector"]["lost"] == 1, r.notes
+        assert ("fail" if r.fails else ("noref" if r.noref else "pass")) == "noref"
+        r = cases.Result("x", "terminal")
+        r.fails.append("its own failure")
+        runmod.account_case(r, be.calls, log, "x", 204.0)
+        assert not r.noref and r.fails == ["its own failure"] and any(n.startswith("injector accounting: injector sent 5") for n in r.notes), r.notes
+        r = cases.Result("fast_typing", "terminal")
+        runmod.account_case(r, be.calls, log, "fast_typing", 204.0)
+        assert not r.noref and r.notes[0].startswith("injector accounting: WARN loss case"), r.notes
+        r = cases.Result("x", "terminal")
+        runmod.account_case(r, be.calls, log, "x", 210.0)
+        assert not r.noref and not r.fails and r.metrics["injector"]["lost"] == 0
+        # Windows is accounted like every other backend: the run loop no longer names backends
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")).read()
+        assert 'a.backend in ("wayland", "x11", "mac") and not sim' not in src and src.count("account_case(") == 2, "the accounting gate names backends again"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
 def lifecycle_full_log_line_and_incremental_report():
     """r18d8: the first failing message / NO-REFERENCE reason is logged in full; results.json exists after every emit"""
     import run as runmod

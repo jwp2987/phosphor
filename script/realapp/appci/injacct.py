@@ -9,7 +9,8 @@
 # `input_order hop=enter_begin ... deferred=false` hop (input.rs). An Enter that goes to the pty (alt screen, running program) logs the keydown
 # instead. The two are disjoint, so the app-side Enter count is keydown-enters + enter_begin hops (deferred=true re-runs of a held Enter are not
 # new keys). Paste chords post no per-character keys: they are excluded from "sent", and a paste-only row reports n/a, not 0.
-# Informational: a notes row + a metric on every case; it never fails a case by itself.
+# A notes row + a metric on every case, on every backend that records calls (Windows included). It never FAILS a case; since the harness audit (#5,
+# #1912) a case outside LOSS_CASES whose checks passed while keys were lost before the app is UNVERIFIABLE (status noref), see loss_verdict().
 import glob
 import re
 
@@ -96,14 +97,33 @@ def join(calls, keys, enter_hops=0, slack_before=0.5, slack_after=3.0):
     return dict(sent=sent, enters_sent=sent_enter, seen=seen, lost=max(sent - seen, 0), extra=max(seen - sent, 0), enters_seen=enters_seen, errs=errs, pastes=pastes)
 
 
-def window(calls):
+def window(calls, t_end=None):
+    """the wall window the app's keys are read in: 0.5 s before the first injector call to 3 s after the last, or to `t_end` (the moment of accounting,
+    i.e. the case's end) when that is later. Audit #5: a held ssh-typeahead Enter or a slow-classifier Enter is processed more than 3 s after the last
+    injector call, and the fixed 3 s cut it off ("Enter: sent 2, app saw 0")."""
     mine = [c for c in calls if not c.get("ref")]
-    return (min(c["wall0"] for c in mine) - 0.5, max(c["wall1"] for c in mine) + 3.0) if mine else None
+    if not mine:
+        return None
+    end = max(c["wall1"] for c in mine) + 3.0
+    return (min(c["wall0"] for c in mine) - 0.5, max(end, t_end) if t_end is not None else end)
 
 
-def account(calls, log_path, case_name=""):
-    """-> (note text or None, metric dict or None) for the calls one case made"""
-    w = window(calls)
+def loss_verdict(j, case_name=""):
+    """audit #5: the sentence for a case whose injector accounting shows keys (or Enters) the injector posted and the app never logged, or None.
+    None for the loss cases (their own verdict measures it), a paste-only row, and a run without an app key trace (nothing to compare)."""
+    if not j or j.get("seen") is None or j.get("na") or case_name in LOSS_CASES:
+        return None
+    lost, el = j.get("lost") or 0, max((j.get("enters_sent") or 0) - (j.get("enters_seen") or 0), 0)
+    if not lost and not el:
+        return None
+    return ("injector accounting: %d of %d injected key(s) never reached the app's key trace (Enter: sent %d, app saw %d) in a case that is not a "
+            "key-loss case; its checks passed on effects alone, so the pass cannot be trusted (lost between the injector and the app: compositor, "
+            "focus, or the injector)" % (max(lost, el), j["sent"], j["enters_sent"], j["enters_seen"]))
+
+
+def account(calls, log_path, case_name="", t_end=None):
+    """-> (note text or None, metric dict or None) for the calls one case made; t_end: wall time of the accounting (the case's end)"""
+    w = window(calls, t_end)
     if w is None:
         return None, None
     j = join(calls, app_keys(log_path, *w), app_enter_hops(log_path, *w))
