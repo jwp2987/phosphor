@@ -1843,6 +1843,119 @@ fn escape_does_not_exit_local_agent_view_with_long_running_command() {
     })
 }
 
+/// What #1984 keeps (owner decision 2026-11-10): without vi keys, Escape leaves a new agent view
+/// for the terminal. The control for the two tests below.
+#[test]
+fn escape_exits_local_agent_view_without_vi_keys() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        AppEditorSettings::handle(&app).update(&mut app, |editor_settings, ctx| {
+            let _ = editor_settings.vim_mode.set_value(false, ctx);
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.enter_agent_view_for_new_conversation(
+                None,
+                AgentViewEntryOrigin::Input {
+                    was_prompt_autodetected: false,
+                },
+                ctx,
+            );
+            assert!(view.agent_view_controller().as_ref(ctx).is_active());
+            assert!(!view.escape_stays_with_vi_keys(ctx));
+
+            view.handle_input_event(&InputEvent::Escape, ctx);
+
+            assert!(!view.agent_view_controller().as_ref(ctx).is_active());
+        });
+    })
+}
+
+/// #1984: with the input editor's vim keybindings on, an Escape that reaches the agent view's exit
+/// (normal mode, nothing pending) is the vi keys': the view stays. Ctrl-C on the empty input,
+/// pressed twice, still leaves it.
+#[test]
+fn escape_stays_in_local_agent_view_with_editor_vim_keys() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        AppEditorSettings::handle(&app).update(&mut app, |editor_settings, ctx| {
+            let _ = editor_settings.vim_mode.set_value(true, ctx);
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.enter_agent_view_for_new_conversation(
+                None,
+                AgentViewEntryOrigin::Input {
+                    was_prompt_autodetected: false,
+                },
+                ctx,
+            );
+            assert!(view.vi_key_facts(ctx).editor_vim_keys);
+
+            view.handle_input_event(&InputEvent::Escape, ctx);
+            assert!(view.agent_view_controller().as_ref(ctx).is_active());
+            view.handle_input_event(&InputEvent::Escape, ctx);
+            assert!(view.agent_view_controller().as_ref(ctx).is_active());
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_input_event(
+                &InputEvent::CtrlC {
+                    cleared_buffer_len: 0,
+                },
+                ctx,
+            );
+            assert!(view.agent_view_controller().as_ref(ctx).is_active());
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_input_event(
+                &InputEvent::CtrlC {
+                    cleared_buffer_len: 0,
+                },
+                ctx,
+            );
+            assert!(!view.agent_view_controller().as_ref(ctx).is_active());
+        });
+    })
+}
+
+/// #1984 leaves a running command alone: with vim keybindings on and the agent's view not
+/// leavable (a long-running command), Escape is not claimed for the vi keys.
+#[test]
+fn escape_with_vim_keys_keeps_its_meaning_for_a_long_running_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        AppEditorSettings::handle(&app).update(&mut app, |editor_settings, ctx| {
+            let _ = editor_settings.vim_mode.set_value(true, ctx);
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.enter_agent_view_for_new_conversation(
+                None,
+                AgentViewEntryOrigin::Input {
+                    was_prompt_autodetected: false,
+                },
+                ctx,
+            );
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 10", "running");
+
+            assert!(view.vi_key_facts(ctx).editor_vim_keys);
+            assert!(!view.escape_stays_with_vi_keys(ctx));
+        });
+    })
+}
+
 #[test]
 fn root_ambient_agent_pane_sets_root_ambient_agent_context_key() {
     use crate::settings::import::model::ImportedConfigModel;
