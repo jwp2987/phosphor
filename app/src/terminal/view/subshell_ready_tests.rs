@@ -5,10 +5,10 @@
 use std::time::Duration;
 
 use super::{
-    CancelKind, Decision, HeldKeysDest, LastUserLine, LineEnd, LineEndVerdict, LineTracker,
-    PRE_READY_CEILING, ReadinessSample, StageTwoPending, Tail, TypedAhead, UserLedger, WaitWhy,
-    WrittenCancel, WrittenSample, WrittenVerdict, cancel_flushes_unread_setup,
-    held_keys_destination, judge_written, last_user_line_after_ends,
+    CancelKind, Decision, HeldKeysDest, LastUserLine, LineEnd, LineEndVerdict, LineStart,
+    LineTracker, PRE_READY_CEILING, ReadinessSample, StageTwoPending, Tail, TypedAhead, UserLedger,
+    WaitWhy, WrittenCancel, WrittenSample, WrittenVerdict, cancel_flushes_unread_setup,
+    held_keys_destination, judge_written, key_read_took_the_typed_keys, last_user_line_after_ends,
     line_editor_announcement_enabled_from_env, line_end_is_typed_ahead, on_user_line_ended,
     row_shows_typed_line, stage_two_pending, subshell_ready, typed_ahead_after_look,
     user_line_may_be_at_cursor,
@@ -1719,4 +1719,153 @@ fn last_user_line_after_ends_rows() {
         LastUserLine::Opaque,
         "a non-empty line and then an empty one in one chunk"
     );
+}
+
+// ---- #2016: a one-key answer (zsh-newuser-install's menu, `read -k`) is not text in the line ----
+
+const NEWUSER_FOOTER_ROW: &str = "--- Type one of the keys in parentheses --- ";
+
+/// The look before the menu's `q`: a clean line, the footer on a raw tty under zsh, row 20.
+fn at_the_menu() -> LineStart {
+    LineStart {
+        line_clean: true,
+        raw_shell_tty: true,
+        tail: Tail::InputPrompt,
+        row: 20,
+        row_text: NEWUSER_FOOTER_ROW.to_owned(),
+    }
+}
+
+/// `key_read_took_the_typed_keys` for a look that shows `row_text` on `row` under a zle reading
+/// with nothing unread, after the user typed `typed` at `before`.
+fn taken(before: &LineStart, typed: Option<&str>, row: usize, row_text: &str) -> bool {
+    key_read_took_the_typed_keys(
+        before,
+        typed,
+        &SubshellTtySample::line_reader("zsh"),
+        Tail::ShellPrompt,
+        row,
+        row_text,
+        false,
+    )
+}
+
+/// The case's path: `q` at the footer, the menu returns, zle draws `host% ` on the next row. The
+/// key is gone; the judge then writes at that prompt (a line editor, a prompt, the queue empty).
+#[test]
+fn a_menu_key_answered_and_a_new_prompt_below_means_the_key_is_gone() {
+    assert!(taken(&at_the_menu(), Some("q"), 21, "host% "));
+    // Rows printed between the answer and the prompt ("Aborting. ...") change nothing.
+    assert!(taken(&at_the_menu(), Some("x"), 25, "host% "));
+    // Two menu keys (`1`, then `q` on a later screen), prompt further down.
+    assert!(taken(&at_the_menu(), Some("1q"), 40, "~/src % "));
+    // zsh's PROMPT_SP mark, seen before the prompt itself: still not the typed key.
+    assert!(taken(&at_the_menu(), Some("q"), 21, "%"));
+}
+
+/// Each fact alone turns the rule off: the line stays dirty and the attempt waits, as before.
+#[test]
+fn a_key_is_not_gone_without_every_fact() {
+    let before = at_the_menu();
+    // Text typed before the question's key may sit in a line editor's buffer (zsh's "do you wish
+    // to see all N possibilities?" after a line typed before Phosphorize).
+    let mut b = before.clone();
+    b.line_clean = false;
+    assert!(!taken(&b, Some("n"), 21, "host% ls /usr/bin/"));
+    // The key was not typed at a question ...
+    let mut b = before.clone();
+    b.tail = Tail::ShellPrompt;
+    assert!(!taken(&b, Some("q"), 21, "host% "));
+    let mut b = before.clone();
+    b.tail = Tail::None;
+    assert!(!taken(&b, Some("q"), 21, "host% "));
+    // ... or not on a raw tty under a shell leader (a cooked `read -p` needs its Enter; a
+    // program's own key read is the program's).
+    let mut b = before.clone();
+    b.raw_shell_tty = false;
+    assert!(!taken(&b, Some("q"), 21, "host% "));
+    // Nothing is known about the look before the line (no look since arming).
+    assert!(!taken(&LineStart::unknown(), Some("q"), 21, "host% "));
+    // The same row (the echo of the key behind the question) or a row above it.
+    assert!(!taken(&before, Some("q"), 20, "host% "));
+    assert!(!taken(&before, Some("q"), 3, "host% "));
+    // The row shows what was typed: a line editor redrew its buffer behind its prompt.
+    assert!(!taken(&before, Some("q"), 21, "host% q"));
+    assert!(!taken(&before, Some("ls -l"), 21, "host% ls"));
+    // The typed text cannot be predicted (an arrow key, a paste, nothing kept).
+    assert!(!taken(&before, None, 21, "host% "));
+    // The question drawn again on a lower row (the menu redisplayed, the same prompt redrawn).
+    assert!(!taken(&before, Some("x"), 30, NEWUSER_FOOTER_ROW));
+    assert!(!taken(
+        &before,
+        Some("x"),
+        30,
+        "--- Type one of the keys in parentheses --- 12:03"
+    ));
+}
+
+/// The look's own facts: only a line editor's raw tty with nothing unread at a shell-shaped tail
+/// on a row of its own counts.
+#[test]
+fn a_key_is_not_gone_on_a_look_that_is_not_a_line_editor_at_a_prompt() {
+    let before = at_the_menu();
+    let judge = |tty: &SubshellTtySample, tail: Tail, continues: bool| {
+        key_read_took_the_typed_keys(&before, Some("q"), tty, tail, 21, "host% ", continues)
+    };
+    let zle = SubshellTtySample::line_reader("zsh");
+    assert!(judge(&zle, Tail::ShellPrompt, false));
+    // The cooked gap between the read and the line editor, a relay, a program, no probe.
+    for kind in [
+        SubshellTtyKind::Cooked,
+        SubshellTtyKind::Relay,
+        SubshellTtyKind::Secret,
+        SubshellTtyKind::Unknown,
+    ] {
+        let mut other = zle.clone();
+        other.kind = kind;
+        assert!(!judge(&other, Tail::ShellPrompt, false), "{kind:?}");
+    }
+    assert!(!judge(
+        &SubshellTtySample::unknown(),
+        Tail::ShellPrompt,
+        false
+    ));
+    // Something typed is still unread, or the queue cannot be probed.
+    for queue in [Some(false), None] {
+        let mut unread = zle.clone();
+        unread.queue_empty = queue;
+        assert!(!judge(&unread, Tail::ShellPrompt, false), "{queue:?}");
+    }
+    // The next question of the menu, or a finished line: no prompt of a line editor.
+    assert!(!judge(&zle, Tail::InputPrompt, false));
+    assert!(!judge(&zle, Tail::None, false));
+    // The row continues the row above it (a soft wrap): not a prompt drawn on a row of its own.
+    assert!(!judge(&zle, Tail::ShellPrompt, true));
+}
+
+/// The tracker's text of the line being typed: kept while its echo can be predicted, gone at a
+/// line end, never for a paste or a control byte.
+#[test]
+fn the_tracker_knows_the_text_typed_so_far_only_while_it_is_plain() {
+    let mut tracker = LineTracker::default();
+    assert_eq!(tracker.typed_so_far(), None);
+    assert!(tracker.note(b"q").is_empty());
+    assert_eq!(tracker.typed_so_far(), Some("q"));
+    assert!(tracker.note(b"1").is_empty());
+    assert_eq!(tracker.typed_so_far(), Some("q1"));
+    // An escape sequence (an arrow key) makes the echo unpredictable for the rest of the line.
+    assert!(tracker.note(b"\x1b[A").is_empty());
+    assert_eq!(tracker.typed_so_far(), None);
+    assert!(tracker.line_has_content());
+    // A line end starts a new line.
+    assert_eq!(tracker.note(b"\r").len(), 1);
+    assert_eq!(tracker.typed_so_far(), None);
+    assert!(tracker.note(b"ls").is_empty());
+    assert_eq!(tracker.typed_so_far(), Some("ls"));
+    // ^U empties the line.
+    assert_eq!(tracker.note(b"\x15").len(), 1);
+    assert_eq!(tracker.typed_so_far(), None);
+    // A paste is never predictable.
+    assert!(tracker.note(b"\x1b[200~pasted\x1b[201~").is_empty());
+    assert_eq!(tracker.typed_so_far(), None);
 }

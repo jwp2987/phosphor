@@ -141,6 +141,12 @@ for the one realistic case found: text typed BEFORE Phosphorize, then zsh's "do 
 N possibilities?" answered with one key (the buffer is redrawn on a lower row); the line was dirty
 before the key, so the rule does not apply. Windows (no tty probe: never `LineReader`) is untouched.
 
+Limit, on the safe side: the rule compares rows of one block. After the menu's later screens
+(`1`, then more keys) each `clear` drops the scrollback (`ESC[3J`) and the last prompt may sit on
+a HIGHER row number than the first question: the rule then does not apply and the attempt waits
+for the user's next Enter, as before this change. The first-screen answers (`q`, `0`, `2`, any
+other key = "Aborting.") are covered.
+
 Rejected: clearing the hand-off's `wrote_user_bytes` (more state, other readers of that flag);
 treating any key at an `InputPrompt` as a line end (a `read -p` answer typed without Enter would
 count as consumed); waiting for a cooked look between the read and zle (not guaranteed to be
@@ -162,9 +168,10 @@ key, under the same shell leader. Those tails classify as `ShellPrompt`: a Phosp
 - `key_facts_tests.rs`: the three other menu prompts are input prompts; a shell prompt is not.
 - `subshell_ready_tests.rs`: truth rows of `key_read_took_the_typed_keys` (each condition alone
   turns it off), `LineTracker::typed_so_far`.
-- `view_test.rs`: `a_menu_key_answer_does_not_leave_the_setup_armed`: menu, Phosphorize (armed,
-  nothing written), `q` (line dirty: asserted), prompt on the next row: written; and the same with
-  the key shown at the new prompt: still armed.
+- `view_test.rs`: `a_menu_key_answer_does_not_leave_the_setup_armed` (unix; Legacy and Table): the
+  real `clear` bytes and the menu (footer = `InputPrompt`: asserted), Phosphorize (armed, nothing
+  written), `q` (passes through alone; line dirty: asserted as the premise), prompt on the next
+  row: written; and the same with the key shown at the new prompt: still armed.
 - appci case unchanged in what it demands; stays in `cases.PROVING`.
 
 ## What the next Linux run must show
