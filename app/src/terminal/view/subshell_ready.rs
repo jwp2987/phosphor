@@ -256,79 +256,6 @@ pub fn line_end_is_typed_ahead(non_empty: bool, tty: &SubshellTtySample, tail: T
         && leader_has_line_editor(tty.leader_comm.as_deref().unwrap_or_default())
 }
 
-/// #2016: what the last look showed BEFORE the first byte of the line the user is typing now.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LineStart {
-    /// The hand-off said the shell's line held no typed text (nothing typed earlier sits in it).
-    pub line_clean: bool,
-    /// The tty was raw under a shell leader (`SubshellTtyKind::LineReader`): keys are read one
-    /// at a time, by the shell's line editor or by a key read of the shell (`read -k`).
-    pub raw_shell_tty: bool,
-    pub tail: Tail,
-    /// The cursor's row and that row's text. In memory only; never logged.
-    pub row: usize,
-    pub row_text: String,
-}
-
-impl LineStart {
-    /// Nothing is known yet (no look since arming): never proof of anything.
-    pub fn unknown() -> Self {
-        Self {
-            line_clean: false,
-            raw_shell_tty: false,
-            tail: Tail::None,
-            row: 0,
-            row_text: String::new(),
-        }
-    }
-}
-
-/// #2016 (`subshell_ready_zsh_newuser_install`, the menu answered with `q`): whether the keys of
-/// the line being typed are GONE, taken one at a time by a key read, although no Enter, ^C or ^U
-/// ended them. The hand-off counts every key written without a line end as text in the shell's
-/// line (#1562: the setup's `^K ^U` would kill it), which is right for a line editor and wrong
-/// for zsh-newuser-install's menu, a `read -k` or a `read -n1` in an rc file: the read took the
-/// key, the line editor that follows never saw it, and the attempt stayed armed (`LineDirty`)
-/// until the user's next Enter or the 60 s ceiling.
-///
-/// Taken, when ALL of these hold:
-/// - before the first key the line was clean, and the look showed a question on a raw tty under
-///   a shell leader (`before`): the keys answered that question;
-/// - now the line editor's facts: a raw tty under a shell leader, the queue empty (nothing that
-///   was typed is unread), a shell-shaped tail;
-/// - on a row BELOW the question's row that does not continue the row above it: a prompt drawn
-///   after the read returned, not the question growing by the echo;
-/// - the row does not show what was typed (`row_shows_typed_line` says `Some(false)`; a line
-///   whose echo cannot be predicted never qualifies) and does not begin with the question's own
-///   text. A line editor that holds typed text draws it behind its prompt wherever it redraws.
-///
-/// The clean line before the first key is what keeps a line typed BEFORE the Phosphorize click
-/// safe: zsh's "do you wish to see all N possibilities?" is answered with one key and the buffer
-/// is drawn again on a lower row, but that line was dirty before the key. Without a tty probe
-/// (ConPTY) the kind is never `LineReader`: the rule does not apply there.
-pub fn key_read_took_the_typed_keys(
-    before: &LineStart,
-    typed: Option<&str>,
-    tty: &SubshellTtySample,
-    tail: Tail,
-    row: usize,
-    row_text: &str,
-    row_continues: bool,
-) -> bool {
-    let question = before.row_text.trim();
-    before.line_clean
-        && before.raw_shell_tty
-        && before.tail == Tail::InputPrompt
-        && !question.is_empty()
-        && tty.kind == SubshellTtyKind::LineReader
-        && tty.queue_empty == Some(true)
-        && tail == Tail::ShellPrompt
-        && row > before.row
-        && !row_continues
-        && row_shows_typed_line(row_text, row_continues, typed) == Some(false)
-        && !row_text.trim_start().starts_with(question)
-}
-
 /// Why an attempt ended before or after its first line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CancelKind {
@@ -723,16 +650,6 @@ impl LineTracker {
     /// Whether the line holds content the shell has not been told to end.
     pub fn line_has_content(&self) -> bool {
         self.content_bytes > 0 || self.in_paste
-    }
-
-    /// #2016: the text of the line being typed (no line end yet), while its echo can be predicted
-    /// (plain printable bytes); `None` for an empty line, a paste, a control byte or an escape
-    /// sequence in it. In memory only; never logged.
-    pub fn typed_so_far(&self) -> Option<&str> {
-        if self.line_opaque || self.in_paste || self.line.is_empty() {
-            return None;
-        }
-        std::str::from_utf8(&self.line).ok()
     }
 }
 
