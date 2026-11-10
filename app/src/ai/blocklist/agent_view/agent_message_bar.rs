@@ -216,7 +216,8 @@ impl AgentMessageBar {
         // corrected at the next key, as it was before.
         ctx.subscribe_to_model(&slash_command_model, |me, model, event, ctx| {
             let state_changed = event.old_state != *model.as_ref(ctx).state();
-            if slash_event_needs_render(state_changed, || me.row_needs_render(ctx)) {
+            let app: &AppContext = ctx;
+            if slash_event_needs_render(state_changed, || me.row_needs_render(app)) {
                 ctx.notify();
             }
         });
