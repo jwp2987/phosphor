@@ -575,6 +575,32 @@ impl Input {
         self.enter_gate.is_some_and(|gate| gate.held_unready)
     }
 
+    /// #1997: the Enter gate this input has open on the queue while the LINE of its Enter is
+    /// still waiting with it: an Enter held for an unready shell (its requested line, #1435), or
+    /// one that waits for its verdict or completion or for its route to settle (the buffer).
+    /// `None` with no gate on the queue, for an empty line (a bare Enter has no line to overtake),
+    /// and for the multi-line dialog's gate (the dialog asks about a later Enter; keys typed
+    /// before it opened must not be discarded with its answer).
+    ///
+    /// The terminal view asks before it releases the keys held behind a deferred Enter whose
+    /// submit wrote no command: lines typed after a line that waits here go behind this gate,
+    /// never to the pty ahead of it (owner decision 2026-11-09, keep them together).
+    pub(crate) fn enter_gate_holding_a_line(&self, ctx: &AppContext) -> Option<(GateKind, u64)> {
+        let gate = self.enter_gate.filter(|gate| !gate.held_for_dialog)?;
+        if !self.enter_queue_holds_keys(ctx) {
+            return None;
+        }
+        let requested = self
+            .pending_command_text
+            .as_deref()
+            .filter(|_| gate.held_unready);
+        let has_line = match requested {
+            Some(line) => !line.is_empty(),
+            None => !self.editor.as_ref(ctx).buffer_text(ctx).is_empty(),
+        };
+        has_line.then_some((gate.kind, gate.key))
+    }
+
     /// #1652: an Enter that asked the multi-line submit dialog gates the queue until the answer.
     pub(crate) fn multiline_dialog_gate_open(&self) -> bool {
         self.enter_gate.is_some_and(|gate| gate.held_for_dialog)

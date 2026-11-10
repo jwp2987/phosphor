@@ -2982,6 +2982,13 @@ plain terminal"). The owner saw it on macOS at an EMPTY remote prompt: a toast f
   the owner (2026-11-09): an editor key with no byte form among given-up keys (a cursor motion, a
   selection) acts on the editor in its place; on ConPTY a give-up's write waits for the line editor
   only when no prompt hold is already queued.
+- **Keep-together holds on the event path too (#1997, owner 2026-11-09).** A deferred Enter whose
+  submit wrote no command because its own non-empty line now waits behind the input's Enter gate
+  (an unready shell, a verdict wait) no longer has the complete lines typed behind it written to
+  the pty at once (the #826 N1 / #1016 behaviour). They are handed to that gate in place
+  (`InputQueue::hand_gate_to`, `hand_deferred_gate_lines_to_waiting_enter`) and follow the line:
+  after it at readiness, behind it at the net. Lines typed behind a BARE deferred Enter are still
+  written at once (no line to overtake). Do not restore the direct write past a waiting line.
 - **The consequence the first ruling left open is closed.** Under the first ruling (a few hours on
   2026-11-09) the unrun line stayed in the editor and the keys typed after it were written to the
   pty, so a second complete command ran without the first. The owner ruled "keep them together":
@@ -2992,7 +2999,7 @@ plain terminal"). The owner saw it on macOS at an EMPTY remote prompt: a toast f
   unready shell's line in the editor while what followed it is sent, or a hand-back of a young
   Enter's keys to the editor at its cap. (`text_of_entries_typed_after`, #1661's helper, stays
   deleted; the keys kept with a line are turned into text by `keep_given_up_keys_with_line`.)
-<!-- markers: sym:text_of_entries_typed_after sym:typed_after_enter_discarded_toast sym:discard_gate_keys_after_enter sym:split_line_before_first_enter keep:close_gate_for_give_up keep:write_given_up_entries_to_pty keep:keep_given_up_keys_with_line keep:write_unready_line_and_keys_to_pty keep:place_given_up_enter_gate_keys keep:take_given_up_unready_line keep:KeysAfterEnter keep:give_up_gate_keys_to_pty keep:give_up_deferred_enter_keys keep:give_up_young_hold_keys_to_pty keep:on_given_up_user_bytes keep:give_up_deferred_gate keep:report_enter_gate_discard keep:YOUNG_HOLD_GIVE_UP keep:young_hold_cap_is_normal_end keep:close_gate_discarding -->
+<!-- markers: sym:text_of_entries_typed_after sym:typed_after_enter_discarded_toast sym:discard_gate_keys_after_enter sym:split_line_before_first_enter keep:close_gate_for_give_up keep:hand_gate_to keep:hand_deferred_gate_lines_to_waiting_enter keep:write_given_up_entries_to_pty keep:keep_given_up_keys_with_line keep:write_unready_line_and_keys_to_pty keep:place_given_up_enter_gate_keys keep:take_given_up_unready_line keep:KeysAfterEnter keep:give_up_gate_keys_to_pty keep:give_up_deferred_enter_keys keep:give_up_young_hold_keys_to_pty keep:on_given_up_user_bytes keep:give_up_deferred_gate keep:report_enter_gate_discard keep:YOUNG_HOLD_GIVE_UP keep:young_hold_cap_is_normal_end keep:close_gate_discarding -->
 
 ### History: the decision this reverses (#1661, 2026-11-05; resolved #1766, #1767, #1768, #1769, #1770)
 

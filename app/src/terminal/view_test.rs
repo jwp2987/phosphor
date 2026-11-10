@@ -18147,8 +18147,17 @@ fn typeahead_handoff_ctrl_c_voids_the_keys_behind_a_deferred_enters_gate() {
 
 /// #1016: keys that reach the editor after an Enter that waits for the shell's report (the
 /// focused editor can take them before the terminal does) are not part of the line that Enter
-/// submits. The submit sees only the text typed before the Enter, and the later keys are written
-/// after it, ahead of the keys already held, in typed order.
+/// submits. The submit sees only the text typed before the Enter, and the later keys follow it,
+/// ahead of the keys already held, in typed order.
+///
+/// Expectation history (owner decision 2026-11-09 on #1997, "keep them together" on the event
+/// path; a changed decision, not a weakened test): since #826 N1 / #1016 this test expected
+/// `echo 2` + Enter at the pty the moment the report arrived, while the line typed BEFORE it
+/// (`true`) had not run: the test shell is not ready for a command, so `true` was held for it
+/// (#1571) and the later line ran first. Now nothing is written while `true` waits; `echo 2` and
+/// its Enter wait behind it in the queue, and the hold's give-up writes `true`, its Enter,
+/// `echo 2`, its Enter, in that order. The #1016 claim itself is still asserted: `echo 2` never
+/// joins the submitted line.
 #[test]
 fn typeahead_handoff_keys_the_editor_took_after_a_deferred_enter_do_not_join_its_line() {
     App::test((), |mut app| async move {
@@ -18189,10 +18198,243 @@ fn typeahead_handoff_keys_the_editor_took_after_a_deferred_enter_do_not_join_its
                 "true",
                 "what was typed after the Enter must not be part of the submitted line"
             );
+            // #1997: `true` is held for the unready shell, so the line typed after it waits
+            // behind it: nothing reaches the pty ahead of `true`.
+            assert!(view.input.as_ref(ctx).unready_enter_gate_open());
+            assert_eq!(
+                view.paste_queue.queue.borrow().queued_len(),
+                2,
+                "`ec` and `ho 2` + Enter still wait, in place"
+            );
+        });
+        // Checked after the update, when the write events it emitted have been delivered.
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "the later line must not run before `true`: {:?}",
+            pty_writes.borrow()
+        );
+        // The hold's net: the line, its Enter, then what was typed after it.
+        terminal.update(&mut app, |view, ctx| {
+            view.input
+                .update(ctx, |input, ctx| input.give_up_unready_enter("test", ctx));
         });
 
-        assert_eq!(*pty_writes.borrow(), vec![b"echo 2\r".to_vec()]);
+        assert_eq!(
+            String::from_utf8_lossy(&pty_writes.borrow().concat()),
+            "true\recho 2\r",
+            "typed order: the held line and its Enter first, then the line typed after it"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(view.paste_queue.queue.borrow().is_idle());
+        });
     })
+}
+
+/// #1997 (owner decision 2026-11-09, "keep them together" on the event path), at the NET:
+/// `cd build`, Enter, `make clean`, Enter typed while the shell's report is outstanding. The
+/// report arrives, the deferred Enter is submitted and the shell cannot take a command yet, so
+/// `cd build` is held for it (#1571). `make clean` must not be written to the pty ahead of it
+/// (it ran first, in the wrong directory): nothing is written while `cd build` waits, the keys
+/// stay queued behind its gate, and the 60 s net writes `cd build`, Enter, `make clean`, Enter
+/// in that order. Legacy and Table.
+#[test]
+fn a_line_typed_behind_a_deferred_enter_never_reaches_the_pty_before_that_enters_held_line() {
+    use crate::terminal::input_queue::{DestinationMode, GateKind};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            let executed = count_executed_commands(&mut app, &terminal);
+
+            terminal.update(&mut app, |view, ctx| {
+                awaiting_typeahead_report(view);
+                view.input.update(ctx, |input, ctx| {
+                    input.replace_buffer_content("cd build", ctx)
+                });
+                view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+                view.open_deferred_enter_gate(ctx);
+                // The next line and its Enter, typed on the terminal behind the deferred Enter.
+                view.write_user_bytes_to_pty(b"make clean\r".to_vec(), ctx);
+                assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+                view.handle_typeahead_report_with_handoff(true, ctx);
+
+                let input = view.input.as_ref(ctx);
+                assert!(
+                    input.unready_enter_gate_open(),
+                    "{mode:?}: `cd build` is held for the unready shell"
+                );
+                assert_eq!(input.buffer_text(ctx), "cd build", "{mode:?}");
+                let queue = view.paste_queue.queue.borrow();
+                assert!(
+                    !queue.has_gate_kind(GateKind::HandoffReport),
+                    "{mode:?}: the deferred Enter's gate is closed"
+                );
+                assert_eq!(
+                    queue.queued_len(),
+                    1,
+                    "{mode:?}: `make clean` + Enter waits behind the held line, in place"
+                );
+                assert_eq!(
+                    input.enter_gate_held_len_for_test(ctx),
+                    1,
+                    "{mode:?}: behind the held Enter's own gate"
+                );
+            });
+            // Checked after the update, when the write events it emitted have been delivered.
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: `make clean` must not reach the pty before `cd build`: {:?}",
+                pty_writes.borrow()
+            );
+            assert_eq!(*executed.borrow(), 0, "{mode:?}: nothing ran");
+
+            terminal.update(&mut app, |view, ctx| {
+                view.input
+                    .update(ctx, |input, ctx| input.give_up_unready_enter("test", ctx));
+            });
+            assert_eq!(
+                String::from_utf8_lossy(&pty_writes.borrow().concat()),
+                "cd build\rmake clean\r",
+                "{mode:?}: line one, Enter, line two, Enter, in typed order, once"
+            );
+            terminal.read(&app, |view, ctx| {
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
+            });
+        });
+    }
+}
+
+/// #1997, at READINESS: the same typing, and the shell becomes ready. Nothing reaches the pty
+/// and nothing runs until then; the readiness event runs `cd build`, alone; only after it has
+/// run is `make clean` + Enter released, once, to wherever keys typed at that moment belong (the
+/// running command's tty, or the next prompt). The release is the gate's own (#1571); this test
+/// is about the order. Legacy and Table.
+#[test]
+fn a_line_typed_behind_a_deferred_enter_follows_that_enters_held_line_at_readiness() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            // Everything typed that is not `cd build`: where `make clean` is, and how often.
+            let typed_after = |pty: &[Vec<u8>], executed: &[String], buffer: &str| {
+                let pty: Vec<u8> = pty.iter().flatten().copied().collect();
+                String::from_utf8_lossy(&pty).matches("make clean").count()
+                    + executed
+                        .iter()
+                        .filter(|command| command.contains("make clean"))
+                        .count()
+                    + buffer.matches("make clean").count()
+            };
+
+            terminal.update(&mut app, |view, ctx| {
+                // The prompt is up but the session is not registered with the history yet: the
+                // shell refuses a command (#1572's window).
+                register_local_session_for_ssh_test(view, ctx);
+                view.model
+                    .lock()
+                    .block_list_mut()
+                    .active_block_for_test()
+                    .set_session_id(SessionId::from(9001));
+                awaiting_typeahead_report(view);
+                view.input.update(ctx, |input, ctx| {
+                    input.replace_buffer_content("cd build", ctx)
+                });
+                view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+                view.open_deferred_enter_gate(ctx);
+                view.write_user_bytes_to_pty(b"make clean\r".to_vec(), ctx);
+                view.handle_typeahead_report_with_handoff(true, ctx);
+
+                let input = view.input.as_ref(ctx);
+                assert!(
+                    input.has_held_unready_enter() && input.unready_enter_gate_open(),
+                    "{mode:?}: `cd build` is held for the unready shell"
+                );
+                assert_eq!(
+                    view.paste_queue.queue.borrow().queued_len(),
+                    1,
+                    "{mode:?}: `make clean` + Enter waits behind it"
+                );
+            });
+            assert!(executed.borrow().is_empty(), "{mode:?}: nothing ran");
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing typed reached the pty before the shell was ready: {:?}",
+                pty_writes.borrow()
+            );
+
+            // The readiness event: the held line runs, alone.
+            terminal.update(&mut app, |view, ctx| {
+                first_precmd_processed_for_test(view, ctx);
+                view.retry_held_unready_enter("session_bootstrapped", ctx);
+            });
+            assert_eq!(
+                *executed.borrow(),
+                ["cd build".to_owned()],
+                "{mode:?}: the held line ran once, first"
+            );
+            assert_eq!(
+                typed_after(&pty_writes.borrow(), &[], ""),
+                0,
+                "{mode:?}: `make clean` did not reach the pty with or before `cd build`: {:?}",
+                pty_writes.borrow()
+            );
+            // The pty takes the command: the keys behind it are released.
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .simulate_long_running_block("cd build", "");
+                view.settle_enter_queue(ctx);
+            });
+            for _ in 0..200 {
+                let released = terminal.read(&app, |view, ctx| {
+                    !view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+                        && view.paste_queue.queue.borrow().is_idle()
+                });
+                if released {
+                    break;
+                }
+                warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
+            }
+            terminal.read(&app, |view, ctx| {
+                assert!(
+                    view.paste_queue.queue.borrow().is_idle(),
+                    "{mode:?}: the keys behind the held line were released"
+                );
+                let buffer = view.input.as_ref(ctx).buffer_text(ctx);
+                assert_eq!(
+                    typed_after(&pty_writes.borrow(), &executed.borrow(), &buffer),
+                    1,
+                    "{mode:?}: `make clean` was delivered exactly once, after `cd build`; \
+                     pty={:?} executed={:?} buffer={buffer:?}",
+                    pty_writes.borrow(),
+                    executed.borrow()
+                );
+                assert_eq!(
+                    executed.borrow().first().map(String::as_str),
+                    Some("cd build"),
+                    "{mode:?}: `cd build` ran first"
+                );
+            });
+        });
+    }
 }
 
 /// #1016: a second Enter that reaches the editor while the first is deferred follows the keys

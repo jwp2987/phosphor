@@ -1605,6 +1605,29 @@ warpify and tmux-install blocks' Interrupt, a rewind) cancels a deferred Enter f
 |---|---|---|
 | view, Legacy and Table | `view_test.rs`: `an_interrupt_ctrl_c_is_not_held_behind_a_deferred_enter` (Stop of a user command, ssh warpify Interrupt, tmux-install Interrupt, rewind) | with an Enter deferred and `x` typed behind it, each path writes exactly one ^C, `x` is never written, the deferred Enter is cancelled |
 
+**#1997 (owner decision 2026-11-09): keep them together on the EVENT path too.** Not a give-up: the report arrives, the
+deferred Enter is submitted and writes no command because its line now waits behind the input's own Enter gate (the shell
+cannot take a command yet, #1571; or the Enter waits for its verdict). `release_held_keys` then wrote complete lines typed
+behind that Enter to the pty at once (#826 N1, #1016), so `cd build⏎ make clean⏎` ran `make clean` first and `cd build` at
+readiness. Now, when that line is not empty and an Enter is among the held keys, nothing is taken out of the queue: the
+`HandoffReport` gate's entries are handed to the input's gate IN PLACE (`InputQueue::hand_gate_to`, called by
+`TerminalView::hand_deferred_gate_lines_to_waiting_enter` from both the direct take and the mailbox's deferred
+`TakeGateKeys`; `Input::enter_gate_holding_a_line` says whether a line waits). Every entry keeps its id, form and place;
+a key typed since stays behind them. They end with that gate: delivered in typed order after the line ran (readiness),
+written behind the line and its Enter at the 60 s net, kept with the line when a verdict wait gives up, voided with it
+by ^C. Unchanged: an unfinished line (no Enter among the keys) still queues behind the same gate as text or goes to a
+secret read (#1957); everything typed behind a BARE deferred Enter (an empty line) is still written at once (S2,
+`typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_nothing`). In an appci log:
+`hop=held_lines_kept_behind_enter entries=N` is the hand-over; a `hop=held_keys_release` with `enter_held_gate` just before
+it and a non-empty held line is the old bug. Not compiled or run on the authoring machine.
+
+| layer | test | asserts |
+|---|---|---|
+| queue unit (new) | `input_queue/tests.rs`: `hand_gate_to_keeps_the_held_entries_in_place_behind_the_later_gate`, `hand_gate_to_then_the_later_gates_give_up_takes_everything_in_typed_order`, `hand_gate_to_changes_nothing_without_both_gates_and_never_raises_a_barrier`, `holds_enter_tells_a_complete_line_from_an_unfinished_one` | the hand-over delivers nothing, keeps ids and order, is not counted as a give-up; the later gate's event delivers, and its give-up takes, the handed entries with its own in typed order; a missing gate changes nothing; a barrier never moves later; which entry kinds end a line |
+| view (expectation changed by the owner decision, not weakened) | `view_test.rs`: `typeahead_handoff_keys_the_editor_took_after_a_deferred_enter_do_not_join_its_line` | was: `echo 2⏎` at the pty when the report arrived, while `true` (typed before it) was still held for the unready shell. Now: nothing at the pty while `true` waits, two entries still queued; the hold's net writes `true⏎echo 2⏎`, once; the #1016 claim (the later keys never join the submitted line) is still asserted |
+| view, Legacy and Table (new) | `view_test.rs`: `a_line_typed_behind_a_deferred_enter_never_reaches_the_pty_before_that_enters_held_line` | `cd build`, Enter (deferred), `make clean⏎` on the terminal, report with the shell unready: nothing at the pty, nothing run, the `HandoffReport` gate closed, one entry behind the held Enter's gate; at the net `cd build⏎make clean⏎` in that order, editor empty, queue idle |
+| view, Legacy and Table (new) | `view_test.rs`: `a_line_typed_behind_a_deferred_enter_follows_that_enters_held_line_at_readiness` | the same typing with a session that becomes ready: nothing at the pty or run before; the readiness event runs `cd build` alone with `make clean` nowhere yet; after the pty took the command `make clean` is delivered exactly once (pty, a command or the editor, wherever keys typed at that moment belong) |
+
 **#1996 follow-up (owner decision 2026-11-09, second ruling): KEEP THEM TOGETHER.** A later line never runs without the line
 typed before it (`cd build⏎ make clean⏎` must never run `make clean` alone). This narrows the #1996 paragraph below in one
 point: where it says "only the line typed BEFORE an Enter that did not run stays in the editor" and the keys after it go to

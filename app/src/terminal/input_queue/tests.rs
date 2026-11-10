@@ -874,6 +874,221 @@ fn close_gate_for_give_up_behind_an_earlier_gate_leaves_its_entries_in_place() {
     assert_eq!(h.delivered_ids(), vec![1, 2, 3], "typed order kept");
 }
 
+/// #1997 (owner decision 2026-11-09, keep them together): the keys held behind a deferred
+/// Enter's gate are handed to the gate its own line now waits behind, IN PLACE. Nothing is
+/// delivered or handed out, every entry keeps its id and its place in front of a key typed
+/// since, and the entries end with the later gate: its event delivers them all in typed order.
+#[test]
+fn hand_gate_to_keeps_the_held_entries_in_place_behind_the_later_gate() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::HandoffReport, 4));
+    q.offer(&mut h, text("make clean"));
+    q.offer(&mut h, EntryKind::Enter);
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::EnterVerdict, 9).with_cap(None),
+    );
+    q.offer(&mut h, text("x"));
+    assert_eq!(
+        q.held_by_gate(GateKind::HandoffReport, 4)
+            .map(|entry| entry.id.0)
+            .collect::<Vec<_>>(),
+        vec![1, 2],
+        "the gate's own entries: up to the next gate's barrier"
+    );
+    assert_eq!(q.held_behind_gate(GateKind::EnterVerdict, 9), 1);
+
+    assert_eq!(
+        q.hand_gate_to(
+            &mut h,
+            GateKind::HandoffReport,
+            4,
+            GateKind::EnterVerdict,
+            9
+        ),
+        Some(2)
+    );
+    assert!(
+        !q.has_gate(GateKind::HandoffReport, 4),
+        "the handed gate closed"
+    );
+    assert!(q.has_gate(GateKind::EnterVerdict, 9));
+    assert_eq!(
+        q.held_behind_gate(GateKind::EnterVerdict, 9),
+        3,
+        "the later gate now holds them, with the key typed since"
+    );
+    assert_eq!(q.queued_len(), 3, "nothing left the queue");
+    assert_eq!(
+        q.queued_ids().map(|id| id.0).collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "ids and order unchanged"
+    );
+    assert!(h.delivered.is_empty() && h.discarded.is_empty());
+    assert_eq!(q.give_up_count(), 0, "a hand-over is not a give-up");
+
+    // The later gate's event (the line ran) delivers all of it, in typed order.
+    assert!(q.on_gate_event(&mut h, GateKind::EnterVerdict, 9));
+    assert_eq!(h.delivered_ids(), vec![1, 2, 3]);
+    assert!(q.is_idle());
+}
+
+/// #1997: after the hand-over the later gate's GIVE-UP takes the handed entries with its own, in
+/// typed order (the unready shell's net writes them behind the line and its Enter).
+#[test]
+fn hand_gate_to_then_the_later_gates_give_up_takes_everything_in_typed_order() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::HandoffReport, 4));
+    q.offer(&mut h, text("make clean"));
+    q.offer(&mut h, EntryKind::Enter);
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::EnterVerdict, 9).with_cap(None),
+    );
+    q.offer(&mut h, text("x"));
+    assert_eq!(
+        q.hand_gate_to(
+            &mut h,
+            GateKind::HandoffReport,
+            4,
+            GateKind::EnterVerdict,
+            9
+        ),
+        Some(2)
+    );
+    let gave_up = q.close_gate_for_give_up(&mut h, GateKind::EnterVerdict, 9);
+    assert_eq!(
+        gave_up
+            .entries
+            .iter()
+            .map(|entry| entry.id.0)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert_eq!(gave_up.left_in_place, 0);
+    assert!(h.delivered.is_empty() && h.discarded.is_empty());
+    assert!(q.is_idle());
+}
+
+/// #1997: the edges of the hand-over. A gate that is not open changes nothing (`None`); a `to`
+/// gate that opened EARLIER already holds the entries, so its barrier stays and only the handed
+/// gate closes; a gate is never handed to itself.
+#[test]
+fn hand_gate_to_changes_nothing_without_both_gates_and_never_raises_a_barrier() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::EnterVerdict, 9).with_cap(None),
+    );
+    q.offer(&mut h, text("a"));
+    assert_eq!(
+        q.hand_gate_to(
+            &mut h,
+            GateKind::HandoffReport,
+            4,
+            GateKind::EnterVerdict,
+            9
+        ),
+        None,
+        "no gate to hand"
+    );
+    q.open_gate(&mut h, GateSpec::new(GateKind::HandoffReport, 4));
+    q.offer(&mut h, text("b"));
+    assert_eq!(
+        q.hand_gate_to(&mut h, GateKind::HandoffReport, 4, GateKind::SshConnect, 1),
+        None,
+        "no gate to hand it to"
+    );
+    assert_eq!(
+        q.hand_gate_to(
+            &mut h,
+            GateKind::HandoffReport,
+            4,
+            GateKind::HandoffReport,
+            4
+        ),
+        None
+    );
+    assert!(q.has_gate(GateKind::HandoffReport, 4), "nothing changed");
+    assert_eq!(q.queued_len(), 2);
+
+    let barrier_before = q.gates()[0].barrier;
+    assert_eq!(
+        q.hand_gate_to(
+            &mut h,
+            GateKind::HandoffReport,
+            4,
+            GateKind::EnterVerdict,
+            9
+        ),
+        Some(1)
+    );
+    assert!(!q.has_gate(GateKind::HandoffReport, 4));
+    assert_eq!(q.gates().len(), 1);
+    assert_eq!(q.gates()[0].barrier, barrier_before, "never moved later");
+    assert!(h.delivered.is_empty());
+    assert!(q.on_gate_event(&mut h, GateKind::EnterVerdict, 9));
+    assert_eq!(h.delivered_ids(), vec![1, 2], "typed order kept");
+}
+
+/// #1997: which held entries end a line. An Enter in any form does; text without a line break,
+/// a signal and an editor key that is not Enter do not; a paste whose content is not in the
+/// entry cannot say (the host looks it up).
+#[test]
+fn holds_enter_tells_a_complete_line_from_an_unfinished_one() {
+    let pty = |bytes: &[u8]| EntryKind::PtyBytes {
+        bytes: bytes.to_vec(),
+        takes_over_agent_control: true,
+    };
+    assert_eq!(EntryKind::Enter.holds_enter(), Some(true));
+    assert_eq!(text("ls").holds_enter(), Some(false));
+    assert_eq!(text("ls\npwd").holds_enter(), Some(true));
+    assert_eq!(pty(b"ls -l").holds_enter(), Some(false));
+    assert_eq!(pty(b"ls -l\r").holds_enter(), Some(true));
+    assert_eq!(pty(b"\n").holds_enter(), Some(true));
+    assert_eq!(
+        EntryKind::Signal(SignalKind::Interrupt).holds_enter(),
+        Some(false)
+    );
+    assert_eq!(
+        EntryKind::EditorKey(EditorKeyPayload::new(HeldPasteKey::Text("ec".into()))).holds_enter(),
+        Some(false)
+    );
+    assert_eq!(
+        EntryKind::EditorKey(EditorKeyPayload::new(HeldPasteKey::Action(
+            crate::editor::EditorAction::Enter
+        )))
+        .holds_enter(),
+        Some(true)
+    );
+    let taken = EditorKeyPayload::new(HeldPasteKey::Action(crate::editor::EditorAction::Enter));
+    let _ = taken.take();
+    assert_eq!(
+        EntryKind::EditorKey(taken).holds_enter(),
+        Some(false),
+        "a key that was delivered is no longer an Enter in the queue"
+    );
+    assert_eq!(
+        EntryKind::Paste {
+            paste_id: 3,
+            payload: Some(b"a\rb".to_vec())
+        }
+        .holds_enter(),
+        Some(true)
+    );
+    assert_eq!(
+        EntryKind::Paste {
+            paste_id: 3,
+            payload: None
+        }
+        .holds_enter(),
+        None
+    );
+}
+
 #[test]
 fn enter_gate_releases_keys_in_typed_order_on_its_event() {
     let mut q = InputQueue::new();

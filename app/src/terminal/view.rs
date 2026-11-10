@@ -15806,6 +15806,14 @@ impl TerminalView {
     /// one chunk per key entry, in typed order: on ConPTY each key is its own write, so no write
     /// carries an Enter with the next line's keys behind it (#1189).
     ///
+    /// #1997 (owner decision 2026-11-09, keep them together; this changes what #826 N1 / #1016
+    /// did): that holds only while NO line waits in front of them. When the deferred Enter's own
+    /// line is not empty and now waits behind the input's Enter gate (an unready shell, #1571; a
+    /// verdict wait), held keys with an Enter among them are not taken at all: they stay queued
+    /// behind that gate and follow the line
+    /// ([`Self::hand_deferred_gate_lines_to_waiting_enter`]). What reaches this function then is
+    /// an unfinished line, or the keys typed behind a bare Enter.
+    ///
     /// `in_mailbox_flush`: called by the pane queue's mailbox flush (a deferred take), which
     /// applies operations in order, so text queued behind a waiting Enter is offered at once
     /// rather than behind later mailbox operations (r18u27 review).
@@ -15851,9 +15859,10 @@ impl TerminalView {
                 // them). Inserted, they became a programmatic edit deferred behind the gate and
                 // were applied by the give-up, i.e. handed back to the editor.
                 //
-                // #1997 (open): the `to_pty` branch above does NOT make this check, so keys
-                // that contain an Enter are written at once even while a non-empty line waits
-                // behind the unready gate, and run before it.
+                // #1997: keys that contain an Enter never get here while a non-empty line waits
+                // behind that gate. They are handed to it in place before anything is taken
+                // out of the queue (`hand_deferred_gate_lines_to_waiting_enter`), so the
+                // `to_pty` branch above cannot write a later line ahead of it.
                 //
                 // Not behind the multi-line dialog's gate: that dialog asks about a later Enter,
                 // and keys typed before it opened must not be discarded with its answer.
