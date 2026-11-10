@@ -20,7 +20,8 @@ with the user's prompt honored and with Phosphor's own prompt:
   5. a user's own `read` function is never replaced (and still runs); a user's `read` alias does not
      break the bootstrap;
   6. bash POSIX mode installs nothing; PHOSPHOR_READER_MARKER=0 installs nothing and sends nothing;
-  7. `set -e` / `set -u` (zsh: err_exit, nounset) do not abort the wrapper or the shell;
+  7. `set -e` / `set -u` (zsh: err_exit, nounset) do not abort the wrapper or the shell, a bare `read`
+     under nounset included (before bash 4.4 an empty "$@" is an unbound variable there);
   8. a Ctrl-C at the question does not leave the wrapper behind for the next command.
 
 Not covered here (said in docs/design/r14-readmark.md): a function registered after the bootstrap runs
@@ -369,6 +370,13 @@ def run_main(kind, honor):
         relaxed = "set +eu" if kind == "bash" else "unsetopt err_exit nounset"
         ok, at = sh.stage(strict + "; " + S["ask"]("ans", "QS? ") + '; printf "%s" "$ans" > "$HOME/out"; ' + relaxed, "QS? ", b"strict\r")
         check(ok and out() == "strict" and sh.count(MARKER, at) == 1, "%s: under %s the read is announced, answered, and the shell lives" % (label, strict),
+              "out=%r events=%r" % (out(), names(sh.events(at))))
+
+        # a bare `read` under nounset: before bash 4.4 an empty "$@" is an unbound variable there, so the wrapper must not expand one.
+        nounset = "set -u" if kind == "bash" else "setopt nounset"
+        nounset_off = "set +u" if kind == "bash" else "unsetopt nounset"
+        ok, at = sh.stage(nounset + '; printf "QB? "; read; printf "%s" "$REPLY" > "$HOME/out"; ' + nounset_off, "QB? ", b"bare\r")
+        check(ok and out() == "bare" and sh.count(MARKER, at) == 1, "%s: a bare `read` under nounset is announced and sets REPLY" % label,
               "out=%r events=%r" % (out(), names(sh.events(at))))
 
         # 4. outside the stage.

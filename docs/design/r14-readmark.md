@@ -28,12 +28,19 @@ has it. Only the shell knows the moment of the read.
         send ESC ] 9278 ; f ; {"hook": "TtyReaderAsks", "value": {"session_id": S, "seq": N}} BEL
     builtin read "$@"
 
+(bash: `__warp_reader_announce` is the write; zsh: the body is set through `functions[read]` and
+starts on its own line, because `script/check_input_path_timers` reads `read ... -t ` on one line
+as a timed read and the `-t 0` there is the terminal test.)
+
 Same OSC form, session id and `seq` as `LineEditorReading`, written with `__warp_emit` (to
 `/dev/tty`), so it is in the stream after the Precmd and ahead of the question's bytes.
 
 - **No local, no assignment, builtin last** in the function, so the caller's locals, `REPLY`, `-a`
   / `-A` arrays, an `IFS=: read` prefix and the status (EOF, timeout) are the builtin's. The write
   is `|| :` so the caller's `set -e` / ERR trap / `err_exit` cannot trip on it.
+- **A bare `read` (bash).** Before bash 4.4 `"$@"` with no arguments is an unbound variable under
+  the caller's `set -u`; in an interactive shell that aborts the whole command. bash 3.2 (macOS)
+  is such a bash, so the function has a branch for `$# -eq 0` that never expands `"$@"`.
 - **What is announced.** A read of fd 0 while fd 0 is a tty. Not announced: a file, pipe or
   here-string (fd 0 is not a tty), `-u N` for N != 0, the poll `read -t 0` (zsh: `-t` with no
   number), zsh `-p` (coprocess), `-z`, `-c`, `-l`. The options are looked at by
@@ -140,7 +147,8 @@ ignored.
   `test_zsh_bootstrap_strict_options`, `test_hook_forks`, `test_child_ps1`,
   `test_line_editor_markers`) were run against the changed files.
 - **bash 3.2 (macOS), read not run.** Everything used exists in 3.2 (`function name {}`,
-  `builtin getopts` with a local `OPTIND`, `declare -F`, `[[ -t 0 ]]`). Known 3.2 quirk: a local
+  `builtin getopts` with a local `OPTIND`, `declare -F`, `[[ -t 0 ]]`), and the one 3.2 trap found
+  by reading (an empty `"$@"` under `set -u`) has its own branch and its own check in the script. Known 3.2 quirk: a local
   `OPTIND` is not fully unwound for a caller that is itself in the middle of a `getopts` loop and
   calls `read` on the terminal inside the stage. `-i` / `-N` in the option string do not exist in
   3.2's `read`; the builtin rejects them itself.

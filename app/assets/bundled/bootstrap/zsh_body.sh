@@ -408,7 +408,10 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     __warp_reader_stage_close
     [[ ${PHOSPHOR_READER_MARKER:-1} != 0 && -n ${WARP_SESSION_ID:-} && -n ${WARP_BOOTSTRAPPED:-} ]] || return 0
     (( ${+functions[read]} )) && return 0
-    functions[read]='if [[ -t 0 ]] && __warp_read_is_of_fd0 "$@"; then
+    # (The body starts on its own line: script/check_input_path_timers reads `read ... -t ` on one
+    # line as a timed read, and the `-t 0` here is the terminal test.)
+    functions[read]='
+if [[ -t 0 ]] && __warp_read_is_of_fd0 "$@"; then
   __warp_emit '"'"'\e]9278;f;{"hook": "TtyReaderAsks", "value": {"session_id": %s, "seq": %s}}\a'"'"' "${WARP_SESSION_ID:-0}" "${__warp_seq:-0}" || :
 fi
 builtin read "$@"'

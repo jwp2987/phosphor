@@ -648,6 +648,9 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # two from the options, parsed with the builtin's own option string; its locals are gone before
     # the builtin runs.
     #
+    # A bare `read` has its own branch: before bash 4.4 `"$@"` with no arguments is an unbound
+    # variable under the caller's `set -u` (bash 3.2 on macOS), which would abort the caller.
+    #
     # Never installed: with PHOSPHOR_READER_MARKER=0 (the one kill switch; the app honours the same
     # name), before the bootstrap is done (its own code runs after the first warp_precmd), over a
     # `read` function of the user's, or in POSIX mode (there an assignment in front of a function
@@ -661,10 +664,13 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         [[ :${SHELLOPTS:-}: == *:posix:* ]] && return 0
         declare -F read >/dev/null 2>&1 && return 0
         function read {
-            if [[ -t 0 ]] && __warp_read_is_of_fd0 "$@"; then
-                __warp_emit '\e]9278;f;{"hook": "TtyReaderAsks", "value": {"session_id": %s, "seq": %s}}\a' "${WARP_SESSION_ID:-0}" "${__warp_seq:-0}" || :
+            if [[ $# -eq 0 ]]; then
+                if [[ -t 0 ]]; then __warp_reader_announce; fi
+                builtin read
+            else
+                if [[ -t 0 ]] && __warp_read_is_of_fd0 "$@"; then __warp_reader_announce; fi
+                builtin read "$@"
             fi
-            builtin read "$@"
         }
         __warp_reader_stage=1
     }
@@ -673,6 +679,10 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             __warp_reader_stage=
             unset -f read
         fi
+        return 0
+    }
+    __warp_reader_announce () {
+        __warp_emit '\e]9278;f;{"hook": "TtyReaderAsks", "value": {"session_id": %s, "seq": %s}}\a' "${WARP_SESSION_ID:-0}" "${__warp_seq:-0}" || :
         return 0
     }
     __warp_read_is_of_fd0 () {
