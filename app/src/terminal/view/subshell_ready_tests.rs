@@ -1425,8 +1425,8 @@ fn d4_a_line_typed_ahead_of_the_line_editor_blocks_the_write_until_it_was_accept
     assert_eq!(look(runs, &editor, p, gone, 2), none);
 
     // The cursor row against the typed line.
-    let typed = Some("vim -u NONE f.txt");
-    let shows = |row: &str, continues: bool| row_shows_typed_line(row, continues, typed);
+    let typed_line = Some("vim -u NONE f.txt");
+    let shows = |row: &str, continues: bool| row_shows_typed_line(row, continues, typed_line);
     assert_eq!(shows("LAB$ vim -u NONE f.txt", false), Some(true));
     assert_eq!(shows("LAB$ vim -u N", false), Some(true), "echo arriving");
     assert_eq!(shows("LAB$ v", false), Some(true));

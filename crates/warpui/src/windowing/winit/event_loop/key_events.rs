@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use lazy_static::lazy_static;
 
 use winit::event::ElementState;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use winit::keyboard::NativeKey;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
