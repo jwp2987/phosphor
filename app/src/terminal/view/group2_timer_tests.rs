@@ -1,5 +1,11 @@
-//! Group 2: timers close a segment and hand text back; they never write to a pty and never run a
-//! command (#1577 / #1588). Child of `view_test.rs` (private helpers come in through `super`).
+//! Group 2: what a timer does when it closes a segment (#1577 / #1588). A timer never runs a
+//! command through the editor. Since the owner's decision of 2026-11-09 (REVERSING #1661) a
+//! give-up of a hold for the shell (an Enter gate, a young Enter's hold, a paced CLI-agent submit)
+//! WRITES the keys it held to the pty in typed order, what a plain terminal would have sent all
+//! along; the tests below that expected those keys discarded (#1661) or handed back with a toast
+//! (#1577) were changed for that decision. The setup gates and a paste's read cap still hand
+//! their keys back to the editor. Child of `view_test.rs` (private helpers come in through
+//! `super`).
 
 use super::*;
 use crate::terminal::input_queue;
@@ -103,24 +109,31 @@ fn assert_handed_back(
     });
 }
 
-/// A3 (#1577) / owner decision 2026-11-05 (#1661): the 20 s leak net of a paced CLI-agent submit
-/// DISCARDS the keys typed behind it (they were typed after the submit's Enter): never drained to
-/// the pty (#1577), and no longer handed back to the editor either. Both modes.
+/// Owner decision 2026-11-09 (REVERSING #1661, under which this test expected a discard): the
+/// 20 s leak net of a paced CLI-agent submit WRITES the keys typed behind it to the pty, in typed
+/// order (two lines with their Enters here), for the program that reads the tty. Nothing goes to
+/// the editor and nothing is dropped. Both modes.
 #[test]
-fn cli_submit_cap_discards_the_keys_behind_it() {
+fn cli_submit_cap_writes_the_keys_behind_it_to_the_pty_in_typed_order() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
-            let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 view.begin_cli_submit_gate(ctx);
-                assert!(view.write_user_bytes_to_pty(b"l".to_vec(), ctx));
+                for key in [&b"l"[..], b"s", b"\r", b"pwd", b"\r"] {
+                    assert!(view.write_user_bytes_to_pty(key.to_vec(), ctx));
+                }
+                assert!(
+                    pty_writes_are_empty(&pty),
+                    "{mode:?}: held behind the submit"
+                );
                 let token = gate_token_of(view, input_queue::GateKind::CliSubmit);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_enter_gate_discarded(&terminal, &app, &writes);
+            assert_given_up_to_pty(&terminal, &app, &pty, b"ls\rpwd\r");
         });
     }
 }
@@ -161,18 +174,40 @@ fn paste_cap_hands_the_keys_behind_the_unread_paste_back() {
     }
 }
 
-/// What an Enter gate's give-up must leave (#1661, owner decision 2026-11-05): the keys typed
-/// behind the Enter DISCARDED (the editor as it was, no guard: nothing came back), nothing written
-/// to the pty, the queue idle.
-fn assert_enter_gate_discarded(
+/// The text of every toast shown from now on. The `ToastStack` singleton must be registered.
+fn record_toasts(app: &mut App) -> Rc<RefCell<Vec<String>>> {
+    let texts = Rc::new(RefCell::new(Vec::new()));
+    let sink = texts.clone();
+    app.update(|ctx| {
+        let stack = crate::workspace::ToastStack::handle(ctx);
+        ctx.subscribe_to_model(&stack, move |_, event, _| {
+            if let crate::workspace::ToastStackEvent::AddEphemeralToast { toast, .. } = event {
+                sink.borrow_mut()
+                    .push(toast.main_text_for_test().to_string());
+            }
+        });
+    });
+    texts
+}
+
+/// Whether nothing has been written to the pty yet.
+fn pty_writes_are_empty(pty: &Rc<RefCell<Vec<Vec<u8>>>>) -> bool {
+    pty.borrow().iter().all(|write| write.is_empty())
+}
+
+/// What a give-up of a hold for the shell must leave (owner decision 2026-11-09, reversing #1661):
+/// the held keys at the pty, `expected` byte for byte and in typed order; nothing of them in the
+/// editor and no guard (nothing came back); no toast about discarded keys; the queue idle.
+fn assert_given_up_to_pty(
     terminal: &ViewHandle<TerminalView>,
     app: &App,
-    writes: &Rc<RefCell<Vec<&'static str>>>,
+    pty: &Rc<RefCell<Vec<Vec<u8>>>>,
+    expected: &[u8],
 ) {
-    assert!(
-        writes.borrow().is_empty(),
-        "a timer wrote to the pty: {:?}",
-        writes.borrow()
+    assert_eq!(
+        String::from_utf8_lossy(&pty.borrow().concat()),
+        String::from_utf8_lossy(expected),
+        "the held keys reach the pty in typed order, none dropped"
     );
     terminal.read(app, |view, ctx| {
         view.input.read(ctx, |input, ctx| {
@@ -184,17 +219,17 @@ fn assert_enter_gate_discarded(
     });
 }
 
-/// A3 (#1577) / #1661 (owner decision 2026-11-05): the 10 s leak net of an Enter's gate DISCARDS
-/// what was typed behind the Enter (text and pty keys); the queue's own give-up used to deliver it
-/// through the stages, and #1577 handed it back as editor text. Both modes.
+/// Owner decision 2026-11-09 (REVERSING #1661, under which this test expected a discard): the
+/// leak net of an Enter's gate WRITES what was typed behind the Enter (text typed in the editor
+/// and a pty key) to the pty in typed order; it is never put into the editor. Both modes.
 #[test]
-fn enter_gate_leak_net_discards_the_keys_behind_the_enter() {
+fn enter_gate_leak_net_writes_the_keys_behind_the_enter_to_the_pty() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
-            let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
             let input = terminal.read(&app, |view, _| view.input.clone());
             input.update(&mut app, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx);
@@ -210,21 +245,22 @@ fn enter_gate_leak_net_discards_the_keys_behind_the_enter() {
                 let token = gate_token_of(view, input_queue::GateKind::EnterVerdict);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_enter_gate_discarded(&terminal, &app, &writes);
+            assert_given_up_to_pty(&terminal, &app, &pty, b"xy");
         });
     }
 }
 
-/// #1661: the leak net of an Enter gate the input no longer tracks discards what waited behind it
-/// too; it is never delivered by the queue's own give-up nor put into the editor. Both modes.
+/// Owner decision 2026-11-09 (REVERSING #1661, under which this test expected a discard): the
+/// leak net of an Enter gate the input no longer tracks writes what waited behind it to the pty
+/// too, in typed order (the Enter as `\r`); it is never put into the editor. Both modes.
 #[test]
-fn orphan_enter_gate_leak_net_discards_the_keys_behind_it() {
+fn orphan_enter_gate_leak_net_writes_the_keys_behind_it_to_the_pty() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
-            let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
             let input = terminal.read(&app, |view, _| view.input.clone());
             input.update(&mut app, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx);
@@ -242,7 +278,7 @@ fn orphan_enter_gate_leak_net_discards_the_keys_behind_it() {
                 let token = gate_token_of(view, input_queue::GateKind::EnterVerdict);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_enter_gate_discarded(&terminal, &app, &writes);
+            assert_given_up_to_pty(&terminal, &app, &pty, b"x\r");
         });
     }
 }
@@ -291,20 +327,22 @@ fn bootstrap_write_gate_cap_hands_the_held_keys_back_once_the_lines_are_out() {
     }
 }
 
-/// A4 (#1577): a young Enter hold whose prompt never comes hands the Enter and the keys behind it
-/// back to the editor (guard armed, nothing written), in both destination modes. This pane's
-/// hand-off has no prompt sequence numbers, so the hold is the window hold, whose cap is its
-/// NORMAL end (owner decision 2026-11-05, #1661): it keeps the hand-back. (Round 2 of #1661 had
-/// changed this to a discard; the owner's decision restores the original expectation.)
+/// Owner decision 2026-11-09 (REVERSING #1661 and, for this hold, #1577's hand-back, which this
+/// test expected): a young Enter hold whose prompt never comes WRITES the Enter and the keys
+/// behind it to the pty as typeahead, in typed order; nothing goes to the editor, no guard is
+/// armed and no toast is shown. This pane's hand-off has no prompt sequence numbers, so the hold
+/// is the window hold, whose cap is its normal end and stays short. Its hand-back put the Enter
+/// into the editor as a newline with the "Input was waiting too long" toast, once per Enter at
+/// such a prompt: the toast that kept popping on macOS at an empty remote prompt. Both modes.
 #[test]
-fn young_hold_cap_hands_the_enter_and_keys_back_with_the_guard_armed() {
+fn young_hold_cap_writes_the_enter_and_keys_to_the_pty() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
-            let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 young_enter_setup(view);
                 assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
@@ -317,16 +355,58 @@ fn young_hold_cap_hands_the_enter_and_keys_back_with_the_guard_armed() {
                 let token = gate_token_of(view, input_queue::GateKind::PromptSeen);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_handed_back(&terminal, &app, &writes, "\nls");
+            assert_given_up_to_pty(&terminal, &app, &pty, b"\rls");
         });
     }
 }
 
-/// #1661 (owner decision 2026-11-05): the fish no-barrier hold (`PrecmdMaybeInFlight`) ends at
-/// its short cap by design: the Enter and the keys behind it are handed back to the editor
-/// (guard armed, nothing written), not dropped. Both modes.
+/// The owner's macOS report: a BARE Enter at an empty prompt of a session without prompt sequence
+/// numbers, again and again. Each one is held for its window and then, at the cap, goes to the
+/// pty as the `\r` it is; none is turned into editor text and no toast is shown, however many
+/// times it happens. Both modes.
 #[test]
-fn young_hold_fish_no_barrier_cap_hands_the_keys_back() {
+fn bare_enters_at_a_prompt_without_sequence_numbers_reach_the_pty_with_no_toast() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let toasts = record_toasts(&mut app);
+            let mut held_enters = 0usize;
+            for _ in 0..3 {
+                let held = terminal.update(&mut app, |view, ctx| {
+                    young_enter_setup(view);
+                    assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+                    if !young_gate_open(view) {
+                        // Not in the window this time: the Enter went straight to the pty.
+                        return false;
+                    }
+                    let token = gate_token_of(view, input_queue::GateKind::PromptSeen);
+                    view.on_paste_queue_give_up(token, ctx);
+                    true
+                });
+                held_enters += usize::from(held);
+            }
+            assert!(held_enters > 0, "{mode:?}: the first Enter is held");
+            assert_given_up_to_pty(&terminal, &app, &pty, b"\r\r\r");
+            assert!(
+                toasts.borrow().is_empty(),
+                "{mode:?}: no toast for an Enter that reached the shell: {:?}",
+                toasts.borrow()
+            );
+        });
+    }
+}
+
+/// Owner decision 2026-11-09 (REVERSING #1661 and #1577's hand-back, which this test expected):
+/// the fish no-barrier hold (`PrecmdMaybeInFlight`) ends at its short cap by design, and at that
+/// cap the Enter and the keys behind it are WRITTEN TO THE PTY in typed order (nothing in the
+/// editor, no guard, nothing dropped). Both modes.
+#[test]
+fn young_hold_fish_no_barrier_cap_writes_the_keys_to_the_pty() {
     use crate::terminal::model::typeahead_handoff::{EVENT_HOLD_GIVE_UP, YoungHoldEvidence};
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -334,7 +414,7 @@ fn young_hold_fish_no_barrier_cap_hands_the_keys_back() {
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
-            let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 young_enter_setup(view);
                 assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
@@ -353,7 +433,7 @@ fn young_hold_fish_no_barrier_cap_hands_the_keys_back() {
                 let token = gate_token_of(view, input_queue::GateKind::PromptSeen);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_handed_back(&terminal, &app, &writes, "\nls");
+            assert_given_up_to_pty(&terminal, &app, &pty, b"\rls");
         });
     }
 }
@@ -372,54 +452,56 @@ fn make_young_hold_a_sequence_path_hold(view: &TerminalView) {
     );
 }
 
-/// #1661 (owner decision 2026-11-05): a sequence-path young hold whose events never come gives
-/// up at the 10 s net and DISCARDS the Enter and the keys typed after it: nothing in the editor,
-/// no guard, nothing written. Both modes.
+/// Owner decision 2026-11-09 (REVERSING #1661, under which this test expected a discard): a
+/// sequence-path young hold whose events never come gives up at the 10 s net and WRITES the Enter
+/// and the keys typed after it to the pty, in typed order, as the typeahead they are: nothing in
+/// the editor, no guard, nothing dropped. Both modes.
 #[test]
-fn young_hold_cap_discards_the_enter_and_the_keys_after_it() {
+fn young_hold_net_writes_the_enter_and_the_keys_after_it_to_the_pty() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
-            let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 young_enter_setup(view);
                 assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
                 assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+                assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
                 assert!(young_gate_open(view), "the Enter is held");
                 make_young_hold_a_sequence_path_hold(view);
                 let token = gate_token_of(view, input_queue::GateKind::PromptSeen);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_enter_gate_discarded(&terminal, &app, &writes);
+            // Both held Enters, in their places.
+            assert_given_up_to_pty(&terminal, &app, &pty, b"\rls\r");
         });
     }
 }
 
-/// #1661 (owner decision 2026-11-05): the line typed BEFORE a sequence-path young Enter is not in
-/// the hold. The hand-off holds a young Enter only on a write that STARTS with the Enter
-/// (`should_hold_young_enter_sampled`); `ls` typed before it went to the pty as typed, into the
-/// shell's own line, where it stays. The give-up discards only the Enter and `x` typed after it:
-/// nothing in the editor, no guard, nothing more written. Both modes. (r18u27: this test assumed
-/// `ls\r` in one write is held with its line; it is not held at all, so the assumption was wrong,
-/// not the code.)
+/// The line typed BEFORE a sequence-path young Enter is not in the hold. The hand-off holds a
+/// young Enter only on a write that STARTS with the Enter (`should_hold_young_enter_sampled`);
+/// `ls` typed before it went to the pty as typed, into the shell's own line. Owner decision
+/// 2026-11-09 (REVERSING #1661, under which this test expected the Enter and `x` discarded): the
+/// give-up writes the Enter and `x` typed after it behind that line, so the pty has received
+/// exactly what was typed, `ls\rx`, in order. Nothing in the editor, no guard. Both modes.
 #[test]
-fn young_hold_cap_leaves_the_line_typed_before_the_enter_in_the_shell() {
+fn young_hold_net_sends_the_enter_after_the_line_already_at_the_shell() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
-            let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 young_enter_setup(view);
                 assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
                 assert!(!young_gate_open(view), "{mode:?}: the line is not held");
             });
-            let before = writes.borrow().len();
+            assert_eq!(pty.borrow().concat(), b"ls".to_vec(), "{mode:?}");
             terminal.update(&mut app, |view, ctx| {
                 assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
                 assert!(view.write_user_bytes_to_pty(b"x".to_vec(), ctx));
@@ -428,29 +510,20 @@ fn young_hold_cap_leaves_the_line_typed_before_the_enter_in_the_shell() {
                 let token = gate_token_of(view, input_queue::GateKind::PromptSeen);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_eq!(
-                writes.borrow().len(),
-                before,
-                "{mode:?}: the give-up wrote nothing: {:?}",
-                writes.borrow()
-            );
-            terminal.read(&app, |view, ctx| {
-                view.input.read(ctx, |input, ctx| {
-                    assert_eq!(input.buffer_text(ctx), "", "{mode:?}: nothing came back");
-                    assert!(!input.ssh_handover_enter_guard_armed(), "{mode:?}");
-                });
-                assert!(ssh_queue_is_idle(view), "{mode:?}");
-            });
+            assert_given_up_to_pty(&terminal, &app, &pty, b"ls\rx");
         });
     }
 }
 
-/// #1661 review (MEDIUM): a give-up that finds the queue busy is ONE deferred operation applied
-/// in FIFO order: a key typed after the give-up, while the queue is still busy, waits in the
-/// mailbox behind it and is offered once the gate is gone. It is NOT discarded with what the gate
-/// held (a 100 ms timer retry let it land behind the still-open gate). Both modes.
+/// #1661 review (MEDIUM), owner decision 2026-11-09 (REVERSING #1661: what the gate held is now
+/// written to the pty, where this test expected it discarded): a give-up that finds the queue
+/// busy is ONE deferred operation applied in FIFO order. A key typed after the give-up, while
+/// the queue is still busy, waits in the mailbox behind it and is offered once the gate is gone:
+/// it reaches the pty AFTER what the gate held, in typed order (a 100 ms timer retry let it land
+/// behind the still-open gate). The generic give-up write is used here (a gate the hand-off no
+/// longer knows): the hand-off must not hold its Enter for another young-hold net. Both modes.
 #[test]
-fn a_key_typed_after_a_busy_young_hold_give_up_is_not_discarded() {
+fn a_key_typed_after_a_busy_young_hold_give_up_follows_the_held_keys_to_the_pty() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -476,7 +549,13 @@ fn a_key_typed_after_a_busy_young_hold_give_up_is_not_discarded() {
                 let queue = view.paste_queue.queue.clone();
                 {
                     let _busy = queue.peek();
-                    view.hand_back_young_hold_keys(hold_id, "young_hold_cap", None, false, ctx);
+                    view.give_up_young_hold_keys_to_pty(
+                        hold_id,
+                        "young_hold_gone",
+                        None,
+                        false,
+                        ctx,
+                    );
                     assert!(
                         queue.has_deferred(),
                         "{mode:?}: the take waits for the queue"
@@ -495,22 +574,19 @@ fn a_key_typed_after_a_busy_young_hold_give_up_is_not_discarded() {
             }
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
             let buffer = terminal.read(&app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
-            assert!(
-                written.contains(&b'x') || buffer.contains('x'),
-                "{mode:?}: the key typed after the give-up was discarded: pty {:?}, editor {buffer:?}",
-                String::from_utf8_lossy(&written)
+            assert_eq!(
+                String::from_utf8_lossy(&written),
+                "\rlsx",
+                "{mode:?}: what the gate held, then the key typed after the give-up, in typed \
+                 order (editor {buffer:?})"
             );
-            assert!(
-                !written.windows(2).any(|pair| pair == b"ls") && !buffer.contains("ls"),
-                "{mode:?}: what the gate held was discarded: pty {:?}, editor {buffer:?}",
-                String::from_utf8_lossy(&written)
-            );
+            assert_eq!(buffer, "", "{mode:?}: nothing went to the editor");
         });
     }
 }
 
 /// #1701 / #1702: an Enter deferred behind a report, with a key typed after it, is still held 3.5 s
-/// on (past the old 3 s patience, whose give-up now DISCARDS the keys after the Enter, #1661):
+/// on (past the old 3 s patience; the give-up writes the keys after the Enter to the pty, #1996):
 /// both patiences are the 10 s net, the text and the key behind the Enter are intact, and the late
 /// report is the event that releases the Enter. Two terminals: one waits on the hand-off's own
 /// outstanding report (#1215, `TYPEAHEAD_REPORT_PATIENCE`), the other on a report that must cover
@@ -590,10 +666,11 @@ fn a_report_several_seconds_late_still_releases_the_deferred_enter() {
 }
 
 /// A6 (#1577): the uncovered-report patience (10 s since #1701) no longer RUNS the deferred
-/// Enter. The text stays in the editor; the keys held behind the Enter are DISCARDED (#1661, owner
-/// decision 2026-11-05), never put into the editor; nothing is written or executed.
+/// Enter: its text stays in the editor and nothing is executed. Owner decision 2026-11-09
+/// (REVERSING #1661, under which this test expected the key discarded and nothing written): the
+/// keys held behind the Enter are WRITTEN TO THE PTY in typed order, never put into the editor.
 #[test]
-fn uncovered_report_patience_keeps_the_text_instead_of_running_the_enter() {
+fn uncovered_report_patience_keeps_the_text_and_sends_the_keys_behind_the_enter_to_the_pty() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -601,6 +678,7 @@ fn uncovered_report_patience_keeps_the_text_instead_of_running_the_enter() {
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
             let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 let id = {
                     let mut model = view.model.lock();
@@ -636,24 +714,90 @@ fn uncovered_report_patience_keeps_the_text_instead_of_running_the_enter() {
                 let buffer = view.input.as_ref(ctx).buffer_text(ctx);
                 assert_eq!(
                     buffer, "ho 47",
-                    "the text stays and the key behind the Enter is discarded"
+                    "the text stays and the key behind the Enter is not put into the editor"
                 );
                 assert!(view.paste_queue.queue.borrow().is_idle());
             });
             assert!(
-                writes.borrow().is_empty(),
-                "nothing ran or was written: {:?}",
+                !writes.borrow().contains(&"execute"),
+                "{mode:?}: a timer ran the Enter: {:?}",
                 writes.borrow()
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&pty.borrow().concat()),
+                "ls",
+                "{mode:?}: the keys typed behind the Enter reach the pty, once, in order"
             );
         });
     }
 }
 
-/// A8 (#1577): the ssh connect window's give-up timer hands the held keys back as text even when
-/// the remote's prompt was seen (that prompt's own event hands over; a timer never delivers). The
-/// held `echo hi` shows in the input, not run, and nothing is written to the pty.
+/// #1793's shape, owner decision 2026-11-09: a BARE Enter (an empty editor line) deferred behind
+/// a report that never comes, with `~.` typed behind it. There is no visible line to keep, so at
+/// the patience's give-up the Enter itself goes to the pty as `\r`, in front of the keys typed
+/// after it: `\r~.`, what a plain terminal would have sent. Nothing is discarded, nothing goes to
+/// the editor, and no toast is shown. Both modes.
 #[test]
-fn ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering() {
+fn a_bare_deferred_enter_and_the_keys_behind_it_reach_the_pty_at_the_give_up() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            let toasts = record_toasts(&mut app);
+            terminal.update(&mut app, |view, ctx| {
+                view.input.update(ctx, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx);
+                });
+                let taken = vec![pty_entry(1, b"~"), pty_entry(2, b".")];
+                view.give_up_deferred_enter_keys(taken, "uncovered_report", ctx);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            assert!(
+                !writes.borrow().contains(&"execute"),
+                "{mode:?}: the editor ran nothing: {:?}",
+                writes.borrow()
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&pty.borrow().concat()),
+                "\r~.",
+                "{mode:?}: the Enter, then the keys typed after it"
+            );
+            assert!(
+                toasts.borrow().is_empty(),
+                "{mode:?}: no toast: {:?}",
+                toasts.borrow()
+            );
+        });
+    }
+}
+
+/// A pty key as an entry taken out of a gate, for the give-up tails that take entries.
+fn pty_entry(id: u64, bytes: &[u8]) -> input_queue::InputEntry {
+    input_queue::InputEntry {
+        id: input_queue::EntryId(id),
+        kind: input_queue::EntryKind::PtyBytes {
+            bytes: bytes.to_vec(),
+            takes_over_agent_control: true,
+        },
+        focus_epoch: 0,
+        arrived_at: std::time::Instant::now(),
+        origin: input_queue::Origin::Keyboard,
+        stamp: input_queue::Stamp::default(),
+    }
+}
+
+/// A8 (#1577): the ssh connect window's give-up timer never delivers through the editor (it
+/// submits nothing), even when the remote's prompt was seen. Owner decision 2026-11-09
+/// (REVERSING #1661 and #1577's hand-back, which this test expected: `echo hi` back in the input
+/// with the guard, nothing written): the held keys are WRITTEN TO THE PTY in typed order, for
+/// what reads the tty now, and nothing goes to the editor.
+#[test]
+fn ssh_give_up_with_the_remote_prompt_seen_writes_the_held_keys_to_the_pty() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -661,6 +805,7 @@ fn ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering() {
             app.add_singleton_model(|_| crate::workspace::ToastStack);
             let terminal = add_window_with_terminal(&mut app, None);
             let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 register_local_session_for_ssh_test(view, ctx);
                 submit_command(view, "ssh host", ctx);
@@ -669,6 +814,7 @@ fn ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering() {
             // above ended, as every emit is): setup, not the timer. Only what happens from here on
             // is the give-up's.
             writes.borrow_mut().clear();
+            pty.borrow_mut().clear();
             terminal.update(&mut app, |view, ctx| {
                 view.typed_characters_on_terminal("echo hi", ctx);
                 assert!(view.ssh_typeahead_holding);
@@ -683,13 +829,22 @@ fn ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering() {
                 view.ssh_give_up_fired(ctx);
                 assert!(!view.ssh_typeahead_holding);
                 assert!(!view.ssh_give_up_in_progress);
-                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
-                assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing is put into the editor"
+                );
+                assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
             });
             assert!(
-                writes.borrow().is_empty(),
-                "a timer delivered to the pty: {:?}",
+                !writes.borrow().contains(&"execute"),
+                "{mode:?}: a timer submitted a command: {:?}",
                 writes.borrow()
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&pty.borrow().concat()),
+                "echo hi",
+                "{mode:?}: the held keys reach the pty in typed order, once"
             );
         });
     }

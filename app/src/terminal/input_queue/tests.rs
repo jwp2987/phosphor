@@ -778,6 +778,102 @@ fn close_gate_taking_leaves_what_a_later_gate_holds() {
     assert_eq!(h.delivered_ids(), vec![2]);
 }
 
+/// Owner decision 2026-11-09 (reverses #1661): a give-up hands the held entries to the caller in
+/// typed order (to be written to the pty); nothing is delivered by the take, nothing is discarded.
+#[test]
+fn close_gate_for_give_up_hands_back_every_held_entry_in_typed_order() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.offer(&mut h, text("a"));
+    q.open_gate(&mut h, GateSpec::new(GateKind::EnterVerdict, 5));
+    q.offer(&mut h, text("b"));
+    q.offer(&mut h, EntryKind::Enter);
+    q.offer(&mut h, text("c"));
+    q.offer(&mut h, EntryKind::Enter);
+    let gave_up = q.close_gate_for_give_up(&mut h, GateKind::EnterVerdict, 5);
+    assert_eq!(
+        gave_up
+            .entries
+            .iter()
+            .map(|entry| entry.id.0)
+            .collect::<Vec<_>>(),
+        vec![2, 3, 4, 5],
+        "both Enters and the text between them, in typed order"
+    );
+    assert_eq!(gave_up.left_in_place, 0);
+    assert!(h.discarded.is_empty(), "a give-up discards nothing");
+    assert_eq!(h.delivered_ids(), vec![1]);
+    assert!(q.is_idle());
+    assert_eq!(q.give_up_count(), 1);
+    // A second give-up finds no gate.
+    let again = q.close_gate_for_give_up(&mut h, GateKind::EnterVerdict, 5);
+    assert!(again.entries.is_empty() && again.left_in_place == 0);
+    assert_eq!(q.give_up_count(), 1);
+}
+
+/// A paste typed behind the gate whose read is still pending keeps its own gate and what was
+/// typed after it: it is later in typed order than what the give-up hands back, and is delivered
+/// when its read ends (never cancelled by the give-up).
+#[test]
+fn close_gate_for_give_up_leaves_a_pending_paste_and_what_follows_it_queued() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::EnterVerdict, 1));
+    q.offer(&mut h, text("b"));
+    q.offer_gated(
+        &mut h,
+        EntryKind::Paste {
+            paste_id: 9,
+            payload: None,
+        },
+        GateSpec::new(GateKind::PasteReading, 9),
+    );
+    q.offer(&mut h, text("c"));
+    let gave_up = q.close_gate_for_give_up(&mut h, GateKind::EnterVerdict, 1);
+    assert_eq!(
+        gave_up
+            .entries
+            .iter()
+            .map(|entry| entry.id.0)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert!(h.discarded.is_empty(), "the pending paste is not cancelled");
+    assert_eq!(q.queued_len(), 2, "the paste and the key typed after it");
+    assert!(h.delivered.is_empty());
+    q.on_paste_read(&mut h, 9, Ok(b"p".to_vec()));
+    assert_eq!(h.delivered_ids(), vec![2, 3], "then they follow, in order");
+}
+
+/// Typed order across gates: while an EARLIER gate still holds the queue, the give-up of a later
+/// gate must not hand its entries out (the caller would write them ahead of the earlier ones).
+/// The gate is closed and its entries stay queued, delivered in order when the earlier gate opens.
+#[test]
+fn close_gate_for_give_up_behind_an_earlier_gate_leaves_its_entries_in_place() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::SshConnect, 3));
+    q.offer(&mut h, text("early"));
+    q.open_gate(&mut h, GateSpec::new(GateKind::EnterVerdict, 7));
+    q.offer(&mut h, text("late"));
+    q.offer(&mut h, EntryKind::Enter);
+    let gave_up = q.close_gate_for_give_up(&mut h, GateKind::EnterVerdict, 7);
+    assert!(gave_up.entries.is_empty());
+    assert_eq!(gave_up.left_in_place, 2);
+    assert!(!q.has_gate(GateKind::EnterVerdict, 7), "the gate is closed");
+    assert_eq!(q.queued_len(), 3, "nothing left the queue");
+    assert!(h.delivered.is_empty() && h.discarded.is_empty());
+    assert!(
+        h.warns
+            .iter()
+            .any(|line| line.contains("earlier open gate")),
+        "{:?}",
+        h.warns
+    );
+    q.on_gate_event(&mut h, GateKind::SshConnect, 3);
+    assert_eq!(h.delivered_ids(), vec![1, 2, 3], "typed order kept");
+}
+
 #[test]
 fn enter_gate_releases_keys_in_typed_order_on_its_event() {
     let mut q = InputQueue::new();

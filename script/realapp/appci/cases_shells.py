@@ -2,8 +2,10 @@
 # `session.startup_shell_override` setting (run.py: APPCI_WIN_SHELLS="pwsh7,cmd"; winmap.VARIANT_CASES says which cases each pass runs).
 #   startup_shell_pane   the pane runs the shell the setting names (an effect proves its identity), typed lines at 10-25 ms/key arrive exactly and in
 #                        order, a running command is interrupted by Ctrl-C and the next line runs, the app stays up
+#   giveup_keys_reach_shell  owner decision 2026-11-09 (reversing #1661): lines and bare Enters typed with no pause arrive exactly and in order, the app log
+#                        shows no discard and no young-Enter hand-back, and every give-up wrote its keys to the pty (PROVING)
 # Registered with the same @case decorator as cases.py (imported by its last line).
-import os, sys, time
+import os, re, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases  # noqa: E402  (cases.py imports this module as its last line, so everything below is already defined)
@@ -104,3 +106,60 @@ def c_ctrl_c_no_esc_i_local(ctx, r):
     else:
         r.check("^[i" not in txt and "^[ i" not in txt, "a literal ^[i is on screen after the Ctrl-C rounds")
     ctx.shot("ctrl_c_no_esc_i_local_end")
+
+
+# Owner decision 2026-11-09 (reversing #1661): a hold that gives up writes its keys to the pty in typed order, with no toast. One log hop per give-up.
+_GIVE_UP_HOP_RE = re.compile(r"hop=give_up_keys_to_pty\b.*?\bwhy=(\w+) keys=(\d+) bytes=(\d+) written=(\d+) to_editor=(\d+) pty_gone=(\d)")
+# What a build from before that decision logs when a hold gives up: the #1661 discard, or the young Enter's hand-back to the editor (the one that showed
+# "Input was waiting too long, so it was not sent" for every Enter at a prompt without sequence numbers).
+_OLD_GIVE_UP_MARKS = ("hop=enter_gate_typed_after_discarded", "hop=gate_typed_after_enter_discarded", "hop=young_hold_handed_back", "typed after Enter were discarded")
+_OLD_YOUNG_HAND_BACK_RE = re.compile(r"hop=prompt_hold_handed_back\b[^\n]*\bkind=PromptSeen\b")
+
+
+def give_up_facts(log):
+    """Pure: (give-ups, old-style marks) from an app-log window. A give-up is one `give_up_keys_to_pty` hop: why, keys, bytes, written (to the pty),
+    to_editor (bytes that became input text because nothing could take the write) and pty_gone. Old-style marks are the lines only a build that still
+    discards or hands back at a give-up writes."""
+    ups = [dict(why=m.group(1), keys=int(m.group(2)), bytes=int(m.group(3)), written=int(m.group(4)), to_editor=int(m.group(5)), pty_gone=m.group(6) == "1")
+           for m in _GIVE_UP_HOP_RE.finditer(log or "")]
+    old = [m for m in _OLD_GIVE_UP_MARKS if m in (log or "")]
+    if _OLD_YOUNG_HAND_BACK_RE.search(log or ""):
+        old.append("hop=prompt_hold_handed_back kind=PromptSeen")
+    return ups, old
+
+
+@case("giveup_keys_reach_shell", order=74)
+def c_giveup_keys_reach_shell(ctx, r):
+    """Owner decision 2026-11-09 (reversing #1661; docs/design/user-annoyance-review.md item 1): keys typed after an Enter are never dropped and never
+    bounced into the input by a timer; whenever a hold for the shell gives up they go to the pty in typed order, as a plain terminal would have sent them.
+    Ten rounds of: a line, its Enter, a BARE Enter at the empty prompt, the next line and its Enter with no pause, another bare Enter (10-25 ms/key).
+    (1) every line's effect is in the file exactly once and in typed order; (2) the app log has no discard and no young-Enter hand-back (the old
+    behaviours); (3) every give-up that did happen wrote its bytes to the pty (none became input text while the shell was alive). The number of
+    give-ups is a metric: zero means the timers were not exercised in this run (the lines still have to arrive exactly)."""
+    f = "gup_%s.txt" % ctx.tok(4)
+    ctx.rm(f)
+    off = ctx.log_size()
+    sh = ctx.pane_shell()
+    exp = []
+    for _ in range(10):
+        a, b = ctx.tok(6).lower(), ctx.tok(6).lower()
+        exp += [a, b]
+        ctx.be.type(ctx.append_cmd(sh, a, f), 12, enter=True)
+        ctx.be.key("Return")
+        ctx.be.type(ctx.append_cmd(sh, b, f), 12, enter=True)
+        ctx.be.key("Return")
+        ctx.until(lambda: len(ctx.lines(f)) >= len(exp), 15)
+    time.sleep(0.5)
+    got = [l.strip().lower() for l in ctx.lines(f)]
+    r.check(got == exp, "%d/%d lines exact and in typed order (got %d lines); first difference: %r" % (
+        sum(1 for x, y in zip(exp, got) if x == y), len(exp), len(got), next(((x, y) for x, y in zip(exp, got) if x != y), None)))
+    ups, old = give_up_facts(ctx.log_since(off))
+    r.metric("give_ups", len(ups))
+    r.check(not old, "a hold gave up the old way (keys discarded, or an Enter handed back to the input with the 'waiting too long' toast): %r" % old)
+    bounced = [u for u in ups if u["to_editor"] and not u["pty_gone"]]
+    r.check(not bounced, "a give-up put keys into the input instead of writing them to the live pty: %r" % bounced)
+    if ups:
+        r.note("%d give-up(s), all written to the pty: %s" % (len(ups), ", ".join("%s keys=%d written=%d" % (u["why"], u["keys"], u["written"]) for u in ups)))
+    else:
+        r.note("no hold gave up in this run: the give-up write was not exercised here (unit and view tests cover it); the typed lines arrived exactly")
+    ctx.reset()
