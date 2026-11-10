@@ -63,6 +63,94 @@ pub struct ReadinessSample {
     /// #1886: this pty has no subshell tty probe at all (ConPTY: no termios, no `/proc`), so
     /// `tty` is the all-unknown sample and the screen facts are the only evidence there is.
     pub no_tty_probe: bool,
+    /// #2006: without a tty probe, the cursor's row may be showing the user's own last line (its
+    /// echo arriving after the Enter, or the line editor's redisplay of a typed-ahead line just
+    /// before it runs it): see [`user_line_may_be_at_cursor`]. Always `false` with a probe (the
+    /// tty facts are that proof there).
+    pub user_line_may_be_at_cursor: bool,
+}
+
+/// #2006: what the user's last line end left for the screen to show, on a pane with no tty probe.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum LastUserLine {
+    /// No line ended since arming, or an empty one (a bare Enter, ^C, ^U): nothing is echoed
+    /// that could be taken for a prompt.
+    #[default]
+    None,
+    /// The line's text (plain printable bytes, trimmed, not empty). In memory only; never logged.
+    Text(String),
+    /// A non-empty line whose echo cannot be predicted (a control byte, an escape sequence, a
+    /// paste, too long to keep), or more lines than the one whose text is kept.
+    Opaque,
+}
+
+/// #2006 (round 9, Windows Git Bash, `subshell_ready_rc_questions`): whether the cursor's row may
+/// be showing the user's own last line instead of a prompt drawn after that line was consumed.
+/// Only a pane with no tty probe asks (ConPTY): there the echo of the user's keys comes back
+/// after the Enter went out, `Name: ` becomes `Name: me` (no question, the cursor moved, the line
+/// no longer dirty), and that look read as "a prompt drawn since the user's last line end": the
+/// setup was written into the rc's NEXT `read`. With a probe the cooked tty vetoes that look.
+///
+/// The row may show the line when:
+/// - it is the row the line was ended on (`row_changed` is false): the echo extends that row; a
+///   prompt drawn after the line was consumed is on another row (the Enter's newline, a `clear`);
+/// - the line's text is known and the row shows it or a start of it ([`row_shows_typed_line`]):
+///   the echo wrapped onto a new row, or the line editor redisplayed a typed-ahead line at its
+///   prompt and is about to RUN it (#1941's window, which this pane has no tty facts for);
+/// - the text is not known and the row continues a soft wrap, or the line was typed before any
+///   prompt was drawn (`typed_before_prompt`): nothing on screen can then show that the line
+///   editor ran it, so it is never proof (the attempt waits for its ceiling or a click).
+///
+/// Accepted false positive, on the safe side: a prompt whose last visible character is the first
+/// character of the line.
+pub fn user_line_may_be_at_cursor(
+    last: &LastUserLine,
+    typed_before_prompt: bool,
+    row_changed: bool,
+    row: &str,
+    row_continues: bool,
+) -> bool {
+    match last {
+        LastUserLine::None => false,
+        LastUserLine::Text(line) => {
+            !row_changed
+                || row_shows_typed_line(row, row_continues, Some(line.as_str())) != Some(false)
+        }
+        LastUserLine::Opaque => !row_changed || row_continues || typed_before_prompt,
+    }
+}
+
+/// #2006: the [`LastUserLine`] after a chunk of user bytes ended one or more lines and the setup
+/// stays armed (a ReArm). `non_empty_ends`: how many of the chunk's line ends were non-empty;
+/// `last_end_non_empty`: whether the last one was; `text`: the last line's text when its echo is
+/// predictable (`LineTracker::take_last_line`); `outstanding_before_prompt`: an earlier non-empty
+/// line typed before any prompt was drawn is still outstanding (only the last line's text is
+/// kept, so a second line makes the pair unprovable). The caller drops that flag when the new
+/// line answers a question on screen: a `read` took what was typed ahead, not the line editor.
+pub fn last_user_line_after_ends(
+    prev: &LastUserLine,
+    outstanding_before_prompt: bool,
+    non_empty_ends: usize,
+    last_end_non_empty: bool,
+    text: Option<&str>,
+) -> LastUserLine {
+    if non_empty_ends == 0 {
+        // Empty lines only: a line typed ahead earlier is still what the screen may show.
+        return if outstanding_before_prompt {
+            prev.clone()
+        } else {
+            LastUserLine::None
+        };
+    }
+    if outstanding_before_prompt || non_empty_ends > 1 || !last_end_non_empty {
+        return LastUserLine::Opaque;
+    }
+    match text.map(str::trim) {
+        // Blanks only: nothing a shell runs, nothing a prompt can be mistaken for.
+        Some("") => LastUserLine::None,
+        Some(line) => LastUserLine::Text(line.to_owned()),
+        None => LastUserLine::Opaque,
+    }
 }
 
 /// What the user did since the setup was armed. Cumulative: a ReArm resets the shape baseline,
@@ -205,6 +293,9 @@ pub enum WaitWhy {
     /// #1941: the line editor took a line the user typed ahead of it and has not been seen to
     /// accept it: the prompt shape and the empty queue prove nothing until then.
     TypedLineRuns,
+    /// #2006: no tty probe, and the cursor's row may be showing the user's own last line (its
+    /// echo, or the line editor's redisplay before it runs it), not a prompt drawn after it.
+    UserLineAtCursor,
     /// A cooked shell with a line editor (bash/zsh/fish/nu/pwsh): a `read` builtin (R3).
     CookedReadBuiltin,
     /// An editor-less shell, cooked, with no new prompt drawn yet.
@@ -269,14 +360,20 @@ pub fn subshell_ready(
     // a shell-shaped tail drawn since the baseline, with nothing the user passed through left
     // unproven (no bytes, or a prompt drawn since the user's last line end). Only a leader that
     // is truly unreadable takes this branch; a probe that ran and found nothing still waits.
+    // #2006: "a prompt drawn since the user's last line end" is not the echo of that line: the
+    // cursor's row must not be one that may still show it.
     if sample.no_tty_probe && sample.tty.leader == LeaderKind::Unreadable {
-        let ready = sample.tail == Tail::ShellPrompt
-            && sample.prompt_moved_since_baseline
-            && (user.bytes_since_arm == 0 || sample.prompt_moved_since_line_end);
-        return if ready {
-            Decision::Write(write_shell_type(trigger, None))
-        } else {
+        let shaped = sample.tail == Tail::ShellPrompt && sample.prompt_moved_since_baseline;
+        return if !shaped {
             Decision::Wait(WaitWhy::Unknown)
+        } else if user.bytes_since_arm == 0 {
+            Decision::Write(write_shell_type(trigger, None))
+        } else if !sample.prompt_moved_since_line_end {
+            Decision::Wait(WaitWhy::Unknown)
+        } else if sample.user_line_may_be_at_cursor {
+            Decision::Wait(WaitWhy::UserLineAtCursor)
+        } else {
+            Decision::Write(write_shell_type(trigger, None))
         };
     }
     let comm = sample.tty.leader_comm.as_deref().unwrap_or_default();
