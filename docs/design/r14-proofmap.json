@@ -1,0 +1,2656 @@
+[
+ {
+  "iid": 1103,
+  "title": "Windows: cancelling a restart/sign-out still kills Phosphor (shells are killed at query time, then the app quits on 'No windows left')",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: pane_group/mod_tests.rs test_restart_exited_shell_* (4), blocks_test.rs test_serialized_blocks_for_shell_restart_keeps_restored_and_run_commands, view_test.rs shell_exited_banner_offers_restart_and_one_click_requests_one_restart: pass",
+   "unit test-workspace-rest: warpui session_end_gate_tests.rs (10, gate_* and pump_*): pass"
+  ],
+  "note": "The restart and gate logic passes on Linux. No r12a row is a Windows session end: the VM scripts RS.ps1 / RS2.ps1 are run by hand and have no result in the archive.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1129,
+  "title": "ssh: a large agent `cat`/here-doc command is too large for the ssh session and fails",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: posix_long_command_tests.rs the_typed_input_wrapper_folds_the_base64_and_carries_the_command_byte_for_byte (+6): pass",
+   "app: remote_heredoc_paste, remote_session_ext: not in the fix tier, not run in r12a"
+  ],
+  "note": "The wrapper's bytes are proven; the real ssh path (remote_heredoc_paste) did not run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1162,
+  "title": "Windows: typeahead into a running command is dropped or garbled at 10-25 ms/key (managed Git Bash)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: typeahead_handoff_tests.rs held_keys_released_after_an_unsubmitted_enter_keep_their_key_boundaries_on_conpty and its neighbours, view_test.rs conpty_prompt_hold_* : pass",
+   "app windows terminal@gitbash + agent@gitbash: fast_typing, tab_enter, paste_instant_enter, giveup_keys_reach_shell: PASS"
+  ],
+  "note": "No r12a row types ahead into a RUNNING command in the Git Bash pane at 10-25 ms/key, which is this issue; the rows that pass type at a prompt.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1191,
+  "title": "Large paste: 1 MB paste freezes the UI 6-7 s and Enter takes 1.4 s (1 MB) / 5 s (3 MB) to reach the shell; xterm does it in 50-140 ms",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: input_test.rs test_paste_of_a_large_multi_line_buffer_and_the_keystroke_after_it_are_linear_in_its_size, pty_controller_command_bytes_tests.rs a_huge_single_line_command_is_written_whole_and_in_linear_time: pass",
+   "app: big_paste (1500 ms paste to Enter, 250 ms largest UI item): not in the fix tier, not run in r12a"
+  ],
+  "note": "Scaling is unit-proven; the owner's time budgets are judged only by big_paste, which did not run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1495,
+  "title": "CI review P0-1: A `v*` tag publishes a release without any test suite gating it",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "guards job (success): script/ci/test_check_release_gate.py"
+  ],
+  "note": "The gate's logic is proven by its self-test. No v* tag pipeline has run the release-gate job since; the first tag is the real proof.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1502,
+  "title": "CI review P0-8: Shuttle/loom, fuzz, mutants, bench, integration, pwsh scenarios, usage tests have never run in CI",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "manifest r12a: integration-linux [1-3], integration-linux-pwsh, fuzz-smoke, mutants, bench, usage jobs: status manual, not run"
+  ],
+  "note": "The jobs exist and are wired to the candidate/release tiers; r12a is a fix-tier run and played none of them.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1513,
+  "title": "CI review P1-11: Baselines are all `pending`; build-to-build comparison covers latency medians only",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "issue note: macOS and Windows baselines promoted from r18u31; Linux Wayland/X11 left pending until a release-tier run"
+  ],
+  "note": "Linux baselines are still pending by the issue's own note; needs a release-tier run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1535,
+  "title": "CI review GAP-ssh: Coverage gap: ssh",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "app: lab_password_prompt, ssh_password_prompt, ssh_drop_reconnect, ssh_hanging_host_not_local, sudo_su_real_shell: not in the fix tier, not run in r12a",
+   "guards: selftest g11_password_prompt_host_and_variants, lab_cases_registry_and_selection: pass"
+  ],
+  "note": "The gap cases exist; none of them ran in r12a.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1548,
+  "title": "CI review GAP-latency: Coverage gap: latency",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "app: cb_ui_action_latency: not run in r12a",
+   "app: latency_key_log: NOREF on wayland, macos, windows@gitbash (no reference terminal measured for key to frame); SKIP windows PowerShell"
+  ],
+  "note": "The latency gap cases exist; the one that ran is NOREF everywhere.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1613,
+  "title": "Mermaid render is non-deterministic: same flowchart with a cycle gives two layouts (fuzz-smoke mermaid_render)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (warp_editor): crates/editor/tests/mermaid_corpus.rs issue_1613_cycle_with_two_sources_renders_one_layout: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1635,
+  "title": "Editor: keys from the editor host's non-flush drain apply against a stale display map (Left/Right, now also auto-paired closers)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: editor view mod_test.rs test_queue_editor_host_gates_every_map_reading_key_not_only_layout_ones: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1642,
+  "title": "Windows appci: app-test teardown leaves conhost trees holding app.stdout, so every later job on the runner fails at checkout",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards: selftest windows_app_runs_under_a_kill_on_close_job: pass",
+   "manifests r10a, r11a, r12a: app-test-windows ran to its cases on phosphor-windows-vm three times in one day (r12a: 336 rows); the reported symptom was the next job failing at checkout"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1643,
+  "title": "macOS: after Cmd-Shift-F (global search), Escape leaves focus in the search field, so the next typed line goes into the search instead of the terminal",
+  "verdict": "NO-TEST",
+  "evidence": [],
+  "note": "docs/testing.md says so: no unit test (GlobalSearchView has no view-test harness) and no app case. A test needs: macOS app case that opens global search (Cmd-Shift-F), presses Escape, types a line and checks the shell received it.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1645,
+  "title": "@-file picker: an Enter whose preceding keystroke's edit event arrives after it is deferred against the old query and then cancelled by the new one (lost key, needs design)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: ai_context_menu query_gate_tests.rs an_enter_typed_after_a_pending_edit_survives_that_edits_query, a_different_query_still_cancels_an_enter_waiting_for_a_pending_edit, no_edit_is_pending_for_the_newest_query_or_a_fresh_gate: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1658,
+  "title": "Windows PowerShell new tab: after a young-hold cap hands keys back to the editor, later keys still go to the pty and the line is reordered (needs design)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: keys_follow_editor_tests.rs (4), typeahead_handoff_tests.rs a_kept_line_makes_keys_follow_the_editor_not_the_pty (+4), view_test.rs keys_typed_after_a_secret_hand_back_are_the_readers_not_the_editors: pass",
+   "app windows PowerShell: ps_fast_command_young_enter terminal + agent: PASS",
+   "app: tabs_streaming, tabs_two_windows (where the reorder was seen): not in the fix tier, not run"
+  ],
+  "note": "The rule is unit-proven; the Windows new-tab reorder rows did not run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1659,
+  "title": "A Tab pressed while the shell's line report is pending completes only the editor fragment",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: typeahead_handoff_tests.rs a_report_is_pending_before_editor_text_until_it_lands: pass",
+   "app: tab_enter: PASS on every platform and pane"
+  ],
+  "note": "The unit test asserts the 'report pending' predicate only; tab_enter presses Tab at a settled prompt. Nothing presses Tab while a line report is pending and checks the merged line was completed.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1672,
+  "title": "busy-machine H12 (HIGH): LINE_EDITOR_ACTIVATION_DELAY 50 ms",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: line_editor_status_tests.rs the_prompt_event_opens_the_gate_of_a_shell_that_never_signalled, the_ready_signal_proves_the_reader_and_starts_the_decision (+6); pty_controller_tests.rs an_unproven_line_editor_after_ctrl_c_gets_no_request: pass",
+   "app: ctrl_c_no_esc_i_local wayland + macos, terminal + agent: PASS",
+   "guards: check_input_path_timers + self-test: pass; LINE_EDITOR_ACTIVATION_DELAY is in no .rs file at the run commit"
+  ],
+  "note": "The tests the fix commit added were renamed by #1825; the ones named here are their successors at the run commit.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1674,
+  "title": "busy-machine H14 (HIGH): NATIVE_COMPLETIONS_PROMPT_TIMEOUT 2 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: pty_controller_tests.rs keys_after_the_prompt_timeout_and_a_late_prompt_lose_nothing: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1679,
+  "title": "busy-machine H19 (HIGH): SUBSHELL_BOOTSTRAP_STALL_CEILING 20 s",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: subshell_ready_tests.rs row_1_secret_waits and the other judge rows, view_test.rs typed_input_during_an_announced_setup_is_held_whatever_the_output_shows and the other setup tests, subshell_tty_tests.rs: pass",
+   "app wayland: subshell_sh_probe, subshell_ready_rc_questions, _rc_clear, _vim_typeahead, _secret_after_prompt, _secret_after_probe, _exec_fish_rc, _zsh_newuser_install: PASS both modes",
+   "app macos: the same PASS except _zsh_newuser_install SKIP; subshell_ready_unsupported_tcsh PASS (SKIP on wayland)",
+   "app windows@gitbash: subshell_ready_rc_questions PASS both modes; subshell_ready_rc_clear terminal PASS, agent FAIL 'the first inner line ran 3.75 s after its Enter (budget 2 s)'",
+   "SKIP everywhere: subshell_ready_relay_shape (no passwordless sudo), subshell_ready_docker_t_without_i (no docker image)"
+  ],
+  "note": "Linux and macOS are proven for the shapes that ran. Windows Git Bash agent rc_clear fails its time budget (#2025); two shapes never ran on any machine.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1697,
+  "title": "busy-machine M4 (MEDIUM): CONPTY_PROMPT_HOLD_GIVE_UP 1.5 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: typeahead_handoff_tests.rs the_first_unsignalled_conpty_miss_does_not_switch_the_hold_off, a_signal_resets_the_unsignalled_miss_count, one_overdue_hold_counts_as_one_unsignalled_miss: pass"
+  ],
+  "note": "Timer-policy finding; the hand-off model is platform-neutral code, so the Linux unit job ran it.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1698,
+  "title": "busy-machine M5 (MEDIUM): PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK 100 ms / 3 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: typeahead_handoff_tests.rs a_hold_with_no_wait_and_no_release_keeps_its_bound_unless_writes_are_in_flight, the_first_unsignalled_conpty_miss_does_not_switch_the_hold_off: pass"
+  ],
+  "note": "As #1697.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1701,
+  "title": "busy-machine M8 (MEDIUM): UNCOVERED_REPORT_PATIENCE 3 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: group2_timer_tests.rs a_report_several_seconds_late_still_releases_the_deferred_enter: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1702,
+  "title": "busy-machine M9 (MEDIUM): TYPEAHEAD_REPORT_PATIENCE 3 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: group2_timer_tests.rs a_report_several_seconds_late_still_releases_the_deferred_enter: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1703,
+  "title": "busy-machine M10 (MEDIUM): INTERRUPT_GIVE_UP 2 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs typeahead_handoff_ctrl_c_give_up_does_not_commit: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1710,
+  "title": "busy-machine M17 (MEDIUM): SUBSHELL_FIRST_PROMPT_GIVE_UP 5 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs the_sh_probe_is_marker_paced_not_timed, an_unsupported_subshell_ends_the_setup_and_delivers_the_held_keys_in_order; bootstrap_test.rs test_sh_probe_is_marker_paced_on_its_prelude_line: pass",
+   "app: subshell_sh_probe wayland + macos both modes PASS; subshell_ready_unsupported_tcsh macos PASS",
+   "SUBSHELL_FIRST_PROMPT_GIVE_UP is in no .rs file at the run commit"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1711,
+  "title": "busy-machine M18 (MEDIUM): SUBSHELL_SETUP_MARKER_GIVE_UP 5 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs subshell_setup_is_written_on_the_shells_proof_not_on_the_prompt_shape and the other setup tests, subshell_ready_tests.rs: pass",
+   "SUBSHELL_SETUP_MARKER_GIVE_UP is in no .rs file at the run commit",
+   "app: subshell_ready_* rows as listed under #1679"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1712,
+  "title": "busy-machine M19 (MEDIUM): SUBSHELL_SETUP_DEFER_QUIET 600 ms",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs a_finished_setup_does_not_trip_the_net_later, a_subshell_that_exits_during_the_setup_ends_the_net and others: pass",
+   "SUBSHELL_SETUP_DEFER_QUIET is in no .rs file at the run commit"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1728,
+  "title": "busy-machine M35 (MEDIUM): SELECT_WAIT_GIVE_UP 3 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: input_test.rs test_at_picker_enter_give_up_keeps_the_text_and_says_so: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1748,
+  "title": "busy-machine M55 (MEDIUM): Terminal 100 ms",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-warpui-core: terminal_probe_tests.rs a_missed_window_gives_up_without_losing_keys_and_the_reply_stays_outstanding, alt_bracket_then_text_is_not_eaten (+3): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1749,
+  "title": "busy-machine M56 (MEDIUM): DA1_DRAIN_GRACE 20 ms",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-warpui-core: terminal_probe_tests.rs a_late_reply_is_swallowed_once_and_only_while_outstanding, a_reply_split_across_reads_still_matches_bel_and_st (+3): pass",
+   "DA1_DRAIN_GRACE is in no .rs file at the run commit"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1772,
+  "title": "probe_writable can hold the UI ~1-1.8 s after setup when another process holds the write lock (beyond MIGRATION_LOCK_BUDGET's 3 s claim)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: sqlite_tests.rs writable_probe_is_bounded_by_the_setup_deadline_and_restores_the_timeout: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1774,
+  "title": "Some ^C paths don't cancel a deferred Enter first, so the legacy queue can hold that ^C behind the gate",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs an_interrupt_ctrl_c_is_not_held_behind_a_deferred_enter: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1777,
+  "title": "Windows ConPTY: Ctrl-C does not void typeahead queued behind a command; the hand-off resets its counts anyway and later keys split between editor and pty",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: typeahead_handoff_tests.rs conpty_ctrl_c_keeps_the_queued_lines_counted_until_their_prompts_arrive, the_interrupt_enter_count_is_kept_only_on_conpty: pass",
+   "app windows: ctrl_c_d PowerShell terminal + agent PASS, agent@gitbash PASS, terminal@gitbash NOREF"
+  ],
+  "note": "The count rule is unit-proven. No Windows row queues lines behind a running msys command, presses Ctrl-C and checks where the later keys went.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1778,
+  "title": "51 surviving mutants in crates/warpui_core/src/clipboard.rs (tests don't check deferred reads, paste-insert decision, content counts)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-warpui-core: clipboard_tests.rs (32 added, e.g. a_read_kind_targets_the_clipboard_it_reads): pass",
+   "manifest r12a: mutants-warpui-core: manual, not run"
+  ],
+  "note": "The new tests pass; that they kill the 51 mutants is shown only by the mutants job, which did not run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1780,
+  "title": "Wayland terminal soak: only 295/660 commands arrived exactly; app memory fell 365->157 MB mid-soak (restart or crash?)",
+  "verdict": "NOT-A-FIX",
+  "evidence": [
+   "commit e89d495cd adds soak diagnostics to the harness only; no app change",
+   "app: soak: not run in r12a"
+  ],
+  "note": "An observation (lost soak commands, a memory drop) with instrumentation added to explain it next time. Nothing was fixed and the soak has not been re-run.",
+  "action": "remove label",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1781,
+  "title": "Move the workspace off nix 0.26 (pulls the unmaintained pin-utils, RUSTSEC-2026-0441)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "check-linux: ok; unit test-linux: local_tty unix_tests.rs: pass on nix 0.29",
+   "advisories job: success (RUSTSEC-2026-0441 stays in deny.toml's ignore list for the two transitive users, as the entry's reason says)"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1787,
+  "title": "agent_code_recycle: the agent-mode PowerShell pass never recycles the snippet answer's editors (Windows)",
+  "verdict": "NOT-A-FIX",
+  "evidence": [
+   "commit dcbde8e56 logs the recycle plan and fails the case with that evidence; no app change",
+   "app: agent_code_recycle: not in the fix tier, not run in r12a"
+  ],
+  "note": "The commit is a diagnostic for the next failing run, not a fix; the PowerShell agent pass has not been re-run.",
+  "action": "remove label",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1789,
+  "title": "appci: real pointer input and OCR-free positions on Wayland (make the 4 Wayland NOREF cases real tests again)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app wayland: ui_copy_wrapped_drag terminal + agent PASS (a real pointer drag); ui_vertical_tabs_panel_click terminal PASS, agent NOREF (OCR found 0 of 3 tokens)",
+   "unit test-warpui-core: appci_find_test.rs (8): pass",
+   "guards: selftest app_find_hook_harness_side_1789, wayland_pointer_gate_follows_the_holder_1789, wlptr_virtual_pointer_wire_and_holder: pass",
+   "app: ui_palette, alt_screen_mouse_reporting (two of the four NOREF cases the issue names): not run in r12a"
+  ],
+  "note": "The Wayland pointer works in r12a. The four cases the issue wants made real again did not all run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1791,
+  "title": "Settings-file option to stop downloading the models.dev catalog",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: models_dev_bundle_tests.rs disabled_startup_path_never_fetches_even_with_a_custom_url (+7); models_dev.rs disabled_setting_never_calls_the_fetch, enabled_setting_runs_the_fetch: pass",
+   "app wayland: zero_network_startup terminal PASS"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1793,
+  "title": "ssh: a bare Enter at a warpified remote prompt is held 3 s and dropped, and <Enter>~. never reaches ssh (stale typeahead request count)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: input_test.rs test_ssh_escape_on_a_proven_empty_remote_line_goes_out_behind_a_carriage_return, test_bare_enter_then_ssh_escape_after_an_unanswered_request_in_a_managed_ssh_session (+4); typeahead_handoff_tests.rs an_ssh_escape_on_a_proven_empty_line_gets_a_carriage_return_counted_as_a_bare_enter (+9): pass",
+   "app: ssh_drop_reconnect [escape arms]: not in the fix tier, not run in r12a"
+  ],
+  "note": "docs/testing.md names ssh_drop_reconnect as the real-app proof; it did not run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1796,
+  "title": "Agent mode: a slow, silent, non-interactive agent command is handed to the user as 'Command needs your input' (LRC handoff error)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_lrc_no_false_takeover: PASS wayland, macos, windows PowerShell and Git Bash",
+   "app: agent_noninteractive_no_takeover: PASS wayland + macos (SKIP windows: POSIX programs)",
+   "unit test-linux: block_test.rs a_silent_command_after_a_trailing_colon_is_not_handed_to_the_user; prompt_tests.rs a_prompt_lookalike_is_never_handed_over_while_the_foreground_is_not_reading; corpus_replay_tests (wave0_1796_silent_then_handoff): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1797,
+  "title": "Agent mode: ask_user_question gets stuck on 'Preparing question...' after approval; the question card never renders",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_question_answer, _empty, _slow, _cut, _nodone, _trunc: PASS on wayland, macos, windows (agent@fake and agent@gitbash+fake)",
+   "unit test-linux: view_test.rs a_question_shows_its_card_with_no_approval_step_and_a_skip_resolves_it_once; ask_user_question_tests.rs (5); corpus_replay_tests (wave0_1797_ask_valid, wave0_1797_ask_empty_args): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1798,
+  "title": "After Ctrl-C of a long command over ssh, the line-report request is echoed as a literal '^[i' block (and a bogus 'Session abandoned before bootstrap')",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app lab (ssh): lab_ctrl_c_no_esc_i bash + zsh, lan + 150 ms, nohelper, terminal + agent: PASS (8 rows)",
+   "app lab: lab_ctrl_c_no_esc_i fish + nu: FAIL (8 rows) 'the shell received [], expected exactly [sleep 30, the echo]'; helper arms: NOREF (16 rows, no cached helper)",
+   "app local: ctrl_c_no_esc_i_local wayland + macos both modes: PASS",
+   "unit test-linux: abandoned_session_tests.rs (4), line_editor_status_tests.rs a_remembered_signal_is_not_a_missed_signal_when_a_typed_ahead_line_ends_the_cycle: pass"
+  ],
+  "note": "Proven over ssh for bash and zsh. The fish and nu rows fail for #2044 (its fix is after r12a); the helper arms were not judged.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1799,
+  "title": "Agent mode: rejecting an action leaves a dependent action from the same turn pending with no card; follow-ups queue forever",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: action_model_tests.rs only_a_user_reject_cancels_the_rest_of_the_turn; view_test.rs rejecting_a_command_cancels_the_rest_of_its_turn; controller_tests.rs byop_message_for_a_cancelled_transfer_says_why; corpus_replay_tests (wave0_1799_reject_then_transfer, appr_edit_then_reject): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1800,
+  "title": "macOS: typing in an ssh session where Phosphor's remote agent was not installed is very laggy",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "manifest r12a: app-test-lab-macos: manual, not run",
+   "app lab (Linux): lab_enter_no_network_wait bash + zsh nohelper 150 ms: PASS; fish NOREF; nu FAIL"
+  ],
+  "note": "The owner's report is typing lag on macOS in a no-helper ssh session. Nothing in r12a measures typing in such a session on macOS; the work is tracked under #1801 and #1970.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1801,
+  "title": "Remote ssh session without the helper: completions and path detection don't work (generators 'could not prepare execution context')",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app: remote_tab_no_helper, remote_tab_enter_no_helper: PASS wayland + macos, terminal + agent",
+   "app windows@gitbash: both FAIL, both modes: 'no remote shell prompt after `ssh fake`' (#2051)",
+   "app: lab_path_detect (path detection without the helper): not run in r12a",
+   "unit test-linux: native_completions_tests.rs explicit_tab_in_a_remote_session_without_the_helper_prefers_the_shell (+6), pushed_listing_tests.rs (7): pass"
+  ],
+  "note": "Remote Tab completion is proven on Linux and macOS. Path detection did not run and the Windows Git Bash rows fail.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1802,
+  "title": "Claude plugin clean-up: drop oz-harness-support from the fork's marketplace; point the install instructions at the fork",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: plugin_manager claude_tests.rs shipped_plugin_has_no_oz_part_no_warp_metadata_and_no_network_calls, bundle_folder_registrations_are_not_a_developer_override: pass",
+   "app wayland: claude_plugin_offline, agent_plugins_offline: PASS"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1803,
+  "title": "Claude plugin events: malformed payloads dropped silently; non-UTF-8 parts discarded; prompt text logged at INFO",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: mod_tests.rs malformed_event_is_dropped_with_a_message_that_has_no_content, prompt_with_semicolons_and_multibyte_characters_parses; mod_test.rs osc_777_body_keeps_semicolons_and_never_drops_a_non_utf8_part: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1804,
+  "title": "Remote helper: 273 MB full-app binary per host, and old versions never cleaned up (1.6 GB on one host)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): capability.rs (4), server_tests.rs (12), proxy_tests.rs cleanup_removes_a_dead_unversioned_daemons_files_once_versioned (+6), setup_tests.rs (17): pass",
+   "app lab: every helper arm in r12a is NOREF: 'APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout'",
+   "app: lab_helper_install: not run"
+  ],
+  "note": "The helper's code is unit-proven. No r12a row ran against a real small helper, and neither its size nor the clean-up of old versions on a host is recorded.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1805,
+  "title": "Startup blocks the UI ~120 s when no Secret Service keyring is available (ProxyCredentials)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app wayland: keyring_unavailable_startup terminal + agent: PASS",
+   "unit test-linux: network_secrets_tests.rs a_hanging_keyring_does_not_block_the_model_update (+3); test-workspace-rest (warpui_extras): availability_tests.rs (3), linux_test.rs (6): pass"
+  ],
+  "note": "A Secret Service outage is a Linux condition; the case skips on macOS and Windows by design.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1806,
+  "title": "Replace the stub 'Test User' (the 'T' avatar) with a fun, user-changeable local avatar and name",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: local_identity_tests.rs display_name_is_never_the_old_stub, display_name_prefers_configured_then_os_user_then_neutral (+8): pass"
+  ],
+  "note": "The name rule is unit-proven. No test looks at the avatar or changes it in the app.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1808,
+  "title": "busy-machine H17 (HIGH): SSH_BOOTSTRAP_SWALLOW_CEILING 15 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs ssh_keys_typed_during_a_pending_bootstrap_stay_held_in_order_and_unwritten: pass",
+   "SSH_BOOTSTRAP_SWALLOW_CEILING is in no .rs file at the run commit",
+   "app: ssh_connect_typing PASS wayland, macos, windows PowerShell"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1809,
+  "title": "busy-machine H18 (HIGH): SSH_CONNECT_SILENCE_CEILING 15 s",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: view_test.rs ssh_gate_with_a_tty_read_probe_has_no_clock: pass",
+   "SSH_CONNECT_SILENCE_CEILING is in no .rs file at the run commit",
+   "app lab: lab_ctrl_c_no_esc_i fish + nu: FAIL (8 rows)"
+  ],
+  "note": "The timer is gone and unit-proven. docs/testing.md traces #2044 (Ctrl-C ends a plain ssh session) to this change, 'the connect window stays armed for the whole session since #1809'; r12a shows that failure and the repair is after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "5f9de29a3"
+  ]
+ },
+ {
+  "iid": 1810,
+  "title": "busy-machine H21 (HIGH): SSH_LOGIN_RECHECK_GIVE_UP 3 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "SSH_LOGIN_RECHECK_GIVE_UP is in no .rs file at the run commit; guards: check_input_path_timers + self-test: pass",
+   "unit test-linux: terminal_model_test.rs ssh_login_reprompt_withdraws_pending_recheck: pass",
+   "app: ssh_connect_typing, ssh_enter_then_immediate_command, ssh_nested_typeahead: PASS wayland, macos, windows PowerShell"
+  ],
+  "note": "A deletion: the proof is that the timer no longer exists and the ssh login rows pass without it.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1811,
+  "title": "Agent-run command: silence on a prompt marker hands the command to the user on a timer (3 s / 15 s)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_lrc_no_false_takeover: PASS wayland, macos, windows PowerShell + Git Bash",
+   "app: agent_noninteractive_no_takeover: PASS wayland + macos",
+   "unit test-linux: block_test.rs an_explicit_marker_with_a_foreground_not_reading_the_tty_shows_nothing, an_explicit_marker_with_an_unknown_tty_read_gets_a_notice_not_a_hand_over: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": [
+   "fa1e6602b"
+  ]
+ },
+ {
+  "iid": 1812,
+  "title": "Agent-run command: STALL_PAGER_UNRESPONSIVE_AFTER (8 s) hands the command to the user on a timer",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "STALL_PAGER_UNRESPONSIVE_AFTER is in no .rs file at the run commit",
+   "app: agent_interactive_less: PASS wayland + macos (SKIP windows); agent_lrc_no_false_takeover: PASS all platforms"
+  ],
+  "note": "The 8 s timer is deleted. The fix commit's own view test is not at the run commit under its name, and no row stalls a pager and checks that Phosphor wrote no `q`.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1813,
+  "title": "Nu agent commands run with no pager environment",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: agent_shell_wrap_tests.rs nu_bootstrap_matches_the_overrides_and_the_marker, bootstrap_backstops_restore_every_pager_variable (+2): pass",
+   "guards: selftest nu_pager_marker_matches_the_app: pass",
+   "app lab: lab_nu_agent_pager_env: not run in r12a"
+  ],
+  "note": "The bootstrap text is unit-proven; the case that runs a pager under a real nu did not run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1814,
+  "title": "Remove the timed-bootstrap and subshell-readiness rollback switches (PHOSPHOR_BOOTSTRAP_TIMED, PHOSPHOR_SUBSHELL_READY=0) and the legacy timer path",
+  "verdict": "PROVEN",
+  "evidence": [
+   "PHOSPHOR_BOOTSTRAP_TIMED is in no .rs file at the run commit; PHOSPHOR_SUBSHELL_READY survives only inside the name of another switch, PHOSPHOR_SUBSHELL_READY_DECSET_2004",
+   "unit test-linux: 11901 of 11905 pass on the tree without the rollbacks (the 4 failures are #2010, #2022, #2038)",
+   "app: subshell_ready_* PASS on wayland + macos (listed under #1679)"
+  ],
+  "note": "A deletion: the proof is that the switches no longer exist and the suites pass without them.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1815,
+  "title": "Remove the PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS rollback (timer writes held typing after an ssh bootstrap give-up)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS is in no .rs file at the run commit",
+   "unit test-linux: group2_timer_tests.rs ssh_give_up_with_the_remote_prompt_seen_writes_the_held_keys_to_the_pty: pass"
+  ],
+  "note": "A deletion.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1816,
+  "title": "Settings text still describes behaviour removed in v0.1.18 (proxy 'System follows OS / env vars (default)'; removed tmux option listed)",
+  "verdict": "NO-TEST",
+  "evidence": [
+   "commit 7f315bb73 changes the settings strings; it adds no test"
+  ],
+  "note": "Nothing asserts the settings text. A test needs: a string check on the proxy mode descriptions and the tmux option list (a unit test over the .ftl keys, or an app case that reads the Network page).",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1818,
+  "title": "Code review: discarding several files where one is new deletes the tracked files instead of restoring them",
+  "verdict": "NO-TEST",
+  "evidence": [
+   "unit test-workspace-rest: remote_server ops_tests.rs restore_and_clean_unknown_path_goes_through_rm_reset_and_fs: pass (one unknown path only)"
+  ],
+  "note": "No commit on integ/r14 names this issue and no test discards a batch. A test needs: git_restore_and_clean over [a tracked modified file, a new file] asserting the tracked file is restored, not removed.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1819,
+  "title": "Agent: tool results in a request are not in the order of the calls they answer",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: corpus_replay_tests.rs corpus_replays_as_listed_and_reaches_the_wave0_cells, corpus_replays_with_the_allowlist_on: pass (dup_call_ids, two_questions_in_one_reply; no known_failures)",
+   "unit test-linux: agent_fuzz random_agent_conversations_hold_the_invariants (+ _with_the_allowlist_on): FAILED in r12a (triage: oracle fault #2010)"
+  ],
+  "note": "The corpus replays hold the invariants. No test names 'results in call order when calls finish out of order', and the random fuzz runs were red in r12a.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1820,
+  "title": "Agent: two ask_user_question calls in one reply leave the first blocked without a card",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: corpus_replay_tests.rs corpus_replays_as_listed_and_reaches_the_wave0_cells (two_questions_in_one_reply.json, added by the fix commit): pass",
+   "app: agent_question_* (10 cases): PASS on all three platforms"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1821,
+  "title": "Agent: a diagnostic note about a suppressed request dump is logged at ERROR",
+  "verdict": "NO-TEST",
+  "evidence": [
+   "commit f52cb970f lowers the log level; it adds no test for it"
+  ],
+  "note": "A test needs: the stream-failure path run with content diagnostics off, asserting no ERROR line for the 'request not dumped' note.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1822,
+  "title": "Security advisories block the release gate: rmcp 2.2 (RUSTSEC-2026-0457, -0462) and bundled SQLite via libsqlite3-sys 0.33 (RUSTSEC-2026-0459)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "advisories job (cargo deny): success; deny.toml at the run commit does not ignore RUSTSEC-2026-0457, -0462 or -0459"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1826,
+  "title": "macOS app tests: the reference-terminal step leaves ~250 Terminal.app windows open per run",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "guards: selftest refterm_mac_bookkeeping, refterm_single_launch_path: pass",
+   "app macos r12a: 111 PASS, 0 FAIL with the reference blocks running"
+  ],
+  "note": "The launch and quit bookkeeping is self-tested. The archive holds no count of Terminal.app windows left on the Mac after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1827,
+  "title": "Agent tests: the agent driving a remote host in the ssh lab (helper and no-helper)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app lab: lab_agent_remote_flow.bash, lab_agent_remote_errors.bash: PASS",
+   "app lab: lab_agent_remote_drop.bash: FAIL 'the approved command never started on the host'; the three .nu rows: FAIL 'the model received 0 of 5 tool results'",
+   "helper arms: not run"
+  ],
+  "note": "Two of three no-helper bash rows pass. The drop row and every nu row fail; no helper arm ran.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1828,
+  "title": "Agent tests: agent-mode latency and fast steer while a reply streams",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_latency_key, agent_latency_enter: PASS wayland, macos, windows agent@gitbash+fake (SKIP in the Windows PowerShell fake-model pass)",
+   "app: agent_steer_fast: PASS wayland, macos, windows agent@gitbash+fake"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1829,
+  "title": "Agent tests: agent-run interactive commands hand over and hand back (password, vim, ssh, pager)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app: agent_interactive_password: PASS wayland, macos, windows PowerShell",
+   "app: agent_interactive_vim, agent_interactive_less, agent_noninteractive_no_takeover: PASS wayland + macos (SKIP windows by design)",
+   "app: agent_interactive_ssh: NOREF wayland + macos 'no hand-over (take-over notice only, #1811 ...): the ssh hand-over is not verified'"
+  ],
+  "note": "Password, vim and pager arms are proven; the ssh arm is NOREF.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1830,
+  "title": "Agent tests: network gate under the agent (denial notice, Allow, off switch, key never leaves)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app wayland: network_gate_notice, agent_gate_off_live, agent_gate_key_never_leaves: PASS",
+   "app wayland: agent_gate_deny_allow NOREF 'pointer Allow: the page or its Allow button was not found by OCR'; network_gate_switch NOREF",
+   "macos + windows: all gate cases SKIP",
+   "unit test-linux: network_page_tests.rs (5): pass"
+  ],
+  "note": "Denial notice, the off switch and 'key never leaves' are proven on Linux. Deny/Allow and the switch page are NOREF.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1831,
+  "title": "Agent tests: model failures mid-reply in the real app (429, 500, dropped stream, slow first token, Ollama down)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_fault_429, _500, _disconnect, _down, _slow_cancel: PASS on wayland, macos, windows (agent@fake and agent@gitbash+fake)"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1832,
+  "title": "Agent tests: restart mid-conversation (reply streaming, queued rows, blocked card)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app: agent_restart_kill_stream, _kill_queued, _kill_blocked: PASS on all three platforms",
+   "app: agent_restart_quit_stream, _quit_queued, _quit_blocked: PASS wayland; SKIP macos + windows 'the harness has no usable quit key'",
+   "app: agent_fault_queued_rows: PASS all platforms"
+  ],
+  "note": "Kill arms proven everywhere; clean-quit arms on Linux only.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1833,
+  "title": "Agent tests: several agents at once across tabs (hidden tabs streaming, typing elsewhere)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app: agent_multitab_streaming: PASS wayland + macos; SKIP windows (both panes)"
+  ],
+  "note": "Not judged on Windows.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1834,
+  "title": "Agent tests: misbehaving MCP servers (crash, hang, garbage) after the rmcp upgrade",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "app: agent_mcp_faults: SKIP on every platform; wayland + macos: 'the app did not load ~/.warp/.mcp.json, so no fault could be injected'"
+  ],
+  "note": "The case never got past its precondition on any machine.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1835,
+  "title": "Agent tests: agent file edits (diff accept/reject, edited-in-between conflict at save, no-helper remote)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app: agent_edit_accept, _reject, _conflict, _touch_only, _endings: PASS wayland + macos; SKIP windows",
+   "app lab: lab_fam_agent_edit_endings.bash, _edit_touch_only.bash, _delete_conflict.bash: PASS",
+   "app lab: lab_fam_agent_edit_conflict.bash FAIL '207 bytes on disk, 228 expected'; .nu FAIL"
+  ],
+  "note": "Local arms proven on Linux and macOS. The no-helper remote conflict arm fails (see #1837).",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1837,
+  "title": "Remote agent edit accept writes with no on-disk precondition: a file changed since the proposal is clobbered (helper and no-helper)",
+  "verdict": "FAILING",
+  "evidence": [
+   "app lab: lab_fam_agent_edit_conflict.bash.lan.nohelper (agent): FAIL 'remote: the accepted multi-hunk edit: 207 bytes on disk, 228 expected; first difference at byte 25' and 'no hop=backend_route family=file_write line'",
+   "app lab: lab_fam_agent_edit_conflict.nu: FAIL",
+   "app lab: lab_fam_agent_delete_conflict.bash: PASS",
+   "unit test-workspace-rest (remote_server): contract_tests.rs the_shell_backend_refuses_a_stale_guarded_delete, the_helper_refuses_a_stale_guarded_delete; router_tests.rs a_guarded_write_with_no_way_to_check_is_refused_and_leaves_the_file; fs_ops_tests.rs write_file_with_an_expectation_writes_only_when_it_holds: pass"
+  ],
+  "note": "The row that judges this issue fails in r12a. docs/design/r12-lab2.md calls the bash failure a TEST fault (#2045, the fake model read attached context as the prompt); that repair is after r12a, so the row has not judged the app yet.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1839,
+  "title": "Windows agent-mode PowerShell ssh_connect_typing: next trial typed into the previous, still-closing ssh.exe (harness settle too short)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app windows PowerShell: ssh_connect_typing agent: PASS (the row that failed); terminal: PASS"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1840,
+  "title": "Subshell setup cancelled as Gone at its own InitShell: bootstrap truncated, typed line handed back (#1679 step 3)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: subshell_ready_tests.rs (the #1840 row: a changed block after progress is Keep): pass",
+   "app: subshell_sh_probe, subshell_ready_rc_questions, subshell_ready_rc_clear: PASS wayland + macos both modes"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1841,
+  "title": "r18w6: remote_tab_enter_no_helper fails from a harness ambiguity; remote_tab_no_helper: in-band Tab line missing (cause unproven)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app wayland: remote_tab_enter_no_helper, remote_tab_no_helper: PASS terminal + agent (also macos)",
+   "app windows@gitbash: both FAIL both modes 'no remote shell prompt after `ssh fake`'"
+  ],
+  "note": "The harness ambiguity is gone on Linux. On Windows Git Bash, the other half of this issue, both cases fail (#2051).",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1842,
+  "title": "UI strings show a literal \\n: Fluent does not unescape \\n in .ftl values",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): script/check_ftl_escapes"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1843,
+  "title": "agent_latency_key streaming: key->frame is quantised by frame pacing (test), not per-key conversation re-render",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_latency_key: PASS wayland, macos (streaming overhead 0.88 +/- 0.26 ms against 2 ms), windows agent@gitbash+fake",
+   "unit test-workspace-rest (warpui): key_frame_tests.rs a_key_with_an_undrawn_invalidation_is_drawn_at_the_end_of_the_iteration (+8): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1844,
+  "title": "Keys typed after a subshell exits are held indefinitely: typeahead mode not restored to the parent session",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: typeahead_handoff_tests.rs an_unengaged_user_command_releases_the_deferred_gate_and_its_held_keys, an_unengaged_user_command_makes_a_young_hold_follow_not_drop: pass",
+   "app: giveup_keys_reach_shell: PASS all platforms (the give-up net, not the subshell exit)"
+  ],
+  "note": "docs/testing.md: the bash 3.2 subshell exit 'needs a lab run' as its real-app proof; the macOS lab job did not run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1845,
+  "title": "Armed subshell setup cancelled by the Enter of a line typed into vim (UserDrove)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: subshell_ready_tests.rs r2_a_line_typed_into_a_program_that_owns_the_tty_re_arms: pass",
+   "app: subshell_ready_vim_typeahead: PASS wayland + macos, terminal + agent"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1846,
+  "title": "Table mode holds a typed password behind the subshell setup gate (R8 secret check missing)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: subshell_ready_secret_after_prompt, subshell_ready_secret_after_probe: PASS wayland + macos, terminal + agent (mode_proof: queue_destination=table)"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1847,
+  "title": "dash subshell: readiness judge never re-samples after the first line, setup never written",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: subshell_ready_tests.rs idle_untouched_editor_less_prompt_is_written_without_a_moved_prompt; view_test.rs an_idle_dash_prompt_with_nothing_typed_is_written_on_the_look, an_idle_dash_prompt_drawn_around_the_users_enter_is_judged_moved: pass",
+   "app: subshell_sh_probe: PASS wayland + macos both modes"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1848,
+  "title": "macOS key-to-paint is 5-7 ms over Terminal.app (2 ms budget); key frame submit->presented ~20-28 ms unmeasured",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app macos: latency_paint_ab terminal + agent: PASS 'key frame at the end of the key press, on vs off: key->paint delta p50 = -4.61 ms'",
+   "app macos: latency_paint terminal: PASS at 'overhead <= 10 ms' with 5.82 +/- 1.97 ms over Terminal.app; agent: -0.44 +/- 2.87 ms",
+   "unit: warpui platform/mac/frame_latency_tests.rs is macOS-only code; no macOS unit job exists, so it did not run"
+  ],
+  "note": "The change is proven to help (A/B row). The issue's own target, 2 ms over Terminal.app, is not met in terminal mode: r12a measures 5.82 ms and the row passes only because its gate is 10 ms.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1850,
+  "title": "Recovered agent stream failure (resume) is logged as ERROR 'failed after 0 recovery attempts'",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_fault_disconnect: PASS wayland, macos, windows (both panes); the issue was found by this case on Windows",
+   "unit test-linux: api_error.rs provider_throttling_and_server_faults_are_expected_but_client_errors_are_not: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1851,
+  "title": "Agent hangs on the question card's preparing state (ask-user-question never becomes answerable)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_question_answer, _cut, _nodone, _trunc, _empty, _slow, _ctrl_c, _steer, _after_command, _steer_at_end: PASS on wayland, macos, windows (both fake panes)",
+   "unit test-linux: chat_stream.rs empty_ids_take_the_ids_invented_for_the_chunks_in_order, only_content_bearing_events_restart_the_idle_window; corpus_replay_tests (the hang1851_* scenarios): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1852,
+  "title": "Table mode: Ctrl-Z / Ctrl-\\ cancel a held Enter as an interrupt and discard keys typed behind it",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: route_parity_a_tests.rs suspend_and_quit_do_not_void_a_waiting_enter_interrupt_does: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1853,
+  "title": "Table mode: a paste during an ssh connect is decided by the legacy ssh derivation; every table Hold collapses to a pty paste (misroute + reorder)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs ssh_paste_between_held_keys_keeps_typed_order_in_both_modes, paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes, paste_during_a_powershell_setup_is_held_behind_earlier_keys_in_both_modes: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1854,
+  "title": "Table mode: the secret-read check runs only at key arrival, not at delivery; pastes never run it (both modes)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: route_parity_a_tests.rs a_delivered_key_cancels_a_written_setup_when_a_secret_is_read: pass"
+  ],
+  "note": "The test covers the check at delivery for keys; the paste half of the title has no test of its own.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1855,
+  "title": "Synced input takes control of an agent-run command in the synced pane (both modes), contrary to #1430",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: route_parity_a_tests.rs synced_input_does_not_take_over_an_agent_driven_command: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1856,
+  "title": "Table mode: Ctrl-C in the ssh connect window before the gate arms is written as a raw byte, not handled as SIGINT",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: route_parity_a_tests.rs ctrl_c_before_the_connect_gate_is_armed_is_sigint: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1857,
+  "title": "Table mode lacks the per-key entry hops legacy logs (kh_terminal_typed_entry/routed, kh_hold_entry/exit)",
+  "verdict": "NO-TEST",
+  "evidence": [
+   "commit b8de7dd62 adds the table-mode hops; none of its four tests reads a hop line"
+  ],
+  "note": "Diagnostic only. A test needs: a table-mode view test (or an appci self-test fixture) asserting the per-key entry hop lines with ssh_holding / gate_armed.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1858,
+  "title": "Ask card shows 'Preparing question...' while an earlier action in the same turn is what's actually pending (#1851 candidate 1)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_question_after_command: PASS wayland, macos, windows (both fake panes)",
+   "unit test-linux: common.rs question_text_only_when_nothing_else_is_running, running_action_text_wins_over_a_trailing_ask: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1859,
+  "title": "Preprocess FIFO parks a later turn's ask behind a stuck earlier batch; cancel never clears preprocessing batches (#1851 candidate 2)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: preprocess_tests.rs stale_parked_command_is_released_for_cancel_not_queued_with_new_turn, abandon_pending_unparks_later_batches, abandoned_batch_late_result_is_dropped; corpus_replay_tests (hang1851c2_hung_command_then_ask_stop): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": [
+   "0d82f9df6"
+  ]
+ },
+ {
+  "iid": 1860,
+  "title": "AfterStreamFinished early returns skip queueing and cleanup, leaving the conversation InProgress (#1851 candidate 3)",
+  "verdict": "NO-TEST",
+  "evidence": [
+   "commits 13938e8ad, 17d823d56: no test drives AfterStreamFinished with the conversation or exchange gone"
+  ],
+  "note": "A test needs: a controller test that prunes the exchange before AfterStreamFinished and asserts cleanup ran and the status is Cancelled/Error, not InProgress.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1861,
+  "title": "A steer during an ask placeholder may leave the ask without a result and block the follow-up (#1851 candidate 4)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_question_steer_at_end, agent_question_steer: PASS wayland, macos, windows (both fake panes)",
+   "unit test-linux: corpus_replay_tests (hang1851c4_steer_during_ask_placeholder): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1862,
+  "title": "Synced input queued behind a gate is delivered as Replay and loses its passive (synced) origin",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs synced_ness_at_delivery_is_the_entrys_not_the_enclosing_arrivals: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1863,
+  "title": "Every Wayland launch logs ERROR 'error creating connection to Xorg server' (optional X11 extras manager)",
+  "verdict": "NO-TEST",
+  "evidence": [
+   "commit f6681ac46 (in the run) lowers the log level; no test",
+   "r12a wayland run_slim/logs/*/app.stdout are empty, so the archive cannot show the line is gone"
+  ],
+  "note": "A test needs: the Wayland app log of a launch scanned for 'error creating connection to Xorg server' (a line in mode_proof would do).",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1864,
+  "title": "No-helper writes/patches/commit text travel in process argv (visible in ps, audit logs)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): contract_tests.rs a_shell_write_keeps_the_file_content_out_of_every_command_line; shell_git_runner_tests.rs a_200_kib_patch_stages_and_never_appears_in_the_command_line, a_commit_message_is_stdin_not_argv; write_tests.rs no_content_is_in_any_write_command_and_the_pwsh_one_fits_a_windows_command_line: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1865,
+  "title": "Buffer save after a helper-to-shell fallback writes unguarded (clobber)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): contract_tests.rs the_shell_arm_handles_directory_symlink_hardlink_and_tilde_targets, a_multi_chunk_write_that_fails_part_way_leaves_no_temp_file: pass"
+  ],
+  "note": "The shared write fix is unit-proven, but no test saves a buffer after a helper-to-shell fallback and checks the guard is still applied, which is this issue.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1866,
+  "title": "No-helper write to a path that is a directory reports success (temp moved into the directory)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): write_tests.rs a_directory_target_is_refused_before_and_after_the_chunks; contract_tests.rs the_shell_arm_handles_directory_symlink_hardlink_and_tilde_targets: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1867,
+  "title": "Helper WriteFile is not atomic (truncate+write)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): contract_tests.rs the_helper_handles_directory_symlink_hardlink_and_tilde_targets: pass"
+  ],
+  "note": "No test at the run commit is named for atomicity (temp file + rename) of the helper's WriteFile.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1868,
+  "title": "Stale .phosphor-tmp files left in the repo after a drop/timeout mid multi-chunk write (no-helper)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): contract_tests.rs a_multi_chunk_write_that_fails_part_way_leaves_no_temp_file: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1869,
+  "title": "No-helper writes over ~6 KiB fail on PowerShell hosts (command line limit)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): write_tests.rs no_content_is_in_any_write_command_and_the_pwsh_one_fits_a_windows_command_line: pass"
+  ],
+  "note": "The command text is proven to fit. No test runs the write against a real PowerShell host.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1870,
+  "title": "No-helper git stage/hunk with a patch over ~90 KiB fails (argument list too long)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): shell_git_runner_tests.rs a_200_kib_patch_stages_and_never_appears_in_the_command_line: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1871,
+  "title": "No-helper codebase scan fails on large repos (10 MiB output cap / 60 s timeout)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): index_tests.rs pages_slice_the_listing_and_only_the_first_reports_the_total, the_total_is_read_from_the_first_page: pass"
+  ],
+  "note": "Unit level: paging is asserted; no test scans a large real repository.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1872,
+  "title": "Branch picker and PR file list empty without the helper (get_branches / get_committed_branch_files bypass the router)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): router_tests.rs git_reads_with_no_helper_are_served_by_the_shell_arm; ops_tests.rs branch_list_skips_head_pointers_and_marks_main, committed_branch_files_come_from_numstat_against_the_merge_base: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1873,
+  "title": "No-helper reads refuse files over 7 MiB (agent edits and editor opens of big files fail)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): read_tests.rs a_range_section_skips_whole_blocks_and_reads_back: pass"
+  ],
+  "note": "Ranged reads are unit-proven. No test reads a file over 7 MiB through the shell arm.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1874,
+  "title": "PowerShell hosts without the helper have no git, index or skills; pwsh ranged reads alter non-UTF-8 files",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): pwsh.rs the_script_quotes_every_piece_and_forwards_stdin_only_when_asked; index_tests.rs the_pwsh_scan_page_lists_hashes_and_pages_like_the_posix_one; read_tests.rs the_pwsh_range_section_seeks_and_the_ranged_read_never_re_encodes_text: pass"
+  ],
+  "note": "The PowerShell scripts are checked as text. No test runs git, index or a ranged read on a PowerShell host.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1875,
+  "title": "Remote command timeouts and kill semantics differ: shell 60 s with SIGHUP vs helper 120 s",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: remote_command_executor_tests.rs shell_mode_timeout_matches_the_helper_budget: pass"
+  ],
+  "note": "The timeout is asserted; the kill signal is not.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1876,
+  "title": "No-helper write replaces the inode (hard links, owner, ACLs, xattrs lost)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): write_tests.rs the_write_keeps_owner_and_group_as_far_as_the_user_may; contract_tests.rs the_shell_arm_handles_directory_symlink_hardlink_and_tilde_targets: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1877,
+  "title": "Tilde handling differs between helper and shell arms (writes, deletes, git repo_path)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): mod_tests.rs sh_quote_path_expands_only_a_leading_tilde_on_the_host; contract_tests.rs the_shell_arm_... and the_helper_handles_directory_symlink_hardlink_and_tilde_targets: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1878,
+  "title": "No-helper ListDirectory has no sizes, mtimes or symlink kind",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): tree_tests.rs stat_listing_builders_ask_for_size_and_mtime, stat_records_carry_kind_size_and_mtime: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1879,
+  "title": "Symlink edge cases differ: dangling link counts as absent on the shell arm; readlink -f missing replaces the link",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): write_tests.rs a_symlink_is_followed_by_hand_without_readlink_f_and_a_dangling_one_is_present; contract_tests.rs both *_handles_directory_symlink_hardlink_and_tilde_targets: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1880,
+  "title": "csh/tcsh login shells get POSIX scripts and fail with unreadable output instead of Unavailable; old nu lacks raw strings",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): shell mod.rs csh_complaints_are_recognised, an_old_nushell_without_raw_strings_gets_the_escaped_wrapping_and_keeps_it, a_login_shell_that_cannot_parse_the_script_is_unavailable_not_unreadable; shell_kind_tests.rs legacy_nu_wraps_the_script_in_an_escaped_double_quoted_string: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1881,
+  "title": "No-helper index stores vectors app-side, contradicting the owner decision (flat-file store with vectors on the host)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (remote_server): index_store_tests.rs put_writes_stdin_through_a_temp_file_and_a_rename, resolve_names_the_canonical_repo_and_the_root_with_the_override (+3): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1882,
+  "title": "Windows: an agent-run interactive command never hands over to the user (all take-over hooks are unix-only); keys dropped, tool call hangs",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app windows PowerShell: agent_interactive_password (agent@fake): PASS; agent_lrc_no_false_takeover: PASS both panes",
+   "unit test-linux: terminal_model_test.rs tty_read_markers_are_events_and_the_secret_fact_without_termios; prompt_notice_tests.rs (4): pass"
+  ],
+  "note": "The Git Bash fake arm of agent_interactive_password is SKIP; the PowerShell arm is the Windows proof.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1883,
+  "title": "Windows Git Bash: ConPTY prompt-hold give-up hands a secret typed into a PROMPT_COMMAND read -s back as visible editor text",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app windows@gitbash: gitbash_precmd_secret terminal: PASS; precmd_secret_honor_ps1 terminal + agent: PASS",
+   "unit test-linux: view_test.rs table_mode_a_secret_read_at_the_deferred_enter_release_sends_the_held_keys_to_the_pty: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1884,
+  "title": "Windows: the managed-ssh wrapper hold (#1641) never engages, so keys go to the remote while the bootstrap is typed",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "app windows: ssh_connect_typing_wrapper, ssh_nested_typeahead_wrapper: SKIP in all four panes: 'set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on'"
+  ],
+  "note": "The two cases that judge the wrapper hold skipped themselves; the runner does not set the variable.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1885,
+  "title": "Windows: no secret guard at ssh ownership / first-prompt release",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: ssh_phase_tests.rs an_owned_window_passes_keys_like_a_plain_terminal_secret_read_or_not: pass",
+   "app windows PowerShell: ps_read_host_secure: PASS"
+  ],
+  "note": "docs/testing.md: decided as plain-terminal pass-through and 'tested at the phase machine'.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1886,
+  "title": "Windows: subshell auto-setup never writes in any pane (no tty probe -> Wait(Unknown) -> 60 s -> misleading NotAShell toast)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app windows@gitbash: subshell_ready_rc_questions terminal + agent: PASS; subshell_ready_rc_clear terminal: PASS",
+   "app windows@gitbash: subshell_ready_rc_clear agent: FAIL 'the first inner line ran 3.75 s after its Enter (budget 2 s)'",
+   "unit test-linux: subshell_ready_tests.rs no_probe_judges_from_screen_facts: pass"
+  ],
+  "note": "The setup is now written on Windows (three rows pass). One agent row fails its time budget (#2025).",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1888,
+  "title": "Windows: no Ctrl-Break and no win32-input-mode (PSReadLine chords and TreatControlCAsInput programs)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app windows PowerShell: ps_ctrl_break, ps_ctrl_scrolllock_break: PASS terminal + agent",
+   "unit: warp_terminal escape_sequences_test.rs test_ctrl_break_win32_input_sequence; warpui key_events_tests.rs test_windows_vk_cancel_is_recognised: pass"
+  ],
+  "note": "Ctrl-Break is proven on Windows. No test presses a PSReadLine chord that needs win32-input-mode, the other half of the title.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1889,
+  "title": "Windows: the 50 ms no-probe latch releases a held young Enter even when the ConPTY barrier says the prompt is still in flight",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app windows PowerShell: ps_fast_command_young_enter: PASS terminal + agent",
+   "unit test-linux: typeahead_handoff_tests.rs the_unsampled_latch_leaves_a_young_hold_to_the_barrier_while_output_is_in_flight: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1891,
+  "title": "Windows: a stale PowerShell LineEditorReading marker can re-baseline during Read-Host -AsSecureString, sending later keys to the editor",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app windows PowerShell: ps_read_host_secure terminal: PASS",
+   "unit test-linux: typeahead_handoff_tests.rs a_powershell_marker_stamped_with_the_answered_prompt_proves_nothing: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1892,
+  "title": "Windows: IME composition flag hard-coded false; CJK input untested",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-workspace-rest (warpui): key_events_tests.rs mark_composing_sets_the_flag_only_while_composing: pass"
+  ],
+  "note": "The flag is unit-proven. The title's second half stands: no test types CJK through an IME on Windows.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1893,
+  "title": "#1855 regression: execute_typed reads the thread-local arrival origin during a queue drain, so the user's own held keys stop taking over an agent program when synced text triggers the drain",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs synced_ness_at_delivery_is_the_entrys_not_the_enclosing_arrivals: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1894,
+  "title": "#1859 gap: actions of a still-pending abandoned preprocess batch never get a result (server path has no net); queue_actions abandon does not cancel a hung preprocess",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: preprocess_tests.rs late_result_of_an_abandoned_or_missing_batch_hands_back_its_actions_to_cancel, live_batch_result_has_no_stale_actions: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1895,
+  "title": "#1853 follow-up: table-mode paste skips the ssh hand-over pre-step after a gate release, so a paste can be written ahead of still-held keys",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: group1_handover_tests.rs release_without_event_hands_over_before_the_next_paste: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1896,
+  "title": "#1861 check: cancel_discarded_actions emits FinishedAction for never-queued actions; confirm no extra follow-up request is scheduled",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: controller_tests.rs discarded_actions_of_a_follow_up_send_no_request_of_their_own; oracle.rs i8_one_message_one_request: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1897,
+  "title": "typeahead_mode_by_session (#1844) grows per session for the pane's life",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: terminal_model_test.rs exit_shell_removes_the_sessions_typeahead_mode: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1898,
+  "title": "#1851 idle net: an empty first chunk shrinks the first-event window",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: chat_stream.rs an_empty_first_chunk_keeps_the_first_event_window: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1902,
+  "title": "A tool call with an empty call id is sent back to the model twice (assigned uuid + empty id) — fuzzer I4",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: chat_stream.rs empty_ids_take_the_ids_invented_for_the_chunks_in_order; corpus_replay_tests (hang1851_ask_empty_id, the scenario that found it): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1903,
+  "title": "A refused/unknown first tool call splits a multi-call reply into separate assistant messages in the next request (fuzzer I4)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: corpus_replay_tests.rs corpus_replays_as_listed_and_reaches_the_wave0_cells (unknown_and_not_offered_tools, the scenario that found it; no known_failures): pass"
+  ],
+  "note": "Fix commit f84c4cef0 does not cite the issue number; it is in the run.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1904,
+  "title": "Line typed as subshell setup finishes is split: held keys released at the next key after Bootstrapped, before the first prompt",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs key_typed_between_bootstrapped_and_the_first_prompt_follows_the_held_keys_legacy, ..._table: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1905,
+  "title": "Subshell setup stage 2 is written on the marker, before the next prompt: a PROMPT_COMMAND secret read eats it and no Secret verdict fires",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: subshell_ready_secret_after_probe, subshell_ready_secret_after_prompt: PASS wayland + macos, terminal + agent",
+   "unit test-linux: view_test.rs stage_two_first_line_waits_for_what_follows_the_probes_hook; subshell_ready_tests.rs stage_two_pending_rows: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1906,
+  "title": "Windows: Ctrl+Break never reaches the pty (ps_ctrl_break 0/3, no 3;70 write); harness leave_nested exit quit the app (#1888)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app windows PowerShell: ps_ctrl_break, ps_ctrl_scrolllock_break: PASS terminal + agent",
+   "unit: key_events_tests.rs test_windows_ctrl_scroll_lock_is_ctrl_break, test_break_key_names_convert_to_pause; escape_sequences_test.rs test_ctrl_break_sequence_is_windows_only: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1907,
+  "title": "Child shells started from a Phosphor bash pane inherit an empty PS1 when the user exports PS1 (dash shows no prompt)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: subshell_sh_probe_empty_ps1: PASS wayland + macos, terminal + agent"
+  ],
+  "note": "script/test_child_ps1 exists as well; it is in no r12a job.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1908,
+  "title": "appci: stale or wrong root PID feeds leave_nested and the harness quits the app",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest audit1_shell_pid_counts_only_tokens_appended_after_its_snapshot, audit2_raw_exit_is_banned_outside_ctx_and_the_root_pid_is_recorded_once_per_launch",
+   "r12a ran four app jobs on this harness"
+  ],
+  "note": "Harness logic; the self-test is the test.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1909,
+  "title": "appci: raw exit typed after an unchecked until quits the app",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest audit2_raw_exit_is_banned_outside_ctx_and_the_root_pid_is_recorded_once_per_launch (a source lint over every case file)"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1910,
+  "title": "appci: probe-then-exit prompt race in return_to_local and leave_nested",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest audit3_probe_waits_for_its_own_prompt_and_exit_waits_for_the_next"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1911,
+  "title": "appci: ssh trial verdict read before the remote hook logged the line (false pass with contradicting detail)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest ssh_trial_plan_and_loss_report / ssh_trial_facts_name_the_issue (fb78e64c9 added 26 lines of self-test)",
+   "app: ssh_connect_typing PASS wayland, macos, windows PowerShell on the new verdict rule"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1912,
+  "title": "appci: injector accounting is informational, window clips late Enters, Windows excluded (false pass on key loss)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest audit5_accounting_window_runs_to_case_end_and_a_loss_outside_loss_cases_is_noref",
+   "r12a: the 'injector accounting' line is on 132 of the 167 judged Windows rows, 125 of 128 on wayland, 114 of 116 on macos"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1913,
+  "title": "appci: harness probe lines (.appci_pid/.appci_where) counted as the case's commands",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest audit6_7_harness_probe_lines_are_not_the_cases_commands_and_comparisons_wait_for_the_log"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1914,
+  "title": "appci: rec.log compared after a fixed 0.5 s sleep in effect_run and subshell cases",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest audit6_7_harness_probe_lines_are_not_the_cases_commands_and_comparisons_wait_for_the_log"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1915,
+  "title": "appci: Profile.read has no PermissionError retry (Windows harness exception)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest audit8_9_12_profile_read_retries_and_post_case_invariants_reset_leaked_state"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1916,
+  "title": "appci: reference-terminal state (ref_active, guard_override, remote) leaks to later cases",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest audit8_9_12_profile_read_retries_and_post_case_invariants_reset_leaked_state"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1917,
+  "title": "appci: per-case app-log slice is saved on Windows only",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest audit10_case_log_slice_on_every_platform_follows_the_log_across_a_rotation"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1919,
+  "title": "appci: wedged-pane detection runs on Windows only",
+  "verdict": "PROVEN",
+  "evidence": [
+   "guards job (success): appci selftest audit8_9_12_profile_read_retries_and_post_case_invariants_reset_leaked_state"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1921,
+  "title": "ci_seq: sshlab-image pending behind the pipeline's own jobs is labelled RUNNER-OFFLINE and the lab job is never played",
+  "verdict": "PROVEN",
+  "evidence": [
+   "manifest r12a: sshlab-image success, then app-test-lab-linux played and ran 100 rows (77.7 min)"
+  ],
+  "note": "The reported symptom was the lab job never being played.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1922,
+  "title": "Windows ConPTY: a typed key of the ssh connect typeahead is dropped when the hand-over delivers it under an open prompt hold (ssh fake arrives as ssh fae)",
+  "verdict": "FAILING",
+  "evidence": [
+   "app windows@gitbash: ssh_nested_typeahead terminal: FAIL 'the line typed behind a nested ssh ran exactly once remotely: []'",
+   "app windows@gitbash: ssh_enter_then_immediate_command agent: FAIL 'never reached the REMOTE file (ssh did not give a remote shell in front)'"
+  ],
+  "note": "These are the two rows the issue names, and both fail in r12a. The failure text is that of #2051 (no remote shell at all), so the rows could not reach the dropped-key check; either way nothing proves this fix.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1924,
+  "title": "Windows no-tty-probe subshell judge cancels the setup on an answer or typeahead (rc read -p questions, rc with sleep+clear): tail taken from the echo of the user's own line",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app windows@gitbash: subshell_ready_rc_questions terminal + agent: PASS; subshell_ready_rc_clear terminal: PASS, agent: FAIL (3.75 s against 2 s)",
+   "unit test-linux: view_test.rs stage_two_first_line_waits_for_what_follows_the_probes_hook; subshell_ready_tests.rs (3): pass"
+  ],
+  "note": "The rc-question shape is proven on Windows Git Bash; the rc sleep+clear shape fails in agent mode on its time budget.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1925,
+  "title": "Agent edit accept adds a final newline to a file that had none (LF and CRLF)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_edit_endings: PASS wayland + macos; lab_fam_agent_edit_endings.bash: PASS",
+   "unit: ai apply_tests.rs an_edit_of_the_last_line_keeps_the_final_newline_state (+18); model_tests.rs test_apply_diffs_keeps_line_endings_and_final_newline_state: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1926,
+  "title": "Hand-back after a password hand-over re-sends the block output (echoed secret) as USER context — cause of round-8 agent_interactive_password",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: agent_interactive_password: PASS wayland, macos, windows PowerShell",
+   "unit test-linux: cli_controller_tests.rs take_over_that_cancelled_the_tool_call_still_attaches_the_block, hand_back_of_a_user_command_still_attaches_the_block: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1927,
+  "title": "NLD predict and next-command suggestions ship typed text/blocks to the provider while the tty reads a secret",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: input_test.rs partial_query_is_sent_only_for_locked_ai_input_outside_a_secret_read, editing_the_buffer_during_a_secret_read_never_requests_a_query_prediction; generate_ai_input_suggestions_test.rs a_block_typed_during_a_secret_read_is_not_suggestion_context: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1928,
+  "title": "Provider API key / custom headers follow a cross-origin redirect to any other configured origin (network_gate AI_ENDPOINT is Automatic)",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "tests exist: crates/network_gate/src/lib_tests.rs an_ai_endpoint_redirect_to_another_configured_origin_is_denied (+3); lib/rust-genai web_config.rs redirect_guard_gets_the_first_url_and_a_refused_hop_is_not_requested",
+   "no unit job runs them: `-p network_gate` appears nowhere in .gitlab-ci.yml at the run commit, and lib/rust-genai is in no job"
+  ],
+  "note": "The fix has tests, but r12a ran none of them: the network_gate crate is in no unit job's package list.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1929,
+  "title": "Exa API key is in the request URL and leaks into tool error strings returned to the model",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: websearch_tests.rs a_refused_exa_connection_reports_no_key, an_exa_http_error_that_echoes_the_key_reports_no_key: pass"
+  ],
+  "note": "The module's third test, real_exa_anonymous_search, failed in r12a for #2022 (a live-endpoint policy collision); it does not judge this issue.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1930,
+  "title": "BYOP logs print the provider host (build_client endpoint_url, provider-fetch GET url)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: chat_stream.rs provider_endpoint_is_reduced_to_scheme_host_hash_port, error_text_urls_are_reduced_before_logging: pass"
+  ],
+  "note": "The `[provider-fetch] GET` line named in the issue has no test of its own.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1931,
+  "title": "MCP: a managed secret templated into args lands in the server's argv (plaintext env in sqlite)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: mod_test.rs test_apply_secrets_never_renders_a_secret_into_args, test_apply_secrets_never_renders_a_secret_into_the_command: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1933,
+  "title": "Windows Git Bash ssh is never managed: the ssh wrapper falls back to plain ssh (WARP_IN_MSYS2), so no in-band remote Tab and no managed hold",
+  "verdict": "FAILING",
+  "evidence": [
+   "app windows@gitbash: ssh_gitbash_managed terminal + agent: FAIL 'no remote shell prompt after `ssh fake`'",
+   "app windows@gitbash: ssh_gitbash_typeahead_managed, remote_tab_no_helper, remote_tab_enter_no_helper, ssh_connect_typing, ssh_enter_then_immediate_command, ssh_nested_typeahead: FAIL both modes",
+   "app windows@gitbash: ssh_gitbash_kill_switch, gitbash_long_osc_reaches_app: PASS"
+  ],
+  "note": "Managed ssh from Git Bash did not give a remote shell in r12a. After the run, c82ff4af0 turned it off unless PHOSPHOR_MSYS_MANAGED_SSH=1 and 85def6917 changed how the bootstrap is sent (#2051); neither has run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "85def6917",
+   "91771a958",
+   "c82ff4af0"
+  ]
+ },
+ {
+  "iid": 1934,
+  "title": "Subshell setup written into zsh-newuser-install: readiness tail is classified on the LAST grid row, not the cursor row, and the LineReader row needs no prompt shape (D1)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs the_readiness_tail_is_the_cursor_row_not_the_blank_rows_below_a_clear; subshell_ready_tests.rs d1_a_line_reader_without_a_prompt_shape_waits; key_facts_tests.rs the_other_zsh_newuser_install_key_prompts_are_input_prompts: pass",
+   "app wayland: subshell_ready_zsh_newuser_install: PASS both modes (SKIP macos)"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1935,
+  "title": "dash subshell with an empty PS1 is never Phosphorized: the cooked editor-less judge requires a prompt the shell never draws (60 s hang, sh_probe fails) (D2)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: subshell_sh_probe_empty_ps1: PASS wayland + macos, terminal + agent",
+   "unit test-linux: view_test.rs a_dash_with_an_empty_ps1_is_written_at_once_and_its_probe_line_follows_the_marker ; subshell_ready_tests.rs d2_an_idle_editor_less_shell_needs_no_prompt_only_an_empty_queue: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1936,
+  "title": "Armed subshell setup judges a line end against the LAST LOOK tty facts, not the key: a child started or ended between looks makes a wrong Cancel(UserDrove) or a wrong ReArm (D5)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs a_line_end_is_judged_with_the_tty_facts_at_the_key_not_the_last_look: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1937,
+  "title": "exec <shell> from the parent shell: every readiness look is Unknown/Parent (pgid == parent pid), the setup is never written and cancels at 60 s (D6)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: subshell_ready_exec_fish_rc: PASS wayland + macos, terminal + agent",
+   "unit test-linux: subshell_tty_tests.rs a_parent_pid_under_another_comm_was_replaced_by_an_exec; terminal_attributes_tests.rs a_parent_pid_under_another_comm_is_classified_by_its_comm_on_a_real_pty (Linux only): pass"
+  ],
+  "note": "Listed as an owner question in this round's rules: the verdict says what the rows show; the owner decides the close. Action is left at keep because the close is the owner's call.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1939,
+  "title": "Three overlapping give-ups for one subshell setup: the 7 s bootstrap timer (re-armed on every progress) beside the 30 s quiet net and the 120 s ceiling (D8)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs setup_gates_have_no_cap_of_their_own_the_net_is_the_one_net, a_finished_setup_does_not_trip_the_net_later: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1940,
+  "title": "R9 flush of unread setup bytes depends on the echo filter matching; a cooked tty echoes \\\" ^K ^U\\\" as ^K + ECHOKE erase, not LINE_CLEAR_ECHO, so a Secret cancel on a cooked shell could flush the user first byte (D9)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: subshell_ready_tests.rs d9_a_secret_cancel_or_user_bytes_since_the_write_never_flush; view_test.rs the_r9_flush_spares_a_secret_read_and_bytes_the_user_sent_whatever_the_echo_filter_saw : pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1941,
+  "title": "Agent mode: a line typed into a subshell during its setup never reaches it (vim_typeahead agent FAIL, root shell lost); the editor Enter route bypasses the readiness ledger and setup gates (D4, unconfirmed)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: subshell_ready_vim_typeahead agent: PASS wayland + macos (the failing row); terminal: PASS",
+   "unit test-linux: view_test.rs a_line_typed_ahead_of_readline_is_not_written_over_while_the_editor_runs_it (+5): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1942,
+  "title": "Stop / Ctrl-C after a partially finished batch sends a new request (plan_finished_batch follows up on a Cancelled outcome)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: controller_tests.rs a_user_stop_after_a_finished_result_sends_no_request; stop_tests.rs a_stop_after_a_finished_result_opens_no_request_and_the_results_ride_on_the_next_message ; oracle.rs i8_a_stop_freezes_the_request_count_until_the_user_acts; ctrl_c_tests.rs (2): pass",
+   "app: agent_question_ctrl_c, agent_stream_cancel: PASS"
+  ],
+  "note": "The two random fuzz runs were red in r12a (I4 oracle fault, #2010); the tests named here are deterministic and passed.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1943,
+  "title": "Offline pre-action stream failure ends the turn with a wrong 'unfinished exchange' error instead of waiting for connectivity",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: response_stream_tests.rs an_offline_failure_parks_the_retry_and_the_dead_attempts_end_is_not_the_streams_end's end: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1944,
+  "title": "Stop while a turn's actions are all still preprocessing leaves the conversation InProgress forever",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: preprocess_tests.rs has_pending_is_true_only_while_a_batch_is_still_preprocessing; oracle.rs i8_a_stop_freezes_the_request_count_until_the_user_acts: pass"
+  ],
+  "note": "The predicate is tested. No test stops a turn whose actions are all still preprocessing and asserts the conversation leaves InProgress.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1945,
+  "title": "A failed update_for_new_request_input leaves a live, unobserved stream and silently discards the prompt and the reply",
+  "verdict": "NO-TEST",
+  "evidence": [
+   "commit 2f17df184 changes controller.rs only (118 lines); it adds no test"
+  ],
+  "note": "A test needs: a controller test where update_for_new_request_input fails, asserting the prompt is kept and the failure is shown.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1946,
+  "title": "Calls of a cancelled (non-steer) stream get no result; their cards never settle until the next send ('Preparing question...' after Stop)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: controller_tests.rs a_user_stop_after_a_finished_result_sends_no_request; oracle.rs i8_*: pass",
+   "app: agent_question_ctrl_c, agent_stream_cancel: PASS",
+   "commit 0d82f9df6 (the self-heal part, #1967) is after r12a; its turn_invariant_tests are not at the run commit"
+  ],
+  "note": "Stop is proven. That every call of a cancelled stream gets a result and its card settles is asserted only by tests added after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "0d82f9df6"
+  ]
+ },
+ {
+  "iid": 1947,
+  "title": "A user send deferred for an attachment read is lost if a request opens meanwhile (in-flight guard Err only logged)",
+  "verdict": "NO-TEST",
+  "evidence": [
+   "commit 2f17df184: no test"
+  ],
+  "note": "A test needs: a send deferred for an attachment read while another request opens, asserting the user's send is not lost.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1948,
+  "title": "A stashed BYOP request (PendingToolResults) is dropped when its trigger batch ends without a follow-up",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: controller_tests.rs stop_puts_a_stashed_typed_prompt_back_into_the_input, only_a_typed_prompt_counts_as_the_users_own, the_restored_prompt_is_appended_to_a_draft (+4): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1949,
+  "title": "complete_byop_blocked_request ends a turn without a stream end: added_exchanges_by_response leaks and queued prompts stay locked",
+  "verdict": "NO-TEST",
+  "evidence": [
+   "commit 2f17df184: no test"
+  ],
+  "note": "A test needs: complete_byop_blocked_request driven to its end, asserting added_exchanges_by_response is empty and queued prompts unlock.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1950,
+  "title": "pending_passive_follow_ups survives Stop: a later Stop/Reject on the conversation sends a UserRequested follow-up",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: controller_tests.rs a_user_stop_after_a_finished_result_sends_no_request: pass"
+  ],
+  "note": "That test stops after a finished result. No test at the run commit is named for a pending passive follow-up being withdrawn by Stop and a LATER Stop or Reject sending nothing.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1951,
+  "title": "Restore after relaunch reports Success for a turn with unanswered tool calls",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: conversation_tests.rs a_restored_turn_that_ends_in_a_subagent_or_carrier_call_is_cancelled, a_restored_passive_code_diff_that_was_never_answered_is_cancelled (+3): pass",
+   "app: agent_restart_kill_blocked: PASS all platforms"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1952,
+  "title": "Defensive: AfterStreamFinished with actions queued AND a pending resume would arm both",
+  "verdict": "NO-TEST",
+  "evidence": [
+   "commit 2f17df184: no test"
+  ],
+  "note": "Defensive change. A test needs: AfterStreamFinished with actions queued and a resume pending, asserting only one is armed.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1953,
+  "title": "Agent fuzzer gaps: no request-count invariant (I8), no 'every tool call of the last reply has a status or result' check, no offline chaos",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: oracle.rs i8_a_stop_freezes_the_request_count_until_the_user_acts, i8_one_message_one_request, i8_a_repeated_request_fails_unless_a_reply_in_between_failed: pass",
+   "unit test-linux: fuzz_tests random_agent_conversations_hold_the_invariants and ..._with_the_allowlist_on: FAILED in r12a (162 s each)"
+  ],
+  "note": "The new invariants have passing tests of their own, but the fuzzer that carries them was red in r12a (triage: I4 oracle fault #2010, repaired after the run).",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1954,
+  "title": "Agent edit that appends after the last line of a file with no final newline joins the new text onto the last line",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit: ai apply_tests.rs (19), model_tests.rs test_apply_diffs_on_an_unterminated_one_line_file_and_an_empty_file: pass",
+   "app: agent_edit_endings: PASS wayland + macos"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1955,
+  "title": "TUI agent edit accept: lines edited in a CRLF file are written with bare LF, and a file with no final newline gains one",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux (warp_tui): tui_diff_storage_tests.rs final_content_keeps_line_endings_and_final_newline_state, apply_deltas_appends_a_new_line_after_an_unterminated_last_line: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1957,
+  "title": "Keys held behind a deferred Enter are put into the editor as visible text while the tty reads a secret",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: view_test.rs table_mode_a_secret_read_at_the_deferred_enter_release_sends_the_held_keys_to_the_pty, a_line_typed_behind_a_deferred_enter_never_reaches_the_pty_before_that_enters_held_line : pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1958,
+  "title": "Linux: every key written to the pty pays a whole-/proc scan (key -> pty write 4.2 ms terminal, 16.5 ms agent; macOS 0.44 ms)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: fg_group_tests.rs orphans_are_members_wherever_they_hang, every_stage_of_a_pipeline_is_a_member and others: pass",
+   "app wayland: latency_key_log terminal + agent: NOREF; its detail reads '#1176 key -> pty write median 0.61 ms (p95 0.69, n=60): within the 1 ms target' and '#1958 platform samples while typing 63 key(s): 1'"
+  ],
+  "note": "The number the issue is about is now 0.61 ms (was 4.2 ms), but it sits in a row whose verdict is NOREF, and a NOREF is not a pass.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1959,
+  "title": "Windows Git Bash managed ssh (one connection): keys typed during the login make that session plain; adopt them at the front of the hold and stay managed",
+  "verdict": "FAILING",
+  "evidence": [
+   "app windows@gitbash: ssh_gitbash_typeahead_managed terminal + agent: FAIL 'trial 1: the line typed during the connect never reached the remote shell'"
+  ],
+  "note": "The case written for this issue fails in r12a (#2051 underneath: no remote shell). Unit tests of the hold order pass, which proves the queue, not the session.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1962,
+  "title": "perf(input): one typed character re-renders 4-7 views (Input, AgentMessageBar, input message bar, status bars), not only the editor",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: latency_key_views_ab: PASS on wayland, macos, windows, every pane and mode (8 rows)",
+   "unit test-linux: key_view_skip_tests.rs (3), agent_tests.rs (4), status_bar_tests.rs (3), terminal_message_bar_tests.rs (3): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1963,
+  "title": "OSC 52 clipboard write is denied by default: tmux/vim/pbcopy-style yanks silently do nothing (annoyance review 8a)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: settings_tests.rs osc52_explicit_deny_is_kept, osc52_write_notice_fires_once: pass"
+  ],
+  "note": "Unit level: the default and the notice. No app case yanks from tmux or vim.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1964,
+  "title": "Repeated identical error toasts pile up: a repeating give-up shows a new toast each time (annoyance review 16)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: dismissible_toast_tests.rs same_text_ephemeral_toast_refreshes_instead_of_stacking, persistent_toast_is_not_deduplicated_by_an_ephemeral_one: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1967,
+  "title": "A stuck agent turn has no self-healing and no escape: add 'no pending action without a card' as a runtime invariant and a 'turn stuck, click to cancel' affordance",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "fix commit 0d82f9df6 is AFTER the r12a commit; its turn_invariant_tests.rs (8) are not in the run"
+  ],
+  "note": "Fix landed after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "0d82f9df6",
+   "64bdde259",
+   "b4701c769",
+   "fa1e6602b"
+  ]
+ },
+ {
+  "iid": 1969,
+  "title": "Remote bash 3.2 (macOS /bin/bash): no in-band Tab completion without the helper",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "unit test-workspace-rest (warp_terminal): mod_tests.rs bash3_native_completions_kill_switch_reads_only_zero_as_off: pass (the kill switch only)",
+   "script/test_native_completions (the bash 3.2 arm): in no r12a job; app-test-lab-macos: manual, not run"
+  ],
+  "note": "The tests that would judge in-band Tab on a bash 3.2 host exist and did not run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1970,
+  "title": "ssh over a slow link is unverified: no latency-injected (netem 150 ms) lab, latency_enter_ssh INCONCLUSIVE; Enter must never wait on the network",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app lab: lab_enter_no_network_wait bash + zsh, 150 ms, nohelper, terminal + agent: PASS (4 rows)",
+   "app lab: fish: NOREF 'no Enter -> write times in the app log'; nu: FAIL '`exit` did not return to the local shell'; helper arms: NOREF (8 rows)",
+   "app lab: lab_enter_start bash + zsh 150 ms: PASS; fish NOREF; nu FAIL"
+  ],
+  "note": "The slow-link lab exists and proves bash and zsh without the helper. fish, nu and every helper arm are not proven.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1971,
+  "title": "No keybinding to 'Give control back to agent' after taking over an agent command",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "fix commit fa1e6602b is AFTER the r12a commit"
+  ],
+  "note": "Fix landed after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "0d82f9df6",
+   "64bdde259",
+   "b4701c769",
+   "fa1e6602b"
+  ]
+ },
+ {
+  "iid": 1972,
+  "title": "Agent-run ssh with a remote read: the prompt is never handed to the user (agent_interactive_ssh fails)",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "fix commit fa1e6602b and case agent_interactive_ssh_takeover (b4701c769) are AFTER the r12a commit",
+   "app r12a (pre-fix): agent_interactive_ssh: NOREF wayland + macos"
+  ],
+  "note": "Fix landed after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "0d82f9df6",
+   "64bdde259",
+   "b4701c769",
+   "fa1e6602b"
+  ]
+ },
+ {
+  "iid": 1977,
+  "title": "macOS: relaunch logs ERROR 'A default keychain could not be found' twice",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "unit: warpui_extras secure_storage/mac_tests.rs a_missing_default_keychain_is_recorded_once_and_recovers: macOS-only module; no macOS unit job exists",
+   "app macos: keyring_unavailable_startup: SKIP (Linux launcher only)"
+  ],
+  "note": "The one test of this fix can only run on macOS and no macOS unit job ran.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1983,
+  "title": "Ctrl-C '^[i' echo block and bogus 'Session abandoned before bootstrap' are only tested locally; no ssh twin of ctrl_c_no_esc_i",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app lab: lab_ctrl_c_no_esc_i bash + zsh, lan + 150 ms, nohelper, both modes: PASS (8 rows)",
+   "app lab: fish + nu: FAIL (8 rows); helper arms: NOREF (16 rows)",
+   "unit test-linux: abandoned_session_tests.rs (4): pass"
+  ],
+  "note": "The ssh twin exists and judges; it passes for bash and zsh only.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1985,
+  "title": "ssh lab flood_scrollback_find stays red in agent mode: app log says it scrolled, OCR could not read - app or harness?",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "app: flood_scrollback_find: not run in r12a (it was in neither SMOKE nor PROVING until a767eb69c, which is after the run)"
+  ],
+  "note": "The case could not have run in any fix-tier round so far.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "a767eb69c"
+  ]
+ },
+ {
+  "iid": 1987,
+  "title": "Network gate 'Allow' from the toast/log row did not persist to settings.toml, and the gate did not refuse an unlisted host (agent_gate_deny_allow)",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "app wayland: agent_gate_deny_allow: NOREF 'pointer Allow: the page or its Allow button was not found by OCR'; SKIP macos + windows",
+   "issue note: round 10 judged this a TEST fault and saw keyboard Allow persist in r10a"
+  ],
+  "note": "In r12a the case that answers 'app or harness?' is NOREF.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1992,
+  "title": "appci Windows fake sshd cannot serve a managed ssh session: exec with a pty runs on pipes, and it identifies as paramiko (blocks the Git Bash managed-ssh cases of #1933)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app windows@gitbash r12a sshd.log (quoted in the failing rows): 'exec pty arm app (a pseudo console of the app's own conpty.dll)', 'conpty first output after 0.02 s'"
+  ],
+  "note": "The test sshd now serves exec with a pty. Every managed-ssh row that uses it still fails (#2051), so no passing row rests on it.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1993,
+  "title": "Autosuggestion keybinding hint: a changed accept-autosuggestion keybinding is drawn only after the next edit",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: accept_autosuggestion_keybinding_view_tests.rs closing_an_open_menu_rerenders_the_hint, an_edit_with_the_menu_closed_does_not_rerender_the_hint; key_view_skip_tests.rs (3): pass",
+   "app: latency_key_views_ab: PASS all platforms"
+  ],
+  "note": "The re-render rules are tested. No test changes the accept-autosuggestion keybinding and asserts the hint redraws at once, which is this issue.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1994,
+  "title": "Agent input is not told when the queued-prompts panel appears or disappears; it relied on its re-render on every edit",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: queued_prompts_panel_tests.rs a_shown_panel_and_a_panel_that_changes_visibility_are_rerendered; agent_tests.rs an_edit_that_changes_a_fact_the_agent_input_is_built_from_rerenders_it: pass",
+   "app: latency_key_views_ab: PASS all platforms"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 1996,
+  "title": "Reverse #1661: a hold that gives up writes the held keys to the pty in typed order (no discard, no toast)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app: giveup_keys_reach_shell: PASS wayland, macos, windows, every pane and mode (8 rows)",
+   "unit test-linux: give_up_to_pty_tests.rs given_up_keys_of_every_form_reach_the_pty_in_typed_order_with_no_toast (+13); group2_timer_tests.rs young_hold_fish_no_barrier_cap_writes_the_keys_to_the_pty: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2004,
+  "title": "big_paste checks bytes only: no time-to-Enter or UI-responsiveness check for #1191",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "app: big_paste: not in the fix tier, not run in r12a",
+   "guards: selftest big_paste_time_budgets_2004: pass"
+  ],
+  "note": "The timing check exists; the case did not run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2006,
+  "title": "Windows no-tty-probe subshell judge writes the setup on the echo of the user's own line (rc read -p: the setup text is taken as the second answer)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app windows@gitbash: subshell_ready_rc_questions terminal + agent: PASS (the rc read -p shape of the title)",
+   "unit test-linux: subshell_ready_tests.rs no_probe_never_writes_on_the_users_own_line_sweep; view_test.rs without_a_tty_probe_the_echo_of_the_users_line_is_not_a_prompt: pass"
+  ],
+  "note": "subshell_ready_rc_clear agent fails in r12a on its 2 s budget; that is #2025's subject, not this one's.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2008,
+  "title": "13 plugin_manager unit tests fail on the CI box: assert_all_local flags the temp path /home/gitlab-runner as a remote",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux r12a (on the CI box): none of the plugin_manager claude/codex/gemini tests is in the failure list (4 failures, all elsewhere)"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2011,
+  "title": "appci: pane_not_local_after_* fails after SKIPPED cases (md_viewer leaves the viewer tab in front, the root-shell probe finds no shell)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app macos r12a: 44 SKIP rows and no pane_not_local_after_* row at all (0 FAIL)",
+   "guards: appci selftest (8a1e87374 added the pin): pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2012,
+  "title": "Windows PowerShell: keys typed while a command completes are split between the editor and the shell line and merged in the wrong order (giveup_keys_reach_shell 2/20)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app windows PowerShell: giveup_keys_reach_shell terminal + agent: PASS (the row that failed 2/20)",
+   "unit test-linux: report_anchor_tests.rs a_report_of_keys_typed_after_the_editors_text_goes_behind_that_text (+3); input_test.rs a_handoff_report_goes_behind_the_text_the_editor_held_when_it_was_anchored: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2013,
+  "title": "ssh connect window is released by its own block start when the shell's echo of the command is polluted (nested ssh: typed line split between the kept-text banner and the inner shell)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app wayland: ssh_nested_typeahead terminal + agent: PASS (also macos, windows PowerShell)",
+   "unit test-linux: view_test.rs an_ssh_window_survives_its_own_block_start_with_a_polluted_echo (+2): pass"
+  ],
+  "note": "The Windows Git Bash rows of this case fail for #2051, a different defect.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2014,
+  "title": "App log shows the full URL of a remote image when its fetch fails or is refused by the network gate",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit: asset_cache lib_tests.rs url_source_debug_and_gate_denial_never_show_the_url; warpui_core asset_cache_tests.rs async_asset_id_debug_prints_a_fingerprint_never_the_key: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2017,
+  "title": "zsh-newuser-install's other key prompts ('--- Type a key ---') read as a shell prompt: a Phosphorize click there writes the setup into the menu",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-linux: key_facts_tests.rs the_other_zsh_newuser_install_key_prompts_are_input_prompts; subshell_ready_tests.rs a_menu_key_answered_and_a_new_prompt_below_means_the_key_is_gone (+3): pass",
+   "app wayland: subshell_ready_zsh_newuser_install: PASS both modes"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2019,
+  "title": "ssh to a host whose login shell is fish or nu ends at once: the POSIX bootstrap is refused by the login shell",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "unit test-linux: bootstrap_test.rs ssh_login_shell_question_is_answered_by_every_login_shell: pass",
+   "app lab: fish rows reach a session (lab_enter_start.fish: NOREF on timing only); nu rows FAIL '`exit` did not return to the local shell'; lab_ctrl_c_no_esc_i fish + nu FAIL"
+  ],
+  "note": "The unit rule passes. In the lab no fish or nu row passes; what an agent may do in the plain session is an open owner question on this issue.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "b22a3f1b6"
+  ]
+ },
+ {
+  "iid": 2021,
+  "title": "Lab fix-tier job, first run: harness faults behind 12 of the 21 FAIL rows, and the helper arms cannot run in CI",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app lab r12a: 29 PASS, 21 FAIL, 50 NOREF",
+   "every helper arm: NOREF 'no cached helper ... play the manual `lab-helper` job on this ref'"
+  ],
+  "note": "The harness faults of the first run are mostly gone (29 rows pass), but the second half of the title is still true in r12a: no helper arm ran.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2025,
+  "title": "Git Bash: a bash subshell gets the 83 KB bootstrap typed through its line editor (about 40 lines per second on ConPTY); setup takes over 30 s and typed input is held meanwhile",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app windows@gitbash: subshell_ready_rc_clear terminal: PASS; subshell_ready_rc_questions both modes: PASS",
+   "app windows@gitbash: subshell_ready_rc_clear agent: FAIL 'the first inner line ran 3.75 s after its Enter (budget 2 s)'",
+   "unit test-linux: bootstrap_test.rs a_plain_bash_subshell_of_an_msys2_session_sources_its_bootstrap (+3): pass"
+  ],
+  "note": "The failing row is on the very time budget this issue is about. docs/design/r13-winssh2.md reads it as the shell's own setup time; that reading has not been run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2026,
+  "title": "settings.toml: a hand edit that restores the bytes Phosphor wrote last is ignored after another hand edit was reloaded (undo in the editor does not apply)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "unit test-workspace-rest (warpui_extras): toml_backed_tests.rs test_our_last_write_put_back_by_hand_is_reloaded, test_our_last_write_put_back_after_a_syntax_error_is_reloaded; background_writer_tests.rs our_last_write_put_back_by_hand_after_a_foreign_edit_is_not_an_echo: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2027,
+  "title": "appci: round 10 Linux Wayland and lab failures that are test faults (question verdict race, empty-PS1 precondition, command mark race, toast OCR timing, lab Enter timing, lab Ctrl-C prompt count)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app wayland: agent_question_empty, subshell_sh_probe_empty_ps1, network_gate_notice, ui_copy_wrapped_drag, ui_vertical_tabs_many: PASS",
+   "app lab: lab_enter_start bash + zsh 150 ms, lab_ctrl_c_no_esc_i.bash.150: PASS",
+   "app wayland: agent_gate_deny_allow: NOREF"
+  ],
+  "note": "The repaired cases pass, bar one that is NOREF.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2031,
+  "title": "macOS: Enter -> command start 3.6-3.75 ms over Terminal.app (r10a): per-hop split, 2.1 ms is after zle-line-finish in the zsh integration",
+  "verdict": "NOT-A-FIX",
+  "evidence": [
+   "commits 36e105753, e02f79284, 7026d357a: harness measurement and a design note; no app change",
+   "app macos r12a latency table: latency_enter/enter_to_start overhead 3.89 +/- 0.31 ms (terminal), 4.24 +/- 0.60 ms (agent) against 'overhead <= 2 ms': table verdict FAIL"
+  ],
+  "note": "A measurement issue: the work split the 3.6 ms into hops; nothing was changed to remove it, and r12a still measures it over budget.",
+  "action": "remove label",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2033,
+  "title": "appci: the Windows ctrl_c_d regression gate fails on the noise of the end-to-end median (judge Ctrl-C on the app's own segments)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "app windows: ctrl_c_d PowerShell terminal + agent: PASS; agent@gitbash: PASS; terminal@gitbash: NOREF 'overhead 15.22 +/- 5.86 ms vs budget 20 ms is within noise: INCONCLUSIVE'"
+  ],
+  "note": "The defect was a FAIL on noise. Three rows pass on the new judge and the noisy one reports itself inconclusive instead of failing.",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2035,
+  "title": "Results archive: ctrl_c_flood_ab takes the whole 2 MB latency-evidence budget, latency_enter keeps 2 of 52555 hop lines (r10a macOS)",
+  "verdict": "PROVEN",
+  "evidence": [
+   "archive r12a macos run_slim/logs: case_latency_enter.lat.txt 966 lines and case_ctrl_c_flood_ab.lat.txt 1150-1182 lines, about 161 KB each (was 2 of 52555 lines)",
+   "guards: selftest lat_evidence_filter_keeps_only_hop_lines: pass"
+  ],
+  "note": "",
+  "action": "verified+close",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2037,
+  "title": "appci macOS: latency_key_log fails 'REGRESSION key to frame' on the wait for the display pass, not on app time (r11a: 7.28 vs baseline 6.23, app share 1.68 ms)",
+  "verdict": "PROVEN-PARTLY",
+  "evidence": [
+   "app macos: latency_key_log terminal + agent: NOREF; detail '#2037 key to frame without the wait for the display pass (the app's own share): median 1.57 ms (p95 2.06, n=60)'",
+   "guards: selftest mac_key_to_frame_regression_is_judged_on_the_app_share_and_the_tail: pass"
+  ],
+  "note": "The false REGRESSION did not fire in r12a (macOS: 0 FAIL). The row itself is NOREF, so there is no passing row to cite.",
+  "action": "keep fixed-untested",
+  "commits_after_run": []
+ },
+ {
+  "iid": 2044,
+  "title": "Ctrl-C in an ssh session Phosphor does not manage ends the connection: it is sent as SIGINT to the local ssh, not as the byte",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "fix commit 5f9de29a3 is AFTER the r12a commit",
+   "app lab r12a (pre-fix): lab_ctrl_c_no_esc_i fish + nu: FAIL 8 rows"
+  ],
+  "note": "Fix landed after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "5f9de29a3",
+   "b22a3f1b6"
+  ]
+ },
+ {
+  "iid": 2045,
+  "title": "appci lab: round 11 failures that are test faults (fake model reads attached context as the prompt, where-probe is POSIX only, Ctrl-C case types bash lines into nu)",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "fix commit d6dd5d4b7 is AFTER the r12a commit",
+   "app lab r12a (pre-fix): lab_fam_agent_edit_conflict.bash, lab_agent_remote_drop.bash: FAIL"
+  ],
+  "note": "Fix landed after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "b22a3f1b6",
+   "d6dd5d4b7"
+  ]
+ },
+ {
+  "iid": 2050,
+  "title": "Linux/macOS: a secret asked by a precmd function (read -s) is typed into the input editor; Enter runs it as a command, or sends it to the agent",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "fix commit f35389322 is AFTER the r12a commit",
+   "app wayland r12a (pre-fix): precmd_secret_honor_ps1 terminal + agent: FAIL 'the PIN did not reach `read -s` whole and in order'; macos: NOREF"
+  ],
+  "note": "Fix landed after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "2c382f1b7",
+   "e19d0b057",
+   "f35389322"
+  ]
+ },
+ {
+  "iid": 2051,
+  "title": "Windows Git Bash managed ssh (one connection) never bootstraps in time: the 62 KB bootstrap is typed through msys ssh.exe, which forwards console input at about 1.3 KB/s (7 round-12 cases)",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "fix commits c82ff4af0, 85def6917 are AFTER the r12a commit; case ssh_gitbash_bootstrap_in_command is not in the run",
+   "app windows@gitbash r12a (pre-fix): ssh_gitbash_managed, ssh_gitbash_typeahead_managed and five other ssh rows: FAIL both modes"
+  ],
+  "note": "Fix landed after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "2689d2397",
+   "83eac86f7",
+   "85def6917",
+   "91771a958",
+   "c82ff4af0"
+  ]
+ },
+ {
+  "iid": 2053,
+  "title": "Agent conversation: the question of a precmd function (a secret prompt printed before the shell's prompt) is not shown",
+  "verdict": "NOT-JUDGED",
+  "evidence": [
+   "fix commit e19d0b057 is AFTER the r12a commit"
+  ],
+  "note": "Fix landed after the run.",
+  "action": "keep fixed-untested",
+  "commits_after_run": [
+   "6648d339f",
+   "e19d0b057"
+  ]
+ }
+]
