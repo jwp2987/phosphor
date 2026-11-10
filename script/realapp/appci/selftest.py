@@ -610,13 +610,13 @@ def render_latency_step_a_hops_parse():
         "input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 t=10.0")
     # arms: A/B/C order, kept samples per arm, env, deltas
     sch = rh.arm_schedule(rh.ARMS, 30, 2, 3)
-    assert [a for a, _c, _d in sch] == ["default", "keynow_off", "mailbox", "lat1"] * 2 and all(c == 18 and d == 3 for _a, c, d in sch), sch
+    assert [a for a, _c, _d in sch] == ["default", "keynow_off"] * 2 and all(c == 18 and d == 3 for _a, c, d in sch), sch
     assert rh.arm_env("keynow_off") == {"PHOSPHOR_KEY_FRAME_NOW": "0"}      # #1843: the kill-switch arm
-    assert rh.arm_env("mailbox") == {"PHOSPHOR_PRESENT_MODE": "mailbox"} and rh.arm_env("lat1") == {"PHOSPHOR_FRAME_LATENCY": "1"} and rh.arm_env("default") == {}
+    assert rh.ARMS == ("default", "keynow_off") and set(rh.ARM_ENV) == {"default", "keynow_off"} and rh.arm_env("default") == {}     # mailbox / lat1 dropped (round 8)
     base = rh.arm_summary([10.0, 12.0, 14.0], [8.0, 9.0, 10.0], "input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 present_ms=9.0 t=1.0")
     mb = rh.arm_summary([6.0, 7.0, 8.0], [5.0, 6.0, 7.0], "")
-    d = rh.arm_deltas(dict(default=base, mailbox=mb, lat1=rh.arm_summary([], [], "")))
-    assert d["mailbox"] == dict(raw_p50_delta=-5.0, adjusted_p50_delta=-3.0) and d["lat1"] == dict(raw_p50_delta=None, adjusted_p50_delta=None), d
+    d = rh.arm_deltas(dict(default=base, keynow_off=mb, other=rh.arm_summary([], [], "")))
+    assert d["keynow_off"] == dict(raw_p50_delta=-5.0, adjusted_p50_delta=-3.0) and d["other"] == dict(raw_p50_delta=None, adjusted_p50_delta=None), d
     assert base["present_ms"]["p50"] == 9.0 and mb["present_ms"] is None
     # #1843 / #1848: key frames drawn at once. Linux `wait_ms=`, macOS `drawn= ms=`, the Linux switch-off line; an old build gives none of the names
     K = ["input_order hop=key_frame_now wait_ms=0.3 t=1000000.0", "input_order hop=key_frame_now wait_ms=0.5 t=1000001.0",
@@ -4977,6 +4977,26 @@ def agent_latency_pure_parts():
     finally:
         FM.STREAM_GAP_S = saved
         f.stop()
+
+
+@check
+def lat_evidence_filter_keeps_only_hop_lines():
+    """the committed test-results keep the latency cases' hop lines (and only those), capped; other cases and non-case logs are left out"""
+    import lat_evidence as le
+    assert le.case_of("run/logs/agent/case_agent_latency_key.log") == "agent_latency_key" and le.case_of("run_slim/logs/terminal/case_latency_paint.log") == "latency_paint"
+    assert le.case_of("run/logs/agent/case_ctrl_c_flood_ab.log") == "ctrl_c_flood_ab" and le.case_of("run/logs/agent/case_latency_new_thing.log") == "latency_new_thing"
+    assert le.case_of("run/logs/agent/case_mode_proof.log") is None and le.case_of("run/logs/agent/phosphor.log") is None and le.case_of("run/logs/x/case_latency_paint.txt") is None
+    L = ["2026-11-09T10:00:00Z INFO input_order hop=key_presented submit_to_presented_ms=1.0 key_to_presented_ms=2.0 sync=1 wait_ms=0.1 t=1.0",
+         "2026-11-09T10:00:00Z INFO input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 present_ms=9.0 t=1.0",
+         "2026-11-09T10:00:00Z INFO key_frame_sched ms=0.2", "2026-11-09T10:00:00Z INFO frame ms=3.0 n=1", "2026-11-09T10:00:00Z INFO key_frame_now wait_ms=0.3"]
+    noise = ["2026-11-09T10:00:01Z INFO terminal output ready", "plain frame without fields", "2026-11-09T10:00:01Z WARN something else"]
+    txt, hits, kept = le.evidence("\n".join(noise[:1] + L + noise[1:]))
+    assert txt == "\n".join(L) + "\n" and hits == 5 and kept == 5, txt
+    assert le.evidence("\n".join(noise)) == ("", 0, 0)
+    big = [("input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 t=%d" % i) for i in range(1000)]
+    txt, hits, kept = le.evidence("\n".join(big), 20000)
+    assert hits == 1000 and kept < 1000 and len(txt) <= 20200 and big[0] in txt and big[-1] in txt and "lat_evidence: %d of 1000" % (1000 - kept) in txt
+    assert le.CASE_CAP == 2 * 1024 * 1024 and le.PLATFORM_CAP >= le.CASE_CAP
 
 
 def main():

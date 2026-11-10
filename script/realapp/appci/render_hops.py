@@ -115,13 +115,13 @@ def record(r, txt_or_lines, t0=None, t1=None, prefix=""):
 
 
 # ---------------------------------------------------------------- Linux present-mode / frame-latency A/B (design option F, zero code)
-# agent_latency_key relaunches the app per block with one of these environment variables (App.extra_env), like cases_ctrlc_ab: the variables are read once at
+# agent_latency_key relaunches the app per block with the environment variable of one of these arms (App.extra_env), like cases_ctrlc_ab: the variables are read once at
 # start-up (crates/warpui/src/rendering/wgpu/resources.rs), so the arm cannot change inside a running app.
 # keynow_off (#1843): the kill switch of the key frame drawn ahead of the frame callback (crates/warpui/src/windowing/winit/event_loop/key_frame.rs), so the
 # default arm (path ON) and the old behaviour are measured in the same run, interleaved.
 KEY_FRAME_NOW_ENV = "PHOSPHOR_KEY_FRAME_NOW"
-ARM_ENV = {"default": {}, "keynow_off": {KEY_FRAME_NOW_ENV: "0"}, "mailbox": {"PHOSPHOR_PRESENT_MODE": "mailbox"}, "lat1": {"PHOSPHOR_FRAME_LATENCY": "1"}}
-ARMS = ("default", "keynow_off", "mailbox", "lat1")
+ARM_ENV = {"default": {}, "keynow_off": {KEY_FRAME_NOW_ENV: "0"}}
+ARMS = ("default", "keynow_off")       # the mailbox / frame-latency-1 arms were dropped (owner, round 8: raw -0.92 / +0.52 ms, slot-adjusted +0.1 both)
 
 
 def arm_env(arm):
