@@ -94,7 +94,7 @@ the pty | `Co` | report `d-` -> `Add-Co`.
   a native program consumed an Enter the counts never agree again and the editor never gets input
   back). The sound proof needs a fact from the shell (for example the wrapper reporting whether
   console input is pending when it sends the marker), which is a bootstrap protocol change that
-  cannot be tried here. Recorded on the issue for a decision; with (B) in place a wrong commit no
+  cannot be tried here. Filed as #2018 for a decision; with (B) in place a wrong commit no
   longer reorders the line.
 - **Insert at the cursor the editor has when the report arrives.** Wrong: keys typed in the
   editor after focus returned (`Co`) were typed after the pty keys.
@@ -108,5 +108,5 @@ the pty | `Co` | report `d-` -> `Add-Co`.
 - Not covered: an Enter typed inside the ~40 ms pty window is still handled by the young-Enter
   rules (held and run with the merged line, or written as typeahead when the hold's evidence says
   so). That is the hand-off's behaviour for any typeahead Enter and is not changed here.
-- Defect (A) stays: a key typed in the few ms between the wrong commit and the empty line's
+- Defect (A) stays (#2018): a key typed in the few ms between the wrong commit and the empty line's
   Preexec still takes the editor/pty/editor path; (B) makes that path keep typed order.
