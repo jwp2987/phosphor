@@ -4507,3 +4507,40 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   start on purpose. Worked, unproven: nothing was compiled or run. The next Linux run should show, in both modes, `ssh trial verdicts: exact=1`, hand-overs
   `precmd` then `finish` (`delivered=tty_owner`), and NO `ssh_gate_released how=other_command` between the nested `ssh_pty_owner ssh=true site=ssh_submit`
   and its `site=tty_owned`.
+
+## Round 10: `subshell_ready_zsh_newuser_install` on Linux (#2015, #2016, #2017; design `docs/design/r10-wl-zsh-newuser.md`)
+
+- **The case never showed the menu (#2015, TEST fault; rounds 7, 8 and 9b, Wayland, both modes).** The Linux app is started with `ZDOTDIR` = the scratch
+  home (`app.py`), which has a `.zshrc`; zsh looks for its startup files in `$ZDOTDIR` first, so `HOME=~/w/lab_zsh_home zsh` started at a plain prompt and
+  the setup was rightly written there (`subshell_ready_judged ... kind=LineReader tail=ShellPrompt decision=Write`). The guard ran in the harness's
+  environment (no ZDOTDIR), saw a menu and did not skip. The case's `q` then ran as `qecho ...`, and with HOME changed the PID probe (`~/.appci_pid`) answered
+  into the inner HOME: "got none", `pane_not_local_after_*`.
+- **What changed in the case.** It types `ZDOTDIR=~/w/lab_zsh_home zsh` (HOME untouched, so the probes answer where the harness reads). The guard
+  `zsh_runs_newuser_install(dotdir, home)` starts its zsh with the same two variables on a 24x80 pty and looks for the menu's footer. Before Ctrl-I the case
+  reads the pane's zsh from the OS (`pane_zsh_facts`: `ZDOTDIR` in `/proc/<pid>/environ`, the tty size by `TIOCGWINSZ`; Linux): another `ZDOTDIR` FAILS as
+  `TEST precondition: ...` and the case stops; a pane under 15x72 (zsh-newuser-install shows no menu there) skips; no `/proc` is a note. Every check the
+  case made is still made, unchanged.
+- **Self-test `subshell_ready_newuser_guard`**: the guard's environment, the `/proc` environ parser, the precondition verdicts, that `app.py` still exports
+  `ZDOTDIR` and the case overrides exactly that, and on a machine with zsh a real zsh on a real pty: startup files in `ZDOTDIR` = no menu whatever HOME
+  holds; an empty `ZDOTDIR` = the menu although HOME has a `.zshrc` (Linux).
+- Worked, unproven: no app run yet. The next Linux run must show `tail=InputPrompt decision=Wait(InputPrompt)` at Ctrl-I, no
+  `subshell_setup_ready_write` before the `q`, then the write, the typed line in `lab_zshnew.txt`, one `exit` and the root shell in front.
+- **zsh-newuser-install's other key prompts are input prompts (#2017, APP, found by reading).** `--- Type a key ---`, `--- Edit abandoned, type a key ---`
+  and `--- Type a key in forlorn hope ---` read as a shell prompt (no `:`/`?` ending), and a raw tty under a shell leader with a shell-shaped tail is where
+  the setup is written. `output_tail_is_input_prompt` now takes a tail that ends in `---` and says "type a key" for a prompt. Unit test
+  `key_facts_tests.rs`: `the_other_zsh_newuser_install_key_prompts_are_input_prompts` (the three prompts; shell prompts that mention a key or end in
+  dashes are not). Not compiled or run yet. No app case walks the sub-menus (the case answers `q` at the first screen).
+- **A one-key answer no longer leaves the setup armed (#2016, APP, found by reading).** The menu's `q` has no line end, so the hand-off counted it as
+  text in the shell's line and every look was `Wait(LineDirty)` until the user's next Enter (or the 60 s ceiling). New pure rule
+  `subshell_ready::key_read_took_the_typed_keys`: the keys are gone when the line was clean before the first of them, that look showed a question on a
+  raw tty under a shell leader, and this look shows a line editor (queue empty) at a shell-shaped tail on a LOWER row that neither shows the typed
+  text nor repeats the question. The view then judges with a clean line for this attempt (hop `subshell_ready_key_read rows_below= bytes=
+  line_dirty=`); the next user byte ends that. Never without a tty probe (ConPTY).
+
+| layer | test | what it proves |
+|---|---|---|
+| judge (pure) | `subshell_ready_tests.rs`: `a_menu_key_answered_and_a_new_prompt_below_means_the_key_is_gone`, `a_key_is_not_gone_without_every_fact`, `a_key_is_not_gone_on_a_look_that_is_not_a_line_editor_at_a_prompt` | the case's path (`q`, prompt on the next row; rows printed between; two menu keys; PROMPT_SP's `%`) is "taken"; each fact alone turns it off: a line dirty before the key (zsh's "see all N possibilities?" after text typed before Phosphorize), no question, no raw shell tty, same or higher row, the key shown at the prompt, unpredictable text, the question drawn again, a cooked / relay / secret / unknown look, an unread or unprobed queue, an input-prompt or finished tail, a soft-wrap continuation |
+| judge (pure) | `subshell_ready_tests.rs`: `the_tracker_knows_the_text_typed_so_far_only_while_it_is_plain` | `LineTracker::typed_so_far`: plain bytes are kept, an escape sequence or a paste makes the line unpredictable, a line end or ^U empties it |
+| view_test (unix) | `a_menu_key_answer_does_not_leave_the_setup_armed` | Legacy and Table: after the REAL `clear` bytes (`ESC[H ESC[2J ESC[3J`) the footer is `InputPrompt` and nothing is written at Phosphorize; `q` passes through alone and the hand-off calls the line dirty (premise); a prompt on the next row writes the setup; the same row showing `% q` writes nothing |
+
+  Not compiled or run yet. The appci case is the app-level proof: `subshell_ready_key_read` then `subshell_setup_ready_write` after the `q`.

@@ -5877,6 +5877,59 @@ def fakesshd_exec_pty_arms_2007():
     assert winmap.skip_reason(n, "gitbash") is None and winmap.skip_reason(n, "powershell") and ("`%s`" % n) in doc
 
 
+@check
+def subshell_ready_newuser_guard():
+    """#2015 (rounds 7-9b, Linux): subshell_ready_zsh_newuser_install typed `HOME=<empty dir> zsh` into a pane whose ZDOTDIR is the scratch home
+    (app.py exports it; the scratch home has a .zshrc). zsh looks in $ZDOTDIR first, so no menu ever showed, while the guard, run in the harness's
+    environment (no ZDOTDIR), saw one and did not skip. The case now empties the directory zsh really looks in, the guard starts its zsh the same
+    way, and the pane's zsh is inspected through /proc before anything is judged."""
+    import cases_subshell_ready as sr
+    import app as appmod
+    env = sr.newuser_probe_env({"HOME": "/real", "ZDOTDIR": "/scratch", "X": "1"}, "/lab", "/scratch")
+    assert env == {"HOME": "/scratch", "ZDOTDIR": "/lab", "X": "1"}
+    raw = b"A=1\0NOTZDOTDIR=/x\0ZDOTDIR=/lab\0HOME=/scratch\0"
+    assert sr.environ_value(raw, "ZDOTDIR") == "/lab" and sr.environ_value(raw, "HOME") == "/scratch"
+    assert sr.environ_value(raw, "DOTDIR") is None and sr.environ_value(b"", "ZDOTDIR") is None
+    assert sr.pane_zsh_facts(None) is None
+    with tempfile.TemporaryDirectory() as d:
+        lab, other = os.path.join(d, "lab"), os.path.join(d, "scratch")
+        os.makedirs(lab)
+        os.makedirs(other)
+        assert sr.newuser_precondition(None, lab)[0] == "unknown"
+        assert sr.newuser_precondition({"zdotdir": lab, "rows": 40, "cols": 120}, lab)[0] == "ok"
+        assert sr.newuser_precondition({"zdotdir": os.path.join(d, ".", "lab"), "rows": None, "cols": None}, lab)[0] == "ok"       # same directory, size unknown
+        v, text = sr.newuser_precondition({"zdotdir": other, "rows": 40, "cols": 120}, lab)       # the round 7-9b pane
+        assert v == "wrong_env" and "no menu can show" in text
+        assert sr.newuser_precondition({"zdotdir": None, "rows": 40, "cols": 120}, lab)[0] == "wrong_env"
+        assert sr.newuser_precondition({"zdotdir": lab, "rows": 14, "cols": 120}, lab)[0] == "small"
+        assert sr.newuser_precondition({"zdotdir": lab, "rows": 40, "cols": 71}, lab)[0] == "small"
+        assert sr.newuser_precondition({"zdotdir": lab, "rows": 15, "cols": 72}, lab)[0] == "ok"
+    # the two halves that must agree: the app hands the pane a ZDOTDIR, and the case overrides exactly that variable (never only HOME again)
+    assert 'ZDOTDIR="%(home)s"' in appmod.INNER
+    src = open(os.path.join(HERE, "cases_subshell_ready.py")).read()
+    assert 'ctx.be.type("ZDOTDIR=~/w/lab_zsh_home zsh"' in src and 'ctx.be.type("HOME=' not in src
+    assert sr.NEWUSER_FOOTER == b"Type one of the keys in parentheses" and sr.NEWUSER_MIN_TTY == (15, 72)
+    # a real zsh on a real pty: startup files in ZDOTDIR mean no menu, whatever HOME holds (the pane of rounds 7-9b) ...
+    if os.name != "nt" and shutil.which("zsh") and os.geteuid() != 0:
+        with tempfile.TemporaryDirectory() as d:
+            dot, home = os.path.join(d, "dot"), os.path.join(d, "home")
+            os.makedirs(dot)
+            os.makedirs(home)
+            with open(os.path.join(dot, ".zshrc"), "w") as f:
+                f.write("PS1='lab%# '\n")
+            assert sr.zsh_runs_newuser_install(dot, home, wait=1.5) is False
+            assert os.listdir(dot) == []                 # emptied again for the case
+            # ... and an empty ZDOTDIR means the menu although HOME has a .zshrc, where this zsh has the function at all (Linux distributions)
+            has_fn = subprocess.run(["zsh", "-fc", "autoload -U +X zsh-newuser-install"], capture_output=True, timeout=20).returncode == 0
+            if sys.platform.startswith("linux") and has_fn:
+                with open(os.path.join(home, ".zshrc"), "w") as f:
+                    f.write("PS1='home%# '\n")
+                assert sr.zsh_runs_newuser_install(dot, home, wait=6.0) is True
+                assert ".zshrc" not in os.listdir(dot)
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
+    assert "subshell_ready_newuser_guard" in doc and "#2015" in doc
+
+
 def main():
     failed = 0
     for f in CHECKS:
