@@ -2395,6 +2395,28 @@ impl BlocklistAIController {
         if !failed_files.is_empty() {
             self.notify_attachment_read_failures(&failed_files, ctx);
         }
+        // #1947: `send_query` cancelled the running turn before this submit was parked for its
+        // attachment read, but a request can open during the read (a monitored command finishing
+        // resumes the conversation). `send_request_input` refuses to send into an in-flight
+        // request and its caller only logged that, so the user's prompt was dropped. The typed
+        // prompt is a steer (#851): supersede the request that opened meanwhile, exactly as
+        // `send_query` supersedes one that was running at the submit.
+        if self
+            .in_flight_response_streams
+            .has_active_stream_for_conversation(conversation_id, ctx)
+        {
+            log::info!(
+                "a request opened for conversation {conversation_id:?} while a submit waited on \
+                 its attachment read: the submit supersedes it (#1947)"
+            );
+            self.cancel_conversation_progress(
+                conversation_id,
+                CancellationReason::FollowUpSubmitted {
+                    is_for_same_conversation: true,
+                },
+                ctx,
+            );
+        }
         let ai_input = match input_query {
             InputQueryType::UserSubmittedQueryFromInput {
                 static_query_type,
@@ -4797,6 +4819,22 @@ impl BlocklistAIController {
             ctx.dispatch_global_action("workspace:save_app", ());
         }
 
+        // #1949: this turn is over the moment it starts -- no stream was opened, so no
+        // `AfterStreamFinished` will ever run its end. Do the two things that end does that
+        // others wait on: forget the local stream id (it stayed in the conversation's
+        // response-stream map for good, reading as "still processing"), and announce the turn
+        // end, so the view drains or unlocks this conversation's queued prompts instead of
+        // leaving them parked until some unrelated turn ends.
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, _| {
+            if let Some(conversation) = history_model.conversation_mut(&conversation_id) {
+                conversation.cleanup_completed_response_stream(&response_stream_id);
+            }
+        });
+        ctx.emit(BlocklistAIControllerEvent::FinishedReceivingOutput {
+            stream_id: response_stream_id.clone(),
+            conversation_id,
+        });
+
         Ok((conversation_id, response_stream_id))
     }
 
@@ -5046,26 +5084,61 @@ impl BlocklistAIController {
             }
         }
 
-        history_model.update(ctx, |history_model, ctx| {
-            match history_model.update_conversation_for_new_request_input(
-                request_input,
-                response_stream_id.clone(),
-                self.terminal_view_id,
-                ctx,
-            ) {
-                Ok(_) => {
+        let exchange_added = history_model.update(ctx, |history_model, ctx| {
+            history_model
+                .update_conversation_for_new_request_input(
+                    request_input,
+                    response_stream_id.clone(),
+                    self.terminal_view_id,
+                    ctx,
+                )
+                .map(|_| {
                     history_model.update_conversation_status(
                         self.terminal_view_id,
                         conversation_data.id,
                         ConversationStatus::InProgress,
                         ctx,
                     );
-                }
-                Err(e) => {
-                    log::warn!("Failed to push new exchange to AI conversation: {e:?}");
-                }
-            }
+                })
         });
+        if let Err(e) = exchange_added {
+            // #1945: the request has no exchange to land in (for example its target subagent
+            // task is gone). It used to stay registered and live: the provider was asked, every
+            // reply event was dropped ("Could not find conversation for response stream"), and
+            // the user saw neither their prompt nor a reply. Stop the request before it is
+            // observed or registered, and end the turn with a visible error instead.
+            log::error!(
+                "Not sending the request: no exchange could be added to conversation {:?}: {e:?}",
+                conversation_data.id
+            );
+            ctx.unsubscribe_from_model(&response_stream);
+            response_stream.update(ctx, |stream, ctx| {
+                stream.cancel(
+                    CancellationReason::FollowUpSubmitted {
+                        is_for_same_conversation: true,
+                    },
+                    conversation_data.id,
+                    ctx,
+                );
+            });
+            let terminal_view_id = self.terminal_view_id;
+            history_model.update(ctx, |history_model, ctx| {
+                history_model.update_conversation_status_with_error_message(
+                    terminal_view_id,
+                    conversation_data.id,
+                    ConversationStatus::Error,
+                    Some(
+                        "The message could not be added to the conversation, so it was not \
+                         sent. Send it again."
+                            .to_owned(),
+                    ),
+                    ctx,
+                );
+            });
+            return Err(anyhow::anyhow!(
+                "no exchange could be added to the conversation for the request: {e:?}"
+            ));
+        }
 
         self.in_flight_response_streams.register_new_stream(
             response_stream_id.clone(),
@@ -5718,6 +5791,7 @@ impl BlocklistAIController {
                 let mut was_passive_request = false;
                 let mut is_any_exchange_unfinished = false;
                 let mut actions_to_queue = vec![];
+                let mut actions_were_queued = false;
                 // Zap BYOP: collects the message ids newly added this round, used
                 // later to detect the synthetic invalid_arguments error marker in
                 // the EMPTY branch. **Only looking at this round's added** avoids
@@ -5851,6 +5925,7 @@ impl BlocklistAIController {
                     // over the alt screen and renders Allow/Reject for every tool the
                     // round is offered (`chat_stream::CLI_AGENT_TOOLS`). Removed in
                     // #1070, as upstream never had it.
+                    actions_were_queued = true;
                     self.action_model.update(ctx, |action_model, ctx| {
                         action_model.queue_actions(actions_to_queue, conversation_id, ctx);
                     });
@@ -5964,8 +6039,23 @@ impl BlocklistAIController {
                 // Before cleaning up the response stream, check if we should attempt to
                 // resume. The resume inherits the failed request's remaining recovery
                 // budget, so the chain stays bounded by MAX_RECOVERY_ATTEMPTS in total.
+                // Never both (#1952): a stream that both finished with tool calls (queued above)
+                // and scheduled a resume would run the calls AND re-ask the model, which
+                // answers with the same calls again. `chat_stream` cannot yield `Finished`
+                // and then an error today, so this is a guard, not a fix: the queued calls
+                // carry the turn, and their follow-up is the request that continues it.
                 if let Some(resume) = pending_resume {
-                    self.schedule_auto_resume_after_error(conversation_id, resume, ctx);
+                    if actions_were_queued {
+                        log::warn!(
+                            "a stream ended with tool calls queued and a resume scheduled; \
+                             keeping the tool calls and dropping the resume. \
+                             conversation_id={conversation_id:?}"
+                        );
+                        // The resume's countdown was showing; nothing is waiting any more.
+                        self::response_stream::clear_retry_wait(conversation_id);
+                    } else {
+                        self.schedule_auto_resume_after_error(conversation_id, resume, ctx);
+                    }
                 }
 
                 // Clean up the response stream tracking entry now that the stream is complete.
