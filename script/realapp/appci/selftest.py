@@ -1855,6 +1855,74 @@ def audit10_case_log_slice_on_every_platform_follows_the_log_across_a_rotation()
 
 
 @check
+def audit8_9_12_profile_read_retries_and_post_case_invariants_reset_leaked_state():
+    """harness audit #8 (#1915): Profile.read survives a PermissionError (Windows: the shell has the log open). #9 / F (#1916): reference-terminal and
+    lab-arm state a case left behind is reset and named. #12 (#1919): the wedged-pane probe runs after a failing case on every platform."""
+    import builtins
+    import lab as L
+    import profile as P
+    import run as runmod
+    d = tempfile.mkdtemp()
+    real_open = builtins.open
+    try:
+        open(os.path.join(d, "prompt.log"), "w").write("P\t1\nP\t2\n")
+        open(os.path.join(d, "rec.log"), "w").write("C\t1.0\techo hi\n")
+        pr = types.SimpleNamespace(ctl=d, rctl=d, refctl=d, ref_active=False, remote=None)
+        pr.read = lambda which, remote=False: P.Profile.read(pr, which, remote)
+        n = {"left": 1, "calls": 0}
+
+        def flaky(path, *a, **k):
+            if str(path).endswith((".log",)) and str(path).startswith(d):
+                n["calls"] += 1
+                if n["left"] > 0:
+                    n["left"] -= 1
+                    raise PermissionError(13, "sharing violation")
+            return real_open(path, *a, **k)
+        builtins.open = flaky
+        try:
+            assert P.Profile.prompts(pr) == 2 and n["calls"] == 2, n                       # one PermissionError, then the read
+            n.update(left=3, calls=0)
+            assert P.Profile.commands(pr) == [(1.0, "echo hi")] and n["calls"] == 4, n
+            n.update(left=99, calls=0)
+            try:
+                P.Profile.read(pr, "rec.log")
+                raise AssertionError("an unreadable log read as empty: 'no commands' would be a false verdict")
+            except PermissionError:
+                assert n["calls"] == 5, n
+        finally:
+            builtins.open = real_open
+        assert P.Profile.read(pr, "nope.log") == []
+        # #9: the invariants
+        refocused = []
+        be = types.SimpleNamespace(guard_override=None, refocus=lambda verify=False: refocused.append(1))
+        c = types.SimpleNamespace(arm=None, remote=L.LocalRemote(pr), _lab_prev=None)
+        assert runmod.post_case_invariants(c, pr, be) == [] and not refocused, "a clean case tripped the invariant"
+        pr.ref_active, be.guard_override = True, dict(pids={1})
+        out = runmod.post_case_invariants(c, pr, be)
+        assert len(out) == 2 and "ref_active" in out[0] and "guard_override" in out[1] and pr.ref_active is False and be.guard_override is None and refocused == [1], out
+        lab_rem = object()
+        c.arm, c.remote, pr.remote, c._lab_prev = dict(name="u_dash/nohelper"), lab_rem, lab_rem, (None, None)
+        out = runmod.post_case_invariants(c, pr, be)
+        assert len(out) == 1 and "u_dash/nohelper" in out[0] and c.arm is None and isinstance(c.remote, L.LocalRemote) and pr.remote is None, out
+        c.remote = lab_rem                                                              # arm cleared by the case, the remote not restored
+        assert len(runmod.post_case_invariants(c, pr, be)) == 1 and isinstance(c.remote, L.LocalRemote)
+        assert runmod.post_case_invariants(c, pr, be) == []
+        be.refocus = lambda verify=False: (_ for _ in ()).throw(RuntimeError("no window"))
+        pr.ref_active = True
+        out = runmod.post_case_invariants(c, pr, be)                                    # never raises
+        assert pr.ref_active is False and any("refocus after the reset failed" in o for o in out), out
+        # the run loop: the invariant runs right after the case (before the screenshot / probes), emits a row, and the wedge probe is not Windows-only
+        src = real_open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")).read()
+        loop = src[src.index("def main("):src.index("def post_case_invariants(")]
+        assert loop.index("leaks = post_case_invariants(ctx, prof, be)") < loop.index('shot = None if sim else ctx.shot(c["name"]')
+        assert '"harness_state_reset_after_" + c["name"]' in loop
+        assert 'ctx.pane_responsive() if (not sim and (status == "fail" or (win and c["name"] in ("ctrl_c_d", "cadence"))))' in loop, "the wedged-pane probe is platform-gated again"
+    finally:
+        builtins.open = real_open
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
 def audit5_accounting_window_runs_to_case_end_and_a_loss_outside_loss_cases_is_noref():
     """harness audit #5 (#1912): a held / slow-classifier Enter processed more than 3 s after the last injector call is still the case's Enter when the
     window ends at the case's end; lost > 0 (or an Enter short) on a case that is not a loss case and has no failure is noref, never a pass."""

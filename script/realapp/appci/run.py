@@ -488,6 +488,14 @@ def main():
                     traceback.print_exc()
                 finally:
                     disarm()
+                # audit #9 / F (#1916): state a case must have put back before anything else is typed (the screenshot, the probes, the next case)
+                leaks = post_case_invariants(ctx, prof, be)
+                if leaks:
+                    emit(dict(name="harness_state_reset_after_" + c["name"], mode=label, status="fail" if status in ("pass", "noref") else "pass", seconds=0, metrics={}, shots=[],
+                              detail=["after %s the harness's own state was not put back and was reset so later cases are not judged against it: %s%s" % (
+                                  c["name"], "; ".join(leaks), "" if status not in ("pass", "noref") else " -- the case did not fail, so its cleanup has a hole (TEST defect)")]))
+                    if status in ("pass", "noref"):
+                        exit_fail = True
                 if a.backend == "mac" and not sim:      # #1826: a case that left a harness-started Terminal.app (with windows) running names itself in its row
                     try:
                         import refterm_mac
@@ -615,7 +623,9 @@ def main():
                         exit_fail = True
                         instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "left_agent_mode_after_" + c["name"])
                         continue
-                alive = ctx.pane_responsive() if (win and (status == "fail" or c["name"] in ("ctrl_c_d", "cadence"))) else 0
+                # audit #12 (#1919): after ANY failing case on every platform (Windows-only before): on POSIX a program left in the foreground that ignores
+                # Ctrl-C (vim, less, cat) silently failed every later case. pane_responsive is an effect probe and platform-neutral.
+                alive = ctx.pane_responsive() if (not sim and (status == "fail" or (win and c["name"] in ("ctrl_c_d", "cadence")))) else 0
                 if alive == 1:
                     # typing took effect only after the retry's Ctrl-C x3: not wedged, but the NEXT case would have typed into a pane that eats Enter (r18co Git Bash
                     # pane after cadence: keys written to the pty, Enter taken by the empty input editor, fast_typing 0/30). Visible row, not a failure here.
@@ -714,6 +724,39 @@ def main():
 
 
 PTY_WRITE_RX = re.compile(r'hop=pty_write_bytes .*?bytes="((?:[^"\\]|\\.)*)"')
+
+
+def post_case_invariants(ctx, prof, be):
+    """audit #9 / F (#1916): harness state that must be back to its resting value when a case returns, however it returned. A case that raised between
+    switching to the reference terminal and closing it left prof.ref_active / be.guard_override set: every later prompts()/commands() then read the
+    REFERENCE shell's logs and every injection was guarded against the (closed) reference window, a cascade of false fails to the end of the pass. A
+    lab arm that did not reach its cleanup left ctx.remote / prof.remote on the lab user. Each is reset here and named. -> [what was reset] (empty =
+    clean). Never raises."""
+    import lab as labmod_
+    out = []
+    try:
+        if getattr(prof, "ref_active", False):
+            prof.ref_active = False
+            out.append("prof.ref_active was still True (shell logs were being read from the reference terminal)")
+        if be is not None and getattr(be, "guard_override", None):
+            be.guard_override = None
+            out.append("be.guard_override was still set (keys were still aimed at the reference terminal)")
+        arm = getattr(ctx, "arm", None)
+        if arm is not None or not isinstance(getattr(ctx, "remote", None), labmod_.LocalRemote) or getattr(prof, "remote", None) is not None:
+            ctx.arm = None
+            ctx._lab_prev = None
+            ctx.remote = labmod_.LocalRemote(prof)
+            prof.remote = None
+            who = (arm.get("name") or arm.get("user")) if isinstance(arm, dict) else None
+            out.append("the remote side still pointed at a lab arm (%s)" % (who or ("arm set" if arm is not None else "ctx.arm unset, but ctx.remote / prof.remote was not the same-machine remote")))
+        if out and be is not None and hasattr(be, "refocus"):
+            try:
+                be.refocus()
+            except Exception as e:
+                out.append("refocus after the reset failed: %r" % (e,))
+    except Exception as e:
+        out.append("post-case invariant check itself failed: %r" % (e,))
+    return out
 
 
 def account_case(r, calls, log_path, name, t_end):

@@ -4019,3 +4019,15 @@ false fails. Each fix below names its finding (1-12) / cross-cutting letter (A-F
   Windows followed by the timestamp cut of a log file the case's own relaunch created. With no offset it is the old timestamp cut. Artifacts grow
   by at most 1 MB per passing case on Linux/macOS (as on Windows since r18e9). Pin:
   `audit10_case_log_slice_on_every_platform_follows_the_log_across_a_rotation`.
+- **#8 / #9 / #12 / F (#1915, #1916, #1919) — `Profile.read` retries, post-case invariants, wedge probe everywhere.** `Profile.read` (under
+  `prompts()` / `commands()`, polled inside `until` lambdas) retries a `PermissionError` five times like `Ctx.lines` (Windows: the shell has the log
+  open); a log that stays unreadable RAISES rather than reading as "no prompts, no commands". `run.post_case_invariants(ctx, prof, be)` runs right
+  after every case returns or raises, before the screenshot and any probe: `prof.ref_active` must be False, `be.guard_override` None, and with no
+  lab arm `ctx.remote` a `LocalRemote` and `prof.remote` None. Anything else is reset (then `be.refocus()`) and reported in a
+  `harness_state_reset_after_<case>` row: `pass` when the case itself failed (the leak is that failure's debris), **`fail` when the case passed or
+  was `noref`** (its cleanup has a hole: a TEST defect to fix, the later cases are protected either way). Before this a case that raised between
+  switching to the reference terminal and closing it made every later case read the reference shell's logs and guard against a closed window.
+  The wedged-pane probe (`ctx.pane_responsive()`, an effect probe) now runs after ANY failing case on every platform, not only on Windows: a
+  program left in the foreground that ignores Ctrl-C gets a `pane_wedged_after_<case>` row and a relaunch instead of failing every later case.
+  A failing case therefore costs one extra marker command (about a second) on Linux/macOS. Pin:
+  `audit8_9_12_profile_read_retries_and_post_case_invariants_reset_leaked_state`.

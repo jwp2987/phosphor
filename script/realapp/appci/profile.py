@@ -2,7 +2,7 @@
 # and the test tree. Never reads the owner's real config: CI has none. The owner-like settings are the ones in
 # docs/testing.md 3.1 (agent mode default, autodetect + natural-language detection on, vertical tabs are not
 # set because they do not affect input), plus a provider ONLY when the endpoint is configured (ci_env.py: env or ~/.config/phosphor-ci/ci.env).
-import os, random, re, shutil, subprocess, sys
+import os, random, re, shutil, subprocess, sys, time
 
 
 def _wr(path, text):
@@ -543,10 +543,19 @@ class Profile:
         if remote and self.remote is not None:
             return self.remote.read(which)
         p = os.path.join(self.rctl if remote else (self.refctl if self.ref_active else self.ctl), which)
-        try:
-            return open(p, errors="replace").read().splitlines()
-        except FileNotFoundError:
-            return []
+        # audit #8 (#1915): on Windows the shell holds rec.log / prompt.log open while it appends; prompts()/commands() are polled inside until()
+        # lambdas, and one PermissionError there was a "harness exception" fail (and left return_to_local half done). Same retry as Ctx.lines (r18cm);
+        # after five tries the error is raised: an unreadable log must not read as "no prompts, no commands".
+        for attempt in range(5):
+            try:
+                with open(p, errors="replace") as f:
+                    return f.read().splitlines()
+            except FileNotFoundError:
+                return []
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
 
     def commands(self, remote=False):
         """the exact command lines the shell received, in order: [(epoch, cmd)]"""
