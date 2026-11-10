@@ -200,6 +200,22 @@ impl PendingPreprocessedActions {
         ready
     }
 
+    /// #1967: how many actions [`Self::release_ready`] would return: actions that finished
+    /// preprocessing with no `Pending` batch ahead of them. Every path that completes or
+    /// abandons a batch drains these in the same call, so a non-zero count that persists is a
+    /// lost hand-off (#1859), not a wait.
+    pub fn parked_count(&self) -> usize {
+        let mut count = 0;
+        for batch in self.0.iter() {
+            match &batch.status {
+                PreprocessActionStatus::Pending => break,
+                PreprocessActionStatus::Abandoned => {}
+                PreprocessActionStatus::Done { actions } => count += actions.len(),
+            }
+        }
+        count
+    }
+
     /// Whether any batch is still preprocessing (its actions are in the hands of its future, not
     /// here, so a cancel cannot give them results yet).
     pub fn has_pending(&self) -> bool {

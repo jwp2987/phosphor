@@ -36072,3 +36072,202 @@ fn without_a_tty_probe_the_echo_of_the_users_line_is_not_a_prompt() {
         }
     }
 }
+
+/// #1972: what a user's "Take over" does, by who drives the command. A command a tool call only
+/// waits on (no CLI subagent, so no control state) is handed over as for a prompt, which keeps
+/// the turn alive; a command the user already holds, or the user's own, is left alone.
+#[test]
+fn take_over_reason_follows_who_drives_the_agent_command() {
+    // (is_agent_in_control, is_agent_requested_command_in_flight, is_agent_driving_command)
+    let subagent = agent_command_take_over_facts(true, true, true);
+    assert_eq!(subagent, (true, false));
+    assert_eq!(
+        agent_command_take_over(subagent.0, subagent.1),
+        Some(UserTakeOverReason::Manual)
+    );
+    let waited = agent_command_take_over_facts(false, true, true);
+    assert_eq!(waited, (false, true));
+    assert_eq!(
+        agent_command_take_over(waited.0, waited.1),
+        Some(UserTakeOverReason::BlockedOnInput)
+    );
+    // The user holds it (`is_agent_driving_command` is false then), it finished, or it is the
+    // user's own command: nothing to take over.
+    for facts in [
+        agent_command_take_over_facts(false, true, false),
+        agent_command_take_over_facts(false, false, true),
+        agent_command_take_over_facts(false, false, false),
+    ] {
+        assert_eq!(facts, (false, false));
+        assert_eq!(agent_command_take_over(facts.0, facts.1), None);
+    }
+}
+
+/// #1972: an agent command whose tool call waits for it to complete (`ssh -tt host '<a remote
+/// read>'`: the local OS cannot see the remote read, so only the take-over notice is shown). The
+/// notice's old action did nothing for such a command; "Take over" hands it to the user with
+/// `BlockedOnInput`, and the conversation is not cancelled.
+#[test]
+fn take_over_hands_a_waited_agent_command_to_the_user_and_keeps_the_turn() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh -tt host 'read -s x'", "rpw: ");
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("requested-command".to_owned()),
+                    None,
+                    conversation_id,
+                );
+            {
+                let model = view.model.lock();
+                let active_block = model.block_list().active_block();
+                assert!(active_block.is_agent_driving_command());
+                assert!(!active_block.is_agent_in_control());
+                assert!(active_block.long_running_control_state().is_none());
+            }
+
+            // What the notice used to dispatch: no control state, so nothing happens.
+            view.handle_action(&TerminalAction::ToggleLongRunningCommandControl, ctx);
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_eligible_for_agent_handoff(),
+                "the old notice action never handed a waited command over"
+            );
+
+            view.handle_action(&TerminalAction::TakeOverAgentCommand, ctx);
+            {
+                let model = view.model.lock();
+                let active_block = model.block_list().active_block();
+                assert!(active_block.is_eligible_for_agent_handoff());
+                assert!(!active_block.is_agent_driving_command());
+                assert_eq!(
+                    active_block
+                        .long_running_control_state()
+                        .and_then(|state| state.user_take_over_reason()),
+                    Some(&UserTakeOverReason::BlockedOnInput)
+                );
+            }
+            assert!(
+                BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&conversation_id)
+                    .is_some_and(|conversation| !matches!(
+                        conversation.status(),
+                        ConversationStatus::Cancelled
+                    )),
+                "a hand-over for input does not cancel the turn"
+            );
+
+            // A second "Take over" has nothing left to take.
+            view.handle_action(&TerminalAction::TakeOverAgentCommand, ctx);
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_eligible_for_agent_handoff()
+            );
+        });
+    })
+}
+
+/// #1971: "Give control back to agent" as an action (the palette entry, a key the user set):
+/// it hands a command the user holds back to the agent, and does nothing when the user holds
+/// none.
+#[test]
+fn give_control_back_action_hands_the_held_command_to_the_agent() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.init_shell(InitShellValue {
+                    pid: None,
+                    session_id: 0.into(),
+                    shell: "zsh".to_owned(),
+                    ..Default::default()
+                });
+                model.bootstrapped(BootstrappedValue {
+                    shell: "zsh".to_owned(),
+                    ..Default::default()
+                });
+                model.simulate_long_running_block("ssh localhost", "Password:");
+            }
+
+            // Nothing is held yet: the action is a no-op.
+            view.handle_action(&TerminalAction::GiveControlBackToAgent, ctx);
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_in_control()
+            );
+
+            let conversation_id = view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_inline_agent_view(
+                        None,
+                        AgentViewEntryOrigin::LongRunningCommand,
+                        ctx,
+                    )
+                    .expect("inline agent view should create a conversation")
+            });
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_is_agent_tagged_in(true);
+            let task_id = TaskId::new("test-task".to_owned());
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                .expect("tagged-in command should transition to agent-monitored");
+            view.cli_subagent_controller.update(ctx, |controller, ctx| {
+                controller.switch_control_to_user(
+                    UserTakeOverReason::TransferFromAgent {
+                        reason: "Enter your password".to_owned(),
+                    },
+                    ctx,
+                );
+            });
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_eligible_for_agent_handoff()
+            );
+
+            view.handle_action(&TerminalAction::GiveControlBackToAgent, ctx);
+
+            let model = view.model.lock();
+            let active_block = model.block_list().active_block();
+            assert!(active_block.is_agent_in_control());
+            assert!(!active_block.is_eligible_for_agent_handoff());
+        });
+    })
+}

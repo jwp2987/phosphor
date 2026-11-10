@@ -1010,6 +1010,42 @@ const SSH_CONNECT_NO_PROBE_GIVE_UP: Duration = Duration::from_secs(15);
 pub(crate) const MAY_BE_WAITING_FOR_INPUT_NOTICE: &str =
     "This command may be waiting for input \u{2014} Take over";
 
+/// #1967: shown when a question the agent asked had no card to answer it on and was cancelled.
+pub(crate) const STUCK_QUESTION_TOAST: &str = "The agent asked a question, but its card could \
+     not be shown, so the turn was stopped. Send a message to continue.";
+
+/// #1972: the two facts [`agent_command_take_over`] decides on, from the active block's own
+/// answers: whether a CLI subagent controls the command, and whether it is an agent-requested
+/// command in flight that the agent still drives with no control state (a tool call waiting for
+/// it to complete).
+pub(crate) fn agent_command_take_over_facts(
+    is_agent_in_control: bool,
+    is_agent_requested_command_in_flight: bool,
+    is_agent_driving_command: bool,
+) -> (bool, bool) {
+    (
+        is_agent_in_control,
+        !is_agent_in_control && is_agent_requested_command_in_flight && is_agent_driving_command,
+    )
+}
+
+/// #1972: what a user's "Take over" does to the running agent command, or `None` when there is
+/// nothing to take over. A command a CLI subagent controls is taken over manually, as before; a
+/// command a tool call only waits on is handed over as for a prompt (`BlockedOnInput`), so the
+/// turn stays alive and gets the command's result.
+pub(crate) fn agent_command_take_over(
+    agent_in_control: bool,
+    agent_waits_on_command: bool,
+) -> Option<UserTakeOverReason> {
+    if agent_in_control {
+        Some(UserTakeOverReason::Manual)
+    } else if agent_waits_on_command {
+        Some(UserTakeOverReason::BlockedOnInput)
+    } else {
+        None
+    }
+}
+
 // give-up-net: the one subshell-setup net: held keys come back to the editor with a count toast; writes nothing (#1711)
 const SUBSHELL_SETUP_QUIET_NET: Duration = Duration::from_secs(30);
 /// The absolute ceiling of a subshell setup (#1711): however steady the progress, a setup older
@@ -1130,6 +1166,10 @@ const DEFAULT_AI_BLOCK_HEIGHT: f32 = 96.;
 pub const DEFAULT_ASK_AI_AUTOSUGGESTION_TEXT: &str = "What happened here?";
 
 pub const LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY: &str = "LongRunningRequestedCommand";
+/// #1972: the agent drives the running command: a CLI subagent controls it, or an agent tool
+/// call waits for it to complete (no control state). The states "Take over the running agent
+/// command" acts in.
+pub const AGENT_DRIVES_RUNNING_COMMAND_CONTEXT_KEY: &str = "AgentDrivesRunningCommand";
 pub const LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY: &str =
     "LongRunningRequestedUserTookOverCommand";
 
@@ -8900,7 +8940,7 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         match event {
-            BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(_) => {
+            BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(action_id) => {
                 let is_agent_in_control = self
                     .model
                     .lock()
@@ -8910,6 +8950,8 @@ impl TerminalView {
                 if is_agent_in_control {
                     self.redetermine_terminal_focus(ctx);
                 }
+                // #1967: a question that waits for the user must have a card to answer it on.
+                self.watch_blocked_question_card(action_id.clone(), 0, ctx);
             }
             BlocklistAIActionEvent::ExecutingAction(..) => {
                 self.redetermine_focus_after_action_event(ctx);
@@ -12846,10 +12888,16 @@ impl TerminalView {
     }
 
     /// A small non-modal notice on the running agent command: "This command may be waiting for
-    /// input -- Take over". Clicking it does the existing take-over (the same action as the
-    /// long-running command control); nothing else changes, and the command stays with the agent
-    /// until the user acts, the probe says it reads, a marker appears or it completes (#1796).
-    /// Shown only while the agent drives the active block.
+    /// input -- Take over". Clicking it takes the command over
+    /// ([`Self::take_over_agent_command`]); nothing else changes, and the command stays with the
+    /// agent until the user acts, the probe says it reads, a marker appears or it completes
+    /// (#1796). Shown only while the agent drives the active block.
+    ///
+    /// #1972: the click used to dispatch `ToggleLongRunningCommandControl`, which only acts on a
+    /// command with a control state. The notice is shown for commands a tool call WAITS on, and
+    /// those have none for their whole life, so the click did nothing exactly where it was
+    /// offered (an `ssh -tt` whose remote program reads: the local OS cannot see that read, so
+    /// the notice is all the app can offer).
     fn show_may_be_waiting_for_input_notice(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.is_agent_driving_active_block() {
             return;
@@ -12867,11 +12915,144 @@ impl TerminalView {
                 ctx.dispatch_typed_action_for_view(
                     window_id,
                     view_id,
-                    &TerminalAction::ToggleLongRunningCommandControl,
+                    &TerminalAction::TakeOverAgentCommand,
                 );
             });
             toast_stack.add_ephemeral_toast(toast, window_id, ctx);
         });
+    }
+
+    /// #1967: the conversation of `action_id` when it is a question waiting for the user in this
+    /// pane's active conversation and no AI block of the pane holds a question card for it.
+    /// `None` in every other case (answered, cancelled, another kind of action, a card exists,
+    /// a conversation shown elsewhere).
+    fn blocked_question_without_card(
+        &self,
+        action_id: &AIAgentActionId,
+        ctx: &AppContext,
+    ) -> Option<AIConversationId> {
+        let conversation_id = self
+            .ai_action_model
+            .as_ref(ctx)
+            .blocked_question_conversation(action_id)?;
+        if BlocklistAIHistoryModel::as_ref(ctx).active_conversation_id(self.view_id)
+            != Some(conversation_id)
+        {
+            return None;
+        }
+        let has_card = self
+            .rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+            .any(|metadata| {
+                metadata
+                    .ai_block_handle
+                    .as_ref(ctx)
+                    .has_question_card(action_id)
+            });
+        (!has_card).then_some(conversation_id)
+    }
+
+    /// #1967 ("no pending action without a card"): the action model says the question
+    /// `action_id` waits for the user. If no card exists for it, nothing on screen can answer
+    /// it and the turn sits on "Preparing question..." for good. Checked on main-loop hops
+    /// after the event (never a timer): a card is made when the reply's tool call streams in,
+    /// well before the action is blocked, so one that is still missing after
+    /// `turn_invariant::CONFIRM_ROUNDS` hops is not coming. Then the question is cancelled as a
+    /// stop and a toast says why; the user's next message continues the conversation.
+    /// `PHOSPHOR_AGENT_TURN_SELF_HEAL=0` leaves it logged only.
+    fn watch_blocked_question_card(
+        &mut self,
+        action_id: AIAgentActionId,
+        round: u8,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use crate::ai::blocklist::turn_invariant;
+
+        let Some(conversation_id) = self.blocked_question_without_card(&action_id, ctx) else {
+            return;
+        };
+        if round < turn_invariant::CONFIRM_ROUNDS {
+            // A future that is ready at once: the next main-loop turn, no clock.
+            ctx.spawn(async {}, move |me, _, ctx| {
+                me.watch_blocked_question_card(action_id, round + 1, ctx);
+            });
+            return;
+        }
+        let heal = turn_invariant::self_heal_enabled();
+        let fault = turn_invariant::TurnFault::BlockedQuestionWithoutCard {
+            ids: turn_invariant::ids_hash([&action_id]),
+        };
+        // ERROR on purpose: a healed fault is still a defect; the heal must not hide it.
+        log::error!(
+            "hop=agent_turn_stuck fault={} healed={} conversation={conversation_id:?} \
+             id={action_id}",
+            fault.name(),
+            u8::from(heal)
+        );
+        if !heal {
+            return;
+        }
+        // The user's Stop, done for them: every pending action of the turn gets its cancelled
+        // result, the turn ends `Cancelled`, nothing is sent (#1942).
+        self.ai_controller.update(ctx, |controller, ctx| {
+            controller.cancel_conversation_progress(
+                conversation_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+        self.show_error_toast(STUCK_QUESTION_TOAST.to_owned(), ctx);
+    }
+
+    /// #1972: the user takes the running agent command over (the take-over notice's click, the
+    /// command palette's "Take over the running agent command"). A user's act, never a timer.
+    ///
+    /// * A command a CLI subagent controls: the existing manual take-over.
+    /// * A command the agent's tool call only waits on (no control state): the same
+    ///   `BlockedOnInput` hand-over a proven tty read makes. The conversation stays alive and
+    ///   the tool call gets the command's real result when it completes, which is what a user
+    ///   who answers a prompt for the agent wants; a `Manual` take-over would cancel the turn and
+    ///   is refused for such a command anyway (`InteractionMode::take_over_for_user`).
+    /// * Anything else (the user already holds it, no agent command runs): nothing.
+    fn take_over_agent_command(&mut self, ctx: &mut ViewContext<Self>) {
+        let (agent_in_control, agent_waits_on_command) = {
+            let model = self.model.lock();
+            let active_block = model.block_list().active_block();
+            agent_command_take_over_facts(
+                active_block.is_agent_in_control(),
+                active_block.is_agent_requested_command_in_flight(),
+                active_block.is_agent_driving_command(),
+            )
+        };
+        let Some(reason) = agent_command_take_over(agent_in_control, agent_waits_on_command) else {
+            return;
+        };
+        if reason.is_blocked_on_input() {
+            // As for a prompt hand-over: the keys now belong to the command, not the editor.
+            self.end_keys_follow_editor("user_take_over", ctx);
+        }
+        self.cli_subagent_controller.update(ctx, |controller, ctx| {
+            controller.switch_control_to_user(reason, ctx);
+        });
+        ctx.notify();
+    }
+
+    /// #1971: hands the command the user holds back to the agent; nothing when there is none.
+    fn give_control_back_to_agent(&mut self, ctx: &mut ViewContext<Self>) {
+        let eligible = self
+            .model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_eligible_for_agent_handoff();
+        if !eligible {
+            return;
+        }
+        self.cli_subagent_controller.update(ctx, |controller, ctx| {
+            controller.handoff_active_command_control_to_agent(ctx);
+        });
+        ctx.notify();
     }
 
     fn show_ssh_typing_toast(&self, message: &str, ctx: &mut ViewContext<Self>) {
@@ -38881,6 +39062,8 @@ impl TypedActionView for TerminalView {
             | AgentModeSetupSpeedbumpBanner(_)
             | SummarizeConversation
             | ToggleLongRunningCommandControl
+            | GiveControlBackToAgent
+            | TakeOverAgentCommand
             | ToggleHideCliResponses
             | OpenConversationsPalette
             | ExitAgentView
@@ -39870,6 +40053,12 @@ impl TypedActionView for TerminalView {
                 }
                 ctx.notify();
             }
+            GiveControlBackToAgent => {
+                self.give_control_back_to_agent(ctx);
+            }
+            TakeOverAgentCommand => {
+                self.take_over_agent_command(ctx);
+            }
             ToggleHideCliResponses => {
                 self.cli_subagent_controller.update(ctx, |controller, ctx| {
                     controller.toggle_hide_responses(ctx);
@@ -40749,6 +40938,12 @@ impl View for TerminalView {
         }
 
         let active_block = model_lock.block_list().active_block();
+        if active_block.is_agent_in_control()
+            || (active_block.is_agent_requested_command_in_flight()
+                && active_block.is_agent_driving_command())
+        {
+            context.set.insert(AGENT_DRIVES_RUNNING_COMMAND_CONTEXT_KEY);
+        }
         if active_block.is_active_and_long_running() {
             if !model_lock.is_alt_screen_active() {
                 context.set.insert("LongRunningCommand");

@@ -5368,6 +5368,12 @@ def agent_interactive_oracles():
     assert not AI.handover_seen("x [INFO] prompt-shaped line Some(\"Waiting:\") unchanged for 0ns, but the foreground is not reading the tty; leaving the command with the agent\n")
     assert not AI.handover_seen("") and not AI.handover_seen(None)
     assert {"agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover"} <= names
+    # #1972: the user's take-over arm of the remote read: which arm runs, and that the case and the app's palette entry exist under the same words
+    assert AI.remote_read_arm(True, True) == "auto" and AI.remote_read_arm(False, True) == "auto"
+    assert AI.remote_read_arm(True, False) == "user" and AI.remote_read_arm(False, False) == "none"
+    assert "agent_interactive_ssh_takeover" in names and "agent_interactive_ssh_takeover" in cases.PROVING and "agent_interactive_ssh_takeover" in cases.PROVING_FAKE
+    ftl = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "app", "i18n", "en", "warp.ftl"), encoding="utf-8").read()
+    assert "keybinding-desc-take-over-agent-command = %s\n" % AI.TAKE_OVER_PALETTE_TEXT in ftl
 
 
 @check

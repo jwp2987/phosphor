@@ -2425,6 +2425,7 @@ keybinding-desc-set-input-mode-terminal = Set Input Mode to Terminal Mode
 keybinding-desc-toggle-hide-cli-responses = Toggle Hide CLI Responses
 keybinding-desc-slash-command = Slash command: { $name }
 keybinding-desc-take-control-of-running-command = Take control of running command
+keybinding-desc-take-over-agent-command = Take over the running agent command
 
 # --- Terminal zero-state block (welcome chips) ---
 terminal-zero-state-title = New terminal session

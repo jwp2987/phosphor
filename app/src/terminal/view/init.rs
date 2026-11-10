@@ -14,7 +14,7 @@ use crate::terminal::input::{
 use crate::terminal::ssh::error::{SSH_ERROR_BLOCK_VISIBLE_KEY, SshErrorBlockAction};
 use crate::terminal::view::passive_suggestions::PromptSuggestionResolution;
 use crate::terminal::view::{
-    LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY,
+    AGENT_DRIVES_RUNNING_COMMAND_CONTEXT_KEY, LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY,
     LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY,
 };
 use crate::util::bindings;
@@ -1085,6 +1085,10 @@ struct InputModePredicates {
     /// [`Self::agent_mode_predicate`] for the Ctrl-I / Cmd-I key: never while the pty has focus
     /// during a running command (#1024).
     agent_mode_key_predicate: ContextPredicate,
+    /// When Cmd-Enter / Ctrl-Shift-Enter typed at the terminal (not the Input editor) belongs to
+    /// the agent: it starts a conversation, tags the agent into a running command, or (#1971)
+    /// gives a command the user took over back to the agent.
+    agent_conversation_predicate: ContextPredicate,
 }
 
 fn input_mode_predicates() -> InputModePredicates {
@@ -1123,27 +1127,6 @@ fn input_mode_predicates() -> InputModePredicates {
     let agent_mode_key_predicate = agent_mode_predicate.clone()
         & !(id!("Terminal") & !id!("Input") & command_predicate.clone());
 
-    InputModePredicates {
-        base_context,
-        command_predicate,
-        agent_mode_predicate,
-        agent_mode_key_predicate,
-    }
-}
-
-/// Registers bindings related to input modes.
-fn register_input_mode_bindings(app: &mut AppContext) {
-    use warpui::keymap::macros::*;
-
-    let InputModePredicates {
-        base_context,
-        command_predicate,
-        agent_mode_predicate,
-        agent_mode_key_predicate,
-    } = input_mode_predicates();
-
-    // A context predicate that is active when a user can start a new agent conversation.
-    //
     // Deliberately does NOT require `TERMINAL_MODE_INPUT`: that flag is set by the
     // Input view's keymap context, so a cmd-enter dispatched from the terminal
     // (where Input is not in the responder chain) can never satisfy it. Requiring
@@ -1159,6 +1142,63 @@ fn register_input_mode_bindings(app: &mut AppContext) {
         & !id!(ROOT_AMBIENT_AGENT_PANE_KEY)
         & !id!(flags::HAS_PENDING_PROMPT_SUGGESTION)
         & !id!(SSH_ERROR_BLOCK_VISIBLE_KEY);
+
+    InputModePredicates {
+        base_context,
+        command_predicate,
+        agent_mode_predicate,
+        agent_mode_key_predicate,
+        agent_conversation_predicate,
+    }
+}
+
+/// The name of the "Give control back to agent" binding (#1971): the command palette entry and a
+/// key the user may set. The default key is the footer button's own, Cmd-Enter /
+/// Ctrl-Shift-Enter (`USE_AGENT_KEYSTROKE`), which the fixed binding below handles.
+pub const GIVE_CONTROL_BACK_TO_AGENT_ACTION_NAME: &str = "terminal:give_control_back_to_agent";
+
+/// The name of the "Take over the running agent command" binding (#1972): the command palette
+/// entry for what the take-over notice's click does. No default key: Ctrl-I / Cmd-I takes over a
+/// command a CLI subagent controls, and is Tab for any other running command (#1024).
+pub const TAKE_OVER_AGENT_COMMAND_ACTION_NAME: &str = "terminal:take_over_agent_command";
+
+/// #1971: matches while the user holds a command the agent ran (a take-over, or a hand-over for a
+/// prompt): the state the footer shows "Give control back to agent" in.
+fn give_control_back_predicate() -> ContextPredicate {
+    use warpui::keymap::macros::*;
+
+    id!(flags::IS_ANY_AI_ENABLED)
+        & id!("Terminal")
+        & !id!("IMEOpen")
+        & !id!(CLI_AGENT_SESSION_ACTIVE_KEY)
+        & id!(LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY)
+}
+
+/// #1972: matches while the agent drives the running command, with or without a CLI subagent in
+/// control of it: the states a user's "Take over" acts in.
+fn take_over_agent_command_predicate() -> ContextPredicate {
+    use warpui::keymap::macros::*;
+
+    id!(flags::IS_ANY_AI_ENABLED)
+        & id!("Terminal")
+        & !id!("IMEOpen")
+        & !id!(CLI_AGENT_SESSION_ACTIVE_KEY)
+        & id!(AGENT_DRIVES_RUNNING_COMMAND_CONTEXT_KEY)
+}
+
+/// Registers bindings related to input modes.
+fn register_input_mode_bindings(app: &mut AppContext) {
+    use warpui::keymap::macros::*;
+
+    let InputModePredicates {
+        base_context,
+        command_predicate,
+        agent_mode_predicate,
+        agent_mode_key_predicate,
+        // A context predicate that is active when a user can start a new agent conversation
+        // (see `input_mode_predicates`).
+        agent_conversation_predicate,
+    } = input_mode_predicates();
 
     // A context predicate that is active when the user could switch input to shell mode.
     // This matches when in AI mode AND either:
@@ -1215,6 +1255,25 @@ fn register_input_mode_bindings(app: &mut AppContext) {
         .with_context_predicate(terminal_mode_predicate)
         .with_mac_key_binding("cmd-i")
         .with_linux_or_windows_key_binding("ctrl-i"),
+        // #1971: the hand-back as a named action: a command palette entry, and a key the user
+        // may set. Its default key is the fixed Cmd-Enter / Ctrl-Shift-Enter binding above (the
+        // one the footer button shows), so none is set here.
+        EditableBinding::new(
+            GIVE_CONTROL_BACK_TO_AGENT_ACTION_NAME,
+            crate::t!("terminal-give-control-back-to-agent"),
+            TerminalAction::GiveControlBackToAgent,
+        )
+        .with_group(bindings::BindingGroup::WarpAi.as_str())
+        .with_context_predicate(give_control_back_predicate()),
+        // #1972: what the "may be waiting for input -- Take over" notice does, reachable from
+        // the keyboard through the command palette.
+        EditableBinding::new(
+            TAKE_OVER_AGENT_COMMAND_ACTION_NAME,
+            crate::t!("keybinding-desc-take-over-agent-command"),
+            TerminalAction::TakeOverAgentCommand,
+        )
+        .with_group(bindings::BindingGroup::WarpAi.as_str())
+        .with_context_predicate(take_over_agent_command_predicate()),
         EditableBinding::new(
             TOGGLE_HIDE_CLI_RESPONSES_KEYBINDING,
             crate::t!("keybinding-desc-toggle-hide-cli-responses"),
@@ -1297,6 +1356,88 @@ mod take_over_binding_tests {
             "SubshellBanner",
         ]);
         assert!(!predicates.agent_mode_key_predicate.eval(&banner));
+    }
+
+    /// #1971: the user holds a command the agent ran and the terminal has focus. The key the
+    /// footer's "Give control back to agent" button shows (Cmd-Enter / Ctrl-Shift-Enter) is
+    /// live: its fixed binding's predicate holds, on the prompt line and in a full-screen
+    /// program alike, and so does the palette entry's.
+    #[test]
+    fn give_control_back_key_and_palette_entry_are_live_while_the_user_holds_the_command() {
+        let predicates = input_mode_predicates();
+        let fixed_key = predicates.agent_conversation_predicate.clone()
+            & predicates.agent_mode_predicate.clone()
+            & predicates.command_predicate.clone();
+        for running in ["LongRunningCommand", "AltScreen"] {
+            let user_holds = ctx_with(&[
+                flags::IS_ANY_AI_ENABLED,
+                "Terminal",
+                running,
+                LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY,
+                LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY,
+            ]);
+            assert!(
+                fixed_key.eval(&user_holds),
+                "{running}: Cmd-Enter / Ctrl-Shift-Enter gives control back"
+            );
+            assert!(
+                give_control_back_predicate().eval(&user_holds),
+                "{running}: the palette lists 'Give control back to agent'"
+            );
+        }
+    }
+
+    /// #1971: the palette entry is offered only while the user holds an agent command: not while
+    /// the agent still drives it, not for the user's own command, not inside a CLI agent session.
+    #[test]
+    fn give_control_back_palette_entry_is_absent_when_the_user_holds_no_agent_command() {
+        let agent_drives = ctx_with(&[
+            flags::IS_ANY_AI_ENABLED,
+            "Terminal",
+            "LongRunningCommand",
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY,
+            AGENT_DRIVES_RUNNING_COMMAND_CONTEXT_KEY,
+        ]);
+        assert!(!give_control_back_predicate().eval(&agent_drives));
+        let plain_command = ctx_with(&[flags::IS_ANY_AI_ENABLED, "Terminal", "LongRunningCommand"]);
+        assert!(!give_control_back_predicate().eval(&plain_command));
+        let cli_agent = ctx_with(&[
+            flags::IS_ANY_AI_ENABLED,
+            "Terminal",
+            "LongRunningCommand",
+            CLI_AGENT_SESSION_ACTIVE_KEY,
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY,
+        ]);
+        assert!(!give_control_back_predicate().eval(&cli_agent));
+        let ai_off = ctx_with(&[
+            "Terminal",
+            "LongRunningCommand",
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY,
+        ]);
+        assert!(!give_control_back_predicate().eval(&ai_off));
+    }
+
+    /// #1972: "Take over the running agent command" is offered while the agent drives the
+    /// command (with or without a CLI subagent in control), and not once the user holds it or
+    /// for the user's own command.
+    #[test]
+    fn take_over_palette_entry_follows_who_drives_the_command() {
+        let waited = ctx_with(&[
+            flags::IS_ANY_AI_ENABLED,
+            "Terminal",
+            AGENT_DRIVES_RUNNING_COMMAND_CONTEXT_KEY,
+        ]);
+        assert!(take_over_agent_command_predicate().eval(&waited));
+        let user_holds = ctx_with(&[
+            flags::IS_ANY_AI_ENABLED,
+            "Terminal",
+            "LongRunningCommand",
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY,
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY,
+        ]);
+        assert!(!take_over_agent_command_predicate().eval(&user_holds));
+        let plain_command = ctx_with(&[flags::IS_ANY_AI_ENABLED, "Terminal", "LongRunningCommand"]);
+        assert!(!take_over_agent_command_predicate().eval(&plain_command));
     }
 
     /// Once the user owns the command the key belongs to the pty (Ctrl-I is Tab), and without an

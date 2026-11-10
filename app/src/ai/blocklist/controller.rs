@@ -987,6 +987,11 @@ pub struct BlocklistAIController {
     /// into a report that is pending or in flight (a submission cancels the running request and
     /// its output would be lost). Cleared when that stream ends or the user cancels.
     monitored_completion_resumes_in_flight: HashSet<AIConversationId>,
+    /// #1967: per conversation that had a live step in this pane, the count of consecutive
+    /// main-loop hops on which the same turn fault was seen (`turn_invariant`). An entry exists
+    /// only once a reply's stream ended or an action finished here, so a restored conversation
+    /// that was never continued is never judged.
+    turn_watch: HashMap<AIConversationId, super::turn_invariant::StuckWatch>,
 }
 
 /// What [`MonitoredCompletionFacts`] say to do about a finished monitored command.
@@ -1250,6 +1255,14 @@ impl BlocklistAIController {
             else {
                 return;
             };
+            // #1967: a step may have ended here; look at the turn once this event's own
+            // handling is done. Not for the cancels of a revert or an optimistic completion
+            // (`Succeeded`): those rewrite the conversation on purpose.
+            if (*cancellation_reason).map(|reason| reason.conversation_outcome())
+                != Some(CancellationOutcome::Succeeded)
+            {
+                me.schedule_turn_check(*conversation_id, true, ctx);
+            }
             // A closed pane sends no follow-up (#848). Closing stops a conversation mid-batch by
             // cancelling its pending actions, and each cancellation lands here: with an earlier
             // action of the batch already succeeded, the check below would see a result that
@@ -1554,6 +1567,7 @@ impl BlocklistAIController {
             monitored_completion_follow_ups: HashSet::new(),
             deferred_monitored_completions: HashMap::new(),
             monitored_completion_resumes_in_flight: HashSet::new(),
+            turn_watch: HashMap::new(),
         }
     }
 
@@ -5442,6 +5456,152 @@ impl BlocklistAIController {
             .try_cancel_stream(stream_id, reason, ctx)
     }
 
+    /// #1967: an event that may have ended a step of `conversation_id`. Schedules ONE main-loop
+    /// hop (never a timer) that judges the turn after this event's handlers and the events they
+    /// posted have run. `live_step`: the event is itself proof of a live step in this pane (a
+    /// stream ended, an action finished); a stop is not, and only looks at a conversation that
+    /// already had one.
+    fn schedule_turn_check(
+        &mut self,
+        conversation_id: AIConversationId,
+        live_step: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self.suspended_for_close {
+            return;
+        }
+        if !live_step && !self.turn_watch.contains_key(&conversation_id) {
+            return;
+        }
+        if self
+            .turn_watch
+            .entry(conversation_id)
+            .or_default()
+            .schedule()
+        {
+            self.spawn_turn_check_hop(conversation_id, ctx);
+        }
+    }
+
+    fn spawn_turn_check_hop(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // A future that is ready at once: its callback runs on the main loop's next turn, after
+        // the current event's handlers. No clock is involved.
+        ctx.spawn(async {}, move |me, _, ctx| {
+            me.check_turn_invariant(conversation_id, ctx);
+        });
+    }
+
+    /// #1967: the facts `turn_invariant::judge` decides on, read now, and the calls nothing
+    /// holds (for the heal).
+    fn turn_facts(
+        &self,
+        conversation_id: AIConversationId,
+        ctx: &AppContext,
+    ) -> (
+        super::turn_invariant::TurnFacts,
+        Vec<crate::ai::agent::AIAgentAction>,
+    ) {
+        let action_model = self.action_model.as_ref(ctx);
+        let unsettled = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .map(|conversation| {
+                super::turn_invariant::unsettled_actions(conversation, action_model)
+            })
+            .unwrap_or_default();
+        let facts = super::turn_invariant::TurnFacts {
+            stream_in_flight: self
+                .in_flight_response_streams
+                .has_active_stream_for_conversation(conversation_id, ctx),
+            suspended_for_close: self.suspended_for_close,
+            parked: action_model.parked_action_count(conversation_id),
+            unsettled: unsettled.len(),
+            unsettled_ids: super::turn_invariant::ids_hash(
+                unsettled.iter().map(|action| &action.id),
+            ),
+        };
+        (facts, unsettled)
+    }
+
+    /// #1967: one hop of the turn watch. Judges the turn; a fault seen unchanged on
+    /// `turn_invariant::CONFIRM_ROUNDS` consecutive hops is healed (unless the kill switch is
+    /// off), anything else is looked at again on the next hop or dropped.
+    fn check_turn_invariant(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        use super::turn_invariant::{TurnFault, WatchStep, judge, self_heal_enabled};
+
+        if BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .is_none()
+        {
+            self.turn_watch.remove(&conversation_id);
+            return;
+        }
+        let (facts, unsettled) = self.turn_facts(conversation_id, ctx);
+        let fault = judge(&facts);
+        let Some(watch) = self.turn_watch.get_mut(&conversation_id) else {
+            return;
+        };
+        match watch.on_hop(fault) {
+            WatchStep::Clear => {}
+            WatchStep::Recheck => self.spawn_turn_check_hop(conversation_id, ctx),
+            WatchStep::Confirmed(fault) => {
+                let heal = self_heal_enabled();
+                // ERROR on purpose: a healed fault is still a lifecycle defect, and the agent
+                // fuzzer (I6) and the app cases count ERROR lines, so the heal cannot hide it.
+                log::error!(
+                    "hop=agent_turn_stuck fault={} healed={} conversation={conversation_id:?} \
+                     facts={facts:?}",
+                    fault.name(),
+                    u8::from(heal)
+                );
+                if !heal {
+                    return;
+                }
+                match fault {
+                    TurnFault::ParkedActions { .. } => {
+                        self.action_model.update(ctx, |action_model, ctx| {
+                            action_model.release_parked_actions(conversation_id, ctx);
+                        });
+                    }
+                    TurnFault::UnsettledCalls { .. } => {
+                        // The ordinary cancel of a call that was never queued (#1861, #1946),
+                        // with no reason: nobody stopped the turn. Each call gets its one
+                        // result; the step's results go back to the model when another result
+                        // of it finished, else the turn ends `Cancelled` and the
+                        // `FinishedAction` handling says why ("Agent stopped: a tool call was
+                        // cancelled before it returned a result").
+                        //
+                        // A turn the user already stopped stays stopped (#1942): there the
+                        // cancel carries the stop's reason, so no request follows it.
+                        let stopped = BlocklistAIHistoryModel::as_ref(ctx)
+                            .conversation(&conversation_id)
+                            .is_some_and(|conversation| {
+                                matches!(conversation.status(), ConversationStatus::Cancelled)
+                            });
+                        let reason = stopped.then_some(CancellationReason::ManuallyCancelled);
+                        self.action_model.update(ctx, |action_model, ctx| {
+                            action_model.cancel_discarded_actions(
+                                unsettled,
+                                conversation_id,
+                                reason,
+                                ctx,
+                            );
+                        });
+                    }
+                    // The pane's check (it needs the cards): `TerminalView`.
+                    TurnFault::BlockedQuestionWithoutCard { .. } => {}
+                }
+            }
+        }
+    }
+
     /// Cancels 'progress' for the active conversation if there is one:
     ///  * If there is an in-flight request, cancels it.
     ///  * Else, if the request finished, but actions from the response are pending or mid-execution, cancels all of them.
@@ -5458,6 +5618,16 @@ impl BlocklistAIController {
         // concurrent background session in another conversation is left intact; idempotent and a
         // no-op when this conversation has no active background session.
         computer_use::end_background_session(&conversation_id.to_string());
+
+        // #1967: a stop may leave calls nothing holds (a reply cut between its last event and
+        // the queueing of its calls); look at the turn once the stop's own handling is done.
+        // Only for a conversation that had a live step here. A revert or an optimistic
+        // completion (`Succeeded`) rewrites the conversation on purpose: it ends the watch.
+        if reason.conversation_outcome() == CancellationOutcome::Succeeded {
+            self.turn_watch.remove(&conversation_id);
+        } else {
+            self.schedule_turn_check(conversation_id, false, ctx);
+        }
 
         // A stop / Ctrl-C / delete / revert discards submits of this conversation still waiting
         // on their attachment read (#1362). A follow-up submit supersedes the running turn, not
@@ -5985,6 +6155,9 @@ impl BlocklistAIController {
                         id
                     }
                 };
+                // #1967: a reply's stream ended; look at the turn once this event's own
+                // handling (the queueing of the reply's calls) is done.
+                self.schedule_turn_check(conversation_id, true, ctx);
 
                 let history_model = BlocklistAIHistoryModel::handle(ctx);
                 let Some(conversation) = history_model.as_ref(ctx).conversation(&conversation_id)

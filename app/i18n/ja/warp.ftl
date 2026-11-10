@@ -2140,6 +2140,7 @@ keybinding-desc-set-input-mode-terminal = 入力モードをターミナルモ�
 keybinding-desc-toggle-hide-cli-responses = CLI レスポンス非表示を切り替え
 keybinding-desc-slash-command = スラッシュコマンド: { $name }
 keybinding-desc-take-control-of-running-command = 実行中コマンドの制御を引き継ぐ
+keybinding-desc-take-over-agent-command = 実行中のエージェントコマンドを引き継ぐ
 
 # --- Terminal zero-state block (welcome chips) ---
 terminal-zero-state-title = 新規ターミナルセッション

@@ -4245,6 +4245,7 @@ Module `script/realapp/appci/cases_agent_interactive.py`, agent mode only, needs
 | `agent_interactive_password` | `bash -c 'read -s -p "pw: " x; echo; echo got:$x'` (a real tty read with echo off, not sudo) | the app log shows the hand-over (`hop=handover action=<id> reason=blocked_on_input`, logged by `switch_control_to_user`: the one line every system hand-over writes, including the echo-off password path that logs no "handing the command to the user" line; that line is also accepted); the next model request's tool result contains `got:<secret>` byte-exact; the secret is in no user message and not in the app log. #1926 (the round-8 failure on Linux and macOS): the resume after the hand-over used to attach the block (command + output) to the conversation as USER context, so the echoed secret rode in a user message besides the tool result. Two resumes did it: the command finishing in the user's hands (`on_user_block_completed` in `view.rs`, the one this case takes: `read -s` ends as soon as the secret is entered) and the user handing a still-running command back (`cli_controller.rs`). Both now ask `handback_attaches_block_context(block, take_over_reason)`: nothing is attached for an agent-requested command whose hand-over kept the tool call (`BlockedOnInput`, `TransferFromAgent`); a take-over that cancelled the conversation (`Manual`, `Stop`) and a user-run command still attach the block, since no tool result carries their output (unit `hand_over_that_keeps_the_tool_call_attaches_no_block_context`, `take_over_that_cancelled_the_tool_call_still_attaches_the_block`, `hand_back_of_a_user_command_still_attaches_the_block` in `cli_controller_tests.rs`) |
 | `agent_interactive_vim` | `vim -u NONE -N ai_vim.txt` | vim's swap file proves it is up; after `i<text>`, Esc, `:wq` the file is exactly the text; text in no user message |
 | `agent_interactive_ssh` | `ssh -tt fake '<remote read -s ...>'` against the local test sshd (skips with `ssh_why` when there is none) | the REMOTE file holds exactly `got:<text>`, no local file does; the model's next request has `got:<text>` |
+| `agent_interactive_ssh_takeover` (PROVING, #1972) | the same `ssh -tt fake '<remote read -s ...>'` | the user's side of a read the local OS cannot see: the app must say something within 60 s (a hand-over by itself, arm `auto`, or the take-over notice, arm `user`); in arm `user` the case takes over from the command palette ("Take over the running agent command", the action the notice's click dispatches) and `hop=handover ... reason=blocked_on_input` must follow within 15 s; then as `agent_interactive_ssh`: the REMOTE file is exactly `got:<text>`, no local file, the model's next request has `got:<text>`, the text in no user message. Neither a hand-over nor a notice is a FAIL. `agent_interactive_ssh` itself is unchanged (it asks for a hand-over the app makes by itself and stays NOREF while only the notice comes). Not run on Windows (same reason as `agent_interactive_ssh`). |
 | `agent_interactive_less` | `less ai_long.txt` (600 lines) | `G g jjjjj /line 450`, `!echo <tok> >> ai_less.txt`, Enter, `q`: the effect file is exactly the token; token in no user message |
 | `agent_noninteractive_no_takeover` | `printf 'Continue? '; sleep 6; echo done:<tok>` | no `handing the command to the user` line; `done:<tok>` in the model's next request |
 
@@ -5152,3 +5153,36 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
   reader.
 - **Not covered:** an echoing question (`read -p`) on Unix is not a noted reader yet (#2052: design only, `docs/design/r13-secretui.md`
   section 2); on ConPTY the question appears in the conversation at the first key, not at its output.
+
+## Round 13: agent control: stuck turns, the hand-back key, agent-run ssh with a remote read (design `docs/design/r13-agentctl.md`; #1967 #1971 #1972; nothing compiled or run when written)
+
+- **#1971, unit, `terminal/view/init.rs` (`take_over_binding_tests`):**
+  `give_control_back_key_and_palette_entry_are_live_while_the_user_holds_the_command` (the fixed Cmd-Enter / Ctrl-Shift-Enter binding's
+  predicate and the new palette entry's, on the prompt line and under `AltScreen`),
+  `give_control_back_palette_entry_is_absent_when_the_user_holds_no_agent_command` (agent still drives, the user's own command, a CLI
+  agent session, AI off). **View, `terminal/view_test.rs`:** `give_control_back_action_hands_the_held_command_to_the_agent` (a no-op
+  with nothing held; after a `TransferFromAgent` take-over the action puts the agent back in control).
+- **#1972, unit:** `take_over_palette_entry_follows_who_drives_the_command` (`init.rs`),
+  `take_over_reason_follows_who_drives_the_agent_command` (`view_test.rs`: subagent in control = `Manual`, a waited command =
+  `BlockedOnInput`, held / finished / the user's own = nothing). **View:**
+  `take_over_hands_a_waited_agent_command_to_the_user_and_keeps_the_turn` (a requested command with no control state: the notice's OLD
+  action `ToggleLongRunningCommandControl` leaves it with the agent, which is the defect; `TakeOverAgentCommand` hands it over with
+  `BlockedOnInput`, the conversation is not `Cancelled`, a second take-over changes nothing).
+- **#1972, appci:** `agent_interactive_ssh_takeover` in `cases.PROVING` (table above); self-test
+  `agent_interactive_oracles` gained the arm table (`remote_read_arm`) and checks that the palette words the case types are the
+  app's (`keybinding-desc-take-over-agent-command` in `app/i18n/en/warp.ftl`). Hops to read: `may_be_waiting_notice shown=1`, then
+  `hop=handover action=<id> reason=blocked_on_input`.
+- **#1967, unit, `ai/blocklist/turn_invariant_tests.rs`** (pure): `a_turn_that_something_still_moves_has_no_fault` (nothing held, a
+  stream in flight, a closing pane), `calls_nothing_holds_and_parked_actions_are_faults`,
+  `a_fault_is_confirmed_after_the_same_fault_on_consecutive_hops` (three hops, one pending at a time, healed once),
+  `a_fault_that_goes_away_or_changes_is_not_confirmed`, `a_healed_fault_that_returns_later_is_counted_again`,
+  `the_kill_switch_is_on_unless_the_environment_says_off`, `the_id_hash_names_a_set_of_calls`, `fault_names_are_the_log_names`.
+  **`action_model/preprocess_tests.rs`:** `parked_count_counts_only_done_batches_with_nothing_pending_ahead`.
+  **`action_model_tests.rs`:** `only_a_front_question_with_nothing_running_waits_for_the_user`.
+- **#1967, not covered by a test of its own:** the controller wiring (`schedule_turn_check` / `check_turn_invariant`) and the pane's
+  question check (`watch_blocked_question_card`) need the fuzz rig or a live pane. Their regression net is the agent fuzzer: a confirmed
+  fault logs `hop=agent_turn_stuck fault=<unsettled_calls|parked_actions|blocked_question_without_card> healed=<0|1>` at ERROR, which I6
+  counts. A fuzz scenario that passed before and now shows that line is either a lost action the 2 s window of I1 tolerated or a false
+  positive of the check: read the scenario before changing an allowance. No appci case was added: the fake model cannot make the app
+  lose a call, a batch or a card, which is what the heal is for.
+- **Kill switch.** `PHOSPHOR_AGENT_TURN_SELF_HEAL=0`: faults are logged (`healed=0`), nothing is healed.

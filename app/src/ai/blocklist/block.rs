@@ -4557,6 +4557,14 @@ impl AIBlock {
         Some(rich_content_link)
     }
 
+    /// #1967: whether this block holds a question card for `action_id`. A question card takes
+    /// answers exactly while the action model has its action blocked
+    /// (`AskUserQuestionView::is_waiting_on_user_answers`), so for a blocked question "the card
+    /// exists" is "the user can answer".
+    pub fn has_question_card(&self, action_id: &AIAgentActionId) -> bool {
+        self.ask_user_question_views.contains_key(action_id)
+    }
+
     /// Test-only (agent fuzzer, invariants I1 and I7): the ids of the actions this block shows a
     /// card for that the user can act on right now. A command / MCP / button card counts only
     /// while the action model has the action blocked (a finished action's card is history, not a
