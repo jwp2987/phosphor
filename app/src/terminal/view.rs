@@ -3035,6 +3035,11 @@ struct SubshellBootstrapInFlight {
     marker_token: Option<u64>,
     /// Index of the line whose marker releases the next one.
     awaiting_marker: usize,
+    /// #1905 (owner decision 2026-11-09): the next line is written only after the shell has
+    /// drawn a prompt FOLLOWING the marker, so an rc / `PROMPT_COMMAND` read that runs before
+    /// that prompt is seen by the readiness judge (a secret read cancels) before any setup bytes
+    /// reach it. `false` for PowerShell, whose "reading again" marker already is that proof.
+    after_prompt: bool,
 }
 
 /// An event that proves the shell is working through a subshell setup (#1711). The one thing
@@ -3202,6 +3207,8 @@ struct SubshellPaneLook {
     echo_started: bool,
     marker_count: u64,
     last_marker: Option<(u64, usize)>,
+    /// Printable text was output since the latest setup-line marker (#1905).
+    text_since_marker: bool,
 }
 
 /// How the keys typed during a PowerShell subshell setup are held (#1048). See
@@ -22269,6 +22276,7 @@ impl TerminalView {
             pending_lines: rest.into(),
             marker_token: Some(session_id.as_u64()),
             awaiting_marker: 0,
+            after_prompt: shell_type != Some(ShellType::PowerShell),
         });
         // The gates open with the setup, so a paste read started meanwhile (it queues behind
         // them) and every key typed from here on wait for the bootstrap's last line.
@@ -22695,8 +22703,32 @@ impl TerminalView {
             return;
         };
         let awaited = in_flight.awaiting_marker;
+        let after_prompt = in_flight.after_prompt;
         if self.model.lock().last_setup_line_marker() != Some((token, awaited)) {
             return;
+        }
+        if after_prompt {
+            // #1905: the marker only says the shell ran the line. The next line goes out on the
+            // output look that finds the prompt the shell drew AFTER the marker, on a tty its line
+            // editor reads; until then (a `PROMPT_COMMAND` / rc `read -s` in between) the readiness
+            // judge, which ran on this same wakeup, sees a secret read before any setup byte can
+            // reach it. No timer decides: the quiet net is the give-up.
+            let look = self.take_subshell_pane_look();
+            let ready = subshell_ready::stage_two_may_follow(
+                look.tail,
+                look.echo_mid_line,
+                look.text_since_marker,
+                &look.tty,
+            );
+            if !ready {
+                warpui::input_order::log_hop("subshell_stage_two_waits_for_prompt", || {
+                    format!(
+                        "tail={:?} text_since_marker={} kind={:?}",
+                        look.tail, look.text_since_marker, look.tty.kind
+                    )
+                });
+                return;
+            }
         }
         self.write_next_marked_subshell_line(ctx);
     }
@@ -22878,6 +22910,7 @@ impl TerminalView {
             echo_started: model.setup_echo_started(),
             marker_count: model.setup_line_marker_count(),
             last_marker: model.last_setup_line_marker(),
+            text_since_marker: model.text_since_setup_marker(),
         }
     }
 

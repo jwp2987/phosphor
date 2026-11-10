@@ -447,6 +447,33 @@ pub fn judge_written(s: &WrittenSample) -> WrittenVerdict {
     }
 }
 
+/// #1905 (owner decision 2026-11-09): whether the next marker-paced setup line may be written. The
+/// marker only says the shell ran the previous line; the line goes out once the shell has drawn a
+/// prompt AFTER that marker (`text_since_marker`, a shell-shaped unterminated `tail`, our own echo
+/// not half matched) and the tty does not say a secret or a `read` builtin owns it. A secret read
+/// that runs before the prompt (a `PROMPT_COMMAND` / rc `read -s`) therefore meets the written-
+/// state judge first and cancels, instead of being fed the setup. `Unknown` / `Relay` / editor-less
+/// facts add no objection (no OS fact exists: ConPTY, tmux control mode); the quiet net is the
+/// give-up for a shell that never draws a prompt.
+pub fn stage_two_may_follow(
+    tail: Tail,
+    echo_mid_line: bool,
+    text_since_marker: bool,
+    tty: &SubshellTtySample,
+) -> bool {
+    if echo_mid_line || !text_since_marker || tail != Tail::ShellPrompt {
+        return false;
+    }
+    match tty.kind {
+        SubshellTtyKind::Secret => false,
+        // A cooked tty under a shell with a line editor is a `read` builtin (R3).
+        SubshellTtyKind::Cooked => {
+            !leader_has_line_editor(tty.leader_comm.as_deref().unwrap_or_default())
+        }
+        SubshellTtyKind::LineReader | SubshellTtyKind::Relay | SubshellTtyKind::Unknown => true,
+    }
+}
+
 /// Where the keys held behind a cancelled setup go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeldKeysDest {

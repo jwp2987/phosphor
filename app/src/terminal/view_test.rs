@@ -16482,6 +16482,7 @@ fn keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order() {
                 pending_lines: VecDeque::new(),
                 marker_token: None,
                 awaiting_marker: 0,
+                after_prompt: false,
             });
             for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
                 assert!(view.write_user_bytes_to_pty(key, ctx));
@@ -16725,6 +16726,7 @@ fn start_subshell_bootstrap(view: &mut TerminalView, announce: bool) {
         pending_lines: VecDeque::new(),
         marker_token: None,
         awaiting_marker: 0,
+        after_prompt: false,
     });
 }
 
@@ -16822,7 +16824,7 @@ fn table_mode_ctrl_z_during_the_bootstrap_lines_waits_in_order_and_does_not_end_
         terminal.update(&mut app, |view, ctx| {
             view.model
                 .lock()
-                .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+                .process_bytes(format!("\x1b]7771;{token};0\x07\r\nbash-5.1$ ").as_str());
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert!(view.subshell_bootstrap_in_flight.is_none());
         });
@@ -17628,7 +17630,7 @@ fn a_stale_net_timer_does_not_release_a_later_setups_keys() {
         let second = terminal.update(&mut app, |view, ctx| {
             view.model
                 .lock()
-                .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+                .process_bytes(format!("\x1b]7771;{token};0\x07\r\nbash-5.1$ ").as_str());
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             let second = subshell_setup_net_id(view);
             assert_eq!(second.0, first.0, "same setup");
@@ -24364,7 +24366,7 @@ fn subshell_setup_lines_follow_the_shells_markers_not_the_clock() {
 
         // The marker of line 0 releases exactly line 1.
         terminal.update(&mut app, |view, ctx| {
-            let marker = format!("\x1b]7771;{token};0\x07");
+            let marker = format!("\x1b]7771;{token};0\x07\r\nbash-5.1$ ");
             view.model.lock().process_bytes(marker.as_str());
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             // A second wakeup for the same marker does not write the next line too.
@@ -24426,7 +24428,7 @@ fn the_sh_probe_is_marker_paced_not_timed() {
 
         // The marker of line 0 releases the probe line, and that was the last one.
         terminal.update(&mut app, |view, ctx| {
-            let marker = format!("\x1b]7771;{token};0\x07");
+            let marker = format!("\x1b]7771;{token};0\x07\r\nbash-5.1$ ");
             view.model.lock().process_bytes(marker.as_str());
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert!(
@@ -24486,7 +24488,7 @@ fn an_unsupported_subshell_ends_the_setup_and_delivers_the_held_keys_in_order() 
             );
             // The shell ran the prelude: the probe line goes out; the keys stay held.
             terminal.update(&mut app, |view, ctx| {
-                let marker = format!("\x1b]7771;{token};0\x07");
+                let marker = format!("\x1b]7771;{token};0\x07\r\nbash-5.1$ ");
                 view.model.lock().process_bytes(marker.as_str());
                 view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             });
@@ -24683,7 +24685,7 @@ fn the_setup_net_re_arms_only_on_progress_not_on_output() {
             // Our marker: progress, once (a second wakeup for the same marker is not).
             view.model
                 .lock()
-                .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+                .process_bytes(format!("\x1b]7771;{token};0\x07\r\nbash-5.1$ ").as_str());
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             // (The marker also wrote the probe line, itself a chunk: two progress events.)
             let (gen1, seq1) = subshell_setup_net_id(view);
@@ -24786,7 +24788,7 @@ fn the_setup_net_hands_the_held_keys_back_at_30_s_quiet_and_at_the_120_s_ceiling
                     // older than the ceiling.
                     view.model
                         .lock()
-                        .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+                        .process_bytes(format!("\x1b]7771;{token};0\x07\r\nbash-5.1$ ").as_str());
                     view.handle_terminal_wakeup(
                         crate::terminal::event_listener::Wakeup::Output,
                         ctx,
@@ -24956,7 +24958,7 @@ fn a_healthy_marker_paced_setup_re_arms_the_bootstrap_give_up() {
             let armed = view.bootstrap_timer_generation;
             view.model
                 .lock()
-                .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+                .process_bytes(format!("\x1b]7771;{token};0\x07\r\nbash-5.1$ ").as_str());
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert!(
                 view.bootstrap_timer_generation > armed,
@@ -33111,5 +33113,182 @@ fn readiness_toasts_carry_counts_never_text() {
         if n > 0 {
             assert!(toast.contains("not run"), "{toast}");
         }
+    }
+}
+
+/// #1905 (owner decision 2026-11-09), case (1): the second setup line of a bash subshell is
+/// written when the shell has drawn a prompt AFTER the first line's marker, not on the marker.
+/// The marker alone writes nothing, in Legacy and Table; the prompt that follows releases exactly
+/// one line, once.
+#[test]
+fn stage_two_is_written_after_the_prompt_that_follows_the_marker_not_on_the_marker() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            let token = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("bash", "");
+                install_subshell_tty_for_test(view, bash_reading());
+                view.arm_subshell_setup(
+                    SubshellPromptTrigger::Banner {
+                        shell_type: Some(ShellType::Bash),
+                    },
+                    ctx,
+                );
+                assert_eq!(readiness_state(view), "written", "{mode:?}");
+                readiness_token(view)
+            });
+            assert_eq!(setup_lines_written(&pty_writes), 1, "{mode:?}: first line");
+            // The marker alone: the shell ran line 0 but has drawn nothing after it.
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+                output_wakeup(view, ctx);
+                output_wakeup(view, ctx);
+            });
+            assert_eq!(
+                setup_lines_written(&pty_writes),
+                1,
+                "{mode:?}: the marker alone writes no stage 2"
+            );
+            // The prompt after the marker releases it, once.
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().process_bytes("\r\nbash-5.1$ ");
+                output_wakeup(view, ctx);
+                output_wakeup(view, ctx);
+            });
+            assert_eq!(
+                setup_lines_written(&pty_writes),
+                2,
+                "{mode:?}: stage 2 follows the prompt"
+            );
+        })
+    }
+}
+
+/// #1905 case (2): an rc `PROMPT_COMMAND` `read -s` runs after stage 1's marker and before the
+/// prompt. Stage 2 is NOT written while it is open; the judge's Secret verdict cancels in that
+/// wakeup (held keys back in the editor, attempt re-armed), and the secret the user types next is
+/// the only thing that reaches the read. Legacy and Table.
+#[test]
+fn a_prompt_command_secret_read_after_stage_one_gets_no_setup_bytes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            let (token, tty) = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("bash", "");
+                let tty = install_subshell_tty_for_test(view, bash_reading());
+                view.arm_subshell_setup(
+                    SubshellPromptTrigger::Banner {
+                        shell_type: Some(ShellType::Bash),
+                    },
+                    ctx,
+                );
+                assert_eq!(readiness_state(view), "written", "{mode:?}");
+                for key in [b"sec".to_vec(), b"ret".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                }
+                (readiness_token(view), tty)
+            });
+            let after_stage_one: usize = pty_writes.borrow().iter().map(Vec::len).sum();
+            assert_eq!(setup_lines_written(&pty_writes), 1, "{mode:?}");
+            // The marker, then the rc's silent `read -s` opens (no prompt drawn yet).
+            terminal.update(&mut app, |view, ctx| {
+                *tty.lock() = secret_read();
+                view.model
+                    .lock()
+                    .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+                output_wakeup(view, ctx);
+                assert_eq!(
+                    readiness_state(view),
+                    "armed",
+                    "{mode:?}: Secret cancelled and re-armed"
+                );
+                assert!(view.subshell_bootstrap_in_flight.is_none(), "{mode:?}");
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+            });
+            assert_eq!(
+                pty_writes.borrow().iter().map(Vec::len).sum::<usize>(),
+                after_stage_one,
+                "{mode:?}: no byte at all followed stage 1"
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "secret", "{mode:?}");
+                });
+            });
+            // The secret the user types reaches the read, and nothing else does.
+            terminal.update(&mut app, |view, ctx| {
+                assert!(
+                    view.write_user_bytes_to_pty(b"pw".to_vec(), ctx),
+                    "{mode:?}"
+                );
+            });
+            let all: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(&all[after_stage_one..], b"pw", "{mode:?}");
+        })
+    }
+}
+
+/// #1905 case (3): a shell that never draws a prompt after the marker keeps stage 2 unwritten, and
+/// the existing quiet net is the give-up: the held keys come back to the editor, nothing more is
+/// written. Legacy and Table.
+#[test]
+fn a_shell_that_never_draws_a_prompt_after_the_marker_is_given_up_by_the_quiet_net() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            drain_model_startup_events(&mut app, &terminal).await;
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            let token = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("bash", "");
+                view.write_init_subshell_bytes_to_pty(Some(ShellType::Bash), ctx);
+                view.subshell_bootstrap_in_flight
+                    .as_ref()
+                    .and_then(|f| f.marker_token)
+                    .expect("marker-paced")
+            });
+            terminal.update(&mut app, |view, ctx| {
+                assert!(
+                    view.write_user_bytes_to_pty(b"ls".to_vec(), ctx),
+                    "{mode:?}"
+                );
+                view.model
+                    .lock()
+                    .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+                output_wakeup(view, ctx);
+                assert!(view.subshell_bootstrap_in_flight.is_some(), "{mode:?}");
+                backdate_subshell_setup_net(view, false);
+                let id = subshell_setup_net_id(view);
+                view.subshell_setup_quiet_net_fired(id.0, id.1, ctx);
+                assert!(view.subshell_bootstrap_in_flight.is_none(), "{mode:?}");
+                assert!(view.subshell_setup_net.is_none(), "{mode:?}");
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+            });
+            assert_eq!(
+                setup_lines_written(&pty_writes),
+                1,
+                "{mode:?}: no stage 2 without a prompt"
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "ls", "{mode:?}: handed back");
+                });
+            });
+        })
     }
 }

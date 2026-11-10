@@ -938,3 +938,61 @@ fn no_probe_judges_from_screen_facts() {
         Decision::Cancel(_)
     ));
 }
+
+/// #1905: stage 2 follows a prompt drawn after the marker, never the marker alone, and never on a
+/// tty a secret or a `read` builtin owns.
+#[test]
+fn stage_two_may_follow_only_a_prompt_after_the_marker_on_a_non_secret_tty() {
+    use super::stage_two_may_follow;
+    let reading = tty(SubshellTtyKind::LineReader, LeaderKind::Shell, "bash");
+    let cooked = tty(SubshellTtyKind::Cooked, LeaderKind::Shell, "bash");
+    let secret = tty(SubshellTtyKind::Secret, LeaderKind::Unreadable, "");
+    let unknown = SubshellTtySample::unknown();
+    // The ready row.
+    assert!(stage_two_may_follow(
+        Tail::ShellPrompt,
+        false,
+        true,
+        &reading
+    ));
+    // No text since the marker (the old prompt is still the tail), no prompt, a question.
+    assert!(!stage_two_may_follow(
+        Tail::ShellPrompt,
+        false,
+        false,
+        &reading
+    ));
+    assert!(!stage_two_may_follow(Tail::None, false, true, &reading));
+    assert!(!stage_two_may_follow(
+        Tail::InputPrompt,
+        false,
+        true,
+        &reading
+    ));
+    assert!(!stage_two_may_follow(
+        Tail::ShellPrompt,
+        true,
+        true,
+        &reading
+    ));
+    // A secret read, or a `read` builtin of a line-editor shell.
+    assert!(!stage_two_may_follow(
+        Tail::ShellPrompt,
+        false,
+        true,
+        &secret
+    ));
+    assert!(!stage_two_may_follow(
+        Tail::ShellPrompt,
+        false,
+        true,
+        &cooked
+    ));
+    // No OS fact: the prompt shape is the evidence there is.
+    assert!(stage_two_may_follow(
+        Tail::ShellPrompt,
+        false,
+        true,
+        &unknown
+    ));
+}
