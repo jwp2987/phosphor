@@ -148,6 +148,7 @@ pub fn get_context_messages(
             block.state() == BlockState::DoneWithExecution
                 && !block.is_in_band_command_block()
                 && is_user_context_block(block.bootstrap_stage(), block.is_ssh_payload_only())
+                && !block.typed_during_secret_read()
         })
         .collect();
 

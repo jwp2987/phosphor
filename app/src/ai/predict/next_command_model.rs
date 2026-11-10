@@ -367,14 +367,23 @@ impl NextCommandModel {
                 let model = terminal_model.lock();
                 compute(model.block_list())
             });
-            history_contexts = Self::get_similar_history_context(
-                &mut conn,
-                command,
-                &serialized_block.pwd,
-                serialized_block.exit_code,
-                serialized_block.shell_host.as_ref(),
-                NUM_ADDITIONAL_PREV_COMMAND_CONTEXT_LLM,
-            );
+            // #1927: every history context ends with `command` itself, so none is built for a
+            // line submitted while the tty read a secret (it may be a password).
+            let typed_during_secret_read = terminal_model
+                .lock()
+                .block_list()
+                .block_with_id(&serialized_block.id)
+                .is_some_and(|block| block.typed_during_secret_read());
+            if !typed_during_secret_read {
+                history_contexts = Self::get_similar_history_context(
+                    &mut conn,
+                    command,
+                    &serialized_block.pwd,
+                    serialized_block.exit_code,
+                    serialized_block.shell_host.as_ref(),
+                    NUM_ADDITIONAL_PREV_COMMAND_CONTEXT_LLM,
+                );
+            }
         }
         NextCommandContext {
             history_contexts,

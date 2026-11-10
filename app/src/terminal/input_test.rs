@@ -11210,6 +11210,84 @@ fn completer_autosuggestion_is_skipped_for_multi_line_buffers() {
     assert!(!super::completer_autosuggestion_allowed("echo a\n"));
 }
 
+// #1927: the query prediction's `partial_query` is the input buffer. It is sent only for a
+// locked AI input and never while the tty reads a secret; the secret fact is not even asked when
+// the input type already forbids the send.
+#[test]
+fn partial_query_is_sent_only_for_locked_ai_input_outside_a_secret_read() {
+    use super::partial_query_may_be_sent;
+    assert!(partial_query_may_be_sent(true, true, || false));
+    assert!(!partial_query_may_be_sent(true, true, || true));
+    for (is_ai_input, is_locked) in [(true, false), (false, true), (false, false)] {
+        assert!(
+            !partial_query_may_be_sent(is_ai_input, is_locked, || panic!(
+                "the tty is not probed when the input type forbids the send"
+            )),
+            "ai={is_ai_input} locked={is_locked}"
+        );
+    }
+}
+
+// #1927: typing into the editor asks for a query prediction (a send on the debounce channel,
+// which later ships the buffer to the provider) only when the buffer may leave the machine.
+// With the secret probe saying a secret is being read, or with autodetection's unlocked AI
+// guess, no edit sends on the channel; the locked AI input outside a secret read is the control.
+#[test]
+fn editing_the_buffer_during_a_secret_read_never_requests_a_query_prediction() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let _predict = FeatureFlag::PredictAMQueries.override_enabled(true);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let set_config = |app: &mut App, is_locked: bool| {
+            input.update(app, |input, ctx| {
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::AI,
+                            is_locked,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+            });
+        };
+        let set_secret = |app: &mut App, reading: bool| {
+            terminal.read(app, |terminal, _| {
+                terminal
+                    .model
+                    .lock()
+                    .set_secret_read_probe(std::sync::Arc::new(move || reading));
+            });
+        };
+        let type_and_count = |app: &mut App, text: &str| {
+            input.update(app, |input, ctx| {
+                input.user_insert(text, ctx);
+            });
+            input.read(app, |input, ctx| {
+                (
+                    input.debounce_ai_query_prediction_tx.len(),
+                    input.may_send_buffer_as_partial_query(ctx),
+                )
+            })
+        };
+
+        set_config(&mut app, true);
+        set_secret(&mut app, true);
+        assert_eq!(type_and_count(&mut app, "hunter"), (0, false), "secret");
+
+        set_config(&mut app, false);
+        set_secret(&mut app, false);
+        assert_eq!(type_and_count(&mut app, "2"), (0, false), "unlocked");
+
+        set_config(&mut app, true);
+        let (queued, may_send) = type_and_count(&mut app, " and then");
+        assert!(may_send);
+        assert!(queued > 0, "control: locked AI input asks for a prediction");
+    });
+}
+
 /// #1216: an Enter the shell cannot take yet gets a notice instead of a silent drop; an empty
 /// Enter gets none; a running command keeps its notice.
 #[test]

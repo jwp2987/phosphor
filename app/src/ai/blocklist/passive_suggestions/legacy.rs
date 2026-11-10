@@ -671,6 +671,10 @@ fn build_prompt_suggestions_byop_request(
         let model = terminal_model.lock();
         let terminal_width = model.block_list().size().columns();
         let current_block = model.block_list().block_with_id(&serialized_block.id)?;
+        // #1927: a line submitted while the tty read a secret may be a password.
+        if current_block.typed_during_secret_read() {
+            return None;
+        }
         current_block.get_block_content_summary(
             terminal_width,
             NUM_TOP_BLOCK_LINES,

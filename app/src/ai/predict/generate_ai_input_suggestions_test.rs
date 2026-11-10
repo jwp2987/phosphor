@@ -158,3 +158,23 @@ fn bootstrap_and_payload_blocks_are_not_suggestion_context() {
         true
     ));
 }
+
+// #1927: a line submitted from the editor while the tty read a secret may be a password that
+// missed the read. Its block (command and output) is never part of the context sent for
+// next-command suggestions; the blocks around it still are.
+#[test]
+fn a_block_typed_during_a_secret_read_is_not_suggestion_context() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_block("echo before", "before\r\n");
+    model
+        .block_list_mut()
+        .active_block_mut()
+        .set_typed_during_secret_read(true);
+    model.simulate_block("hunter2", "bash: hunter2: command not found\r\n");
+    model.simulate_block("echo after", "after\r\n");
+
+    let messages = get_context_messages(Arc::new(FairMutex::new(model)), 5, 100, 200);
+    let inputs: Vec<&str> = messages.iter().map(|m| m.input.trim()).collect();
+    assert_eq!(inputs, vec!["echo before", "echo after"]);
+    assert!(messages.iter().all(|m| !m.output.contains("hunter2")));
+}

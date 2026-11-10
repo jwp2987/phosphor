@@ -533,6 +533,12 @@ pub struct Block {
     /// This is used for debugging UI shown in the block header on dogfood builds.
     nld_overridden: bool,
 
+    /// Whether the tty was reading a secret (canonical, echo off) when this block's command was
+    /// submitted from the editor (#1927). Such a line may be a password that landed in the editor
+    /// instead of the read, so the block is kept out of everything sent to a model in the
+    /// background (query prediction, next-command and prompt suggestions).
+    typed_during_secret_read: bool,
+
     visible_bootstrap_block_event_sent: bool,
 }
 
@@ -1029,6 +1035,7 @@ impl Block {
                 None => AgentViewVisibility::new_from_terminal(),
             },
             nld_overridden: false,
+            typed_during_secret_read: false,
             is_oz_environment_startup_command: false,
             visible_bootstrap_block_event_sent: false,
         }
@@ -1111,6 +1118,15 @@ impl Block {
     /// Sets whether NLD was overridden at command submission time.
     pub fn set_nld_overridden(&mut self, nld_overridden: bool) {
         self.nld_overridden = nld_overridden;
+    }
+
+    pub fn typed_during_secret_read(&self) -> bool {
+        self.typed_during_secret_read
+    }
+
+    /// Sets the flag from the tty's state at command submission time.
+    pub fn set_typed_during_secret_read(&mut self, typed_during_secret_read: bool) {
+        self.typed_during_secret_read = typed_during_secret_read;
     }
 
     pub fn set_trim_trailing_blank_rows(&mut self, trim: bool) {
