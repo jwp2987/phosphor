@@ -46,6 +46,32 @@ pub fn default_quit_keystroke() -> Option<Keystroke> {
     }
 }
 
+/// Name of the editable "Insert last word of previous command" binding of the input editor: the
+/// editor's counterpart of readline's `yank-last-arg` (#1989).
+pub const INSERT_LAST_WORD_BINDING_NAME: &str = "editor:insert_last_word_previous_command";
+
+/// Default of [`INSERT_LAST_WORD_BINDING_NAME`] on macOS: Option-. where an Option key is set to
+/// act as Meta (`terminal.input.extra_meta_keys`). An Option key that is not Meta types the
+/// layout's character (`≥` on a US layout, `…` on a German one) and keeps doing so, as in
+/// Terminal.app and iTerm2.
+pub const MAC_INSERT_LAST_WORD_KEYSTROKE: &str = "meta-.";
+
+/// Default of [`INSERT_LAST_WORD_BINDING_NAME`] on Linux and Windows: Alt-. (#1989). Alt is the
+/// Meta key there: it is how the same key is encoded for a program that has the terminal
+/// (`ESC .`, `meta_keystroke_to_escape_sequence`), so the key means "last argument" on both
+/// sides of the prompt. Before #1989 only `meta-.` was bound, which those platforms send only
+/// with an Alt key set to act as Meta; that keystroke is kept as a fixed binding next to it.
+pub const LINUX_OR_WINDOWS_INSERT_LAST_WORD_KEYSTROKE: &str = "alt-.";
+
+/// The default "insert last word of previous command" shortcut for the current platform.
+pub fn default_insert_last_word_keystroke() -> Option<Keystroke> {
+    if OperatingSystem::get().is_mac() {
+        Keystroke::parse(MAC_INSERT_LAST_WORD_KEYSTROKE).ok()
+    } else {
+        Keystroke::parse(LINUX_OR_WINDOWS_INSERT_LAST_WORD_KEYSTROKE).ok()
+    }
+}
+
 // CustomActions are attached to menu items, and may be attached to Bindings.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Sequence)]
 #[repr(isize)]

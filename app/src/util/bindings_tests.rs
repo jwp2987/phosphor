@@ -8,7 +8,8 @@ use warpui::{
 use crate::{
     terminal,
     util::bindings::{
-        CONTROL_CHARACTER_KEY_REGEX, QUIT_APP_BINDING_NAME, default_quit_keystroke,
+        CONTROL_CHARACTER_KEY_REGEX, INSERT_LAST_WORD_BINDING_NAME, QUIT_APP_BINDING_NAME,
+        default_insert_last_word_keystroke, default_quit_keystroke,
         keybinding_name_to_display_string, trigger_to_keystroke,
     },
     workspace::WorkspaceAction,
@@ -288,6 +289,68 @@ fn test_quit_binding_default_and_no_collision() {
                 claimants.is_empty(),
                 "the default quit shortcut collides with: {claimants:?}"
             );
+        });
+    });
+}
+
+// #1989 (owner decision 2026-11-10): Alt-. inserts the last word of the previous command, the
+// editor's counterpart of readline's yank-last-arg. Off macOS that is the Alt key itself (it is
+// the Meta key there); on macOS it is Option-. with Option set to act as Meta, so an Option key
+// that types characters keeps typing them.
+#[test]
+fn test_default_insert_last_word_keystroke_per_platform() {
+    let expected = if OperatingSystem::get().is_mac() {
+        Keystroke::parse("meta-.").ok()
+    } else {
+        Keystroke::parse("alt-.").ok()
+    };
+    assert!(expected.is_some());
+    assert_eq!(default_insert_last_word_keystroke(), expected);
+}
+
+#[test]
+fn test_insert_last_word_binding_default_and_no_collision() {
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+        app.update(terminal::init);
+        app.update(crate::editor::init);
+
+        app.update(|ctx| {
+            let binding = ctx
+                .editable_bindings()
+                .find(|binding| binding.name == INSERT_LAST_WORD_BINDING_NAME)
+                .expect("the insert-last-word binding should be registered as editable");
+            assert_eq!(
+                trigger_to_keystroke(binding.trigger),
+                default_insert_last_word_keystroke()
+            );
+
+            // The names of the other bindings whose default is `keystroke` (a fixed binding has
+            // an empty name).
+            let claimants = |keystroke: &str| -> Vec<String> {
+                let keystroke = Keystroke::parse(keystroke).ok();
+                ctx.get_key_bindings()
+                    .filter(|binding| binding.name != INSERT_LAST_WORD_BINDING_NAME)
+                    .filter(|binding| trigger_to_keystroke(binding.trigger) == keystroke)
+                    .map(|binding| binding.name.to_string())
+                    .collect()
+            };
+            let none = Vec::<String>::new();
+
+            // Alt-. is the editable binding's alone.
+            assert_eq!(claimants("alt-."), none);
+            // `meta-.`: the editable binding on macOS; elsewhere exactly the one fixed binding
+            // that keeps an Alt key set to act as Meta working.
+            if OperatingSystem::get().is_mac() {
+                assert_eq!(claimants("meta-."), none);
+            } else {
+                assert_eq!(claimants("meta-."), vec![String::new()]);
+            }
+            // #1988: Alt-R / Meta-R stay unbound, so a program that has the terminal receives
+            // them (`ESC r`) and they remain free for the owner's decision on the shell's
+            // history search.
+            assert_eq!(claimants("alt-r"), none);
+            assert_eq!(claimants("meta-r"), none);
         });
     });
 }
