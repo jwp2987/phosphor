@@ -3728,6 +3728,12 @@ must collect the "before" with the switch at `0` and the "after" with it unset, 
 - Collect: open the 7 MB txt and rs files from `editor_memory_7mb` with `RUST_LOG=editor_memory=debug` and report the
   rss_kb step between stages (the stage with the largest jump is the next thing to cut), together with the existing
   `editor_memory open ...` breakdown line and the after-open figure with `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1`.
+- The `editor_memory open` line also carries `walk_ms=<ms>` (round 10): how long the breakdown's own two tree walks took. They
+  run on the main thread right after the file-sized delta's layout, and only when `editor_memory=debug` is
+  on (as the appci launchers set it): a main-thread pause a user's open does not pay, and one no `hop=ui_item` covers (those
+  time frames, events and actions; the walk runs in a model event handler). `editor_memory_7mb` notes it per kind
+  (`<kind>: the app's own 'editor_memory open' breakdown walk took N ms ...`) and it is in the `<kind>_app_breakdown_open`
+  metric.
 
 ## AWS credential resolver for Bedrock (`app/src/ai/aws_creds`)
 

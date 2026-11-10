@@ -768,11 +768,17 @@ impl CodeEditorModel {
             self.large_layouts_handled += 1;
         }
         if log::log_enabled!(target: "editor_memory", log::Level::Debug) {
+            // The two walks below visit every node of both trees on the main thread, right after
+            // the file-sized delta's layout. `walk_ms` says how long they took, so a run that
+            // times the open can tell this instrumentation's share (it exists only with
+            // `editor_memory=debug`) from the editor's (#1340).
+            let walk_start = std::time::Instant::now();
             let buffer = self.content.as_ref(ctx).memory_stats();
             let render = self.render_state.as_ref(ctx).memory_stats();
+            let walk_ms = walk_start.elapsed().as_secs_f64() * 1000.0;
             log::debug!(
                 target: "editor_memory",
-                "editor_memory open text_bytes={} lines={} buffer_items={} buffer_leaves={} buffer_nodes_bytes={} buffer_item_size={} undo_entries={} render_items={} render_nodes_bytes={} parked_chunks={} parked_lines={} parked_bytes={} hydrated={} dehydrated={} frame_bytes={} source_bytes={} other_items={} syntax_trees={}",
+                "editor_memory open text_bytes={} lines={} buffer_items={} buffer_leaves={} buffer_nodes_bytes={} buffer_item_size={} undo_entries={} render_items={} render_nodes_bytes={} parked_chunks={} parked_lines={} parked_bytes={} hydrated={} dehydrated={} frame_bytes={} source_bytes={} other_items={} syntax_trees={} walk_ms={walk_ms:.2}",
                 buffer.text_bytes,
                 buffer.lines,
                 buffer.tree.items,

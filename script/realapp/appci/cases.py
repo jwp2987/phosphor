@@ -5444,6 +5444,12 @@ def c_editor_mem(ctx, r):
             br = editor_mem_log(ctx, off)
             if br["open"]:
                 r.metric("%s_app_breakdown_open" % tag, br["open"][-1])
+                walk = br["open"][-1].get("walk_ms")
+                if cyc == 0 and walk is not None:
+                    # #1340: the breakdown is computed on the main thread right after the file-sized delta's layout, and only because
+                    # this run turns editor_memory=debug on. It is inside no hop=ui_item (those time frames, events and actions), so it is reported here.
+                    r.note("%s: the app's own 'editor_memory open' breakdown walk took %s ms on the main thread right after the load's layout "
+                           "(instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)" % (tag, walk))
             if cyc == 0 and getattr(ctx, "log_path", None):
                 stages = load_stages(ctx.log_since(off))
                 if stages:
