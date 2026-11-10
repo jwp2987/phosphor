@@ -53,9 +53,29 @@ WHAT IT CHECKS, per shell (PHOSPHOR_NC_DEADLINE=5 keeps the hook's own deadline 
   * zsh without zsh/datetime (no $EPOCHREALTIME): the cancel, the late frame and the cut-short
     frame still behave.
 
+BASH BELOW 4.0 (#1969)
+  bash 3.2 (macOS /bin/bash, the usual remote shell on a Mac) has no READLINE_LINE, so its hook
+  cannot edit the line: bytes that are not a frame are handed back as KEYS through a readline
+  macro (`__warp_nc_finish`, replay mode). Every check above runs there too, plus: an arrow key
+  after RS goes back whole (the macro can carry an escape), a multi-line bracketed
+  paste read by the hook is inserted, not run line by line, and text with a quote and a
+  backslash goes back unchanged. Readline before 7.0 (bash < 4.4) has no bracketed paste, so the
+  app's command bytes are written there as the app writes them without it: ^P, the text, Enter.
+
 USAGE
-    script/test_native_completions
-Exit 0 when every check passes (or a shell is SKIPPED), 1 otherwise.
+    script/test_native_completions [--bash PATH] [--bash-image IMAGE ...] [--only-bash]
+  --bash PATH        the bash to run (default: the first `bash` on PATH). On macOS,
+                     `--bash /bin/bash` runs the system 3.2.
+  --bash-image IMAGE run bash from a container image as well (docker or podman; the official
+                     `bash:3.2` ... `bash:5.x` images), e.g. on a Linux machine with no bash 3.2:
+                     `--bash-image bash:3.2 --bash-image bash:4.0`. Repeatable. A missing
+                     runtime or image is SKIPPED, never pulled.
+  --only-bash        skip zsh (with the options above, to check one bash quickly).
+  PHOSPHOR_NC_BASH_IMAGES="bash:3.2 bash:4.0" names the images when no --bash-image is given (for
+  script/precheck, which runs this with no arguments). On macOS the system /bin/bash (3.2) is
+  run as well when the bash on PATH is another one.
+Temporary files go under $TMPDIR. Exit 0 when every check passes (or a shell is SKIPPED), 1
+otherwise.
 """
 
 import json
@@ -110,14 +130,23 @@ def frame(token, text):
 CANCEL = RS + b"-:" + US
 
 
+# Whether the shell under test has bracketed paste (readline 7.0+, bash 4.4+; zsh). The app writes a
+# command as a bracketed paste only to a shell that turned the mode on.
+BRACKETED = [True]
+
+
 def app_command(text):
-    """The bytes the app writes for a command: its line-clear key, a bracketed paste, Enter."""
+    """The bytes the app writes for a command: its line-clear key, the text (a bracketed paste
+    where the shell has it), Enter."""
+    if not BRACKETED[0]:
+        return b"\x10" + text.encode() + b"\r"
     return b"\x10\x1b[200~" + text.encode() + b"\x1b[201~\r"
 
 
 class Pty:
-    def __init__(self, argv, env, cwd):
+    def __init__(self, argv, env, cwd, on_close=None):
         self.buf = b""
+        self.on_close = on_close
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.chdir(cwd)
@@ -157,6 +186,8 @@ class Pty:
         return out
 
     def close(self):
+        if self.on_close:
+            self.on_close()
         try:
             os.kill(self.pid, signal.SIGKILL)
             os.waitpid(self.pid, 0)
@@ -385,8 +416,24 @@ def protocol_checks(sh, shell, full=True):
     expect_runs(sh, shell, "the shell runs a command at the end", want)
 
 
-def start_bash(base, lab):
-    bash = shutil.which("bash")
+def container_runtime():
+    return shutil.which("docker") or shutil.which("podman")
+
+
+def bash_version(bash=None, image=None):
+    """(major, minor) of the bash under test, or None when it cannot be run."""
+    probe = "echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"
+    argv = [container_runtime(), "run", "--rm", image, "bash", "-c", probe] if image else [bash, "-c", probe]
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL).stdout.strip()
+        major, minor = out.split(".")
+        return int(major), int(minor)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def start_bash(base, lab, bash=None, image=None):
+    bash = bash or shutil.which("bash")
     with open(os.path.join(BOOTSTRAP, "bash_init_shell.sh")) as f:
         init = f.read().replace("@@WARP_SESSION_ID@@", "4242").replace("@@USING_CON_PTY_BOOLEAN@@", "false")
     with open(os.path.join(BOOTSTRAP, "bash.sh")) as f:
@@ -399,6 +446,21 @@ def start_bash(base, lab):
         "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1",
         "INPUTRC": "/dev/null", "PHOSPHOR_NC_DEADLINE": "5",
     }
+    if image:
+        # The image's own bash, in a pty the container runtime relays. The temporary tree is
+        # mounted at the same path (the rc file and the lab), and the shell runs as this user so
+        # nothing root-owned is left in it.
+        runtime = container_runtime()
+        name = "phx-nc-%d-%d" % (os.getpid(), int(time.time() * 1000) % 1000000)
+        root = os.path.dirname(lab)
+        argv = [runtime, "run", "--rm", "-i", "-t", "--name", name, "--network", "none", "--user", "%d:%d" % (os.getuid(), os.getgid()),
+                "-v", "%s:%s" % (root, root), "-w", lab]
+        for k, v in env.items():
+            if k != "PATH":
+                argv += ["-e", "%s=%s" % (k, v)]
+        argv += [image, "bash", "--noprofile", "--rcfile", rc, "-i"]
+        kill = lambda: subprocess.run([runtime, "kill", name], capture_output=True, timeout=30, stdin=subprocess.DEVNULL)  # noqa: E731
+        return Pty(argv, dict(os.environ), lab, on_close=kill)
     return Pty([bash, "--noprofile", "--rcfile", rc, "-i"], env, lab)
 
 
@@ -443,22 +505,95 @@ def wait_bootstrapped(sh, shell):
     return True
 
 
-def run_bash(base, lab):
-    bash = shutil.which("bash")
-    if not bash:
-        skipped.append("bash")
-        return
-    ver = subprocess.run([bash, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True).stdout.strip()
-    if ver and int(ver) < 4:
-        print("NOTE bash: bash %s is below 4.0; the bootstrap binds no ^Y there and the app sends none" % ver)
-        skipped.append("bash (below 4.0, by design)")
-        return
-    print("NOTE bash: bash %s; bash 3.2 (macOS /bin/bash) is not exercised: no ^Y and no advertisement below 4.0, by design" % ver)
-    sh = start_bash(base, lab)
-    try:
-        if not wait_bootstrapped(sh, "bash"):
+def replay_checks(sh, shell):
+    """Below bash 4.0: what only the replay macro can do, and what it must not get wrong."""
+    # An arrow key after RS goes back whole: Up recalls the last command, Enter runs it again.
+    sh.write(app_command("echo ran-$((90+9))up"))
+    expect_runs(sh, shell, "(setup) the command to recall runs", b"ran-99up")
+    sh.drain(0.5)
+    sh.write(RS + b"\x1b[A")
+    sh.drain(0.5)
+    sh.write(b"\r")
+    expect_runs(sh, shell, "RS + Up arrow is handed back as the key: Enter runs the recalled command", b"ran-99up")
+    # Text with a quote, a backslash and a space after a bare RS: the first byte is not frame
+    # alphabet, so the widget hands back only that byte and the rest is read by readline; a
+    # frame-alphabet lead (digits) is read by the widget and goes back through the macro.
+    sh.drain(0.3)
+    sh.write(RS + b"12x" + b"\x10" + b"echo \"ran-$((40+3))\\\\q\" 'p q'\r")
+    expect_runs(sh, shell, "RS + frame-alphabet text + ^P + a quoted command: the text is cleared, the command runs unchanged", b"ran-43\\q p q")
+    # A multi-line bracketed paste read by the hook (where the frame was expected) is inserted
+    # as one text, never run line by line: the line is then cleared and a marker command runs.
+    if ask(sh, shell, "multi-line paste") is not None:
+        sh.write(b"\x1b[200~echo ran-$((60+6))first\necho ran-$((60+7))second\x1b[201~")
+        sh.drain(0.8)
+        got = sh.drain(0.5)
+        sh.write(b"\x03")
+        sh.drain(0.5)
+        text, want = command()
+        sh.write(app_command(text))
+        out = sh.read_until(re.escape(want))
+        seen = sh.buf[-4000:]
+        check(shell, "a multi-line paste read by the hook is inserted, not run line by line",
+              b"ran-66first\r\n" not in seen and b"ran-67second\r\n" not in seen and want in out, f"(got {seen[-300:]!r} {got[-80:]!r})")
+
+
+def run_bash(base, lab, bash=None, image=None):
+    bash = bash or shutil.which("bash")
+    label = "bash"
+    if image:
+        if not container_runtime():
+            skipped.append(f"bash image {image} (no docker or podman)")
             return
-        protocol_checks(sh, "bash")
+        have = subprocess.run([container_runtime(), "image", "inspect", image], capture_output=True, stdin=subprocess.DEVNULL).returncode == 0
+        if not have:
+            skipped.append(f"bash image {image} (not present locally; it is never pulled here)")
+            return
+    elif not bash:
+        skipped.append("bash: not installed")
+        return
+    ver = bash_version(bash, image)
+    if ver is None:
+        check(f"bash ({image or bash})", "reports its version", False)
+        return
+    label = "bash %d.%d%s" % (ver[0], ver[1], " (%s)" % image if image else "")
+    if ver < (3, 2):
+        print("NOTE %s: below 3.2; the bootstrap binds no ^Y there and the app sends none" % label)
+        skipped.append("%s (below 3.2, by design)" % label)
+        return
+    BRACKETED[0] = ver >= (4, 4)
+    print("NOTE %s: %s; command bytes %s bracketed paste" % (
+        label, "hands bytes back through the replay macro (no READLINE_LINE)" if ver < (4, 0) else "hands bytes back through READLINE_LINE",
+        "with" if BRACKETED[0] else "without"))
+    sh = start_bash(base, lab, bash, image)
+    try:
+        if not wait_bootstrapped(sh, label):
+            return
+        protocol_checks(sh, label)
+        if ver < (4, 0):
+            replay_checks(sh, label)
+        # The exchange is not a command: no Preexec, CommandFinished or Precmd hook may come of a
+        # ^Y or an RS key (before bash 4.0 the DEBUG trap cannot see a readline binding by
+        # READLINE_LINE, #1969), and the next real command still announces itself exactly once.
+        sh.drain(0.5)
+        before = {h: len(sh.hooks(h)) for h in ("Preexec", "CommandFinished", "Precmd")}
+        got = complete(sh, label, "cd pro")
+        sh.write(RS + b"-:" + US)
+        sh.drain(1.0)
+        after = {h: len(sh.hooks(h)) for h in before}
+        check(label, "the exchange and a frame at the prompt send no Preexec / CommandFinished / Precmd hook",
+              got is not None and after == before, f"(before {before}, after {after})")
+        # #2002: the prompt-mode switch keys (ESC p, ESC w) are `bind -x` commands too.
+        sh.write(b"\x1bw")
+        sh.drain(1.0)
+        after = {h: len(sh.hooks(h)) for h in before}
+        check(label, "the prompt-mode switch key (ESC w) sends no Preexec / CommandFinished / Precmd hook (#2002)", after == before, f"(before {before}, after {after})")
+        text, want = command()
+        sh.write(app_command(text))
+        expect_runs(sh, label, "(hooks) the command after the exchange runs", want)
+        sh.drain(1.0)
+        after = {h: len(sh.hooks(h)) for h in before}
+        check(label, "the next real command sends exactly one Preexec, CommandFinished and Precmd",
+              all(after[h] == before[h] + 1 for h in before), f"(before {before}, after {after})")
         for line in (
             "_phx() { COMPREPLY=($(compgen -W 'alpha beta' -- \"$2\")); }; complete -F _phx phx",
             "_phz() { COMPREPLY=(\"w${COMP_CWORD}-${COMP_WORDS[1]}\"); }; complete -F _phz phz",
@@ -474,23 +609,24 @@ def run_bash(base, lab):
             ("phq --color=re", ["--color=red"], "the token's --opt= part is kept"),
             ("phy --fo", ["--force"], "a complete -W spec answers"),
         ):
-            got = complete(sh, "bash", line)
+            got = complete(sh, label, line)
             if got is not None:
-                check("bash", name, got == want, f"(got {got})")
+                check(label, name, got == want, f"(got {got})")
         # vi mode: the precmd re-binds the keys in vi-insert and vi-command.
         text, want = command()
         sh.write(app_command("set -o vi; " + text))
         sh.read_until(re.escape(want))
         sh.drain(0.5)
-        got = complete(sh, "bash", "cd pro")
-        check("bash", "vi mode: the exchange still answers", got is not None and "projects/" in got, f"(got {got})")
+        got = complete(sh, label, "cd pro")
+        check(label, "vi mode: the exchange still answers", got is not None and "projects/" in got, f"(got {got})")
     finally:
         sh.close()
+        BRACKETED[0] = True
 
 
 def run_zsh(base, lab):
     if not shutil.which("zsh"):
-        skipped.append("zsh")
+        skipped.append("zsh: not installed")
         return
     sh = start_zsh(base, lab)
     try:
@@ -523,15 +659,32 @@ def run_zsh(base, lab):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="the in-band native-completions exchange in the real bash and zsh bootstraps")
+    ap.add_argument("--bash", help="the bash to run (default: the first on PATH)")
+    ap.add_argument("--bash-image", action="append", default=[], help="also run bash from this container image (repeatable)")
+    ap.add_argument("--only-bash", action="store_true", help="skip zsh")
+    a = ap.parse_args()
     with tempfile.TemporaryDirectory(prefix="phx-native-") as base:
         lab = make_lab(base)
-        for runner, name in ((run_bash, "bash"), (run_zsh, "zsh")):
+        runners = [(lambda b, l: run_bash(b, l, bash=a.bash), "bash")]
+        # macOS: the system /bin/bash is 3.2 and is what a remote Mac usually runs; check it as
+        # well when the bash on PATH is another one (Homebrew's).
+        first = shutil.which("bash")
+        if sys.platform == "darwin" and not a.bash and os.path.exists("/bin/bash") and first and os.path.realpath(first) != "/bin/bash":
+            runners.append((lambda b, l: run_bash(b, l, bash="/bin/bash"), "bash-system"))
+        images = a.bash_image or os.environ.get("PHOSPHOR_NC_BASH_IMAGES", "").split()
+        for n, image in enumerate(images):
+            runners.append((lambda b, l, image=image: run_bash(b, l, image=image), "bash-image-%d" % n))
+        if not a.only_bash:
+            runners.append((run_zsh, "zsh"))
+        for runner, name in runners:
             sub = os.path.join(base, name)
             os.makedirs(sub)
             runner(sub, lab)
     print("NOTE fish: not exercised; the app never sends fish ^Y (ShellType::supports_native_shell_completions)")
     for shell in skipped:
-        print(f"SKIPPED {shell}: not installed")
+        print(f"SKIPPED {shell}")
     if failures:
         print(f"test_native_completions: {len(failures)} check(s) failed")
         return 1

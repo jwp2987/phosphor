@@ -769,9 +769,10 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
 
         # Phosphor (#1801): ^Y asks this shell for its own completions (see
         # warp_native_complete). Readline's yank is never used here: the editor is Phosphor's.
-        # bash 4.0+ only, like ESC-i above: the app never sends ^Y to an older bash
-        # (`Shell::supports_native_shell_completions`).
-        if [[ ${WARP_INPUT_REPORTING_SUPPORTED:-} == "1" ]]; then
+        # bash 3.2 and later (#1969: macOS /bin/bash is 3.2; the hook hands bytes back through a
+        # macro there, see __warp_nc_finish). The app sends ^Y only to a shell that advertised
+        # the protocol (`Shell::supports_native_shell_completions`).
+        if [[ -n ${__warp_nc_supported:-} ]]; then
           # ^Y runs the hook, RS (^^) the discard widget; each is a macro that runs its `bind -x`
           # key and then \C-x\C-_9 (accept-line after a handed-back Enter, set-mark otherwise).
           # US (^_) is left alone: it stays readline's undo.
@@ -1386,6 +1387,27 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # its frame (any write first sends the cancel frame), so only a key typed straight into the
     # shell's own line editor could meet that.
 
+    # Which bash runs the exchange (#1969): 3.2 and later. Below 4.0 there is no READLINE_LINE,
+    # so bytes are handed back by a replay macro (__warp_nc_finish) instead of by editing the line.
+    __warp_nc_supported=
+    __warp_nc_replay_mode=
+    __warp_nc_replay=
+    if (( BASH_VERSINFO[0] > 3 || (BASH_VERSINFO[0] == 3 && BASH_VERSINFO[1] >= 2) )); then
+        __warp_nc_supported=1
+    fi
+    if (( BASH_VERSINFO[0] < 4 )); then
+        __warp_nc_replay_mode=1
+    fi
+
+    # Before bash 4.0 readline moves to a NEW line (CR LF) before it runs a `bind -x` function,
+    # where 4.0 and later clear the current one (CR, erase to end of line), and redraws the prompt
+    # after it either way. Left alone, every Tab would push the prompt one row down. One
+    # cursor-up puts the redraw back on the prompt's own row (also when the LF scrolled: the
+    # prompt's row scrolled up with it).
+    __warp_nc_undo_newline () {
+        if [[ -n ${__warp_nc_replay_mode:-} ]]; then builtin printf '\e[A\e[K'; fi
+    }
+
     # Starts a total deadline of $1 whole seconds.
     __warp_nc_deadline_set () {
         if [[ -n ${EPOCHREALTIME:-} ]]; then
@@ -1415,18 +1437,40 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # nothing behind it is consumed.
     __warp_nc_read_byte () {
         __warp_nc_byte=
-        if (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[1] >= 1 )); then
+        if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 1) )); then
             # give-up-net: read bounded by the overall deadline only; expiry hands the bytes read back to the line, writes nothing
             IFS= builtin read -r -s -t "$1" -N 1 __warp_nc_byte < /dev/tty
         else
-            IFS= builtin read -r -s -t "$1" -n 1 __warp_nc_byte < /dev/tty
+            # No -N before bash 4.1. With -n alone a newline is the delimiter and reads as an
+            # EMPTY byte, so an Enter was not told from nothing; -d '' makes NUL the delimiter and
+            # the newline an ordinary byte (#1969).
+            # give-up-net: read bounded by the overall deadline only; expiry hands the bytes read back to the line, writes nothing
+            IFS= builtin read -r -s -t "$1" -n 1 -d '' __warp_nc_byte < /dev/tty
         fi
     }
 
-    # Inserts $1 into the line at the cursor.
+    # Inserts $1 into the line at the cursor. Below bash 4.0 (no READLINE_LINE) the text is
+    # queued for the replay macro instead, as keys (see __warp_nc_finish).
     __warp_nc_insert () {
+        if [[ -n ${__warp_nc_replay_mode:-} ]]; then
+            __warp_nc_replay+=$1
+            return 0
+        fi
         READLINE_LINE="${READLINE_LINE:0:READLINE_POINT}$1${READLINE_LINE:READLINE_POINT}"
         READLINE_POINT=$((READLINE_POINT + ${#1}))
+    }
+
+    # Replay mode only: queues the text of a bracketed paste ($1) as keys that insert it
+    # literally: every control byte is prefixed with ^V (quoted-insert), so a newline in the
+    # paste is inserted, never run.
+    __warp_nc_replay_literal () {
+        local __i __c __n
+        for ((__i = 0; __i < ${#1}; __i++)); do
+            __c=${1:__i:1}
+            builtin printf -v __n '%d' "'$__c" 2>/dev/null
+            if (( (__n >= 0 && __n < 32) || __n == 127 )); then __warp_nc_replay+=$'\x16'; fi
+            __warp_nc_replay+=$__c
+        done
     }
 
     # Reads one byte within what is left of the overall deadline (the only clock): status 1 when
@@ -1443,9 +1487,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # is read to its end and its text inserted; any other CSI (a key) cannot be re-injected from
     # a `bind -x` function and is dropped; anything else goes back as the byte (ESC itself cannot
     # be re-injected). A lone ESC waits for the next byte or the deadline.
+    #
+    # Replay mode (below bash 4.0, see __warp_nc_finish) hands keys back through a macro, which
+    # CAN carry an escape: there the ESC itself, a key's CSI and an ESC-prefixed key go back
+    # whole; replies are dropped whole and a paste's text is inserted, as above.
     __warp_nc_give_back_escape () {
         local __seq=
-        __warp_nc_read_byte_dl || return 0
+        if ! __warp_nc_read_byte_dl; then
+            if [[ -n ${__warp_nc_replay_mode:-} ]]; then __warp_nc_replay+=$'\e'; fi
+            return 0
+        fi
         __seq=$__warp_nc_byte
         case $__seq in
             '[')
@@ -1464,10 +1515,17 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 done
                 return 0 ;;
             *)
+                if [[ -n ${__warp_nc_replay_mode:-} ]]; then __warp_nc_replay+=$'\e'; fi
                 __warp_nc_give_back "" "$__seq"
                 return 0 ;;
         esac
-        [[ $__seq == "[200~" ]] || return 0
+        if [[ $__seq != "[200~" ]]; then
+            if [[ -n ${__warp_nc_replay_mode:-} ]]; then
+                # A key (an arrow, say) goes back whole; a terminal reply is dropped.
+                case $__seq in *[cRnty]) ;; *) __warp_nc_replay+=$'\e'$__seq ;; esac
+            fi
+            return 0
+        fi
         local __text=
         while __warp_nc_read_byte_dl; do
             __text+=$__warp_nc_byte
@@ -1477,14 +1535,32 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             fi
             (( ${#__text} <= 1000000 )) || break
         done
-        __warp_nc_insert "$__text"
+        if [[ -n ${__warp_nc_replay_mode:-} ]]; then
+            __warp_nc_replay_literal "$__text"
+        else
+            __warp_nc_insert "$__text"
+        fi
     }
 
     # Hands back to the line what the hook or the discard widget read that is not a frame: the
     # frame-alphabet text read so far ($1, never control bytes), then the byte that broke the
     # shape ($2, empty after a gap).
+    #
+    # Replay mode (below bash 4.0): everything is queued as the KEYS it was, in order, for the
+    # macro __warp_nc_finish binds: text, ^P (the app's line-clear key), Enter as CR (the tty is
+    # cooked while a `bind -x` function runs, so a typed CR is read as NL), and any other
+    # control key as itself.
     __warp_nc_give_back () {
         __warp_nc_insert "$1"
+        if [[ -n ${__warp_nc_replay_mode:-} ]]; then
+            case $2 in
+                '') ;;
+                $'\e') __warp_nc_give_back_escape ;;
+                $'\r'|$'\n') __warp_nc_replay+=$'\r' ;;
+                *) __warp_nc_replay+=$2 ;;
+            esac
+            return 0
+        fi
         case $2 in
             '') ;;
             $'\e') __warp_nc_give_back_escape ;;
@@ -1536,7 +1612,33 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
 
     # Ends a ^Y or RS key: rebinds the macro's second key to accept-line when an Enter was handed
     # back, and to set-mark (no visible effect) otherwise.
+    #
+    # Below bash 4.0 (#1969, macOS /bin/bash 3.2) a `bind -x` function has no READLINE_LINE, so it
+    # cannot put a byte back into the line. There the bytes to hand back were queued as keys
+    # (__warp_nc_replay) and the macro's second key is rebound to a MACRO of exactly those keys:
+    # readline runs it right after this function, in front of anything still in the tty, so the
+    # keys reach the line editor in the order they were typed. Every control byte is written as
+    # an octal escape, `\` and `"` are escaped; the next ^Y, RS or prompt rebinds the key.
     __warp_nc_finish () {
+        if [[ -n ${__warp_nc_replay:-} ]]; then
+            local __i __c __n __o __m=
+            for ((__i = 0; __i < ${#__warp_nc_replay}; __i++)); do
+                __c=${__warp_nc_replay:__i:1}
+                builtin printf -v __n '%d' "'$__c" 2>/dev/null
+                if [[ $__c == \\ || $__c == \" ]]; then
+                    __m+=\\$__c
+                elif (( (__n >= 0 && __n < 32) || __n == 127 )); then
+                    builtin printf -v __o '\\%03o' "$__n"
+                    __m+=$__o
+                else
+                    __m+=$__c
+                fi
+            done
+            __warp_nc_replay=
+            __warp_nc_accept=
+            bind "\"\\C-x\\C-_9\": \"$__m\"" 2>/dev/null
+            return 0
+        fi
         if [[ -n ${__warp_nc_accept:-} ]]; then
             bind '"\C-x\C-_9": accept-line' 2>/dev/null
         else
@@ -1551,6 +1653,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         [[ $__pc_deadline =~ ^[0-9]+$ ]] || __pc_deadline=20
         __warp_nc_seq=$(( ${__warp_nc_seq:-0} + 1 ))
         local __pc_tok="${RANDOM}x${__warp_nc_seq}x${RANDOM}"
+        __warp_nc_undo_newline
         builtin printf '\e]9280;P;%s\a' "$__pc_tok"
         __warp_nc_deadline_set "$__pc_deadline"
         __warp_nc_time_left || return 0
@@ -1580,8 +1683,10 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         __warp_nc_out=()
     }
     function warp_native_complete {
+        __warp_nc_running=1
         __warp_run_relaxed __warp_native_complete_impl "$@"
         __warp_nc_finish
+        __warp_nc_running=
     }
 
     # Phosphor (#1801): RS at the prompt opens a native-completions frame whose exchange already
@@ -1590,13 +1695,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     __warp_native_discard_impl () {
         local __pc_deadline=${PHOSPHOR_NC_DEADLINE:-20}
         [[ $__pc_deadline =~ ^[0-9]+$ ]] || __pc_deadline=20
+        __warp_nc_undo_newline
         __warp_nc_deadline_set "$__pc_deadline"
         __warp_nc_read_frame_body
         return 0
     }
     function warp_native_discard {
+        __warp_nc_running=1
         __warp_run_relaxed __warp_native_discard_impl "$@"
         __warp_nc_finish
+        __warp_nc_running=
     }
 
     # Sets __warp_nc_out to the candidates for the line $1 (cursor at its end). Builtins
@@ -3253,10 +3361,10 @@ fi' RETURN
             shell_options="$shell_options \n !histcontrol_$USER_HISTCONTROL"
         fi
         # Phosphor (#1801): advertise the framed in-band native-completions protocol (the ^Y hook
-        # and the RS/US frame keys are bound from bash 4.0, with input reporting, whose flag the
-        # first precmd sets after this hook). The app sends ^Y and frames only to a shell that
-        # reported this pseudo option.
-        if (( BASH_VERSINFO[0] >= 4 )); then
+        # and the RS frame key are bound from bash 3.2 on, #1969; the first precmd binds them
+        # after this hook). The app sends ^Y and frames only to a shell that reported this
+        # pseudo option.
+        if [[ -n ${__warp_nc_supported:-} ]]; then
             shell_options="$shell_options"$'\n''!phosphor_nc_frames_v1'
         fi
 

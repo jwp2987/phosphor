@@ -948,13 +948,6 @@ def judge_step(ctx, r, rec, ctl, bracketed, io_lines=None):
         r.check(False, "%s (control: %s)" % (base, why))
 
 
-def need_in_band_remote_shell(r):
-    """#1801: the in-band Tab needs a remote bash 4.0+ (or zsh). The harness's macOS remote shell is /bin/bash 3.2 (force.sh), where the bootstrap
-    binds no ^Y and the app sends none, by design: the case skips there with that reason instead of judging the ControlMaster path."""
-    if sys.platform == "darwin":
-        r.skip("the macOS test host's remote shell is /bin/bash 3.2: no in-band Tab below bash 4.0 (by design, #1801 review B3)")
-
-
 def tok_prefix(tok):
     """The typed prefix of a fixture directory name: the case counter AND the first random char of ctx.tok ("t126_x" of "t126_xbfizx"). The old `tok[:3]` was
     "t12" for t126, t127 and t128, so the trials' directories shared the prefix, Tab was AMBIGUOUS and the visible line ran, as a real shell does (r18w6)."""
@@ -970,7 +963,6 @@ def c_remote_tab_no_helper(ctx, r):
     Path highlighting of a typed remote directory is not observable from outside the app: a note, not judged (see testing.md, #1801 lab case).
     The netem 150 ms variant is the same case with `PHOSPHOR_APPCI_NETEM_NOTE` set by whoever applied the delay (needs root; never applied by the harness)."""
     need_ssh(ctx, r)
-    need_in_band_remote_shell(r)
     tok = ctx.tok(6).lower()
     rdir = "phxtab_" + tok
     os.makedirs(os.path.join(ctx.prof.rhome, rdir), exist_ok=True)
@@ -1026,7 +1018,6 @@ def c_remote_tab_enter_no_helper(ctx, r):
     line back and runs nothing, which is a FAIL here (a fake sshd on loopback answers in milliseconds) unless PHOSPHOR_APPCI_NETEM_NOTE says a
     delay over the cap was applied. Nothing may run locally. Repeated ctx.count(3) times with fresh directories."""
     need_ssh(ctx, r)
-    need_in_band_remote_shell(r)
     netem = os.environ.get("PHOSPHOR_APPCI_NETEM_NOTE")
     if netem:
         r.note("network delay applied outside the harness: %s" % netem)

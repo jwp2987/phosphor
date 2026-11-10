@@ -49,6 +49,27 @@ pub const NATIVE_COMPLETIONS_PROTOCOL_OPTION: &str = "!phosphor_nc_frames_v1";
 lazy_static! {
     static ref BASH_INPUT_REPORTING_MINIMUM_VERSION: Version<'static> =
         Version::from("4.0").expect("version parses successfully");
+    /// The oldest bash whose bootstrap binds the in-band native-completions keys (#1969).
+    static ref BASH_NATIVE_COMPLETIONS_MINIMUM_VERSION: Version<'static> =
+        Version::from("3.2").expect("version parses successfully");
+}
+
+/// `PHOSPHOR_BASH3_NATIVE_COMPLETIONS`: unset or anything but `0` keeps the in-band native
+/// completions on for bash below 4.0 (#1969).
+pub fn bash3_native_completions_enabled_from_env(value: Option<&str>) -> bool {
+    value.map(str::trim) != Some("0")
+}
+
+/// The #1969 kill switch, read once per process.
+fn bash3_native_completions_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        bash3_native_completions_enabled_from_env(
+            std::env::var("PHOSPHOR_BASH3_NATIVE_COMPLETIONS")
+                .ok()
+                .as_deref(),
+        )
+    })
 }
 
 /// Strips the extended history prefix from a zsh history line, if present.
@@ -177,9 +198,20 @@ impl Shell {
     /// Returns whether the current shell supports native shell completions: its bootstrap
     /// advertised the framed protocol ([`NATIVE_COMPLETIONS_PROTOCOL_OPTION`] in its shell
     /// options, #1801 review M2), so a `^Y` and every frame the app writes reach the hook and its
-    /// bound keys, never a line editor that would type them. bash also needs 4.0 or later, like
-    /// input reporting (its bootstrap advertises the protocol only then).
+    /// bound keys, never a line editor that would type them. bash also needs a known version of
+    /// 3.2 or later (its bootstrap binds the keys and advertises the protocol only then).
+    ///
+    /// bash below 4.0 (#1969: macOS `/bin/bash` 3.2, the usual remote shell on a Mac) has no
+    /// `READLINE_LINE`, so its hook hands bytes that are not a frame back to the line editor
+    /// through a readline macro instead of by editing the line (`__warp_nc_finish` in
+    /// `bash_body.sh`). The text to complete travels in the app's frame, so the answer does not
+    /// need the variable. `PHOSPHOR_BASH3_NATIVE_COMPLETIONS=0` turns that path alone off.
     pub fn supports_native_shell_completions(&self) -> bool {
+        self.supports_native_shell_completions_with(bash3_native_completions_enabled())
+    }
+
+    /// [`Self::supports_native_shell_completions`] with the bash-below-4.0 kill switch given.
+    pub fn supports_native_shell_completions_with(&self, bash3_enabled: bool) -> bool {
         if !self.shell_type.supports_native_shell_completions() {
             return false;
         }
@@ -191,7 +223,19 @@ impl Shell {
             return false;
         }
         match self.shell_type {
-            ShellType::Bash => self.input_reporting_sequence().is_some(),
+            ShellType::Bash => {
+                let Some(version) = self
+                    .version
+                    .as_ref()
+                    .and_then(|version| Version::from(version.as_str()))
+                else {
+                    return false;
+                };
+                if !version.compare_to(&*BASH_NATIVE_COMPLETIONS_MINIMUM_VERSION, Cmp::Ge) {
+                    return false;
+                }
+                bash3_enabled || version.compare_to(&*BASH_INPUT_REPORTING_MINIMUM_VERSION, Cmp::Ge)
+            }
             _ => true,
         }
     }

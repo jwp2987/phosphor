@@ -247,6 +247,10 @@ enum PtyWrite {
 //    back to the line editor, an Enter included (a terminal reply is dropped whole instead).
 //    The only clock is the hook's overall read deadline, a give-up net: on expiry it hands back
 //    what it read and exits, writing nothing and inventing no input.
+//    bash below 4.0 (macOS /bin/bash 3.2, #1969) has no READLINE_LINE to edit: its hook hands
+//    the same bytes back as keys, through a readline macro that runs right after the hook, in
+//    front of anything still in the tty (`__warp_nc_finish` in bash_body.sh). Same order, same
+//    rules; the app side does not differ.
 //
 // The app side. NOTHING ever sits in the write queue behind `^Y`:
 // a. An exchange starts only when the write queue is empty, no command is executing, the line

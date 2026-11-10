@@ -359,6 +359,19 @@
              # command running.
              return
          fi
+ #### Phosphor (#1969): before bash 4.0 there is no READLINE_LINE, so the clause above cannot see
+ #### a readline binding there, and the in-band completions keys (`bind -x`, bound from bash 3.2)
+ #### would be announced to the app as a command that started and never finished. They are
+ #### known by name (the trap fires for the bound command itself) and by the flag they hold
+ #### while they run (with functrace on, the trap also fires inside them).
+         if [[ -n "${__warp_nc_running:-}" ]]; then
+             return
+         fi
+         case ${BASH_COMMAND:-} in
+             warp_native_complete|warp_native_discard) return ;;
+ #### Phosphor (#2002): the prompt-mode switch keys are `bind -x` too, bound in every bash.
+             warp_change_prompt_modes_to_ps1|warp_change_prompt_modes_to_warp_prompt) return ;;
+         esac
  #### End of difference 2/4 between Warp and bash-preexec's original source.
 
          if [[ -z "${__bp_preexec_interactive_mode:-}" ]]; then
