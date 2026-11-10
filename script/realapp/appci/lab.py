@@ -198,6 +198,13 @@ def enter_start_samples(toks, enters, starts, offset):
     return out
 
 
+# ---- lab_ctrl_c_no_esc_i: the long command a round interrupts, per login shell (round 11, #2045)
+def long_sleep_line(shell):
+    """pure: the line that runs for 30 s in `shell`. nushell's own `sleep` takes a duration (`sleep 30` is a type error there, the command ends at once and the
+    Ctrl-C would meet an idle prompt, proving nothing); every other lab shell runs the external `sleep 30`."""
+    return "sleep 30sec" if shell == "nu" else "sleep 30"
+
+
 # ---- lab_ctrl_c_no_esc_i: how many prompts a Ctrl-C burst may draw (round 10, #2027)
 def ctrl_c_prompt_bounds(log_text, pressed):
     """pure: (fewest, most) prompt.log lines a round of lab_ctrl_c_no_esc_i may add in bash: one for the interrupted `sleep`, one for the echo, plus at most one

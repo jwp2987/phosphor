@@ -4921,6 +4921,64 @@ def lab_first_run_fixes_round10():
 
 
 @check
+def r12_lab2_round11_test_faults():
+    """Round 11 in the lab (build/r11a, job 17896783499; docs/design/r12-lab2.md, #2045): the pure parts of the three test faults. (1) the fake model's
+    triggers and fault matches read what the USER typed, never the <attached_context> block the app puts in front of it, while the request log keeps
+    the whole message; (2) the where-probe of a nu lab arm is a line nu, bash, zsh and fish all run as an append; (3) lab_ctrl_c_no_esc_i types its two
+    lines in the arm's own shell syntax."""
+    import fake_model as FM
+    import lab as labmod
+    # (1) the request of lab_fam_agent_edit_conflict.bash, round 11: the block of the nu arm before it, attached by the app, quotes that arm's prompt
+    att = ('<attached_context>\n  <executed_shell_command command_id="precmd-1-5" exit_code="0" auto_attached="true">\n    <command>ssh lab-u_nu</command>\n'
+           '    <output>Error: nu::shell::external_command\n 1 | Please carry out these steps in order: run /usr/bin/touch /work/u_nu/started_t1; /usr/bin/sleep 300\n'
+           'nu&gt; </output>\n  </executed_shell_command>\n</attached_context>')
+    env = "<environment_context>\n  <cwd>/w</cwd>\n</environment_context>"
+    edit = "Please edit exactly this file: /work/u_bash/ae.txt with these edits: L02 beta t=>L02 BETA-EDITED t ;; L05 epsilon t=>L05 EPSILON-EDITED t"
+    msgs = [{"role": "user", "content": att + "\n\n" + edit}, {"role": "user", "content": env}]
+    reply = FM.reply_for(msgs)
+    assert reply["tool"]["name"] == "apply_file_diffs" and [o["search"] for o in reply["tool"]["arguments"]["operations"]] == ["L02 beta t", "L05 epsilon t"], reply
+    assert FM.user_prompt(msgs) == edit and FM.turn_state(msgs) == (edit, [])
+    assert FM.prompt_text(att + "\n\n" + att + "\n\n" + edit) == edit            # user attachments and referenced attachments: two blocks
+    assert FM.prompt_text(att) == "" and FM.prompt_text(None) == "" and FM.prompt_text(edit) == edit
+    mid = "see <attached_context>\nx\n</attached_context>\n\n" + edit
+    assert FM.prompt_text(mid) == mid                                              # only a block the message STARTS with is the app's
+    run = "Please run exactly this shell command and nothing else: echo T"
+    assert FM.reply_for([{"role": "user", "content": att + "\n\n" + run}])["tool"]["arguments"]["command"] == "echo T"
+    plan = "Please carry out these steps in order: read /w/a.txt ;; run cat /w/a.txt"
+    pm = [{"role": "user", "content": att + "\n\n" + plan}]
+    assert FM.reply_for(pm)["tool"] == {"name": "read_files", "arguments": {"files": [{"path": "/w/a.txt"}]}}, FM.reply_for(pm)
+    assert FM.reply_for([{"role": "user", "content": att.replace("Please carry", "STREAMLONG carry") + "\n\nReply with the word Q7"}])["text"] == "OK Q7"
+    # the oracles that prove what the model was SENT still see the attachment (#1829)
+    assert FM.request_record(msgs)["users"] == [att + "\n\n" + edit] and FM.user_texts(msgs) == [att + "\n\n" + edit]
+    # (2) the where-probe
+    nu = cases.where_probe_cmd("nu", "wT1_abc")
+    assert nu == "sh -c 'echo wT1_abc >> ~/.appci_where'"
+    for sh in (None, "bash", "zsh", "fish", "pwsh", "dash"):
+        assert cases.where_probe_cmd(sh, "wT1_abc") == "echo wT1_abc >> ~/.appci_where", sh       # unchanged everywhere else
+    assert cases.Ctx.HARNESS_MARKER_RE.search(nu)                                  # still one of the harness's own lines for every command count
+    src = open(os.path.join(HERE, "cases.py")).read()
+    assert "self.probe(where_probe_cmd(shell, probe), probe" in src
+    if os.name != "nt":
+        for shell in ("sh", "bash", "zsh", "fish", "nu"):                          # every shell this machine has runs the line as an append into ITS home
+            if not shutil.which(shell):
+                continue
+            home = tempfile.mkdtemp(prefix="appci_where_")
+            try:
+                out = subprocess.run([shell, "-c", nu], env=dict(os.environ, HOME=home), capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
+                got = open(os.path.join(home, ".appci_where")).read() if os.path.exists(os.path.join(home, ".appci_where")) else None
+                assert got == "wT1_abc\n", (shell, got, out.stdout[-200:], out.stderr[-200:])
+            finally:
+                shutil.rmtree(home, ignore_errors=True)
+    # (3) the Ctrl-C case's lines per shell
+    assert labmod.long_sleep_line("nu") == "sleep 30sec" and all(labmod.long_sleep_line(s) == "sleep 30" for s in ("bash", "zsh", "fish"))
+    src = open(os.path.join(HERE, "cases_lab.py")).read()
+    body = src[src.index("def c_ctrl_c_no_esc_i"):src.index("# ------------------------------------------------------------------ 7. The helper install itself")]
+    assert 'ctx.be.type("sleep 30"' not in body and '"echo %s >> %s" % (tok, work(arm, f))' not in body
+    assert "ctx.be.type(sleep_line, type_pace(ctx), enter=True)" in body and "ctx.be.type(ctx.append_cmd(shell_kind, tok, work(arm, f))" in body
+    assert "new[0][1].strip() == sleep_line and tok in new[-1][1]" in body         # still: exactly the two lines, the first one the sleep as typed
+
+
+@check
 def r11_wl_round10_test_faults():
     """Round 10 on Linux Wayland and the lab (build/r10a; docs/design/r11-wl.md, #2027): the pure parts of the six test faults. (1) a question verdict is
     judged only once two polls agree; (2) the empty-PS1 dash gets its PS1 from an $ENV file on every platform; (3) a tab's pwd probe is over when the shell

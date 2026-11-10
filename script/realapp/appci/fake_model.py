@@ -28,6 +28,8 @@
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
 # Trigger order in reply_for (no trigger shadows another): plan, tool-result "Done.", stream long reply, follow up check, call mcp tool, show this image,
 # run a slow command then ask me a question, ask me a question, run / read / create / delete / edit exactly, STREAMLONG (sticky), SLOW, fallback.
+# Every trigger and every fault `match` reads the text the USER typed (prompt_text): never the app's <environment_context> message, and never the
+# <attached_context> block the app puts in front of the prompt (the blocks run since the last query, with their output; #2045).
 # Fault injection (#1831, cases_agent_resilience.py): fake.inject(kind, times=1, match=None, **kw) arms a fault that the next `times` /api/chat requests
 # (None = every one until clear_faults()) take instead of the normal answer; `match` = a substring of the request's last user text (None = any request).
 #   status      kw code=429|500|.., retry_after=secs|None   -> that HTTP status with a JSON error body (and a Retry-After header)
@@ -132,6 +134,22 @@ def stream_text():
 ENV_RE = re.compile(r"<environment_context>.*?</environment_context>\s*", re.S)      # user_context.rs render_environment_context: its own user message after the prompt
 
 
+# #2045: the app puts what the user attached in FRONT of the prompt, in the same user message (chat_stream.rs: "{prefix}\n\n{query}"; user_context.rs
+# collect_user_attachments / render_referenced_attachments, each one `<attached_context>\n ... </attached_context>`). The blocks run since the last query are
+# attached by the app itself (auto_attached="true"), with their command and OUTPUT. The text inside is XML-escaped (xml_text: & < >), so the first
+# literal `</attached_context>` is the block's real end.
+ATT_RE = re.compile(r"\A(?:<attached_context>\n.*?</attached_context>(?:\n\n|\Z))+", re.S)
+
+
+def prompt_text(content):
+    """pure: a user message's text without the attached context the app put in front of it: what the USER typed. Triggers and fault matches read this,
+    never the attachment: round 11 lab, a nu arm's prompt had been typed into the remote shell, whose error message quotes the line, and the next arm's
+    request carried that block in front of its own prompt; PLAN_RE (tried first) matched the EARLIER case's "carry out these steps in order: ..." there
+    and the model answered an edit request with another case's plan (lab_fam_agent_edit_conflict.bash, lab_agent_remote_drop.bash). clean_messages
+    keeps the attachment: the request log, fake.fresh and history_check must still show everything the model was sent (#1829)."""
+    return ATT_RE.sub("", content) if isinstance(content, str) and content.startswith("<attached_context>") else (content or "")
+
+
 def clean_messages(messages):
     """pure: the request's messages as the PROMPT sees them: the app's <environment_context> block is removed (a user message that holds nothing else is dropped;
     a block inside a longer message is cut out). Every trigger / token match goes through this, never through the raw list."""
@@ -147,10 +165,10 @@ def clean_messages(messages):
 
 
 def user_prompt(messages):
-    """pure: the text of the last user message that is not the environment-context message ('' when none)"""
+    """pure: the text of the last user message that is not the environment-context message ('' when none), without its attached context (prompt_text)"""
     for m in reversed(clean_messages(messages)):
         if m.get("role") == "user":
-            return m.get("content") or ""
+            return prompt_text(m.get("content"))
     return ""
 
 
@@ -309,11 +327,11 @@ def plan_call(step):
 
 
 def turn_state(messages):
-    """pure: (text of the last user turn, [content of the tool messages after it])"""
+    """pure: (text of the last user turn without its attached context (prompt_text), [content of the tool messages after it])"""
     text, results = "", []
     for m in reversed(clean_messages(messages)):
         if m.get("role") == "user":
-            text = m.get("content") or ""
+            text = prompt_text(m.get("content"))
             break
         if m.get("role") == "tool":
             results.append(m.get("content") or "")
@@ -383,7 +401,7 @@ def reply_for(messages, tools=None):
             old, _, new = pair.partition("=>")
             ops.append({"op": "edit", "file_path": m.group(1), "search": old.replace("\\n", "\n"), "replace": new.replace("\\n", "\n")})
         return {"text": "", "tool": {"name": "apply_file_diffs", "arguments": {"summary": "Edit " + m.group(1), "operations": ops}}}
-    if any("STREAMLONG" in t for t in user_texts(messages)):
+    if any("STREAMLONG" in prompt_text(t) for t in user_texts(messages)):
         return {"text": stream_text(), "tool": None, "stream": True}
     if "SLOW" in text:
         return {"text": "slow reply", "tool": None, "slow": True}

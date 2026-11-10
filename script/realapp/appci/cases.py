@@ -668,6 +668,19 @@ def depth_probe_cmd(pane, tok):
     return "sh -c 'echo %s:$PPID >> ~/.appci_pid'" % tok
 
 
+def where_probe_cmd(remote_shell, tok):
+    """pure: the line where_now() types to learn which shell is in front: it appends `tok` to ~/.appci_where of whatever shell runs it. `remote_shell` is the
+    login shell of the remote the pane may be in (the lab arm's; None when it is not known, the same-machine sshd: bash or zsh).
+    nu (#2045, round 11 lab): `echo tok >> ~/.appci_where` is not an append in nushell 0.116: it PRINTS a three-row table (tok, >>, the path) and writes
+    nothing, so a pane in the remote nu was never proven remote and `exit` was never typed ("`exit` did not return to the local shell (none)" on six rows).
+    There the append is done by a child `sh`, which nu, bash, zsh and fish all start the same way from this one line (the single-quoted word is one
+    argument in each), so the line is right whichever of the two shells, the remote nu or the local pane's, is in front. Every other shell keeps the
+    plain line: a Windows PowerShell or cmd.exe pane has no `sh`."""
+    if remote_shell == "nu":
+        return "sh -c 'echo %s >> ~/.appci_where'" % tok
+    return "echo %s >> ~/.appci_where" % tok
+
+
 def parse_depth_probe(tokens, tok):
     """the PID a probe with token `tok` recorded among the whitespace tokens of ~/.appci_pid, or None"""
     for t in reversed(tokens):
@@ -1043,7 +1056,9 @@ class Ctx:
         """Which shell is in front, proven by an effect: a fresh token written to ~/.appci_where lands in the REMOTE home ("remote"), the local
         scratch home ("local"), or nowhere ("none")."""
         probe = "w" + self.ptok(8)
-        where, _ = self.probe("echo %s >> ~/.appci_where" % probe, probe, ".appci_where", remote=True, timeout=timeout)
+        # the lab arm's login shell, while a lab case runs (cases_lab.lab_prepare puts a lab.LabRemote in ctx.remote); None otherwise
+        shell = getattr(getattr(self, "remote", None), "shell", None)
+        where, _ = self.probe(where_probe_cmd(shell, probe), probe, ".appci_where", remote=True, timeout=timeout)
         return where
 
     def where_homes(self):

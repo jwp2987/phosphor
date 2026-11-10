@@ -5029,3 +5029,21 @@ Unit tests (`app/src/terminal/view/route_parity_a_tests.rs`, run with the `warp`
 
 No existing expectation changed. The SIGINT tests of #1001, #1641 and #1856 stay as they are: none of them has an ownership event in an unheld
 window.
+
+The test faults of the same run (#2045; `run.py --self-test` check `r12_lab2_round11_test_faults`):
+
+| rows | verdict | what changed |
+|---|---|---|
+| `lab_fam_agent_edit_conflict.bash` (agent, the one REGRESSION against round 10), `lab_agent_remote_drop.bash` and its `pane_not_local_after_*` (3) | **TEST**: the app puts the blocks run since the last query in front of the prompt (`<attached_context>`), and `fake_model.py` searched the whole message for its triggers. The nu arm before each of these had typed its prompt into the remote shell, nu's error quotes the line, and the plan trigger (tried first) matched the EARLIER case's "carry out these steps in order" inside the attached block: an edit request was answered with another case's shell command | `fake_model.prompt_text`: triggers and fault matches read the user's text without the attached block(s) the message starts with (`user_prompt`, `turn_state`, the sticky `STREAMLONG` check). `clean_messages` keeps the block, so the request log, `fake.fresh` and `history_check` still show everything the model was sent (#1829) |
+| `lab_enter_start.nu.150`, `lab_enter_no_network_wait.nu.150` (both modes), `lab_fam_agent_context.nu.{lan,150}` (terminal): "`exit` did not return to the local shell (none)" (6) | **TEST**: `where_now` typed `echo <tok> >> ~/.appci_where`; nushell 0.116.1 prints a three-row table for that and writes nothing, so the pane was never proven remote and `exit` was never typed | `cases.where_probe_cmd`: for a nu lab arm the line is `sh -c 'echo <tok> >> ~/.appci_where'`, which nu, bash, zsh and fish run the same way (the selftest runs it in every shell the machine has); every other arm and every non-lab case keeps the plain line |
+| `lab_ctrl_c_no_esc_i.nu` (behind #2044) | **TEST**: the case typed `sleep 30` and `echo <tok> >> <file>` into every shell; neither is right in nushell | the two lines are typed in the arm's shell syntax (`lab.long_sleep_line`: `sleep 30sec` for nu; `ctx.append_cmd`). **Expectation text changed, not weakened:** "the shell received exactly [the sleep, the echo]" compares the first line with the sleep as typed |
+| `lab_agent_remote_{flow,errors,drop}.nu`, `lab_fam_agent_edit_conflict.nu` (agent, 4) | **owner question on #2019**: a nu login shell gets a plain session, where the keys are ssh's, so the agent prompt goes to the remote shell | nothing; the rows stay FAIL (not turned into NOREF) until the question is answered |
+
+Found by reading and filed, not changed: #2046 (Ctrl-D is held for the whole of such a session when the remote's last output line is complete; the
+#1111 unit test `ssh_ctrl_d_is_held_after_a_prompt_was_answered` requires the hold for the same window state).
+
+**What the next Linux lab run should show.** `lab_fam_agent_edit_conflict.bash` PASS with `tool_call_in: name=apply_file_diffs`;
+`lab_agent_remote_drop.bash` gets its own `run_shell_command` and its real checks run for the first time; the eight fish / nu Ctrl-C rows have
+`ctrl_c_pty_write bytes=1` after `ctrl_c_route route=pty`, no `CommandFinished` for the ssh block, and exact effect files (these rounds have never run
+on fish or nu, so a new finding is possible); `lab_enter_start.nu` PASS; `lab_enter_no_network_wait.nu` and `lab_fam_agent_context.nu` NOREF with
+their own reasons and no `exit` line; the four agent-mode nu rows FAIL as now. 4 FAIL expected instead of 21 if nothing new appears.

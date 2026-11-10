@@ -631,8 +631,14 @@ def c_lab_drop(ctx, r, arm):
 def c_ctrl_c_no_esc_i(ctx, r, arm):
     """#1798/#1672: `sleep 30`, then Ctrl-C x1/x2/x3 at gaps 0/50/200 ms, then a typed echo. Per round: the effect file is exact, the shell received exactly two
     commands (the sleep and the echo), the prompt log grew by one per command (bash exact; zsh at least), no ESC-i reached the shell (rec.log has no \\x1bi),
-    and the app log never says "Session abandoned before bootstrap". One OCR at the end looks for a visible ^[i."""
+    and the app log never says "Session abandoned before bootstrap". One OCR at the end looks for a visible ^[i.
+    Both lines are typed in the arm's own shell syntax (#2045): nushell's `sleep` takes a duration (lab.long_sleep_line) and `echo x >> f` prints a table there
+    instead of appending (ctx.append_cmd). The checks are the same for every shell.
+    #2044: on a login shell the app gives a plain session (fish, nu) the first Ctrl-C used to END the ssh (SIGINT to the local client); the rounds after it
+    then ran in the local shell, which is why every effect file was empty."""
     lab, rt = ctx.lab, rtt_s(arm)
+    shell_kind = arm["shell"] if arm["shell"] in ("nu", "pwsh") else "bash"
+    sleep_line = L.long_sleep_line(arm["shell"])
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
@@ -644,7 +650,7 @@ def c_ctrl_c_no_esc_i(ctx, r, arm):
             label = "x%d gap %d ms" % (nctl, gap)
             off = ctx.log_size()
             c0, p0 = len(rem.commands()), rem.prompts()
-            ctx.be.type("sleep 30", type_pace(ctx), enter=True)
+            ctx.be.type(sleep_line, type_pace(ctx), enter=True)
             time.sleep(0.8 + 2 * rt)
             for i in range(nctl):
                 ctx.be.key("ctrl+c")
@@ -657,12 +663,12 @@ def c_ctrl_c_no_esc_i(ctx, r, arm):
                 time.sleep(1.0 + 2 * rt)
             tok = unique(ctx, 8)
             toks.append(tok)
-            ctx.be.type("echo %s >> %s" % (tok, work(arm, f)), type_pace(ctx), enter=True)
+            ctx.be.type(ctx.append_cmd(shell_kind, tok, work(arm, f)), type_pace(ctx), enter=True)
             ctx.until(lambda: len(rem.lines(f)) >= len(toks), 10 + 4 * rt)
             CA.exact_lines(r, "[%s] effect file" % label, toks, rem.lines(f))
             time.sleep(0.3 + rt)
             new = rem.commands()[c0:]
-            r.check(len(new) == 2 and new[0][1].strip() == "sleep 30" and tok in new[-1][1], "[%s] the shell received %r, expected exactly [sleep 30, the echo]" % (label, [c for _, c in new]))
+            r.check(len(new) == 2 and new[0][1].strip() == sleep_line and tok in new[-1][1], "[%s] the shell received %r, expected exactly [%s, the echo]" % (label, [c for _, c in new], sleep_line))
             r.check(not any("\x1bi" in c or "^[i" in c for _, c in new), "[%s] an ESC-i (^[i) reached the shell: %r" % (label, [c for _, c in new]))
             if arm["shell"] == "bash":
                 # one prompt per command, plus at most one for each further Ctrl-C the app WROTE while the prompt had not come back (lab.ctrl_c_prompt_bounds)
