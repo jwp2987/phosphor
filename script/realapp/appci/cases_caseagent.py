@@ -424,7 +424,11 @@ AMBIGUOUS_LINES = ["find the bug in main.rs", "make a PR", "cat the error log an
 # expectation is per line:
 #   * "find the bug in main.rs": `main.rs` is a data-shaped word (interior dot, util.rs is_data_shaped_word) = command evidence, so it runs in the
 #     shell on both surfaces (routing_corpus.rs: Case::cmd "#964 / #906"); the log says evidence-in-conversation (#1183) when it does
-#   * "make a PR": `make` + words that are not common make targets = no evidence in a conversation (no-evidence-in-conversation) -> agent
+#   * "make a PR": `make` + words that are not common make targets = no evidence in a conversation (no-evidence-in-conversation) -> agent. On the
+#     plain terminal it runs in the shell when `make` is a program on this machine (#1981, owner 2026-11-10: an installed first word runs in the shell
+#     in terminal mode; routing_corpus.rs Case::cmd "#831 / #964"). Until r14 this half was unpinned and either outcome passed; the committed
+#     results show why nobody noticed: on macOS and Windows the terminal-mode pass typed the line with surface AgentConversation every time (the
+#     table's own prose lines had opened a conversation), and on Wayland the row had no surface at all (see `seen` in the case)
 #   * "cat the error log and tell me what is wrong": request shape (#834/#965: `tell me what` is a request addressed to someone) -> agent on
 #     BOTH surfaces. r18u19: the plain-terminal half was unpinned, so the surface fallback below said shell; until then the line had only ever
 #     been typed inside a conversation (r18u8/r18u13 logged AgentConversation). The routing corpus pins the plain terminal as Agent too
@@ -432,17 +436,20 @@ AMBIGUOUS_LINES = ["find the bug in main.rs", "make a PR", "cat the error log an
 #     #834, and this exact line): the owner's installed-head rule (#964) covers English-looking arguments, not a sentence addressed to someone.
 AMBIGUOUS_EXPECT = {
     "find the bug in main.rs": ("shell", "shell"),
-    "make a PR": (None, "agent"),
+    "make a PR": ("shell", "agent"),
     "cat the error log and tell me what is wrong": ("agent", "agent"),
 }
 
 
-def ambiguous_want(line, surface, rule):
+def ambiguous_want(line, surface, rule, installed=True):
     """Where an installed-head English line must go, from the line, the surface the app reports and the rule it logged. None = no verdict
-    (no routing line was logged)."""
+    (no routing line was logged, or the line is pinned to the shell on the plain terminal and its first word is NOT a program on this machine:
+    `installed` False; the pin is the installed-head rule, which then does not apply)."""
     pinned = AMBIGUOUS_EXPECT.get(line)
     if pinned and surface:
         want = pinned[1] if surface == "AgentConversation" else pinned[0]
+        if want == "shell" and surface != "AgentConversation" and not installed:
+            return None
         if want:
             return want
     if rule and rule.startswith(("evidence-in-conversation", "shell-structure-unknown-head")):
@@ -450,6 +457,11 @@ def ambiguous_want(line, surface, rule):
     if rule and rule.startswith("no-evidence-in-conversation"):
         return "agent"
     return ("agent" if surface == "AgentConversation" else "shell") if surface else None
+
+
+def head_installed(line, which=shutil.which):
+    """whether the line's first word is a program on this machine (the app under test runs here, with this PATH unless a case changed it)"""
+    return bool(which(line.split()[0]))
 
 
 ENTER_BEGIN_RE = re.compile(r'hop=enter_begin\b.*?\binput_type=(\w+)')
@@ -524,20 +536,26 @@ def c_routing_table(ctx, r):
         excerpt = ctx.log_since(off)
         dest = classify_dest(reached_shell, rows, enter_begin_types(excerpt))
         gave_up = verdict_give_ups(excerpt) > 0                 # #1593: the A5 toast fired for this line
-        surface = enter["surface"] if enter else None
+        # surface and rule: the enter-stage row, else the line's own keystroke-stage row. A line whose keystroke verdict had settled logs no `enter:`
+        # row at all (every Wayland routing_table row up to r12a has surface None for that reason), and an ambiguous line then had no verdict
+        any_rows = typo_rows(excerpt, line)
+        seen = enter or (any_rows[-1] if any_rows else None)
+        surface = seen["surface"] if seen else None
+        rule = seen["rule"] if seen else None
         if kind == "ambiguous":
-            want = ambiguous_want(line, surface, enter["rule"] if enter else None)
+            want = ambiguous_want(line, surface, rule, installed=head_installed(line))
         ok = want is None or dest == want
-        results.append(dict(line=line, kind=kind, want=want, got=dest, surface=surface, rule=enter["rule"] if enter else None, verdict_give_up=gave_up))
+        results.append(dict(line=line, kind=kind, want=want, got=dest, surface=surface, rule=rule, verdict_give_up=gave_up))
         if gave_up and dest in ("lost", "unproven"):
             r.check(False, "%r (%s) was not sent: its shell-or-chat verdict missed the budget and the line stayed in the editor with the "
                     "'press Enter again' toast (#1593 A5; dest %s, surface %s)" % (line, kind, dest, surface))
         elif dest == "lost" or (dest == "unproven" and want != "shell"):
             r.check(False, "%r (%s) was LOST or unproven: the shell received nothing and the app log shows no agent-routed Enter (dest %s, surface %s)" % (line, kind, dest, surface))
         elif want is None:
-            r.note("ambiguous %r: went to %s (no routing log line, so no rule to check)" % (line, dest))
+            r.note("ambiguous %r: went to %s, no verdict (%s)" % (line, dest, "no routing log line, so no rule to check" if not surface else
+                                                                 "surface %s, rule %s, first word a program here: %s" % (surface, rule, head_installed(line))))
         elif not ok:
-            r.check(False, "%r (%s) expected %s, went to %s (surface %s, rule %s); shell received %r" % (line, kind, want, dest, surface, enter["rule"] if enter else "n/a", [c for c in ctx.cmds_since(mark)][:2]))
+            r.check(False, "%r (%s) expected %s, went to %s (surface %s, rule %s); shell received %r" % (line, kind, want, dest, surface, rule or "n/a", [c for c in ctx.cmds_since(mark)][:2]))
         if dest == "agent":
             ctx.be.key("ctrl+c")            # do not leave a model request running
             time.sleep(0.4)
@@ -621,6 +639,101 @@ def c_routing_typo_head(ctx, r):
     ctx.reset()
     if not judged:
         r.skip("no line was typed with an agent conversation as the routing surface (rows: %s)" % [(x["line"], x["surface"]) for x in results])
+
+
+# ---------------------------------------------------------------- #1981: an installed first word runs in the shell on the PLAIN terminal
+# Owner decision 2026-11-10 (confirming #964): in terminal mode a line whose first word is a command the session knows runs in the shell, however
+# English its arguments read (`make a PR`); rule `installed-head (#906/#964)` (routing.rs). routing_table could not prove it: its terminal-mode pass
+# types these lines after its own prose lines, which open a conversation in the pane, so the surface was AgentConversation and the #1183 evidence rule
+# (correctly) sent `make a PR` to the agent. This case leaves the agent view first and judges only lines the app itself logged as PlainTerminal.
+PLAIN_INSTALLED_LINES = ["make a PR", "make a README", "find the bug in main.rs", "find large files"]
+PLAIN_INSTALLED_RULE = "installed-head"
+
+
+def plain_installed_verdict(dest, surface, rule, installed):
+    """(ok, note) for one typed line, or None = no verdict: the line was not typed on the plain terminal (the app's own routing row says another surface,
+    or there is no row), or its first word is no program on this machine (the installed-head rule does not apply). With a verdict the line must have
+    reached the shell and nothing else; reaching it by another rule passes with a note naming the rule."""
+    if surface != "PlainTerminal" or not installed:
+        return None
+    if dest != "shell":
+        return False, None
+    if rule and not rule.startswith(PLAIN_INSTALLED_RULE):
+        return True, "reached the shell by %s, not by the installed-head rule" % rule
+    return True, None
+
+
+@case("routing_plain_installed_head", order=49, gui=True)
+def c_routing_plain_installed_head(ctx, r):
+    """#1981. Both modes: with the pane in the TERMINAL view (Escape leaves the agent view; proven by hop=view_mode mode=terminal), lines whose first
+    word is an installed command but whose arguments read as English (`make a PR`) are typed at 10-25 ms/key with an instant Enter and must reach the
+    shell with the exact line in rec.log, never the agent. Judged only when the app's routing row for the line says PlainTerminal and the first word is
+    a program on this machine; with no line judged the case is UNVERIFIABLE. Ends in the view it started in."""
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.skip("no app log at %s: the routing surface and rule cannot be read" % ctx.log_path)
+    start = ctx.log_view_mode()
+    if start is None:
+        r.skip("the app log has no hop=view_mode line (a build older than #1568): the view cannot be proven")
+    chord = "cmd+Return" if ctx.be.name == "mac" else "ctrl+shift+Return"
+
+    def to_terminal():
+        """True once the log says the pane shows the terminal view"""
+        if ctx.log_view_mode() == "terminal":
+            return True
+        ctx.reset()
+        ctx.be.key("Escape")
+        return wait_view_mode(ctx, "terminal") == "terminal"
+
+    results, judged = [], 0
+    try:
+        for line in PLAIN_INSTALLED_LINES:
+            if not to_terminal():
+                r.note("%r: not typed, Escape did not leave the agent view (hop=view_mode says %s)" % (line, ctx.log_view_mode()))
+                results.append(dict(line=line, got=None, surface=None, rule=None, stage=None, installed=head_installed(line)))
+                continue
+            ctx.reset()
+            off, mark = ctx.log_size(), ctx.cmd_mark()
+            type_fast(ctx, line)
+            if not ctx.until(lambda: [c for c in ctx.cmds_since(mark) if c == line], 3.0):
+                time.sleep(0.6)
+            excerpt = ctx.log_since(off)
+            rows = typo_rows(excerpt, line)
+            last = rows[-1] if rows else None
+            if last and last["route"] == "Shell" and not any(c == line for c in ctx.cmds_since(mark)):
+                ctx.until(lambda: any(c == line for c in ctx.cmds_since(mark)), 3)          # the shell logs a command with its next prompt
+            reached_shell = any(c == line for c in ctx.cmds_since(mark))
+            excerpt = ctx.log_since(off)
+            dest = classify_dest(reached_shell, [x for x in rows if x["stage"] == "enter"] or rows, enter_begin_types(excerpt))
+            surface, rule, installed = (last["surface"] if last else None), (last["rule"] if last else None), head_installed(line)
+            verdict = plain_installed_verdict(dest, surface, rule, installed)
+            results.append(dict(line=line, got=dest, surface=surface, rule=rule, stage=last["stage"] if last else None, installed=installed))
+            if verdict is None:
+                r.note("%r: no verdict (surface %s, first word a program here: %s; went to %s by %s)" % (line, surface, installed, dest, rule))
+            else:
+                judged += 1
+                ok, why = verdict
+                r.check(ok, "%r typed on the plain terminal went to %s by %s; an installed first word must run in the shell (#1981). The shell received %r" % (
+                    line, dest, rule, [c for c in ctx.cmds_since(mark)][:2]))
+                if why:
+                    r.note("%r %s" % (line, why))
+            if dest == "agent":
+                ctx.be.key("ctrl+c")            # do not leave a model request running
+                time.sleep(0.4)
+        ctx.shot("routing_plain_installed_head_end")
+    finally:
+        # always try to leave the session as found (agent_mode_switch does the same)
+        for _ in range(2):
+            if ctx.log_view_mode() == start:
+                break
+            ctx.reset()
+            ctx.be.key(chord if start == "agent" else "Escape")
+            wait_view_mode(ctx, start)
+        ctx.reset()
+    r.metric("plain_installed_rows", results)
+    r.check(ctx.log_view_mode() == start, "could not return to the %s view the case started in (log says %s): later cases would run in the wrong mode" % (start, ctx.log_view_mode()))
+    if not judged:
+        r.unverifiable("no line was typed with the plain terminal as the routing surface and an installed first word, so the installed-head rule was not "
+                       "judged (rows: %s)" % [(x["line"], x["surface"], x["installed"]) for x in results])
 
 
 # ---------------------------------------------------------------- agent input exactness and mid-session mode switches (#1510)

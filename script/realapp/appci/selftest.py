@@ -1187,6 +1187,50 @@ def routing_typo_head_pure_pieces():
 
 
 @check
+def routing_plain_installed_head_1981():
+    """#1981 (owner 2026-11-10): `make a PR` typed on the PLAIN terminal runs in the shell when `make` is installed. routing_table pins it and reads
+    the surface from the line's keystroke row when no enter row was logged; routing_plain_installed_head judges only PlainTerminal rows"""
+    import inspect
+    w = ca.ambiguous_want
+    assert ca.AMBIGUOUS_EXPECT["make a PR"] == ("shell", "agent")
+    assert w("make a PR", "PlainTerminal", "installed-head (#906/#964)") == "shell" and w("make a PR", "PlainTerminal", None) == "shell"
+    assert w("make a PR", "AgentConversation", "no-evidence-in-conversation (#1183)") == "agent"
+    # no `make` on the machine: the installed-head rule does not apply, so the plain-terminal pin gives no verdict; the conversation pin stands
+    assert w("make a PR", "PlainTerminal", "english-head-not-installed (#696)", installed=False) is None
+    assert w("make a PR", "AgentConversation", "no-evidence-in-conversation (#1183)", installed=False) == "agent"
+    assert w("cat the error log and tell me what is wrong", "PlainTerminal", "request-shape (#834/#965)", installed=False) == "agent"
+    assert w("make a PR", None, None) is None
+    assert ca.head_installed("make a PR", which=lambda n: "/usr/bin/" + n if n == "make" else None) is True
+    assert ca.head_installed("nosuchcmd_zz a PR", which=lambda n: None) is False
+    # the keystroke row gives the surface when the enter stage logged nothing (the Wayland rows up to r12a had surface None)
+    log = ('D keystroke: Shell by installed-head (#906/#964) (PlainTerminal, head "make", 9 bytes)\n'
+           'D keystroke: Agent by no-evidence-in-conversation (#1183) (AgentConversation, head "make", 13 bytes)\n')
+    rows = ca.typo_rows(log, "make a PR")
+    assert len(rows) == 1 and rows[0]["stage"] == "keystroke" and rows[0]["surface"] == "PlainTerminal" and rows[0]["rule"].startswith("installed-head")
+    assert ca.typo_rows(log, "make a README")[0]["surface"] == "AgentConversation"
+    src = inspect.getsource(ca.c_routing_table)
+    assert "seen = enter or (any_rows[-1] if any_rows else None)" in src and "installed=head_installed(line)" in src
+    v = ca.plain_installed_verdict
+    assert v("shell", "PlainTerminal", "installed-head (#906/#964)", True) == (True, None)
+    for bad in ("agent", "BOTH", "lost", "unproven"):
+        assert v(bad, "PlainTerminal", "installed-head (#906/#964)", True) == (False, None), bad
+    assert v("agent", "PlainTerminal", "model", True) == (False, None)                    # the classifier sent an installed head to the agent: a failure
+    ok, why = v("shell", "PlainTerminal", "command-shape (#808/#1203)", True)
+    assert ok and "command-shape" in why
+    assert v("agent", "AgentConversation", "no-evidence-in-conversation (#1183)", True) is None      # not the plain terminal: no verdict (#1183 stands)
+    assert v("shell", None, None, True) is None and v("agent", "PlainTerminal", "english-head-not-installed (#696)", False) is None
+    n = "routing_plain_installed_head"
+    reg = {c["name"]: c for c in cases.CASES}
+    assert n in reg and reg[n]["modes"] == ("terminal", "agent") and n in cases.PROVING and n not in cases.SMOKE and n in winmap.GITBASH_ONLY
+    assert "make a PR" in ca.PLAIN_INSTALLED_LINES
+    body = inspect.getsource(ca.c_routing_plain_installed_head)
+    for needle in ('wait_view_mode(ctx, "terminal")', "plain_installed_verdict(dest, surface, rule, installed)", "r.unverifiable(", "ctx.log_view_mode() == start"):
+        assert needle in body, needle
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md"), encoding="utf-8").read()
+    assert ("`%s`" % n) in doc and "routing_plain_installed_head_1981" in doc
+
+
+@check
 def r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window():
     # the r18d2 failures: find the bug in main.rs ran in the shell inside a conversation by the #1183 evidence rule (main.rs is data-shaped)
     w = ca.ambiguous_want
@@ -7204,6 +7248,103 @@ def gitbash_bootstrap_in_command_2051():
         assert needle in sh, needle
     doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
     assert ("`%s`" % n) in doc and "gitbash_bootstrap_in_command_2051" in doc and "PHOSPHOR_MSYS_SSH_BOOTSTRAP=typed" in doc
+
+
+@check
+def editor_save_mixed_endings_1956():
+    """#1956 (owner 2026-11-10): the editor's save of a file that mixes CRLF and LF lines is judged byte for byte, and a failure says whether line endings
+    or the text itself differ"""
+    import inspect
+    import cases_robust as rb
+    le, v = rb.line_endings, rb.mixed_save_verdict
+    assert le(rb.MIXED_ORIG) == ["CRLF", "LF", "CRLF", "LF", "CRLF"] and le(b"") == [] and le(b"a") == ["none"] and le(b"a\rb\r\n\nc") == ["CR", "CRLF", "LF", "none"]
+    want = b"HEAD_" + rb.MIXED_ORIG
+    assert v(want, want, "x") == []
+    all_crlf = want.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")         # what the buffer's one line ending wrote before #1956
+    msgs = v(all_crlf, want, "x")
+    assert len(msgs) == 1 and "#1956" in msgs[0] and "line 2 is CRLF on disk, expected LF" in msgs[0], msgs
+    msgs = v(want.replace(b"\r\n", b"\n"), want, "x")
+    assert len(msgs) == 1 and "line 1 is LF on disk, expected CRLF" in msgs[0], msgs
+    msgs = v(want + b"\n", want, "x")                                           # one more (empty) line: text differs, not an ending
+    assert len(msgs) == 1 and "TEXT" in msgs[0], msgs
+    msgs = v(rb.MIXED_ORIG, want, "x")                                          # nothing saved
+    assert len(msgs) == 1 and "TEXT" in msgs[0]
+    msgs = v(want[:-2], want, "x")                                              # the final line break lost: not byte-exact either way
+    assert len(msgs) == 1 and "TEXT" in msgs[0], msgs
+    n = "editor_save_mixed_endings"
+    reg = {c["name"]: c for c in cases.CASES}
+    assert n in reg and n in cases.PROVING and n not in cases.SMOKE and n in winmap.BOTH
+    assert winmap.skip_reason(n, "powershell") is None and winmap.skip_reason(n, "gitbash") is None
+    body = inspect.getsource(rb.c_editor_save_mixed_endings)
+    for needle in ("f.write(MIXED_ORIG)", "want1 = t1.encode() + MIXED_ORIG", "mixed_save_verdict(got1, want1", "finally:", "ctx.be.key(CLOSE_PANE"):
+        assert needle in body, needle
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md"), encoding="utf-8").read()
+    assert ("`%s`" % n) in doc and "editor_save_mixed_endings_1956" in doc
+
+
+@check
+def lab_plain_session_limit_2019():
+    """#2019 (owner 2026-11-10): an agent-mode lab arm on a host whose login shell gets a plain ssh session by decision (fish, nu) is UNVERIFIABLE with the
+    DECLINED reference, on the app log's own evidence; bash / zsh / dash / ash / pwsh arms are judged in full whatever the log says, and so is a fish / nu
+    arm that got a managed session or whose connect logged neither line"""
+    import inspect
+    import cases_lab as CL
+    import cases_agent_remote as AR, cases_agent_file_edits as FE, cases_lab_remote as LR
+    plain = "15:49:23.421 [INFO] Received PlainSSHFallback hook\n15:49:23.421 [DEBUG] input_order hop=ssh_wrapper verdict managed=false tty_owned_deferred=false t=1\n"
+    managed = "15:49:23.421 [INFO] Received ManagedSSHSessionStarting hook\n15:49:23.5 [DEBUG] input_order hop=ssh_wrapper verdict managed=true tty_owned_deferred=true t=1\n"
+    lim = CL.plain_session_limit
+    for shell in ("nu", "fish"):
+        why = lim(shell, plain)
+        assert why and "DECLINED.md" in why and "#2019" in why and shell in why and "KNOWN LIMITATION" in why, why
+        assert lim(shell, managed) is None and lim(shell, "") is None and lim(shell, None) is None
+        assert lim(shell, plain + managed) is None          # a managed-session line anywhere in the connect: judged in full
+    for shell in ("bash", "zsh", "dash", "ash", "pwsh", "rbash"):
+        assert lim(shell, plain) is None and lim(shell, managed) is None, shell
+    assert CL.PLAIN_SESSION_LOGIN_SHELLS == ("fish", "nu")
+    # the entry the reason names exists in DECLINED.md, word for word
+    root = os.path.join(HERE, "..", "..", "..")
+    declined = open(os.path.join(root, "DECLINED.md"), encoding="utf-8").read()
+    title = CL.PLAIN_SESSION_DECLINED.split("'")[1]
+    assert ("## " + title) in declined, title
+
+    # agent_connect, driven with stubs: what it returns, what it records, and that it never types the agent steps
+    def drive(shell, log, connected=True, left=True):
+        calls = []
+        ctx = types.SimpleNamespace(log_size=lambda: 0, log_since=lambda off: log, reset=lambda: calls.append("reset"), ssh_diag=lambda: "diag",
+                                    left_unproven=None)
+        r = cases.Result("lab_x.%s.lan.nohelper" % shell, "agent")
+        real = (CL.CR.connect, CL.CR.leave, CL.time.sleep)
+        CL.CR.connect = lambda c, host, timeout: calls.append("connect " + host) or (1.0 if connected else None)
+        CL.CR.leave = lambda c: calls.append("leave") or left
+        CL.time.sleep = lambda s: None
+        try:
+            ok = CL.agent_connect(ctx, r, dict(shell=shell, user="u_" + shell, lat_ms=0))
+        finally:
+            CL.CR.connect, CL.CR.leave, CL.time.sleep = real
+        return ok, r, calls
+    ok, r, calls = drive("nu", plain)
+    assert ok is False and not r.fails and len(r.noref) == 1 and r.noref[0].startswith("UNVERIFIABLE: KNOWN LIMITATION") and "DECLINED.md" in r.noref[0], (r.fails, r.noref)
+    assert calls == ["connect lab-u_nu", "leave", "reset"] and r.metrics.get("plain_session_by_decision") == "nu", calls
+    ok, r, calls = drive("nu", plain, left=False)            # the pane must still be left: that check is not waived
+    assert ok is False and len(r.fails) == 1 and "exit" in r.fails[0] and len(r.noref) == 1
+    for shell, log in (("bash", plain), ("bash", managed), ("dash", plain), ("pwsh", plain), ("nu", managed), ("nu", ""), ("fish", managed)):
+        ok, r, calls = drive(shell, log)
+        assert ok is True and not r.fails and not r.noref and calls == ["connect lab-u_" + shell], (shell, calls, r.noref)
+    ok, r, calls = drive("nu", plain, connected=False)       # no remote prompt is a FAIL on every shell, never the limitation
+    assert ok is False and len(r.fails) == 1 and "no remote prompt" in r.fails[0] and not r.noref and calls == ["connect lab-u_nu", "reset"]
+    ok, r, calls = drive("bash", plain, connected=False)
+    assert ok is False and len(r.fails) == 1 and not r.noref
+    # every agent-mode lab case that has a nu arm connects through it (the four rows of #2019 and the two older cases with the same premise)
+    for fn in (AR.c_agent_remote_flow, AR.c_agent_remote_errors, AR.c_agent_remote_drop, LR.c_read_files_remote, LR.c_diff_apply_remote):
+        src = inspect.getsource(fn)
+        assert "CL.agent_connect(ctx, r, arm)" in src and "connect_or_fail" not in src, fn.__name__
+    assert "CL.agent_connect(ctx, r, arm)" in inspect.getsource(FE.lab_ready) and "lab_ready(ctx, r, arm)" in inspect.getsource(FE.c_lab_agent_edit_conflict)
+    names = {c["name"] for c in cases.CASES}
+    for n in ("lab_agent_remote_flow.nu.lan.nohelper", "lab_agent_remote_errors.nu.lan.nohelper", "lab_agent_remote_drop.nu.lan.nohelper",
+              "lab_fam_agent_edit_conflict.nu.lan.nohelper", "lab_agent_remote_flow.bash.lan.nohelper"):
+        assert n in names, n                                 # the nu rows are still registered: reported by name, not dropped
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    assert "lab_plain_session_limit_2019" in doc and "plain_session_limit" in doc
 
 
 def main():

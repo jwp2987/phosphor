@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
+use ai::diff_validation::{has_mixed_line_endings, text_with_line_endings_of};
 use bimap::BiMap;
 
 use futures_util::stream::AbortHandle;
@@ -329,6 +330,12 @@ pub struct GlobalBufferModel {
     /// the buffer is dropped (`close_buffer`), so registration cannot tell whether a drop event is
     /// still coming; this can. Entries leave on the drop event.
     drop_watched: HashMap<FileId, usize>,
+    /// #1956: the raw text of every open file that MIXES line endings, as the disk last had it
+    /// (what was loaded, reloaded, or written by a save). The editor buffer holds text
+    /// LF-normalised and serialises it with one line ending, so this is the only record of which
+    /// line ended how; a save gives each line its own ending back from it
+    /// ([`Self::text_to_save`]). Files with one line ending have no entry.
+    mixed_ending_disk_text: HashMap<FileId, String>,
     /// The `trim` verdicts of the drop events, in order (for tests).
     #[cfg(test)]
     pub(crate) dropped_with_trim: Vec<(FileId, bool)>,
@@ -363,9 +370,37 @@ impl GlobalBufferModel {
             buffers: HashMap::new(),
             trim_on_drop_of: HashSet::new(),
             drop_watched: HashMap::new(),
+            mixed_ending_disk_text: HashMap::new(),
             #[cfg(test)]
             dropped_with_trim: Vec::new(),
         }
+    }
+
+    /// Records `content` as the text the disk holds for `file_id` (#1956). Only a text that mixes
+    /// line endings is kept; any other forgets the file.
+    fn note_disk_text(&mut self, file_id: FileId, content: &str) {
+        if has_mixed_line_endings(content) {
+            self.mixed_ending_disk_text
+                .insert(file_id, content.to_owned());
+        } else {
+            self.mixed_ending_disk_text.remove(&file_id);
+        }
+    }
+
+    /// The text a save of `file_id` writes, given the editor's serialisation of its buffer
+    /// (#1956). For a file whose text on disk mixes line endings, every line that is still a line
+    /// of that text keeps its own ending and a changed or new line takes the ending of the line
+    /// it replaces or follows (`ai::diff_validation::text_with_line_endings_of`); the buffer's one
+    /// line ending is not written over the whole file. For every other file this is `content`
+    /// unchanged. The result is recorded as the disk's text for the next save: if the write then
+    /// fails, the record still holds the same line endings for every line the file has.
+    fn text_to_save(&mut self, file_id: FileId, content: String) -> String {
+        let content = match self.mixed_ending_disk_text.get(&file_id) {
+            Some(disk_text) => text_with_line_endings_of(disk_text, content),
+            None => content,
+        };
+        self.note_disk_text(file_id, &content);
+        content
     }
 
     /// Client-app only: subscribes to `RemoteServerManager`'s buffer push events,
@@ -599,6 +634,7 @@ impl GlobalBufferModel {
         }
 
         self.buffers.remove(&file_id);
+        self.mixed_ending_disk_text.remove(&file_id);
         log::debug!(
             target: "code::buffer_lifecycle",
             "unregister (cleanup): registered={}",
@@ -884,6 +920,8 @@ impl GlobalBufferModel {
                 // Only set the initial_content_version on first file load.
                 if let Some(state) = self.buffers.get_mut(id) {
                     state.set_initial_content_version(*version);
+                    // #1956: what the disk holds, with each line's own ending.
+                    self.note_disk_text(*id, content);
                 }
 
                 // For initial load, base_version and new_version are the same
@@ -901,6 +939,12 @@ impl GlobalBufferModel {
                 base_version,
                 new_version,
             } => {
+                // #1956: this is what the disk holds now, whether or not the buffer takes it
+                // (a buffer with unsaved edits keeps its text; its next save still aligns with
+                // the lines the file has).
+                if self.buffers.contains_key(id) {
+                    self.note_disk_text(*id, content);
+                }
                 if let Some(buffer) = self.buffer_handle_for_id(*id, ctx) {
                     if buffer.as_ref(ctx).version_match(base_version) {
                         self.populate_buffer_with_read_content(
@@ -987,14 +1031,18 @@ impl GlobalBufferModel {
     }
 
     /// Save the content of a tracked buffer to disk via FileModel.
+    ///
+    /// `content` is the editor's text. It is written as it is, except that a file whose text on
+    /// disk mixes line endings keeps each line's own ending (#1956, `text_to_save`).
     #[cfg(feature = "local_fs")]
     pub fn save(
-        &self,
+        &mut self,
         file_id: FileId,
         content: String,
         version: ContentVersion,
         ctx: &mut ModelContext<Self>,
     ) -> Result<(), FileSaveError> {
+        let content = self.text_to_save(file_id, content);
         FileModel::handle(ctx).update(ctx, |file_model, ctx| {
             file_model.save(file_id, content, version, ctx)
         })
@@ -1003,13 +1051,15 @@ impl GlobalBufferModel {
     /// Rename a file and save its content via FileModel.
     #[cfg(feature = "local_fs")]
     pub fn rename_and_save(
-        &self,
+        &mut self,
         file_id: FileId,
         new_path: PathBuf,
         content: String,
         version: ContentVersion,
         ctx: &mut ModelContext<Self>,
     ) -> Result<(), FileSaveError> {
+        // #1956: the renamed file is the same lines; each keeps its own ending.
+        let content = self.text_to_save(file_id, content);
         FileModel::handle(ctx).update(ctx, |file_model, ctx| {
             file_model.rename_and_save(file_id, new_path, content, version, ctx)
         })
@@ -1076,6 +1126,9 @@ impl GlobalBufferModel {
                         FileModel::handle(ctx).update(ctx, |file_model, _ctx| {
                             file_model.set_version(id, new_version);
                         });
+                        if me.buffers.contains_key(&id) {
+                            me.note_disk_text(id, &content);
+                        }
                         me.populate_buffer_with_read_content(
                             id,
                             &content,
@@ -1105,6 +1158,7 @@ impl GlobalBufferModel {
         ctx: &mut ModelContext<Self>,
     ) -> Option<BufferState> {
         let old_state = self.buffers.remove(&old_file_id)?;
+        let disk_text = self.mixed_ending_disk_text.remove(&old_file_id);
         let buffer = old_state.buffer.upgrade(ctx)?;
 
         // Send didClose for the old path and remove the mapping.
@@ -1124,13 +1178,19 @@ impl GlobalBufferModel {
             file_model.unsubscribe(old_file_id, ctx);
         });
 
-        Some(self.register_buffer_for_path(
+        let state = self.register_buffer_for_path(
             new_path,
             buffer,
             old_state.base_content_version(),
             old_state.initial_content_version(),
             ctx,
-        ))
+        );
+        // #1956: the renamed file has the same lines, so the record of their endings moves with
+        // it.
+        if let Some(disk_text) = disk_text {
+            self.mixed_ending_disk_text.insert(state.file_id, disk_text);
+        }
+        Some(state)
     }
 
     /// Adopt an existing buffer under a new path without reading from disk.

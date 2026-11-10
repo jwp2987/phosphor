@@ -52,10 +52,8 @@ def c_read_files_remote(ctx, r, arm):
     CRP.need_model(ctx, r)
     tok = CL.unique(ctx, 6)
     path = CL.work(arm, "rf_%s.txt" % tok)
-    if CL.connect_or_fail(ctx, r, arm) is None:
-        ctx.reset()
+    if not CL.agent_connect(ctx, r, arm):          # no remote prompt, or the #2019 plain-session limitation (UNVERIFIABLE)
         return
-    time.sleep(1.0 + 2 * CL.rtt_s(arm))
     ask(ctx, "Please create exactly this file: %s with this content: line one %s" % (path, tok), "file_write")
     r.check(any(tok in l for l in ctx.remote.lines(path)), "the setup file was not created on the host")
     got = ask(ctx, "Please read exactly this file and nothing else: %s" % path, "file_context")
@@ -95,10 +93,9 @@ def c_diff_apply_remote(ctx, r, arm):
     pat, seen = CL.work(arm, "da_%s.pat" % tok), CL.work(arm, "da_%s.ps" % tok)
     wrote = ctx.lab.ssh(arm["user"], "sh -c 'echo %s > %s; echo %s >> %s; echo %s >> %s'" % (mk, pat, b64, pat, ctl, pat), timeout=30).returncode == 0
     sampling = wrote and start_ps_sampler(ctx, arm, pat, seen, ctl)
-    if CL.connect_or_fail(ctx, r, arm) is None:
-        ctx.reset()
+    if not CL.agent_connect(ctx, r, arm):          # no remote prompt, or the #2019 plain-session limitation (UNVERIFIABLE)
+        ctx.remote.rm(pat, seen)
         return
-    time.sleep(1.0 + 2 * CL.rtt_s(arm))
     got = ask(ctx, "Please create exactly this file: %s with this content: hello %s" % (path, mk), "file_write")
     r.check(ctx.until(lambda: any(mk in l for l in ctx.remote.lines(path)), 30, step=0.5), "the created file is not on the host")
     r.check(all(b == expected_backend(arm) for b, _ in got), "file_write routed to %r, expected %s" % (got, expected_backend(arm)))

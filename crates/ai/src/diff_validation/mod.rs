@@ -20,7 +20,9 @@ use derivative::Derivative;
 use serde_json::json;
 
 mod apply;
+mod endings;
 pub use apply::{accepted_update_text, apply_deltas_to_text, lf_normalized};
+pub use endings::{has_mixed_line_endings, text_with_line_endings_of};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub enum ParsedDiff {

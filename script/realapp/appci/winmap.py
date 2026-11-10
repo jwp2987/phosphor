@@ -13,7 +13,7 @@ BOTH = {
     "idle_cpu", "enter_loss_control", "latency_enter", "latency_paint", "latency_key_views_ab", "tabs_two_windows", "tabs_streaming",
     "paste_multiline_prompt", "intl_wide_type", "intl_wide_paste", "intl_wide_edit", "intl_altgr_bash", "intl_altgr_ps",
     "cb_no_autoupdate", "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
-    "editor_edit_save", "editor_paste",         # #1544: phosphor.exe <file URL> reaches the running instance over its named pipe (cases.open_file_in_windows_app)
+    "editor_edit_save", "editor_paste", "editor_save_mixed_endings",         # #1544: phosphor.exe <file URL> reaches the running instance over its named pipe (cases.open_file_in_windows_app)
     "upgrade_over_previous",                 # #1546: skips itself without APPCI_PREV_FIXTURE / APPCI_PREV_BIN
     "startup_shell_pane",                    # #1534: itself skips outside a startup_shell_override pass
     "ctrl_c_no_esc_i_local",                 # #1798: itself skips on Windows with its reason
@@ -62,6 +62,7 @@ GITBASH_ONLY = {
     "ui_copy_wrapped_output": "#1976: `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (keyboard and clipboard only)",
     "routing_table": "asserts what the shell received from rec.log: runs in the Git Bash pane",
     "routing_typo_head": "asserts what the shell received from rec.log (#1980, agent mode only): runs in the Git Bash pane",
+    "routing_plain_installed_head": "asserts what the shell received from rec.log (#1981): runs in the Git Bash pane",
     "agent_stream_cancel": "uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)",
     "agent_input_exact": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
     "agent_mode_switch": "asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane",

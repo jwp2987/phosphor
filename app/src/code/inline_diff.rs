@@ -395,11 +395,13 @@ impl InlineDiffView {
     /// line ending (the file's majority one), so for a file that mixes line
     /// endings its text rewrites lines the edit never touched (#1956).
     /// `ai::diff_validation::accepted_update_text` returns the byte-exact
-    /// result instead whenever it is the same text as the buffer's, and the
-    /// buffer's own text otherwise (the user edited the proposal, a creation,
-    /// no original recorded). What is written is therefore always the text
-    /// shown in this view; only line endings outside the edit can differ from
-    /// the buffer's serialisation, and they are the file's own.
+    /// result instead whenever it is the same text as the buffer's. When it
+    /// is not (the user edited the proposal), it returns the buffer's text
+    /// with every line that is still the original's given back the original's
+    /// line ending. A creation, or an update with no original recorded, writes
+    /// the buffer's own text. What is written is therefore always the text
+    /// shown in this view; only line endings can differ from the buffer's
+    /// serialisation, and they are the file's own.
     fn content_to_write(&self, ctx: &AppContext) -> String {
         let buffer_text = self.editor.as_ref(ctx).text(ctx).into_string();
         match (&self.diff_type, &self.original_content) {

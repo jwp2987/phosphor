@@ -1067,3 +1067,98 @@ def c_soak(ctx, r):
     lim = max(float(os.environ.get("APPCI_SOAK_IDLE_CPU_PCT", "5")), cpu0 + 3)
     r.check(cpu1 <= lim, "soak: idle CPU %.1f %% at the end exceeds max(%s %%, start %.1f %% + 3) = %.1f %%" % (cpu1, os.environ.get("APPCI_SOAK_IDLE_CPU_PCT", "5"), cpu0, lim))
     ctx.shot("soak_end")
+
+
+# ---------------------------------------------------------------- #1956: a save of a file that mixes line endings keeps each line's own
+# The editor buffer holds text LF-normalised and serialises it with ONE line ending, the file's majority one (here CRLF, 3 lines to 2), so before #1956 a
+# save rewrote the two LF lines although nobody had edited them. Owner decision 2026-11-10: each line keeps its own ending.
+MIXED_ORIG = b"alpha one\r\nbeta two\ngamma three\r\ndelta four\nlast five\r\n"
+
+
+def disk_bytes(path, tries=40):
+    """the file's bytes, with disk()'s retry for a sharing violation while the editor writes (Windows)"""
+    for i in range(tries):
+        try:
+            return open(path, "rb").read()
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.05)
+
+
+def line_endings(data):
+    """pure: the line ending of every line of `data`, in order: 'CRLF' | 'LF' | 'CR' | 'none' (an unterminated last line)"""
+    out, i, start = [], 0, 0
+    while i < len(data):
+        if data[i:i + 2] == b"\r\n":
+            out.append("CRLF"); i += 2; start = i
+        elif data[i:i + 1] == b"\n":
+            out.append("LF"); i += 1; start = i
+        elif data[i:i + 1] == b"\r":
+            out.append("CR"); i += 1; start = i
+        else:
+            i += 1
+    if start < len(data):
+        out.append("none")
+    return out
+
+
+def mixed_save_verdict(got, want, label):
+    """pure: [] when the saved bytes are exactly `want`; else one message that says WHICH kind of difference it is: the same text with other line endings
+    (the #1956 defect: names the first line whose ending changed), or different text (the edit itself did not land as typed)."""
+    if got == want:
+        return []
+    norm = lambda b: b.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    if norm(got) == norm(want):
+        ge, we = line_endings(got), line_endings(want)
+        first = next((i for i, (a, b) in enumerate(zip(ge, we)) if a != b), min(len(ge), len(we)))
+        return ["%s: the save rewrote line endings nobody edited (#1956): line %d is %s on disk, expected %s; endings on disk %s, expected %s" % (
+            label, first + 1, ge[first] if first < len(ge) else "missing", we[first] if first < len(we) else "missing", ge, we)]
+    return ["%s: the saved TEXT is not what was typed: disk has %r, expected %r" % (label, got[:120], want[:120])]
+
+
+@case("editor_save_mixed_endings", order=72, gui=True)
+def c_editor_save_mixed_endings(ctx, r):
+    """#1956: a file with CRLF and LF lines is opened in the code editor, a token is typed at the start of line 1 (10-25 ms/key) and saved with Ctrl-S:
+    the file on disk must be the token plus the ORIGINAL BYTES, every line with its own ending. Then a token typed at the very end (a new last line with
+    no line break) and saved: again byte-exact. Nothing may reach the shell."""
+    path = editor_prepare(ctx, r, "mixed_%s.txt" % ctx.mode)
+    with open(path, "wb") as f:
+        f.write(MIXED_ORIG)
+    mark = ctx.cmd_mark()
+    if not editor_open(ctx, r, path, "m"):
+        return
+    try:
+        t1 = "HEAD_%s_" % ctx.tok(6)
+        ctx.be.key("ctrl+Home")
+        ctx.be.type(t1, ctx.rng.randint(10, 25))
+        time.sleep(0.4)
+        ctx.be.key("ctrl+s")
+        want1 = t1.encode() + MIXED_ORIG
+        ctx.until(lambda: disk_bytes(path) != MIXED_ORIG, 6)
+        time.sleep(0.3)
+        got1 = disk_bytes(path)
+        ctx.shot("editor_mixed_saved")
+        r.metric("mixed_endings_after_save", line_endings(got1))
+        for msg in mixed_save_verdict(got1, want1, "an edit of line 1, saved"):
+            r.check(False, msg)
+        t2 = "TAIL_%s" % ctx.tok(6)
+        ctx.be.key("ctrl+End")
+        ctx.be.type(t2, ctx.rng.randint(10, 25))
+        time.sleep(0.4)
+        ctx.be.key("ctrl+s")
+        ctx.until(lambda: disk_bytes(path) != got1, 6)
+        time.sleep(0.3)
+        want2 = (got1 if got1 != MIXED_ORIG else want1) + t2.encode()        # on top of whatever the first save wrote: the second verdict is its own
+        for msg in mixed_save_verdict(disk_bytes(path), want2, "a new last line typed at the end, saved"):
+            r.check(False, msg)
+    finally:
+        # a harness exception must not leave the editor pane open in front of the shell (r18u8 H15)
+        try:
+            ctx.be.guard()
+            ctx.be.key(CLOSE_PANE or "ctrl+shift+w")
+            time.sleep(1.0)
+        except Exception:
+            pass
+    got = ctx.cmds_since(mark)
+    r.check(not got, "keys meant for the editor reached the shell: %r" % got)

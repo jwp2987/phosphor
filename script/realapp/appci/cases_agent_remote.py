@@ -127,11 +127,10 @@ def c_agent_remote_flow(ctx, r, arm):
     fx = "agf_%s" % uid
     d = setup_tree(ctx, arm, fx, toks)
     a = "%s/a.txt" % d
-    if CL.connect_or_fail(ctx, r, arm) is None:
-        ctx.reset()
+    if not CL.agent_connect(ctx, r, arm):          # no remote prompt, or the #2019 plain-session limitation (UNVERIFIABLE)
+        ctx.remote.rm("%s/a.txt" % fx, "%s/b.txt" % fx, "%s/c.txt" % fx, "%s/src/lib.rs" % fx)
         return
-    time.sleep(1.0 + 2 * CL.rtt_s(arm))
-    ran = "ran_%s.txt" % uid          # the approved command's own effect file: one copy of the edited file per run
+    ran = "ran_%s.txt" % uid         # the approved command's own effect file: one copy of the edited file per run
     steps = ["read %s" % a, "grep %s %s" % (toks["n"], d), "glob *.txt %s" % d,
              "edit %s :: alpha %s :: alpha %s" % (a, toks["a"], toks["e"]), "run cat %s | /usr/bin/tee -a %s" % (a, CL.work(arm, ran))]
     index_on = os.environ.get("APPCI_FAKE_EMBEDDINGS_ACTIVE") == "1"
@@ -191,10 +190,9 @@ def c_agent_remote_errors(ctx, r, arm):
     fx = "age_%s" % uid
     d = setup_tree(ctx, arm, fx, toks)
     a, missing = "%s/a.txt" % d, "%s/nope_%s.txt" % (d, uid)
-    if CL.connect_or_fail(ctx, r, arm) is None:
-        ctx.reset()
+    if not CL.agent_connect(ctx, r, arm):          # no remote prompt, or the #2019 plain-session limitation (UNVERIFIABLE)
+        ctx.remote.rm("%s/a.txt" % fx, "%s/b.txt" % fx, "%s/c.txt" % fx, "%s/src/lib.rs" % fx)
         return
-    time.sleep(1.0 + 2 * CL.rtt_s(arm))
     steps = ["read %s" % missing, "edit %s :: not_in_file_%s :: whatever" % (a, uid), "grep zz%sqq %s" % (uid, d), "glob *.nothing_%s %s" % (uid, d)]
     off, done = drive_plan(ctx, steps)
     ctx.shot("agent_remote_errors_%s_%s" % (arm["shell"], arm["helper"]))
@@ -227,10 +225,8 @@ def c_agent_remote_drop(ctx, r, arm):
         r.skip("not yet ported to the Windows panes (see lab_ssh_drop_reconnect)")
     fake = fake_model_or_skip(ctx, r)
     tok = CL.unique(ctx, 8)
-    if CL.connect_or_fail(ctx, r, arm) is None:
-        ctx.reset()
+    if not CL.agent_connect(ctx, r, arm):          # no remote prompt, or the #2019 plain-session limitation (UNVERIFIABLE)
         return
-    time.sleep(1.0 + 2 * CL.rtt_s(arm))
     base, off = fake.requests, ctx.log_size()
     started_file = "started_%s" % tok
     AG.type_fast(ctx, plan_text([drop_command(arm["shell"], CL.work(arm, started_file), tok)]))

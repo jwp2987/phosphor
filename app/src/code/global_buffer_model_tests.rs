@@ -587,3 +587,61 @@ fn save_remote_buffer_fails_when_the_host_has_no_helper_and_no_channel() {
         assert_eq!(content(&app, file_id), "hello");
     })
 }
+
+// ── #1956: a save of a file that mixes line endings keeps each line's own ──
+// The editor buffer serialises with ONE line ending (the file's majority one). The model keeps the
+// raw text of a mixed-ending file as the disk last had it and gives each line its ending back.
+
+#[test]
+fn a_save_of_a_mixed_ending_file_keeps_each_line_ending() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let mixed = warp_util::file::FileId::new();
+        let uniform = warp_util::file::FileId::new();
+        gbm(&app).update(&mut app, |gbm, _ctx| {
+            // Nothing recorded for the file: the editor's text is written as it is.
+            assert_eq!(
+                gbm.text_to_save(mixed, "a\r\nb\r\n".to_owned()),
+                "a\r\nb\r\n"
+            );
+
+            // What the disk holds (FileLoaded / FileUpdated): only a mixed text is remembered.
+            gbm.note_disk_text(mixed, "one\r\ntwo\nthree\r\nfour\r\n");
+            gbm.note_disk_text(uniform, "one\r\ntwo\r\n");
+            assert!(gbm.mixed_ending_disk_text.contains_key(&mixed));
+            assert!(!gbm.mixed_ending_disk_text.contains_key(&uniform));
+
+            // The buffer's serialisation is all CRLF (the majority); line 2 stays LF on disk.
+            assert_eq!(
+                gbm.text_to_save(mixed, "ONE\r\ntwo\r\nthree\r\nfour\r\n".to_owned()),
+                "ONE\r\ntwo\nthree\r\nfour\r\n"
+            );
+            // The next save is aligned with what the first one wrote.
+            assert_eq!(
+                gbm.text_to_save(mixed, "ONE\r\ntwo\r\nthree\r\nfour\r\nfive\r\n".to_owned()),
+                "ONE\r\ntwo\nthree\r\nfour\r\nfive\r\n"
+            );
+            // A file with one line ending is not touched.
+            assert_eq!(
+                gbm.text_to_save(uniform, "one\r\nTWO\r\n".to_owned()),
+                "one\r\nTWO\r\n"
+            );
+
+            // The only LF line is deleted: what is written has one line ending, and the file is
+            // no longer remembered as mixed.
+            assert_eq!(
+                gbm.text_to_save(mixed, "ONE\r\nthree\r\nfour\r\nfive\r\n".to_owned()),
+                "ONE\r\nthree\r\nfour\r\nfive\r\n"
+            );
+            assert!(!gbm.mixed_ending_disk_text.contains_key(&mixed));
+
+            // A reload that mixes endings again is remembered again; one that does not, forgotten.
+            gbm.note_disk_text(mixed, "x\ny\r\n");
+            assert_eq!(gbm.text_to_save(mixed, "x\nY\n".to_owned()), "x\nY\r\n");
+            gbm.note_disk_text(mixed, "x\ny\n");
+            assert!(!gbm.mixed_ending_disk_text.contains_key(&mixed));
+        });
+    })
+}

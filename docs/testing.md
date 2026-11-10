@@ -5225,3 +5225,77 @@ App: `keyring_unavailable_startup` (#1805) is unchanged. The change adds no keyr
 - Unit: `app/src/ai/agent_providers/active_ai/mod_test.rs` `a_query_prediction_is_not_requested_in_an_ssh_session_unless_allowed` (the decision `nld_predict::allowed_for_session`: local yes; ssh no; unknown session no; everything yes when the setting is on). `app/src/settings/ai_tests.rs` `natural_language_autosuggestions_in_ssh_default_off`.
 - App: `lab_agent_nld_predict_ssh` (`appci/cases_agent_remote.py`; one arm, `bash.lan.nohelper`, agent mode, fake model; in `cases.PROVING_LAB`, so the fix tier's lab job plays it). Each side first runs `echo` so the pane has a completed block (a prediction's context), then types a partial agent prompt with NO Enter. Local pane (control): an `nld_predict` request must reach the fake model within 10 s (`fake_model.by_purpose`, the model server's own count). ssh pane: none in 5 s (the debounce is 250 ms). `nld_verdict`: no control request makes the case UNVERIFIABLE (never a pass: predictions may be off, unconfigured, or the pane lookup of the new gate may be failing everywhere); any request from the ssh pane is a FAIL. Also checked: the unsent prompt never reached the remote shell (`rec.log`). The setting's ON side has no app case (it needs a settings write and a relaunch inside a lab arm); the unit test covers the decision. Self-test: `fake_model_plan_and_agent_remote_pure_parts` (verdict table, the arm's registration).
 - Run: `APPCI_FAKE_MODEL=1 python3 script/realapp/appci/run.py --cases 'lab_agent_nld_predict_ssh.*'`.
+## Round 14: routed (#1981, #1956, #2019; design `docs/design/r14-routed.md`)
+Everything below is worked, unproven: nothing was compiled or run against a build (the appci self-test was run).
+- **#2019, TEST + DECLINED: the agent-mode lab arms on a `nu` login shell report the decided limitation by name.** Owner decision
+  2026-11-10 (`DECLINED.md`, "A remote host whose login shell is fish or nu gets a plain ssh session: no agent tools on that host"): such
+  a host gets a plain ssh session, and the agent's remote tools need a managed one. `cases_lab.agent_connect` (used by
+  `lab_agent_remote_{flow,errors,drop}`, the `lab_fam_agent_*` cases through `lab_ready`, `lab_read_files_remote` and
+  `lab_diff_apply_remote`) connects, then asks `cases_lab.plain_session_limit(shell, app log of this connect)`. The premise needs all
+  three: the arm's login shell is `fish` or `nu`; the log has `Received PlainSSHFallback hook`; the log has no
+  `Received ManagedSSHSessionStarting hook` and no `hop=ssh_wrapper verdict managed=true`. Then the row is UNVERIFIABLE (status `noref`,
+  never a pass) with the DECLINED reference, metric `plain_session_by_decision`, the agent steps are not typed (in a plain session they
+  would be typed into the remote shell), and the pane is left with `exit`, whose check stands. **No check is weakened for any other
+  arm:** a bash / zsh / dash / ash / pwsh arm is judged in full whatever the log says (a plain session there fails on the case's own
+  checks), a `nu` arm that gets a managed session is judged in full, and "no remote prompt" is a FAIL on every shell. The rows stay
+  registered (`lab_agent_remote_flow.nu.lan.nohelper` and the others), so they are reported, not dropped. Self-test
+  `lab_plain_session_limit_2019` (the pure verdict per shell and log, `agent_connect` driven with stubs: what it records and that the
+  `exit` check is not waived, the six cases connect through it, the DECLINED entry exists under the title the reason quotes).
+  **Next Linux lab run:** the four rows `lab_agent_remote_{flow,errors,drop}.nu`, `lab_fam_agent_edit_conflict.nu` NOREF with
+  "KNOWN LIMITATION (owner decision, #2019)", no `exit` line; the bash rows unchanged.
+- **#1981, TEST: `make a PR` typed in terminal mode.** Not an app bug: on the plain terminal `routing::route` already sends a line whose
+  first word the session knows to the shell (`Rule::InstalledHead`); the row note that raised the question came from a line typed inside a
+  conversation (the committed `routing_rows` say `surface=AgentConversation`, rule `no-evidence-in-conversation (#1183)`, in every
+  terminal-mode pass on macOS and Windows: `routing_table`'s own prose lines open a conversation in the pane). What pins it now:
+  - unit `an_installed_head_with_english_arguments_runs_in_the_shell_on_the_plain_terminal` (`crates/input_classifier`,
+    `routing_corpus_tests.rs`): `make a PR`, `make a README`, `find the bug in main.rs`, `find large files`,
+    `rm -rf node_modules, reinstall` with an installed head on the plain terminal are Shell at the keystroke and at Enter (`make a PR` by
+    `Rule::InstalledHead`); `make a PR` in a conversation is the agent's (#1183 kept); the request-shaped
+    `cat the error log and tell me what is wrong` and `find the process that is eating my memory` are the agent's on the plain terminal
+    (owner 2026-11-04 kept).
+  - appci `routing_plain_installed_head` (both modes, in `cases.PROVING`; Git Bash pane on Windows): leaves the agent view with Escape
+    (proven by `hop=view_mode mode=terminal`), types `make a PR`, `make a README`, `find the bug in main.rs`, `find large files` at
+    10-25 ms/key with an instant Enter. A line is judged only when its own routing row (`keystroke:` or `enter:`) says `PlainTerminal` and
+    its first word is a program on the machine (`shutil.which`); then the shell's rec.log must hold the exact line and nothing may have gone
+    to the agent. No line judged = UNVERIFIABLE (never a pass). It ends in the view it started in and fails if it cannot get back.
+    Metric `plain_installed_rows`.
+  - `routing_table`: **expectation changed by the owner decision, not weakened:** `make a PR` on the plain terminal was unpinned (either
+    outcome passed) and is now pinned `shell` when `make` is a program on the machine (`AMBIGUOUS_EXPECT`, `ambiguous_want(..., installed)`);
+    the conversation half is unchanged (`agent`). A row with no `enter:` line (the keystroke verdict had settled: every Wayland row up to
+    r12a) now takes surface and rule from the line's `keystroke:` row, so those ambiguous rows get a verdict instead of the note "no routing
+    log line".
+  - self-test `routing_plain_installed_head_1981`.
+  **Next run:** `routing_plain_installed_head` PASS in both modes with `rule=installed-head (#906/#964)` and `surface=PlainTerminal` in
+  `plain_installed_rows`; a FAIL there names a line the app sent to the agent on the plain terminal (then read the rule: `model` means
+  the session could not say the first word is a command). `routing_table` rows on Wayland carry a surface.
+- **#1956, APP: a file that mixes CRLF and LF lines keeps each line's own ending** (owner decision 2026-11-10). Two paths wrote the editor
+  buffer's one line ending (the file's majority one) over such a file: a save from the code editor, and an accepted agent edit the user had
+  changed in the diff view. Both now go through `ai::diff_validation::text_with_line_endings_of(original, text)`
+  (`crates/ai/src/diff_validation/endings.rs`): lines are aligned by content with the file's raw text as the disk last had it, a line that is
+  still there keeps its ending, a changed line takes the ending of the line it replaces, an inserted one of the line before it; the final
+  newline state is the text's. A file with one line ending is returned untouched, and the function returns its input whenever the result
+  would not be the same text (line endings aside). `GlobalBufferModel` keeps the raw text of mixed-ending files only
+  (`mixed_ending_disk_text`: `FileLoaded`, `FileUpdated`, discard-and-reload, each save) and `save` / `rename_and_save` use it
+  (`text_to_save`). Not covered here: the remote editor save and the remote accept (#2020).
+  - unit, `crates/ai/src/diff_validation/endings_tests.rs`: `raw_lines_split_at_every_kind_of_line_break_and_lose_nothing`,
+    `mixed_means_more_than_one_kind_of_line_break`, `a_file_with_one_line_ending_is_not_touched`, `unchanged_lines_keep_their_own_ending`,
+    `inserted_and_deleted_lines_leave_the_other_lines_alone`, `a_changed_run_takes_the_endings_of_the_lines_it_replaces`,
+    `repeated_lines_are_matched_in_order`, `the_final_newline_state_is_the_texts`, `a_result_that_would_change_the_text_is_never_returned`
+    (a lone `\r` in front of an empty LF line), `only_line_endings_ever_differ_from_the_text`,
+    `a_large_changed_middle_still_keeps_each_line_ending` (the greedy match past `MAX_ALIGNMENT_CELLS`).
+  - unit, `apply_tests.rs`: **expectation changed by the owner decision, not weakened:**
+    `accepted_text_is_the_buffer_when_the_user_changed_the_proposal` expected the buffer's all-CRLF text for a mixed original; it is now
+    `accepted_text_keeps_each_line_ending_when_the_user_changed_the_proposal` (the user's text, each surviving line with its own ending),
+    and `accepted_text_is_the_buffer_when_the_user_changed_the_proposal_of_a_uniform_file` keeps the old expectation for LF / CRLF files with
+    and without a final newline.
+  - unit, `app/src/code/global_buffer_model_tests.rs`: `a_save_of_a_mixed_ending_file_keeps_each_line_ending` (what is remembered, two saves
+    in a row, a uniform file untouched, the record forgotten once the text has one ending).
+  - appci `editor_save_mixed_endings` (both modes, in `cases.PROVING`; Linux and both Windows panes, skips on macOS like `editor_edit_save`):
+    a file `alpha one\r\n beta two\n gamma three\r\n delta four\n last five\r\n` is opened in the code editor, a token typed at the start of
+    line 1 and saved with Ctrl-S; the file must be the token plus the original bytes. Then a token typed at the very end (a new last line
+    with no line break) and saved, again byte-exact. A failure says which it is: line endings rewritten (names the first line, `#1956`) or
+    the text itself. Metric `mixed_endings_after_save`. Self-test `editor_save_mixed_endings_1956`. The accept of an agent edit on a mixed
+    file is `agent_edit_endings` (`mixed`, `mixed_no_eol`, already there); an accept after the user edited the proposal has no app case
+    (the harness cannot edit inside the diff view), only the unit test.
+  **Next run:** `editor_save_mixed_endings` PASS with `mixed_endings_after_save = [CRLF, LF, CRLF, LF, CRLF]`; before this change the
+  metric would read five CRLF and the case names line 2.
