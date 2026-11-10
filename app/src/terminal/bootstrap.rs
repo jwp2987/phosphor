@@ -127,6 +127,62 @@ pub fn should_use_rc_file_bootstrap_method(
     }
 }
 
+/// Whether `subshell` was started by plain `bash` (`bash`, `bash --rcfile x`, `FOO=1 bash -l`,
+/// `/usr/bin/bash`, `bash.exe`): the shell of the session it was typed in, on that session's own
+/// machine and file system. Not `sudo -s`, `wsl`, `ssh host`, `docker exec ... bash`, whose bash
+/// may live somewhere else.
+#[cfg(feature = "local_fs")]
+pub(crate) fn subshell_started_by_plain_bash(
+    subshell: &super::model::terminal_model::SubshellInitializationInfo,
+) -> bool {
+    subshell.ssh_connection_info.is_none()
+        && super::warpify::subshell_display_name(&subshell.spawning_command)
+            .and_then(|name| name.rsplit(['/', '\\']).next())
+            .map(|name| name.strip_suffix(".exe").unwrap_or(name))
+            == Some("bash")
+}
+
+/// `PHOSPHOR_MSYS2_SUBSHELL_SOURCE`: `0`, `off`, `false` or `no` (any case) types the bootstrap
+/// into a Git Bash subshell as before #2025.
+pub(crate) fn msys2_subshell_source_enabled_from_env(value: Option<&str>) -> bool {
+    !matches!(
+        value
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("0" | "off" | "false" | "no")
+    )
+}
+
+/// #2025: whether the bootstrap of the pending bash subshell `session_info` is sourced from a
+/// temporary file, as the pane's own Git Bash is (`should_use_rc_file_bootstrap_method`:
+/// `is_msys2`), instead of being typed through its line editor. msys bash behind ConPTY takes the
+/// typed here-document at about 40 lines per second (round 10 Windows: 83 KB written in 1.1 s,
+/// no `Bootstrapped` 15 s later, everything typed meanwhile held behind the setup).
+///
+/// `spawned_from_msys2` is the caller's fact about the sessions: the chain of spawning sessions
+/// leads to an MSYS2 shell through plain-bash subshells only. A subshell has no launch data of
+/// its own to say so. Together with [`subshell_started_by_plain_bash`] for the pending subshell
+/// that makes it a bash of the same MSYS2 installation, which opens the same Windows path the
+/// pane's shell was given. Anything else keeps its way in.
+#[cfg(feature = "local_fs")]
+pub(crate) fn msys2_bash_subshell_sources_file(
+    shell_type: ShellType,
+    session_info: &SessionInfo,
+    spawned_from_msys2: bool,
+) -> bool {
+    spawned_from_msys2
+        && shell_type == ShellType::Bash
+        && session_info.session_type == BootstrapSessionType::Local
+        && session_info.is_legacy_ssh_session == IsLegacySSHSession::No
+        && !session_info.tmux_control_mode
+        && session_info.wsl_name.is_none()
+        && !is_container_subshell(session_info)
+        && session_info
+            .subshell_info
+            .as_ref()
+            .is_some_and(subshell_started_by_plain_bash)
+}
+
 /// The line of the bash bootstrap (`bash.sh`) that opens the here-document holding `bash_body.sh`.
 const BASH_BOOTSTRAP_HEREDOC_OPEN: &[u8] =
     b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n";

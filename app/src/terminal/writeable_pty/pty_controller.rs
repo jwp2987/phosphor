@@ -1988,6 +1988,49 @@ impl<T: EventLoopSender> PtyController<T> {
         self.paced_write_queue.len()
     }
 
+    /// #2025: whether the session `session_info` was spawned from is an MSYS2 shell (Git Bash), or
+    /// a subshell started by plain `bash` whose own spawning chain leads to one. A subshell's
+    /// session has no launch data, so the pane's shell is found through the chain. Bounded like
+    /// `Sessions::MAX_SPAWNING_CHAIN` (nothing prevents a cycle). `false` when the switch
+    /// `PHOSPHOR_MSYS2_SUBSHELL_SOURCE` is off.
+    #[cfg(feature = "local_fs")]
+    fn spawned_from_msys2_through_plain_bash(
+        &self,
+        session_info: &SessionInfo,
+        ctx: &ModelContext<PtyController<T>>,
+    ) -> bool {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let enabled = *ENABLED.get_or_init(|| {
+            bootstrap::msys2_subshell_source_enabled_from_env(
+                std::env::var("PHOSPHOR_MSYS2_SUBSHELL_SOURCE")
+                    .ok()
+                    .as_deref(),
+            )
+        });
+        if !enabled {
+            return false;
+        }
+        let sessions = self.sessions.as_ref(ctx);
+        let mut next = session_info.spawning_session_id;
+        for _ in 0..8 {
+            let Some(session) = next.and_then(|id| sessions.get(id)) else {
+                return false;
+            };
+            if session.is_msys2() {
+                return true;
+            }
+            let through_plain_bash = session
+                .subshell_info()
+                .as_ref()
+                .is_some_and(bootstrap::subshell_started_by_plain_bash);
+            if !through_plain_bash {
+                return false;
+            }
+            next = session.spawning_session_id();
+        }
+        false
+    }
+
     #[cfg(feature = "local_fs")]
     fn write_bootstrap_script_to_shell(
         &mut self,
@@ -1999,7 +2042,21 @@ impl<T: EventLoopSender> PtyController<T> {
         use super::bootstrap_file::create_bootstrap_file;
         use crate::terminal::ShellLaunchData;
 
-        if bootstrap::should_use_rc_file_bootstrap_method(shell_type, pending_session_info) {
+        // #2025: a bash started by plain `bash` inside a Git Bash pane is sourced its bootstrap
+        // like the pane's own shell; typed through its line editor it takes over 30 s on ConPTY.
+        let msys2_bash_subshell = bootstrap::msys2_bash_subshell_sources_file(
+            shell_type,
+            pending_session_info,
+            self.spawned_from_msys2_through_plain_bash(pending_session_info, ctx),
+        );
+        if msys2_bash_subshell {
+            warpui::input_order::log_hop("subshell_bootstrap_sourced", || {
+                "why=msys2_bash_subshell".to_owned()
+            });
+        }
+        if msys2_bash_subshell
+            || bootstrap::should_use_rc_file_bootstrap_method(shell_type, pending_session_info)
+        {
             let wsl_distribution = match (
                 &pending_session_info.launch_data,
                 pending_session_info.wsl_name.as_ref(),

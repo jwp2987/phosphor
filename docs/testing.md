@@ -4621,3 +4621,15 @@ Windows run.
   is neither sent, stored, on screen nor in that record is still "lost" (self-test), an Enter after the restore voids the record, and a count-only
   line proves nothing. Self-test: the block after `row_hops` in the agent-resilience checks. Next Windows run: PASS with
   `queued_rows_in_input` naming the first row and `queued_rows_stored` the second.
+- **APP, #2025 (second defect behind #2006): `subshell_ready_rc_questions` (terminal and agent) and `subshell_ready_rc_clear` (terminal), Git Bash pane.**
+  The #2006 change held (two `verdict=ReArm`, `Wait(UserLineAtCursor)` at each echo, one `subshell_setup_ready_write` after the answers, no cancel; the
+  answers file was right). The setup then reached `InitShell`, the controller typed the 83 KB bootstrap into the inner bash (41 `SetupChunked` writes) and
+  readline took it at 32-49 lines per second: no `Bootstrapped` 15 s later, the typed line held, the harness's probe unanswered, its Ctrl-C aborted the
+  setup. A bash started by plain `bash` from an MSYS2 session (through plain-bash subshells only) now gets `source '<temp file>'` like the pane's shell
+  (`bootstrap::msys2_bash_subshell_sources_file`, `PtyController::spawned_from_msys2_through_plain_bash`; switch `PHOSPHOR_MSYS2_SUBSHELL_SOURCE=0`).
+  Unit tests `bootstrap_test.rs`: `a_plain_bash_subshell_of_an_msys2_session_sources_its_bootstrap` (which commands, and never without an MSYS2 shell
+  up the chain, never for wsl / sudo / ssh / containers / another shell / a session that reports a WSL distribution),
+  `msys2_subshell_sourcing_is_on_unless_switched_off`. The chain walk over real sessions has no unit test (it needs a `Sessions` model with an MSYS2
+  session; the cases are its proof). The cases are unchanged. Next Windows Git Bash run: `hop=subshell_bootstrap_sourced why=msys2_bash_subshell` after
+  `subshell_setup_progress kind=InitShell`, no `class=SetupChunked` writes after that hop, `Bootstrapped` within a few seconds, the inner line and the
+  `back_` line run, the shell in front after leaving is the root shell.
