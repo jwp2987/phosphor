@@ -83,7 +83,10 @@ use crate::terminal::grid_size_util::grid_cell_dimensions;
 use crate::terminal::model::block::BlockId;
 use crate::themes::theme::Fill;
 use crate::ui_components::avatar::{Avatar, AvatarContent};
-use crate::util::bindings::{CustomAction, cmd_or_ctrl_shift, keybinding_name_to_keystroke};
+use crate::util::bindings::{
+    CustomAction, INSERT_LAST_WORD_BINDING_NAME, LINUX_OR_WINDOWS_INSERT_LAST_WORD_KEYSTROKE,
+    MAC_INSERT_LAST_WORD_KEYSTROKE, cmd_or_ctrl_shift, keybinding_name_to_keystroke,
+};
 use crate::util::clipboard::clipboard_content_with_escaped_paths;
 use crate::util::color::{ContrastingColor, MinimumAllowedContrast};
 use crate::util::image::{MAX_IMAGE_COUNT_FOR_QUERY, MAX_IMAGE_SIZE_BYTES, resize_image};
@@ -476,6 +479,17 @@ pub fn init(ctx: &mut AppContext) {
             id!("EditorView") & !id!("IMEOpen"),
         ),
     ]);
+
+    // #1989: off macOS the editable "insert last word" binding is `alt-.`. An Alt key the user
+    // set to act as Meta arrives as `meta-.` instead, which was the only default before; it keeps
+    // working.
+    if !OperatingSystem::get().is_mac() {
+        ctx.register_fixed_bindings([FixedBinding::new(
+            MAC_INSERT_LAST_WORD_KEYSTROKE,
+            EditorAction::InsertLastWordPrevCommand,
+            id!("EditorView") & !id!("IMEOpen"),
+        )]);
+    }
 
     // Register mac-only `FixedBinding`s.
     if OperatingSystem::get().is_mac() {
@@ -906,13 +920,15 @@ pub fn init(ctx: &mut AppContext) {
         )
         .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
         .with_key_binding("alt-cmdorctrl-f"),
+        // #1989: Alt-. on Linux and Windows, Option-. as Meta on macOS (see the constants).
         EditableBinding::new(
-            "editor:insert_last_word_previous_command",
+            INSERT_LAST_WORD_BINDING_NAME,
             crate::t!("keybinding-desc-editor-insert-last-word-prev-cmd"),
             EditorAction::InsertLastWordPrevCommand,
         )
         .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
-        .with_key_binding("meta-."),
+        .with_mac_key_binding(MAC_INSERT_LAST_WORD_KEYSTROKE)
+        .with_linux_or_windows_key_binding(LINUX_OR_WINDOWS_INSERT_LAST_WORD_KEYSTROKE),
         EditableBinding::new(
             "editor_view:move_backward_one_word",
             crate::t!("keybinding-desc-editor-move-backward-one-word-cap"),

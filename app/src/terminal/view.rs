@@ -6215,6 +6215,60 @@ impl TerminalView {
         true
     }
 
+    /// #1984: what this pane says about vi keys: the input editor's vim keybindings, and the
+    /// vi line editing its shell reported at bootstrap.
+    fn vi_key_facts(&self, ctx: &AppContext) -> agent_escape::ViKeyFacts {
+        agent_escape::ViKeyFacts {
+            editor_vim_keys: self
+                .input
+                .as_ref(ctx)
+                .editor()
+                .as_ref(ctx)
+                .vim_mode_enabled(ctx),
+            shell_vi_mode: self
+                .active_block_session_id()
+                .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
+                .is_some_and(|session| shell_reports_vi_mode(&session)),
+        }
+    }
+
+    /// #1984: whether the pane's keys are vi keys and the kill switch is not set, whatever the
+    /// view's state: what the back button's Escape hint follows.
+    fn pane_has_vi_keys_for_escape(&self, ctx: &AppContext) -> bool {
+        agent_escape::agent_view_escape(
+            self.vi_key_facts(ctx),
+            true,
+            agent_escape::vi_escape_stays_env_enabled(),
+        ) == agent_escape::AgentViewEscape::StaysWithViKeys
+    }
+
+    /// #1984: whether an Escape that reached the agent view's exit stays with the pane's vi keys
+    /// (see [`agent_escape`]). Only where the view could be left now: with a command running, or
+    /// a view that cannot be exited, Escape keeps the meaning it had. Reads the published key
+    /// snapshot, never waits for the model.
+    fn escape_stays_with_vi_keys(&self, ctx: &AppContext) -> bool {
+        let facts = self.vi_key_facts(ctx);
+        if !facts.editor_vim_keys && !facts.shell_vi_mode {
+            return false;
+        }
+        let view_can_be_left_now = self.can_exit_agent_view_for_terminal_view(ctx).is_ok()
+            && !self.read_key_snapshot().active_and_long_running;
+        let stays = agent_escape::agent_view_escape(
+            facts,
+            view_can_be_left_now,
+            agent_escape::vi_escape_stays_env_enabled(),
+        ) == agent_escape::AgentViewEscape::StaysWithViKeys;
+        if stays {
+            warpui::input_order::log_hop("agent_view_escape_stays_vi", || {
+                format!(
+                    "editor_vim_keys={} shell_vi_mode={}",
+                    facts.editor_vim_keys, facts.shell_vi_mode
+                )
+            });
+        }
+        stays
+    }
+
     /// Exits the active agent, either:
     /// * Exiting agent view for the selected conversation
     /// * Popping the current view off the navigation stack (for ambient-agent sessions)
@@ -19008,8 +19062,18 @@ impl TerminalView {
                 .map(|e| e.to_string())
         };
 
+        // #1984: the button names Escape only where Escape leaves the view. In a pane whose keys
+        // are vi keys it does not; the button itself still works.
+        let escape_hint = (!self.pane_has_vi_keys_for_escape(ctx)).then(|| {
+            KeystrokeSource::Fixed(Keystroke {
+                key: "escape".to_string(),
+                ..Default::default()
+            })
+        });
+
         self.agent_view_back_button.update(ctx, |button, ctx| {
             button.set_label(label, ctx);
+            button.set_keybinding(escape_hint, ctx);
             button.set_disabled(disabled_reason.is_some(), ctx);
             button.set_tooltip(disabled_reason, ctx);
         });
@@ -22155,15 +22219,7 @@ impl TerminalView {
         }
 
         // Have we detected that vim keybindings may be wanted?
-        let vi_mode_in_plugins = session.shell().plugins().contains("vi");
-        let vi_mode_in_opts = session
-            .shell()
-            .options()
-            .to_owned()
-            .unwrap_or_default()
-            .contains("vi_mode");
-
-        vi_mode_in_plugins || vi_mode_in_opts
+        shell_reports_vi_mode(session)
     }
 
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
@@ -33424,8 +33480,13 @@ impl TerminalView {
                     self.close_cli_agent_rich_input_and_disable_auto_toggle(ctx);
                     return;
                 }
+                // #1984: in a pane whose keys are vi keys (the editor's vim keybindings, or a
+                // shell in vi mode) an Escape that could leave the view is the vi keys' instead:
+                // the view stays. An Escape with another meaning (a running command) is not
+                // touched; see `agent_escape`.
                 if FeatureFlag::AgentView.is_enabled()
                     && self.agent_view_controller.as_ref(ctx).is_active()
+                    && !self.escape_stays_with_vi_keys(ctx)
                 {
                     // For child agents, ESC navigates one level up first;
                     // run this before any can-exit gating.
@@ -42186,6 +42247,20 @@ fn is_rich_input_chip_in_cli_toolbar(app: &AppContext) -> bool {
 /// compact for long parent-agent names.
 const BACK_BUTTON_LABEL_MAX_WIDTH: f32 = 160.;
 
+/// Whether the shell said, when it bootstrapped, that it edits its line with vi keys: a vi
+/// plugin, or the vi editing mode among its options (bash `set -o vi`, fish vi key bindings,
+/// PSReadLine `EditMode Vi`). What the vim keybindings banner is offered on, and what keeps an
+/// Escape in the agent view (#1984).
+fn shell_reports_vi_mode(session: &Session) -> bool {
+    let vi_mode_in_plugins = session.shell().plugins().contains("vi");
+    let vi_mode_in_opts = session
+        .shell()
+        .options()
+        .as_ref()
+        .is_some_and(|options| options.contains("vi_mode"));
+    vi_mode_in_plugins || vi_mode_in_opts
+}
+
 /// Returns the agent-view back button label. ESC navigates one level up, so
 /// the label names the direct parent: children of the tree root keep the
 /// classic "for Orchestrator" wording, nested subagents name their parent
@@ -42359,6 +42434,8 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
 
 /// #1983: when a dropped view is an abandoned session, and at which log level.
 mod abandoned_session;
+/// #1984: Escape in the agent view stays in a pane whose keys are vi keys.
+mod agent_escape;
 mod dest_table;
 /// Owner decision 2026-11-09 (reversing #1661): a hold that gives up writes its keys to the pty.
 mod give_up_to_pty;

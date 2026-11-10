@@ -84,6 +84,8 @@ PROVING = (
     # #1340: memory of a 7 MB file in the code editor against the file's size (terminal mode only; about 8 minutes: two 75 s undo-close waits and
     # four relaunches for the trim A/B). #1985: Find reaches a marker printed before a flood (needs OCR; Windows SKIPs with its winmap reason).
     "editor_memory_7mb", "flood_scrollback_find",
+    # #1989 / #1988: Alt-. is the editor's last argument; with a program in front Alt-. / Alt-R / Ctrl-R reach it as ESC . / ESC r / 0x12 (Linux backends)
+    "ui_readline_keys",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).

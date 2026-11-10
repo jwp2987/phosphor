@@ -199,7 +199,19 @@ The input is a real multi-line editor, not a single-line readline.
 - Completions open as you type in local sessions by default; remote sessions
   keep them on `tab` only. Set `terminal.input.completions_open_while_typing`
   explicitly (true or false) to override that for every session.
-- `meta-.` inserts the last word of the previous command.
+- **`alt-.` inserts the last word of the previous command** (readline's
+  yank-last-arg; press it again to step back through earlier commands). On
+  macOS the key is `option-.` with that Option key set to act as Meta
+  (**Settings → Features**, `terminal.input.extra_meta_keys`); an Option key
+  that is not Meta keeps typing its character. The binding is
+  `editor:insert_last_word_previous_command` and can be changed. While a
+  program has the terminal (a nested shell, an ssh session without shell
+  integration, a REPL) the same key is sent to it as `ESC .`, so readline's own
+  last-argument works there.
+- **The shell's own reverse-i-search.** `ctrl-R` is Command Search only while
+  the input editor has the key. While a nested or remote shell without shell
+  integration has the terminal, `ctrl-R` goes to that shell (`0x12`) and opens
+  its own search. `alt-R` is bound to nothing and is sent through as `ESC r`.
 
 ### Vim mode
 
@@ -220,6 +232,14 @@ Two gotchas:
 
 - `ctrl-[` exits insert mode; `ctrl-R` is redo in normal mode (Command Search is
   suppressed there so vim wins).
+- **`escape` does not leave the agent view in a vi pane.** Elsewhere `escape`
+  in the agent view goes back to the terminal. With Vim keybindings on, or with
+  a shell that edits its line in vi mode (bash `set -o vi`, fish vi bindings,
+  PSReadLine `EditMode Vi`), the Escape habit would throw you out of the
+  conversation, so there the key stays with the vi keys. Leave with the back
+  button, or `ctrl-C` twice on an empty input. A running command is not
+  affected: `escape` still stops the agent's turn while its own command runs.
+  `PHOSPHOR_VI_ESCAPE_STAYS=0` in the environment restores the old behaviour.
 - **`ctrl-D` / `ctrl-U` half-page scroll only work in the code editor.** The
   vim engine defines the actions, but the terminal input editor does not
   implement them, so they do nothing there. Use `pageup` / `pagedown` to scroll

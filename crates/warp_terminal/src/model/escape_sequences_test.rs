@@ -523,6 +523,29 @@ fn test_meta_keystroke_to_escape_sequence() {
     validate_keystroke_test_cases(test_cases, &terminal_model_mock);
 }
 
+/// #1989 / #1988: with a program in front (a nested shell, an ssh without shell integration, a
+/// REPL) the terminal encodes the Meta key for it, so readline keeps its own keys there: Alt-.
+/// (Option-. as Meta on macOS) is `ESC .`, yank-last-arg, and Alt-R is `ESC r`, which no app
+/// binding claims.
+#[test]
+fn test_readline_meta_keys_reach_the_program_in_front() {
+    fn metaify(keystroke: &str) -> String {
+        if OperatingSystem::get().is_mac() {
+            format!("meta-{keystroke}")
+        } else {
+            format!("alt-{keystroke}")
+        }
+    }
+
+    let test_cases: &[(Keystroke, Vec<u8>)] = &[
+        (Keystroke::parse(metaify(".")).unwrap(), vec![C0::ESC, b'.']),
+        (Keystroke::parse(metaify("r")).unwrap(), vec![C0::ESC, b'r']),
+    ];
+
+    let terminal_model_mock = TerminalModelMock::new();
+    validate_keystroke_test_cases(test_cases, &terminal_model_mock);
+}
+
 #[test]
 fn test_unmatched_keystroke_does_not_yield_escape_sequence() {
     let test_cases: &[Keystroke] = &[
