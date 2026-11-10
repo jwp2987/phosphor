@@ -4479,7 +4479,7 @@ for a in "$@"; do printf '%s\n' "$a" >> "$OUT"; done
 case "$1" in
   -G) printf 'user u\nhostname h\nport 22\n%s' "$G_EXTRA"; exit 0;;
 esac
-printf 'ENV %s|%s|%s\n' "${PHOSPHOR_SSH_AUTH_DONE:+script}" "$PHOSPHOR_SSH_SYNC_TOK" "$SHELL" >> "$LOG"
+printf 'ENV %s|%s|%s|%s|%s\n' "${PHOSPHOR_SSH_AUTH_DONE:+script}" "$PHOSPHOR_SSH_SYNC_TOK" "$SHELL" "$PHOSPHOR_SSH_SYNC_MANAGED_A" "$PHOSPHOR_SSH_SYNC_TA" >> "$LOG"
 exit 0
 "#,
         )
@@ -4528,6 +4528,7 @@ printf '%s\n' "$BANNER" >&2
             .env("BANNER", case.banner)
             .env("G_EXTRA", case.g_extra)
             .env_remove("PHOSPHOR_MSYS_MANAGED_SSH")
+            .env_remove("PHOSPHOR_MSYS_SSH_TYPEAHEAD")
             .stdin(std::process::Stdio::null());
         if case.kill_switch {
             command.env("PHOSPHOR_MSYS_MANAGED_SSH", "0");
@@ -4656,16 +4657,30 @@ printf '%s\n' "$BANNER" >&2
             env.next().is_some_and(|shell| shell.ends_with("bash")),
             "{name}: LocalCommand runs through this bash: {env_line:?}"
         );
+        // #1959: the managed stage can carry typed-ahead bytes (the hook up to the hex), and the
+        // typed-ahead kill switch is off unless the user set it.
+        let managed_with_typeahead = hex::encode(format!(
+            "{{\"hook\": \"SSHWrapperSync\", \"value\": {{\"session_id\": 77, \"nonce\": \
+             \"{nonce}\", \"stage\": \"managed\", \"typeahead\": \""
+        ));
+        assert_eq!(
+            env.next(),
+            Some(managed_with_typeahead.as_str()),
+            "{name}: {env_line:?}"
+        );
+        assert_eq!(env.next(), Some(""), "{name}: {env_line:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
 
 /// #1933: the LocalCommand script of the one-connection ssh, run in a real bash with the console
 /// replaced by a pipe. It prints the `auth_done` hook first, reads up to the sync token and
-/// reports EXACTLY the bytes in front of it: none is the managed hook; any (a NUL, a byte over
-/// 0x7f, a quote, a backslash, a newline, another invocation's token) is the plain hook carrying
-/// them as hex inside the hex-encoded hook. Input that ends without the token (no console) is
-/// the plain hook with what was read.
+/// reports EXACTLY the bytes in front of it: none is the bare managed hook; any (a NUL, a byte
+/// over 0x7f, a quote, a backslash, a newline, another invocation's token) is the managed hook
+/// carrying them as hex inside the hex-encoded hook (#1959, owner 2026-11-09: the app holds them
+/// at the front and the session stays managed), or the plain hook with them when the typed-ahead
+/// kill switch is set (`PHOSPHOR_SSH_SYNC_TA=plain`). Input that ends without the token (no
+/// console) is the plain hook with what was read, whatever the switch says.
 #[test]
 #[cfg(unix)]
 fn msys_ssh_auth_done_script_reports_exactly_what_was_typed_before_the_token() {
@@ -4685,24 +4700,34 @@ fn msys_ssh_auth_done_script_reports_exactly_what_was_typed_before_the_token() {
     assert!(script.contains("__p_drain") && !script.contains("'\"'\"'"));
 
     let token = b":PHX5:";
-    let cases: [(&[u8], Option<&[u8]>); 6] = [
-        (b":PHX5:", None),
-        (b"ls\r:PHX5:", Some(b"ls\r")),
+    // (console input, the bytes reported, whether the token was seen)
+    let cases: [(&[u8], &[u8], bool); 6] = [
+        (b":PHX5:", b"", true),
+        (b"ls\r:PHX5:", b"ls\r", true),
         (
             b"a\0b\xc3\xa9'\\\n \x7f:PHX5:",
-            Some(b"a\0b\xc3\xa9'\\\n \x7f"),
+            b"a\0b\xc3\xa9'\\\n \x7f",
+            true,
         ),
-        (b":PHX6::PHX5:", Some(b":PHX6:")),
-        (b":PHX5", Some(b":PHX5")),
-        (b"ls", Some(b"ls")),
+        (b":PHX6::PHX5:", b":PHX6:", true),
+        (b":PHX5", b":PHX5", false),
+        (b"ls", b"ls", false),
     ];
-    for (input, typeahead) in cases {
+    for ((input, typeahead, token_seen), keep_plain) in cases
+        .into_iter()
+        .flat_map(|case| [(case, false), (case, true)])
+    {
         let mut child = Command::new("bash")
             .args(["-c", "eval \"$PHOSPHOR_SSH_AUTH_DONE\""])
             .env("PHOSPHOR_SSH_AUTH_DONE", &script)
             .env("PHOSPHOR_SSH_SYNC_TOK", hex::encode(token))
             .env("PHOSPHOR_SSH_SYNC_DONE", "d0")
             .env("PHOSPHOR_SSH_SYNC_MANAGED", "a1")
+            .env("PHOSPHOR_SSH_SYNC_MANAGED_A", "a2")
+            .env(
+                "PHOSPHOR_SSH_SYNC_TA",
+                if keep_plain { "plain" } else { "" },
+            )
             .env("PHOSPHOR_SSH_SYNC_PLAIN_A", "b2")
             .env("PHOSPHOR_SSH_SYNC_PLAIN_B", "c3")
             .env("PHOSPHOR_SSH_SYNC_PRE", "<")
@@ -4715,11 +4740,18 @@ fn msys_ssh_auth_done_script_reports_exactly_what_was_typed_before_the_token() {
         child.stdin.take().unwrap().write_all(input).unwrap();
         let output = child.wait_with_output().unwrap();
         let printed = String::from_utf8_lossy(&output.stdout).into_owned();
-        let expected = match typeahead {
-            None => "<d0><a1>".to_owned(),
-            Some(bytes) => format!("<d0><b2{}c3>", hex::encode(hex::encode(bytes))),
+        let reported = hex::encode(hex::encode(typeahead));
+        let expected = if token_seen && typeahead.is_empty() {
+            "<d0><a1>".to_owned()
+        } else if token_seen && !keep_plain {
+            format!("<d0><a2{reported}c3>")
+        } else {
+            format!("<d0><b2{reported}c3>")
         };
-        assert_eq!(printed, expected, "input {input:?}");
+        assert_eq!(
+            printed, expected,
+            "input {input:?}, kill switch {keep_plain}"
+        );
         assert!(output.status.success(), "input {input:?}");
     }
 }

@@ -119,3 +119,82 @@ fn delivery_waits_for_the_first_precmd_but_only_up_to_the_cap() {
         "a session that can take the command is not waited for"
     );
 }
+
+/// #1959: keys read back from the tty become the held inputs the live key path would have made
+/// of them, and nothing else: their concatenation is the bytes, in order.
+#[test]
+fn tty_bytes_become_the_held_inputs_the_key_path_would_have_made() {
+    let seq = |s: &str| HeldInput::Seq(s.to_owned());
+    let key = |s: &str| HeldInput::Key(s.to_owned());
+    let text = |s: &str| HeldInput::Typed(s.to_owned());
+    assert_eq!(held_inputs_from_tty_bytes(b""), Some(vec![]));
+    assert_eq!(
+        held_inputs_from_tty_bytes("echo h\u{e9}\rls\u{7f}\u{15}".as_bytes()),
+        Some(vec![
+            text("echo h\u{e9}"),
+            key("\r"),
+            text("ls"),
+            key("\u{7f}"),
+            key("\u{15}"),
+        ])
+    );
+    assert_eq!(
+        held_inputs_from_tty_bytes(b"a\x1b[Ab\x1b[1;5Cc\x1bOPd\x1bfe\tf\x1b"),
+        Some(vec![
+            text("a"),
+            seq("\u{1b}[A"),
+            text("b"),
+            seq("\u{1b}[1;5C"),
+            text("c"),
+            seq("\u{1b}OP"),
+            text("d"),
+            seq("\u{1b}f"),
+            text("e"),
+            seq("\t"),
+            text("f"),
+            seq("\u{1b}"),
+        ])
+    );
+    // A `\r\n` pair is one Enter; an Escape before a control key is its own key; a sequence cut
+    // off by a control key or by text outside its alphabet ends there.
+    assert_eq!(
+        held_inputs_from_tty_bytes("x\r\n\u{1b}\r\u{1b}[1\ry\u{1b}[\u{e9}".as_bytes()),
+        Some(vec![
+            text("x"),
+            key("\r\n"),
+            seq("\u{1b}"),
+            key("\r"),
+            seq("\u{1b}[1"),
+            key("\r"),
+            text("y"),
+            seq("\u{1b}["),
+            text("\u{e9}"),
+        ])
+    );
+    // Every split keeps the bytes.
+    let samples: [&[u8]; 3] = [
+        b"echo hi\rls -la\x1b[D\x1b[3~\x7f\r",
+        b"\x1b\x1b[\x1bO",
+        b"\0\x01a\x1b\x00",
+    ];
+    for bytes in samples {
+        let joined: Vec<u8> = held_inputs_from_tty_bytes(bytes)
+            .expect("UTF-8")
+            .into_iter()
+            .flat_map(|input| input.into_parts().1.into_bytes())
+            .collect();
+        assert_eq!(joined, bytes);
+    }
+}
+
+/// #1959: bytes that are not keys of ours, or more than a connect may hold, are not turned into
+/// held inputs (the caller keeps them as bytes for the pty).
+#[test]
+fn tty_bytes_that_cannot_be_held_exactly_are_refused() {
+    assert_eq!(held_inputs_from_tty_bytes(b"ls\xff\r"), None);
+    assert_eq!(
+        held_inputs_from_tty_bytes(&vec![b'a'; SSH_TYPEAHEAD_MAX_BYTES + 1]),
+        None
+    );
+    assert!(held_inputs_from_tty_bytes(&vec![b'a'; SSH_TYPEAHEAD_MAX_BYTES]).is_some());
+}

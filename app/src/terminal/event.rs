@@ -86,7 +86,8 @@ pub enum Event {
         session_id: Option<SessionId>,
     },
     /// A stage of the one-connection managed ssh (#1933, the `SSHWrapperSync` hook): `stage` is
-    /// `auth`, `auth_done`, `managed` or `plain`; `typeahead` is hex and only set for `plain`.
+    /// `auth`, `auth_done`, `managed` or `plain`; `typeahead` (hex) is what the LocalCommand
+    /// drained from the console, set for `plain` and, since #1959, for a `managed` that has some.
     SshWrapperSync {
         stage: String,
         nonce: String,

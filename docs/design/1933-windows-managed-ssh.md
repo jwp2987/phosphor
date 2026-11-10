@@ -3,6 +3,9 @@
 Owner decision 2026-11-09: ssh from a Windows Git Bash pane is managed by default.
 Status: design + implementation on `fix/1933-windows-managed-ssh`. Nothing here was compiled or
 run (no builds on the laptop; the Windows VM could not be reached from the agent session).
+Owner decisions of 2026-11-09 folded in: only POSIX OpenSSH servers are managed (3.6); keys typed
+during the login do NOT make the session plain, they go to the front of the hold (3.2a, #1959);
+shipping an ssh client of our own is not evaluated (owner: skip).
 
 ## 1. What is true today (verified in the tree)
 
@@ -71,8 +74,8 @@ printed before any session output exists, and in the LocalCommand's environment)
 | 1 | wrapper | `PreInteractiveSSHSession` (existing) | `AwaitingVerdict`: hold (existing, #1641/#1884) |
 | 2 | wrapper, before `ssh` | `SSHWrapperSync stage=auth` | AUTH PASS-THROUGH: what was held since the Enter goes to the pty in typed order, later keys pass straight to `ssh.exe` (the plain console's rule). No ceiling runs: nothing is held |
 | 3 | LocalCommand | `SSHWrapperSync stage=auth_done` | pass-through ends BY THIS EVENT: keys are held again; the app then writes a sync token (`:PHX<nonce>:`) to the pty |
-| 4a | LocalCommand | `SSHWrapperSync stage=managed` | writes the mode byte `M`; then exactly the existing managed verdict (`ManagedSSHSessionStarting`): keys stay held to the remote shell's first prompt |
-| 4b | LocalCommand | `SSHWrapperSync stage=plain typeahead=<hex>` | writes `P` + the reported bytes; then exactly the existing plain verdict (`PlainSSHFallback`): held keys go to the pty in typed order, later keys pass through |
+| 4a | LocalCommand | `SSHWrapperSync stage=managed [typeahead=<hex>]` | the reported bytes (if any) go to the FRONT of the held keys (3.2a); writes the mode byte `M`; then exactly the existing managed verdict (`ManagedSSHSessionStarting`): keys stay held to the remote shell's first prompt |
+| 4b | LocalCommand | `SSHWrapperSync stage=plain typeahead=<hex>` | only when the console ended before the token, or under the typed-ahead kill switch: writes `P` + the reported bytes; then exactly the existing plain verdict (`PlainSSHFallback`): held keys go to the pty in typed order, later keys pass through |
 
 Between 3 and 4 the LocalCommand reads the console (raw, no echo) up to the token. It is the only
 reader: `ssh.exe` waits for it, the local shell waits for `ssh.exe`. Because the app holds from
@@ -87,14 +90,62 @@ The token and the mode byte are printable ASCII (`:PHX<nonce>:`, `M`, `P`) so th
 translation cannot change them.
 
 - T empty (nobody typed blind during the connect; the usual case, and the password prompt flushes
-  earlier typeahead anyway): 4a. The remote reads `M` and runs the bootstrap; the session is
-  managed exactly like the multiplexed one from here (SSH hook, InitShell, bootstrap, first
-  prompt, hand-over of the held keys).
-- T not empty: 4b. The LocalCommand already consumed T, so the app writes it back (the bytes come
-  from the nonce-authenticated local hook, and they go only to the pty they were typed for), behind
-  `P`: the remote reads `P`, execs the user's login shell with nothing of Phosphor's, and T, then
-  the keys held since stage 3, reach that shell in typed order, exactly as plain ssh would have
-  delivered them. THIS CONNECTION IS PLAIN. Nothing is lost, reordered or run in the wrong place.
+  earlier typeahead anyway): 4a with no bytes. The remote reads `M` and runs the bootstrap; the
+  session is managed exactly like the multiplexed one from here (SSH hook, InitShell, bootstrap,
+  first prompt, hand-over of the held keys).
+- T not empty: 4a WITH the bytes (owner decision 2026-11-09, #1959: typing during the login must
+  not make the session plain). The LocalCommand already consumed T from the console, so T exists
+  only in the nonce-authenticated local hook. The app does not write it back: it puts T at the
+  front of the keys it holds (3.2a) and answers `M`. The first remote prompt then gets T, then
+  the keys held since stage 3, in typed order, through the one hand-over. T never travels next
+  to the bootstrap.
+
+### 3.2a Typed-ahead keys stay managed: the front insert (#1959)
+
+The order that must come out at the remote prompt is: T (typed before the `auth_done` event),
+then K (typed after it, held by the connect gate). K is already in the pane's input queue when T
+is learnt, one console round trip later. Appending T would reorder; taking K out and re-offering
+it behind T would open a window in which K is not held, and would lose the entry kinds a
+re-offer cannot rebuild. So T is inserted in FRONT of K, in the one queue, with one primitive:
+
+1. **A mark at the event.** At `auth_done`, before the token is written, the view reserves a
+   range of entry ids in the pane queue (`InputQueue::reserve_ids`, 64 Ki ids: a held input has
+   at least one byte and a connect holds at most 64 KiB). Entry ids are the queue's one order,
+   and every arrival after the mark gets a later id. Reserving queues nothing and opens no gate:
+   a connect in which nobody typed during the login is byte-for-byte what it was before #1959.
+2. **The fill.** At `managed` with bytes, T is split into held inputs the way the live key path
+   would have held the same keys (`held_inputs_from_tty_bytes`: printable run = typed text, a
+   control character = a key, Tab / CSI / SS3 / ESC+char = a sequence; `\r\n` is one Enter; the
+   split concatenates back to T exactly). `InputQueue::insert_reserved` gives them the reserved
+   ids, so they sit in front of K, and the `SshConnect` gate that holds K has its barrier moved
+   down onto them (same gate, same token); if nothing was typed after the mark there is no gate
+   yet and one is opened at the first reserved id. Nothing is delivered and nothing queued moves.
+3. **The delivery is the existing one.** T and K are `Held` entries behind one gate; the
+   hand-over at the remote shell's first prompt drains them in id order, each routed by the
+   facts of its own delivery, with the existing yield after a held Enter. Legacy and Table read
+   the same queue, so both routes get it.
+
+The insert is all or nothing, and it is refused unless the reserved ids are PROVABLY T's place:
+
+- the gate holding K must have opened at the first id after the range (so everything that
+  arrived since the mark is held by it), or nothing at all arrived since the mark;
+- the hold must still be the first one after the mark (`ssh_hold_insert_front` compares the
+  connection counter): if K was delivered, dropped or handed back meanwhile (a give-up net fired,
+  ^C), T has no place in front of it any more;
+- T must be valid UTF-8 (anything else is not a key of ours) and fit the 64 KiB bound; the queue
+  must be free, with no operation waiting in its mailbox.
+
+When it is refused the answer is the plain one, exactly as before #1959: `P`, then T as the bytes
+it is, then what is held. No key is lost, reordered, merged or split in either case; the refusal
+only costs the managed session for that connection, and is logged
+(`hop=ssh_wrapper typeahead_front adopted=false reason=...`). No timer is involved anywhere.
+
+What T can contain that a held key normally cannot: nothing new. A ^C typed during the login
+reaches ssh as a signal (the console keeps `isig`), not as a byte in T.
+
+Kill switch: `PHOSPHOR_MSYS_SSH_TYPEAHEAD=plain` in the pane's shell makes the LocalCommand
+report typed-ahead bytes with the `plain` stage, i.e. the behaviour before #1959, without a
+rebuild (`PHOSPHOR_MSYS_MANAGED_SSH=0` still turns the whole path off).
 
 ### 3.3 Remote side
 
@@ -134,8 +185,9 @@ Unchanged machinery, now reached from Windows:
 Decided locally, BEFORE ssh starts (wrapper prints `PlainSSHFallback`, the existing verdict):
 `PHOSPHOR_MSYS_MANAGED_SSH=0` (kill switch), stdin or stdout not a terminal, a user
 `RemoteCommand` or `LocalCommand`, no nonce, a server that is not known to be POSIX OpenSSH (3.6).
-Decided at stage 4: typed-ahead keys (4b); the console ending (no terminal) while the token is
-awaited (4b with what was read).
+Decided at stage 4: the console ending (no terminal) while the token is awaited (4b with what was
+read); typed-ahead keys that have no provable place in the hold (3.2a: `P` + those bytes), or
+under the typed-ahead kill switch (4b).
 Decided remotely: no mode byte within 20 s (the one clock in the design, a give-up net on the
 REMOTE side for an app that never answered: the remote command then execs the plain login shell;
 it reads at most the one byte, and in that state the app has written none).
@@ -185,7 +237,6 @@ macOS today when their probe is inconclusive. Workaround: `PHOSPHOR_MSYS_MANAGED
 - The shell backend's out-of-band channel (`register_shell_mode_channel`): none, so shell-mode
   features are `Unavailable` (parity design R1: never type into the user's pty for those).
 - Side commands are in-band: serialized through the user's pty, only at a prompt.
-- The 4b case: a connection during whose login the user typed is a plain session.
 - Remote zsh works like bash from the app's point of view but only the bash wrapper
   (`bash_body.sh`) gets this path; a Git Bash pane running msys zsh or fish keeps plain ssh.
 - No `ControlPersist`, no shared authentication for split panes (each pane logs in).
@@ -232,16 +283,18 @@ takes the keyscan branch only for an empty control path, which only the msys pat
   delivers what was held; `auth_done` clears it, tells the phase machine (`TtyReclaimed`), and only
   then writes the token; `managed` / `plain` write the mode byte (and the drained bytes) and call
   the existing verdict handler. The window does not run its no-probe ceiling during the login.
+- #1959: `auth_done` also sets the mark (`TerminalView::ssh_hold_reserve_front`, kept on the
+  in-flight sync state); `managed` with bytes calls `ssh_single_adopt_typeahead`, which splits
+  them (`view/ssh_typeahead.rs`), inserts them (`view/ssh_queue.rs` `ssh_hold_insert_front` ->
+  `InputQueue::insert_reserved`) and starts the hold if no key had (`set_ssh_typeahead_holding`),
+  so the existing hand-over finds it. A refusal turns the stage into the plain answer.
 - A stage is honoured only in order, with the `auth` stage's nonce, from the announcing session,
   and `auth` only on Windows (`SSH_SINGLE_CONNECTION_PLATFORM`).
 - The three raw writes are an allow-listed pty door (`script/check_pty_doors`).
 
 ## 5. Open points for the owner (none blocks the implementation)
 
-1. 4b makes "typed during the connect" a plain session for that connection. The alternative is to
-   put T at the FRONT of the app's held keys and stay managed (then T goes through the first-prompt
-   hand-over like on Unix). It needs a front insert into the one input queue behind the connect
-   gate; it was not attempted blind. Filed as #1959.
+1. Decided 2026-11-09 (#1959): typed-ahead keys stay managed (3.2a). Left open there: nothing.
 2. The keyscan probe is one extra TCP connect + banner per destination per 10 minutes.
 3. No banner tells the user the session has no helper; the log says so.
 4. msys zsh / fish panes keep plain ssh. Decided 2026-11-09: only POSIX OpenSSH servers are
@@ -256,8 +309,12 @@ takes the keyscan branch only for an empty control path, which only the msys pat
 - `ansi/mod_test.rs`: the new hook parses; unknown stage is ignored.
 - `view_test.rs` (Legacy and Table): auth pass-through writes typed keys to the pty in order; the
   `auth_done` event writes the token and holds; `managed` writes `M` and holds to the first prompt;
-  `plain` writes `P` + T and then the held keys, in order; a stage with a wrong nonce changes
-  nothing.
+  `managed` with typed-ahead bytes writes only `M`, and the first prompt gets those bytes and
+  then the later keys (#1959); a refused front insert and the `plain` stage write `P` + T and
+  then the held keys, in order; a stage with a wrong nonce changes nothing.
+- `input_queue/tests.rs`: `reserve_ids` / `insert_reserved` (in front of what the gate holds, a
+  gate opened by the insert, every refusal leaves the queue untouched).
+- `view/ssh_typeahead_tests.rs`: the split of tty bytes into held inputs.
 - `command_executor_tests.rs`: a single-connection session never gets the ControlMaster executor.
 - appci (`cases.PROVING`): Windows Git Bash managed ssh cases; `remote_tab_no_helper` keeps
   requiring the in-band line.

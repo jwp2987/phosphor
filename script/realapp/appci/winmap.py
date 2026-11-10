@@ -71,7 +71,7 @@ GITBASH_ONLY = {
     "ssh_connect_typing_wrapper": "bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, #1884); skips itself without it",
     "ssh_nested_typeahead_wrapper": "bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, #1884); skips itself without it",
     "ssh_gitbash_managed": "the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper",
-    "ssh_gitbash_typeahead_plain": "keys typed during a one-connection managed ssh login (#1933): only the Git Bash pane has the wrapper",
+    "ssh_gitbash_typeahead_managed": "keys typed during a one-connection managed ssh login stay managed (#1959): only the Git Bash pane has the wrapper",
     "ssh_gitbash_kill_switch": "PHOSPHOR_MSYS_MANAGED_SSH=0 in the bash pane (#1933): only the Git Bash pane has the wrapper",
     "agent_approval": "uses rec.log and effect files in bash syntax: runs in the Git Bash pane (needs the CI model)",
 }

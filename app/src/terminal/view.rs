@@ -529,6 +529,7 @@ use crate::terminal::view::inline_banner::{
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::terminal::view::ssh_typeahead::{
     HeldInput, SSH_TYPEAHEAD_PRECMD_WAIT_CAP, SshTypeaheadPush, delivery_waits_for_first_precmd,
+    held_inputs_from_tty_bytes,
 };
 use crate::terminal::waterfall_gap_element::WaterfallGapElement;
 use crate::terminal::{
@@ -11963,11 +11964,16 @@ impl TerminalView {
     /// - `auth_done`: the login is over. Keys are held again from this event, and only then the
     ///   sync token is written: the LocalCommand reads the console up to it, so it sees exactly
     ///   the keys typed before the hold that no prompt consumed.
-    /// - `managed`: there were none. `M` tells the remote command to run the bootstrap; from here
-    ///   it is the managed verdict (`ssh_on_wrapper_verdict`): held to the first remote prompt.
-    /// - `plain`: there were some (`typeahead`, hex). `P` tells the remote command to exec a plain
-    ///   login shell; the drained bytes follow it, then the plain verdict delivers what was held
-    ///   since `auth_done`: one pty, typed order, nothing of Phosphor's in between.
+    /// - `managed`: the token came back. The keys in front of it (`typeahead`, hex; usually
+    ///   none) join the hold at its FRONT, at the mark `auth_done` set (#1959, owner 2026-11-09:
+    ///   typing during the login must not make the session plain). `M` tells the remote command
+    ///   to run the bootstrap; from here it is the managed verdict (`ssh_on_wrapper_verdict`):
+    ///   everything is held to the first remote prompt and delivered there in typed order. Only
+    ///   when those keys have no provable place in the hold is the answer the plain one.
+    /// - `plain`: the console ended before the token, or the wrapper was told to keep typed-ahead
+    ///   connections plain. `P` tells the remote command to exec a plain login shell; the
+    ///   drained bytes follow it, then the plain verdict delivers what was held since
+    ///   `auth_done`: one pty, typed order, nothing of Phosphor's in between.
     ///
     /// A stage is accepted only in order and with the nonce of the `auth` stage (minted locally,
     /// never sent to the server), from the announcing shell's session, and `auth` only on a
@@ -12022,6 +12028,7 @@ impl TerminalView {
                 self.ssh_single = Some(SshSingleConnection {
                     nonce: nonce.to_owned(),
                     stage: SshSingleStage::Auth,
+                    front: None,
                 });
                 if let Some(gate) = self.ssh_connect_gate.as_mut() {
                     // ssh is the console's reader from here (the wrapper runs it in the
@@ -12056,32 +12063,95 @@ impl TerminalView {
                 self.ssh_edge(input_queue::SshEdge::TtyReclaimed);
                 self.ssh_observe(ctx);
                 self.schedule_ssh_typeahead_give_up(ctx);
+                // #1959: THIS is the point in the pane's input order where the keys still in the
+                // console belong (typed before it, reported at the `managed` stage): every key
+                // held from here on gets a later place. Marked before the token is written.
+                let front = self.ssh_hold_reserve_front();
+                if let Some(single) = self.ssh_single.as_mut() {
+                    single.front = front;
+                }
                 self.write_to_pty(ssh_single_sync_token(nonce), ctx);
             }
-            "managed" => {
-                self.write_to_pty(vec![SSH_SINGLE_MODE_MANAGED], ctx);
-                self.ssh_on_wrapper_verdict(true, session_id, ctx);
-            }
-            "plain" => {
-                let mut bytes = vec![SSH_SINGLE_MODE_PLAIN];
-                match hex::decode(typeahead) {
-                    Ok(drained) => bytes.extend(drained),
-                    Err(_) => {
-                        log::error!(
-                            "ssh wrapper sync: the plain stage's typeahead is not hex ({} chars); \
-                             the keys it stood for cannot be written back",
-                            typeahead.len()
-                        );
+            "managed" | "plain" => {
+                let drained = ssh_single_decode_typeahead(typeahead);
+                // `managed`: the drained keys join the hold at its front (#1959). When they have
+                // no provable place there, this connection is plain after all.
+                let plain = if stage == "managed" {
+                    let front = self.ssh_single.as_ref().and_then(|single| single.front);
+                    self.ssh_single_adopt_typeahead(drained, front, ctx).err()
+                } else {
+                    Some(drained)
+                };
+                match plain {
+                    None => {
+                        self.write_to_pty(vec![SSH_SINGLE_MODE_MANAGED], ctx);
+                        self.ssh_on_wrapper_verdict(true, session_id, ctx);
+                    }
+                    // `P` (the remote command execs a plain login shell), then the drained keys
+                    // as the bytes they are, then the plain verdict delivers what was held since
+                    // `auth_done`: one pty, typed order, nothing of Phosphor's in between.
+                    Some(drained) => {
+                        let mut bytes = vec![SSH_SINGLE_MODE_PLAIN];
+                        bytes.extend(drained);
+                        self.write_to_pty(bytes, ctx);
+                        if let Some(gate) = self.ssh_connect_gate.as_mut() {
+                            gate.tty_owned_deferred = true;
+                        }
+                        self.ssh_on_wrapper_verdict(false, session_id, ctx);
                     }
                 }
-                self.write_to_pty(bytes, ctx);
-                if let Some(gate) = self.ssh_connect_gate.as_mut() {
-                    gate.tty_owned_deferred = true;
-                }
-                self.ssh_on_wrapper_verdict(false, session_id, ctx);
             }
             _ => {}
         }
+    }
+
+    /// #1959: the keys ssh's LocalCommand drained from the console (`drained`: typed during the
+    /// one-connection login, consumed by no prompt) join the connect hold at its FRONT, at the
+    /// mark set at `auth_done` (`front`): they were typed before every key held since. They are
+    /// then delivered with those keys by the one hand-over at the remote shell's first prompt,
+    /// in typed order, never written next to the bootstrap. Nothing to do when there are none.
+    ///
+    /// `Err` hands the bytes back, with nothing changed, when they cannot be held exactly at
+    /// that place (no mark, not UTF-8, the hold moved on since the mark, the bound); the caller
+    /// answers plain. No clock and no screen text is involved.
+    fn ssh_single_adopt_typeahead(
+        &mut self,
+        drained: Vec<u8>,
+        front: Option<ssh_queue::SshFrontReservation>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Result<(), Vec<u8>> {
+        if drained.is_empty() {
+            return Ok(());
+        }
+        let adopted = match (front, held_inputs_from_tty_bytes(&drained)) {
+            (Some(front), Some(inputs)) => {
+                let count = inputs.len();
+                self.ssh_hold_insert_front(front, inputs, ctx)
+                    .map(|()| count)
+                    .map_err(|_| "hold_moved")
+            }
+            (None, _) => Err("no_mark"),
+            (_, None) => Err("not_keys"),
+        };
+        warpui::input_order::log_hop("ssh_wrapper", || match adopted {
+            Ok(inputs) => format!(
+                "typeahead_front adopted=true inputs={inputs} bytes={}",
+                drained.len()
+            ),
+            Err(why) => format!(
+                "typeahead_front adopted=false reason={why} bytes={}",
+                drained.len()
+            ),
+        });
+        if adopted.is_err() {
+            return Err(drained);
+        }
+        // From here it is a hold like one a typed key started: the hand-over delivers it.
+        if !self.ssh_typeahead_holding {
+            self.set_ssh_typeahead_holding(true);
+        }
+        self.schedule_ssh_typeahead_give_up(ctx);
+        Ok(())
     }
 
     /// #1933: makes sure the connect window is this ssh's and waits for the wrapper's verdict
@@ -40699,6 +40769,10 @@ struct SshSingleConnection {
     /// The invocation's nonce, as the `auth` stage carried it. Never logged.
     nonce: String,
     stage: SshSingleStage,
+    /// #1959: the mark set in the pane's input order at `auth_done`, where the keys the
+    /// LocalCommand is draining from the console belong. `None` before that stage, or when the
+    /// mark could not be set (such keys then make the connection plain).
+    front: Option<ssh_queue::SshFrontReservation>,
 }
 
 /// #1933: the last accepted stage of the one-connection sync.
@@ -40724,6 +40798,20 @@ const SSH_SINGLE_MODE_PLAIN: u8 = b'P';
 /// passes it unchanged). Keep in step with `warp_ssh_msys_run_single` in `bootstrap/bash_body.sh`.
 fn ssh_single_sync_token(nonce: &str) -> Vec<u8> {
     format!(":PHX{nonce}:").into_bytes()
+}
+
+/// #1933: the bytes a stage's `typeahead` (hex) stands for: what the LocalCommand read from the
+/// console in front of the token. Hex that does not decode cannot be turned back into the keys
+/// (the LocalCommand consumed them); that is logged and nothing is returned.
+fn ssh_single_decode_typeahead(typeahead: &str) -> Vec<u8> {
+    hex::decode(typeahead).unwrap_or_else(|_| {
+        log::error!(
+            "ssh wrapper sync: a stage's typeahead is not hex ({} chars); the keys it stood for \
+             cannot be written back",
+            typeahead.len()
+        );
+        Vec::new()
+    })
 }
 
 /// #1641: a `PreInteractiveSSHSession` seen for a block, remembered so a connect window that arms

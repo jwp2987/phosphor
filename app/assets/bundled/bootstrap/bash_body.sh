@@ -2512,9 +2512,13 @@ esac
         #  2. reads the console, verbatim and without echo, up to the token. ssh waits for this command
         #     and the shell waits for ssh, so nothing else reads: what is in front of the token is
         #     every key typed before the hold that no login prompt consumed, in order;
-        #  3. none: the managed hook (the app answers `M` to the remote and keeps holding to the
-        #     remote shell's first prompt). Some: the plain hook with those bytes as hex (the app
-        #     writes `P`, then them, then what it held, to the pty: a plain login, in typed order).
+        #  3. prints the managed hook, with those bytes as hex when there are any (#1959, owner
+        #     2026-11-09: typing during the login must not make the session plain). The app puts
+        #     them at the FRONT of the keys it holds, answers `M` to the remote and delivers all of
+        #     it, in typed order, at the remote shell's first prompt; it answers `P` (a plain
+        #     login: `P`, those bytes, then what it held) only when it cannot hold them exactly.
+        #     PHOSPHOR_SSH_SYNC_TA=plain (the user's PHOSPHOR_MSYS_SSH_TYPEAHEAD=plain, a kill
+        #     switch for #1959) prints the plain hook for typed-ahead bytes instead, as before.
         # The wait for the token has no deadline: the token is the answer of the app that printed
         # this script, and no clock may decide what happens to typed keys. After 10 s without it
         # a notice is printed once and the wait goes on; Ctrl-C ends the ssh (the console stays in
@@ -2571,7 +2575,11 @@ else
       d) __p_hh+=64 ;; e) __p_hh+=65 ;; f) __p_hh+=66 ;;
     esac
   done
-  __p_emit "$PHOSPHOR_SSH_SYNC_PLAIN_A$__p_hh$PHOSPHOR_SSH_SYNC_PLAIN_B"
+  if [[ $__p_ok == 1 && $PHOSPHOR_SSH_SYNC_TA != plain ]]; then
+    __p_emit "$PHOSPHOR_SSH_SYNC_MANAGED_A$__p_hh$PHOSPHOR_SSH_SYNC_PLAIN_B"
+  else
+    __p_emit "$PHOSPHOR_SSH_SYNC_PLAIN_A$__p_hh$PHOSPHOR_SSH_SYNC_PLAIN_B"
+  fi
 fi
 '
 
@@ -2592,13 +2600,16 @@ fi
             shift
             local sid="${WARP_SESSION_ID:-}"
             local head="{\"hook\": \"SSHWrapperSync\", \"value\": {\"session_id\": $sid, \"nonce\": \"$nonce\", \"stage\": "
-            local tok done_hex managed_hex plain_a plain_b pre suf
+            local tok done_hex managed_hex managed_a plain_a plain_b pre suf
             __warp_hex_encode_to ":PHX$nonce:"
             tok=$__warp_hex
             __warp_hex_encode_to "$head\"auth_done\"}}"
             done_hex=$__warp_hex
             __warp_hex_encode_to "$head\"managed\"}}"
             managed_hex=$__warp_hex
+            # #1959: the managed stage that carries typed-ahead bytes (same closing as the plain one).
+            __warp_hex_encode_to "$head\"managed\", \"typeahead\": \""
+            managed_a=$__warp_hex
             __warp_hex_encode_to "$head\"plain\", \"typeahead\": \""
             plain_a=$__warp_hex
             __warp_hex_encode_to "\"}}"
@@ -2615,6 +2626,8 @@ fi
             PHOSPHOR_SSH_SYNC_TOK="$tok" \
             PHOSPHOR_SSH_SYNC_DONE="$done_hex" \
             PHOSPHOR_SSH_SYNC_MANAGED="$managed_hex" \
+            PHOSPHOR_SSH_SYNC_MANAGED_A="$managed_a" \
+            PHOSPHOR_SSH_SYNC_TA="${PHOSPHOR_MSYS_SSH_TYPEAHEAD:-}" \
             PHOSPHOR_SSH_SYNC_PLAIN_A="$plain_a" \
             PHOSPHOR_SSH_SYNC_PLAIN_B="$plain_b" \
             PHOSPHOR_SSH_SYNC_PRE="$pre" \

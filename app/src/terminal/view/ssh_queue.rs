@@ -47,7 +47,8 @@ use super::TerminalView;
 use super::paste_queue::{PtyQueueHost, signal_bytes};
 use super::ssh_typeahead::{HeldInput, SSH_TYPEAHEAD_MAX_BYTES, SshTypeahead, SshTypeaheadPush};
 use crate::terminal::input_queue::{
-    Deferred, EntryKind, GateKind, GateSpec, HELD_SIGNAL, Origin, SignalKind, SshDropThen, trace,
+    Deferred, EntryId, EntryKind, GateKind, GateSpec, HELD_SIGNAL, Origin, SignalKind, SshDropThen,
+    trace,
 };
 
 /// What the ssh hold keeps next to the queue itself: which gate is open. What it holds is read
@@ -59,6 +60,20 @@ pub(super) struct SshQueueState {
     /// The 64 KiB bound was passed: the run was dropped and the rest of this connect is ignored.
     overflowed: bool,
 }
+
+/// #1959: a mark in the pane's input order ([`TerminalView::ssh_hold_reserve_front`]): entry ids
+/// set aside for keys typed before it whose content arrives later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SshFrontReservation {
+    first: EntryId,
+    /// The connection counter at the mark: the hold that keeps the keys typed since is the next.
+    conn: u64,
+}
+
+/// #1959: ids set aside per mark. A held input has at least one byte and a connect holds at most
+/// [`SSH_TYPEAHEAD_MAX_BYTES`], so no run that can be held needs more (ids are 64-bit and cost
+/// nothing when unused).
+const SSH_FRONT_RESERVED_IDS: u64 = SSH_TYPEAHEAD_MAX_BYTES as u64;
 
 impl SshQueueState {
     pub(super) fn new() -> Self {
@@ -265,6 +280,99 @@ impl TerminalView {
                 .defer(Deferred::OfferGated { kind: held, spec });
         }
         SshTypeaheadPush::Held
+    }
+
+    /// #1959: marks THIS moment in the pane's one input order for keys that were typed before it
+    /// but are still on their way back from the tty (the one-connection ssh login: `auth_done`
+    /// is the moment, ssh's LocalCommand reports the keys a console round trip later). Every key
+    /// held from now on is behind the mark. `None`, and the caller keeps those keys as bytes for
+    /// the pty, when the mark cannot be set exactly: a hold is already open (its keys are older
+    /// than the mark), the run overflowed, or the queue is busy or has operations waiting.
+    pub(super) fn ssh_hold_reserve_front(&mut self) -> Option<SshFrontReservation> {
+        if self.ssh_iq.gate.is_some() || self.ssh_iq.overflowed {
+            return None;
+        }
+        let queue = self.paste_queue.queue.clone();
+        let mut guard = queue.try_lock_ordered()?;
+        let first = guard.reserve_ids(SSH_FRONT_RESERVED_IDS);
+        Some(SshFrontReservation {
+            first,
+            conn: self.ssh_iq.next_conn,
+        })
+    }
+
+    /// #1959: puts `inputs` (typed before the mark `reservation`, learnt now) at the FRONT of the
+    /// connect hold, in order, in front of every key held since the mark; they are delivered
+    /// with them by the one hand-over. The hold's gate is the one those later keys opened, or a
+    /// new one when nothing was typed since.
+    ///
+    /// `Err` hands `inputs` back and changes nothing when their place is not provable: the hold
+    /// that was open since the mark is gone or is not the first one after it (keys typed after
+    /// the mark were delivered, dropped or handed back meanwhile), something arrived between the
+    /// mark and the hold (`InputQueue::insert_reserved`), the 64 KiB bound would be passed, or
+    /// the queue is busy. The caller then keeps them as bytes for the pty (the plain path).
+    pub(super) fn ssh_hold_insert_front(
+        &mut self,
+        reservation: SshFrontReservation,
+        inputs: Vec<HeldInput>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Result<(), Vec<HeldInput>> {
+        let key = reservation.conn + 1;
+        let same_hold = match self.ssh_iq.gate {
+            Some(open) => open == key,
+            None => self.ssh_iq.next_conn == reservation.conn,
+        };
+        let bytes: usize = inputs.iter().map(HeldInput::byte_len).sum();
+        if !same_hold || self.ssh_iq.overflowed {
+            return Err(inputs);
+        }
+        let queue = self.paste_queue.queue.clone();
+        // Read before the lock (nothing reads a queue that is held).
+        if queue.try_peek().is_none_or(|peek| {
+            peek.queued_since_gate(GateKind::SshConnect).1 + bytes > SSH_TYPEAHEAD_MAX_BYTES
+        }) {
+            return Err(inputs);
+        }
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            return Err(inputs);
+        };
+        let kinds: Vec<EntryKind> = inputs
+            .into_iter()
+            .map(|input| {
+                let (class, text) = input.into_parts();
+                EntryKind::Held { class, text }
+            })
+            .collect();
+        let count = kinds.len();
+        let spec = GateSpec::new(GateKind::SshConnect, key).with_cap(None);
+        let mut host = PtyQueueHost::new(self, ctx);
+        let inserted = guard.insert_reserved(
+            &mut host,
+            spec,
+            reservation.first,
+            SSH_FRONT_RESERVED_IDS,
+            kinds,
+            Origin::Keyboard,
+        );
+        drop(host);
+        drop(guard);
+        match inserted {
+            Ok(()) => {
+                if count > 0 {
+                    self.ssh_iq.next_conn = self.ssh_iq.next_conn.max(key);
+                    self.ssh_iq.gate = Some(key);
+                    trace::hold(trace::legacy::SSH, bytes);
+                }
+                Ok(())
+            }
+            Err(kinds) => Err(kinds
+                .into_iter()
+                .filter_map(|kind| match kind {
+                    EntryKind::Held { class, text } => Some(HeldInput::from_parts(class, text)),
+                    _ => None,
+                })
+                .collect()),
+        }
     }
 
     /// Gives up the whole run as if it had grown past its bound.

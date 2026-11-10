@@ -1125,7 +1125,8 @@ pub struct SSHWrapperSyncValue {
     /// text the server prints cannot forge a stage.
     #[serde(default)]
     pub nonce: String,
-    /// `plain` only: the bytes typed before the hold that no login prompt consumed, as hex.
+    /// `managed` and `plain`: the bytes typed before the hold that no login prompt consumed, as
+    /// hex (empty when there were none). #1959: with `managed` the app holds them at the front.
     #[serde(default)]
     pub typeahead: String,
 }

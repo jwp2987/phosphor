@@ -3,9 +3,10 @@
 #   ssh_connect_typing_wrapper / ssh_nested_typeahead_wrapper   Git Bash pane, the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1 in the profile):
 #                                                               the existing ssh cases, plus proof from the app log that the wrapper announcement was ACCEPTED
 #                                                               on the born-owned ConPTY window (hop ssh_wrapper "announced reclaimed=true", #1884)
-#   ssh_gitbash_managed / ssh_gitbash_typeahead_plain /         Git Bash pane, the DEFAULT settings (#1933, owner 2026-11-09: managed ssh from Git Bash on ONE
+#   ssh_gitbash_managed / ssh_gitbash_typeahead_managed /       Git Bash pane, the DEFAULT settings (#1933, owner 2026-11-09: managed ssh from Git Bash on ONE
 #   ssh_gitbash_kill_switch                                     connection): the session is managed (stage hops auth, auth_done, managed), keys typed during the
-#                                                               login make that connection plain and stay in typed order, PHOSPHOR_MSYS_MANAGED_SSH=0 is plain ssh
+#                                                               login stay managed and reach the first remote prompt first, in typed order (#1959),
+#                                                               PHOSPHOR_MSYS_MANAGED_SSH=0 is plain ssh
 #   ps_ctrl_break                                               PowerShell pane: Ctrl+Break reaches a program as CTRL_BREAK_EVENT (#1888)
 #   ps_fast_command_young_enter                                 PowerShell pane: a fast command's Enter and the next line typed at once run once each, in order (#1889)
 import os, sys, time
@@ -185,17 +186,18 @@ def c_ssh_gitbash_managed(ctx, r):
     ctx.reset()
 
 
-@case("ssh_gitbash_typeahead_plain", order=62)
-def c_ssh_gitbash_typeahead_plain(ctx, r):
-    """#1933: a line typed blind right after `ssh fake` + Enter (no pause, 10-25 ms keys). With one connection those keys are in the console before the
-    session exists; they must never meet the bootstrap. The app's rule: ssh's LocalCommand drains them, the session is PLAIN for this connection, and
-    the keys reach the remote shell in typed order. Evidence: the typed line ran exactly once REMOTELY, never locally; and the stages in the app log
-    are consistent with what happened: either `plain` (keys were found in front of the token) or `managed` (ssh's login consumed or flushed nothing
-    and the keys were typed after auth_done, i.e. held and delivered at the first prompt). Which of the two is a note, not a verdict: it depends on
-    how fast the login was. A line lost, doubled, cut or run locally fails either way."""
+@case("ssh_gitbash_typeahead_managed", order=62)
+def c_ssh_gitbash_typeahead_managed(ctx, r):
+    """#1959 (owner 2026-11-09; was ssh_gitbash_typeahead_plain, where either outcome passed): a line typed blind right after `ssh fake` + Enter (no
+    pause, 10-25 ms keys) must NOT make the session plain. With one connection those keys can be in the console before the session exists; ssh's
+    LocalCommand drains them, the app puts them at the FRONT of the keys it holds and answers managed, and the first remote prompt gets the line.
+    Required in EVERY trial: the typed line ran exactly once REMOTELY and never locally; the stages are auth, auth_done, managed; the verdict is
+    managed=true; no stage or verdict was ignored; the app never reports `typeahead_front adopted=false` (that is the plain fallback for keys with no
+    provable place in the hold: a defect here, where one pane types one line). How many trials had keys in the console (`typeahead_front
+    adopted=true`) is a note: it depends on how fast the login was, and a trial where every key was typed after auth_done is held the ordinary way."""
     _need_windows_pane(ctx, r, "gitbash")
     R.need_ssh(ctx, r)
-    trials, plain, managed = 3, 0, 0
+    trials, adopted = 3, 0
     for i in range(trials):
         tok = ctx.tok(6)
         line = "echo %s" % tok
@@ -212,19 +214,26 @@ def c_ssh_gitbash_typeahead_plain(ctx, r):
         r.check(got == [line], "trial %d: the remote shell received %r, want exactly [%r]" % (i + 1, got, line))
         local = [c for c in ctx.cmds_since(lmark) if not c.startswith("ssh ")]
         r.check(local == [], "trial %d: the LOCAL shell received %r" % (i + 1, local))
-        stages = _sync_stages(_wrapper_hops(ctx, off))
-        r.check(stages in (["auth", "auth_done", "plain"], ["auth", "auth_done", "managed"]),
-                "trial %d: one-connection stages in the app log: %r" % (i + 1, stages))
-        plain += stages[-1:] == ["plain"]
-        managed += stages[-1:] == ["managed"]
+        hops = _wrapper_hops(ctx, off)
+        stages = _sync_stages(hops)
+        r.check(stages == ["auth", "auth_done", "managed"],
+                "trial %d: one-connection stages in the app log: %r, want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)" % (i + 1, stages))
+        r.check(any("verdict managed=true" in ln for ln in hops), "trial %d: the wrapper's verdict was managed=true" % (i + 1))
+        r.check(not any("sync_ignored" in ln or "verdict_ignored" in ln for ln in hops),
+                "trial %d: no stage or verdict was ignored: %r" % (i + 1, [ln[-140:] for ln in hops if "_ignored" in ln][:3]))
+        refused = [ln[-120:] for ln in hops if "typeahead_front adopted=false" in ln]
+        r.check(refused == [], "trial %d: the keys drained from the console were not put at the front of the hold (plain fallback): %r" % (i + 1, refused[:2]))
+        adopted += any("typeahead_front adopted=true" in ln for ln in hops)
+        if i == 0:
+            ctx.shot("gitbash_typeahead_managed_remote_prompt")
         if ctx.where_now() == "remote":
             if not R.leave(ctx):
                 r.check(False, "trial %d: `exit` did not bring the local prompt back" % (i + 1))
         else:
             r.check(False, "trial %d: the pane is not provably remote after the connect (probe ran in: %s)" % (i + 1, ctx.where_now()))
             ctx.reset()
-    r.note("typed-during-connect outcome: %d plain, %d managed of %d (plain = the keys were in the console before the session; #1933 design 3.2)" % (
-        plain, managed, trials))
+    r.note("typed-during-connect: in %d of %d trials keys were in the console before the session and were held at the front (typeahead_front "
+           "adopted=true); in the others every key was typed after auth_done or consumed by the login" % (adopted, trials))
     ctx.reset()
 
 

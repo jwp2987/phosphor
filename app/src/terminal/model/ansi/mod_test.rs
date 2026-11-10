@@ -2099,14 +2099,15 @@ fn parse_dcs_ssh_wrapper_verdict_hooks() {
 }
 
 /// #1933: the one-connection managed ssh's stage hook is a hex-encoded JSON hook like the verdict
-/// hooks: session id, stage, the nonce as a string of digits, and (for `plain`) the typed-ahead
-/// bytes as hex. Missing fields are empty, never an error.
+/// hooks: session id, stage, the nonce as a string of digits, and (for `plain`, and since #1959 for
+/// a `managed` that has some) the typed-ahead bytes as hex. Missing fields are empty, never an error.
 #[test]
 fn parse_dcs_ssh_wrapper_sync_hook() {
     for (stage, typeahead) in [
         ("auth", ""),
         ("auth_done", ""),
         ("managed", ""),
+        ("managed", "6c730d"),
         ("plain", "6c730d"),
     ] {
         let extra = if typeahead.is_empty() {

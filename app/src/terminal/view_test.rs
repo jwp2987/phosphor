@@ -20874,13 +20874,148 @@ fn one_connection_ssh_passes_the_login_through_and_holds_from_auth_done_to_the_f
     }
 }
 
-/// #1933: keys typed during the login that no prompt consumed were drained by the LocalCommand
-/// (it reports them, `typeahead`). They must not meet the bootstrap: the `plain` stage writes `P`
-/// (the remote command execs a plain login shell), then the drained bytes, then the keys held
-/// since `auth_done`: one pty, typed order, and the window behaves like an unmanaged one from
-/// there. Legacy and Table.
+/// #1959 (owner 2026-11-09: keys typed during the login must NOT make the session plain). Keys
+/// typed during the one-connection login that no prompt consumed are drained from the console by
+/// the LocalCommand, which reports them with its `managed` stage. They join the hold at its
+/// FRONT (they were typed before every key held since `auth_done`), the answer is `M`, and the
+/// first remote prompt gets all of it once, in typed order: a line the login cut in two (`abec`
+/// before `auth_done`, `ho` + Enter after) arrives whole. Nothing of the user's is written
+/// between the token and that prompt, so nothing can be glued to the bootstrap. With and without
+/// keys typed after `auth_done`. Legacy and Table.
 #[test]
-fn one_connection_ssh_with_typeahead_stays_plain_and_keeps_typed_order() {
+fn one_connection_ssh_keys_typed_during_the_login_stay_managed_at_the_front_of_the_hold() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for typed_after in [true, false] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::workspace::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = record_all_pty_writes(&mut app, &terminal);
+                let written = {
+                    let pty_writes = pty_writes.clone();
+                    move || -> String {
+                        let bytes: Vec<u8> =
+                            pty_writes.borrow().iter().flatten().copied().collect();
+                        String::from_utf8_lossy(&bytes).into_owned()
+                    }
+                };
+                let what = format!("{mode:?}, typed after auth_done: {typed_after}");
+                let armed = terminal.update(&mut app, |view, ctx| {
+                    let armed = one_connection_ssh_announced_for_test(view, ctx);
+                    ssh_wrapper_sync_for_test(view, "auth", "7", "", ctx);
+                    view.typed_characters_on_terminal("ec", ctx);
+                    ssh_wrapper_sync_for_test(view, "auth_done", "7", "", ctx);
+                    if typed_after {
+                        view.typed_characters_on_terminal("ho", ctx);
+                        view.keydown_on_terminal("\r", ctx);
+                        assert_eq!(view.ssh_held_bytes(), "ho\r".len(), "{what}");
+                    }
+                    armed
+                });
+                assert_eq!(written(), "abec:PHX7:", "{what}: the login got its keys");
+                terminal.update(&mut app, |view, ctx| {
+                    // The LocalCommand found `abec` in front of the token.
+                    ssh_wrapper_sync_for_test(view, "managed", "7", "61626563", ctx);
+                    assert!(view.ssh_typeahead_holding, "{what}: held for the bootstrap");
+                    assert!(view.ssh_single.is_none(), "{what}: the sync is over");
+                    assert_eq!(
+                        view.ssh_held_bytes(),
+                        if typed_after { 7 } else { 4 },
+                        "{what}: the drained keys are held with the later ones"
+                    );
+                    assert_eq!(
+                        view.ssh_connect_gate.as_ref().map(|gate| gate.wrapper),
+                        Some(SshWrapperHold::Managed),
+                        "{what}: the session stays managed"
+                    );
+                });
+                assert_eq!(
+                    written(),
+                    "abec:PHX7:M",
+                    "{what}: only the mode byte; the drained keys are NOT written back"
+                );
+                terminal.update(&mut app, |view, ctx| {
+                    managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
+                });
+                assert_eq!(
+                    written(),
+                    if typed_after {
+                        "abec:PHX7:Mabecho\r"
+                    } else {
+                        "abec:PHX7:Mabec"
+                    },
+                    "{what}: the drained keys first, then the later ones, once, at the first \
+                     remote prompt"
+                );
+            })
+        }
+    }
+}
+
+/// #1959: the drained keys are held only where their place in typed order is provable. Bytes
+/// that are not keys of ours (not UTF-8), and a hold that moved on since `auth_done` (what was
+/// held then is gone, a new hold began), have no such place: the answer is `P` and the bytes go
+/// back to the pty exactly as they were, then what is held, then live keys. Nothing is lost,
+/// doubled or reordered. Legacy and Table.
+#[test]
+fn one_connection_ssh_typeahead_without_a_provable_place_in_the_hold_falls_back_to_plain() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for hold_moved in [false, true] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::workspace::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = record_all_pty_writes(&mut app, &terminal);
+                let what = format!("{mode:?}, hold moved on: {hold_moved}");
+                terminal.update(&mut app, |view, ctx| {
+                    one_connection_ssh_announced_for_test(view, ctx);
+                    ssh_wrapper_sync_for_test(view, "auth", "7", "", ctx);
+                    ssh_wrapper_sync_for_test(view, "auth_done", "7", "", ctx);
+                    view.typed_characters_on_terminal("x", ctx);
+                    assert!(view.ssh_typeahead_holding, "{what}: held after auth_done");
+                    if hold_moved {
+                        // What was held since the mark left the hold (as a hand-back does) and
+                        // a new hold began: `ls` can no longer be put in front of `x`.
+                        assert_eq!(view.ssh_hold_take().len(), 1, "{what}");
+                        view.typed_characters_on_terminal("z", ctx);
+                        ssh_wrapper_sync_for_test(view, "managed", "7", "6c73", ctx);
+                    } else {
+                        ssh_wrapper_sync_for_test(view, "managed", "7", "6c73ff", ctx);
+                    }
+                    assert!(!view.ssh_typeahead_holding, "{what}: the hold ended");
+                    assert!(view.ssh_held_is_empty(), "{what}");
+                    assert!(view.ssh_single.is_none(), "{what}");
+                    view.typed_characters_on_terminal("y", ctx);
+                });
+                let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+                let expected: &[u8] = if hold_moved {
+                    b"ab:PHX7:Plszy"
+                } else {
+                    b"ab:PHX7:Pls\xffxy"
+                };
+                assert_eq!(
+                    written, expected,
+                    "{what}: pass-through, token, P, the drained bytes, the held key, the live key"
+                );
+            })
+        }
+    }
+}
+
+/// #1933: the `plain` stage (the console ended before the token came back, or the wrapper was
+/// told to keep typed-ahead connections plain, `PHOSPHOR_MSYS_SSH_TYPEAHEAD=plain`) carries the
+/// bytes the LocalCommand drained (`typeahead`). They must not meet the bootstrap: `P` is
+/// written (the remote command execs a plain login shell), then the drained bytes, then the keys
+/// held since `auth_done`: one pty, typed order, and the window behaves like an unmanaged one
+/// from there. Legacy and Table.
+#[test]
+fn one_connection_ssh_plain_stage_writes_the_drained_keys_then_the_held_ones_in_typed_order() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
