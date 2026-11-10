@@ -3183,6 +3183,10 @@ struct WrittenSubshellSetup {
     /// waits, with the keys still held, for the look that proves a prompt drawn after the probe's
     /// hook (`subshell_ready::stage_two_pending`). Nothing of stage 2 is written before it.
     stage_two_pending: Option<ShellType>,
+    /// #1940: user bytes that went to the pty since this attempt's first line (the held keys are
+    /// not among them: they wait in the queue). Any at all, and a cancel's R9 flush is off: what
+    /// sits unread in the tty may be the user's.
+    user_bytes_since_write: usize,
 }
 
 /// Where the readiness-judged subshell setup is (#1679 step 3).
@@ -23100,6 +23104,10 @@ impl TerminalView {
             tail: look.tail,
             prompt_moved_since_baseline: moved(armed.baseline),
             prompt_moved_since_line_end: moved(armed.line_end_baseline),
+            // #1935: the Enter's echo moved the cursor down a row (the line end reached the tty),
+            // and nothing typed since waits for its own line end.
+            newline_since_line_end: look.position.1 > armed.line_end_baseline.1
+                && !armed.tracker.line_has_content(),
             elapsed: armed.armed_at.elapsed(),
             no_tty_probe,
         };
@@ -23143,12 +23151,15 @@ impl TerminalView {
         warpui::input_order::log_hop("subshell_ready_judged", || {
             format!(
                 "source={source} decision={decision:?} kind={:?} leader={:?} comm={:?} tail={:?} \
-                 queue_empty={:?} bytes={} lines={} age_ms={}",
+                 queue_empty={:?} reader_blocked={:?} newline_since_line_end={} bytes={} lines={} \
+                 age_ms={}",
                 look.tty.kind,
                 look.tty.leader,
                 look.tty.leader_comm.as_deref().unwrap_or("-"),
                 look.tail,
                 look.tty.queue_empty,
+                look.tty.reader_blocked,
+                sample.newline_since_line_end,
                 armed.ledger.bytes_since_arm,
                 armed.ledger.lines_ended,
                 sample.elapsed.as_millis()
@@ -23205,6 +23216,7 @@ impl TerminalView {
             secret_probe: None,
             generation: self.subshell_setup_generation,
             stage_two_pending: None,
+            user_bytes_since_write: 0,
         });
         self.last_subshell_setup_session_id = None;
         match armed.trigger {
@@ -23495,6 +23507,14 @@ impl TerminalView {
     /// attempt. Nothing is written here, ever.
     fn note_user_bytes_for_subshell_readiness(&mut self, bytes: &[u8]) {
         use crate::terminal::model::subshell_tty::SubshellTtyKind;
+        if let SubshellSetupState::Written(written) = &mut self.subshell_setup_state {
+            // #1940: a user byte on its way to the pty while the setup is written (the held keys
+            // never come here: they wait in the queue). From now on a cancel must not flush the
+            // tty's input: the unread bytes may be these.
+            written.user_bytes_since_write =
+                written.user_bytes_since_write.saturating_add(bytes.len());
+            return;
+        }
         let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state else {
             return;
         };
@@ -23690,13 +23710,24 @@ impl TerminalView {
         // A stage 2 that was still waiting wrote nothing: there are no setup bytes to flush (R9),
         // only what the user may have typed to whatever reads now.
         let stage_two_pending = written.stage_two_pending.is_some();
+        // #1940: the decision does not rest on the echo filter alone: never for a Secret cancel,
+        // never once a user byte went to the pty since the first line.
         let flush = !stage_two_pending
-            && subshell_ready::cancel_flushes_unread_setup(proof.queue_empty, proof.echo_started);
+            && subshell_ready::cancel_flushes_unread_setup(
+                kind,
+                proof.queue_empty,
+                proof.echo_started,
+                written.user_bytes_since_write,
+            );
         warpui::input_order::log_hop("subshell_setup_cancelled", || {
             format!(
-                "why={kind:?} dest={dest:?} chunks={} bytes={} flush={flush} age_ms={}",
+                "why={kind:?} dest={dest:?} chunks={} bytes={} flush={flush} queue_empty={:?} \
+                 echo_started={} user_bytes_since_write={} age_ms={}",
                 held.0,
                 held.1,
+                proof.queue_empty,
+                proof.echo_started,
+                written.user_bytes_since_write,
                 written.written_at.elapsed().as_millis()
             )
         });

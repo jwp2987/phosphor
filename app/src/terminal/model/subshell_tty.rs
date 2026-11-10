@@ -89,7 +89,8 @@ pub enum LeaderKind {
     /// Any other program (vim, fzf, less, a REPL, a compiler).
     Other,
     /// The parent shell's own group: the shell that ran this block is at its prompt (or runs a
-    /// builtin); no subshell is in front.
+    /// builtin); no subshell is in front. Not when the pid's comm changed since the shell reported
+    /// it (`exec zsh`, #1937, [`parent_was_replaced`]): that leader is classified by its comm.
     Parent,
     /// No foreground group, an unreadable leader, an unsupported platform.
     Unreadable,
@@ -175,7 +176,8 @@ pub enum SubshellTtyKind {
 
 /// One sample of the pty, taken at an output wakeup, the hand-off's change or a banner click;
 /// never on a timer. One `tcgetattr`, one `tcgetpgrp`, at most one `/proc` read and the queue
-/// probe's ioctls (R10: the ioctls first, `/proc` only for a candidate).
+/// probe's ioctls (R10: the ioctls first, `/proc` only for a candidate); for an editor-less cooked
+/// shell with an empty queue, on Linux, the leader's blocked-read fact on top (`reader_blocked`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubshellTtySample {
     pub kind: SubshellTtyKind,
@@ -191,6 +193,14 @@ pub struct SubshellTtySample {
     /// when the platform cannot tell. macOS: `FIONREAD` on the master; Linux: a slave peer opened
     /// `O_NOCTTY|O_NONBLOCK`, `poll(0)`, `FIONREAD`, closed.
     pub queue_empty: Option<bool>,
+    /// Whether the leader is BLOCKED IN `read(2)` ON A TTY at this sample (owner decision
+    /// 2026-11-09, #1935): the shell itself sits in its read, waiting for the next line. Linux
+    /// only (`/proc/<pgid>/syscall`: the `read` syscall number of the architecture and an fd that
+    /// is a terminal), read once per look, after the queue probe, and only for the one candidate
+    /// it decides: an editor-less shell leader on a cooked tty with an empty queue. `None`
+    /// everywhere else: another platform, another kind of sample, or a leader whose `/proc` files
+    /// the kernel will not show (another user's shell, Yama `ptrace_scope` >= 2).
+    pub reader_blocked: Option<bool>,
 }
 
 impl SubshellTtySample {
@@ -202,6 +212,7 @@ impl SubshellTtySample {
             leader_comm: None,
             canonical: None,
             queue_empty: None,
+            reader_blocked: None,
         }
     }
 
@@ -214,14 +225,33 @@ impl SubshellTtySample {
             leader_comm: Some(comm.to_owned()),
             canonical: Some(false),
             queue_empty: Some(true),
+            reader_blocked: None,
         }
     }
 }
 
 /// Builds a [`SubshellTtySample`] for the pty, given the parent shell's pid (the shell that ran
-/// the block; its own group in front is [`LeaderKind::Parent`]). Installed by the local tty
+/// the block; its own group in front is [`LeaderKind::Parent`]) and the comm that pid had when the
+/// shell reported it (#1937; `None` when it was never read). Installed by the local tty
 /// (`terminal_attributes::subshell_tty_fact`); a test installs a closure of its own.
-pub type SubshellTtyProbe = Arc<dyn Fn(i32) -> SubshellTtySample + Send + Sync>;
+pub type SubshellTtyProbe = Arc<dyn Fn(i32, Option<String>) -> SubshellTtySample + Send + Sync>;
+
+/// Reads the comm of a process (#1937): `/proc/<pid>/stat` on Linux, `proc_pidpath` on macOS.
+/// Installed by the local tty; called once per `InitShell` that carries a pid.
+pub type ProcessCommProbe = Arc<dyn Fn(i32) -> Option<String> + Send + Sync>;
+
+/// #1937 (review r8 D6): `exec zsh` typed in the parent shell keeps the parent's pid, so the
+/// foreground group is still "the parent's" and every sample read `LeaderKind::Parent` (no fact)
+/// until the 60 s ceiling. A pid whose comm is no longer the one the shell had when it reported
+/// that pid is a different program: an `exec` replaced the shell. `comm_at_report` is what the
+/// pid's comm was at the shell's `InitShell`, `comm_now` what it is at this sample. Then the
+/// leader is classified by `comm_now` like any other (a shell, a relay for `exec ssh host`, a
+/// program). The same comm (`exec bash` from bash) cannot be told from the parent at its prompt:
+/// it stays `Parent`, as before.
+pub fn parent_was_replaced(comm_at_report: &str, comm_now: &str) -> bool {
+    let (was, now) = (comm_at_report.trim(), comm_now.trim());
+    !was.is_empty() && !now.is_empty() && was != now
+}
 
 /// Flushes the slave's unread input (R9: a cancelled setup whose bytes the shell provably never
 /// read must not be read later by whatever reads next). Returns whether anything was flushed.

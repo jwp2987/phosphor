@@ -285,7 +285,8 @@ def c_sh_probe_empty_ps1(ctx, r):
     Phosphor blanks it, so a child dash inherits ""). Phosphorize must still write the probe at once (the idle reader with nothing
     unread needs no prompt), the probe's second line must follow the prelude's marker without waiting for a prompt, and the
     unsupported-shell EVENT ends the setup: the line typed right behind Ctrl-I runs in dash < 2 s after its Enter, no give-up, no
-    cancel. `export PS1` (exporting the value the pane already has) is left set, as the appci bashrc sets it on Linux."""
+    cancel. `export PS1` (exporting the value the pane already has) is left set, as the appci bashrc sets it on Linux.
+    A second leg (empty_ps1_typed_before_setup, Linux) types a line before the setup is written."""
     need_posix(ctx, r)
     if not shutil.which("dash"):
         r.skip("dash is not installed")
@@ -317,6 +318,56 @@ def c_sh_probe_empty_ps1(ctx, r):
     r.check(first_index(hs, "subshell_setup_cancelled") is None, "no cancel")
     r.check(not any("subshell_setup_given_up" in ln for ln in ctx.log_since(off).splitlines()), "no give-up net fired")
     leave_and_prove_parent(ctx, r, "empty_ps1", f, l[:2])
+    empty_ps1_typed_before_setup(ctx, r)
+
+
+def empty_ps1_typed_before_setup(ctx, r):
+    """The second leg of subshell_sh_probe_empty_ps1 (owner decision 2026-11-09, #1935 "reader idle"): the same empty-PS1 dash, but the
+    user types a line BEFORE the setup is written. dash's $ENV file sleeps, so the setup armed by Ctrl-I waits (a program in front);
+    the line typed then is typeahead that dash runs when its rc ends. No prompt ever proves that line ran, so before this fact the
+    attempt stayed armed until the 60 s ceiling. Now the look after the line's output finds the queue empty and dash blocked in
+    read(2) on the tty (Linux: /proc/<pid>/syscall) and writes the probe: hop `subshell_ready_judged decision=Write ...
+    reader_blocked=Some(true)` with bytes > 0, then the unsupported-shell event. The typed line ran exactly once, the next line runs.
+    The typed line ends in an `echo` so the pane gets an output event after dash is done with it (the judge looks at events only).
+    Linux only: other platforms have no such fact and keep the old rule."""
+    if not sys.platform.startswith("linux"):
+        r.note("empty_ps1 typed-before-the-setup leg: needs the Linux blocked-in-read fact (/proc/<pid>/syscall); not run on %s" % sys.platform)
+        return
+    label, f = "empty_ps1_typed", "lab_ps1_typed.txt"
+    ctx.rm(f)
+    rc = write_rc(ctx, "lab_ps1_sleep.rc", "sleep 4\n")
+    ctx.left_inner = False
+    try:
+        ctx.be.type("export ENV=" + rc, 12, enter=True)      # an interactive dash reads $ENV: busy for 4 s, PS1 still empty
+        time.sleep(0.5)
+        off = ctx.log_size()
+        ctx.be.type("dash", 12, enter=True)
+        time.sleep(BANNER_S)
+        ctx.be.key("ctrl+i")
+        r.check(ctx.until(lambda: first_index(hops(ctx, off), "subshell_setup_armed") is not None, 4), "%s: Ctrl-I armed the setup" % label)
+        tok = ctx.tok(6)
+        ctx.be.type("echo %s >> %s; echo ran" % (tok, f), 12, enter=True)    # typed while the rc sleeps: before any setup byte
+        r.check(ctx.until(lambda: tok in ctx.lines(f), 10), "%s: the line typed before the setup ran in dash (file %r)" % (label, ctx.lines(f)))
+        r.check(ctx.until(lambda: first_index(hops(ctx, off), "subshell_setup_unsupported") is not None, 6),
+                "%s: the probe was written once dash sat in its read again, and answered (before: armed until the 60 s ceiling)" % label)
+        hs = hops(ctx, off)
+        line_end = first_index(hs, "subshell_ready_line_end")
+        write = first_index(hs, "subshell_setup_ready_write")
+        r.check(line_end is not None and write is not None and line_end < write,
+                "%s: premise: the line was ended BEFORE the setup was written (line_end %r, write %r)" % (label, line_end, write))
+        judged = [ln for h, ln in hs[:write or 0] if h == "subshell_ready_judged" and "decision=Write" in ln]
+        r.check(len(judged) == 1 and "reader_blocked=Some(true)" in judged[0] and " bytes=0 " not in judged[0],
+                "%s: one Write decision, on the blocked-read fact with the user's bytes counted: %r" % (label, judged[:2]))
+        r.check(first_index(hs, "subshell_setup_cancelled") is None, "%s: no cancel" % label)
+        r.check(not any("subshell_setup_given_up" in ln for ln in ctx.log_since(off).splitlines()), "%s: no give-up net fired" % label)
+        tok2, _ = run_in_inner(ctx, r, label, "sh", f)
+        r.check(ctx.lines(f) == [tok, tok2], "%s: the typed-ahead line ran exactly once, then the next: %r" % (label, ctx.lines(f)))
+        leave_and_prove_parent(ctx, r, label, f, [tok, tok2])
+    finally:
+        if not ctx.left_inner:
+            leave_inner(ctx, r, label)
+        ctx.be.type("unset ENV", 12, enter=True)             # the pane's bash: later dash starts must not sleep
+        time.sleep(0.3)
 
 
 @case("subshell_ready_relay_shape", order=22)

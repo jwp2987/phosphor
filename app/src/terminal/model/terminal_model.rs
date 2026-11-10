@@ -553,6 +553,11 @@ pub struct TerminalModel {
     /// parent of a readiness sample taken while that session is the active one, so a `su` from a
     /// Phosphorized `sudo -s` is judged against THAT shell, not the top-level one (review R5).
     session_shell_pids: HashMap<SessionId, i32>,
+    /// #1937: the comm each of those pids had when its shell reported it, read once at the
+    /// `InitShell` through `process_comm_probe`. A sample that finds the same pid in front under
+    /// another comm knows an `exec` replaced the shell (`subshell_tty::parent_was_replaced`).
+    session_shell_comms: HashMap<SessionId, String>,
+    process_comm_probe: Option<super::subshell_tty::ProcessCommProbe>,
 
     /// Stack of saved window titles. When a title is popped from this stack, the `title` for the
     /// term is set.
@@ -1319,6 +1324,8 @@ impl TerminalModel {
             subshell_tty_flush: None,
             local_shell_pid: None,
             session_shell_pids: HashMap::new(),
+            session_shell_comms: HashMap::new(),
+            process_comm_probe: None,
             title_stack: Vec::new(),
             title: None,
             custom_title: None,
@@ -2098,12 +2105,28 @@ impl TerminalModel {
             .or(self.local_shell_pid)
     }
 
+    /// #1937: installs the comm reader used when a shell reports its pid (unix local ptys).
+    pub fn set_process_comm_probe(&mut self, probe: super::subshell_tty::ProcessCommProbe) {
+        self.process_comm_probe = Some(probe);
+    }
+
+    /// #1937: the comm the parent's pid had when the active session's shell reported it. `None`
+    /// when the parent is the spawn pid (no report) or the comm could not be read: nothing is
+    /// compared then, and the parent's group in front reads as the parent.
+    fn subshell_parent_comm(&self) -> Option<String> {
+        self.block_list()
+            .active_block()
+            .session_id()
+            .filter(|sid| self.session_shell_pids.contains_key(sid))
+            .and_then(|sid| self.session_shell_comms.get(&sid).cloned())
+    }
+
     /// One readiness sample of the pty (#1679 step 3), taken now, never on a timer: `Unknown`
     /// without a probe or a parent pid. One `tcgetattr`, one `tcgetpgrp`, at most one `/proc`
     /// read (review R10), so it is taken once per output wakeup.
     pub fn subshell_tty_sample(&self) -> super::subshell_tty::SubshellTtySample {
         match (&self.subshell_tty_probe, self.subshell_parent_pid()) {
-            (Some(probe), Some(parent)) => probe(parent),
+            (Some(probe), Some(parent)) => probe(parent, self.subshell_parent_comm()),
             _ => super::subshell_tty::SubshellTtySample::unknown(),
         }
     }
@@ -4307,6 +4330,19 @@ impl ansi::Handler for TerminalModel {
             // session is the active one.
             if let Some(pid) = data.pid.and_then(|pid| i32::try_from(pid).ok()) {
                 self.session_shell_pids.insert(data.session_id, pid);
+                // #1937: the comm that pid has now, while the shell that reported it runs.
+                match self
+                    .process_comm_probe
+                    .as_ref()
+                    .and_then(|probe| probe(pid))
+                {
+                    Some(comm) => {
+                        self.session_shell_comms.insert(data.session_id, comm);
+                    }
+                    None => {
+                        self.session_shell_comms.remove(&data.session_id);
+                    }
+                }
             }
 
             // #1069: a wrapper ssh session has no `subshell_info`, so record the command the user

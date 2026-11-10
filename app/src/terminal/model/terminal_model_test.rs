@@ -3306,6 +3306,88 @@ fn late_init_shell_after_abandon_starts_a_fresh_pending_session() {
     assert!(terminal.abandoned_subshell_session.is_none());
 }
 
+/// #1937: the comm of the pid a shell reports in its `InitShell` is read once, then, through the
+/// installed reader, and remembered with that session; the readiness probe is handed the parent's
+/// pid together with THAT session's comm (never one session's pid with another's comm, and no
+/// comm at all for the spawn-pid fallback). A pid whose comm cannot be read leaves no entry.
+#[test]
+fn the_reporting_shells_comm_is_remembered_with_its_pid_for_the_readiness_probe() {
+    use crate::terminal::model::subshell_tty::SubshellTtySample;
+    use std::sync::{Arc, Mutex};
+
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    for readable in [true, false] {
+        let mut terminal = TerminalModel::mock(None, None);
+        let comm_reads: Arc<Mutex<Vec<i32>>> = Arc::new(Mutex::new(Vec::new()));
+        let reads = comm_reads.clone();
+        terminal.set_process_comm_probe(Arc::new(move |pid: i32| {
+            reads.lock().unwrap().push(pid);
+            readable.then(|| "bash".to_owned())
+        }));
+        let probed: Arc<Mutex<Vec<(i32, Option<String>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = probed.clone();
+        terminal.set_subshell_tty_probe(
+            Arc::new(move |parent: i32, parent_comm: Option<String>| {
+                sink.lock().unwrap().push((parent, parent_comm));
+                SubshellTtySample::unknown()
+            }),
+            None,
+        );
+        terminal.set_local_shell_pid(1);
+
+        // The sequence of `late_init_shell_after_abandon_starts_a_fresh_pending_session`: a
+        // subshell's `InitShell` that the lifecycle accepts.
+        command_finished_and_precmd(&mut terminal);
+        command_finished_and_precmd(&mut terminal);
+        terminal.start_command_execution();
+        terminal.preexec(PreexecValue {
+            command: "bash".to_owned(),
+            session_id: None,
+        });
+        terminal.init_shell(InitShellValue {
+            pid: Some(4242),
+            shell: "bash".into(),
+            user: "u".to_owned(),
+            hostname: "h".to_owned(),
+            session_id: 0.into(),
+            is_subshell: true,
+            ..Default::default()
+        });
+        assert!(terminal.pending_subshell_session().is_some(), "accepted");
+        assert_eq!(
+            *comm_reads.lock().unwrap(),
+            vec![4242],
+            "readable={readable}: read once, at the report"
+        );
+        assert_eq!(
+            terminal.session_shell_pids.get(&SessionId::from(0)),
+            Some(&4242)
+        );
+        assert_eq!(
+            terminal
+                .session_shell_comms
+                .get(&SessionId::from(0))
+                .map(String::as_str),
+            readable.then_some("bash"),
+            "readable={readable}"
+        );
+
+        // The probe gets a consistent pair: the session's pid with that session's comm, or the
+        // spawn pid with none; never one with the other's.
+        let _ = terminal.subshell_tty_sample();
+        let pair = probed.lock().unwrap().last().cloned().expect("probed");
+        assert!(
+            pair == (4242, readable.then(|| "bash".to_owned())) || pair == (1, None),
+            "readable={readable}: {pair:?}"
+        );
+        assert_eq!(
+            *comm_reads.lock().unwrap(),
+            vec![4242],
+            "a sample reads none"
+        );
+    }
+}
+
 /// The first zsh subshell setup line, as typed (and echoed) in the #1038 captures.
 const ZSH_SETUP_FIRST_LINE: &str = r#" [ -n "${__whi-}" ] || { __whi=0; [[ -o hist_ignore_space ]] && __whi=1; }; setopt hist_ignore_space; [ -n "${__wpe-}" ] || { __wpe=0; [[ -o print_exit_value ]] && __wpe=1; }; unsetopt print_exit_value; [ -n "${__wee-}" ] || { __wee=0; [[ -o err_exit ]] && __wee=1; }; unsetopt err_exit err_return; [ -n "${__wpf-}" ] || { __wpf=0; [[ -o pipe_fail ]] && __wpf=1; }; unsetopt pipe_fail; [ -n "${__wnu-}" ] || { __wnu=0; [[ -o unset ]] || __wnu=1; }; setopt unset"#;
 const ZSH_SETUP_SECOND_LINE: &str = r#" _wbs='export WARP_HONOR_PS1=0;  setopt hist_ignore_space; unsetopt ZLE; WARP_IS_SUBSHELL=1; for _i in 1 2 3; do _c=${(#)_i}; _x=$(( [##16] _i )); done'"#;

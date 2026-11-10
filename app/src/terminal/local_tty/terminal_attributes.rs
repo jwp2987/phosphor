@@ -809,21 +809,31 @@ fn process_group_names(_pgid: libc::pid_t) -> Option<Vec<String>> {
 // ---- subshell readiness (#1679 / #1711 step 3) ------------------------------------------------
 
 use crate::terminal::model::subshell_tty::{
-    LeaderKind, SubshellTtyKind, SubshellTtySample, classify_leader,
+    LeaderKind, SubshellTtyKind, SubshellTtySample, classify_leader, leader_has_line_editor,
+    parent_was_replaced,
 };
 
 /// What the pty says about who reads it, for the subshell setup's readiness judge
 /// (`view/subshell_ready.rs`). `parent_pid` is the shell that ran the block (the session's
 /// reported pid; the spawn pid for the top-level shell): its own group in front means no
-/// subshell is, so the sample is `Unknown` with `LeaderKind::Parent`.
+/// subshell is, so the sample is `Unknown` with `LeaderKind::Parent`. `parent_comm` is the comm
+/// that pid had when the shell reported it (#1937): when the pid's comm is a different one now, an
+/// `exec` replaced the parent shell (`exec zsh`), and the leader is classified by its comm like
+/// any other instead of reading as the parent for good. One more comm read, in that case only.
 ///
 /// Order, and cost (review R10: ioctls first, `/proc` only for a candidate, and this is called at
 /// most once per output wakeup): `tcgetattr` (Secret ends it here, nothing else is read),
 /// `tcgetpgrp` (no group or the parent's ends it), ONE read of the leader's comm
 /// (`/proc/<pgid>/stat` on Linux, `proc_pidpath` on macOS; never a `/proc` scan), then, for a
-/// shell or relay leader only, the slave input-queue probe ([`slave_input_queue_empty`], R1).
+/// shell or relay leader only, the slave input-queue probe ([`slave_input_queue_empty`], R1), and
+/// last, for an editor-less shell on a cooked tty with an empty queue only, whether that shell is
+/// blocked in `read(2)` on a tty ([`leader_blocked_reading_tty`], Linux, #1935).
 /// Precedence: Secret > Relay / Unknown > LineReader > Cooked.
-pub fn subshell_tty_fact(fd: RawFd, parent_pid: i32) -> SubshellTtySample {
+pub fn subshell_tty_fact(
+    fd: RawFd,
+    parent_pid: i32,
+    parent_comm: Option<&str>,
+) -> SubshellTtySample {
     let termios = fetch_termial_attributes(fd).ok();
     let canonical = termios
         .as_ref()
@@ -838,6 +848,7 @@ pub fn subshell_tty_fact(fd: RawFd, parent_pid: i32) -> SubshellTtySample {
             leader_comm: None,
             canonical,
             queue_empty: None,
+            reader_blocked: None,
         };
     }
     // SAFETY: `tcgetpgrp` only reads the terminal's foreground group id.
@@ -848,16 +859,24 @@ pub fn subshell_tty_fact(fd: RawFd, parent_pid: i32) -> SubshellTtySample {
             ..SubshellTtySample::unknown()
         };
     }
+    let mut replaced_parent = None;
     if pgid == parent_pid {
-        return SubshellTtySample {
-            kind: SubshellTtyKind::Unknown,
-            leader: LeaderKind::Parent,
-            leader_comm: None,
-            canonical,
-            queue_empty: None,
-        };
+        // #1937: the parent's pid in front. Its comm now against its comm at the shell's report.
+        replaced_parent = parent_comm.and_then(|at_report| {
+            leader_comm(pgid).filter(|now| parent_was_replaced(at_report, now))
+        });
+        if replaced_parent.is_none() {
+            return SubshellTtySample {
+                kind: SubshellTtyKind::Unknown,
+                leader: LeaderKind::Parent,
+                leader_comm: None,
+                canonical,
+                queue_empty: None,
+                reader_blocked: None,
+            };
+        }
     }
-    let Some(comm) = leader_comm(pgid) else {
+    let Some(comm) = replaced_parent.or_else(|| leader_comm(pgid)) else {
         return SubshellTtySample {
             canonical,
             ..SubshellTtySample::unknown()
@@ -873,13 +892,51 @@ pub fn subshell_tty_fact(fd: RawFd, parent_pid: i32) -> SubshellTtySample {
     let queue_empty = matches!(leader, LeaderKind::Shell | LeaderKind::Relay)
         .then(|| slave_input_queue_empty(fd))
         .flatten();
+    // #1935 (owner decision 2026-11-09): the one candidate the blocked-read fact decides, an
+    // editor-less shell on a cooked tty with nothing unread. Read AFTER the queue probe: "empty,
+    // then blocked in read" says the shell took everything that had arrived and came back for
+    // more; the other order would let a line land between the two reads unseen.
+    let reader_blocked = (kind == SubshellTtyKind::Cooked
+        && queue_empty == Some(true)
+        && !leader_has_line_editor(&comm))
+    .then(|| leader_blocked_reading_tty(pgid))
+    .flatten();
     SubshellTtySample {
         kind,
         leader,
         leader_comm: Some(comm),
         canonical,
         queue_empty,
+        reader_blocked,
     }
+}
+
+/// #1935: whether the process `pid` (the foreground group's leader, a shell) is blocked in
+/// `read(2)` on a terminal right now. Linux: the #1796 single-task probe ([`task_tty_read`]: the
+/// line discipline's read in `wchan`, or asleep in the architecture's `read` syscall on an fd whose
+/// `/proc/<pid>/fd` link is a tty; `/proc/<pid>/syscall` is read at most once). `None` when the
+/// kernel will not say (no ptrace access to the leader, an architecture with no known `read`
+/// number) and on every other platform: the judge then keeps the rules it had.
+fn leader_blocked_reading_tty(pid: libc::pid_t) -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        match task_tty_read(&format!("/proc/{pid}")) {
+            ForegroundTtyRead::Reading => Some(true),
+            ForegroundTtyRead::NotReading => Some(false),
+            ForegroundTtyRead::Unknown => None,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// #1937: the comm of `pid`, for the model to remember with the pid a shell reports in its
+/// `InitShell` ([`leader_comm`]; `None` where it cannot be read).
+pub fn process_comm(pid: i32) -> Option<String> {
+    leader_comm(pid as libc::pid_t)
 }
 
 /// The comm of the process `pid` (the foreground group's leader), or `None` when it cannot be

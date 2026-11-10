@@ -21,6 +21,7 @@ fn tty(kind: SubshellTtyKind, leader: LeaderKind, comm: &str) -> SubshellTtySamp
         leader_comm: (!comm.is_empty()).then(|| comm.to_owned()),
         canonical: Some(kind == SubshellTtyKind::Cooked),
         queue_empty: Some(true),
+        reader_blocked: None,
     }
 }
 
@@ -33,6 +34,7 @@ fn sample(tty: SubshellTtySample) -> ReadinessSample {
         tail: Tail::ShellPrompt,
         prompt_moved_since_baseline: true,
         prompt_moved_since_line_end: true,
+        newline_since_line_end: false,
         elapsed: Duration::from_secs(1),
         no_tty_probe: false,
     }
@@ -353,6 +355,125 @@ fn d2_an_idle_editor_less_shell_needs_no_prompt_only_an_empty_queue() {
     assert_eq!(subshell_ready(&s, &no_bytes(), None), Decision::Write(None));
 }
 
+/// #1935, "reader idle" (owner decision 2026-11-09): an editor-less cooked shell the user typed
+/// into since arming, with no prompt to prove anything (an empty PS1), is written to when the OS
+/// says it took every line and is blocked in its read again (Linux: `reader_blocked`), the queue is
+/// empty and the last line end reached the tty (its newline was echoed). Any one fact missing
+/// keeps the old answer; where the fact does not exist (`None`: macOS, no ptrace access) nothing
+/// changes.
+#[test]
+fn reader_idle_an_editor_less_shell_blocked_in_read_is_written_after_the_users_lines() {
+    for comm in ["dash", "sh", "ash", "busybox", "ksh"] {
+        let mut s = cooked(comm);
+        s.tail = Tail::None;
+        s.prompt_moved_since_baseline = false;
+        s.prompt_moved_since_line_end = false;
+        s.newline_since_line_end = true;
+        s.tty.reader_blocked = Some(true);
+        assert_eq!(
+            subshell_ready(&s, &typed(), None),
+            Decision::Write(None),
+            "{comm}: typed into, queue empty, blocked in read, the Enter echoed"
+        );
+        // The old answer for each missing fact.
+        for blocked in [Some(false), None] {
+            let mut t = s.clone();
+            t.tty.reader_blocked = blocked;
+            assert_eq!(
+                subshell_ready(&t, &typed(), None),
+                Decision::Wait(WaitWhy::CookedNoPrompt),
+                "{comm}: reader_blocked {blocked:?} (running a command, or no such fact here)"
+            );
+        }
+        for queue in [Some(false), None] {
+            let mut t = s.clone();
+            t.tty.queue_empty = queue;
+            assert_eq!(
+                subshell_ready(&t, &typed(), None),
+                Decision::Wait(WaitWhy::CookedNoPrompt),
+                "{comm}: queue {queue:?}"
+            );
+        }
+        let mut t = s.clone();
+        t.newline_since_line_end = false;
+        assert_eq!(
+            subshell_ready(&t, &typed(), None),
+            Decision::Wait(WaitWhy::CookedNoPrompt),
+            "{comm}: the line end is not known to have reached the tty"
+        );
+        let mut t = s.clone();
+        t.tty.leader = LeaderKind::Other;
+        assert_eq!(
+            subshell_ready(&t, &typed(), None),
+            Decision::Wait(WaitWhy::CookedNoPrompt),
+            "{comm}: a program in front"
+        );
+        // Bytes with no line end at all (the ledger counts lines): the old rule.
+        let no_line = UserLedger {
+            lines_ended: 0,
+            ..typed()
+        };
+        assert_eq!(
+            subshell_ready(&s, &no_line, None),
+            Decision::Wait(WaitWhy::CookedNoPrompt),
+            "{comm}: typed, never ended"
+        );
+        // The vetoes that run before the rule still win.
+        let mut t = s.clone();
+        t.tail = Tail::InputPrompt;
+        assert_eq!(
+            subshell_ready(&t, &typed(), None),
+            Decision::Wait(WaitWhy::InputPrompt),
+            "{comm}: a question at the tail is the shell's own `read`"
+        );
+        let mut t = s.clone();
+        t.line_dirty = true;
+        assert_eq!(
+            subshell_ready(&t, &typed(), None),
+            Decision::Wait(WaitWhy::LineDirty),
+            "{comm}: typed text sits in the line"
+        );
+        let mut t = s.clone();
+        t.alt_screen = true;
+        assert_eq!(
+            subshell_ready(&t, &typed(), None),
+            Decision::Wait(WaitWhy::AltScreen),
+            "{comm}"
+        );
+    }
+    // A shell with a line editor at a cooked tty is a `read` builtin whatever it is blocked in.
+    for comm in ["bash", "zsh", "fish"] {
+        let mut s = cooked(comm);
+        s.tail = Tail::None;
+        s.newline_since_line_end = true;
+        s.tty.reader_blocked = Some(true);
+        assert_eq!(
+            subshell_ready(&s, &typed(), None),
+            Decision::Wait(WaitWhy::CookedReadBuiltin),
+            "{comm}"
+        );
+    }
+    // The fact adds nothing to a line reader or a relay.
+    let mut s = line_reader("bash");
+    s.tail = Tail::None;
+    s.newline_since_line_end = true;
+    s.tty.reader_blocked = Some(true);
+    assert_eq!(
+        subshell_ready(&s, &typed(), Some(ShellType::Bash)),
+        Decision::Wait(WaitWhy::NoPrompt)
+    );
+    let mut s = relay("sudo");
+    s.tty.canonical = Some(false);
+    s.tail = Tail::None;
+    s.prompt_moved_since_baseline = false;
+    s.newline_since_line_end = true;
+    s.tty.reader_blocked = Some(true);
+    assert_eq!(
+        subshell_ready(&s, &typed(), None),
+        Decision::Wait(WaitWhy::RelayNoPrompt)
+    );
+}
+
 /// Rows 7 and 8 + owner Q8: behind a cooked prompt or a relay, user bytes are consumed only when
 /// the queue is empty AND a prompt was drawn since the last line end; either alone is not enough.
 #[test]
@@ -626,6 +747,7 @@ fn every_sample() -> Vec<ReadinessSample> {
                                                         .then(|| comm.to_owned()),
                                                     canonical,
                                                     queue_empty,
+                                                    reader_blocked: None,
                                                 },
                                                 block_unchanged,
                                                 alt_screen,
@@ -633,6 +755,7 @@ fn every_sample() -> Vec<ReadinessSample> {
                                                 tail,
                                                 prompt_moved_since_baseline: moved,
                                                 prompt_moved_since_line_end: moved_since_end,
+                                                newline_since_line_end: false,
                                                 elapsed,
                                                 no_tty_probe: false,
                                             });
@@ -997,10 +1120,64 @@ fn r8_held_keys_go_to_the_editor_except_a_proven_unsupported_prompt() {
 /// R9: the flush happens only with the setup bytes provably unread.
 #[test]
 fn r9_a_cancel_flushes_only_provably_unread_setup_bytes() {
-    assert!(cancel_flushes_unread_setup(Some(false), false));
-    assert!(!cancel_flushes_unread_setup(Some(false), true));
-    assert!(!cancel_flushes_unread_setup(Some(true), false));
-    assert!(!cancel_flushes_unread_setup(None, false));
+    // The rows this test had, for every cancel that may flush (the signature gained the cancel's
+    // kind and the user's bytes, #1940; the expectations are the same).
+    for why in [
+        WrittenCancel::Question,
+        WrittenCancel::Net,
+        WrittenCancel::Gone,
+        WrittenCancel::Unsupported,
+    ] {
+        assert!(
+            cancel_flushes_unread_setup(why, Some(false), false, 0),
+            "{why:?}"
+        );
+        assert!(
+            !cancel_flushes_unread_setup(why, Some(false), true, 0),
+            "{why:?}"
+        );
+        assert!(
+            !cancel_flushes_unread_setup(why, Some(true), false, 0),
+            "{why:?}"
+        );
+        assert!(!cancel_flushes_unread_setup(why, None, false, 0), "{why:?}");
+    }
+}
+
+/// #1940 (review r8 D9): the flush never rests on the echo filter alone. Whatever the filter saw
+/// (`echo_started` false is also what a MISSED echo looks like) and whatever the queue holds, a
+/// Secret cancel never flushes (the unread bytes may be what the user types for the secret), and
+/// no cancel flushes once a user byte went to the pty since the setup's first line.
+#[test]
+fn d9_a_secret_cancel_or_user_bytes_since_the_write_never_flush() {
+    for queue in [Some(false), Some(true), None] {
+        for echo_started in [false, true] {
+            for user_bytes in [0, 1, 40] {
+                assert!(
+                    !cancel_flushes_unread_setup(
+                        WrittenCancel::Secret,
+                        queue,
+                        echo_started,
+                        user_bytes
+                    ),
+                    "Secret: queue {queue:?} echo {echo_started} bytes {user_bytes}"
+                );
+            }
+            for why in [
+                WrittenCancel::Question,
+                WrittenCancel::Net,
+                WrittenCancel::Gone,
+                WrittenCancel::Unsupported,
+            ] {
+                for user_bytes in [1, 40] {
+                    assert!(
+                        !cancel_flushes_unread_setup(why, queue, echo_started, user_bytes),
+                        "{why:?}: queue {queue:?} echo {echo_started} bytes {user_bytes}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// #1886: with no tty probe (ConPTY) the screen facts decide: a shell prompt drawn since the

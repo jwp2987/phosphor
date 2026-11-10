@@ -6,7 +6,8 @@
 //!
 //! The principle: a setup line is written only on a sample that proves WHO reads it (the shell's
 //! own line editor AT A PROMPT IT DREW, #1934; an editor-less shell that is the tty's idle reader,
-//! review r8 D2; the first new prompt behind a relay) and that NOTHING the user passed through is
+//! review r8 D2, also after the user typed into it when the OS shows it blocked in its read again,
+//! #1935; the first new prompt behind a relay) and that NOTHING the user passed through is
 //! still unread (R1: the slave input queue is empty) or about to be RUN by the shell (review r8 D4:
 //! a line typed ahead of the line editor).
 //! An Enter never writes. A secret read, a question, a changed block, the user driving the shell
@@ -52,6 +53,11 @@ pub struct ReadinessSample {
     /// A prompt drawn since the user's last line end (R1: required before any write that follows
     /// user bytes through a cooked shell or a relay; the line editor's own proof is the queue).
     pub prompt_moved_since_line_end: bool,
+    /// #1935 (reader idle): the cursor's row is BELOW the row it was on at the user's last line
+    /// end, and no typed byte waits for a line end. A cooked tty echoes the Enter's newline when
+    /// the Enter ARRIVES, so this says the user's last line reached the tty (it is not still on
+    /// its way through the app's writer, where the queue probe cannot see it).
+    pub newline_since_line_end: bool,
     /// Since the arming (a banner click resets it).
     pub elapsed: Duration,
     /// #1886: this pty has no subshell tty probe at all (ConPTY: no termios, no `/proc`), so
@@ -303,6 +309,10 @@ pub fn subshell_ready(
                 // An editor-less shell has no script of its own: the probe names it, and its
                 // `InitSubshell` ends the setup as unsupported (#1710) or starts stage 2.
                 Decision::Write(None)
+            } else if reader_idle_after_the_users_lines(sample, user) {
+                // #1935 (owner decision 2026-11-09): the user typed into it, and the OS says it
+                // took every line and sits in its read again. No prompt is asked for.
+                Decision::Write(None)
             } else if !new_prompt {
                 Decision::Wait(WaitWhy::CookedNoPrompt)
             } else if user.bytes_since_arm > 0 && consumed_behind_prompt(sample, user) {
@@ -342,12 +352,40 @@ fn consumed_by_line_editor(sample: &ReadinessSample, user: &UserLedger) -> bool 
 /// passed through (R1 holds trivially). An input prompt at the tail was vetoed before this runs
 /// (the shell's own `read`; D7: termios cannot tell dash's prompt from dash's `read`, accepted as
 /// what a plain terminal does). Where the queue cannot be probed the old proof stands: a new
-/// prompt.
+/// prompt. With bytes typed since arming, see [`reader_idle_after_the_users_lines`].
 fn idle_reader_untouched(sample: &ReadinessSample, user: &UserLedger, new_prompt: bool) -> bool {
     user.bytes_since_arm == 0
         && sample.tty.leader == LeaderKind::Shell
         && (sample.tty.queue_empty == Some(true)
             || (sample.tty.queue_empty.is_none() && new_prompt))
+}
+
+/// "Reader idle" (owner decision 2026-11-09, #1935): an editor-less shell the user DID type into
+/// since arming (the case [`idle_reader_untouched`] gives up: with an empty PS1 no prompt ever
+/// proves the lines were run) is written to when the OS itself says the shell took them and came
+/// back for more. All of:
+/// - the shell is the foreground leader and the queue is empty (nothing that arrived is unread);
+/// - the shell is blocked in `read(2)` on a tty (`reader_blocked`, sampled after the queue: Linux
+///   only, so every other platform keeps the old rule and its accepted loss);
+/// - the user's last line end reached the tty (`newline_since_line_end`: its echo moved the
+///   cursor down a row, and no typed byte waits for an Enter; a canonical tty does not count a
+///   partial line in its queue, and bytes still in the app's writer are in no queue at all).
+///
+/// A command the shell runs for a typed line is not "blocked in read": the shell waits for its
+/// child (or the child is the foreground leader), so the write cannot land in the user's program.
+/// What it cannot tell is the shell's own `read` builtin from its prompt read (review r8 D7,
+/// accepted: a question at the tail was vetoed before this runs). The fact is sampled at looks
+/// only, never on a timer: after a line that prints nothing, an empty-PS1 shell gives no event, and
+/// the write comes at the first look that finds the reader idle. Remaining window, as for every
+/// queue proof (R1): a second line ended after the first one's echo and still in the app's writer
+/// at the look.
+fn reader_idle_after_the_users_lines(sample: &ReadinessSample, user: &UserLedger) -> bool {
+    user.bytes_since_arm > 0
+        && user.lines_ended > 0
+        && sample.tty.leader == LeaderKind::Shell
+        && sample.tty.queue_empty == Some(true)
+        && sample.tty.reader_blocked == Some(true)
+        && sample.newline_since_line_end
 }
 
 /// R1 for a cooked shell or a relay (owner Q8: "line ended + new prompt" counts only ALONGSIDE the
@@ -715,10 +753,33 @@ pub fn held_keys_destination(
     }
 }
 
-/// R9: whether a cancel flushes the slave input queue: only when the setup bytes PROVABLY sit
-/// unread (the queue holds bytes and the tty echoed nothing of our line).
-pub fn cancel_flushes_unread_setup(queue_empty: Option<bool>, echo_started: bool) -> bool {
-    queue_empty == Some(false) && !echo_started
+/// R9: whether a cancel flushes the slave input queue: only when what sits unread is PROVABLY the
+/// setup's own bytes and nothing of them was taken (the queue holds bytes and the tty echoed
+/// nothing of our line).
+///
+/// #1940 (review r8 D9): "echoed nothing" is the echo filter's word, and the filter can miss (a
+/// tty with `-echoctl` / `-echoke` or another kill character echoes the ` ^K ^U` prefix in another
+/// form than the captured one; a line editor redraws it its own way), so `echo_started == false`
+/// alone proves nothing about WHOSE bytes wait. Two facts that do not depend on it decide first:
+/// - a Secret cancel never flushes. A secret read is canonical with echo off: nothing is echoed
+///   whoever typed it, and what waits in the tty there may be what the user types for the secret.
+///   No setup byte is worth a password byte.
+/// - a cancel never flushes once a user byte went to the pty since the setup's first line
+///   (`user_bytes_since_write`: the held keys are not counted, they never left the queue): the
+///   unread bytes may be the user's.
+///
+/// The echo stays a veto when it DID match (the shell is taking our line: cutting the rest would
+/// leave it half a line).
+pub fn cancel_flushes_unread_setup(
+    why: WrittenCancel,
+    queue_empty: Option<bool>,
+    echo_started: bool,
+    user_bytes_since_write: usize,
+) -> bool {
+    why != WrittenCancel::Secret
+        && user_bytes_since_write == 0
+        && queue_empty == Some(false)
+        && !echo_started
 }
 
 #[cfg(test)]

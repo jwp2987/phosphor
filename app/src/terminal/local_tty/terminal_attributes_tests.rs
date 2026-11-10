@@ -237,7 +237,7 @@ fn the_slave_input_queue_proof_and_the_flush_read_a_real_pty() {
     };
     assert_eq!(slave_input_queue_empty(master), Some(true), "fresh pty");
     // The pty's foreground group is nobody's: no leader, the parent's pid is irrelevant.
-    let sample = subshell_tty_fact(master, std::process::id() as i32);
+    let sample = subshell_tty_fact(master, std::process::id() as i32, None);
     assert_eq!(sample.kind, SubshellTtyKind::Unknown, "{sample:?}");
     assert_ne!(sample.leader, LeaderKind::Shell, "{sample:?}");
     // SAFETY: a write of one byte from a valid buffer to an fd this test owns.
@@ -274,4 +274,84 @@ fn the_slave_input_queue_proof_and_the_flush_read_a_real_pty() {
         libc::close(slave);
         libc::close(master);
     }
+}
+
+/// #1937 (review r8 D6) on a real pty: a process that is the pty's foreground group leader AND
+/// the "parent" pid of the sample (what `exec zsh` in the parent shell leaves: the parent's pid,
+/// another program). With the comm the pid had at the shell's report differing from its comm now,
+/// the leader is classified by its comm (`sleep`: another program) instead of reading as the
+/// parent; with the same comm, or none recorded, it is the parent as before.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_parent_pid_under_another_comm_is_classified_by_its_comm_on_a_real_pty() {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    use super::{process_comm, subshell_tty_fact};
+    use crate::terminal::model::subshell_tty::{LeaderKind, SubshellTtyKind};
+    // SAFETY: a fresh pty pair; the slave is handed to the child's stdin below, the master is
+    // closed at the end.
+    let (master, slave) = unsafe {
+        let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        assert!(master >= 0, "posix_openpt");
+        assert_eq!(libc::grantpt(master), 0);
+        assert_eq!(libc::unlockpt(master), 0);
+        let mut name = [0 as libc::c_char; 64];
+        assert_eq!(libc::ptsname_r(master, name.as_mut_ptr(), name.len()), 0);
+        let slave = libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
+        assert!(slave >= 0, "open slave");
+        (master, slave)
+    };
+    let mut command = Command::new("sleep");
+    command
+        .arg("30")
+        // SAFETY: `slave` is an open fd this test owns; the `Stdio` takes it over.
+        .stdin(unsafe { Stdio::from_raw_fd(slave) })
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: between fork and exec only `setsid` and `ioctl` run (async-signal-safe): the child
+    // becomes a session leader with the pty (its stdin) as controlling terminal, so it is the
+    // pty's foreground group leader.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().expect("spawn sleep on the pty");
+    let pid = child.id() as i32;
+    // The exec has happened once the comm is the program's.
+    let mut waited = 0;
+    while process_comm(pid).as_deref() != Some("sleep") && waited < 400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        waited += 1;
+    }
+    assert_eq!(process_comm(pid).as_deref(), Some("sleep"), "exec'd");
+
+    let replaced = subshell_tty_fact(master, pid, Some("bash"));
+    let same = subshell_tty_fact(master, pid, Some("sleep"));
+    let unrecorded = subshell_tty_fact(master, pid, None);
+    let _ = child.kill();
+    let _ = child.wait();
+    // SAFETY: an fd this test opened.
+    unsafe {
+        libc::close(master);
+    }
+
+    assert_eq!(replaced.leader, LeaderKind::Other, "{replaced:?}");
+    assert_eq!(
+        replaced.leader_comm.as_deref(),
+        Some("sleep"),
+        "{replaced:?}"
+    );
+    assert_eq!(replaced.kind, SubshellTtyKind::Unknown, "{replaced:?}");
+    assert_eq!(same.leader, LeaderKind::Parent, "{same:?}");
+    assert_eq!(same.leader_comm, None, "{same:?}");
+    assert_eq!(unrecorded.leader, LeaderKind::Parent, "{unrecorded:?}");
 }
