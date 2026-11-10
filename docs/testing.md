@@ -5188,3 +5188,45 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
   positive of the check: read the scenario before changing an allowance. No appci case was added: the fake model cannot make the app
   lose a call, a batch or a card, which is what the heal is for.
 - **Kill switch.** `PHOSPHOR_AGENT_TURN_SELF_HEAL=0`: faults are logged (`healed=0`), nothing is healed.
+## Round 14: the reader marker, an echoing question of a precmd function (design `docs/design/r14-readmark.md`; #2052; nothing compiled, no app run when written)
+
+- **#2052: the reader marker, bash and zsh (fish not in this cut).** A precmd function's
+  echoing `read -p "continue? "` after the prompt's Precmd: the bootstraps announce the read (`TtyReaderAsks`, OSC 9278 `f` form) and
+  the hand-off treats it as the third source of the one reader fact (`prompt_reader_asks`; #2050 the tty, #2038 the screen). ONE kill
+  switch, both sides: `PHOSPHOR_READER_MARKER=0` (the shell defines nothing and sends nothing; the app ignores a marker that arrives).
+  Worked, unproven: nothing was compiled, no app run yet.
+  - **Shell, `script/test_reader_marker`** (table above). Run here on bash 5.3.9 and zsh 5.9: all pass. Not run on bash 3.2.
+    The existing bootstrap scripts were run against the changed files and pass: `test_init_shell_escaping` (330/330),
+    `test_hijack_bootstrap`, `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options`, `test_hook_forks`, `test_child_ps1`,
+    `test_line_editor_markers --only bash|zsh`.
+  - **Parser, `model/ansi/mod_test.rs`:** `parse_osc_tty_reader_asks_carries_session_and_sequence_number` (the bootstraps' exact
+    bytes, the hex DCS form, an unregistered session dropped).
+  - **Model, `model/terminal_model_test.rs`:** `a_tty_reader_marker_notes_the_reader_in_the_handoff_in_stream_order`.
+  - **Hand-off, `model/typeahead_handoff_tests.rs`:** `a_precmd_reads_marker_takes_input_back_from_the_editor_and_gets_every_key` (the
+    control is the first assertion: the tty look of #2050 notes nothing for an echoing read),
+    `the_readers_marker_needs_no_tty_sample`, `the_readers_marker_is_honoured_only_for_the_prompt_the_app_is_at` (older / newer seq,
+    another session, no session, no seq, after the line editor's marker, while a command runs, before any Precmd, the kill switch),
+    `the_reader_markers_kill_switch_is_off_only_for_zero`, `a_readers_marker_parsed_before_the_precmd_commits_keeps_input_with_the_pty`,
+    `a_marker_reader_ends_on_events_and_its_unread_keys_are_the_shells_line`, `a_readers_marker_ends_keys_following_the_editors_text`,
+    `on_conpty_the_readers_marker_sends_the_first_key_to_the_reader_without_a_hold` (and with keys already held the marker changes
+    nothing: the hold's cap decides from the screen, as before).
+  - **View, `terminal/view_test.rs`:** `a_precmd_reads_marker_takes_the_keys_from_the_focused_editor` (Legacy and Table; control arm =
+    no marker: the keys are the editor's and nothing is written), `a_precmd_reads_marker_is_found_at_the_wakeup_of_its_question`.
+  - **Fuzz, `fuzz/fuzz_targets/typeahead_handoff.rs`:** event 28 is the marker followed by the view's look (the event range grew by
+    one, so the bytes of an old corpus entry that chose event 28, the probe installation, now choose the marker).
+  - **appci, new case `precmd_question_echo`** (`appci/cases_precmd_secret.py`, `cases.PROVING`, both session modes; Windows: Git Bash
+    pane). A function registered by one sourced line asks ONCE at a later prompt (trigger file) with echo on; the answer is typed at
+    10-25 ms per key with its Enter. Judged per arm: the question is on screen before a key (OCR, both modes), the answer file holds
+    the answer whole, no `hop=enter_begin` shows the answer in the editor (`input_type=AI` there = sent to the model), no command the
+    shell received holds it, the next typed line runs. Recorded, not judged: `echo_noted_by_marker_<arm>` (the log has
+    `hop=prompt_reader_asks by=shell_marker`; when it does not, the note names the `hop=tty_reader_marker_ignored why=..` values or
+    says no marker was seen). Arm `own`: the pane's own shell, no relaunch (Linux bash, macOS zsh, Git Bash). Arm `bash`: only where
+    the pane is not bash and the platform is not Windows (macOS): one relaunch with `session.startup_shell_override = "bash"` (the
+    system bash 3.2) and one to put the profile back. An arm whose shell is not what it wants is UNVERIFIABLE. Self-test
+    `precmd_question_echo_pure_parts`.
+  - **Why the case asks at a LATER prompt.** bash-preexec and zsh iterate a copy of `precmd_functions`, so a function appended after
+    the bootstrap runs after `warp_update_prompt_vars` at the first prompt after its registration, outside the stage the marker
+    covers. A case that asked at that very prompt would test the known limit, not the fix.
+  - **Hops to read.** `prompt_reader_asks by=shell_marker took_from_editor=true`, `marker_reader_takes_input site=output|key`,
+    `hand_route reason=prompt_reader` per key, `prompt_reader_end why=line_editor_signal`; in agent mode
+    `reader_question_in_conversation site=output shown=true` then `shown=false`.

@@ -342,6 +342,25 @@ pub fn secret_reader_env_enabled() -> bool {
     std::env::var(SECRET_READER_ENV).map_or(true, |value| value.trim() != "0")
 }
 
+/// The ONE kill switch of the reader marker (#2052), read on both sides. In the shell's
+/// environment (inherited from the app) `0` makes the bash and zsh integrations leave `read`
+/// alone: no wrapper is defined during the precmd stage and no `TtyReaderAsks` marker is sent. In
+/// the app's environment `0` makes the hand-off ignore a marker that still arrives (a remote
+/// shell whose environment the app does not set): the answer to an echoing question a precmd
+/// function asks then goes to the input editor, as before.
+pub const READER_MARKER_ENV: &str = "PHOSPHOR_READER_MARKER";
+
+/// Whether the reader marker is honoured: it is, unless the kill switch says `0`.
+pub fn reader_marker_env_enabled() -> bool {
+    reader_marker_enabled_from(std::env::var(READER_MARKER_ENV).ok().as_deref())
+}
+
+/// [`reader_marker_env_enabled`] for a given value of the variable: only `0` turns it off, the
+/// same test the bootstraps make (`${PHOSPHOR_READER_MARKER:-1} != 0`).
+pub fn reader_marker_enabled_from(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
 /// Environment variable that, set to `0`, keeps the question of a reader ahead of the line editor
 /// out of an agent conversation (#2053): the background block that holds it stays hidden there,
 /// as before. The keys still go to the reader (#2038 / #2050).
@@ -867,6 +886,16 @@ pub struct TypeaheadHandoff {
     /// shell's line or as an Enter a prompt must answer. Ended by events only: the line editor's
     /// signal, a Preexec, the next Precmd, a new session ([`Self::end_prompt_reader`]).
     prompt_reader_asks: bool,
+    /// #2052: the reader of this prompt was announced by the shell itself (the `TtyReaderAsks`
+    /// marker a precmd function's `read` sends, [`Self::on_tty_reader_asks`]). Such a reader has
+    /// the pane's keys whatever view has focus, also where the tty is not sampled
+    /// ([`Self::secret_reader_has_the_keys`]). Cleared with the reader.
+    prompt_reader_by_marker: bool,
+    /// #2052: the marker noted a reader on the model thread and the view has not looked since
+    /// ([`Self::take_marker_reader_news`]); `Some(took_from_editor)`. Cleared with the reader.
+    marker_reader_news: Option<bool>,
+    /// #2052: the kill switch [`READER_MARKER_ENV`] says `0` (the default, `false`, is "on").
+    reader_marker_off: bool,
     /// #2038: keys written while [`Self::prompt_reader_asks`] since the last Enter / line kill
     /// among them. The reader may not have taken them (it ended first, or the question was not
     /// one), and then they are in the tty for the shell's line editor: when the reader ends they
@@ -1837,16 +1866,31 @@ impl TypeaheadHandoff {
     /// its own events decide), and the editor or the pty owns input outright (not a request in
     /// flight, not an Enter deferred for a report).
     pub fn secret_reader_look_due(&self) -> bool {
-        !self.prompt_reader_asks
-            && !self.prompt_hold_queued
-            && !self.young_hold_queued
-            && self.deferred_gate.is_none()
-            && self.shell_activity == ShellActivity::Prompt
-            && self.foreground_probe.samples_secret_read()
-            && matches!(
-                self.state,
-                HandoffState::EditorOwned | HandoffState::PtyOwned { .. }
-            )
+        self.foreground_probe.samples_secret_read() && self.reader_ahead_may_be_noted().is_ok()
+    }
+
+    /// The state in which a reader ahead of the shell's line editor may be noted with the pty
+    /// taking input (#2050 from the tty, #2052 from the shell's marker): a Precmd was parsed and
+    /// neither the line editor's marker nor a Preexec since, no reader is noted yet, no hold is
+    /// queued (its keys were typed first and its own events decide) and the editor or the pty
+    /// owns input outright. `Err` names what is in the way (for the log). No clock, no sample.
+    fn reader_ahead_may_be_noted(&self) -> Result<(), &'static str> {
+        if self.prompt_reader_asks {
+            Err("reader_noted")
+        } else if self.prompt_hold_queued || self.young_hold_queued {
+            Err("hold_queued")
+        } else if self.deferred_gate.is_some() {
+            Err("enter_deferred")
+        } else if self.shell_activity != ShellActivity::Prompt {
+            Err("not_at_prompt")
+        } else if !matches!(
+            self.state,
+            HandoffState::EditorOwned | HandoffState::PtyOwned { .. }
+        ) {
+            Err("request_in_flight")
+        } else {
+            Ok(())
+        }
     }
 
     /// #2050 (main thread, at a key about to be routed or at pty output): between a prompt's
@@ -1866,6 +1910,14 @@ impl TypeaheadHandoff {
         if !self.secret_reader_look_due() || !self.foreground_probe.reads_secret() {
             return None;
         }
+        Some(self.take_input_for_reader_ahead("tty_secret"))
+    }
+
+    /// The transition of #2050 and #2052: the pty takes input (back from the editor when it had
+    /// it) and the reader of #2038 is noted. The caller has checked
+    /// [`Self::reader_ahead_may_be_noted`]. `by` names the source in the log. Returns whether the
+    /// editor owned input.
+    fn take_input_for_reader_ahead(&mut self, by: &'static str) -> bool {
         let took_from_editor = self.state == HandoffState::EditorOwned;
         if took_from_editor {
             // The prompt's line is answered and nothing the user typed is in the shell's line:
@@ -1879,22 +1931,81 @@ impl TypeaheadHandoff {
             self.editor_took_over_at = None;
         }
         // Text the editor holds stays there; the keys do not follow it into the editor (#1658)
-        // while a secret is read.
+        // while something else reads the tty.
         self.end_keys_follow_editor("secret_reader");
         self.prompt_reader_asks = true;
         self.prompt_reader_line_dirty = false;
         warpui::input_order::log_hop("prompt_reader_asks", || {
-            format!("by=tty_secret took_from_editor={took_from_editor}")
+            format!("by={by} took_from_editor={took_from_editor}")
         });
-        Some(took_from_editor)
+        took_from_editor
+    }
+
+    /// Sets the reader marker's kill switch (#2052, [`READER_MARKER_ENV`]).
+    pub fn set_reader_marker_enabled(&mut self, enabled: bool) {
+        self.reader_marker_off = !enabled;
+    }
+
+    /// #2052 (model thread, in stream order): the shell said a `read` of a precmd function is
+    /// about to read the terminal (the `TtyReaderAsks` marker, sent by the function that stands
+    /// in for `read` between the app's own first and last precmd functions; fd 0 was a tty). An
+    /// echoing read leaves the tty canonical with echo on, the state of a shell between its
+    /// Precmd and its line editor, so no sample tells the two apart (#2050 sees only a read that
+    /// turns echo off): the shell's own word is the third source of the one reader fact.
+    ///
+    /// Honoured only for the prompt the app is at: the marker's session and `seq` are the last
+    /// Precmd's, and neither the line editor's marker nor a Preexec was parsed since
+    /// ([`Self::reader_ahead_may_be_noted`]). A marker of an older prompt, one printed by a
+    /// program while a command runs, or one from a bootstrap without sequence numbers changes
+    /// nothing. From there the path is the one of #2038 / #2050, unchanged: the pty takes input,
+    /// every key is the reader's ([`Self::route_prompt_reader_bytes`]), and the reader ends on
+    /// events only ([`Self::end_prompt_reader`]). Returns whether a reader was noted here.
+    pub fn on_tty_reader_asks(&mut self, session: Option<u64>, seq: Option<u64>) -> bool {
+        let refused = if self.reader_marker_off {
+            Err("switched_off")
+        } else if !matches!(
+            (seq, self.prompt_seq),
+            (Some(seq), Some(prompt)) if prompt.session == session && prompt.seq == seq
+        ) {
+            Err("not_this_prompt")
+        } else {
+            self.reader_ahead_may_be_noted()
+        };
+        if let Err(why) = refused {
+            if why == "reader_noted" {
+                // A second `read` of the same stage, or a `read -s` the tty look saw first: the
+                // reader is the shell's own from here.
+                self.prompt_reader_by_marker = true;
+            }
+            warpui::input_order::log_hop("tty_reader_marker_ignored", || format!("why={why}"));
+            return false;
+        }
+        let took_from_editor = self.take_input_for_reader_ahead("shell_marker");
+        self.prompt_reader_by_marker = true;
+        self.marker_reader_news = Some(took_from_editor);
+        true
+    }
+
+    /// #2052: whether the marker noted a reader the view has not looked at yet. One read.
+    pub fn marker_reader_news_pending(&self) -> bool {
+        self.marker_reader_news.is_some()
+    }
+
+    /// #2052 (main thread): the view looks at a reader the marker noted on the model thread, once
+    /// per reader: `Some(took_from_editor)`; the view then ends a line pinned to the editor and
+    /// moves focus to the terminal, as it does where it notes a secret reader itself.
+    pub fn take_marker_reader_news(&mut self) -> Option<bool> {
+        self.marker_reader_news.take()
     }
 
     /// #2050: whether the keys of the pane are a secret reader's whatever view has focus: a
     /// reader is noted, the pty owns input and the platform samples the tty. (On ConPTY the
     /// reader of #2038 is noted while the terminal already has focus; nothing is installed
-    /// there and this is `false`.)
+    /// there and this is `false`.) #2052: so are the keys of a reader the shell announced with
+    /// its marker, on every platform, secret or not.
     pub fn secret_reader_has_the_keys(&self) -> bool {
-        self.routes_to_prompt_reader() && self.foreground_probe.samples_secret_read()
+        self.routes_to_prompt_reader()
+            && (self.foreground_probe.samples_secret_read() || self.prompt_reader_by_marker)
     }
 
     /// #2038: an event says the reader of [`Self::note_prompt_reader_asks`] is over (the line
@@ -1902,6 +2013,8 @@ impl TypeaheadHandoff {
     /// be unread in the tty, where the shell's line editor takes them: they count as the shell's
     /// line from here, so the request decision asks for them instead of leaving them behind.
     fn end_prompt_reader(&mut self, why: &'static str) {
+        self.prompt_reader_by_marker = false;
+        self.marker_reader_news = None;
         if !mem::take(&mut self.prompt_reader_asks) {
             return;
         }
@@ -2241,6 +2354,8 @@ impl TypeaheadHandoff {
         self.tty_read_marker = None;
         // #2038: the reader, and the keys written to it, were the old session's.
         self.prompt_reader_asks = false;
+        self.prompt_reader_by_marker = false;
+        self.marker_reader_news = None;
         self.prompt_reader_line_dirty = false;
         self.line_editor_markers_live = false;
         self.last_parsed_hook = None;
@@ -4645,6 +4760,8 @@ impl TypeaheadHandoff {
             young_hold_ends: mem::take(&mut self.young_hold_ends),
             // #1793: the controller keeps counting into the same cell.
             pty_writes: self.pty_writes.clone(),
+            // #2052: the kill switch is the pane's, not the session's.
+            reader_marker_off: self.reader_marker_off,
             ..Self::default()
         };
     }

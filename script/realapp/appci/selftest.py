@@ -6918,6 +6918,59 @@ def precmd_secret_honor_ps1_pure_parts():
 
 
 @check
+def precmd_question_echo_pure_parts():
+    """#2052 (cases_precmd_secret.py, docs/design/r14-readmark.md): the echoing question of a precmd function. The sourced function in bash and zsh spelling,
+    the shell probe, the arms, the marker reader, and the wiring: both session modes, PROVING only, Git Bash pane on Windows, the names the app and the
+    bootstraps really use."""
+    import cases_precmd_secret as PS
+    n = PS.echo_names("own")
+    assert len(set(n.values())) == len(n) and all("own" in v for v in n.values())
+    assert not set(n.values()) & set(PS.names("own").values()), "the two cases of the module never share a file"
+    assert PS.echo_read_line("bash") == 'read -p "continue? " x' and PS.echo_read_line("zsh") == 'read "x?continue? "', "zsh's -p is the coprocess, its prompt is name?prompt"
+    for shell in ("bash", "zsh"):
+        sc = PS.echo_install_script(n, shell)
+        rd = PS.echo_read_line(shell)
+        assert rd in sc and "-s" not in sc, "the read ECHOES: a `read -s` is #2050's case, not this one"
+        assert "precmd_functions+=(__qe_ask)" in sc and sc.endswith("echo installed > qe_own_inst.txt\n")
+        assert sc.index("echo asked > qe_own_asked.txt") < sc.index(rd) < sc.index('echo "$x" > qe_own_ans.txt'), "asked is recorded BEFORE the read, the answer after"
+        assert sc.index("rm -f qe_own_go.txt") < sc.index(rd), "the function asks once"
+    # nothing the case TYPES may contain the word the screen check looks for
+    typed = [PS.shell_probe_line(n["mode"]), "source ./%s 2> %s" % (n["script"], n["err"]), "touch " + n["go"]]
+    assert PS.ECHO_QUESTION_WORD in PS.ECHO_QUESTION and not [t for t in typed if PS.ECHO_QUESTION_WORD in t]
+    assert PS.shell_probe_line("m.txt") == 'echo "sh=${BASH_VERSION:+bash}${ZSH_VERSION:+zsh}" > m.txt'
+    assert PS.parse_shell_probe(["sh=bash"]) == "bash" and PS.parse_shell_probe(["sh=zsh"]) == "zsh" and PS.parse_shell_probe(["sh="]) == ""
+    assert PS.parse_shell_probe([]) is None and PS.parse_shell_probe(["junk"]) is None and PS.parse_shell_probe(["sh=zsh", "sh=bash"]) == "bash", "the newest line wins"
+    assert PS.echo_question_in("touch qe_own_go.txt\nContinue?\n") and not PS.echo_question_in("touch qe_own_go.txt\n") and not PS.echo_question_in(None)
+    # the arms: the pane's own shell; where that is not bash and the platform is not Windows (macOS: zsh), also the system bash by relaunch
+    assert PS.echo_arms(False, "bash") == [("own", "bash", False)] and PS.echo_arms(True, "bash") == [("own", "bash", False)]
+    assert PS.echo_arms(False, "zsh") == [("own", "zsh", False), ("bash", "bash", True)]
+    # how the reader was noted, from the app's hops
+    assert PS.marker_noted("x input_order hop=prompt_reader_asks by=shell_marker took_from_editor=true t=1\n") is True
+    assert PS.marker_noted("x input_order hop=prompt_reader_asks by=tty_secret took_from_editor=true t=1\n") is None and PS.marker_noted("") is None and PS.marker_noted(None) is None
+    assert PS.marker_noted("x input_order hop=tty_reader_marker_ignored why=not_this_prompt t=1\ny input_order hop=tty_reader_marker_ignored why=hold_queued t=2\n") == ["not_this_prompt", "hold_queued"]
+    # wiring
+    c = [x for x in cases.CASES if x["name"] == "precmd_question_echo"]
+    assert len(c) == 1 and set(c[0]["modes"]) == {"terminal", "agent"} and c[0]["gui"], "both session modes (owner: one mode = not tested)"
+    assert "precmd_question_echo" in cases.PROVING and "precmd_question_echo" not in cases.SMOKE and "precmd_question_echo" not in cases.PROVING_FAKE
+    assert winmap.skip_reason("precmd_question_echo", "gitbash") is None and "Git Bash" in winmap.skip_reason("precmd_question_echo", "powershell")
+    assert cases.wants_depth_check("precmd_question_echo", cases.PROVING)
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    src = lambda p: open(os.path.join(root, p), encoding="utf-8").read()
+    handoff = src("app/src/terminal/model/typeahead_handoff.rs")
+    assert 'take_input_for_reader_ahead("shell_marker")' in handoff and 'format!("by={by} took_from_editor={took_from_editor}")' in handoff, "the hop the case reads"
+    assert 'log_hop("tty_reader_marker_ignored"' in handoff and 'pub const READER_MARKER_ENV: &str = "PHOSPHOR_READER_MARKER";' in handoff
+    assert "TtyReaderAsks {" in src("app/src/terminal/model/ansi/dcs_hooks.rs")
+    for boot in ("bash_body.sh", "zsh_body.sh"):
+        b = src("app/assets/bundled/bootstrap/" + boot)
+        assert '{"hook": "TtyReaderAsks", "value": {"session_id": %s, "seq": %s}}' in b and "${PHOSPHOR_READER_MARKER:-1} != 0" in b, boot
+        assert "__warp_reader_stage_open\n" in b and "__warp_reader_stage_close\n" in b and "__warp_read_is_of_fd0" in b, boot + ": the stage is opened and closed"
+    fish = src("app/assets/bundled/bootstrap/fish.sh")
+    assert "TtyReaderAsks" not in fish, "fish is not in the first cut (owner decision 2026-11-10)"
+    doc = src("docs/testing.md")
+    assert "precmd_question_echo" in doc and "r14-readmark.md" in doc and "test_reader_marker" in doc
+
+
+@check
 def appci_programs_find_their_siblings():
     """#2043: the Windows test machine's Python is the embeddable layout (python312._pth): the folder of the script being run is NOT on sys.path.
     fakesshd_win.py got `import ptyhost` without putting its own folder there, raised ModuleNotFoundError at start, and every Windows ssh case

@@ -4767,6 +4767,340 @@ fn a_secret_read_ends_keys_following_the_editors_text() {
     assert_eq!(handoff.on_user_bytes(b"p"), UserBytesRoute::WriteCounted);
 }
 
+// ---- #2052: the shell's marker for a precmd function's `read` (the third reader source) --------
+
+/// #2052, the gap and its fix. A precmd function's `read -p "continue? " x` after the Precmd gave
+/// input to the editor: the tty stays canonical with echo on, so the tty look of #2050 notes
+/// nothing (the control: the answer would be typed into the editor). The shell's `TtyReaderAsks`
+/// marker for this prompt takes input back for the pty and notes the reader; the answer and its
+/// Enter go to the `read` at once, in typed order: not the shell's line, no young Enter, no line a
+/// prompt must answer. The editor does not take input while the reader has the tty; the line
+/// editor's signal for the same prompt hands it back with nothing requested.
+#[test]
+fn a_precmd_reads_marker_takes_input_back_from_the_editor_and_gets_every_key() {
+    let secret = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut handoff = sampled_prompt_the_editor_owns(&secret);
+    assert_eq!(
+        handoff.take_input_for_secret_reader(),
+        None,
+        "an echoing read: the tty says nothing, the editor keeps input (the #2052 gap)"
+    );
+    assert!(!handoff.marker_reader_news_pending());
+
+    assert!(handoff.on_tty_reader_asks(Some(7), Some(2)));
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::PtyOwned {
+            wrote_user_bytes: false,
+            enters_written: 1,
+            precmds_seen: 1,
+        }
+    );
+    assert!(handoff.prompt_reader_asks());
+    assert!(handoff.secret_reader_has_the_keys());
+    assert!(
+        handoff.wants_terminal_focus(),
+        "focus follows to the terminal"
+    );
+    assert!(handoff.marker_reader_news_pending());
+    assert_eq!(
+        handoff.take_marker_reader_news(),
+        Some(true),
+        "the view is told once, and that the editor had input"
+    );
+    assert_eq!(handoff.take_marker_reader_news(), None);
+    assert!(handoff.secret_reader_has_the_keys(), "after the look too");
+    assert!(
+        !handoff.on_tty_reader_asks(Some(7), Some(2)),
+        "a second read of the same stage finds the reader noted"
+    );
+    assert!(!handoff.marker_reader_news_pending(), "and is no news");
+    assert_eq!(
+        handoff.take_input_for_secret_reader(),
+        None,
+        "one reader per prompt: the tty is not asked again"
+    );
+    for key in [&b"y"[..], b"e", b"s", b"\r"] {
+        assert_eq!(
+            handoff.peek_user_bytes_route(key, true, Instant::now()),
+            UserBytesRoute::WriteCounted
+        );
+        assert_eq!(
+            type_and_flush(&mut handoff, key),
+            UserBytesRoute::WriteCounted,
+            "{key:?} goes to the reader at once"
+        );
+    }
+    assert!(!handoff.young_hold_queued(), "no young Enter");
+    assert!(!handoff.has_unanswered_lines());
+    assert!(!handoff.shell_line_may_hold_typed_text());
+    assert!(
+        !handoff.try_commit_at_prompt(),
+        "the editor does not take input while the reader has the tty"
+    );
+    assert!(matches!(
+        handoff.on_line_editor_active(true, false),
+        ActiveDecision::Wait { .. }
+    ));
+    // The `read` returned, the precmd stage ends, the line editor signals.
+    assert!(handoff.on_line_editor_reading(Some(7), Some(2)));
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert!(!handoff.prompt_reader_asks(), "the signal ends the reader");
+    assert!(!handoff.secret_reader_has_the_keys());
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed,
+        "an empty line at a signalled prompt: the editor takes input, nothing is requested"
+    );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    assert!(
+        !handoff.on_tty_reader_asks(Some(7), Some(2)),
+        "the line editor reads: a marker now is not a reader ahead of it"
+    );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+}
+
+/// #2052 where nothing samples the tty at all (no probe installed: the kill switch of #2050, or a
+/// platform without one): the marker alone notes the reader and gives it the pane's keys.
+#[test]
+fn the_readers_marker_needs_no_tty_sample() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_precmd_seq(Some(7), Some(1));
+    handoff.on_command_written();
+    handoff.on_preexec(false);
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(2));
+    assert!(handoff.try_commit_at_prompt());
+    assert!(!handoff.secret_reader_look_due());
+    assert!(handoff.on_tty_reader_asks(Some(7), Some(2)));
+    assert!(handoff.is_pty_owned());
+    assert!(handoff.secret_reader_has_the_keys());
+    assert_eq!(handoff.take_marker_reader_news(), Some(true));
+    assert_eq!(
+        type_and_flush(&mut handoff, b"y"),
+        UserBytesRoute::WriteCounted
+    );
+}
+
+/// #2052: the marker is honoured only for the prompt the app is at. A marker of an older prompt,
+/// of another session, without a sequence number, after the line editor's marker, while a command
+/// runs (a program printing the OSC), before any Precmd, or with the kill switch set changes
+/// nothing: the editor keeps input, no reader is noted, the view is told nothing.
+#[test]
+fn the_readers_marker_is_honoured_only_for_the_prompt_the_app_is_at() {
+    let secret = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let unchanged = |handoff: &mut TypeaheadHandoff, what: &str| {
+        assert!(!handoff.prompt_reader_asks(), "{what}");
+        assert!(!handoff.secret_reader_has_the_keys(), "{what}");
+        assert!(!handoff.marker_reader_news_pending(), "{what}");
+        assert_eq!(handoff.take_marker_reader_news(), None, "{what}");
+    };
+
+    let mut handoff = sampled_prompt_the_editor_owns(&secret);
+    for (session, seq, what) in [
+        (Some(7), Some(1), "an older prompt's marker"),
+        (Some(7), Some(3), "a marker ahead of the last Precmd parsed"),
+        (Some(8), Some(2), "another session's marker"),
+        (None, Some(2), "a marker without a session"),
+        (Some(7), None, "a marker without a sequence number"),
+    ] {
+        assert!(!handoff.on_tty_reader_asks(session, seq), "{what}");
+        assert_eq!(handoff.state(), &HandoffState::EditorOwned, "{what}");
+        unchanged(&mut handoff, what);
+    }
+
+    let mut reading = sampled_prompt_the_editor_owns(&secret);
+    assert!(reading.on_line_editor_reading(Some(7), Some(2)));
+    assert!(!reading.on_tty_reader_asks(Some(7), Some(2)));
+    assert_eq!(reading.state(), &HandoffState::EditorOwned);
+    unchanged(&mut reading, "after the line editor's marker");
+
+    let mut running = sampled_prompt_the_editor_owns(&secret);
+    running.on_command_written();
+    running.on_preexec(false);
+    let before = running.state().clone();
+    assert!(!running.on_tty_reader_asks(Some(7), Some(2)));
+    assert_eq!(running.state(), &before);
+    unchanged(&mut running, "while a command runs");
+
+    let mut no_prompt_yet = TypeaheadHandoff::default();
+    assert!(!no_prompt_yet.on_tty_reader_asks(Some(7), Some(2)));
+    assert_eq!(no_prompt_yet.state(), &HandoffState::EditorOwned);
+    unchanged(&mut no_prompt_yet, "before any Precmd");
+
+    let mut off = sampled_prompt_the_editor_owns(&secret);
+    off.set_reader_marker_enabled(false);
+    assert!(!off.on_tty_reader_asks(Some(7), Some(2)));
+    assert_eq!(off.state(), &HandoffState::EditorOwned);
+    unchanged(&mut off, "the kill switch");
+    off.set_reader_marker_enabled(true);
+    assert!(off.on_tty_reader_asks(Some(7), Some(2)), "and back on");
+}
+
+/// #2052: the one kill switch, as both sides read it: only `0` turns the marker off (the
+/// bootstraps test `${PHOSPHOR_READER_MARKER:-1} != 0`).
+#[test]
+fn the_reader_markers_kill_switch_is_off_only_for_zero() {
+    assert_eq!(READER_MARKER_ENV, "PHOSPHOR_READER_MARKER");
+    assert!(reader_marker_enabled_from(None));
+    assert!(reader_marker_enabled_from(Some("")));
+    assert!(reader_marker_enabled_from(Some("1")));
+    assert!(reader_marker_enabled_from(Some("off")));
+    assert!(!reader_marker_enabled_from(Some("0")));
+    assert!(!reader_marker_enabled_from(Some(" 0 ")));
+}
+
+/// #2052: the marker parsed while the pty still owns input (the view has not handled the Precmd
+/// yet): the reader is noted without a change of owner, the view is told the editor did not have
+/// input, and the Precmd's commit then leaves input with the reader.
+#[test]
+fn a_readers_marker_parsed_before_the_precmd_commits_keeps_input_with_the_pty() {
+    let secret = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut handoff = sampled_prompt_after_a_command(&secret);
+    let before = handoff.state().clone();
+    assert!(handoff.on_tty_reader_asks(Some(7), Some(2)));
+    assert_eq!(handoff.state(), &before);
+    assert_eq!(handoff.take_marker_reader_news(), Some(false));
+    assert!(!handoff.try_commit_at_prompt());
+    for key in [&b"y"[..], b"\r"] {
+        assert_eq!(
+            type_and_flush(&mut handoff, key),
+            UserBytesRoute::WriteCounted
+        );
+    }
+    assert!(!handoff.has_unanswered_lines());
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+}
+
+/// #2052: a reader the marker noted ends on the events of #2038, and keys it left unread are the
+/// shell's line: `ls` typed after the answer's Enter is in the tty when the line editor starts,
+/// so the decision asks the shell for it. A Preexec, the next Precmd and a new session end the
+/// reader, and with it the news the view has not looked at; after the next Precmd the marker of
+/// the old prompt is stale and the new prompt's is honoured.
+#[test]
+fn a_marker_reader_ends_on_events_and_its_unread_keys_are_the_shells_line() {
+    let secret = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut handoff = sampled_prompt_the_editor_owns(&secret);
+    assert!(handoff.on_tty_reader_asks(Some(7), Some(2)));
+    for key in [&b"y"[..], b"\r", b"l", b"s"] {
+        assert_eq!(
+            type_and_flush(&mut handoff, key),
+            UserBytesRoute::WriteCounted
+        );
+    }
+    assert!(!handoff.shell_line_may_hold_typed_text());
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert!(handoff.shell_line_may_hold_typed_text());
+    assert!(
+        !handoff.marker_reader_news_pending(),
+        "the reader ended before the view looked: there is nothing to look at"
+    );
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest,
+        "the line is asked for, not left in the shell"
+    );
+
+    let mut handoff = sampled_prompt_the_editor_owns(&secret);
+    assert!(handoff.on_tty_reader_asks(Some(7), Some(2)));
+    handoff.on_preexec(true);
+    assert!(!handoff.prompt_reader_asks());
+    assert!(!handoff.marker_reader_news_pending());
+    assert!(!handoff.secret_reader_has_the_keys());
+    assert!(
+        handoff.is_pty_owned(),
+        "the command the shell started has the pty"
+    );
+
+    let mut handoff = sampled_prompt_the_editor_owns(&secret);
+    assert!(handoff.on_tty_reader_asks(Some(7), Some(2)));
+    handoff.on_new_session();
+    assert!(!handoff.prompt_reader_asks());
+    assert!(!handoff.marker_reader_news_pending());
+
+    let mut handoff = sampled_prompt_the_editor_owns(&secret);
+    assert!(handoff.on_tty_reader_asks(Some(7), Some(2)));
+    assert_eq!(
+        type_and_flush(&mut handoff, b"\r"),
+        UserBytesRoute::WriteCounted
+    );
+    // An empty answer; the next prompt cycle comes with no line-editor signal in between.
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(3));
+    assert!(!handoff.prompt_reader_asks());
+    assert!(handoff.try_commit_at_prompt());
+    assert!(
+        !handoff.on_tty_reader_asks(Some(7), Some(2)),
+        "the old prompt's marker, parsed late, is stale"
+    );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    assert!(handoff.on_tty_reader_asks(Some(7), Some(3)));
+}
+
+/// #2052 with #1658: the pty owns input but the keys follow unsent text into the editor. The
+/// marker ends that: the keys are the reader's, the text stays in the editor.
+#[test]
+fn a_readers_marker_ends_keys_following_the_editors_text() {
+    let secret = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut handoff = sampled_prompt_after_a_command(&secret);
+    assert!(handoff.note_keys_follow_editor_if(true));
+    assert!(!handoff.routes_keys_to_pty());
+    assert!(handoff.on_tty_reader_asks(Some(7), Some(2)));
+    assert!(!handoff.keys_follow_editor_active());
+    assert!(handoff.routes_keys_to_pty());
+    assert_eq!(handoff.on_user_bytes(b"y"), UserBytesRoute::WriteCounted);
+}
+
+/// #2052 on ConPTY (Git Bash sends the same marker): the pty owns input at a prompt whose line
+/// editor has not signalled. The marker notes the reader at the question's output, so the first
+/// key goes to it with no hold and no look at the screen, also for a `read` that prints no
+/// question; the line editor's signal ends it as in #2038. Keys already held when the marker
+/// comes were typed first: the marker changes nothing and their hold's cap decides, as before.
+#[test]
+fn on_conpty_the_readers_marker_sends_the_first_key_to_the_reader_without_a_hold() {
+    let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert!(handoff.on_tty_reader_asks(Some(7), Some(2)));
+    assert_eq!(handoff.take_marker_reader_news(), Some(false));
+    assert!(handoff.is_pty_owned());
+    assert!(!handoff.prompt_reader_look_due(), "the screen is not asked");
+    for key in [&b"y"[..], b"\r"] {
+        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::WriteCounted);
+    }
+    assert!(!handoff.has_prompt_hold());
+    assert!(!handoff.young_hold_queued());
+    assert!(!handoff.has_unanswered_lines());
+    assert!(handoff.on_line_editor_reading(Some(7), Some(2)));
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert!(!handoff.prompt_reader_asks());
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+
+    let mut held = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert_eq!(held.on_user_bytes(b"y"), UserBytesRoute::Held);
+    let id = held.take_prompt_hold_started().expect("a prompt hold");
+    assert!(
+        !held.on_tty_reader_asks(Some(7), Some(2)),
+        "keys are held: their hold's own events decide"
+    );
+    assert!(!held.prompt_reader_asks());
+    assert!(!held.marker_reader_news_pending());
+    assert!(held.has_prompt_hold());
+    // The cap's screen look (#2038) still notes the reader for the held keys, and the shell's
+    // word then stands for it.
+    assert!(held.note_prompt_reader_asks());
+    assert!(!held.on_tty_reader_asks(Some(7), Some(2)));
+    assert!(held.expire_queued_prompt_hold(id));
+    assert!(held.route_released_chunk(b"y"));
+    held.finish_queued_prompt_hold(id);
+    assert!(held.secret_reader_has_the_keys());
+}
+
 /// A hold kept past its cap (an Enter among its keys) keeps its wait, so the line editor's signal
 /// still releases it; a shell that had never signalled is switched off meanwhile, and back on when
 /// the signal shows it does signal.

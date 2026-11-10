@@ -127,6 +127,13 @@ pub(super) enum DProtoHook {
     ContinuationPrompt {
         value: LineEditorMarkerValue,
     },
+    /// A `read` of a precmd function is about to read the terminal (#2052): sent by the function
+    /// that stands in for `read` between the bootstrap's own first and last precmd functions
+    /// (bash, zsh), before the builtin runs. Sent unencoded (OSC `f` form), with the session and
+    /// the last Precmd's sequence number, as `LineEditorReading`.
+    TtyReaderAsks {
+        value: LineEditorMarkerValue,
+    },
     /// A running command is about to read the tty itself, not the line editor (#1882): PowerShell's
     /// `Read-Host` / `Get-Credential`, announced by the bootstrap's wrappers. `secret` says the
     /// input is not echoed. Sent unencoded (OSC `f` form), like the line-editor markers.
@@ -171,6 +178,7 @@ impl DProtoHook {
             DProtoHook::ExitShell { .. } => "ExitShell",
             DProtoHook::LineEditorReading { .. } => "LineEditorReading",
             DProtoHook::ContinuationPrompt { .. } => "ContinuationPrompt",
+            DProtoHook::TtyReaderAsks { .. } => "TtyReaderAsks",
             DProtoHook::TtyRead { .. } => "TtyRead",
             DProtoHook::TtyReadEnd { .. } => "TtyReadEnd",
             DProtoHook::CommandFileFailed { .. } => "CommandFileFailed",
@@ -192,9 +200,9 @@ impl DProtoHook {
             DProtoHook::InitShell { value } => Some(value.session_id),
             DProtoHook::Precmd { value } => value.session_id().map(SessionId::from),
             DProtoHook::ExitShell { value } => Some(value.session_id),
-            DProtoHook::LineEditorReading { value } | DProtoHook::ContinuationPrompt { value } => {
-                value.session_id.map(SessionId::from)
-            }
+            DProtoHook::LineEditorReading { value }
+            | DProtoHook::ContinuationPrompt { value }
+            | DProtoHook::TtyReaderAsks { value } => value.session_id.map(SessionId::from),
             DProtoHook::TtyRead { value } | DProtoHook::TtyReadEnd { value } => {
                 value.session_id.map(SessionId::from)
             }
@@ -250,6 +258,7 @@ impl DProtoHook {
             | DProtoHook::ExitShell { .. }
             | DProtoHook::LineEditorReading { .. }
             | DProtoHook::ContinuationPrompt { .. }
+            | DProtoHook::TtyReaderAsks { .. }
             | DProtoHook::TtyRead { .. }
             | DProtoHook::TtyReadEnd { .. }
             | DProtoHook::InitSsh { .. }
@@ -1246,7 +1255,7 @@ pub struct CommandFileFailedValue {
 }
 
 /// Payload of the line-editor activity markers (`LineEditorReading`, `ContinuationPrompt`; #1390,
-/// #1391). The shell sends them unencoded: `ESC ] 9278 ; f ; {"hook": "LineEditorReading",
+/// #1391) and of `TtyReaderAsks` (#2052). The shell sends them unencoded: `ESC ] 9278 ; f ; {"hook": "LineEditorReading",
 /// "value": {"session_id": N, "seq": M}} BEL`. `seq` is the shell's per-session counter (see
 /// [`PromptMetadata::seq`]) as of the last Precmd or Preexec it sent, so the app can order the
 /// marker against the hooks it has parsed. `None` when a bootstrap omits it.

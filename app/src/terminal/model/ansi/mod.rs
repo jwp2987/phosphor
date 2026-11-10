@@ -767,6 +767,7 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
             Ok(DProtoHook::ExitShell { value }) => self.handler.exit_shell(value),
             Ok(DProtoHook::LineEditorReading { value }) => self.handler.line_editor_reading(value),
             Ok(DProtoHook::ContinuationPrompt { value }) => self.handler.continuation_prompt(value),
+            Ok(DProtoHook::TtyReaderAsks { value }) => self.handler.tty_reader_asks(value),
             Ok(DProtoHook::TtyRead { value }) => self.handler.tty_read(value),
             Ok(DProtoHook::TtyReadEnd { value }) => self.handler.tty_read_end(value),
             Ok(DProtoHook::CommandFileFailed { value }) => self.handler.command_file_failed(value),
@@ -806,6 +807,7 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
             // unencoded so a shell emits them with one builtin write and no hex encoding.
             Ok(DProtoHook::LineEditorReading { value }) => self.handler.line_editor_reading(value),
             Ok(DProtoHook::ContinuationPrompt { value }) => self.handler.continuation_prompt(value),
+            Ok(DProtoHook::TtyReaderAsks { value }) => self.handler.tty_reader_asks(value),
             Ok(DProtoHook::TtyRead { value }) => self.handler.tty_read(value),
             Ok(DProtoHook::TtyReadEnd { value }) => self.handler.tty_read_end(value),
             Ok(_) => {

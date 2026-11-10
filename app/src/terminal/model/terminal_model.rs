@@ -1299,6 +1299,10 @@ impl TerminalModel {
                 // #1353 phase 6: the kill switch for the prompt-sequence decisions.
                 let mut handoff = TypeaheadHandoff::default();
                 handoff.set_prompt_seq_enabled(super::typeahead_handoff::prompt_seq_env_enabled());
+                // #2052: the one kill switch of the reader marker, read once per pane.
+                handoff.set_reader_marker_enabled(
+                    super::typeahead_handoff::reader_marker_env_enabled(),
+                );
                 PaneHandoff::from(handoff)
             },
             key_facts: KeyFactsCell::default(),
@@ -4233,6 +4237,18 @@ impl ansi::Handler for TerminalModel {
                     session_id: SessionId::from(session_id),
                     seq: data.seq,
                 });
+        }
+    }
+
+    /// #2052: a precmd function's `read` announced itself. Applied here, on the thread that
+    /// parses the stream and in its order: after the prompt's Precmd, before the question's
+    /// bytes and before the line editor's own marker. No terminal event: the hand-off holds the
+    /// fact and the view reads it at the wakeup this output causes (and at a key).
+    fn tty_reader_asks(&mut self, data: LineEditorMarkerValue) {
+        if data.session_id.is_some() && FeatureFlag::TypeaheadHandoff.is_enabled() {
+            self.typeahead_handoff
+                .write()
+                .on_tty_reader_asks(data.session_id, data.seq);
         }
     }
 

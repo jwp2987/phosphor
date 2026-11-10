@@ -67,7 +67,7 @@ fuzz_target!(|data: &[u8]| {
     let mut ends_taken: usize = 0;
 
     for _ in 0..96 {
-        let Ok(event) = u.int_in_range(0..=28u8) else {
+        let Ok(event) = u.int_in_range(0..=29u8) else {
             break;
         };
         let young_before = h.young_hold_queued();
@@ -230,6 +230,13 @@ fuzz_target!(|data: &[u8]| {
                 // #1614: the pty reader applied a slice; a hold waiting on the barrier decides.
                 let _ = h.on_stream_applied();
                 ends_expected = young_before && !h.young_hold_queued();
+            }
+            28 => {
+                // #2052: the shell's marker for a precmd function's `read`, then the view's look.
+                let session = u.arbitrary::<u8>().ok().map(u64::from);
+                let seq = u.arbitrary::<u8>().ok().map(u64::from);
+                let _ = h.on_tty_reader_asks(session, seq);
+                let _ = h.take_marker_reader_news();
             }
             _ => {
                 // The platform's sample and barrier, as installed by the terminal manager: a fixed

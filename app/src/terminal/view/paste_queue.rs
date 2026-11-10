@@ -2241,6 +2241,11 @@ impl TerminalView {
     /// the usual first event) and at a key the pane's sink is about to route (`site` "key": a
     /// read that prints nothing, or a key typed before the output's wakeup ran).
     ///
+    /// #2052: a reader the shell announced with its `TtyReaderAsks` marker (a precmd function's
+    /// `read`, echoing or not) was noted by the hand-off on the model thread, in stream order
+    /// ahead of the question; this look finds that news at the same two sites and does the
+    /// view's part (the queue pin, focus). Such a reader has the keys on every platform.
+    ///
     /// Returns whether a secret reader has the pane's keys now (noted here or before). No clock.
     /// The model is never waited for: when it is busy at a key, focus follows at the next wakeup
     /// and the sink routes by this answer meanwhile.
@@ -2252,21 +2257,38 @@ impl TerminalView {
         if !FeatureFlag::TypeaheadHandoff.is_enabled() {
             return false;
         }
-        {
+        let marker_news = {
             let handoff = self.handoff.read();
-            if handoff.secret_reader_has_the_keys() {
+            if handoff.marker_reader_news_pending() {
+                true
+            } else if handoff.secret_reader_has_the_keys() {
                 return true;
-            }
-            if !handoff.secret_reader_look_due() {
+            } else if !handoff.secret_reader_look_due() {
                 return false;
+            } else {
+                false
             }
-        }
-        let Some(took_from_editor) = self.handoff.write().take_input_for_secret_reader() else {
-            return false;
         };
-        warpui::input_order::log_hop("secret_reader_takes_input", || {
-            format!("site={site} took_from_editor={took_from_editor}")
-        });
+        if marker_news {
+            // #2052: the shell's marker noted the reader on the model thread (a precmd
+            // function's echoing `read -p`, which no tty sample tells from a shell between its
+            // Precmd and its line editor). The owner of input changed there; the view's part of
+            // the same transition is done here, once per reader.
+            let Some(took_from_editor) = self.handoff.write().take_marker_reader_news() else {
+                // The reader ended between the two looks.
+                return self.handoff.read().secret_reader_has_the_keys();
+            };
+            warpui::input_order::log_hop("marker_reader_takes_input", || {
+                format!("site={site} took_from_editor={took_from_editor}")
+            });
+        } else {
+            let Some(took_from_editor) = self.handoff.write().take_input_for_secret_reader() else {
+                return false;
+            };
+            warpui::input_order::log_hop("secret_reader_takes_input", || {
+                format!("site={site} took_from_editor={took_from_editor}")
+            });
+        }
         // The owner of input changed: a line pinned to the editor is over.
         self.request_queue_pin_clear();
         let model_free = self.model.try_lock().is_some();
