@@ -4227,6 +4227,8 @@ def c_lat_key(ctx, r):
     # #1958: what the key -> pty write share is made of. Informational like the #1176 numbers above: how many platform samples the hand-off took
     # while these keys were typed (a fixed build takes one for the first key of the line, none for the rest; before, one per key inside the
     # hand_route log line) and what each cost; on Linux also which way the foreground group's members were found.
+    # It STAYS informational (owner decision 2026-11-09): every "plain program" verdict (this case types into `cat`) is confirmed by the
+    # `getpgid` list (path=list_confirm), whose cost follows the test machine's process count, so no fixed bound on it is a fact about the app.
     ps = prompt_sample_audit(txt)
     r.metric("typing_prompt_samples", ps)
     r.note("#1958 platform samples while typing %d key(s): %d (median %s us, max %d us, %d at or over 1 ms); foreground-group lookups by path: %s" % (
@@ -4516,7 +4518,8 @@ _FG_LOOKUP_RE = re.compile(r"input_order hop=fg_group_lookup for=\w+ path=(\w+) 
 def prompt_sample_audit(txt):
     """#1958: the platform samples the typeahead hand-off took (`hop=prompt_fact_sample what=<prompt_fact|plain_program> answer=<..> us=<micros>`,
     one line per sample of an installed probe, every unix) and, on Linux, how each look at the pty's foreground process group was answered
-    (`hop=fg_group_lookup for=<..> path=<leader|walk|list|list_after_walk|scan> reads=<n> members=<n|none> us=<micros>`)
+    (`hop=fg_group_lookup for=<..> path=<leader|walk|list|list_confirm|scan> reads=<n> members=<n|none> us=<micros>`;
+    `list_confirm` = the list that every "plain program" verdict takes after the walk, cost proportional to the machine's process count)
     -> dict(samples, max_us, p50_us, over_1ms, lookups={path: [count, max_us, max_reads]}). Before #1958 a Linux run had one sample per key
     written to the pty (inside the `hand_route` log line) and each was a read of every process's stat (4-16 ms); a build older than the hops logs
     nothing, which reads exactly like 'no sample taken'."""

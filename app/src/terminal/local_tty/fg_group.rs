@@ -1,25 +1,37 @@
 //! The members of a pty's foreground process group on Linux, without reading the `stat` of every
 //! process on the machine (#1958).
 //!
-//! Linux has no call that lists a process group. Until #1958 the answer was a scan: list `/proc`
-//! and read `/proc/<pid>/stat` of EVERY process (about 10 us each, more for a process with many
-//! threads), 4-16 ms on the main thread per sample. Three ways to the same answer live here:
+//! Linux has no call that lists a process group, and the tty reports the group's id, never its
+//! size. Until #1958 the answer was a scan: list `/proc` and read `/proc/<pid>/stat` of EVERY
+//! process (about 10 us each, more for a process with many threads), 4-16 ms on the main thread
+//! per sample. What lives here:
 //!
-//! * [`walk_group_members`] (the default): every process of a session descends from the session's
-//!   leader (the pty's shell) unless a parent died, so the leader's subtree is walked through
-//!   `/proc/<pid>/task/<tid>/children`. The cost follows the size of that one tab's tree (a shell
-//!   running `cat`: four small reads), not the machine's process count. It answers only when it
-//!   can be trusted; every doubt (see the function) hands over to the list.
 //! * [`list_group_members`]: list `/proc`, ask `getpgid(2)` for each pid (one cheap syscall, no
 //!   file), read `stat` only of the members. Exactly the scan's membership, about a tenth of its
-//!   cost; still proportional to the machine's process count.
+//!   cost; still proportional to the machine's process count. It is the answer wherever the
+//!   members themselves are asked for ([`group_members`]).
+//! * [`walk_sees_shell_or_hop`]: every process of a session descends from the session's leader
+//!   (the pty's shell) unless a parent died, so the leader's subtree is walked through
+//!   `/proc/<pid>/task/<tid>/children`, looking for ONE thing: a member that is a shell or a
+//!   login hop. The cost follows the size of that one tab's tree, not the machine's process count.
 //! * [`scan_group_members`]: the scan itself, kept as the reference the tests compare against and
 //!   for an A/B run ([`LOOKUP_ENV`]).
 //!
-//! The one case where the walk's answer can differ from the scan's and nothing flags it: a member
-//! whose parent died (so it now hangs under init or a subreaper, outside the shell's subtree)
-//! while the group's leader and at least one other member are still inside it. See
-//! `the_walk_does_not_see_an_orphan_beside_a_living_leader` and [`LOOKUP_ENV`].
+//! # Which answer the walk may give (owner decision 2026-11-09)
+//!
+//! The walk sees a SUBSET of the group: a member whose parent died hangs under init or a
+//! subreaper, outside the shell's subtree, and nothing in the tree (or on the tty) says it
+//! exists. So the walk is trusted only for the answer a missing member cannot change:
+//!
+//! * "a shell or login hop is a member" (so: NOT a plain program, the answer that keeps a key
+//!   held): a member the walk saw is a member in the scan too, whatever else the group holds.
+//! * "no shell or hop seen" would be "plain program", the answer that DELIVERS a key instead of
+//!   holding it, and one unseen member could turn it around. The walk never gives it: the list
+//!   answers ([`LookupPath::ListConfirm`]).
+//!
+//! [`group_is_plain_program`] therefore equals the scan's verdict for every process table, the
+//! orphan included (`an_orphan_beside_a_living_leader_gets_the_scans_answer`), and the list's cost
+//! is paid only where the verdict is, or would have been, "plain program".
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -28,15 +40,17 @@ use super::terminal_attributes::{is_shell_or_login_hop, parse_proc_stat, parse_p
 
 pub(crate) type Pid = libc::pid_t;
 
-/// Picks how the foreground group's members are found: unset or `walk` (the default: the walk,
-/// the list where the walk cannot be trusted), `list` (always the exact list: no walk, so no
-/// orphan is ever missed), `scan` (the pre-#1958 scan of every `stat`, for an A/B measurement).
+/// Picks how the foreground group is looked at: unset or `walk` (the default: for the
+/// plain-program question the leader's name, then the walk for a shell or hop, then the list for
+/// every "plain" verdict; the list for the members), `list` (no walk at all: the leader's name,
+/// then the list), `scan` (the pre-#1958 scan of every `stat`, for an A/B measurement). All three
+/// give the same verdicts and members; they differ in cost only.
 pub(crate) const LOOKUP_ENV: &str = "PHOSPHOR_FG_GROUP_LOOKUP";
 
 /// The most `/proc` reads (a `stat`, a `children` file, a `task` listing) the walk makes before
-/// it gives up and the list answers. A shell running one program is four reads; a pipeline of
-/// three with a few background jobs about twenty. A tree of thread-heavy programs (one `children`
-/// file per thread) goes over, and there the list is the cheaper way anyway.
+/// it stops looking and the list answers. A shell running one program is four reads; a pipeline
+/// of three with a few background jobs about twenty. A tree of thread-heavy programs (one
+/// `children` file per thread) goes over, and the list costs less than walking it.
 pub(crate) const MAX_WALK_READS: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,11 +79,14 @@ pub(crate) fn lookup_mode_from(value: Option<&str>) -> LookupMode {
 pub(crate) enum LookupPath {
     /// The group leader's own `stat` decided (a shell or login hop leads the group).
     Leader,
+    /// The walk saw a shell or login hop among the members (not a plain program).
     Walk,
-    /// The list, because the mode asked for it.
+    /// The list alone: the members were asked for, the mode is `list`, or the pty has no
+    /// session leader to walk from.
     List,
-    /// The list, because the walk could not be trusted.
-    ListAfterWalk,
+    /// The list, after a walk that saw no shell or hop: the verdict "plain program" is the
+    /// list's to give, never the walk's.
+    ListConfirm,
     Scan,
 }
 
@@ -79,7 +96,7 @@ impl LookupPath {
             LookupPath::Leader => "leader",
             LookupPath::Walk => "walk",
             LookupPath::List => "list",
-            LookupPath::ListAfterWalk => "list_after_walk",
+            LookupPath::ListConfirm => "list_confirm",
             LookupPath::Scan => "scan",
         }
     }
@@ -240,79 +257,73 @@ pub(crate) fn list_group_members(
     Some(members)
 }
 
-/// Counts one read against [`MAX_WALK_READS`]; `None` when the budget is spent.
-fn spend(reads: &mut usize) -> Option<()> {
+/// Counts one read against [`MAX_WALK_READS`]; `false` when the budget is spent.
+fn spend(reads: &mut usize) -> bool {
     *reads += 1;
-    (*reads <= MAX_WALK_READS).then_some(())
+    *reads <= MAX_WALK_READS
 }
 
-/// The members of group `pgid` among the session leader and everything that descends from it,
-/// ordered by pid; or `None` when the walk cannot vouch for its answer and the caller must list:
-///
-/// * a `stat` or a `children` file of the subtree cannot be read (a kernel without
-///   `CONFIG_PROC_CHILDREN`, a `/proc` mounted with `hidepid`, a process or thread that exited
-///   during the walk: its children moved to another parent that may already have been read);
-/// * the walk needs more than [`MAX_WALK_READS`] reads;
-/// * no member was found (the group exists, `tcgetpgrp` named it, so its members are elsewhere);
-/// * the group's leader is alive but is not in the subtree.
-///
-/// A leader that has exited is not a doubt: `echo x | less` is that for as long as `less` runs.
+/// Whether a shell or login hop of group `pgid` is seen among the session leader and everything
+/// that descends from it. `true` is a fact about the group (that process is a member in the scan
+/// too). `false` is NOT "the group has none": a member whose parent died is outside the subtree,
+/// a process may be unreadable, a kernel may have no `children` files
+/// (`CONFIG_PROC_CHILDREN`), and the walk stops after [`MAX_WALK_READS`] reads. The caller lists
+/// on `false`.
 ///
 /// A process forks its children from any of its threads, and the kernel lists them per thread,
 /// so a process with more than one thread costs a `task` listing and one `children` read per
 /// thread.
-pub(crate) fn walk_group_members(
+pub(crate) fn walk_sees_shell_or_hop(
     src: &impl ProcSource,
     session_leader: Pid,
     pgid: Pid,
     reads: &mut usize,
-) -> Option<Vec<(Pid, String)>> {
-    let mut members = Vec::new();
+) -> bool {
     let mut seen = HashSet::new();
     let mut stack = vec![session_leader];
-    let mut leader_seen = false;
     while let Some(pid) = stack.pop() {
         if !seen.insert(pid) {
             continue;
         }
-        spend(reads)?;
-        let facts = parse_stat_facts(&src.stat(pid)?)?;
-        if pid == pgid {
-            leader_seen = true;
+        if !spend(reads) {
+            return false;
         }
-        if facts.pgrp == pgid && !facts.comm.is_empty() {
-            members.push((pid, facts.comm));
+        // Unreadable (another user's process under `hidepid`, or it just exited): nothing is
+        // known about it or below it. The rest of the tree can still show a hop.
+        let Some(facts) = src.stat(pid).and_then(|stat| parse_stat_facts(&stat)) else {
+            continue;
+        };
+        if facts.pgrp == pgid && is_shell_or_login_hop(&facts.comm) {
+            return true;
         }
         // One thread, and it is the one named by the pid (a `Z` here can be a process whose main
         // thread exited while others live): its `children` file is the whole list.
         let tids = if facts.threads == Some(1) && facts.state != Some('Z') {
             vec![pid]
         } else {
-            spend(reads)?;
-            src.thread_ids(pid)?
+            if !spend(reads) {
+                return false;
+            }
+            let Some(tids) = src.thread_ids(pid) else {
+                continue;
+            };
+            tids
         };
         for tid in tids {
-            spend(reads)?;
-            for child in src.children(pid, tid)?.split_whitespace() {
-                stack.push(child.parse().ok()?);
+            if !spend(reads) {
+                return false;
             }
+            let Some(children) = src.children(pid, tid) else {
+                continue;
+            };
+            stack.extend(
+                children
+                    .split_whitespace()
+                    .filter_map(|child| child.parse::<Pid>().ok()),
+            );
         }
     }
-    if members.is_empty() {
-        return None;
-    }
-    if !leader_seen {
-        spend(reads)?;
-        let leader_lives_elsewhere = src
-            .stat(pgid)
-            .and_then(|stat| parse_proc_stat(&stat))
-            .is_some_and(|(_, pgrp)| pgrp == pgid);
-        if leader_lives_elsewhere {
-            return None;
-        }
-    }
-    members.sort_by_key(|(pid, _)| *pid);
-    Some(members)
+    false
 }
 
 /// The members found, and how.
@@ -321,40 +332,22 @@ pub(crate) struct GroupLookup {
     /// `None` when `/proc` cannot be listed (the caller's "unknown").
     pub members: Option<Vec<(Pid, String)>>,
     pub path: LookupPath,
-    /// `/proc` reads made (files and listings), all paths together.
+    /// `/proc` reads made (files and listings).
     pub reads: usize,
 }
 
-/// Every process (pid, `comm`) of group `pgid`, ordered by pid. `session_leader` is the pty's
-/// session leader (`tcgetsid`), the root of the walk; without one the list answers.
-pub(crate) fn group_members(
-    src: &impl ProcSource,
-    mode: LookupMode,
-    session_leader: Option<Pid>,
-    pgid: Pid,
-) -> GroupLookup {
+/// Every process (pid, `comm`) of group `pgid`, ordered by pid: the list (the scan in `scan`
+/// mode). Never the walk: a caller that wants the members wants all of them, and the walk cannot
+/// know it has seen them all (module docs).
+pub(crate) fn group_members(src: &impl ProcSource, mode: LookupMode, pgid: Pid) -> GroupLookup {
     let mut reads = 0;
-    match (mode, session_leader) {
-        (LookupMode::Scan, _) => GroupLookup {
+    match mode {
+        LookupMode::Scan => GroupLookup {
             members: scan_group_members(src, pgid, &mut reads),
             path: LookupPath::Scan,
             reads,
         },
-        (LookupMode::Walk, Some(leader)) => {
-            if let Some(members) = walk_group_members(src, leader, pgid, &mut reads) {
-                return GroupLookup {
-                    members: Some(members),
-                    path: LookupPath::Walk,
-                    reads,
-                };
-            }
-            GroupLookup {
-                members: list_group_members(src, pgid, &mut reads),
-                path: LookupPath::ListAfterWalk,
-                reads,
-            }
-        }
-        (LookupMode::List, _) | (LookupMode::Walk, None) => GroupLookup {
+        LookupMode::Walk | LookupMode::List => GroupLookup {
             members: list_group_members(src, pgid, &mut reads),
             path: LookupPath::List,
             reads,
@@ -367,26 +360,36 @@ pub(crate) fn group_members(
 pub(crate) struct PlainProgramLookup {
     pub plain: bool,
     pub path: LookupPath,
+    /// `/proc` reads made (files and listings), all steps together.
     pub reads: usize,
-    /// How many members were found, or `None` when the leader decided alone or nothing is known.
+    /// How many members the list (or the scan) found; `None` when the leader or the walk decided
+    /// without counting them, or `/proc` cannot be listed.
     pub members: Option<usize>,
 }
 
 /// Whether group `pgid` has members and none of them is a shell or a login hop
 /// (`terminal_attributes::foreground_is_plain_program` for a group that is not the shell's own).
+/// The scan's verdict in every mode, for every process table.
 ///
-/// The leader's own `stat` is read first: a shell or login hop there (`ssh`, an inner `bash`,
-/// `sudo -i`) makes the answer `false` whatever the other members are, as it does in the scan,
-/// with one read. The `scan` mode skips that and does exactly what the code before #1958 did.
+/// 1. The leader's own `stat`: a shell or login hop there (`ssh`, an inner `bash`, `sudo -i`)
+///    makes the answer `false` whatever the other members are, with one read.
+/// 2. `walk` mode with a session leader (`tcgetsid` of the pty): the walk of the shell's subtree.
+///    A shell or hop seen there (`make` running `sh`, `timeout 60 bash`) is `false` too.
+/// 3. Otherwise the list decides. "Plain program" is only ever said here, with every member of
+///    the group read (module docs: the walk cannot see a member whose parent died).
+///
+/// The `scan` mode skips all of that and does exactly what the code before #1958 did.
 pub(crate) fn group_is_plain_program(
     src: &impl ProcSource,
     mode: LookupMode,
     session_leader: Option<Pid>,
     pgid: Pid,
 ) -> PlainProgramLookup {
-    let mut leader_reads = 0;
-    if mode != LookupMode::Scan {
-        leader_reads = 1;
+    let mut reads = 0;
+    let (members, path) = if mode == LookupMode::Scan {
+        (scan_group_members(src, pgid, &mut reads), LookupPath::Scan)
+    } else {
+        reads += 1;
         let leader_is_hop = src
             .stat(pgid)
             .and_then(|stat| parse_proc_stat(&stat))
@@ -395,20 +398,38 @@ pub(crate) fn group_is_plain_program(
             return PlainProgramLookup {
                 plain: false,
                 path: LookupPath::Leader,
-                reads: leader_reads,
+                reads,
                 members: None,
             };
         }
-    }
-    let lookup = group_members(src, mode, session_leader, pgid);
-    let plain = lookup.members.as_ref().is_some_and(|members| {
+        let mut path = LookupPath::List;
+        if mode == LookupMode::Walk
+            && let Some(session_leader) = session_leader
+        {
+            // The walk has its own budget; the leader's read is not counted against it.
+            let mut walk_reads = 0;
+            let hop_seen = walk_sees_shell_or_hop(src, session_leader, pgid, &mut walk_reads);
+            reads += walk_reads;
+            if hop_seen {
+                return PlainProgramLookup {
+                    plain: false,
+                    path: LookupPath::Walk,
+                    reads,
+                    members: None,
+                };
+            }
+            path = LookupPath::ListConfirm;
+        }
+        (list_group_members(src, pgid, &mut reads), path)
+    };
+    let plain = members.as_ref().is_some_and(|members| {
         !members.is_empty() && members.iter().all(|(_, comm)| !is_shell_or_login_hop(comm))
     });
     PlainProgramLookup {
         plain,
-        path: lookup.path,
-        reads: lookup.reads + leader_reads,
-        members: lookup.members.as_ref().map(Vec::len),
+        path,
+        reads,
+        members: members.as_ref().map(Vec::len),
     }
 }
 

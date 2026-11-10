@@ -295,7 +295,7 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 |---|---|
 | `PHOSPHOR_PANE_KEY` | `0`/`off`: pane key sink off (elements take keys as before); `shadow`: sink decides and logs `kh_pane_key_shadow`, elements deliver (#1404) |
 | `PHOSPHOR_PROMPT_SEQ=0` | hand-off decides young Enter / Ctrl-C hand-back / stale line counts by the old timing rules (#1353 phase 6) |
-| `PHOSPHOR_FG_GROUP_LOOKUP` | Linux, how the pty's foreground process group's members are found (#1958): unset/`walk` = the shell's process tree, the `getpgid` list where the walk cannot vouch for itself; `list` = always the exact list; `scan` = the old read of every process's `stat` (A/B only) |
+| `PHOSPHOR_FG_GROUP_LOOKUP` | Linux, how the pty's foreground process group is looked at (#1958): unset/`walk` = the leader's name, then a walk of the shell's process tree for a shell or login hop, then the `getpgid` list for every "plain program" verdict (the members themselves always come from the list); `list` = no walk; `scan` = the old read of every process's `stat` (A/B only). Same verdicts and members in all three |
 | `PHOSPHOR_PTY_WRITE_QUEUE=0` | back to timer-chained pty writes instead of the writer-owned job queue (#1384) |
 | `PHOSPHOR_PTY_COALESCE=0` | no key-write coalescing in the pty event loop |
 | `PHOSPHOR_HANDOFF_FACTS=0` | user-key path takes the model lock again instead of published facts (#1403) |
@@ -4138,41 +4138,71 @@ OSC 52 default and toast de-dupe (#1963, #1964, annoyance review 8a/16): `termin
 
 ## Foreground-group lookup without the /proc scan (#1958)
 
-Nothing here was compiled or run when it was written (laptop rule); the first box run decides. The generator of
-`made_up_trees_give_the_scans_answer_in_every_mode` was ported to Python and run once on the laptop to confirm the logic and its fixed
-counts (the walk answers 439 lookups, the list 356).
+Nothing here was compiled or run when it was written (laptop rule); the first box run decides. The logic and the generator of
+`made_up_trees_give_the_scans_answer_in_every_mode` were ported to Python and run once on the laptop: 400 process tables, 1057 groups, every
+one equal to the scan in every mode (the leader answers 625, the walk 52, the list 380; 330 "plain" verdicts; in 33 the list found a shell
+or hop the walk had not seen).
 
 **What changed.** On Linux the hand-off's platform sample (`shell_prompt_fact` -> `foreground_is_plain_program`) and the #1796 tty-read probe
 found the members of the pty's foreground process group by reading `/proc/<pid>/stat` of every process on the machine (4-16 ms on the main
 thread), and the `hop=hand_route` log line ran that sample for every key written to the pty. Now `hand_route` prints the fact the decision
-sampled (`prompt_fact=unsampled` when it took none) and never runs the probe, and the members come from `local_tty/fg_group.rs`: the group
-leader's own `stat` first (a shell or login hop there decides with one read), then a walk of the pty's session tree through
-`/proc/<pid>/task/<tid>/children` (a shell running one program: 4 reads), and where the walk cannot vouch for its answer (no `children`
-file, an unreadable process, more than 32 reads, no member found, a living leader outside the tree) the list: `/proc` listed, `getpgid(2)`
-per pid, `stat` of the members only. macOS and Windows are unchanged apart from the two log changes (`prompt_fact=unsampled`, the
-`prompt_fact_sample` hop).
+sampled (`prompt_fact=unsampled` when it took none) and never runs the probe, and the group is looked at by `local_tty/fg_group.rs`. macOS
+and Windows are unchanged apart from the two log changes (`prompt_fact=unsampled`, the `prompt_fact_sample` hop).
 
-**Known limit of the walk (owner decision pending, in the #1958 notes).** A member whose parent died (it now hangs under init or a
-subreaper) while the group's leader and another member are still below the shell is not seen by the walk and nothing flags it; the scan
-saw it. `PHOSPHOR_FG_GROUP_LOOKUP=list` never walks and has no such case, at a cost that grows with the machine's process count (measured
-with Python on the laptop, 500 processes: about 0.6 ms, against about 5 ms for the scan and about 0.05 ms for a 4-read walk).
+**How "is the foreground a plain program" is answered (owner decision 2026-11-09: the walk WITH a list fallback, the scan's answer always).**
+
+1. `path=leader`: the group leader's own `stat`. A shell or login hop there (`ssh`, an inner shell, `sudo -i`, `tmux`) is "not plain" with
+   one read.
+2. `path=walk`: a walk of the pty's session tree (`tcgetsid`, then `/proc/<pid>/task/<tid>/children`), at most 32 reads, looking for one
+   thing: a member that is a shell or login hop (`make` running `sh`, `timeout 60 bash`). One seen is "not plain".
+3. `path=list_confirm`: everything else, so EVERY "plain program" verdict: `/proc` listed, `getpgid(2)` per pid, `stat` of the members only,
+   the scan's membership exactly. (`path=list`: the same with no walk before it, when `tcgetsid` gave no session leader or the mode is `list`.)
+
+Why the walk may only say "not plain": it sees a subset of the group. A member whose parent died hangs under init or a subreaper, outside
+the shell's tree; the tty reports the group's id and never its size, so nothing says a member is missing. A member the walk saw is a member
+for the scan too, so "a shell or hop is a member" is safe from a subset. "No shell or hop seen" is not: it would be "plain program", the
+verdict that DELIVERS a key instead of holding it, and one unseen member can turn it around. That verdict is therefore always the list's.
+The walk's other blind spots (an unreadable process, a kernel without `children` files, the read budget) end the same way, in the list.
+
+The members themselves (`foreground_process_names`, the #1796 tty-read probe) always come from the list: a caller that wants the members
+wants all of them.
+
+**What it costs** (Python on the laptop with 497 processes, so indicative; the Rust is not slower). Leader read: about 10 us. A 4-read
+walk: about 40 us. The list: about 650 us, of which about 450 us is the kernel listing `/proc`, so it grows with the machine's process count
+(about 1.3 us per process). The old scan: about 8000 us.
+
+| where | what a sample costs |
+|---|---|
+| typing at a shell prompt (the shell's own group in front) | nothing: `tcgetpgrp` alone decides, no lookup, no hop line |
+| `ssh`, an inner shell, `sudo`, `tmux` in front | the leader read |
+| a build tool or wrapper with a shell among its children in front | the leader read and the walk (the list is not run) |
+| a plain program in front (`cat`, `vim`, `less`, a REPL) | the leader read, the walk AND the list, on every sample: the first key of a line and every Enter typed into the program, the counts-diverged check |
+| the #1796 tty-read probe (an agent's command showing a prompt-shaped line; not the key path) | the list, at every observation |
+
+`PHOSPHOR_FG_GROUP_LOOKUP`: unset or `walk` is the above; `list` skips step 2; `scan` is the pre-#1958 scan (A/B only). All three give the
+same verdicts and members.
 
 **Hops (input-order logging on).** `hop=prompt_fact_sample what=<prompt_fact|plain_program> answer=<..> us=<micros>`: one per sample an
-installed probe took (every unix). `hop=fg_group_lookup for=<plain_program|members> path=<leader|walk|list|list_after_walk|scan> reads=<n>
-members=<n|none> us=<micros>`: one per look at the group's members (Linux). Counts and times only, never a process name.
-`latency_key_log` reports them as the metric `typing_prompt_samples` and a `#1958` note (informational, like `key_to_pty_write_ms`).
+installed probe took (every unix). `hop=fg_group_lookup for=<plain_program|members> path=<leader|walk|list|list_confirm|scan> reads=<n>
+members=<n|none> us=<micros>`: one per look at the group (Linux). Counts and times only, never a process name.
+`latency_key_log` reports them as the metric `typing_prompt_samples` and a `#1958` note. The metric STAYS informational (owner decision
+2026-11-09), like `key_to_pty_write_ms`: the case types into `cat`, a plain program, so its samples include the list, whose cost is a fact
+about the test machine's process count and not about the app.
 
 | layer | tests | what they pin |
 |---|---|---|
-| local_tty (Linux, a made-up process table behind `ProcSource`) | `fg_group_tests.rs`: `a_program_run_by_the_shell_is_found_in_four_reads`, `the_walk_reads_no_stat_outside_the_shells_tree`, `every_stage_of_a_pipeline_is_a_member`, `a_pipeline_whose_first_stage_exited_is_still_walked`, `a_zombie_member_counts_as_it_does_in_the_scan`, `grandchildren_of_the_leader_are_members`, `a_shell_below_a_plain_leader_makes_the_group_not_plain`, `other_groups_of_the_session_are_not_members_and_do_not_hide_members_below_them`, `the_shells_own_group_is_the_shell_and_its_groupless_children`, `a_child_forked_by_a_worker_thread_is_found`, `a_threaded_shell_is_walked_through_all_its_threads` | for each tree the walk mode, the list mode and a lookup with no session leader return exactly the members the old scan returns, and the plain-program verdict is the scan's in every mode; the walk reads only the shell's tree (2 `stat` reads with 2000 other processes on the machine, where the scan reads them all) |
-| the same | `a_login_hop_leading_the_group_is_decided_by_one_read`, `a_shell_with_the_leaders_pid_but_another_group_does_not_decide` | `ssh` / an inner shell / `sudo` / `tmux` leading the group: not plain after ONE read, the scan's verdict; a reused pid in another group does not decide |
-| the same | `a_tree_of_thread_heavy_programs_goes_to_the_list`, `a_kernel_without_children_files_goes_to_the_list`, `a_group_wholly_outside_the_shells_tree_goes_to_the_list`, `a_living_leader_outside_the_shells_tree_goes_to_the_list`, `an_unreadable_process_in_the_tree_goes_to_the_list`, `a_shell_that_is_gone_goes_to_the_list`, `a_group_with_no_process_left_is_empty_not_unknown`, `the_walk_alone_refuses_rather_than_guess`, `the_list_falls_back_to_the_stat_where_getpgid_refuses` | every doubt of the walk hands over to the list (`path=list_after_walk`), whose answer is the scan's; the walk's read budget is 32 |
-| the same | `made_up_trees_give_the_scans_answer_in_every_mode` | 300 generated trees (fixed generator: pipelines, nested jobs, threads, zombies, shared groups), every group of each: members and verdict equal the scan's whichever path answered |
-| the same | `the_walk_does_not_see_an_orphan_beside_a_living_leader` | the stated limit above, pinned: the walk misses the orphan, `list` mode sees it |
+| local_tty (Linux, a made-up process table behind `ProcSource`) | `fg_group_tests.rs`, every test through `assert_all_ways_agree` | for the group asked about: the members in `walk` and `list` mode are exactly the scan's; the plain-program verdict is the scan's in `walk` mode, in `walk` mode with no session leader and in `list` mode; the walk alone says "shell or hop" only when the scan has one; in `walk` mode "plain" is said by `list_confirm` and nothing else |
+| the same | `a_plain_program_is_said_by_the_list_after_a_four_read_walk`, `every_stage_of_a_pipeline_is_a_member`, `a_pipeline_whose_first_stage_exited_is_still_a_plain_program`, `a_zombie_member_counts_as_it_does_in_the_scan`, `other_groups_of_the_session_are_not_members`, `a_shell_with_the_leaders_pid_but_another_group_does_not_decide`, `a_group_with_no_process_left_is_empty_not_plain` | plain programs: `path=list_confirm`, 1 + 4 + 2 reads for a shell running `cat`; an empty group is not plain |
+| the same | `a_login_hop_leading_the_group_is_decided_by_one_read`, `the_shells_own_group_is_the_shell_and_its_groupless_children` | `ssh` / an inner shell / `sudo` / `tmux` leading the group: not plain after ONE read, `/proc` not listed |
+| the same | `a_shell_among_the_members_is_decided_inside_the_shells_tree`, `a_shell_below_the_leaders_child_makes_the_group_not_plain`, `a_shell_below_a_plain_leader_makes_the_group_not_plain`, `a_shell_forked_by_a_worker_thread_is_seen_by_the_walk`, `a_threaded_shell_is_walked_through_all_its_threads`, `the_walk_alone_says_only_what_it_saw` | a shell among the members: `path=walk`, 4 `stat` reads and no `/proc` listing with 2000 other processes on the machine (the scan reads them all); children are found under the thread that forked them |
+| the same | `an_orphan_beside_a_living_leader_gets_the_scans_answer`, `orphans_are_members_wherever_they_hang`, `a_group_wholly_outside_the_shells_tree_is_decided_by_the_list`, `a_living_leader_outside_the_shells_tree` | the owner decision: a member re-parented to the user manager or init is invisible to the walk and still decides (an orphaned `sh` beside a living `tee`: not plain, by `list_confirm`, as the scan says). Replaces `the_walk_does_not_see_an_orphan_beside_a_living_leader`, which pinned the opposite answer as a stated limit |
+| the same | `a_tree_of_thread_heavy_programs_is_decided_by_the_list`, `a_kernel_without_children_files_is_decided_by_the_list`, `an_unreadable_process_in_the_tree`, `a_shell_that_is_gone_is_no_obstacle`, `without_a_session_leader_the_list_answers`, `the_list_falls_back_to_the_stat_where_getpgid_refuses` | the walk's other blind spots end in the list: the 32-read budget, no `children` files, an unreadable process (the walk goes on past it), no shell, no session leader; `getpgid` refusing makes the list read each `stat` |
+| the same | `made_up_trees_give_the_scans_answer_in_every_mode` | 400 generated process tables (fixed generator: pipelines, nested jobs, threads, zombies, shared groups, one process in five orphaned to the user manager or init, unreadable processes, kernels without `children` files), every group of each through `assert_all_ways_agree` |
 | the same | `the_stat_line_gives_comm_group_state_and_thread_count`, `the_lookup_mode_is_the_walk_unless_asked_otherwise` | `num_threads` is field 20 of the line; the env values |
-| local_tty (Linux, the real `/proc`) | `the_real_proc_finds_this_process_in_its_own_group` | scan, list and walk mode each find the test process in its own process group through the real `/proc` and `getpgid` |
-| appci self-test | `prompt_sample_audit_counts_samples_and_lookup_paths` | the two hops are parsed into the `typing_prompt_samples` metric |
+| local_tty (Linux, the real `/proc`) | `the_real_proc_finds_this_process_in_its_own_group` | the scan and the list find the test process in its own process group through the real `/proc` and `getpgid`; the verdict in `walk` mode is reached by `leader`, `walk` or `list_confirm` |
+| appci self-test | `prompt_sample_audit_counts_samples_and_lookup_paths` | the two hops are parsed into the `typing_prompt_samples` metric (sample path renamed `list_after_walk` -> `list_confirm`) |
 
 **What a fixed Linux run shows.** `latency_key_log`: `key_to_pty_write_ms` median under 1 ms in both modes; `kh_hold_exit -> hand_route`
-about 0.1 ms as on macOS; `typing_prompt_samples.samples` about one per `cat` line typed (its first key), not one per key, each well under
-1 ms, with `lookups` showing `walk` (or `leader` over ssh), never `scan`.
+about 0.1 ms as on macOS for the keys that take no sample; `typing_prompt_samples.samples` about one per `cat` line typed (its first key),
+not one per key, with `lookups` showing `list_confirm` for `cat` (reads = 7; its `us` is the list's cost on that machine, expect a few
+hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and never `walk` for a plain program.

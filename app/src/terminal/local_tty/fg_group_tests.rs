@@ -1,13 +1,15 @@
-//! #1958: the walk and the list must give the answer the scan of every `stat` gave. A made-up
-//! process table stands behind [`ProcSource`], so each test names the tree it is about.
+//! #1958: whichever way the foreground group is looked at, the answer must be the one the scan of
+//! every `stat` gave. A made-up process table stands behind [`ProcSource`], so each test names
+//! the tree it is about.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
+use super::super::terminal_attributes::is_shell_or_login_hop;
 use super::{
-    GroupLookup, LookupMode, LookupPath, MAX_WALK_READS, PgidAnswer, Pid, ProcSource, StatFacts,
-    group_is_plain_program, group_members, list_group_members, lookup_mode_from, parse_stat_facts,
-    scan_group_members, walk_group_members,
+    LookupMode, LookupPath, MAX_WALK_READS, PgidAnswer, Pid, PlainProgramLookup, ProcSource,
+    StatFacts, group_is_plain_program, group_members, list_group_members, lookup_mode_from,
+    parse_stat_facts, scan_group_members, walk_sees_shell_or_hop,
 };
 
 #[derive(Clone)]
@@ -34,6 +36,8 @@ struct FakeProc {
     /// `getpgid` refuses (a security module): the list must fall back to the `stat`.
     getpgid_refuses: bool,
     stat_reads: Cell<usize>,
+    /// How often `/proc` itself was listed (the list and the scan do; the walk never does).
+    listings: Cell<usize>,
 }
 
 impl FakeProc {
@@ -58,6 +62,11 @@ impl FakeProc {
         let mut ids = vec![pid];
         ids.extend((1..=process.extra_threads as Pid).map(|n| pid * 1000 + n));
         Some(ids)
+    }
+
+    fn reset_counts(&self) {
+        self.stat_reads.set(0);
+        self.listings.set(0);
     }
 }
 
@@ -102,6 +111,7 @@ impl ProcSource for FakeProc {
     }
 
     fn pids(&self) -> Option<Vec<Pid>> {
+        self.listings.set(self.listings.get() + 1);
         Some(
             self.procs
                 .iter()
@@ -142,75 +152,118 @@ fn scan(proc: &FakeProc, pgid: Pid) -> Option<Vec<(Pid, String)>> {
     scan_group_members(proc, pgid, &mut 0)
 }
 
-fn names(lookup: &GroupLookup) -> Vec<&str> {
-    lookup
-        .members
-        .as_ref()
-        .expect("members known")
-        .iter()
-        .map(|(_, comm)| comm.as_str())
-        .collect()
+fn walk_mode(proc: &FakeProc, pgid: Pid) -> PlainProgramLookup {
+    group_is_plain_program(proc, LookupMode::Walk, Some(SHELL), pgid)
 }
 
-/// The walk, the list and the scan agree on the members, and the plain-program verdict is the
-/// one the scan's names give in every mode. Returns the walk-mode lookup for the caller to look
-/// at the path taken.
+/// For one group of one process table, everything the module promises:
+///
+/// * the members asked for in `walk` and in `list` mode are exactly the scan's;
+/// * the plain-program verdict is the scan's in `walk` mode, in `walk` mode with no session
+///   leader and in `list` mode;
+/// * the walk alone says "a shell or hop is a member" only when the scan has one;
+/// * in `walk` mode "plain program" is said by the list and by nothing else.
+///
+/// Returns the `walk` mode verdict for the caller to look at the path taken.
 #[track_caller]
-fn assert_all_ways_agree(proc: &FakeProc, pgid: Pid) -> GroupLookup {
+fn assert_all_ways_agree(proc: &FakeProc, pgid: Pid) -> PlainProgramLookup {
     let scanned = scan(proc, pgid);
-    let walked = group_members(proc, LookupMode::Walk, Some(SHELL), pgid);
-    let listed = group_members(proc, LookupMode::List, Some(SHELL), pgid);
-    let no_session = group_members(proc, LookupMode::Walk, None, pgid);
-    assert_eq!(walked.members, scanned, "walk mode against the scan");
-    assert_eq!(listed.members, scanned, "list mode against the scan");
-    assert_eq!(no_session.members, scanned, "no session leader known");
-    assert_eq!(no_session.path, LookupPath::List);
+    for mode in [LookupMode::Walk, LookupMode::List] {
+        let lookup = group_members(proc, mode, pgid);
+        assert_eq!(lookup.members, scanned, "members in {mode:?} mode");
+        assert_eq!(lookup.path, LookupPath::List, "members in {mode:?} mode");
+    }
+    assert_eq!(group_members(proc, LookupMode::Scan, pgid).members, scanned);
+
     let scan_verdict = group_is_plain_program(proc, LookupMode::Scan, Some(SHELL), pgid);
     assert_eq!(scan_verdict.path, LookupPath::Scan);
-    for mode in [LookupMode::Walk, LookupMode::List] {
-        assert_eq!(
-            group_is_plain_program(proc, mode, Some(SHELL), pgid).plain,
-            scan_verdict.plain,
-            "the plain-program verdict in {mode:?} mode against the scan's"
+    let walked = walk_mode(proc, pgid);
+    let no_session = group_is_plain_program(proc, LookupMode::Walk, None, pgid);
+    let listed = group_is_plain_program(proc, LookupMode::List, Some(SHELL), pgid);
+    assert_eq!(
+        walked.plain, scan_verdict.plain,
+        "walk mode against the scan"
+    );
+    assert_eq!(
+        no_session.plain, scan_verdict.plain,
+        "walk mode, no session leader, against the scan"
+    );
+    assert_eq!(
+        listed.plain, scan_verdict.plain,
+        "list mode against the scan"
+    );
+    for lookup in [&no_session, &listed] {
+        assert!(
+            matches!(lookup.path, LookupPath::Leader | LookupPath::List),
+            "no walk without a session leader or in list mode: {:?}",
+            lookup.path
         );
+    }
+
+    let scan_has_hop = scanned
+        .as_ref()
+        .is_some_and(|members| members.iter().any(|(_, comm)| is_shell_or_login_hop(comm)));
+    if walk_sees_shell_or_hop(proc, SHELL, pgid, &mut 0) {
+        assert!(scan_has_hop, "the walk saw a hop the scan does not have");
+    }
+    match walked.path {
+        LookupPath::Leader | LookupPath::Walk => {
+            assert!(!walked.plain);
+            assert!(scan_has_hop);
+            assert_eq!(walked.members, None);
+        }
+        LookupPath::ListConfirm => {
+            assert_eq!(walked.members, scanned.as_ref().map(Vec::len));
+        }
+        other => panic!("walk mode with a session leader answered by {other:?}"),
     }
     walked
 }
 
 #[test]
-fn a_program_run_by_the_shell_is_found_in_four_reads() {
+fn a_plain_program_is_said_by_the_list_after_a_four_read_walk() {
     let mut proc = machine();
     proc.add(200, "cat", SHELL, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(names(&walked), ["cat"]);
-    // The shell's stat and children, the program's stat and children: nothing else on the
-    // machine is read, however many processes it runs.
-    assert_eq!(walked.reads, 4);
-    let verdict = group_is_plain_program(&proc, LookupMode::Walk, Some(SHELL), 200);
+    let verdict = assert_all_ways_agree(&proc, 200);
     assert!(verdict.plain);
-    assert_eq!(verdict.path, LookupPath::Walk);
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
     assert_eq!(verdict.members, Some(1));
+    // The leader's stat; the walk (the shell's stat and children, the program's stat and
+    // children); the list (the listing of /proc and the one member's stat).
+    assert_eq!(verdict.reads, 1 + 4 + 2);
+    let mut walk_reads = 0;
+    assert!(!walk_sees_shell_or_hop(&proc, SHELL, 200, &mut walk_reads));
+    assert_eq!(walk_reads, 4);
 }
 
+/// `make` running `sh`: the walk answers, and nothing outside the shell's tree is read, however
+/// many processes the machine runs.
 #[test]
-fn the_walk_reads_no_stat_outside_the_shells_tree() {
+fn a_shell_among_the_members_is_decided_inside_the_shells_tree() {
     let mut proc = machine();
     for pid in 1000..3000 {
         proc.add(pid, "worker", 1, pid);
     }
-    proc.add(200, "cat", SHELL, 200);
-    proc.stat_reads.set(0);
-    let walked = group_members(&proc, LookupMode::Walk, Some(SHELL), 200);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(proc.stat_reads.get(), 2, "the shell's and the program's");
-    // The list reads the members' stat only; the scan read all two thousand.
-    proc.stat_reads.set(0);
-    let listed = group_members(&proc, LookupMode::List, Some(SHELL), 200);
-    assert_eq!(proc.stat_reads.get(), 1);
-    assert_eq!(listed.members, walked.members);
-    proc.stat_reads.set(0);
-    assert_eq!(scan(&proc, 200), walked.members);
+    proc.add(200, "make", SHELL, 200);
+    proc.add(201, "sh", 200, 200);
+    assert_all_ways_agree(&proc, 200);
+    proc.reset_counts();
+    let verdict = walk_mode(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::Walk);
+    // The leader's stat, then the shell's stat and children, `make`'s stat and children, and
+    // the stat of `sh`, where the walk stops.
+    assert_eq!(verdict.reads, 1 + 5);
+    assert_eq!(proc.stat_reads.get(), 4);
+    assert_eq!(proc.listings.get(), 0, "/proc is not listed");
+    // The list reads the leader's stat and the members' only; the scan reads all two thousand.
+    proc.reset_counts();
+    let listed = group_is_plain_program(&proc, LookupMode::List, Some(SHELL), 200);
+    assert!(!listed.plain);
+    assert_eq!(proc.stat_reads.get(), 3);
+    assert_eq!(proc.listings.get(), 1);
+    proc.reset_counts();
+    assert!(!group_is_plain_program(&proc, LookupMode::Scan, Some(SHELL), 200).plain);
     assert!(proc.stat_reads.get() > 2000);
 }
 
@@ -220,43 +273,54 @@ fn every_stage_of_a_pipeline_is_a_member() {
     proc.add(200, "git", SHELL, 200);
     proc.add(201, "grep", SHELL, 200);
     proc.add(202, "less", SHELL, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(names(&walked), ["git", "grep", "less"]);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(verdict.plain);
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
+    assert_eq!(verdict.members, Some(3));
+    let names: Vec<String> = group_members(&proc, LookupMode::Walk, 200)
+        .members
+        .expect("listed")
+        .into_iter()
+        .map(|(_, comm)| comm)
+        .collect();
+    assert_eq!(names, ["git", "grep", "less"]);
 }
 
 /// `echo x | less`: the group is named after `echo`, which is gone for as long as `less` runs.
 #[test]
-fn a_pipeline_whose_first_stage_exited_is_still_walked() {
+fn a_pipeline_whose_first_stage_exited_is_still_a_plain_program() {
     let mut proc = machine();
     proc.add(201, "less", SHELL, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(names(&walked), ["less"]);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(verdict.plain);
+    assert_eq!(verdict.members, Some(1));
 }
 
-/// The reaped-late first stage: a zombie is a member in the scan, so it is one in the walk.
+/// The reaped-late first stage: a zombie is a member in the scan, so it is one in the list.
 #[test]
 fn a_zombie_member_counts_as_it_does_in_the_scan() {
     let mut proc = machine();
     proc.add(200, "echo", SHELL, 200).state = 'Z';
     proc.add(201, "less", SHELL, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(names(&walked), ["echo", "less"]);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(verdict.plain);
+    assert_eq!(verdict.members, Some(2));
+    // A zombie shell is a member too, and the walk reads its name like any other.
+    proc.add(202, "sh", SHELL, 200).state = 'Z';
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::Walk);
 }
 
 #[test]
-fn grandchildren_of_the_leader_are_members() {
+fn a_shell_below_the_leaders_child_makes_the_group_not_plain() {
     let mut proc = machine();
     proc.add(200, "make", SHELL, 200);
-    proc.add(201, "sh", 200, 200);
-    proc.add(202, "cc1", 201, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(names(&walked), ["make", "sh", "cc1"]);
-    // `make` leads, but a shell is a member: not a plain program, in every mode.
-    assert!(!group_is_plain_program(&proc, LookupMode::Walk, Some(SHELL), 200).plain);
+    proc.add(201, "cc", 200, 200);
+    proc.add(202, "sh", 201, 200);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::Walk);
 }
 
 /// `timeout 60 bash`: the leader is plain and its child is a shell at a prompt.
@@ -265,8 +329,7 @@ fn a_shell_below_a_plain_leader_makes_the_group_not_plain() {
     let mut proc = machine();
     proc.add(200, "timeout", SHELL, 200);
     proc.add(201, "bash", 200, 200);
-    assert_all_ways_agree(&proc, 200);
-    let verdict = group_is_plain_program(&proc, LookupMode::Walk, Some(SHELL), 200);
+    let verdict = assert_all_ways_agree(&proc, 200);
     assert!(!verdict.plain);
     assert_eq!(verdict.path, LookupPath::Walk);
 }
@@ -279,12 +342,13 @@ fn a_login_hop_leading_the_group_is_decided_by_one_read() {
         proc.add(200, hop, SHELL, 200);
         proc.add(201, "helper", 200, 200);
         assert_all_ways_agree(&proc, 200);
-        proc.stat_reads.set(0);
-        let verdict = group_is_plain_program(&proc, LookupMode::Walk, Some(SHELL), 200);
+        proc.reset_counts();
+        let verdict = walk_mode(&proc, 200);
         assert!(!verdict.plain, "{hop}");
         assert_eq!(verdict.path, LookupPath::Leader, "{hop}");
         assert_eq!(verdict.reads, 1, "{hop}");
         assert_eq!(proc.stat_reads.get(), 1, "{hop}");
+        assert_eq!(proc.listings.get(), 0, "{hop}");
     }
 }
 
@@ -294,23 +358,24 @@ fn a_shell_with_the_leaders_pid_but_another_group_does_not_decide() {
     let mut proc = machine();
     proc.add(200, "bash", 1, 777);
     proc.add(201, "cat", SHELL, 200);
-    assert_all_ways_agree(&proc, 200);
-    let verdict = group_is_plain_program(&proc, LookupMode::Walk, Some(SHELL), 200);
+    let verdict = assert_all_ways_agree(&proc, 200);
     assert!(verdict.plain);
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
 }
 
-/// Background jobs and an inner interactive shell's own job: only the group asked for.
+/// Background jobs and an inner interactive shell's own job: only the group asked for. The
+/// inner shell is on the way to the job and is not a member of its group.
 #[test]
-fn other_groups_of_the_session_are_not_members_and_do_not_hide_members_below_them() {
+fn other_groups_of_the_session_are_not_members() {
     let mut proc = machine();
     proc.add(150, "sleep", SHELL, 150); // a background job
     proc.add(160, "bash", SHELL, 160); // an inner interactive shell, its own group
     proc.add(161, "vim", 160, 161); // the inner shell's foreground job
     proc.add(162, "watch", 160, 162); // the inner shell's background job
-    let walked = assert_all_ways_agree(&proc, 161);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(names(&walked), ["vim"]);
-    assert!(group_is_plain_program(&proc, LookupMode::Walk, Some(SHELL), 161).plain);
+    let verdict = assert_all_ways_agree(&proc, 161);
+    assert!(verdict.plain);
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
+    assert_eq!(verdict.members, Some(1));
 }
 
 /// The shell's own group in front (a builtin `read`, a `( ... )` without job control).
@@ -319,22 +384,27 @@ fn the_shells_own_group_is_the_shell_and_its_groupless_children() {
     let mut proc = machine();
     proc.add(150, "sleep", SHELL, 150);
     proc.add(170, "bash", SHELL, SHELL);
-    let walked = assert_all_ways_agree(&proc, SHELL);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(names(&walked), ["bash", "bash"]);
+    let verdict = assert_all_ways_agree(&proc, SHELL);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::Leader);
+    assert_eq!(
+        group_members(&proc, LookupMode::Walk, SHELL)
+            .members
+            .map(|members| members.len()),
+        Some(2)
+    );
 }
 
 /// The kernel lists children under the thread that forked them: a Go or Node program's child
 /// is in a worker thread's file, not the main thread's.
 #[test]
-fn a_child_forked_by_a_worker_thread_is_found() {
+fn a_shell_forked_by_a_worker_thread_is_seen_by_the_walk() {
     let mut proc = machine();
     proc.add(200, "node", SHELL, 200).extra_threads = 4;
     proc.add(201, "sh", 200, 200).forked_by = Some(200 * 1000 + 3);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(names(&walked), ["node", "sh"]);
-    assert!(!group_is_plain_program(&proc, LookupMode::Walk, Some(SHELL), 200).plain);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::Walk);
 }
 
 /// A multi-threaded shell (fish, nu, pwsh) as the session leader.
@@ -342,88 +412,163 @@ fn a_child_forked_by_a_worker_thread_is_found() {
 fn a_threaded_shell_is_walked_through_all_its_threads() {
     let mut proc = machine();
     proc.procs.get_mut(&SHELL).expect("shell").extra_threads = 2;
-    proc.add(200, "cat", SHELL, 200).forked_by = Some(SHELL * 1000 + 2);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(names(&walked), ["cat"]);
+    proc.add(200, "timeout", SHELL, 200).forked_by = Some(SHELL * 1000 + 2);
+    proc.add(201, "bash", 200, 200);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::Walk);
 }
 
+/// More `children` files than the walk's budget: it stops looking, and the list finds the shell.
 #[test]
-fn a_tree_of_thread_heavy_programs_goes_to_the_list() {
+fn a_tree_of_thread_heavy_programs_is_decided_by_the_list() {
     let mut proc = machine();
     proc.add(200, "java", SHELL, 200).extra_threads = MAX_WALK_READS as u32;
     proc.add(201, "sh", 200, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::ListAfterWalk);
-    assert_eq!(names(&walked), ["java", "sh"]);
-    // The walk stopped at its budget; the list added its own reads on top.
-    assert!(walked.reads > MAX_WALK_READS);
-    assert!(walked.reads <= MAX_WALK_READS + 1 + 1 + 2);
+    let mut walk_reads = 0;
+    assert!(!walk_sees_shell_or_hop(&proc, SHELL, 200, &mut walk_reads));
+    assert_eq!(walk_reads, MAX_WALK_READS + 1, "stopped at the budget");
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
+    assert_eq!(verdict.members, Some(2));
+    // The leader's stat, the walk up to its budget, the listing and the two members' stat.
+    assert_eq!(verdict.reads, 1 + (MAX_WALK_READS + 1) + 3);
 }
 
 #[test]
-fn a_kernel_without_children_files_goes_to_the_list() {
+fn a_kernel_without_children_files_is_decided_by_the_list() {
     let mut proc = machine();
     proc.no_children_file = true;
     proc.add(200, "make", SHELL, 200);
     proc.add(201, "sh", 200, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::ListAfterWalk);
-    assert_eq!(names(&walked), ["make", "sh"]);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
+    assert_eq!(verdict.members, Some(2));
 }
 
-/// Every member's parent died: they hang under the user manager now. The walk finds nothing in
-/// the shell's tree, and nothing is no answer for a group `tcgetpgrp` just named.
+/// The owner decision of 2026-11-09, and the case it is about: a member whose parent died (it
+/// hangs under the user manager now) beside a leader and another member that are still below the
+/// shell. Nothing in the tree says it exists, so the walk alone sees a plain program; the answer
+/// given is the list's, which is the scan's.
 #[test]
-fn a_group_wholly_outside_the_shells_tree_goes_to_the_list() {
+fn an_orphan_beside_a_living_leader_gets_the_scans_answer() {
+    let mut proc = machine();
+    proc.add(200, "tee", SHELL, 200);
+    proc.add(202, "sh", 20, 200); // its parent, a stage of the pipeline, died
+    assert_eq!(scan(&proc, 200).expect("listed").len(), 2);
+    assert!(!walk_sees_shell_or_hop(&proc, SHELL, 200, &mut 0));
+    assert!(!group_is_plain_program(&proc, LookupMode::Scan, Some(SHELL), 200).plain);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain, "the orphaned shell is a member");
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
+    assert_eq!(verdict.members, Some(2));
+    assert!(!group_is_plain_program(&proc, LookupMode::List, Some(SHELL), 200).plain);
+}
+
+/// The same orphan under init, and an orphan that is itself plain: counted, and still plain.
+#[test]
+fn orphans_are_members_wherever_they_hang() {
+    let mut proc = machine();
+    proc.add(200, "tee", SHELL, 200);
+    proc.add(202, "ssh", 1, 200);
+    assert!(!assert_all_ways_agree(&proc, 200).plain);
+
+    let mut proc = machine();
+    proc.add(200, "tee", SHELL, 200);
+    proc.add(202, "sleep", 20, 200);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(verdict.plain);
+    assert_eq!(verdict.members, Some(2));
+}
+
+/// Every member's parent died: they hang under the user manager now, and the shell's tree holds
+/// none of them.
+#[test]
+fn a_group_wholly_outside_the_shells_tree_is_decided_by_the_list() {
     let mut proc = machine();
     proc.add(201, "sh", 20, 200);
     proc.add(202, "sleep", 201, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::ListAfterWalk);
-    assert_eq!(names(&walked), ["sh", "sleep"]);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
+    assert_eq!(verdict.members, Some(2));
 }
 
 /// The leader is alive but not below the shell (its parent died), while a member still is.
 #[test]
-fn a_living_leader_outside_the_shells_tree_goes_to_the_list() {
+fn a_living_leader_outside_the_shells_tree() {
     let mut proc = machine();
-    proc.add(200, "sh", 20, 200);
-    proc.add(201, "tee", SHELL, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::ListAfterWalk);
-    assert_eq!(names(&walked), ["sh", "tee"]);
+    proc.add(200, "tee", 20, 200);
+    proc.add(201, "cat", SHELL, 200);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(verdict.plain);
+    assert_eq!(verdict.members, Some(2));
+    // A shell leading from out there is the leader's read.
+    proc.procs.get_mut(&200).expect("leader").comm = "sh".to_owned();
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::Leader);
 }
 
-/// A process of the tree that cannot be read (`hidepid`, or it exited mid-walk and its children
-/// moved): what is below it is not known, so the walk does not answer. The scan cannot read it
-/// either, and still sees the readable member below it.
+/// A process of the tree that cannot be read (`hidepid`, or it exited mid-walk): what is below
+/// it is not known to the walk. The scan cannot read it either, and still sees the readable
+/// member below it; so does the list.
 #[test]
-fn an_unreadable_process_in_the_tree_goes_to_the_list() {
+fn an_unreadable_process_in_the_tree() {
     let mut proc = machine();
     proc.add(200, "sudo", SHELL, 200).hidden = true;
     proc.add(201, "tail", 200, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::ListAfterWalk);
-    assert_eq!(names(&walked), ["tail"]);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(
+        verdict.plain,
+        "the scan reads `tail` only, and so does the list"
+    );
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
+    assert_eq!(verdict.members, Some(1));
+    // A shell below the unreadable process: the walk cannot get there, the list does.
+    proc.add(202, "sh", 200, 200);
+    assert!(!walk_sees_shell_or_hop(&proc, SHELL, 200, &mut 0));
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
+    // A shell beside it: the walk goes on past what it cannot read.
+    proc.add(203, "sh", SHELL, 200);
+    assert_eq!(assert_all_ways_agree(&proc, 200).path, LookupPath::Walk);
 }
 
 #[test]
-fn a_shell_that_is_gone_goes_to_the_list() {
+fn a_shell_that_is_gone_is_no_obstacle() {
     let mut proc = machine();
     proc.procs.remove(&SHELL);
     proc.add(200, "cat", 20, 200);
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.path, LookupPath::ListAfterWalk);
-    assert_eq!(names(&walked), ["cat"]);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(verdict.plain);
+    assert_eq!(verdict.path, LookupPath::ListConfirm);
 }
 
 #[test]
-fn a_group_with_no_process_left_is_empty_not_unknown() {
+fn a_group_with_no_process_left_is_empty_not_plain() {
     let proc = machine();
-    let walked = assert_all_ways_agree(&proc, 200);
-    assert_eq!(walked.members, Some(Vec::new()));
-    assert!(!group_is_plain_program(&proc, LookupMode::Walk, Some(SHELL), 200).plain);
+    let verdict = assert_all_ways_agree(&proc, 200);
+    assert!(!verdict.plain);
+    assert_eq!(verdict.members, Some(0));
+    assert_eq!(
+        group_members(&proc, LookupMode::Walk, 200).members,
+        Some(Vec::new())
+    );
+}
+
+/// No session leader known (`tcgetsid` failed): no walk, the list alone.
+#[test]
+fn without_a_session_leader_the_list_answers() {
+    let mut proc = machine();
+    proc.add(200, "cat", SHELL, 200);
+    let verdict = group_is_plain_program(&proc, LookupMode::Walk, None, 200);
+    assert!(verdict.plain);
+    assert_eq!(verdict.path, LookupPath::List);
+    assert_eq!(verdict.reads, 1 + 2);
 }
 
 /// `getpgid` refused for every pid: the list reads each `stat`, as the scan does, and agrees.
@@ -434,30 +579,13 @@ fn the_list_falls_back_to_the_stat_where_getpgid_refuses() {
     proc.add(200, "git", SHELL, 200);
     proc.add(201, "less", SHELL, 200);
     assert_eq!(list_group_members(&proc, 200, &mut 0), scan(&proc, 200));
+    assert_all_ways_agree(&proc, 200);
 }
 
-/// The stated limit of the walk (module docs): a member whose parent died, beside a leader and
-/// another member that are still below the shell. Nothing in the tree says it exists. `list` mode
-/// (`PHOSPHOR_FG_GROUP_LOOKUP=list`) sees it.
-#[test]
-fn the_walk_does_not_see_an_orphan_beside_a_living_leader() {
-    let mut proc = machine();
-    proc.add(200, "tee", SHELL, 200);
-    proc.add(202, "sh", 20, 200); // its parent, a stage of the pipeline, died
-    let scanned = scan(&proc, 200).expect("listed");
-    assert_eq!(scanned.len(), 2);
-    let walked = group_members(&proc, LookupMode::Walk, Some(SHELL), 200);
-    assert_eq!(walked.path, LookupPath::Walk);
-    assert_eq!(names(&walked), ["tee"]);
-    let listed = group_members(&proc, LookupMode::List, Some(SHELL), 200);
-    assert_eq!(listed.members, Some(scanned));
-    assert!(group_is_plain_program(&proc, LookupMode::Walk, Some(SHELL), 200).plain);
-    assert!(!group_is_plain_program(&proc, LookupMode::List, Some(SHELL), 200).plain);
-}
-
-/// Many made-up trees below the shell (no orphans): pipelines, nested jobs, threads, zombies,
-/// groups of every shape. Whatever path the walk mode takes, its members and its verdict are the
-/// scan's.
+/// Many made-up process tables: pipelines, nested jobs, threads, zombies, groups of every shape,
+/// and what the walk cannot see or read: members re-parented to the user manager or to init,
+/// unreadable processes, kernels without `children` files. For every group of every table the
+/// members and the verdict are the scan's in every mode (`assert_all_ways_agree`).
 #[test]
 fn made_up_trees_give_the_scans_answer_in_every_mode() {
     const COMMS: [&str; 8] = [
@@ -471,10 +599,17 @@ fn made_up_trees_give_the_scans_answer_in_every_mode() {
             .wrapping_add(1442695040888963407);
         (seed >> 33) % bound
     };
-    let mut walked_paths = 0;
-    let mut listed_paths = 0;
-    for _ in 0..300 {
+    let mut by_leader = 0;
+    let mut by_walk = 0;
+    let mut by_list = 0;
+    let mut plain = 0;
+    // "Not plain" said by the list for a group with members, after a walk that saw no shell or
+    // hop: the shell or hop was an orphan, below an unreadable process, past the walk's budget
+    // or behind a missing `children` file. What a walk trusted for "plain" would have got wrong.
+    let mut list_found_the_hop = 0;
+    for _ in 0..400 {
         let mut proc = machine();
+        proc.no_children_file = next(20) == 0;
         let count = 1 + next(9) as Pid;
         let mut pids = vec![SHELL];
         let mut groups = vec![SHELL];
@@ -497,6 +632,7 @@ fn made_up_trees_give_the_scans_answer_in_every_mode() {
                 process.state = 'Z';
                 process.extra_threads = 0;
             }
+            process.hidden = next(25) == 0;
             pids.push(pid);
             if !groups.contains(&pgrp) {
                 groups.push(pgrp);
@@ -515,33 +651,60 @@ fn made_up_trees_give_the_scans_answer_in_every_mode() {
                 process.forked_by = None;
             }
         }
+        // Orphans: about one process in five lost its parent and hangs under the user manager
+        // or init, its own children still below it.
+        for (pid, process) in proc.procs.iter_mut() {
+            if *pid >= 200 && next(5) == 0 {
+                process.ppid = if next(2) == 0 { 20 } else { 1 };
+                process.forked_by = None;
+            }
+        }
         for pgid in groups {
-            let walked = assert_all_ways_agree(&proc, pgid);
-            match walked.path {
-                LookupPath::Walk => walked_paths += 1,
-                LookupPath::ListAfterWalk => listed_paths += 1,
+            let verdict = assert_all_ways_agree(&proc, pgid);
+            match verdict.path {
+                LookupPath::Leader => by_leader += 1,
+                LookupPath::Walk => by_walk += 1,
+                LookupPath::ListConfirm => by_list += 1,
                 other => panic!("walk mode answered by {other:?}"),
+            }
+            if verdict.plain {
+                plain += 1;
+            }
+            if verdict.path == LookupPath::ListConfirm
+                && !verdict.plain
+                && verdict.members.is_some_and(|count| count > 0)
+            {
+                list_found_the_hop += 1;
             }
         }
     }
-    // Both ways were exercised (the generator is fixed, so these counts never change).
-    assert!(walked_paths > 100, "the walk answered {walked_paths} times");
-    assert!(listed_paths > 10, "the list answered {listed_paths} times");
+    // Every way was exercised. The generator is fixed, so these counts never change; a Python
+    // port of it gave leader 625, walk 52, list 380, plain 330, list-found-the-hop 33.
+    assert!(by_leader > 100, "the leader answered {by_leader} times");
+    assert!(by_walk > 30, "the walk answered {by_walk} times");
+    assert!(by_list > 100, "the list answered {by_list} times");
+    assert!(plain > 50, "{plain} plain verdicts");
+    assert!(
+        list_found_the_hop > 20,
+        "the list found a shell or hop the walk had not seen {list_found_the_hop} times"
+    );
 }
 
 #[test]
-fn the_walk_alone_refuses_rather_than_guess() {
+fn the_walk_alone_says_only_what_it_saw() {
     let mut proc = machine();
     proc.add(200, "cat", SHELL, 200);
-    assert!(walk_group_members(&proc, SHELL, 200, &mut 0).is_some());
-    // No member in the tree.
-    assert_eq!(walk_group_members(&proc, SHELL, 999, &mut 0), None);
+    assert!(!walk_sees_shell_or_hop(&proc, SHELL, 200, &mut 0));
+    proc.add(201, "sh", 200, 200);
+    assert!(walk_sees_shell_or_hop(&proc, SHELL, 200, &mut 0));
+    // A shell of another group is not this group's.
+    assert!(!walk_sees_shell_or_hop(&proc, SHELL, 999, &mut 0));
     // The budget is already spent.
     let mut spent = MAX_WALK_READS;
-    assert_eq!(walk_group_members(&proc, SHELL, 200, &mut spent), None);
+    assert!(!walk_sees_shell_or_hop(&proc, SHELL, 200, &mut spent));
     // No `children` file to read.
     proc.no_children_file = true;
-    assert_eq!(walk_group_members(&proc, SHELL, 200, &mut 0), None);
+    assert!(!walk_sees_shell_or_hop(&proc, SHELL, 200, &mut 0));
 }
 
 #[test]
@@ -583,13 +746,14 @@ fn the_lookup_mode_is_the_walk_unless_asked_otherwise() {
     assert_eq!(lookup_mode_from(Some("anything else")), LookupMode::Walk);
 }
 
-/// The real `/proc`: this test process's own group, found all three ways. The test runner is
-/// alive and in its group for the whole test, so it must be in every answer; other members may
-/// come and go between the looks, so only that much is asserted.
+/// The real `/proc`: this test process's own group. The test runner is alive and in its group
+/// for the whole test, so it must be in every list of the members; other members may come and
+/// go between the looks, so only that much is asserted, and of the verdict only how it was
+/// reached.
 #[test]
 fn the_real_proc_finds_this_process_in_its_own_group() {
     use super::RealProc;
-    // SAFETY: both calls only read this process's ids.
+    // SAFETY: the three calls only read this process's ids.
     let (me, pgid, session) = unsafe { (libc::getpid(), libc::getpgrp(), libc::getsid(0)) };
     assert_eq!(RealProc.pgid_of(me), PgidAnswer::Is(pgid));
     let has_me = |members: Option<Vec<(Pid, String)>>| {
@@ -600,11 +764,15 @@ fn the_real_proc_finds_this_process_in_its_own_group() {
     };
     assert!(has_me(scan_group_members(&RealProc, pgid, &mut 0)));
     assert!(has_me(list_group_members(&RealProc, pgid, &mut 0)));
-    let walked = group_members(&RealProc, LookupMode::Walk, Some(session), pgid);
-    assert!(
-        matches!(walked.path, LookupPath::Walk | LookupPath::ListAfterWalk),
-        "{:?}",
-        walked.path
-    );
-    assert!(has_me(walked.members));
+    let listed = group_members(&RealProc, LookupMode::Walk, pgid);
+    assert_eq!(listed.path, LookupPath::List);
+    assert!(has_me(listed.members));
+    let verdict = group_is_plain_program(&RealProc, LookupMode::Walk, Some(session), pgid);
+    match verdict.path {
+        LookupPath::Leader | LookupPath::Walk => assert!(!verdict.plain),
+        LookupPath::ListConfirm => {
+            assert!(verdict.members.is_some_and(|count| count >= 1));
+        }
+        other => panic!("walk mode with a session leader answered by {other:?}"),
+    }
 }
