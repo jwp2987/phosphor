@@ -15846,9 +15846,14 @@ impl TerminalView {
                 // #1661 (r18u27): these are keys typed AFTER the deferred Enter. When that Enter
                 // now waits behind its own gate (an unready shell refused the submit, #1571),
                 // they queue behind that gate as typed text, in order: released with it when the
-                // shell is ready, and DISCARDED with it by its give-up (owner decision
-                // 2026-11-05). Inserted, they became a programmatic edit deferred behind the
-                // gate and were applied by the give-up, i.e. handed back to the editor.
+                // shell is ready, and written to the pty behind the line and its Enter at its
+                // give-up (owner decision 2026-11-09, "keep them together"; #1661 discarded
+                // them). Inserted, they became a programmatic edit deferred behind the gate and
+                // were applied by the give-up, i.e. handed back to the editor.
+                //
+                // #1997 (open): the `to_pty` branch above does NOT make this check, so keys
+                // that contain an Enter are written at once even while a non-empty line waits
+                // behind the unready gate, and run before it.
                 //
                 // Not behind the multi-line dialog's gate: that dialog asks about a later Enter,
                 // and keys typed before it opened must not be discarded with its answer.
@@ -15856,8 +15861,8 @@ impl TerminalView {
                 // `submit_next_enter_as_shell_command` is not carried with the queued text: an
                 // `EntryKind::Text` has no room for it, and adding a field to the shared queue's
                 // entry kinds for one flag is not cheap. Released at readiness, the text is
-                // routed as typed keys are at that moment; discarded, no stale flag is left
-                // armed (r18u27 review: decided to leave it).
+                // routed as typed keys are at that moment; written by the give-up, no stale flag
+                // is left armed (r18u27 review: decided to leave it).
                 let queued = input.enter_queue_holds_keys(ctx)
                     && !input.multiline_dialog_gate_open()
                     && if in_mailbox_flush {
