@@ -259,6 +259,20 @@ def app_log_readers():
 
 
 @check
+def mode_proof_markers_match_the_current_agent_view_1568():
+    """round 9 macOS: the agent-mode mode_proof FAILED on a correct screen because it looked for 'New Phosphor Agent conversation' / 'Ask anything'
+    while the app shows 'New agent conversation', 'ESC for terminal' and 'Run commands, or ask the agent a question' (autodetect)."""
+    cur = "search tabs... new agent conversation esc for terminal new agent conversation run commands, or ask the agent a question ci ollama / gpt-oss:20b"
+    assert cases.ocr_agent_markers(cur) == (True, False), cases.ocr_agent_markers(cur)
+    assert cases.ocr_agent_markers("new phosphor agent conversation ask anything") == (True, False)         # older builds still count
+    assert cases.ocr_agent_markers("ask anything") == (True, False)
+    # a terminal session: the /agent hint, or only the autodetect placeholder (shown in BOTH modes) is never an agent marker
+    assert cases.ocr_agent_markers("~/w git:(main) new /agent conversation") == (False, True)
+    assert cases.ocr_agent_markers("run commands, or ask the agent a question") == (False, False)
+    assert cases.ocr_agent_markers("") == (False, False)
+
+
+@check
 def profile_rec_log():
     d = tempfile.mkdtemp()
     try:

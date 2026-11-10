@@ -1625,11 +1625,24 @@ def ocr_upscaled(backend_name, p):
     return out if r.returncode == 0 and os.path.exists(out) else None
 
 
+def ocr_agent_markers(low):
+    """(is_agent, terminal_hint) from lower-cased, whitespace-normalised OCR text. Agent view shows the header 'New agent conversation'
+    (older builds: 'New Phosphor Agent conversation'), the 'ESC for terminal' bar, or an 'Ask anything' placeholder. NOT the 'Run commands, or
+    ask the agent a question' placeholder: autodetect shows it in a terminal session AND in agent view (round 9 macOS agent mode_proof: the
+    app log said agent, the screen had the new header and the ESC bar, and the old marker strings failed the case on a correct screen).
+    The 'new /agent conversation' hint under a prompt means a TERMINAL session and does not count as an agent marker."""
+    hint = "/agent" in low and "conversation" in low
+    header = "new phosphor agent conversation" in low or "new agent conversation" in low
+    esc_bar = "esc for terminal" in low
+    placeholder = "ask anything" in low
+    return (header or esc_bar or placeholder) and not (hint and not (header or esc_bar)), hint
+
+
 # ---------------------------------------------------------------- mode proof
 @case("mode_proof", order=1, gui=True)
 def c_mode_proof(ctx, r):
     """screenshot proof of the session mode before any key is typed (shots/<mode>_proof.png is the evidence), plus OCR when an engine exists.
-    Agent mode = header 'New Phosphor Agent conversation' + 'Ask anything' placeholder (+ model chip with the CI model).
+    Agent mode = header 'New agent conversation' (older builds 'New Phosphor Agent conversation') or the 'ESC for terminal' bar or an 'Ask anything' placeholder (+ model chip with the CI model); see ocr_agent_markers.
     The hint 'new /agent conversation' under a prompt means a TERMINAL session: it must not count as an agent marker."""
     # The proof is read from the PRE-KEY screenshot (shots/<mode>_proof_prekey.png): Escape in a fresh agent view LEAVES agent mode
     # (macOS CI run 3015802940 showed 'New terminal session' after the Escape in the agent pass), so the Escape is sent only after.
@@ -1658,20 +1671,17 @@ def c_mode_proof(ctx, r):
         r.note("no OCR engine: screenshot only (shots/%s_proof_prekey.png), mode not machine-verified" % ctx.label)
         return
     low = " ".join(txt.lower().split())
-    hint = "/agent" in low and "conversation" in low                       # terminal-mode hint line
-    header = "new phosphor agent conversation" in low
-    placeholder = "ask anything" in low
-    is_agent = (header or placeholder) and not (hint and not header)
+    is_agent, hint = ocr_agent_markers(low)
     r.metric("ocr_agent_markers", is_agent)
     r.metric("ocr_terminal_hint", hint)
     if ctx.mode == "agent":
-        r.check(is_agent, "agent mode expected but the screen shows no agent markers ('New Phosphor Agent conversation' / 'Ask anything'); terminal hint present: %s" % hint)
+        r.check(is_agent, "agent mode expected but the screen shows no agent markers ('New agent conversation' / 'ESC for terminal' / 'Ask anything'); terminal hint present: %s" % hint)
         if ctx.ollama:
             chip = "gpt-oss" in low
             r.metric("ocr_model_chip_gpt_oss", chip)
             r.check(chip, "model chip 'gpt-oss:20b' not visible before any key was typed (the CI Ollama model is not the active one)")
     else:
-        r.check(not is_agent, "terminal mode expected but the screen shows agent markers ('New Phosphor Agent conversation' / 'Ask anything')")
+        r.check(not is_agent, "terminal mode expected but the screen shows agent markers ('New agent conversation' / 'ESC for terminal' / 'Ask anything')")
 
 
 # ---------------------------------------------------------------- cadence
