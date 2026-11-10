@@ -5199,3 +5199,44 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
   positive of the check: read the scenario before changing an allowance. No appci case was added: the fake model cannot make the app
   lose a call, a batch or a card, which is what the heal is for.
 - **Kill switch.** `PHOSPHOR_AGENT_TURN_SELF_HEAL=0`: faults are logged (`healed=0`), nothing is healed.
+
+## Round 14: test hygiene: view tests that read the pty recorder inside the update that wrote (design `docs/design/r14-hygiene.md`; nothing compiled or run when written)
+
+**The rule (r13-pin2).** A pty write of the terminal view is an event (`Event::WriteBytesToPty`, `Event::WriteHandoffUserBytesToPty`).
+`ViewContext::emit` queues it; the test's recorder (`collect_pty_writes`, `record_pty_writes`, `record_all_pty_writes`,
+`subshell_pty_writes`, or a hand-rolled subscription) runs when the OUTERMOST update returns. Inside `terminal.update(&mut app, |view,
+ctx| { .. })` the recorder holds only what earlier updates wrote: `assert!(pty_writes.borrow().is_empty())` after typing in the same
+update passes whatever the app did, and an exact-content assertion there cannot pass. Read the recorder after the update.
+
+**The audit of `terminal/view_test.rs` (round 14).** 389 reads of `pty_writes`, 72 of them (51 assertions) inside an `.update(`
+closure, 9 more inside `with_ssh_hold_path` bodies (the helper ran the whole body in one update), and the same pattern under the names
+`written`, `retries`, `etx_writes`, `executed`, `delivered`. Every in-update read was an `is_empty()` or a length; none could fail.
+Each was read and sorted: a *real read* (nothing emitted before it in its update), *carried* (a later read after the update is still
+empty; or the same update counts the held entries and the read after it has every byte exactly once, as one exact chunk, or in an
+order an early write would break), or *vacuous* (nothing reads the recorder after the update at all, or a release follows in the same
+update and only a flag stands between "held" and "written early and not again"). No assertion was removed or weakened; a vacuous one
+now reads the recorder after the update, at the same point of the same sequence.
+
+- **Moved after their update (nothing read the recorder after it; the claim "nothing reached the pty" was unproven):**
+  `ssh_run_by_the_agent_does_not_take_the_agent_view_editor_keys`, `pane_key_with_editor_focus_is_inserted_once_and_not_written_to_the_pty`,
+  `pane_key_typed_into_a_text_field_inside_the_pane_is_not_the_sinks`, `ssh_middle_click_paste_with_a_pending_read_keeps_typed_order_around_it`,
+  `ssh_paste_between_held_keys_keeps_typed_order_in_both_modes` (both reads), `shadow_mode_changes_no_destination_and_logs_nothing_when_they_agree`,
+  `replayed_text_is_delivered_by` (the legacy and table tests), `table_mode_text_replayed_after_an_ssh_recognised_at_preexec_only_is_held_not_run_locally`,
+  `table_mode_text_replayed_into_a_new_ssh_connect_is_held_then_delivered_once`, `a_held_signal_is_discarded_when_the_connect_ends_without_a_remote_shell`,
+  `only_table_mode_decides_live_keys_with_the_table`, `table_mode_text_typed_behind_a_gate_waits_as_a_neutral_entry_and_is_routed_when_it_opens`.
+- **The update ended at the read, the next update continues (a release followed in the same update):**
+  `keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order`, `text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order`
+  (its first half), `key_typed_between_bootstrapped_and_the_first_prompt_in` (legacy and table),
+  `typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_nothing`,
+  `managed_ssh_block_end_without_a_verdict_releases_the_keys_to_the_local_shell`, `managed_ssh_verdict_before_ownership_is_honoured_for_each_verdict`
+  (the managed arm), `managed_ssh_a_second_verdict_is_ignored`, `ssh_keys_typed_in_the_agent_view_editor_during_connect_are_held_and_handed_over_once`,
+  `ssh_window_armed_at_preexec_for_a_users_submit_holds_the_agent_view_editor_keys`, `ssh_output_does_not_end_the_hold_ownership_does`,
+  `a_young_hold_give_up_asks_for_the_request_decision` (the `retries` count), `a_precmd_does_not_commit_input_to_the_editor_so_a_precmd_read_gets_the_pin`,
+  `a_hold_whose_wait_a_preexec_cleared_is_released_by_the_latch`, `a_command_running_past_the_prompt_hold_cap_keeps_its_keys_held_and_the_hold_on`
+  (the read after the second cap), `a_subshell_that_exits_during_the_setup_ends_the_net` and
+  `a_give_up_unregisters_the_probe_id_and_a_late_probe_answer_is_ignored` (both compared two lengths taken inside one update: 0 and 0).
+- **If one of these fails in the next unit run:** the old assertion could not fail, so the failure is new information. Read the
+  recorder's contents in the message: bytes there mean the app wrote where the test says it does not (APP, a key written early or a
+  write the test's author never saw), or the test's claim was never true of the sequence it builds (TEST). A split delivers the first
+  half's events before the second half runs, as the app does between two keys; only the test's recorder subscribes to the view's
+  events in these tests, and nothing between the halves awaits, so timers and model events do not run there.
