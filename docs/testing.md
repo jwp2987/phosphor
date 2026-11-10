@@ -870,7 +870,8 @@ budget, previous build, baseline, verdict, n).
   records the line used.
 - **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).
   `latency_key_log` is `NO-REFERENCE` everywhere today: it reads the app's own `input_order` clock (keydown to first frame) and no
-  reference terminal exposes a comparable one; absolute numbers and the old CI sanity bounds (p50 <= 20 ms, p99 <= 60 ms) still apply.
+  reference terminal exposes a comparable one; absolute numbers and the old CI sanity bounds (p50 <= 20 ms, p99 <= 60 ms) still apply
+  (on macOS the app's own share of it is held to the 2 ms own-work budget, see "macOS `latency_key_log` key -> frame" below, #2037).
   The app logs a `frame` line only for the first frame after pty output that followed a pty write, so keys typed at a prompt (they
   go to the input editor, not the pty) never produce one (#1486: why the case once found 0 pairs among thousands of `keydown` lines).
   The case types into a running `cat > /dev/null` instead, pairs each plain `keydown` with the first following `frame`
@@ -912,6 +913,30 @@ budget, previous build, baseline, verdict, n).
   the median gate. Self-test: `ctrl_c_regression_is_judged_on_the_app_share` (the round 10 numbers: +10 % on the median with the share
   unchanged passes with the delta reported; a regressed share fails; re-measure; hard bound; fallback to the median gate; old records;
   the promoted baseline), `ctrl_c_segments_split_the_app_share` (`handler_to_write`).
+- **macOS `latency_key_log` key -> frame is judged on the app's own share and on the p95, not on the median** (#2037,
+  `docs/design/r12-mackey.md`). The echo frame of a key typed into `cat` is requested by the pty read and waits for AppKit's next display
+  pass (`input_order hop=key_frame_sched ms=`, 0.6-7.6 ms at 120 Hz, set by where in the refresh interval the key arrived). That wait is four
+  fifths of the median: over 26 Mac measurements of unchanged code the median was 5.86-8.44 ms (standard error 0.5-0.7 ms at n=60, larger
+  than the +5 % / +0.5 ms gate) while p95 stayed 9.16-9.44 and the app's work did not move. Round 11 failed "REGRESSION key to frame: median
+  7.28 vs baseline build +1.05 ms" with the app's share at 1.68 ms; the same session measured 7.47 and then 5.87 in agent mode. On macOS
+  (`cases.key_frame_regress_basis`; both modes):
+  - the figure is `key_to_frame_less_display_wait`: each key -> frame pair minus the part of the logged wait that lies after the keydown
+    (`cases.key_frame_shares`; a frame with no `hop=key_frame_sched` line since the frame before it has no figure). It carries the two
+    regression verdicts when at least 90 % of the pairs have it (`cases.key_frame_app_share`) and n >= `APPCI_MIN_SAMPLES`, with the same
+    thresholds and the same one re-measure as the Ctrl-C share above; the median's delta is recorded and printed as `NOT JUDGED`;
+  - **hard bound:** the share over `APPCI_KEY_APP_SHARE_MAX_MS` (default: `APPCI_KEY_BUDGET_MS`, the 2 ms own-work budget, which this
+    case could not judge before because it has no reference terminal; measured 1.47-1.72 ms in round 11) is a `FAIL`;
+  - **tail gate** (`cases.key_frame_tail_checks`, only when the share is the basis): the p95 of the whole key -> frame time against the
+    p95 of the previous build and of the baseline, `lat.regress` thresholds, one re-measure (still over = `FAIL`, clean = `WARN`, an
+    empty re-measure clears nothing). p95 is one refresh interval plus the app's work, so a display pass missed for more than 5 % of
+    the keys, or app work that grew, shows there. Recorded as `lat.key_to_frame.tail`;
+  - metrics `key_to_frame_own_ms` and `key_frame_display_wait_ms`, and a `#2037` note with both medians;
+  - `baselines/macos.json` has no share for this record yet (it was promoted on 2026-11-06 from the v0.1.17 release run): the baseline's
+    share verdict is `none` with a note until a full-tier run is promoted again; until then the hard bound, the tail against the
+    baseline's p95 (9.32 terminal, 9.28 agent) and the sanity bounds judge the run.
+  Linux and Windows log no such wait and keep the median gate, as does a Mac log without the hop. No budget and no threshold changed.
+  Self-test: `mac_key_to_frame_regression_is_judged_on_the_app_share_and_the_tail` (the split, the 90 % rule, round 11's numbers on both
+  bases, a promoted baseline, a regressed share, the hard bound, a missed display pass, the fallback).
 - **Promote a baseline** (coordinator, from a run on the build the owner judged good):
   `python3 script/realapp/appci/baseline.py promote <results.json> <platform>` then commit the file; `baseline.py compare <old> <new>`
   prints a delta table for two results/baseline files. The seeded files are `"status": "pending"`.

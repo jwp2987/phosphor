@@ -961,6 +961,111 @@ def ctrl_c_regression_is_judged_on_the_app_share():
 
 
 @check
+def mac_key_to_frame_regression_is_judged_on_the_app_share_and_the_tail():
+    """#2037 (docs/design/r12-mackey.md): on macOS key -> frame of latency_key_log is mostly the wait for the next display pass, so its median moved
+    5.86-8.44 ms on unchanged code and round 11 failed '+1.05 ms vs baseline' with the app's share at 1.68 ms. The regression verdicts are judged on
+    key -> frame minus the logged wait (hop=key_frame_sched), that share has the 2 ms own-work bound, and the p95 of the whole is judged against the
+    older builds' p95 so a missed display pass still fails. Without the figure (other platforms, no hop line) the median gate applies as before."""
+    import lat
+    kd = lambda t: "input_order keydown key=m ctrl=false alt=false shift=false cmd=false t=%.3f seq=1" % t
+    sched = lambda w, t: "input_order hop=key_frame_sched ms=%.2f t=%.3f" % (w, t)
+    frame = lambda t: "input_order frame layout=true t=%.3f" % t
+    # 1. the split: total = frame - keydown; the wait counts only from the keydown on; a frame with no sched line has no figure; a sched line that an
+    #    echo-less frame (hop=key_frame, no `frame` line) used up is not carried to the next frame; a ctrl key never pairs
+    txt = "\n".join([
+        kd(1000.0), "input_order pty_write bytes=1 t=1000.340", sched(5.74, 1006.3), frame(1007.28), "input_order hop=key_frame layout=true t=1007.30",
+        kd(2000.0), kd(2003.0), sched(4.0, 2005.0), frame(2006.0),                 # second key typed 2 ms into the 4 ms wait: it waited the other 2
+        kd(3000.0), frame(3009.0),                                                 # no sched line: no figure
+        kd(4000.0), sched(7.0, 4001.0), "input_order hop=key_frame layout=true t=4001.5", frame(4008.0),      # that wait belonged to another frame
+        "input_order keydown key=c ctrl=true alt=false shift=false cmd=false t=5000.0 seq=9", sched(1.0, 5002.0), frame(5003.0)])
+    sh = cases.key_frame_shares(txt)
+    assert [tuple(None if x is None else round(x, 2) for x in s) for s in sh] == [
+        (7.28, 1.54, 5.74), (6.0, 2.0, 4.0), (3.0, 1.0, 2.0), (9.0, None, None), (8.0, None, None)], sh
+    assert [round(t, 2) for t, _, _ in sh] == [round(x, 2) for x in cases.key_frame_pairs(txt)[0]], "the same pairs as key_frame_pairs"
+    # 2. the figure: needs it for >= 90 % of the pairs
+    full = [(7.0 + i % 3, 1.6 + 0.01 * (i % 3), 5.4) for i in range(60)]
+    assert cases.key_frame_app_share(full) == dict(what="key_to_frame_less_display_wait", p50=1.61, n=60)
+    assert cases.key_frame_app_share(full[:50] + [(9.0, None, None)] * 10) is None and cases.key_frame_app_share([]) is None and cases.key_frame_app_share(sh) is None
+    assert cases.key_frame_app_share(full[:55] + [(9.0, None, None)] * 5)["n"] == 55
+    orig_p, orig_b, env = cases.plat, lat.load_baseline, {k: os.environ.pop(k, None) for k in ("APPCI_KEY_APP_SHARE_MAX_MS", "APPCI_KEY_BUDGET_MS", "APPCI_PREV_RESULTS")}
+    rid = "terminal/latency_key_log/key_to_frame"
+    share = lambda p50, **k: dict(dict(what="key_to_frame_less_display_wait", p50=p50, n=60), **k)
+    # round 11's figures: median 7.28 against the baseline's 6.23, p95 9.4 against 9.32
+    r11 = [3.0 + 0.1 * i for i in range(29)] + [7.26, 7.30] + [8.0] * 26 + [9.4, 9.41, 9.42]
+    try:
+        # 3. where the basis applies, and its hard bound
+        cases.plat = lambda: "macos"
+        got = cases.key_frame_regress_basis(share(1.68), lambda: full)
+        assert got["budget_ms"] == 2.0 and got["what"] == "key_to_frame_less_display_wait" and got["remeasure"]()["p50"] == 1.61 and len(got["remeasure"]()["samples"]) == 60, got
+        os.environ["APPCI_KEY_BUDGET_MS"] = "3"
+        assert cases.key_frame_regress_basis(share(1.68), lambda: full)["budget_ms"] == 3.0
+        os.environ["APPCI_KEY_APP_SHARE_MAX_MS"] = "2.5"
+        assert cases.key_frame_regress_basis(share(1.68), lambda: full)["budget_ms"] == 2.5
+        os.environ.pop("APPCI_KEY_APP_SHARE_MAX_MS"), os.environ.pop("APPCI_KEY_BUDGET_MS")
+        assert cases.key_frame_regress_basis(None, lambda: full) is None, "no figure: the median gate"
+        cases.plat = lambda: "linux-wayland"
+        assert cases.key_frame_regress_basis(share(1.68), lambda: full) is None, "other platforms keep the median gate"
+        cases.plat = lambda: "macos"
+
+        def run(samples, sh_p50, base, tail_again=None, share_again=None):
+            lat.load_baseline = lambda platform: ("ok", {rid: base})
+            calls = []
+            basis = cases.key_frame_regress_basis(share(sh_p50) if sh_p50 is not None else None, lambda: calls.append("share") or (share_again or full))
+            rec = lat.evaluate(rid, samples, None, 2.0, "overhead", "macos", remeasure=lambda: calls.append("median") or samples, app_share=basis)
+            r = cases.Result("latency_key_log", "terminal")
+            cases.lat_checks(r, rec, "key to frame")
+            cases.key_frame_tail_checks(r, rec, "key to frame", lambda: calls.append("tail") or (samples if tail_again is None else tail_again))
+            return rec, r, calls
+        old = {"n": 60, "p50": 6.23, "p95": 9.32}
+        # 4. round 11 as it ran, on the median gate (no figure): FAIL, re-measured
+        rec, r, calls = run(r11, None, old)
+        assert rec["phosphor"]["p50"] == 7.28 and rec["regress_basis"] == "median" and rec["baseline_verdict"] == "fail" and calls == ["median"] and "tail" not in rec, (rec, calls)
+        assert any("REGRESSION key to frame: median 7.28 vs baseline build +1.05 ms" in f for f in r.fails), r.fails
+        # 5. the same numbers with the share: the baseline has no share yet, so nothing is compared on it (said, with the median's delta as NOT JUDGED);
+        #    the tail is within the gate (9.4 vs 9.32); no failure, no re-measure
+        rec, r, calls = run(r11, 1.68, old)
+        assert rec["regress_basis"] == "app_share" and rec["baseline_verdict"] == "none" and rec["verdict"] == "no-reference" and not r.fails and calls == [], (rec, r.fails, calls)
+        assert rec["baseline"]["median_verdict"] == "fail" and rec["baseline"]["delta_ms"] == 1.05 and rec["app_share"]["budget_verdict"] == "pass", rec
+        assert rec["tail"]["baseline"] == {"p95": 9.32, "delta_ms": 0.08, "delta_pct": 0.9, "verdict": "pass"} and rec["tail"]["prev"]["verdict"] == "none", rec["tail"]
+        assert any(n.startswith("NOT JUDGED: key to frame: median 7.28 vs baseline build +1.05 ms") for n in r.notes), r.notes
+        assert any("no app-share figure" in n for n in rec["notes"]), rec["notes"]
+        # 6. a promoted baseline carries the share: an unchanged share passes; a grown one FAILs after its re-measure; a clean re-measure is a WARN;
+        #    over the hard bound it FAILs whatever the comparison says
+        new = dict(old, app_share={"what": "key_to_frame_less_display_wait", "p50": 1.6, "n": 60})
+        rec, r, calls = run(r11, 1.68, new)
+        assert rec["baseline_verdict"] == "pass" and rec["app_share"]["baseline"]["delta_ms"] == 0.08 and not r.fails and calls == [], (rec, calls)
+        slow = [(8.0, 2.4, 5.6)] * 60
+        rec, r, calls = run(r11, 2.4, old)
+        assert rec["app_share"]["budget_verdict"] == "fail" and rec["verdict"] == "fail" and any("exceeds its 2.0 ms budget" in f for f in r.fails), (rec["app_share"], r.fails)
+        os.environ["APPCI_KEY_APP_SHARE_MAX_MS"] = "5"
+        rec, r, calls = run(r11, 2.4, new, share_again=slow)
+        assert rec["baseline_verdict"] == "fail" and calls == ["share"] and any("REGRESSION key to frame: the app's own share" in f for f in r.fails), (rec, r.fails, calls)
+        rec, r, calls = run(r11, 2.4, new)
+        assert rec["baseline_verdict"] == "warn" and not r.fails and any(n.startswith("WARN key to frame: the app's own share") for n in r.notes), (rec, r.fails)
+        os.environ.pop("APPCI_KEY_APP_SHARE_MAX_MS")
+        # 7. the tail: a display pass missed for 6 of 60 keys (p95 one interval later) with the share unchanged FAILs after one re-measure of its own;
+        #    a clean re-measure is a WARN; a re-measure with no samples clears nothing
+        missed = r11[:54] + [x + 8.33 for x in r11[54:]]
+        rec, r, calls = run(missed, 1.68, new)
+        assert calls == ["tail"] and rec["tail"]["baseline"]["verdict"] == "fail" and rec["tail"]["baseline"]["remeasure"]["verdict"] == "fail" and rec["verdict"] == "fail", (rec["tail"], calls)
+        assert any(f.startswith("REGRESSION key to frame: p95 ") and "re-measured once: p95 " in f for f in r.fails), r.fails
+        rec, r, calls = run(missed, 1.68, new, tail_again=r11)
+        assert rec["tail"]["baseline"]["verdict"] == "warn" and not r.fails and rec["verdict"] == "warn" and any(n.startswith("WARN key to frame: p95 ") for n in r.notes), (rec["tail"], r.fails)
+        rec, r, calls = run(missed, 1.68, new, tail_again=[])
+        assert calls == ["tail"] and rec["tail"]["baseline"]["verdict"] == "fail" and r.fails, "an empty re-measure must not clear a tail FAIL"
+        # 8. on the median basis the tail is not judged a second time (the median gate covers the whole)
+        cases.plat = lambda: "linux-wayland"
+        rec, r, calls = run(missed, 1.68, new)
+        assert rec["regress_basis"] == "median" and "tail" not in rec and "app_share" not in rec, rec
+    finally:
+        cases.plat, lat.load_baseline = orig_p, orig_b
+        for k, v in env.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+
+@check
 def previous_run_with_few_samples_is_ignored():
     import lat
     tmp = tempfile.mkdtemp()

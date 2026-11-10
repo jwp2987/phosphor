@@ -4446,6 +4446,102 @@ def key_write_pairs(txt):
     return ds
 
 
+KEY_SCHED_RE = re.compile(r"input_order hop=key_frame_sched ms=(\d+(?:\.\d+)?) t=(\d+\.\d+)")
+KEY_FRAME_OWN = "key_to_frame_less_display_wait"
+
+
+def key_frame_shares(txt):
+    """#2037: the pairs of key_frame_pairs, each split into the wait for the display pass and the rest. macOS logs `input_order hop=key_frame_sched
+    ms=<W> t=<ms>` when a frame a key asked for starts (crates/warpui/src/platform/mac/frame_latency.rs: redraw request -> AppKit's display pass);
+    W is 0.6-7.6 ms at 120 Hz, set by where in the refresh interval the key arrived, and is four fifths of the key -> frame median
+    (docs/design/r12-mackey.md). -> [(total_ms, own_ms, wait_ms)] in the order of key_frame_pairs; own = total minus the part of the wait that lies
+    after the keydown (a key typed while the frame was already waiting only waited from its own keydown on). own and wait are None for a pair whose
+    frame logged no such line since the frame before it (another platform, an older build): no figure, never a guess."""
+    pending, out, sched = [], [], None
+    for l in txt.splitlines():
+        m = KEYDOWN_RE.search(l)
+        if m:
+            if m.group(1) != "true":
+                pending.append(float(m.group(2)))
+            continue
+        m = KEY_SCHED_RE.search(l)
+        if m:
+            sched = (float(m.group(1)), float(m.group(2)))
+            continue
+        m = FRAME_RE.search(l)
+        if m:
+            tf = float(m.group(1))
+            for t in pending:
+                if tf < t:
+                    continue
+                if sched and sched[1] <= tf:
+                    wait = max(0.0, sched[1] - max(t, sched[1] - sched[0]))
+                    out.append((tf - t, tf - t - wait, wait))
+                else:
+                    out.append((tf - t, None, None))
+            pending, sched = [], None
+        elif "input_order hop=key_frame " in l:
+            sched = None                 # a frame with no echo behind it (no `frame` line) took that wait
+    return out
+
+
+def key_frame_app_share(shares):
+    """key_frame_shares() output (warm-up already dropped) -> dict(what, p50, n) for lat.evaluate(app_share=), or None when fewer than 90 % of the
+    pairs have the figure (then the median gate applies, as before)."""
+    own = [o for _, o, _ in shares or [] if o is not None]
+    if not own or len(own) < 0.9 * len(shares):
+        return None
+    return dict(what=KEY_FRAME_OWN, p50=round(statistics.median(own), 2), n=len(own))
+
+
+def key_frame_regress_basis(share, again):
+    """#2037: on macOS the regression verdicts of latency_key_log (vs the previous build and the baseline) are judged on the app's own share of
+    key -> frame, not on the median of the whole. The whole is mostly the wait for the next display pass: its median moved 5.86-8.44 ms over 26
+    measurements of unchanged code (standard error 0.5-0.7 ms at n=60) against a gate of +5 % / +0.5 ms, and round 11 failed on it with the app's
+    share at 1.68 ms. -> the app_share argument of lat.evaluate, or None (other platforms, or no figure in the log: the median gate, as before).
+    Hard bound: the share over APPCI_KEY_APP_SHARE_MAX_MS (default APPCI_KEY_BUDGET_MS, the owner's 2 ms own-work budget) fails the case.
+    again: callable -> key_frame_shares() output of a fresh run (warm-up dropped)."""
+    if not (plat().startswith("macos") and share):
+        return None
+
+    def remeasure():
+        sh = again()
+        return dict(key_frame_app_share(sh) or {}, samples=[t for t, _, _ in sh])
+    return dict(share, budget_ms=float(os.environ.get("APPCI_KEY_APP_SHARE_MAX_MS", os.environ.get("APPCI_KEY_BUDGET_MS", "2"))), remeasure=remeasure)
+
+
+def key_frame_tail_checks(r, rec, label, again):
+    """#2037: with the app's share as the regression basis the wait for the display pass is out of the judged figure, so the upper end of the whole
+    key -> frame time is judged here: its p95 (one refresh interval plus the app's work; 9.16-9.44 ms over 26 Mac measurements while the median moved
+    2.6 ms) against the p95 of the previous build and of the baseline, lat.regress thresholds, one re-measure (still over = FAIL, clean = WARN, as
+    for the median). A display pass missed for more than 5 % of the keys, or app work that grew, shows here. Nothing is judged on the median basis
+    (there the median gate already covers the whole). again: callable -> a fresh key -> frame sample list. The verdicts go into rec['tail']."""
+    if rec.get("regress_basis") != "app_share":
+        return
+    second, tail = (rec.get("remeasure") or {}).get("phosphor") or None, {}
+    for tag in ("prev", "baseline"):
+        old = (rec.get(tag) or {}).get("p95")
+        v, dm, dp = lat.regress(rec["phosphor"]["p95"], old)
+        tail[tag] = {"p95": old, "delta_ms": dm, "delta_pct": dp, "verdict": v}
+        if v not in ("fail", "warn"):
+            continue
+        msg = "%s: p95 %s vs %s build %+.2f ms (%+.1f%%)" % (label, rec["phosphor"]["p95"], tag, dm, dp)
+        if v == "fail":
+            if not second or second.get("p95") is None:
+                second = lat.summarize(again())
+                rec.setdefault("remeasure", {}).setdefault("phosphor", second)
+            v2 = lat.regress(second["p95"], old)[0] if second.get("p95") is not None else "fail"      # a re-measure with no samples clears nothing
+            tail[tag]["remeasure"] = {"p95": second.get("p95"), "verdict": v2}
+            msg += "; re-measured once: p95 %s (%s)" % (second.get("p95"), v2)
+            v = tail[tag]["verdict"] = "fail" if v2 in ("fail", "warn") else "warn"
+        if v == "fail":
+            r.check(False, "REGRESSION " + msg)
+        else:
+            r.note("WARN " + msg)
+    rec["tail"] = tail
+    rec["verdict"] = lat.worst(rec["verdict"], *[t["verdict"] for t in tail.values()])
+
+
 @case("latency_key_log", order=42, gui=True)
 def c_lat_key(ctx, r):
     """key -> first frame after the echo, from the app's own input_order log (keydown ... pty_write -> pty_read -> frame);
@@ -4471,12 +4567,21 @@ def c_lat_key(ctx, r):
         ds, cnt = key_frame_pairs(txt)
         run_keys.counts = cnt
         run_keys.txt = txt
+        run_keys.shares = key_frame_shares(txt)[warm:]       # the same pairs, split into the wait for the display pass and the app's share (#2037)
         return ds[warm:], [(m.group(1), int(m.group(2))) for m in SLOW.finditer(txt)]
 
     ui_off = ctx.log_size()          # the UI-work window: the typed keys of the first run (the `cat` start is a handful of items; the 5 % allowance covers it)
     ds, slow = run_keys(n + warm)
     ui_txt = ctx.log_since(ui_off)       # the window ends here: lat.evaluate's remeasure below types more keys
     r.metric("key_to_frame_ms", stats(ds))
+    # #2037: what key -> frame is made of where the app logs the wait for the display pass (macOS): the app's own share, and that wait.
+    shares = getattr(run_keys, "shares", [])
+    share = key_frame_app_share(shares)
+    if share:
+        r.metric("key_to_frame_own_ms", stats([o for _, o, _ in shares if o is not None]))
+        r.metric("key_frame_display_wait_ms", stats([w for _, _, w in shares if w is not None]))
+        r.note("#2037 key to frame without the wait for the display pass (the app's own share): median %.2f ms (p95 %.2f, n=%d); the wait itself: median %.2f ms (max %.2f)" % (
+            share["p50"], r.metrics["key_to_frame_own_ms"]["p95"], share["n"], r.metrics["key_frame_display_wait_ms"]["p50"], r.metrics["key_frame_display_wait_ms"]["max"]))
     # #1176 (owner 2026-11-03: measure first, then decide): the app's own key -> pty write(2) share, whose target is <= 1 ms median at idle
     # (keys here are 80-180 ms apart), and the main-thread items >= 4 ms and model-lock holds >= 2 ms during the same typing. Informational:
     # metrics and a note, never a check, until the owner sets the verdict from a real-GPU run.
@@ -4511,10 +4616,14 @@ def c_lat_key(ctx, r):
         return
     # Phosphor-side clock only (keydown -> first frame after the echo); there is no paint read-back for a reference terminal through
     # Wayland / ScreenCaptureKit at this resolution, so the 2 ms overhead budget cannot be judged: verdict 'no-reference'.
+    # Regression basis (#2037, docs/design/r12-mackey.md): on macOS the app's own share of key -> frame, with a hard bound at the own-work budget, and
+    # the p95 of the whole against the older builds' p95 (key_frame_tail_checks). Elsewhere, and without the figure, the median gate as before.
     rec = lat.evaluate("%s/latency_key_log/key_to_frame" % ctx.label, ds, None, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
-                       remeasure=lambda: run_keys(n + warm)[0], notes=["Phosphor-side keydown to first frame; no same-method reference exists"])
+                       remeasure=lambda: run_keys(n + warm)[0], notes=["Phosphor-side keydown to first frame; no same-method reference exists"],
+                       app_share=key_frame_regress_basis(share, lambda: (run_keys(n + warm), run_keys.shares)[1]))
     r.metrics.setdefault("lat", {})["key_to_frame"] = rec
     lat_checks(r, rec, "key to frame")
+    key_frame_tail_checks(r, rec, "key to frame", lambda: run_keys(n + warm)[0])
     # UI work (#1548): the app's `hop=ui_item` line (input_order::log_ui_item_if_over_budget, main thread, an event/action/frame at or over the 4 ms
     # budget) is the real ≤4 ms line; the older slow-operation log (#1146) only emits >= 8 ms and stays as a second source. Judged over the typed keys of
     # the FIRST run. `event` / `action` items are UI logic: more than max(2, 5 % of the keys) over 4 ms FAIL. `frame` items include rasterisation, which
