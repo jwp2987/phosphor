@@ -155,17 +155,28 @@ async fn fetch_file_to_memory(url: Url) -> Result<Bytes, anyhow::Error> {
             CLIENT.get_or_init(|| built).clone()
         }
     };
+    // Every reqwest error below is stripped of its URL: reqwest's `Display` appends
+    // "for url (<url>)", and the asset cache logs a failed fetch with its error
+    // ("Asset fetch failed (..): {err:#}"). The app log never names a remote image's host,
+    // port or path.
     cfg_if::cfg_if! {
         if #[cfg(target_family = "wasm")] {
-            let response = client.get(url).send().await?;
+            let response = client.get(url).send().await.map_err(reqwest::Error::without_url)?;
         } else {
             // On non-web platforms, reqwest expects that it is operating within
             // a Tokio-compatible runtime, so use async-compat to wrap the call
             // so reqwest's expectations are met.
-            let response = async_compat::Compat::new(async move { client.get(url).send().await }).await?;
+            let response = async_compat::Compat::new(async move { client.get(url).send().await })
+                .await
+                .map_err(reqwest::Error::without_url)?;
         }
     }
-    let content = response.error_for_status()?.bytes().await?;
+    let content = response
+        .error_for_status()
+        .map_err(reqwest::Error::without_url)?
+        .bytes()
+        .await
+        .map_err(reqwest::Error::without_url)?;
     Ok(content)
 }
 

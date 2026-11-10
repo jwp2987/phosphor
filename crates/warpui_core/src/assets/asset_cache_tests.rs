@@ -81,6 +81,45 @@ fn local_file_content_version_is_none_for_missing_file() {
     );
 }
 
+/// A URL asset's key is its URL. `Debug` is what the asset log lines print, and the app log
+/// must never name a remote image's host, port or path (network gate privacy rule).
+#[test]
+fn async_asset_id_debug_prints_a_fingerprint_never_the_key() {
+    struct UrlLike;
+    impl super::AsyncAssetType for UrlLike {}
+
+    let url = "http://gate-host.example:8099/private/a_tok123.png";
+    let id = super::AsyncAssetId::new::<UrlLike>(url);
+    let shown = format!("{id:?}");
+    for needle in [
+        "gate-host",
+        "example",
+        "8099",
+        "private",
+        "a_tok123",
+        "http",
+    ] {
+        assert!(
+            !shown.contains(needle),
+            "Debug of an async asset id shows {needle:?}: {shown}"
+        );
+    }
+    assert!(
+        shown.contains(&format!("key_len: {}", url.len())),
+        "{shown}"
+    );
+    // The key is still what identifies the asset.
+    assert_eq!(id.key(), url);
+
+    // Two keys stay distinguishable in a log, and the same key prints the same way.
+    let other = super::AsyncAssetId::new::<UrlLike>("http://gate-host.example:8099/b.png");
+    assert_ne!(shown, format!("{other:?}"));
+    assert_eq!(
+        shown,
+        format!("{:?}", super::AsyncAssetId::new::<UrlLike>(url))
+    );
+}
+
 #[test]
 fn with_local_file_content_version_leaves_non_local_sources_unchanged() {
     let bundled = AssetSource::Bundled { path: "icon.svg" };
