@@ -178,8 +178,14 @@ def c_ready_vim_typeahead(ctx, r):
     r.check(write is not None, "the setup was written after vim (hop subshell_setup_ready_write)")
     r.check(alt is not None or unknown is not None, "while vim ran the judge waited (AltScreen or an Unknown leader in the hops)")
     if write is not None:
-        before = [ln for h, ln in hs[:write] if h == "subshell_ready_judged" and "decision=Write" in ln]
+        # The judged hop of the decision that wrote is logged just BEFORE the write hop (round 8 Linux: it was counted as an earlier
+        # decision, a harness bug); only Write decisions ahead of that one mean the app wrote or tried to while vim owned the tty.
+        judged_writes = [ln for h, ln in hs[:write] if h == "subshell_ready_judged" and "decision=Write" in ln]
+        before = judged_writes[:-1]
+        r.check(bool(judged_writes), "the write came from a Write decision (hop subshell_ready_judged decision=Write)")
         r.check(not before, "no Write decision before the one that wrote: %r" % before[:2])
+        if alt is not None:
+            r.check(alt < write, "the setup was written after vim's alt screen, not while it ran")
     leave_and_prove_parent(ctx, r, "vim", f, [tok])
 
 

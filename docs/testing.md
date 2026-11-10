@@ -3900,6 +3900,21 @@ inner shell when the `exit` was eaten, and run.py's `where_now()` cannot see a l
   6 s, so it never wrote the probe at the idle prompt. Open app issue; not fixed here (needs a live tty).
 - `subshell_ready_secret_after_prompt` on Linux (round 7): not an app bug. The log shows `Secret` judged 5 ms after the setup write (0 held chunks), then 41 `Pty(Typed)` keys straight to the `read -s`: the typed line (no Enter, by design) and `hunter2` reached the read in typed order as one line. The rc now sleeps 1 s before the `read -s` so the line is typed while the setup is still out and is held, then handed back.
 
+### Round 8 Linux Wayland terminal pass: `subshell_sh_probe` and `subshell_ready_vim_typeahead` (fix/r8-subshell-linux)
+
+Both failures are TEST bugs (build 0b817b355, with #1847 options 1 and 2).
+
+- `subshell_sh_probe` (dash): the app never wrote the probe because dash drew no prompt at all. The appci bashrc exports `PS1` and Phosphor
+  blanks it, so a dash started from the pane inherits an empty `PS1`: the cursor stays at column 0 (`tail=None`) at the idle "prompt"
+  (`Wait(CookedNoPrompt)` at arm time, 0 bytes) and after the first line, and the judge does not write into a shell it cannot prove idle.
+  busybox ash passed (a line reader: written at arm time, `subshell_setup_unsupported` 20 ms later). The case now gives dash / ash a
+  real `$ ` prompt through `$ENV` (an rc file the case writes; `export ENV=...` before the trials, `unset ENV` after), as a user's dash
+  has, and its comment states the #1847 option 2 expectation. The empty-PS1 dash is not written to by design.
+- `subshell_ready_vim_typeahead`: the oracle counted the Write decision that caused the write as an earlier one (its `subshell_ready_judged`
+  hop is logged just before `subshell_setup_ready_write`). The log shows vim waited the whole time (`Wait(AltScreen)`), then `Write(None)`
+  at bash's prompt after `:wq`. The case now allows exactly that one decision, requires it to exist, and requires the AltScreen wait to
+  precede the write.
+
 ## Paste routing in table mode (#1853)
 
 In `table` mode `paste()` is decided by the table's plan alone (`paste_plan_via_table`); the legacy ssh probe is not consulted, so one phase source (the ssh edge machine) judges the paste and the keys around it. Unit tests in `view_test.rs` (Legacy and Table via `set_destination_mode_for_test`): `ssh_paste_between_held_keys_keeps_typed_order_in_both_modes` (keys, paste, key held together; delivered once, in order, after ownership), `paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes`, `paste_during_a_powershell_setup_is_held_behind_earlier_keys_in_both_modes`. Written without a compiler; first run is on the build box.
