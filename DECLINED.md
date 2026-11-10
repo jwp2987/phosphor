@@ -3173,3 +3173,31 @@ goes back to on only by another owner decision, after the replacement delivery (
 `docs/design/r13-gbssh.md`) has passed a Windows run. Tests: `msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh`
 (cases `default-is-off`, `kill-switch`, `not-one-is-off`; `terminal/bootstrap_test.rs`), appci `ssh_gitbash_kill_switch`
 (the default and `=0` are both plain) and selftest `msys_managed_ssh_default_off_2051`.
+
+## Readline habits: Escape with vi keys, Alt-., Ctrl-R — DECIDED 2026-11-10 (#1984, #1989, #1988)
+
+Owner decisions on three key questions of the daily-user review. Design and evidence:
+`docs/design/r10-r14-keys.md`. Worked, unproven when written (nothing compiled or run).
+
+- **Escape in the agent view leaves it — kept. Not in a vi pane (#1984, IMPROVED).** Where the
+  input editor has vim keybindings on, or the pane's shell reported vi line editing at bootstrap,
+  an Escape that would leave the view stays with the vi keys (`terminal/view/agent_escape.rs`).
+  Upstream leaves the view on every such Escape. A running command keeps the Escape it had (#850
+  above). Ways out in a vi pane: the back button, Ctrl-C twice on an empty input. Kill switch
+  `PHOSPHOR_VI_ESCAPE_STAYS=0`. A re-pin must not restore the unconditional exit.
+- **Alt-. is last-argument on both sides of the prompt (#1989, IMPROVED).** The editor's
+  `editor:insert_last_word_previous_command` is `alt-.` on Linux and Windows (upstream: `meta-.`
+  only, which those platforms send only with an Alt key set to act as Meta; kept as a fixed
+  fallback) and `meta-.` on macOS (Option-. as Meta; an Option key that types characters keeps
+  typing them). With a program in front the key is `ESC .` for it, unchanged. NOT done: writing
+  `ESC .` to the shell while the input editor owns the line. The shell's line is not on screen
+  there and the hand-off counts it empty; bytes put into it are not a key the user sees land.
+- **Ctrl-C in the agent view pauses the agent — kept, unchanged (#1989).**
+- **Ctrl-R opens command search — kept (#1988).** The shell's own reverse-i-search is reached by
+  Ctrl-R wherever a shell without integration has the terminal (a nested shell, a plain ssh).
+  **NOT done, owner decision still open: the shell's reverse-i-search at the app's own prompt on
+  Alt-R.** It cannot be a binding that writes `^R`: the search is a mode of the shell's line
+  editor, shown on a line the input editor covers, and every later key and the next command
+  would be read by that hidden search. It needs the prompt lent to the shell (terminal focus, the
+  shell's line shown, the hand-off pty-owned until the next Preexec or prompt). Alt-R / Meta-R are
+  left unbound (a test pins it) so either answer stays possible.

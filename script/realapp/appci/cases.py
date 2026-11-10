@@ -77,6 +77,8 @@ PROVING = (
     "output_frames",
     # #1976: copy of soft-wrapped lines (keyboard block copy; pointer drag and triple click). #1990: the vertical tabs panel, the owner's layout
     "ui_copy_wrapped_output", "ui_copy_wrapped_drag", "ui_vertical_tabs_many", "ui_vertical_tabs_panel_click",
+    # #1989 / #1988: Alt-. is the editor's last argument; with a program in front Alt-. / Alt-R / Ctrl-R reach it as ESC . / ESC r / 0x12 (Linux backends)
+    "ui_readline_keys",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).

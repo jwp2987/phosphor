@@ -124,6 +124,7 @@ NOT_WINDOWS = {
     "ui_mouse_select_copy": "no pointer synthesis in the Windows backend yet (xdotool / sway seat on Linux)",
     "ui_right_click_paste": "no pointer synthesis in the Windows backend yet",
     "ui_copy_wrapped_drag": "#1976: no pointer synthesis in the Windows backend yet (the keyboard half, ui_copy_wrapped_output, runs in the Git Bash pane)",
+    "ui_readline_keys": "#1989: Alt-. / Alt-R are sent as X11 / Wayland key names; the Windows chord for them is not mapped yet (the binding itself is unit-tested per platform)",
     "ui_vertical_tabs_many": "#1990: not yet ported: switches the panel on by rewriting the settings file while the app runs (as ui_settings_live), and the Windows config path is not wired into cases_ui.settings_path",
     "ui_vertical_tabs_panel_click": "#1990: no pointer synthesis in the Windows backend yet, and the settings rewrite of ui_vertical_tabs_many",
     "ui_drag_drop_file": "no way to synthesize a drag source on Windows from the harness",

@@ -1129,3 +1129,65 @@ def c_completions_as_you_type_local(ctx, r):
     ctx.be.key("Escape")
     ctx.reset()
     r.check(ctx.cmds_since(mark) == [], "Escape/reset ran a command: %r" % ctx.cmds_since(mark))
+
+
+def _reader_chunks(ctx, name):
+    """the byte chunks bytes_reader.py logged so far (one "epoch hex" line per read)"""
+    out = []
+    try:
+        for l in open(os.path.join(ctx.W, name)):
+            p = l.split()
+            if len(p) == 2:
+                out.append(bytes.fromhex(p[1]))
+    except FileNotFoundError:
+        pass
+    return out
+
+
+@case("ui_readline_keys", order=63, gui=True)
+def c_readline_keys(ctx, r):
+    """#1989 / #1988 (owner decisions 2026-11-10): the readline keys on both sides of the prompt. (1) The input editor in front: `echo b<tok> >> `
+    + Alt-. + an instant Enter runs exactly `echo b<tok> >> <last word of the previous command>` (rec.log and the effect file): Alt-. is the editor's
+    yank-last-arg. (2) A program in front (bytes_reader.py, a raw tty, the stand-in for a nested shell): Alt-. arrives as ESC ., Alt-R as ESC r (no app
+    binding claims it) and Ctrl-R as 0x12, the shell's own reverse-i-search key (command search opens only where the input editor has the key).
+    Linux backends only: macOS sends Option-. as Meta only with the owner's Option-as-Meta setting, and the Windows chord is not mapped here."""
+    if ctx.be.name not in ("x11", "wayland"):
+        r.skip("backend %s: Alt-. / Alt-R are sent as X11/Wayland key names here (macOS needs Option-as-Meta, the Windows chord is not mapped)" % ctx.be.name)
+    t = ctx.tok(7).lower()
+    f = "rk_%s.txt" % t
+    ctx.rm(f)
+    r.check(run_cmd(ctx, "echo a%s >> %s" % (t, f)), "seeding command was not received")
+    time.sleep(0.5)
+    want = "echo b%s >> %s" % (t, f)
+    mark = ctx.cmd_mark()
+    ctx.be.type("echo b%s >> " % t, ctx.rng.randint(10, 25))
+    ctx.be.key("alt+period")
+    ctx.be.key("Return")
+    ctx.until(lambda: len(ctx.cmds_since(mark)) >= 1, 8)
+    time.sleep(0.5)
+    got = ctx.cmds_since(mark)
+    ctx.shot("readline_alt_dot")
+    r.check(got == [want], "Alt-. + Enter: shell received %r, expected exactly [%r]" % (got, want))
+    r.check(ctx.lines(f) == ["a" + t, "b" + t], "%s = %r, expected ['a%s', 'b%s']" % (f, ctx.lines(f), t, t))
+    ctx.reset()
+
+    # (2) a program has the terminal: the keys are encoded for it, none is taken by an app binding
+    rf = "rk_%s_bytes.txt" % t
+    ctx.rm(rf, rf + ".ready")
+    ctx.be.type("python3 %s %s 40" % (os.path.join(os.path.dirname(os.path.abspath(__file__)), "bytes_reader.py"), rf), 12, enter=True)
+    if not ctx.until(lambda: os.path.exists(os.path.join(ctx.W, rf + ".ready")), 20):
+        r.check(False, "the raw reader never started")
+        ctx.reset()
+        return
+    time.sleep(0.4)
+    for spec, expect, what in (("alt+period", b"\x1b.", "Alt-."), ("alt+r", b"\x1br", "Alt-R"), ("ctrl+r", b"\x12", "Ctrl-R")):
+        n0 = len(_reader_chunks(ctx, rf))
+        ctx.be.key(spec)
+        ctx.until(lambda: len(_reader_chunks(ctx, rf)) > n0, 5)
+        time.sleep(0.3)
+        got = b"".join(_reader_chunks(ctx, rf)[n0:])
+        r.check(got == expect, "%s with a program in front: pty received %s, expected %s" % (what, got.hex() or "nothing", expect.hex()))
+    ctx.shot("readline_program_in_front")
+    ctx.be.key("ctrl+c")                           # ends the reader (raw tty: it reads the byte and exits)
+    time.sleep(1.6)                                # past the agent view's exit-confirmation window before reset() sends its own Ctrl-C
+    ctx.reset()
