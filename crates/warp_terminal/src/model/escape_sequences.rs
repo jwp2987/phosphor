@@ -256,12 +256,7 @@ impl<T: ModeProvider> ToEscapeSequence<T> for KeystrokeWithDetails<'_> {
             .or_else(|| delete_keystroke_to_escape_sequence(keystroke))
             .or_else(|| meta_keystroke_to_escape_sequence(keystroke, mode_provider))
             .or_else(|| backspace_keystroke_to_escape_sequence(keystroke))
-            .or_else(|| {
-                OperatingSystem::get()
-                    .is_windows()
-                    .then(|| ctrl_break_win32_input_sequence(keystroke))
-                    .flatten()
-            })
+            .or_else(|| ctrl_break_sequence(keystroke))
     }
 }
 
@@ -661,6 +656,17 @@ fn ctrl_break_win32_input_sequence(keystroke: &Keystroke) -> Option<Vec<u8>> {
         return None;
     }
     Some(b"\x1b[3;70;0;1;8;1_\x1b[3;70;0;0;8;1_".to_vec())
+}
+
+/// The bytes of a Ctrl+Break key press on Windows, `None` for any other keystroke and on every
+/// other platform (#1906). For a caller that holds the keystroke but must not run the whole
+/// encoder: Windows also delivers the character `0x03` with this key, and written as that
+/// character it would reach the program as Ctrl-C.
+pub fn ctrl_break_sequence(keystroke: &Keystroke) -> Option<Vec<u8>> {
+    OperatingSystem::get()
+        .is_windows()
+        .then(|| ctrl_break_win32_input_sequence(keystroke))
+        .flatten()
 }
 
 /// Returns DEL (0x7f) for an unmodified or Shift-only Backspace.

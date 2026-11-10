@@ -13417,9 +13417,13 @@ impl TerminalView {
             // #1411: every key down while the terminal itself has focus is the sink's to translate
             // (arrows, Ctrl-letters, Alt-keys, kitty-protocol keys have no control characters);
             // elsewhere a key down is the sink's only when it is all control characters.
-            PaneKeyKind::KeyDown { chars, .. }
-                if key_ctx.is_focused_exactly(self.view_id)
-                    || (!chars.is_empty() && chars.chars().all(|c| c.is_control())) =>
+            // #1906: Ctrl+Break is the sink's whatever text the platform sends with it (Windows
+            // sends the character 0x03; with none it would leave a focus gap unhandled).
+            PaneKeyKind::KeyDown {
+                keystroke, chars, ..
+            } if key_ctx.is_focused_exactly(self.view_id)
+                || (!chars.is_empty() && chars.chars().all(|c| c.is_control()))
+                || escape_sequences::ctrl_break_sequence(keystroke).is_some() =>
             {
                 KeyClass::Control
             }
@@ -13516,7 +13520,29 @@ impl TerminalView {
             }
             // A focus gap (the ssh hold, a settled AI target, the input view outside its editor):
             // the control characters as typed.
-            (KeyTarget::Terminal, PaneKeyKind::KeyDown { chars, .. }) => {
+            (
+                KeyTarget::Terminal,
+                PaneKeyKind::KeyDown {
+                    keystroke, chars, ..
+                },
+            ) => {
+                // #1906: Windows delivers Ctrl+Break with the character 0x03, so as "control
+                // characters as typed" it would be written as Ctrl-C. While the user's own command
+                // runs it goes out as the Break key instead, like a control sequence from the
+                // focused terminal. Every other state of the gap keeps its Ctrl-C handling (an
+                // agent-driven command and an ssh connect hold only pass the abort keys).
+                let ctrl_break = escape_sequences::ctrl_break_sequence(keystroke).filter(|_| {
+                    let snapshot = self.read_key_snapshot();
+                    !facts.ssh_hold_active && snapshot.is_long_running() && !snapshot.agent_owns_pty
+                });
+                if let Some(sequence) = ctrl_break {
+                    self.control_sequence_on_terminal(&sequence, ctx);
+                    return PaneKeyOutcome::Consumed;
+                }
+                // A Ctrl+Break that arrived without the character has nothing to type.
+                if chars.is_empty() {
+                    return PaneKeyOutcome::NotMine;
+                }
                 // #1552 (a): from the input view, the key follows the line. Where the typed keys
                 // of this gap go to the editor (nothing takes them for the pty), the line is the
                 // editor's and so is its Enter: the input's own handling takes it, as before.
