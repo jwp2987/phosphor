@@ -631,10 +631,14 @@ git status`";
 }
 
 /// #1801 reviews: the app writes `^Y` and frames only to a shell whose bootstrap advertised the
-/// framed protocol (M2), and for bash only from 4.0 (its `^Y` binding is a `bind -x` function the
-/// bootstrap installs, and advertises, only then). zsh and bash only; fish and the others never.
+/// framed protocol (M2), and for bash only from a known version the bootstrap binds the keys in.
+/// zsh and bash only; fish and the others never.
+///
+/// #1969 changed one expectation here on purpose: bash 3.2 (macOS `/bin/bash`) now answers the
+/// exchange (its hook hands bytes back through a readline macro, having no `READLINE_LINE`), so
+/// an advertising 3.2 is supported. It was `false` while the bootstrap bound no key below 4.0.
 #[test]
-fn native_shell_completions_need_the_advertised_protocol_and_bash_4() {
+fn native_shell_completions_need_the_advertised_protocol_and_bash_3_2() {
     let advertised = || {
         Some(HashSet::from([
             NATIVE_COMPLETIONS_PROTOCOL_OPTION.to_owned()
@@ -649,7 +653,24 @@ fn native_shell_completions_need_the_advertised_protocol_and_bash_4() {
             None,
         )
     };
-    assert!(!bash("3.2.57(1)-release", advertised()).supports_native_shell_completions());
+    assert!(bash("3.2.57(1)-release", advertised()).supports_native_shell_completions_with(true));
+    assert!(
+        !bash("3.2.57(1)-release", None).supports_native_shell_completions_with(true),
+        "a bash 3.2 that did not advertise the protocol never gets ^Y"
+    );
+    assert!(
+        !bash("3.2.57(1)-release", advertised()).supports_native_shell_completions_with(false),
+        "PHOSPHOR_BASH3_NATIVE_COMPLETIONS=0 turns bash below 4.0 off"
+    );
+    assert!(
+        !bash("3.1.23(1)-release", advertised()).supports_native_shell_completions_with(true),
+        "no key is bound below bash 3.2"
+    );
+    assert!(!bash("2.05b.0(1)-release", advertised()).supports_native_shell_completions_with(true));
+    assert!(
+        bash("4.0.0(1)-release", advertised()).supports_native_shell_completions_with(false),
+        "the bash-3 kill switch does not touch bash 4.0 and later"
+    );
     assert!(bash("4.0.0(1)-release", advertised()).supports_native_shell_completions());
     assert!(bash("5.2.15(1)-release", advertised()).supports_native_shell_completions());
     assert!(
@@ -688,4 +709,14 @@ fn native_shell_completions_need_the_advertised_protocol_and_bash_4() {
                 .supports_native_shell_completions()
         );
     }
+}
+
+/// #1969: the bash-below-4.0 kill switch is on unless the variable is exactly `0`.
+#[test]
+fn bash3_native_completions_kill_switch_reads_only_zero_as_off() {
+    assert!(bash3_native_completions_enabled_from_env(None));
+    assert!(bash3_native_completions_enabled_from_env(Some("1")));
+    assert!(bash3_native_completions_enabled_from_env(Some("")));
+    assert!(!bash3_native_completions_enabled_from_env(Some("0")));
+    assert!(!bash3_native_completions_enabled_from_env(Some(" 0 ")));
 }

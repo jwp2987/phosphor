@@ -5,7 +5,7 @@
 //! second ssh channel per command that a slow or lossy link (a VPN) makes slow or breaks, and
 //! the completer's path and generator completions depend on them. The remote shell, however,
 //! is right there on the session's own connection and knows its completions exactly
-//! (bash-completion on bash 4.0+, zsh compsys; not fish, see
+//! (bash-completion on bash 3.2+, zsh compsys; not fish, see
 //! `ShellType::supports_native_shell_completions`). So an explicit Tab in such a session asks
 //! the shell first, through the `^Y` handshake the bootstrap installs, and falls back to the
 //! completer only when the shell offers nothing.

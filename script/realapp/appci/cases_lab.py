@@ -428,6 +428,66 @@ def c_enter_start(ctx, r, arm):
     finish_remote(ctx, r)
 
 
+# ------------------------------------------------------------------ 4b. Enter never waits on the network (#1970)
+ENTER_WAIT_BUDGET_MS = 2.0          # owner's Enter budget: the app's own share of Enter; APPCI_LAB_ENTER_WAIT_BUDGET_MS overrides it for a diagnosis run
+
+
+@lab_case("enter_no_network_wait", shells=("bash", "zsh", "fish", "nu"), lat=("150", "300"), helper=("nohelper", "helper"))
+def c_enter_no_network_wait(ctx, r, arm):
+    """#1970 ("Enter must never wait on the network"), judged from the APP's own log, no remote clock: lines typed at 10-25 ms/key with an instant Enter while
+    the link has the arm's delay, then as many again in the SAME ssh session with the delay removed (the control; the RTT is measured again and the control is
+    dropped when it is not LAN). Per Enter the app's `hop=enter_begin` -> line `pty_write` time (ctx.app_enter_write_samples). lab.enter_wait_verdict: no
+    delayed sample reaches half the RTT (a wait on any round trip costs a whole one), and the delayed median is within the Enter budget of the undelayed one.
+    The effect file holds every line of both phases once, in order. Each line is typed only after the previous one's effect is on the server and its prompt
+    had 2 RTT to come back, so an Enter never meets a shell that is still busy. lab_enter_start is the other half: the whole Enter -> start against plain ssh."""
+    lab, rt = ctx.lab, rtt_s(arm)
+    n = ctx.count_lat(12)
+    shell_kind = arm["shell"] if arm["shell"] in ("nu", "pwsh") else "bash"
+    eff = work(arm, "enw_%s.txt" % unique(ctx, 4))
+    budget = float(os.environ.get("APPCI_LAB_ENTER_WAIT_BUDGET_MS", ENTER_WAIT_BUDGET_MS))
+    if connect_or_fail(ctx, r, arm) is None:
+        ctx.reset()
+        return
+    time.sleep(1.0 + 2 * rt)
+    toks = []
+
+    def phase(settle):
+        t0 = time.time()
+        for _ in range(n):
+            tok = "enw" + unique(ctx, 5)
+            toks.append(tok)
+            ctx.be.type(ctx.append_cmd(shell_kind, tok, eff), type_pace(ctx), enter=True)
+            ctx.until(lambda: any(tok in x for x in ctx.remote.lines(eff)), 10 + 4 * settle, step=0.02)
+            time.sleep(0.15 + 2 * settle)
+        time.sleep(0.3)
+        return ctx.app_enter_write_samples(t0)
+
+    delayed = phase(rt)
+    lan_ms = None
+    try:
+        lab.clear_fault()
+        gate = L.rtt_gate_verdict(lab.measure_rtt(15), 0)
+        r.metric("control_rtt_gate", gate)
+        if gate["verdict"] == "ok":
+            lan_ms = phase(0.0)
+        else:
+            r.note("no undelayed control: after removing the delay the echo RTT measured %s ms (%s); only the half-RTT rule is judged" % (gate.get("median"), gate["verdict"]))
+    except L.LabError as e:
+        r.note("no undelayed control: the delay could not be removed (%s); only the half-RTT rule is judged" % (e,))
+    CA.exact_lines(r, "effect file: every typed line arrived once, in order", toks, [x.strip() for x in ctx.remote.lines(eff)])
+    v = L.enter_wait_verdict(delayed, lan_ms, arm["lat_ms"], budget_ms=budget)
+    r.metric("enter_to_write_delayed_ms", delayed)
+    r.metric("enter_to_write_lan_ms", lan_ms)
+    r.metric("enter_wait_verdict", v)
+    if v["verdict"] == "no-data":
+        r.unverifiable("no Enter -> write times in the app log (%s): input-order logging is off, or the Enters took a path that logs no hop=enter_begin / pty_write" % v["why"])
+    else:
+        r.check(v["verdict"] == "pass", v["why"])
+        if v["verdict"] == "pass":
+            r.note(v["why"])
+    finish_remote(ctx, r)
+
+
 # ------------------------------------------------------------------ 5. dropped / reset / stalled connections
 @lab_case("ssh_drop_reconnect", modes=("terminal",), shells=("bash", "zsh", "nu"), lat=("lan", "150"), helper=("nohelper", "helper"), faults=("rst", "stall10"))
 def c_lab_drop(ctx, r, arm):
