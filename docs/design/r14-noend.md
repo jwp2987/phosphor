@@ -65,7 +65,7 @@ I6: no new ERROR line (the two new lines are WARN).
   moves every `id#n` call next to `id` (`repeats_beside_their_originals`), so a repeat that is
   not next to its original (`[x, search, x]`) is listed `[x, x#2, search]`, and I4 expects the
   order the model emitted. That is true today for a FINISHED reply with such a repeat (by
-  reading; filed, see below); renaming here would have put the existing corpus scenario
+  reading; filed as #2054); renaming here would have put the existing corpus scenario
   `i4_reply_closed_without_end_is_committed` and the random proptests onto that path. Telling
   the model keeps one call per id and changes no I4 rule.
 * **Leave the held-back calls unanswered, for the resume's cancelled placeholder.** It says
@@ -106,7 +106,7 @@ I6: no new ERROR line (the two new lines are WARN).
   (`repeats_beside_their_originals`, `chat_stream.rs:740`): reply `[x, y, x]` with an `End`
   becomes `[x, x#2, y]`. The move is right when the repeat was only RECORDED late (its
   neighbours had early cards) and wrong when it was emitted late; the stored order is the same
-  in both cases. I4 (`uniquify`) expects `[x, y, x#2]`. Filed, not worked.
+  in both cases. I4 (`uniquify`) expects `[x, y, x#2]`. Filed as #2054, not worked.
 
 ## B. #1340 `editor_memory_7mb` and #1985 `flood_scrollback_find`
 
