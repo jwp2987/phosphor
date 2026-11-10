@@ -4393,7 +4393,7 @@ about 0.1 ms as on macOS for the keys that take no sample; `typing_prompt_sample
 not one per key, with `lookups` showing `list_confirm` for `cat` (reads = 7; its `us` is the list's cost on that machine, expect a few
 hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and never `walk` for a plain program.
 
-## Round 10 group A (#1966 #1985 #2004; design `docs/design/r10-groupa.md`)
+## Round 10 group A (#1966 #1985 #2004 #1907 #1938; design `docs/design/r10-groupa.md`)
 
 - **Windows RUST_LOG covers every module whose `hop=` lines a case reads (#1966).** The Windows launcher's `warn` base hid the plain `log::info!`
   `hop=agent_action` line (module `warp::ai::blocklist::action_model`), so `agent_question` on Git Bash judged a shown card `hung`. The string is now
@@ -4406,3 +4406,9 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   evidence); match OFF screen -> FAIL; only `no_match` hops -> FAIL; no hop, no usable geometry (`busy`, older build) or on screen with `moved=false` -> NOREF
   (`unverifiable`), never a pass. Selftest `coverage` row in the `flood_scrollback_find` block of `selftest.py` has one assertion per situation. Worked,
   unproven: the next Mac agent-mode run that OCRs blind should now be a pass with the note "OCR was blind; the app's own record says ...".
+- **`big_paste` times the Enter and the largest UI item (#2004, #1191).** The case now sends Return at once behind the 1 MB paste and polls `big.out` for its
+  full size (the Enter's effect: the paste's last line has no newline, so cat only gets it on Return): `big_paste_time_to_enter_ms` is that time from the end of
+  the paste. rec.log cannot time it (it stamps `cat > big.out` after Ctrl-D). **PROPOSED budgets, owner to confirm:** time-to-Enter <= 1500 ms
+  (`APPCI_BIGPASTE_ENTER_MS`), judged only on a byte-exact paste; largest single `hop=ui_item` <= 250 ms (`APPCI_BIGPASTE_UI_ITEM_MS`), judged whenever an app
+  log exists. The byte check, the Windows conhost control and both session modes are unchanged. Selftest `big_paste_time_budgets_2004`. Worked, unproven:
+  the next run should print `big_paste_time_to_enter_ms` and `big_paste_ui_items.max_ms`; set the two variables from those numbers once the owner agrees.

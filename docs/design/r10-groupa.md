@@ -50,3 +50,27 @@ for the owner). Removing the "no OCR engine" Skip at the top: with no engine the
 
 **Risk.** A wrong `match_line` in the app (the rendered vs scroll mode disagreement the case already notes) would now pass a blind-OCR run; the
 note says so and the mode mismatch note is kept.
+
+## 3. #2004 big_paste checks bytes, #1191 is about time
+
+**Evidence.** `cases.py` `c_big`: pastes ~1 MB into `cat > big.out`, waited for the file size to be stable (1.5 s polls), THEN sent Return, so a
+frozen UI or a slow Enter was absorbed by the wait; only `got == want` was a check. `ui_item_metrics` records `hop=ui_item` as a metric, "never a
+check". #1191: a 1 MB paste froze the UI 6-7 s and Enter took 1.4-5 s.
+
+**Deviation from the brief, on purpose.** The brief says to time the paste end -> the command's rec.log timestamp. Here the paste goes to a running
+`cat`, so rec.log (`profile.commands()`, the rc hook's `$EPOCHREALTIME`) stamps `cat > big.out` at the NEXT prompt, after Ctrl-D: that is the end of the
+command, not the Enter. The Enter's own effect is observable instead: the paste ends without a newline, the tty holds that last line until Return, so
+`big.out` reaches its full size (data + 1 byte) exactly when the Enter has taken effect. The case now sends Return at once behind the paste (as a user
+does; `paste + instant Enter` already relies on that ordering) and polls the file every 20 ms (`poll_file_size`): time-to-Enter = that moment minus the
+end of `ctx.be.paste()`. If the file never gets there (the ConPTY shortfall) it falls back to the old stable-size wait and nothing is timed.
+
+**Budgets (PROPOSED, owner to confirm).** time-to-Enter <= 1500 ms (`APPCI_BIGPASTE_ENTER_MS`); largest single `hop=ui_item` <= 250 ms
+(`APPCI_BIGPASTE_UI_ITEM_MS`; the 4 ms owner budget stays a metric, 250 ms is the "UI froze" line). Enter is judged only on a byte-exact paste; the
+UI item is judged whenever an app log exists. The byte check, the Windows control and both session modes are untouched. Pure judging
+`judge_big_paste_time`, selftest `big_paste_time_budgets_2004`.
+
+**Rejected.** Waiting for stable size before Return (cannot see #1191). Timing via rec.log (wrong event, above). Scaling the budgets with
+`APPCI_BIG_MB` (set the env vars for a bigger paste).
+
+**Risk.** Return now races the paste's tail on slow platforms: a real ordering bug shows as a byte mismatch (correct), but a platform that merely
+drains slowly could exceed 1500 ms on a first run; the numbers are proposals for that reason.
