@@ -320,6 +320,53 @@ impl Rig {
         }
     }
 
+    /// The agent's commands that are running now: actions in the `Running` stage that the
+    /// shell command executor is waiting on. (A read or a grep that is running is not one.)
+    pub fn running_commands(&self, app: &App) -> Vec<AIAgentActionId> {
+        let running: Vec<AIAgentActionId> = self
+            .observe(app)
+            .snapshot
+            .into_iter()
+            .filter(|s| s.stage == PendingStage::Running)
+            .map(|s| s.action_id)
+            .collect();
+        let executor = self
+            .action_model
+            .read(app, |model, ctx| model.shell_command_executor(ctx));
+        executor.read(app, |executor, _| {
+            running
+                .iter()
+                .filter(|id| executor.is_waiting_on_command_for_test(id))
+                .cloned()
+                .collect()
+        })
+    }
+
+    /// The pty's part of a Ctrl-C typed into a running agent command. In a pane with a pty the
+    /// view sends the ^C to the command and does nothing else
+    /// (`TerminalView::interrupt_agent_command`, #850); the command dies and the executor
+    /// reports exit 130, interrupted. The rig has no pty and no block, so the view's own Ctrl-C
+    /// cannot find the command (it would take the status bar's cancel, which is the Stop path):
+    /// the rig ends the command the way the ^C would have. Returns the commands it interrupted.
+    pub fn interrupt_commands(
+        &mut self,
+        app: &mut App,
+        commands: &[AIAgentActionId],
+    ) -> Vec<AIAgentActionId> {
+        let executor = self
+            .action_model
+            .read(app, |model, ctx| model.shell_command_executor(ctx));
+        let mut interrupted = Vec::new();
+        for id in commands {
+            let took = executor.update(app, |executor, _| executor.interrupt_command_for_test(id));
+            if took {
+                self.running_since.remove(id);
+                interrupted.push(id.clone());
+            }
+        }
+        interrupted
+    }
+
     /// Finishes the running commands whose behaviour ends them, and reports the ones that never
     /// end to the agent after a short wait (what the executor's stall snapshot does), leaving
     /// them alive.

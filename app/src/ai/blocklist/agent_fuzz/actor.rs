@@ -6,7 +6,7 @@
 //! | Reject | `cancel_action_with_id(.., Rejected)` (the Reject button, `controller_tests.rs`): not a stop, the step's results go back to the model at once when an earlier one finished (#1942) |
 //! | Edit | `set_pending_command_text` then Approve |
 //! | AnswerQuestion / SkipQuestion | stage the answers on `AskUserQuestionExecutor`, then `execute_action` by id (the question card) |
-//! | CtrlC | the view's real Ctrl-C key handling (`TerminalView::press_ctrl_c_for_test` -> `handle_ctrl_c_input_event`) |
+//! | CtrlC | with no agent command running: the view's real Ctrl-C key handling (`TerminalView::press_ctrl_c_for_test` -> `handle_ctrl_c_input_event`). Into a running agent command: the ^C goes to the command and nowhere else, as in a pane with a pty (`TerminalView::interrupt_agent_command`, #850); the rig has no pty, so it ends the command the way the ^C would (`Rig::interrupt_commands`: exit 130, interrupted) |
 //! | Stop | `cancel_conversation_progress(.., ManuallyCancelled)` (the status bar's Stop button) |
 //! | FollowUp | typed into the input, `maybe_queue_input_for_in_progress_conversation` decides; if it does not queue, a plain submit |
 //! | ModeSwitch / Escape | no controller entry point exists in a pty-less rig; recorded as no-ops |
@@ -160,9 +160,21 @@ pub fn perform(app: &mut App, rig: &mut Rig, op: &Op) -> Option<&'static str> {
         // Ctrl-C goes through the view's real key handling (blocked-turn cancel, running-command
         // interrupt, agent-view exit rules); Stop is the status bar's button, which calls the
         // controller directly.
+        //
+        // A Ctrl-C typed while an agent command runs is that command's interrupt (#850, owner
+        // decision 2026-11-10: the command is interrupted and the turn goes on). In the app the
+        // view finds the command's block and writes the ^C to the pty, nothing else. The rig
+        // has no pty and no block: the view's handler would not find the command and would take
+        // the status bar's cancel instead, which is the Stop path. So for that one case the rig
+        // delivers the ^C itself.
         Op::CtrlC => {
-            let terminal = rig.terminal.clone();
-            terminal.update(app, |view, ctx| view.press_ctrl_c_for_test(ctx));
+            let commands = rig.running_commands(app);
+            if commands.is_empty() {
+                let terminal = rig.terminal.clone();
+                terminal.update(app, |view, ctx| view.press_ctrl_c_for_test(ctx));
+            } else {
+                rig.interrupt_commands(app, &commands);
+            }
         }
         Op::Stop => {
             rig.controller.update(app, |controller, ctx| {

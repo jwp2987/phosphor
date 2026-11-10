@@ -5,14 +5,14 @@
 //! |---|---|
 //! | I1 | every blocked action has an actionable card within delta; nothing pending sits neither blocked-with-card, runnable nor running for longer than delta; every tool call of the last finished reply has an action-model status or a result within delta (#1946) |
 //! | I2a | once the script is used up and the user has answered every card, the conversation is terminal within 5 s |
-//! | I2b | Stop, and Ctrl-C, leave it terminal within 2 s, nothing pending / running, no stream in flight. Not for a Ctrl-C typed into a running command while later actions of the same reply still wait: that is the command's interrupt and the turn goes on (#850) |
-//! | I2c | that Ctrl-C: the command it was typed into stops running within 2 s (the cards that follow are the closing user's, and I2a still ends the turn) |
+//! | I2b | Stop, and Ctrl-C, leave it terminal within 2 s, nothing pending / running, no stream in flight. The one exception is a Ctrl-C typed into a running agent command: that is the command's interrupt and the turn goes on (#850, owner decision 2026-11-10). A Ctrl-C with any other action running (a read, a grep) is a stop like any other |
+//! | I2c | that Ctrl-C: the command it was typed into stops running within 2 s, and the action that waited behind it for the user's answer (a question; a command, with the allowlist off) is still held then: the key cancelled the command, not the turn. How the step ends afterwards is the ordinary end-of-step rule (results go back to the model when any result finished; a step whose only result is the interrupted command ends `Cancelled`, #1178); the cards that follow are the closing user's, and I2a still ends the turn |
 //! | I3 | when the conversation is terminal, locked queued rows unlock within 2 s; unlocked rows of a conversation that succeeded are sent within 3 s (a cancel restores rows to the input instead: #690 / #1026, kept by #1799) |
 //! | I4 | each request carries exactly one tool message per emitted call id, in order, none extra and none orphaned (duplicates renamed `id#2`); the last request holds the calls of the replies to the requests before it, except a reply whose stream the user cut (a message sent, Stop or Ctrl-C while it was still in flight): that one is whole or absent |
 //! | I5 | `prompt_tests.rs`: a command is handed to the user only if it reads the tty |
 //! | I6 | no panic (any thread) and no ERROR log beyond the allowance per chaos kind and count (`error_allowance`) |
 //! | I7 | no card takes accept keys for an action that is done or cancelled (read from the card's own key routing, `AIBlock::pending_command_card_view_id`, not from the action status) |
-//! | I8 | the model is asked only when it should be, counted on the requests the seam received (#1942, #1896, #1901): (a) after a Stop, or a Ctrl-C with no command running, no request is opened until the user acts again; (b) a message the user sent is the newest message of at most one request per submit (plus one per failed reply, which is retried), and a plain submit in a run without a stop reaches the model; (c) no request repeats an earlier one, or goes back to a prefix of it, unless a reply in between failed |
+//! | I8 | the model is asked only when it should be, counted on the requests the seam received (#1942, #1896, #1901): (a) after a Stop, or a Ctrl-C with no action running, no request is opened until the user acts again; (b) a message the user sent is the newest message of at most one request per submit (plus one per failed reply, which is retried), and a plain submit in a run without a stop reaches the model; (c) no request repeats an earlier one, or goes back to a prefix of it, unless a reply in between failed. A Ctrl-C typed into a running agent command is not a stop in (a) or in (b): the turn goes on, so its results may go back to the model and no message may be lost to it |
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -312,13 +312,13 @@ impl Oracle {
         }
     }
 
-    /// I2c: after a Ctrl-C typed into a running command while later actions of the same reply
-    /// were still waiting. That Ctrl-C is the command's interrupt, not a stop of the conversation
-    /// (#850: "the conversation continues"), so the turn goes on to the next action's card and
-    /// I2b does not apply; what must hold is that the interrupt took: of the actions that were
-    /// running at the key, at least one no longer runs (the Ctrl-C goes to the one the status
-    /// bar shows; a command runs alone, so for a command that is the command). `was_running`
-    /// is from just before the key.
+    /// I2c, first half: after a Ctrl-C typed into a running agent command. That Ctrl-C is the
+    /// command's interrupt, not a stop of the conversation (#850, owner decision 2026-11-10:
+    /// "interrupts the command and the turn goes on"), so I2b does not apply; what must hold is
+    /// that the interrupt took: of the commands that were running at the key, at least one no
+    /// longer runs (a command runs alone, so that is the command). `was_running` is the
+    /// commands the key was typed into (`Rig::running_commands`), from just before the key.
+    /// The second half is [`Oracle::turn_goes_on`].
     pub fn interrupted(
         obs: &Obs,
         was_running: &[crate::ai::agent::AIAgentActionId],
@@ -341,6 +341,38 @@ impl Oracle {
                 ),
             ))
         }
+    }
+
+    /// I2c, second half: the turn goes on. `obs` is the look at which the interrupted command
+    /// was seen to have stopped; `waited_for_the_user` is the action that waited behind it at
+    /// the key and can only end by the user answering it ([`waits_for_the_user`]). Nobody has
+    /// answered it since (the scripted user's next step comes after this check), so it must
+    /// still be held: gone means the Ctrl-C cancelled the rest of the turn with the command,
+    /// which is what a Stop does and what this key must not do.
+    ///
+    /// Nothing is asked when no such action waited: a command that ran alone ends its step by
+    /// the ordinary rule (a request when an earlier result of the step finished, `Cancelled`
+    /// with the reason shown when the interrupted command is all there is, #1178), and an
+    /// action that needs no answer (a read) may have run and finished by now.
+    pub fn turn_goes_on(
+        obs: &Obs,
+        waited_for_the_user: Option<&crate::ai::agent::AIAgentActionId>,
+    ) -> Result<(), Violation> {
+        let Some(waiting) = waited_for_the_user else {
+            return Ok(());
+        };
+        if obs.snapshot.iter().any(|s| &s.action_id == waiting) {
+            return Ok(());
+        }
+        Err(violation(
+            "I2c",
+            format!(
+                "Ctrl-C into a running command also dropped {waiting:?}, which waited behind it \
+                 for the user's answer: the key interrupts the command and the turn goes on \
+                 (conversation is {:?}, held: {:?})",
+                obs.status, obs.snapshot
+            ),
+        ))
     }
 
     /// I2a: the script is used up and nobody owes the app an answer.
@@ -397,6 +429,31 @@ impl Oracle {
         }
         Ok(())
     }
+}
+
+/// For I2c ([`Oracle::turn_goes_on`]): the action next in line behind whatever runs now, when
+/// it is one that only the user can end. `obs` is from just before the key.
+///
+/// * A question always waits for an answer.
+/// * A command waits for approval with the safe allowlist off (the shipped default: every
+///   command asks). With it on a listed command runs by itself, so it is not judged.
+/// * Anything else (a read, a grep, a hand-over) may run and finish without the user.
+///
+/// Only the first queued action counts: the ones behind it wait for it, not for the command.
+pub fn waits_for_the_user(
+    obs: &Obs,
+    safe_allowlist: bool,
+) -> Option<crate::ai::agent::AIAgentActionId> {
+    let next = obs
+        .snapshot
+        .iter()
+        .find(|s| s.stage == PendingStage::Queued)?;
+    let needs_the_user = match next.kind {
+        Some("ask_user_question") => true,
+        Some("run_shell_command") => !safe_allowlist,
+        _ => false,
+    };
+    needs_the_user.then(|| next.action_id.clone())
 }
 
 /// I4 over every request the model received. `cut`: the requests whose reply stream the user
@@ -970,6 +1027,99 @@ mod tests {
         let moved_on = obs(vec![held("c1", PendingStage::Blocked)]);
         assert!(Oracle::interrupted(&moved_on, &was_running).is_ok());
         assert!(Oracle::stopped(&moved_on).is_err());
+    }
+
+    /// Owner decision 2026-11-10 (#850, the question left open on #1942): a Ctrl-C typed into a
+    /// running agent command interrupts the command and the turn goes on. I2c's second half
+    /// holds the turn to that: the action that waited behind the command for the user's answer
+    /// is still held when the command has stopped. A turn the key cancelled whole (what a Stop
+    /// does) passes I2b and the first half of I2c, and fails here.
+    #[test]
+    fn i2c_the_turn_goes_on_after_a_ctrl_c_into_a_running_command() {
+        use crate::ai::agent::AIAgentActionId;
+        use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
+        use crate::ai::blocklist::action_model::PendingActionSnapshot;
+
+        let conversation_id = AIConversationId::new();
+        let held =
+            |id: &str, kind: Option<&'static str>, stage: PendingStage| PendingActionSnapshot {
+                conversation_id,
+                action_id: AIAgentActionId::from(id.to_owned()),
+                kind,
+                stage,
+            };
+        let obs = |status: Option<ConversationStatus>, snapshot: Vec<PendingActionSnapshot>| Obs {
+            status,
+            stream_in_flight: false,
+            snapshot,
+            cards: Vec::new(),
+            routed: Vec::new(),
+            rows: Vec::new(),
+            unsettled_calls: Vec::new(),
+        };
+        let id = |name: &str| AIAgentActionId::from(name.to_owned());
+        let was_running = [id("c0")];
+
+        // At the key: the command runs, a question waits behind it.
+        let before = obs(
+            Some(ConversationStatus::InProgress),
+            vec![
+                held("q1", Some("ask_user_question"), PendingStage::Queued),
+                held("c0", None, PendingStage::Running),
+            ],
+        );
+        let waiting = waits_for_the_user(&before, false);
+        assert_eq!(waiting, Some(id("q1")));
+
+        // The turn went on: the command is gone, the question shows its card.
+        let went_on = obs(
+            Some(ConversationStatus::Blocked {
+                blocked_action: String::new(),
+            }),
+            vec![held("q1", Some("ask_user_question"), PendingStage::Blocked)],
+        );
+        assert!(Oracle::interrupted(&went_on, &was_running).is_ok());
+        assert!(Oracle::turn_goes_on(&went_on, waiting.as_ref()).is_ok());
+
+        // The key stopped the whole turn: the command is gone and so is the question. I2b would
+        // call this fine, and so would the first half of I2c.
+        let stopped = obs(Some(ConversationStatus::Cancelled), Vec::new());
+        assert!(Oracle::stopped(&stopped).is_ok());
+        assert!(Oracle::interrupted(&stopped, &was_running).is_ok());
+        let broken = Oracle::turn_goes_on(&stopped, waiting.as_ref()).unwrap_err();
+        assert_eq!(broken.invariant, "I2c");
+        assert!(broken.detail.contains("q1"), "{}", broken.detail);
+
+        // A command that ran alone: nothing waited, so nothing is asked of the turn here (its
+        // step ends by the ordinary rule, and I2a still has to see it end).
+        let alone = obs(
+            Some(ConversationStatus::InProgress),
+            vec![held("c0", None, PendingStage::Running)],
+        );
+        assert_eq!(waits_for_the_user(&alone, false), None);
+        assert!(Oracle::turn_goes_on(&stopped, None).is_ok());
+
+        // What waits for the user: a question always, a command only while every command asks
+        // (the allowlist off), a read never. Only the first in line counts.
+        let command_next = obs(
+            None,
+            vec![
+                held("c1", Some("run_shell_command"), PendingStage::Queued),
+                held("q2", Some("ask_user_question"), PendingStage::Queued),
+                held("c0", None, PendingStage::Running),
+            ],
+        );
+        assert_eq!(waits_for_the_user(&command_next, false), Some(id("c1")));
+        assert_eq!(waits_for_the_user(&command_next, true), None);
+        let read_next = obs(
+            None,
+            vec![
+                held("r1", Some("read_files"), PendingStage::Queued),
+                held("q2", Some("ask_user_question"), PendingStage::Queued),
+                held("c0", None, PendingStage::Running),
+            ],
+        );
+        assert_eq!(waits_for_the_user(&read_next, false), None);
     }
 
     /// I8b and I8c look past the environment tail the app appends to every request. With the

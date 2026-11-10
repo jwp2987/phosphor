@@ -165,9 +165,11 @@ pub struct ShellCommandExecutor {
     awaiting_completion_action_ids: HashSet<AIAgentActionId>,
     /// Test-only (agent fuzzer): the outcome a scripted command ends with, keyed by action. The
     /// mock terminal has no pty, so no block ever exists for a requested command;
-    /// [`Self::complete_command_for_test`] stands in for the block finishing.
+    /// [`Self::complete_command_for_test`] stands in for the block finishing, and
+    /// [`Self::interrupt_command_for_test`] for a ^C that ended it. The value is `(output, exit
+    /// code, a ^C was written to the command)`.
     #[cfg(any(test, feature = "test-util"))]
-    test_outcomes: Arc<std::sync::Mutex<HashMap<AIAgentActionId, (String, i32)>>>,
+    test_outcomes: Arc<std::sync::Mutex<HashMap<AIAgentActionId, (String, i32, bool)>>>,
 }
 
 impl ShellCommandExecutor {
@@ -226,14 +228,42 @@ impl ShellCommandExecutor {
         output: &str,
         exit_code: i32,
     ) {
+        self.finish_command_for_test(action_id, output, exit_code, false);
+    }
+
+    /// Test-only (agent fuzzer): finishes the waiting `RequestCommandOutput` action `action_id`
+    /// the way a ^C typed into its running command does in a pane with a pty
+    /// (`TerminalView::interrupt_agent_command`, #850): the ^C goes to the command, the command
+    /// dies, and the executor reports exit 130 with `interrupted` set
+    /// (`Block::was_interrupted_by_ctrl_c`). No cancellation reason is involved: the key is the
+    /// command's interrupt, not a stop of the turn. Returns whether the action was waiting on a
+    /// command (false: it was cancelled, has not started, or already finished).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn interrupt_command_for_test(&mut self, action_id: &AIAgentActionId) -> bool {
+        self.finish_command_for_test(action_id, "^C", 130, true)
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    fn finish_command_for_test(
+        &mut self,
+        action_id: &AIAgentActionId,
+        output: &str,
+        exit_code: i32,
+        interrupted: bool,
+    ) -> bool {
         let selector = BlockSelector::RequestedCommandId(action_id.clone());
-        if let Some(finished_tx) = self.block_finished_senders.remove(&selector) {
-            self.test_outcomes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(action_id.clone(), (output.to_owned(), exit_code));
-            let _ = finished_tx.send(());
-        }
+        let Some(finished_tx) = self.block_finished_senders.remove(&selector) else {
+            return false;
+        };
+        self.test_outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                action_id.clone(),
+                (output.to_owned(), exit_code, interrupted),
+            );
+        let _ = finished_tx.send(());
+        true
     }
 
     /// Test-only (agent fuzzer, I5): whether `action_id` is a command the executor is waiting on.
@@ -2079,11 +2109,11 @@ enum TransferControlResult {
     Cancelled,
 }
 
-/// Test-only (agent fuzzer): the result of a scripted command (`complete_command_for_test`), or
-/// `BlockNotFound` when none was scripted for this action.
+/// Test-only (agent fuzzer): the result of a scripted command (`complete_command_for_test`,
+/// `interrupt_command_for_test`), or `BlockNotFound` when none was scripted for this action.
 #[cfg(any(test, feature = "test-util"))]
 fn scripted_command_result(
-    outcomes: &std::sync::Mutex<HashMap<AIAgentActionId, (String, i32)>>,
+    outcomes: &std::sync::Mutex<HashMap<AIAgentActionId, (String, i32, bool)>>,
     selector: &BlockSelector,
 ) -> ActionResult {
     let BlockSelector::RequestedCommandId(action_id) = selector else {
@@ -2095,13 +2125,13 @@ fn scripted_command_result(
         .get(action_id)
         .cloned();
     match scripted {
-        Some((output, exit_code)) => ActionResult::CommandFinished {
+        Some((output, exit_code, interrupted)) => ActionResult::CommandFinished {
             block_id: BlockId::new(),
             output,
             exit_code: ExitCode::from(exit_code),
             start_ts: None,
             completed_ts: None,
-            interrupted: false,
+            interrupted,
         },
         None => ActionResult::BlockNotFound,
     }

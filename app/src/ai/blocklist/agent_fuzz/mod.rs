@@ -14,7 +14,8 @@
 //! * `coverage` - which (tool x op x timing) and (chaos x phase) cells the run hit
 //! * `matrix` (the deterministic approvals matrix: action kind x response, timings, orders, malformed args, command behaviours)
 //! * `fuzz_tests` (proptest), `corpus_replay_tests` (+ `corpus/*.json`, `known_failures.toml`),
-//!   `prompt_tests` (I5), `stop_tests` (Stop means stop, #1942, counted on the seam's requests)
+//!   `prompt_tests` (I5), `stop_tests` (Stop means stop, #1942, counted on the seam's requests),
+//!   `ctrl_c_tests` (a Ctrl-C into a running agent command interrupts it and the turn goes on, #850)
 
 mod actor;
 mod coverage;
@@ -29,6 +30,8 @@ mod runner;
 mod allowlist_tests;
 #[cfg(test)]
 mod corpus_replay_tests;
+#[cfg(test)]
+mod ctrl_c_tests;
 #[cfg(test)]
 mod fuzz_tests;
 #[cfg(test)]

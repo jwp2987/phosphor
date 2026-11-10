@@ -158,17 +158,30 @@ async fn drive(
             record.stage = obs.snapshot.first().map(|s| stage_name(s.stage));
             record.tool = rig.front_action(app).map(|a| fuzz_action_kind(&a.action));
             let requests_before = rig.seam.request_count();
+            // The agent commands a Ctrl-C of this step would be typed into (the same question
+            // the actor asks; nothing runs in between).
+            let ctrl_c_commands = if matches!(step.op, Op::CtrlC) {
+                rig.running_commands(app)
+            } else {
+                Vec::new()
+            };
+            let into_running_command = !ctrl_c_commands.is_empty();
             actor::perform(app, &mut rig, &step.op);
             match &step.op {
                 // I8a. Stop always stops the conversation. Ctrl-C does when no command is
-                // running; into a running command it is that command's interrupt, whose result
-                // may still go back to the model (#1178). CloseTab is not counted: the rig's
-                // close only discards pending work, it does not suspend the pane as the real
-                // close does, so a command still running may report afterwards.
+                // running. CloseTab is not counted: the rig's close only discards pending work,
+                // it does not suspend the pane as the real close does, so a command still
+                // running may report afterwards.
                 Op::Stop => {
                     stopped = true;
                     oracle.user_stopped(requests_before, obs.stream_in_flight);
                 }
+                // A Ctrl-C typed into a running agent command is that command's interrupt and
+                // the turn goes on (#850, owner decision 2026-11-10). It is not a stop in any
+                // of I8's senses: it draws no I8a line (the step's results may go back to the
+                // model, #1178), and it discards nothing, so it is no excuse for a message that
+                // never reached the model either (I8b).
+                Op::CtrlC if into_running_command => {}
                 Op::CtrlC => {
                     stopped = true;
                     if !obs.running() {
@@ -207,31 +220,31 @@ async fn drive(
             if let Op::Wait { ms } = &step.op {
                 pump_for(app, knobs.scale(Duration::from_millis(*ms))).await;
             }
-            // I2b / I2c. A Stop always ends the turn. So does a Ctrl-C, except one typed into
-            // a running command while later actions of the same reply still wait behind it:
-            // that Ctrl-C is the command's interrupt, the conversation continues (#850,
-            // DECLINED.md IMPROVED) and the next action's card comes up, which I2b would report
-            // as "not terminal, an action still held". There the interrupt itself is checked
-            // (I2c); the closing user answers the cards and I2a ends the turn. (Whether such a
-            // Ctrl-C should stop the turn too is an open owner question on #1942; if it is
-            // decided so, drop `interrupts_one_command` and I2b applies to every Ctrl-C again.)
-            let was_running: Vec<_> = obs
-                .snapshot
-                .iter()
-                .filter(|s| s.stage == PendingStage::Running)
-                .map(|s| s.action_id.clone())
-                .collect();
-            let interrupts_one_command = matches!(step.op, Op::CtrlC)
-                && !was_running.is_empty()
-                && obs.snapshot.len() > was_running.len();
-            if interrupts_one_command {
+            // I2b / I2c. A Stop always ends the turn. So does a Ctrl-C, with exactly one
+            // exception (#850, DECLINED.md IMPROVED; owner decision 2026-11-10, which closed
+            // the question on #1942): a Ctrl-C typed into a running agent command interrupts
+            // that command and the turn goes on. I2b ("terminal, nothing held") is not asked of
+            // that Ctrl-C, whether or not other actions of the reply wait behind the command;
+            // I2c is: the command stops, and the action that waited behind it for the user's
+            // answer is still there, not cancelled with the command. How the step ends after
+            // that is the app's ordinary end-of-step rule, not this key's: the cards that
+            // follow are the closing user's, a step with a finished result goes back to the
+            // model and a step whose only result is the interrupted command ends `Cancelled`
+            // (#1178), and I2a still requires the turn to end.
+            //
+            // A Ctrl-C with any other action running (a read, a grep) is not that exception:
+            // it is a stop, and I2b applies.
+            if into_running_command {
+                let waited_for_the_user = oracle::waits_for_the_user(&obs, safe_allowlist);
                 let interrupted = settle_until(app, knobs.terminal_after_stop, |app| {
-                    Oracle::interrupted(&rig.observe(app), &was_running).is_ok()
+                    Oracle::interrupted(&rig.observe(app), &ctrl_c_commands).is_ok()
                 })
                 .await;
+                let after = rig.observe(app);
                 if !interrupted {
-                    Oracle::interrupted(&rig.observe(app), &was_running)?;
+                    Oracle::interrupted(&after, &ctrl_c_commands)?;
                 }
+                Oracle::turn_goes_on(&after, waited_for_the_user.as_ref())?;
             } else if matches!(step.op, Op::CtrlC | Op::Stop) {
                 let stopped = settle_until(app, knobs.terminal_after_stop, |app| {
                     Oracle::stopped(&rig.observe(app)).is_ok()

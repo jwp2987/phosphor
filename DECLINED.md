@@ -3138,6 +3138,10 @@ work to race and nothing drains the main queue, so such a read runs in place.
   **Not changed:** a step nobody stopped (a tool cancelled itself, a command took a ^C, a
   long-running command pushed the other commands out) still follows up when any result
   finished (#1178), and input typed during a reply is still a steer (#851).
+  **A Ctrl-C typed into a running agent command is not a stop** (owner decision 2026-11-10,
+  which closed the question this entry left open): it interrupts the command and the turn goes
+  on (#850). The later actions of the reply still come up, and the step ends by the rule
+  above. The agent fuzzer holds the app to it (I2b / I2c, `agent_fuzz::ctrl_c_tests`).
   **Evidence:** `docs/design/agent-lifecycle-audit.md` finding 1; tests
   `a_user_stop_after_a_finished_result_sends_no_request`,
   `a_reject_after_a_finished_result_tells_the_model_at_once`, `agent_fuzz::stop_tests` (one
