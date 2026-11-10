@@ -4218,6 +4218,14 @@ def c_lat_key(ctx, r):
         r.note("#1176 key -> pty write: no keydown -> `input_order pty_write` pair in the measurement window (input-order logging off, or no key reached the pty)")
     r.metric("typing_ui_items", ui_item_audit(txt))
     r.metric("typing_lock_holds", lock_hold_audit(txt))
+    # #1958: what the key -> pty write share is made of. Informational like the #1176 numbers above: how many platform samples the hand-off took
+    # while these keys were typed (a fixed build takes one for the first key of the line, none for the rest; before, one per key inside the
+    # hand_route log line) and what each cost; on Linux also which way the foreground group's members were found.
+    ps = prompt_sample_audit(txt)
+    r.metric("typing_prompt_samples", ps)
+    r.note("#1958 platform samples while typing %d key(s): %d (median %s us, max %d us, %d at or over 1 ms); foreground-group lookups by path: %s" % (
+        n + warm, ps["samples"], ps["p50_us"], ps["max_us"], ps["over_1ms"],
+        ", ".join("%s x%d (max %d us, %d reads)" % (p, v[0], v[1], v[2]) for p, v in sorted(ps["lookups"].items())) or "none logged"))
     if len(ds) < n * 0.5:
         cnt = getattr(run_keys, "counts", {})
         why = ("no keydown line at all: input_order logging off, wrong log path, or the keys never reached the app" if not cnt.get("keydown") else
@@ -4493,6 +4501,27 @@ def lock_hold_audit(txt):
         k[0] += 1
         k[1] = max(k[1], round(ms, 3))
     return out
+
+
+_PROMPT_SAMPLE_RE = re.compile(r"input_order hop=prompt_fact_sample what=(\w+) answer=\S+ us=(\d+)")
+_FG_LOOKUP_RE = re.compile(r"input_order hop=fg_group_lookup for=\w+ path=(\w+) reads=(\d+) members=\S+ us=(\d+)")
+
+
+def prompt_sample_audit(txt):
+    """#1958: the platform samples the typeahead hand-off took (`hop=prompt_fact_sample what=<prompt_fact|plain_program> answer=<..> us=<micros>`,
+    one line per sample of an installed probe, every unix) and, on Linux, how each look at the pty's foreground process group was answered
+    (`hop=fg_group_lookup for=<..> path=<leader|walk|list|list_after_walk|scan> reads=<n> members=<n|none> us=<micros>`)
+    -> dict(samples, max_us, p50_us, over_1ms, lookups={path: [count, max_us, max_reads]}). Before #1958 a Linux run had one sample per key
+    written to the pty (inside the `hand_route` log line) and each was a read of every process's stat (4-16 ms); a build older than the hops logs
+    nothing, which reads exactly like 'no sample taken'."""
+    us = [int(m.group(2)) for m in _PROMPT_SAMPLE_RE.finditer(txt)]
+    lookups = {}
+    for m in _FG_LOOKUP_RE.finditer(txt):
+        k = lookups.setdefault(m.group(1), [0, 0, 0])
+        k[0] += 1
+        k[1] = max(k[1], int(m.group(3)))
+        k[2] = max(k[2], int(m.group(2)))
+    return dict(samples=len(us), max_us=max(us) if us else 0, p50_us=statistics.median(us) if us else 0, over_1ms=sum(1 for v in us if v >= 1000), lookups=lookups)
 
 
 def ui_item_metrics(ctx, r, off, label):
