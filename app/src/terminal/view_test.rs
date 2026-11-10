@@ -28717,6 +28717,172 @@ fn a_secret_question_at_a_prompt_takes_input_back_at_its_output() {
     })
 }
 
+/// #2052: the prompt of [`sampled_prompt_the_editor_owns`] with nothing reading a secret (an
+/// echoing `read -p` leaves the tty as a shell between its Precmd and its line editor has it), and
+/// the last Precmd's session and sequence number known to the hand-off: (7, 2).
+fn echoing_prompt_the_editor_owns(view: &mut TerminalView) {
+    let tty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    sampled_prompt_the_editor_owns(view, &tty);
+    let mut model = view.model.lock();
+    model
+        .typeahead_handoff_mut()
+        .on_precmd_seq(Some(7), Some(2));
+}
+
+/// #2052 (found by reading, Linux and macOS): a precmd function asks with echo on (`read -p
+/// "continue? " x`) after the prompt's Precmd gave input to the editor. No tty sample sees it; the
+/// shell's `TtyReaderAsks` marker does, and the hand-off noted the reader on the model thread.
+/// The pane's key sink finds that: the answer and its Enter go to the reader as the separate
+/// writes they were typed in, in typed order, also while focus is still reported in the input's
+/// editor. The editor never holds a character of the answer, the Enter is not a line a prompt must
+/// answer, and the line editor's signal ends the reader. Legacy and Table.
+///
+/// The control arm (`marker == false`) is the same prompt with no marker (the kill switch, or a
+/// shell that sends none): the keys are the editor's, as before, and nothing is written.
+#[test]
+fn a_precmd_reads_marker_takes_the_keys_from_the_focused_editor() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for marker in [true, false] {
+            App::test((), move |mut app| async move {
+                let what = format!("{mode:?} marker={marker}");
+                let what = what.as_str();
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = collect_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    register_local_session_for_ssh_test(view, ctx);
+                    echoing_prompt_the_editor_owns(view);
+                    if marker {
+                        // The parser thread's part: the marker, ahead of the question's bytes.
+                        let noted = view
+                            .model
+                            .lock()
+                            .typeahead_handoff_mut()
+                            .on_tty_reader_asks(Some(7), Some(2));
+                        assert!(noted, "{what}");
+                    }
+                    for key in ["y", "e", "s"] {
+                        assert_eq!(
+                            pane_typed(view, key, true, ctx),
+                            PaneKeyOutcome::Consumed,
+                            "{what}"
+                        );
+                    }
+                    let reader = view.handoff.read().prompt_reader_asks();
+                    assert_eq!(reader, marker, "{what}: a reader is noted");
+                    if !marker {
+                        assert!(view.handoff.read().editor_owns_input(), "{what}");
+                        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "yes", "{what}");
+                        return;
+                    }
+                    assert!(
+                        !view.handoff.read().marker_reader_news_pending(),
+                        "{what}: the first key did the view's part of the hand-over"
+                    );
+                    assert_eq!(
+                        view.input.as_ref(ctx).buffer_text(ctx),
+                        "",
+                        "{what}: no character of the answer is in the editor"
+                    );
+                    // Focus followed to the terminal: the Enter is the pane's, not the editor's
+                    // key binding's.
+                    view.keydown_on_terminal("\r", ctx);
+                    let handoff = view.handoff.read();
+                    assert!(handoff.is_pty_owned(), "{what}");
+                    assert!(!handoff.young_hold_queued(), "{what}: no young Enter");
+                    assert!(
+                        !handoff.has_unanswered_lines(),
+                        "{what}: the read's Enter is not a line a prompt must answer"
+                    );
+                    assert!(!handoff.shell_line_may_hold_typed_text(), "{what}");
+                });
+                if !marker {
+                    assert!(
+                        pty_writes.borrow().is_empty(),
+                        "{what}: no reader, nothing is written: {:?}",
+                        pty_writes.borrow()
+                    );
+                    return;
+                }
+                assert_eq!(
+                    *pty_writes.borrow(),
+                    [&b"y"[..], b"e", b"s", b"\r"]
+                        .map(|key| key.to_vec())
+                        .to_vec(),
+                    "{what}: the answer and its Enter, one write per key, in typed order"
+                );
+                // The read returned and the line editor signals.
+                terminal.update(&mut app, |view, ctx| {
+                    line_editor_signal(view, ctx);
+                    assert!(!view.handoff.read().prompt_reader_asks(), "{what}");
+                    assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{what}");
+                });
+                assert_eq!(
+                    pty_writes.borrow().len(),
+                    4,
+                    "{what}: the signal writes nothing more: {:?}",
+                    pty_writes.borrow()
+                );
+            })
+        }
+    }
+}
+
+/// #2052: the marker and the question are output, so the wakeup's look is the usual first event:
+/// it does the view's part (focus to the terminal) before any key is typed, once; the keys typed
+/// next are routed by the terminal. A wakeup with no marker parsed changes nothing.
+#[test]
+fn a_precmd_reads_marker_is_found_at_the_wakeup_of_its_question() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            echoing_prompt_the_editor_owns(view);
+            view.model.lock().process_bytes("continue? ");
+            assert!(
+                !view.hand_keys_to_a_secret_reader("output", ctx),
+                "printed text alone is no reader: the tty says nothing for an echoing read"
+            );
+            assert!(view.handoff.read().editor_owns_input());
+            {
+                let mut model = view.model.lock();
+                assert!(
+                    model
+                        .typeahead_handoff_mut()
+                        .on_tty_reader_asks(Some(7), Some(2))
+                );
+            }
+            assert!(view.handoff.read().marker_reader_news_pending());
+            assert!(view.hand_keys_to_a_secret_reader("output", ctx));
+            {
+                let handoff = view.handoff.read();
+                assert!(handoff.is_pty_owned());
+                assert!(handoff.prompt_reader_asks());
+                assert!(handoff.wants_terminal_focus());
+                assert!(!handoff.marker_reader_news_pending(), "looked at once");
+            }
+            assert!(
+                view.hand_keys_to_a_secret_reader("output", ctx),
+                "asked again: the reader still has the keys"
+            );
+            for key in [&b"y"[..], b"\r"] {
+                view.write_user_bytes_to_pty(key.to_vec(), ctx);
+            }
+        });
+        assert_eq!(
+            *pty_writes.borrow(),
+            [&b"y"[..], b"\r"].map(|key| key.to_vec()).to_vec()
+        );
+    })
+}
+
 /// #2053 (owner decision 2026-11-10; round 12 agent pass: `question_on_screen_hp0 = false`): an
 /// agent conversation shows the question a precmd function asks only while its reader has the
 /// keys. The question is early output in a background block that belongs to no conversation, so

@@ -415,6 +415,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # history to do so. This means that $1 is not the correct command if the executed command is ignored
         # by history (e.g. via $HISTCONTROL or $HISTIGNORE); for example, all in-band generators are ignored
         # by history.
+        # Phosphor (#2052): a stage warp_update_prompt_vars never closed ends here at the latest.
+        if [[ -n ${__warp_reader_stage:-} ]]; then __warp_reader_stage_close; fi
         __warp_seq=$((${__warp_seq:-0} + 1))
         if [ "${WARP_IN_MSYS2:-}" = true ]; then
           warp_send_hook_via_kv_pairs_start "Preexec"
@@ -622,6 +624,76 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       done
       unset -f exit logout; if [ -n "$__phosphor_ap_gx" ]; then eval "$__phosphor_ap_gx"; fi; if [ -n "$__phosphor_ap_gl" ]; then eval "$__phosphor_ap_gl"; fi; unset __phosphor_ap_gx __phosphor_ap_gl
       unset __phosphor_ap_v __phosphor_ap_active
+    }
+
+    # Phosphor (#2052): the reader marker. A precmd function that runs AFTER warp_precmd (the user's
+    # PROMPT_COMMAND, a function registered after this bootstrap) may ask a question with `read`.
+    # The app has the prompt's Precmd by then and gives the keys to its input editor; an echoing
+    # read leaves the tty exactly as a shell between its Precmd and readline has it, so nothing the
+    # app can sample tells it that something is reading. The shell knows: between warp_precmd and
+    # warp_update_prompt_vars (the user stage of the precmd) `read` is the function below, which
+    # says "a read of the terminal starts now" (TtyReaderAsks, the same OSC form, session id and
+    # seq as LineEditorReading) and then runs the builtin with the caller's arguments. The app
+    # routes the keys to the pty until readline's own marker.
+    #
+    # Rules the function keeps, so that a `read` behaves as the builtin in every other respect:
+    # no local variable and no assignment (the caller's locals, REPLY, -a arrays and an `IFS=: read`
+    # prefix are the builtin's to see), the builtin is the last command (its status is the
+    # function's: EOF, a timeout), and a failing write cannot trip the caller's `set -e` or ERR
+    # trap. Builtins only, no fork.
+    #
+    # Announced: a read of fd 0 while fd 0 is a terminal. Not announced: a read from a file, a pipe
+    # or a here-string, `read -u N` from another descriptor (what a prompt tool's helper pipe looks
+    # like), and the poll `read -t 0`, which reads nothing. __warp_read_is_of_fd0 answers the last
+    # two from the options, parsed with the builtin's own option string; its locals are gone before
+    # the builtin runs.
+    #
+    # A bare `read` has its own branch: before bash 4.4 `"$@"` with no arguments is an unbound
+    # variable under the caller's `set -u` (bash 3.2 on macOS), which would abort the caller.
+    #
+    # Never installed: with PHOSPHOR_READER_MARKER=0 (the one kill switch; the app honours the same
+    # name), before the bootstrap is done (its own code runs after the first warp_precmd), over a
+    # `read` function of the user's, or in POSIX mode (there an assignment in front of a function
+    # call can outlive the call on older bash: `IFS= read` would leave IFS empty). `function read`,
+    # not `read ()`: the second form expands a user's `read` alias when this file is parsed.
+    # The stage is closed by warp_update_prompt_vars, and by the next Preexec or the next open if
+    # that never ran (a Ctrl-C at the question abandons the rest of the precmd stage).
+    __warp_reader_stage_open () {
+        __warp_reader_stage_close
+        [[ ${PHOSPHOR_READER_MARKER:-1} != 0 && -n ${WARP_SESSION_ID:-} && -n ${WARP_BOOTSTRAPPED:-} ]] || return 0
+        [[ :${SHELLOPTS:-}: == *:posix:* ]] && return 0
+        declare -F read >/dev/null 2>&1 && return 0
+        function read {
+            if [[ $# -eq 0 ]]; then
+                if [[ -t 0 ]]; then __warp_reader_announce; fi
+                builtin read
+            else
+                if [[ -t 0 ]] && __warp_read_is_of_fd0 "$@"; then __warp_reader_announce; fi
+                builtin read "$@"
+            fi
+        }
+        __warp_reader_stage=1
+    }
+    __warp_reader_stage_close () {
+        if [[ -n ${__warp_reader_stage:-} ]]; then
+            __warp_reader_stage=
+            unset -f read
+        fi
+        return 0
+    }
+    __warp_reader_announce () {
+        __warp_emit '\e]9278;f;{"hook": "TtyReaderAsks", "value": {"session_id": %s, "seq": %s}}\a' "${WARP_SESSION_ID:-0}" "${__warp_seq:-0}" || :
+        return 0
+    }
+    __warp_read_is_of_fd0 () {
+        local OPTIND=1 OPTARG= OPTERR=0 __warp_read_opt=
+        while builtin getopts ':ersa:d:i:n:N:p:t:u:' __warp_read_opt "$@"; do
+            case $__warp_read_opt in
+                u) [[ $OPTARG == 0 ]] || return 1 ;;
+                t) case $OPTARG in 0|0.|0.0) return 1 ;; esac ;;
+            esac
+        done
+        return 0
     }
 
     # Note that this is very performance sensitive code, so try not to
@@ -949,6 +1021,9 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           encoded_message+=$__warp_hex
           __warp_emit_hex_message
         fi
+        # Phosphor (#2052): the Precmd is out; the user stage of the precmd starts. (Not after an
+        # in-band generator: that path returned above and runs no user function.)
+        __warp_reader_stage_open
     }
     function warp_precmd { __warp_run_relaxed __warp_precmd_impl "$@"; }
 
@@ -1936,6 +2011,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # and if not, wrap them with the appropriate markers so that we can direct the
     # prompt bytes to the appropriate grids.
     function __warp_update_prompt_vars_impl() {
+      # Phosphor (#2052): the user stage of the precmd is over; `read` is the builtin again.
+      __warp_reader_stage_close
       # 133;A and 133;B are standard prompt marker OSCs.
       # See https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration and
       # https://gitlab.freedesktop.org/terminal-wg/specifications/-/merge_requests/6/diffs for details.

@@ -1,0 +1,513 @@
+#!/usr/bin/env python3
+"""The reader marker of the bash and zsh bootstraps (#2052): `read` during the user stage of the precmd.
+
+Between the bootstrap's own first and last precmd functions (warp_precmd ... warp_update_prompt_vars)
+`read` is a function that sends one unencoded OSC, `ESC ] 9278 ; f ; {"hook": "TtyReaderAsks",
+"value": {"session_id": N, "seq": M}} BEL`, when it is about to read the terminal, and then runs the
+builtin. The app gives the keys to the pty from that marker to the line editor's own marker, so the
+answer to a precmd function's echoing `read -p "continue? "` reaches the read instead of the input
+editor. This script pins the SHELL side, in a pty, against the real assembled bootstraps (bash, zsh),
+with the user's prompt honored and with Phosphor's own prompt:
+
+  1. a precmd function's question sends exactly one TtyReaderAsks, after the prompt's Precmd, before
+     the question's bytes and before LineEditorReading, with the Precmd's seq and the session id; the
+     typed answer is what the read returns (bash: also from PROMPT_COMMAND);
+  2. the wrapper is the builtin in every other respect: caller locals, `IFS=: read` (IFS restored),
+     REPLY, arrays, the EOF status, `read -s`, a timeout with a question;
+  3. nothing is announced for a read that is not of the terminal on fd 0: from a file, `-u N` (also
+     clustered), and a poll (`read -t 0` / zsh `read -t`);
+  4. outside the stage `read` is the builtin and a read at the prompt sends no marker;
+  5. a user's own `read` function is never replaced (and still runs); a user's `read` alias does not
+     break the bootstrap;
+  6. bash POSIX mode installs nothing; PHOSPHOR_READER_MARKER=0 installs nothing and sends nothing;
+  7. `set -e` / `set -u` (zsh: err_exit, nounset) do not abort the wrapper or the shell, a bare `read`
+     under nounset included (before bash 4.4 an empty "$@" is an unbound variable there);
+  8. a Ctrl-C at the question does not leave the wrapper behind for the next command.
+
+Not covered here (said in docs/design/r14-readmark.md): a function registered after the bootstrap runs
+after warp_update_prompt_vars at the FIRST prompt after its registration (the dispatcher iterates a
+copy of precmd_functions), so that one prompt is outside the stage; this script registers its function
+and lets one prompt pass before it asks. bash 3.2 (macOS) is covered when --bash points at one.
+
+USAGE
+    script/test_reader_marker [--bash PATH] [--zsh PATH] [--only SHELL]
+
+A shell that is not installed is reported and skipped. Exit 0 when every check passes, 1 otherwise.
+Temporary homes are made under $TMPDIR.
+"""
+
+import json
+import os
+import pty
+import re
+import select
+import shlex
+import shutil
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS = os.path.join(ROOT, "app", "assets")
+BOOT = os.path.join(ASSETS, "bundled", "bootstrap")
+DCS_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)(?:\x9c|\xc2\x9c)")
+OSC_RE = re.compile(rb"\x1b\]9278;f;(\{.*?\})\x07")
+OSC_D_RE = re.compile(rb"\x1b\]9278;d;([0-9A-Fa-f]*)\x07")
+EVENT_RE = re.compile("|".join(r.pattern.decode() for r in (DCS_RE, OSC_RE, OSC_D_RE)).encode(), re.S)
+MARKER = "TtyReaderAsks"
+MARKER_BYTES = b'\x1b]9278;f;{"hook": "TtyReaderAsks"'
+
+SHELLS = {"bash": shutil.which("bash"), "zsh": shutil.which("zsh")}
+args = sys.argv[1:]
+ONLY = None
+while args:
+    if args[0] == "--only" and len(args) >= 2:
+        ONLY = args[1]
+        args = args[2:]
+    elif args[0] in ("--bash", "--zsh") and len(args) >= 2:
+        SHELLS[args[0][2:]] = args[1]
+        args = args[2:]
+    else:
+        sys.exit(__doc__)
+
+failures = []
+SID = "4242"
+
+# The precmd function the user "registers after the bootstrap": it runs the scenario file once, when
+# one is there. Valid in bash and zsh. bash also gets the same thing as its PROMPT_COMMAND (set in the
+# rc file, so the bootstrap wraps it as user_prompt_command, which runs inside the stage too).
+HOOK = ('__rm_ask() { if [ -f "$HOME/go" ]; then command mv "$HOME/go" "$HOME/go.run"; . "$HOME/go.run"; fi; }\n'
+        'precmd_functions+=(__rm_ask)\n')
+PROMPT_COMMAND_RC = ('__rm_pc() { if [ -f "$HOME/go_pc" ]; then command mv "$HOME/go_pc" "$HOME/go_pc.run"; . "$HOME/go_pc.run"; fi; }\n'
+                     'PROMPT_COMMAND=__rm_pc\n')
+USER_READ = 'read() { builtin printf x >> "$HOME/USER_READ_RAN"; builtin read "$@"; }\n'
+
+
+def check(cond, what, detail=""):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+        if detail:
+            print("       " + str(detail).replace("\n", "\n       "))
+
+
+def read_asset(name):
+    with open(os.path.join(BOOT, name)) as f:
+        return f.read()
+
+
+def assemble(text):
+    """Mirror bootstrap.rs: inline #include, trim, drop blank and comment lines."""
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("#include "):
+            with open(os.path.join(ASSETS, line[len("#include "):])) as f:
+                out.extend(assemble(f.read().replace("@@USING_CON_PTY_BOOLEAN@@", "false")).split("\n"))
+            continue
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+class Shell:
+    """A real bash or zsh in a pty with the assembled bootstrap, as script/test_line_editor_markers starts them."""
+
+    def __init__(self, kind, home, honor, env_extra=None, rc_prefix=""):
+        self.kind = kind
+        self.home = home
+        env = {"HOME": home, "USER": os.environ.get("USER", "user"), "PATH": "/usr/local/bin:/usr/bin:/bin:" + os.path.dirname(SHELLS.get(kind) or ""),
+               "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1", "WARP_HONOR_PS1": honor,
+               "WARP_PROMPT_NODE_VERSION_ENABLED": "0", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        env.update(env_extra or {})
+        if kind == "bash":
+            init = read_asset("bash_init_shell.sh").replace("@@WARP_SESSION_ID@@", SID).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            rc = os.path.join(home, "rc")
+            with open(rc, "w") as f:
+                f.write("PS1='U> '\n" + rc_prefix + init + "\n" + assemble(read_asset("bash.sh")) + "\n")
+            argv = [SHELLS["bash"], "--noprofile", "--rcfile", rc, "-i"]
+        else:
+            zd = os.path.join(home, "zdot")
+            os.makedirs(zd)
+            open(os.path.join(zd, ".zshenv"), "w").close()
+            open(os.path.join(zd, ".zshrc"), "w").close()
+            self.body = os.path.join(home, "body.sh")
+            with open(self.body, "w") as f:
+                f.write(assemble(read_asset("zsh_body.sh")).replace("@@USING_CON_PTY_BOOLEAN@@", "false") + "\n")
+            self.pre = os.path.join(home, "pre.zsh")
+            with open(self.pre, "w") as f:
+                f.write(rc_prefix)
+            env["ZDOTDIR"] = zd
+            env["PS1"] = "U> "
+            argv = [SHELLS["zsh"], "-g", "--no-rcs", "-i"]
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(home)
+            os.execve(argv[0], argv, env)
+        self.buf = b""
+        if kind == "zsh":
+            self.pump(1.5)
+            os.write(self.fd, ("unsetopt ZLE; source %s; WARP_SESSION_ID=%s; WARP_USING_WINDOWS_CON_PTY=false; source %s\r"
+                               % (shlex.quote(self.pre), SID, shlex.quote(self.body))).encode())
+        self.broken = not self.pump(40, lambda: any(e[0] == "Bootstrapped" for e in self.events()))
+        if not self.broken:
+            self.pump(8, lambda: self.count("LineEditorReading") >= 1)
+        self.pump(1.0)
+
+    def pump(self, timeout, until=None):
+        end = time.time() + timeout
+        while time.time() < end:
+            if until is not None and until():
+                return True
+            r, _, _ = select.select([self.fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                return until() if until else False
+            if not data:
+                return until() if until else False
+            self.buf += data
+        return until() if until else False
+
+    def events(self, start=0):
+        """(name, value) for every hook and marker in the stream from byte `start`, in order."""
+        out = []
+        for m in EVENT_RE.finditer(self.buf, start):
+            try:
+                if m.group(1) is not None:
+                    j = json.loads(bytes.fromhex(m.group(1).decode()).decode(errors="replace"))
+                elif m.group(2) is not None:
+                    j = json.loads(m.group(2).decode())
+                else:
+                    j = json.loads(bytes.fromhex(m.group(3).decode()).decode(errors="replace"))
+            except ValueError:
+                out.append(("INVALID", {}))
+                continue
+            out.append((j.get("hook", "?"), j.get("value") or {}))
+        return out
+
+    def count(self, name, start=0):
+        return sum(1 for e in self.events(start) if e[0] == name)
+
+    def line(self, text, timeout=15):
+        """Type a command line at the prompt and wait for its prompt cycle to end (the next LineEditorReading)."""
+        start = len(self.buf)
+        os.write(self.fd, text.encode() + b"\r")
+        ok = self.pump(timeout, lambda: self.count("LineEditorReading", start) >= 1)
+        self.pump(0.2)
+        return ok, start
+
+    def out(self, name="out"):
+        try:
+            with open(os.path.join(self.home, name)) as f:
+                return f.read()
+        except OSError:
+            return None
+
+    def stage(self, script, question=None, answer=None, go="go", timeout=15):
+        """Run `script` inside the user stage of the next precmd (the function sources it), started by an empty command.
+        When it asks (`question`, a token its prompt prints), `answer` is typed once the token is in the stream.
+        -> (the cycle ended with LineEditorReading, the stream offset the cycle started at)."""
+        for name in ("out", go + ".run"):
+            try:
+                os.remove(os.path.join(self.home, name))
+            except OSError:
+                pass
+        with open(os.path.join(self.home, go), "w") as f:
+            f.write(script + "\n")
+        start = len(self.buf)
+        os.write(self.fd, b"true\r")
+        if question is not None:
+            asked = self.pump(timeout, lambda: question.encode() in self.buf[start:])
+            if not asked:
+                return False, start
+            self.pump(0.3)
+            if answer is not None:
+                os.write(self.fd, answer)
+        ok = self.pump(timeout, lambda: self.count("LineEditorReading", start) >= 1)
+        self.pump(0.2)
+        return ok, start
+
+    def close(self):
+        try:
+            os.kill(self.pid, 9)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+
+def names(evs):
+    return [e[0] for e in evs]
+
+
+def syntax(kind):
+    """The few places bash and zsh spell a read differently."""
+    if kind == "bash":
+        return dict(ask=lambda var, q: 'read -p "%s" %s' % (q, var), secret=lambda var, q: 'read -s -p "%s" %s' % (q, var),
+                    timed=lambda var, q: 'read -t 20 -p "%s" %s' % (q, var), array="read -a arr", poll="read -t 0",
+                    is_function='{ [ "$(type -t read)" = function ] && printf yes || printf no; }')
+    return dict(ask=lambda var, q: 'read "%s?%s"' % (var, q), secret=lambda var, q: 'read -s "%s?%s"' % (var, q),
+                timed=lambda var, q: 'read -t 20 "%s?%s"' % (var, q), array="read -A arr", poll="read -t polled",
+                is_function='{ (( ${+functions[read]} )) && printf yes || printf no; }')
+
+
+def start(kind, honor, label, **kw):
+    base = os.path.realpath(tempfile.mkdtemp(prefix="phosphor-2052-"))
+    sh = Shell(kind, base, honor, **kw)
+    check(not sh.broken, "%s: bootstraps" % label, repr(sh.buf[-400:]))
+    return sh, base
+
+
+def install_hook(sh, label):
+    """Register the precmd function after the bootstrap and let one prompt pass (see the module docstring)."""
+    with open(os.path.join(sh.home, "hook.sh"), "w") as f:
+        f.write(HOOK)
+    ok, _ = sh.line(". ~/hook.sh")
+    ok2, _ = sh.line("true")
+    check(ok and ok2, "%s: the precmd function is registered and a prompt has passed" % label)
+    return ok and ok2
+
+
+def run_main(kind, honor):
+    label = "%s honor=%s" % (kind, honor)
+    print("%s (%s)" % (label, SHELLS[kind]))
+    S = syntax(kind)
+    sh = base = None
+    try:
+        sh, base = start(kind, honor, label, rc_prefix=PROMPT_COMMAND_RC if kind == "bash" else "")
+        if sh.broken or not install_hook(sh, label):
+            return
+        out = lambda: sh.out()  # noqa: E731
+
+        # premise: inside the stage `read` is the function.
+        ok, _ = sh.stage(S["is_function"] + ' > "$HOME/out"')
+        check(ok and out() == "yes", "%s: inside the user stage `read` is the wrapper" % label, repr(out()))
+
+        # 1. the question: one marker, placed and numbered, and the answer reaches the read.
+        ok, at = sh.stage(S["ask"]("ans", "Q1? ") + '; printf "%s" "$ans" > "$HOME/out"', "Q1? ", b"yes\r")
+        evs = sh.events(at)
+        n = names(evs)
+        check(ok and out() == "yes", "%s: the typed answer is what the read returns" % label, "out=%r events=%r" % (out(), n))
+        check(n.count(MARKER) == 1, "%s: exactly one TtyReaderAsks for one read" % label, repr(n))
+        if MARKER in n and "Precmd" in n and "LineEditorReading" in n:
+            check(n.index("Precmd") < n.index(MARKER) < n.index("LineEditorReading"),
+                  "%s: Precmd, then TtyReaderAsks, then LineEditorReading" % label, repr(n))
+            pre = [e[1] for e in evs if e[0] == "Precmd"][-1]
+            mk = [e[1] for e in evs if e[0] == MARKER][0]
+            check(mk.get("seq") == pre.get("seq") and mk.get("session_id") == int(SID),
+                  "%s: the marker carries the Precmd's seq and the session id" % label, "marker=%r precmd seq=%r" % (mk, pre.get("seq")))
+            cycle = sh.buf[at:]
+            check(0 <= cycle.find(MARKER_BYTES) < cycle.find(b"Q1? "), "%s: the marker precedes the question's bytes" % label)
+        else:
+            check(False, "%s: Precmd, TtyReaderAsks and LineEditorReading are all in the cycle" % label, repr(n))
+
+        if kind == "bash":
+            ok, at = sh.stage('read -p "QP? " ans; printf "%s" "$ans" > "$HOME/out"', "QP? ", b"pc\r", go="go_pc")
+            n = names(sh.events(at))
+            check(ok and out() == "pc" and n.count(MARKER) == 1, "%s: a question asked from PROMPT_COMMAND is announced and answered" % label,
+                  "out=%r events=%r" % (out(), n))
+
+        # 2. the builtin's semantics.
+        script = ('__rm_ifs0=$IFS\n'
+                  '__rm_f() { local a b; printf "Q2? "; IFS=: read -r a b; printf "%s|%s" "$a" "$b" > "$HOME/out"; }\n'
+                  '__rm_f\n'
+                  '[ "$IFS" = "$__rm_ifs0" ] && printf "|ifs_ok" >> "$HOME/out"\n'
+                  'printf "|%s|%s" "${a-unset}" "${b-unset}" >> "$HOME/out"')
+        ok, at = sh.stage(script, "Q2? ", b"x:y z\r")
+        check(ok and out() == "x|y z|ifs_ok|unset|unset", "%s: `IFS=: read -r a b` splits on the prefix IFS, fills the caller's locals, IFS is restored" % label,
+              repr(out()))
+        check(sh.count(MARKER, at) == 1, "%s: ... and is announced once" % label)
+
+        ok, at = sh.stage('printf "Q3? "; read; printf "%s" "$REPLY" > "$HOME/out"', "Q3? ", b"hello world\r")
+        check(ok and out() == "hello world", "%s: a bare `read` sets REPLY" % label, repr(out()))
+
+        ok, at = sh.stage('printf "Q4? "; %s; printf "%%s" "${#arr[@]}" > "$HOME/out"' % S["array"], "Q4? ", b"p q r\r")
+        check(ok and out() == "3", "%s: an array read fills the array" % label, repr(out()))
+
+        ok, at = sh.stage('printf "Q5? "; read x; printf "st=%s" "$?" > "$HOME/out"', "Q5? ", b"\x04")
+        check(ok and out() == "st=1", "%s: end of input returns the builtin's status 1" % label, repr(out()))
+
+        ok, at = sh.stage(S["secret"]("x", "Q6? ") + '; printf "%s" "$x" > "$HOME/out"', "Q6? ", b"sec\r")
+        check(ok and out() == "sec" and sh.count(MARKER, at) == 1, "%s: `read -s` is announced and returns the typed secret" % label, repr(out()))
+        check(b"sec" not in sh.buf[at:].split(b"Q6? ", 1)[-1], "%s: ... and the secret is not echoed" % label)
+
+        ok, at = sh.stage(S["timed"]("x", "Q7? ") + '; printf "%s" "$x" > "$HOME/out"', "Q7? ", b"t\r")
+        check(ok and out() == "t" and sh.count(MARKER, at) == 1, "%s: a read with a timeout and a question is announced" % label, repr(out()))
+
+        ok, at = sh.stage('printf "Q8? "; read a; printf "Q9? "; read b; printf "%s%s" "$a" "$b" > "$HOME/out"', "Q8? ", b"1\r")
+        if not ok:      # the second question waits
+            sh.pump(10, lambda: b"Q9? " in sh.buf[at:])
+            os.write(sh.fd, b"2\r")
+            ok = sh.pump(15, lambda: sh.count("LineEditorReading", at) >= 1)
+        check(ok and out() == "12" and sh.count(MARKER, at) == 2, "%s: two reads in one stage are two markers" % label,
+              "out=%r markers=%d" % (out(), sh.count(MARKER, at)))
+
+        # 3. reads that are not of the terminal on fd 0 announce nothing.
+        with open(os.path.join(sh.home, "data"), "w") as f:
+            f.write("from file\n")
+        for what, script in (
+            ("from a file", 'read -r x < "$HOME/data"; printf "%s" "$x" > "$HOME/out"'),
+            ("`-u 3`", 'read -r -u 3 x 3< "$HOME/data"; printf "%s" "$x" > "$HOME/out"'),
+            ("clustered `-ru3`", 'read -ru3 x 3< "$HOME/data"; printf "%s" "$x" > "$HOME/out"'),
+            ("a here-string", 'read -r x <<< "from file"; printf "%s" "$x" > "$HOME/out"'),
+        ):
+            ok, at = sh.stage(script)
+            check(ok and out() == "from file" and sh.count(MARKER, at) == 0, "%s: a read %s returns its line and is not announced" % (label, what),
+                  "out=%r markers=%d" % (out(), sh.count(MARKER, at)))
+        ok, at = sh.stage('%s; a=$?; builtin %s; b=$?; printf "%%s" "$a$b" > "$HOME/out"' % (S["poll"], S["poll"]))
+        o = out() or ""
+        check(ok and len(o) >= 2 and o[:len(o) // 2] == o[len(o) // 2:] and sh.count(MARKER, at) == 0,
+              "%s: the poll (%s) has the builtin's status and is not announced" % (label, S["poll"]), "out=%r markers=%d" % (o, sh.count(MARKER, at)))
+
+        # 7. the caller's strict options.
+        strict = "set -eu" if kind == "bash" else "setopt err_exit nounset"
+        relaxed = "set +eu" if kind == "bash" else "unsetopt err_exit nounset"
+        ok, at = sh.stage(strict + "; " + S["ask"]("ans", "QS? ") + '; printf "%s" "$ans" > "$HOME/out"; ' + relaxed, "QS? ", b"strict\r")
+        check(ok and out() == "strict" and sh.count(MARKER, at) == 1, "%s: under %s the read is announced, answered, and the shell lives" % (label, strict),
+              "out=%r events=%r" % (out(), names(sh.events(at))))
+
+        # a bare `read` under nounset: before bash 4.4 an empty "$@" is an unbound variable there, so the wrapper must not expand one.
+        nounset = "set -u" if kind == "bash" else "setopt nounset"
+        nounset_off = "set +u" if kind == "bash" else "unsetopt nounset"
+        ok, at = sh.stage(nounset + '; printf "QB? "; read; printf "%s" "$REPLY" > "$HOME/out"; ' + nounset_off, "QB? ", b"bare\r")
+        check(ok and out() == "bare" and sh.count(MARKER, at) == 1, "%s: a bare `read` under nounset is announced and sets REPLY" % label,
+              "out=%r events=%r" % (out(), names(sh.events(at))))
+
+        # 4. outside the stage.
+        ok, at = sh.line(S["is_function"] + ' > "$HOME/out"')
+        check(ok and out() == "no", "%s: at the prompt `read` is the builtin" % label, repr(out()))
+        start_at = len(sh.buf)
+        os.write(sh.fd, (S["ask"]("ans", "QO? ") + '; printf "%s" "$ans" > "$HOME/out"').encode() + b"\r")
+        sh.pump(10, lambda: b"QO? " in sh.buf[start_at:].split(b"\r", 1)[-1] or sh.buf[start_at:].count(b"QO? ") >= 2)
+        sh.pump(0.3)
+        os.write(sh.fd, b"cmd\r")
+        ok = sh.pump(15, lambda: sh.count("LineEditorReading", start_at) >= 1)
+        check(ok and out() == "cmd" and sh.count(MARKER, start_at) == 0, "%s: a `read` typed as a command sends no marker" % label,
+              "out=%r events=%r" % (out(), names(sh.events(start_at))))
+
+        # 8. Ctrl-C at the question.
+        with open(os.path.join(sh.home, "go"), "w") as f:
+            f.write(S["ask"]("ans", "QC? ") + "\n")
+        at = len(sh.buf)
+        os.write(sh.fd, b"true\r")
+        asked = sh.pump(10, lambda: b"QC? " in sh.buf[at:])
+        sh.pump(0.3)
+        os.write(sh.fd, b"\x03")
+        sh.pump(1.5)
+        try:
+            os.remove(os.path.join(sh.home, "out"))
+        except OSError:
+            pass
+        os.write(sh.fd, (S["is_function"] + ' > "$HOME/out"').encode() + b"\r")
+        sh.pump(10, lambda: sh.out() is not None)
+        sh.pump(0.5)
+        check(asked and out() == "no", "%s: after a Ctrl-C at the question the next command finds the builtin `read`" % label, repr(out()))
+    finally:
+        if sh:
+            sh.close()
+        if base:
+            shutil.rmtree(base, ignore_errors=True)
+
+
+def run_not_installed(kind, label, premise_out, env_extra=None, rc_prefix="", before=None, question_read=True):
+    """A shell in which the wrapper must not be installed: inside the stage `read` is not ours and a question sends no marker."""
+    S = syntax(kind)
+    sh = base = None
+    try:
+        sh, base = start(kind, "1", label, env_extra=env_extra, rc_prefix=rc_prefix)
+        if sh.broken or not install_hook(sh, label):
+            return
+        if before:
+            ok, _ = sh.line(before)
+            check(ok, "%s: `%s` runs" % (label, before))
+        ok, at = sh.stage(S["is_function"] + ' > "$HOME/out"')
+        check(ok and sh.out() == premise_out, "%s: inside the stage `read` is %s" % (label, "the user's function" if premise_out == "yes" else "the builtin"),
+              repr(sh.out()))
+        if question_read:
+            ok, at = sh.stage(S["ask"]("ans", "QN? ") + '; printf "%s" "$ans" > "$HOME/out"', "QN? ", b"plain\r")
+            check(ok and sh.out() == "plain" and sh.count(MARKER, at) == 0, "%s: the question is answered and no marker is sent" % label,
+                  "out=%r events=%r" % (sh.out(), names(sh.events(at))))
+        return sh
+    finally:
+        if sh:
+            sh.close()
+        if base:
+            shutil.rmtree(base, ignore_errors=True)
+
+
+def run_user_read(kind):
+    label = "%s user's own read" % kind
+    print(label)
+    S = syntax(kind)
+    sh = base = None
+    try:
+        sh, base = start(kind, "1", label, rc_prefix=USER_READ)
+        if sh.broken or not install_hook(sh, label):
+            return
+        ok, at = sh.stage(S["ask"]("ans", "QU? ") + '; printf "%s" "$ans" > "$HOME/out"', "QU? ", b"mine\r")
+        check(ok and sh.out() == "mine" and sh.count(MARKER, at) == 0, "%s: the user's function is not replaced: no marker, the answer arrives" % label,
+              "out=%r events=%r" % (sh.out(), names(sh.events(at))))
+        check(sh.out("USER_READ_RAN") is not None, "%s: the user's function ran for the question" % label)
+        ok, _ = sh.line(S["is_function"] + ' > "$HOME/out"')
+        check(ok and sh.out() == "yes", "%s: the user's function is still defined after the stage" % label, repr(sh.out()))
+    finally:
+        if sh:
+            sh.close()
+        if base:
+            shutil.rmtree(base, ignore_errors=True)
+
+
+def run_alias(kind):
+    """A `read` alias defined before the bootstrap is parsed must not change what the bootstrap defines."""
+    label = "%s user's read alias" % kind
+    print(label)
+    S = syntax(kind)
+    prefix = "shopt -s expand_aliases\nalias read='read -r'\n" if kind == "bash" else "alias read='read -r'\n"
+    sh = base = None
+    try:
+        sh, base = start(kind, "1", label, rc_prefix=prefix)
+        if sh.broken or not install_hook(sh, label):
+            return
+        ok, at = sh.stage('printf "QA? "; builtin eval \'read ans\'; printf "%s" "$ans" > "$HOME/out"', "QA? ", b"al\r")
+        check(ok and sh.out() == "al" and sh.count(MARKER, at) == 1, "%s: the bootstrap loads and the question is announced and answered" % label,
+              "out=%r events=%r" % (sh.out(), names(sh.events(at))))
+    finally:
+        if sh:
+            sh.close()
+        if base:
+            shutil.rmtree(base, ignore_errors=True)
+
+
+def main():
+    for kind in ("bash", "zsh"):
+        if ONLY and kind != ONLY:
+            continue
+        if not SHELLS.get(kind):
+            print("%s: not installed, skipped" % kind)
+            continue
+        for honor in ("1", "0"):
+            run_main(kind, honor)
+        run_user_read(kind)
+        run_alias(kind)
+        label = "%s PHOSPHOR_READER_MARKER=0" % kind
+        print(label)
+        run_not_installed(kind, label, "no", env_extra={"PHOSPHOR_READER_MARKER": "0"})
+        if kind == "bash":
+            label = "bash POSIX mode"
+            print(label)
+            run_not_installed(kind, label, "no", before="set -o posix")
+    if failures:
+        print("\n%d FAILED" % len(failures))
+        for f in failures:
+            print("  " + f)
+        sys.exit(1)
+    print("\nall passed")
+
+
+main()

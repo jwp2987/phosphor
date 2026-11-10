@@ -385,6 +385,80 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     unset __phosphor_ap_v __phosphor_ap_active
   }
 
+  # Phosphor (#2052): the reader marker; see the same block in bash_body.sh for the why. A precmd
+  # function registered after this bootstrap runs between warp_precmd and warp_update_prompt_vars;
+  # there `read` is the function below, which announces a read of the terminal (TtyReaderAsks, the
+  # form, session id and seq of LineEditorReading) and runs the builtin with the caller's
+  # arguments: no local, no assignment, no option change, the builtin last (its status is the
+  # function's), and a failing write cannot trip the caller's err_exit / err_return. Builtins only.
+  #
+  # Announced: a read of fd 0 while fd 0 is a terminal. Not announced: a read from a file or a
+  # pipe, `read -u N` and `read -p` (another descriptor, the coprocess: what gitstatus, p10k and
+  # zsh-async do at every prompt), `read -z` / `-c` / `-l` (the buffer stack, completion), and the
+  # poll `read -t` with no timeout, which reads nothing. __warp_read_is_of_fd0 answers those from
+  # the options (zsh's own rules: -t and -k take an optional number, -d and -u an argument); its
+  # locals and its `emulate -L` are gone before the builtin runs.
+  #
+  # Never installed with PHOSPHOR_READER_MARKER=0 (the one kill switch; the app honours the same
+  # name), before the bootstrap is done, or over a `read` function of the user's. Defined through
+  # the `functions` table, so no alias of the user's (`alias read=...`, a global alias) can change
+  # what is defined. Closed by warp_update_prompt_vars, and by the line editor's start or the next
+  # open if that never ran (a failing or interrupted precmd function abandons the stage).
+  __warp_reader_stage_open () {
+    __warp_reader_stage_close
+    [[ ${PHOSPHOR_READER_MARKER:-1} != 0 && -n ${WARP_SESSION_ID:-} && -n ${WARP_BOOTSTRAPPED:-} ]] || return 0
+    (( ${+functions[read]} )) && return 0
+    # (The body starts on its own line: script/check_input_path_timers reads `read ... -t ` on one
+    # line as a timed read, and the `-t 0` here is the terminal test.)
+    functions[read]='
+if [[ -t 0 ]] && __warp_read_is_of_fd0 "$@"; then
+  __warp_emit '"'"'\e]9278;f;{"hook": "TtyReaderAsks", "value": {"session_id": %s, "seq": %s}}\a'"'"' "${WARP_SESSION_ID:-0}" "${__warp_seq:-0}" || :
+fi
+builtin read "$@"'
+    typeset -g __warp_reader_stage=1
+  }
+  __warp_reader_stage_close () {
+    if [[ -n ${__warp_reader_stage:-} ]]; then
+      typeset -g __warp_reader_stage=
+      builtin unfunction read 2>/dev/null || :
+    fi
+    return 0
+  }
+  __warp_read_is_of_fd0 () {
+    emulate -L zsh
+    local w arg
+    while (( $# )); do
+      w=$1
+      [[ $w == -?* && $w != -- ]] || return 0
+      shift
+      w=${w#-}
+      while [[ -n $w ]]; do
+        case $w[1] in
+          (u)
+            arg=${w#?}
+            [[ -n $arg ]] || arg=${1-}
+            [[ $arg == 0 ]] || return 1
+            [[ -n ${w#?} ]] || { (( $# )) && shift }
+            break ;;
+          (p|z|c|l) return 1 ;;
+          (d)
+            [[ -n ${w#?} ]] || { (( $# )) && shift }
+            break ;;
+          (t)
+            arg=${w#?}
+            if [[ -z $arg && ${1-} == [0-9]* ]]; then arg=$1; shift; fi
+            [[ -n $arg && $arg != (0|0.|0.0) ]] || return 1
+            break ;;
+          (k)
+            [[ -n ${w#?} || ${1-} != [0-9]* ]] || shift
+            break ;;
+        esac
+        w=${w#?}
+      done
+    done
+    return 0
+  }
+
   # Note that this is very performance sensitive code, so try not to
   # invoke any external commands in here.
   warp_precmd () {
@@ -624,6 +698,9 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       __phosphor_cwd_listing
       local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"\",\"honor_ps1\": $honor_ps1,\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"kube_config\": \"$escaped_kube_config\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq${__phosphor_cl_json-}}}"
       warp_send_json_message "$escaped_json"
+      # Phosphor (#2052): the Precmd is out; the user stage of the precmd starts. (Not after an
+      # in-band generator: that path returned above and runs no user function.)
+      __warp_reader_stage_open
   }
 
   # Phosphor (#1801): the bounded cwd listing a remote shell adds to its Precmd, so path detection
@@ -1103,6 +1180,8 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     # expected-failure probe in this hook (no repo, an unset variable) into an
     # early return, a killed shell or a lost Precmd.
     setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
+    # Phosphor (#2052): the user stage of the precmd is over; `read` is the builtin again.
+    __warp_reader_stage_close
     # 133;A and 133;B are standard prompt marker OSCs. We also follow the standard for the rprompt OSC below.
     # See https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration and
     # https://gitlab.freedesktop.org/terminal-wg/specifications/-/merge_requests/6/diffs for details.
@@ -2255,6 +2334,8 @@ esac
     if (( _warp_zle_line_init_depth > 8 )); then
       return 0
     fi
+    # Phosphor (#2052): a stage warp_update_prompt_vars never closed ends here at the latest.
+    if [[ -n ${__warp_reader_stage:-} ]]; then __warp_reader_stage_close; fi
     # Only the main command line: vared, `read -q`-style prompts and
     # continuation lines also start ZLE, possibly while a command is running.
     _WARP_REPAIRED_PRECMD=""

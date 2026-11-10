@@ -279,6 +279,11 @@ impl Handler for MockHandler {
             .push(DProtoHook::ContinuationPrompt { value: data })
     }
 
+    fn tty_reader_asks(&mut self, data: LineEditorMarkerValue) {
+        self.d_proto_hooks
+            .push(DProtoHook::TtyReaderAsks { value: data })
+    }
+
     fn tty_read(&mut self, data: TtyReadValue) {
         self.d_proto_hooks.push(DProtoHook::TtyRead { value: data })
     }
@@ -792,6 +797,41 @@ fn parse_osc_line_editor_markers_carry_session_and_sequence_number() {
         }
         other => panic!("unexpected hooks {other:?}"),
     }
+}
+
+/// #2052: the marker a precmd function's `read` sends (the function that stands in for the
+/// builtin during the user stage of the precmd). The bytes are what the bash and zsh bootstraps
+/// print. Unencoded and hex-encoded forms reach the same handler; a marker for a session this
+/// terminal did not register is dropped like every other hook.
+#[test]
+fn parse_osc_tty_reader_asks_carries_session_and_sequence_number() {
+    let asks =
+        b"\x1b]9278;f;{\"hook\": \"TtyReaderAsks\", \"value\": {\"session_id\": 7, \"seq\": 12}}\x07";
+    let (_, handler) = parse_bytes_with_registered_sessions(asks, [SessionId::from(7)]);
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::TtyReaderAsks { value }] => {
+            assert_eq!(value.session_id, Some(7));
+            assert_eq!(value.seq, Some(12));
+        }
+        other => panic!("unexpected hooks {other:?}"),
+    }
+    // The question follows the marker in the stream: it is printed text, after the hook.
+    let mut with_question = asks.to_vec();
+    with_question.extend_from_slice(b"continue? ");
+    let (_, handler) = parse_bytes_with_registered_sessions(&with_question, [SessionId::from(7)]);
+    assert_eq!(handler.d_proto_hooks.len(), 1);
+
+    let (_, handler) = parse_bytes_with_registered_sessions(asks, [SessionId::from(8)]);
+    assert!(handler.d_proto_hooks.is_empty());
+
+    let bytes = hex_encoded_dcs_string(
+        r#"{"hook": "TtyReaderAsks", "value": {"session_id": 3, "seq": 4}}"#,
+    );
+    let (_, handler) = parse_bytes(&bytes);
+    assert!(matches!(
+        handler.d_proto_hooks.as_slice(),
+        [DProtoHook::TtyReaderAsks { value }] if value.seq == Some(4)
+    ));
 }
 
 /// A marker from a bootstrap without sequence numbers parses with `seq: None`, and a marker for a

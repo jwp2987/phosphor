@@ -12,6 +12,14 @@
 # session.startup_shell_override = "bash" (the system bash, 3.2). Both session modes. The profile's settings.toml is put back and the app relaunched at the end.
 # Each arm proves its own premise first (a line typed into the pane records $WARP_HONOR_PS1 and whether the shell is bash): an arm whose premise is not met is
 # UNVERIFIABLE, never a pass.
+#   precmd_question_echo      #2052 (docs/design/r14-readmark.md): a precmd function asks with echo ON, `read -p "continue? " x` (zsh: `read "x?continue? "`), after the
+#                             prompt's Precmd. No tty sample tells an echoing read from a shell between its Precmd and its line editor, so on Linux and macOS the
+#                             answer was typed into the input editor and its Enter ran it as a command or sent it to the model. The bootstraps now announce the read
+#                             (the TtyReaderAsks marker) and the app gives the keys to the pty. The answer must reach the `read` whole, never be in the input editor at
+#                             an Enter (input_type=AI there = sent to the model), never be a command, the question must be on screen, and the next line must run.
+#                             Arm `own`: the pane's own shell (Linux bash, macOS zsh, Windows Git Bash). Arm `bash` (macOS only): a relaunch with the system bash 3.2.
+#                             The function is registered by one line and asks at a LATER prompt: at the first prompt after its registration a late function runs
+#                             after the bootstrap's last precmd function (the dispatcher iterates a copy), outside the stage the marker covers.
 import os, re, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -265,5 +273,173 @@ def c_precmd_secret_honor_ps1(ctx, r):
         if touched:
             try:
                 relaunch_with(ctx, r, original, "pp_restore")
+            except Exception as e:
+                r.check(False, "could not put the profile's settings.toml back and relaunch: %r" % (e,))
+
+
+# ---- #2052: an ECHOING question from a precmd function (docs/design/r14-readmark.md) ----------------------------------------------------------------------
+
+ECHO_QUESTION = "continue? "
+ECHO_QUESTION_WORD = "continue"     # no line the case TYPES contains it (the function is sourced from a file)
+MARKER_HOP = "hop=prompt_reader_asks by=shell_marker"
+MARKER_IGNORED_HOP = "hop=tty_reader_marker_ignored"
+
+
+def echo_names(tag):
+    """pure: the files of one arm, all relative to the pane's case dir (ctx.W)"""
+    return dict(script="qe_%s.sh" % tag, installed="qe_%s_inst.txt" % tag, err="qe_%s_err.txt" % tag, go="qe_%s_go.txt" % tag, asked="qe_%s_asked.txt" % tag,
+                answer="qe_%s_ans.txt" % tag, after="qe_%s_after.txt" % tag, mode="qe_%s_mode.txt" % tag)
+
+
+def echo_read_line(shell):
+    """pure: the echoing question in the shell's own spelling (zsh's `read -p` reads from the coprocess; its prompt form is `name?prompt`)"""
+    return 'read "x?%s"' % ECHO_QUESTION if shell == "zsh" else 'read -p "%s" x' % ECHO_QUESTION
+
+
+def echo_install_script(n, shell):
+    """pure: the file the pane sources (bash or zsh). The function asks ONCE, at the first precmd that finds the trigger file, with echo on; it records that
+    it is about to ask and what the `read` returned. The last line proves the file was sourced."""
+    return ('__qe_ask() { if [ -f %(go)s ]; then rm -f %(go)s; echo asked > %(asked)s; %(read)s; echo "$x" > %(answer)s; fi; }\n'
+            'precmd_functions+=(__qe_ask)\n'
+            'echo installed > %(installed)s\n') % dict(n, read=echo_read_line(shell))
+
+
+def shell_probe_line(fname):
+    """pure: the line that records which shell the pane runs. Valid in bash and zsh; `$`, quotes and `>` make it shell syntax in an agent conversation too."""
+    return 'echo "sh=${BASH_VERSION:+bash}${ZSH_VERSION:+zsh}" > %s' % fname
+
+
+def parse_shell_probe(lines):
+    """pure: "bash" / "zsh" from the probe file's lines, "" for another shell, None when the file holds no probe line"""
+    for ln in reversed(lines or []):
+        m = re.match(r"^sh=(\S*)\s*$", ln)
+        if m:
+            return m.group(1) if m.group(1) in ("bash", "zsh") else ""
+    return None
+
+
+def echo_question_in(ocr_text):
+    """pure: is the echoing question's word in an OCR text (case and line breaks ignored)?"""
+    return ECHO_QUESTION_WORD in " ".join((ocr_text or "").lower().split())
+
+
+def echo_arms(win, own_shell):
+    """pure: the arms of precmd_question_echo as (tag, wanted shell, needs a relaunch with the bash override). The pane's own shell always; on macOS, whose
+    pane is zsh, also the system bash (3.2), the bash the wrapper's semantics were not run against anywhere else."""
+    arms = [("own", own_shell, False)]
+    if not win and own_shell != "bash":
+        arms.append(("bash", "bash", True))
+    return arms
+
+
+def marker_noted(log_text):
+    """pure: did the app note the reader from the shell's marker (True), refuse a marker (the `why=` values, a list), or log neither (None)?"""
+    t = log_text or ""
+    if MARKER_HOP in t:
+        return True
+    whys = re.findall(re.escape(MARKER_IGNORED_HOP) + r"\s+why=(\w+)", t)
+    return whys or None
+
+
+def probe_shell(ctx, n):
+    """type the shell probe into the pane; -> "bash" / "zsh" / "" or None when the line had no effect within 8 s"""
+    ctx.rm(n["mode"])
+    ctx.be.guard()
+    ctx.be.type(shell_probe_line(n["mode"]), 12, enter=True)
+    ctx.until(lambda: parse_shell_probe(ctx.lines(n["mode"])) is not None, 8, step=0.2)
+    return parse_shell_probe(ctx.lines(n["mode"]))
+
+
+def echo_scenario(ctx, r, tag, n, shell):
+    """one arm, in a pane whose shell (bash or zsh) was already proven. Every message carries the arm's tag."""
+    ctx.rm(n["installed"], n["err"], n["go"], n["asked"], n["answer"], n["after"])
+    with open(os.path.join(ctx.W, n["script"]), "w", newline="\n") as f:
+        f.write(echo_install_script(n, shell))
+    answer = "ok" + ctx.tok(6).replace("_", "").lower()
+    mark = ctx.cmd_mark()
+    ctx.be.type("source ./%s 2> %s" % (n["script"], n["err"]), 12, enter=True)
+    if not r.check(bool(ctx.until(lambda: ctx.lines(n["installed"]) == ["installed"], 10, step=0.2)),
+                   "[%s] the line that installs the precmd function had no effect in the shell (stderr file: %r): the answer was NOT typed" % (tag, ctx.lines(n["err"])[:3])):
+        return
+    time.sleep(2.0)        # the install line's own prompt has passed: from the next prompt on the function runs inside the bootstrap's user stage
+    off = ctx.log_size()
+    ctx.be.type("touch " + n["go"], 12, enter=True)
+    if not r.check(bool(ctx.until(lambda: ctx.lines(n["asked"]) == ["asked"], 10, step=0.2)),
+                   "[%s] the precmd function never reached its `read` after `touch %s` (no %s): the answer was NOT typed" % (tag, n["go"], n["asked"])):
+        return
+    time.sleep(0.6)
+    # The question is early output in a background block. Terminal mode draws it; an agent conversation shows it while a reader ahead of the line editor is
+    # noted (#2053), and the marker notes that reader at the question's own output on every platform. Judged before a key in both modes.
+    txt = ctx.ocr("qe_%s_asked" % tag)
+    if txt is None:
+        ctx.shot("qe_%s_asked" % tag)
+        r.note("[%s] no OCR engine: whether the question is drawn is in the screenshot qe_%s_asked only" % (tag, tag))
+    else:
+        seen = echo_question_in(txt)
+        r.metric("echo_question_on_screen_%s" % tag, seen)
+        r.check(seen, "[%s] the question %r is not on screen while the shell waits for the answer (OCR of qe_%s_asked, %s mode): the user cannot see what is "
+                "asked (agent mode: no `hop=reader_question_in_conversation shown=true` in the app log means no reader was noted)" % (tag, ECHO_QUESTION, tag, ctx.mode))
+    ctx.be.type(answer, ctx.rng.randint(10, 25), enter=True)
+    ok = ctx.until(lambda: ctx.lines(n["answer"]) == [answer], 20, step=0.3)
+    ctx.shot("qe_%s_done" % tag)
+    r.check(bool(ok), "[%s] the answer did not reach the echoing `read` whole and in order: %s holds %r, want %r (#2052: the keys went to the input editor, "
+            "stayed held, or were lost)" % (tag, n["answer"], ctx.lines(n["answer"]), [answer]))
+    time.sleep(1.0)
+    log = ctx.log_since(off)
+    in_editor = pin_in_editor_enters(log, answer)
+    r.check(not in_editor, "[%s] the answer (or half of it) was in the input editor when an Enter was pressed, input_type %s: typed into the editor and "
+            "submitted%s" % (tag, ", ".join(in_editor), " TO THE MODEL" if "AI" in in_editor else ""))
+    if enter_text_logged(log) is False:
+        r.note("[%s] the app log carries no editor text (WARP_INPUT_ORDER_LOG_TEXT is off): 'the answer was never in the editor at an Enter' was not judged" % tag)
+    half = len(answer) // 2
+    ran = [c for c in ctx.cmds_since(mark) if answer in c or answer[:half] in c or answer[half:] in c]
+    r.check(not ran, "[%s] the answer (or half of it) reached the shell as a command: %r" % (tag, ran))
+    # How the reader was noted: the path the fix is. Recorded, and said when it was another one; the judged facts are the ones above.
+    noted = marker_noted(log)
+    r.metric("echo_noted_by_marker_%s" % tag, noted is True)
+    if noted is not True:
+        r.note("[%s] the app log has no `%s` after the trigger (%s): the reader was not noted from the shell's marker" % (
+            tag, MARKER_HOP, "the marker was refused: why=" + ",".join(noted) if noted else "no marker hop at all: the wrapper was not installed, "
+            "or the function ran outside the stage"))
+    tok = ctx.tok(8).lower()
+    ctx.be.type(ctx.append_cmd("bash", tok, n["after"]), 12, enter=True)
+    r.check(bool(ctx.until(lambda: tok in ctx.lines(n["after"]), 10)), "[%s] the line typed after the read did not run" % tag)
+
+
+@case("precmd_question_echo", order=77, gui=True)
+def c_precmd_question_echo(ctx, r):
+    """#2052: a precmd function's ECHOING question (`read -p "continue? " x`; zsh `read "x?continue? "`) asked after the prompt's Precmd. The answer, typed at
+    10-25 ms per key with its Enter, must reach the `read` whole and in order, never be in the input editor at an Enter (in an agent conversation that Enter
+    sends it to the model), never be a command the shell received; the question is on screen in both modes; the next typed line runs. Arm `own`: the pane's
+    own shell (bash or zsh). Arm `bash`, macOS only: the system bash 3.2 (session.startup_shell_override, app relaunched; the settings file is put back)."""
+    if ctx.win and ctx.pane != "gitbash":
+        r.skip("bash and zsh panes only (a precmd function's `read`): on Windows the Git Bash pane")
+    own = probe_shell(ctx, echo_names("own"))
+    r.metric("pane_shell", "no probe answer" if own is None else (own or "neither bash nor zsh"))
+    original = None
+    try:
+        for tag, want, relaunch in echo_arms(ctx.win, own):
+            n = echo_names(tag)
+            shell = own
+            if relaunch:
+                R.need_relaunch_app(ctx, "precmd_question_echo's bash arm relaunches the app with session.startup_shell_override")
+                with open(R.settings_file(ctx), encoding="utf-8", errors="replace") as f:
+                    original = f.read()
+                if not relaunch_with(ctx, r, R.T.set_key(original, "session", "startup_shell_override", '"bash"'), "qe_" + tag):
+                    return
+                shell = probe_shell(ctx, n)
+            if shell not in ("bash", "zsh") or (relaunch and shell != want):
+                r.unverifiable("[%s] the pane's shell is %s, want %s: this arm was not run" % (
+                    tag, "unknown (the probe line had no effect)" if shell is None else (shell or "neither bash nor zsh"), want or "bash or zsh"))
+                continue
+            if ctx.mode == "agent" and ctx.mode_now("qe_%s_mode" % tag) == "terminal":
+                r.unverifiable("[%s] the agent pass's pane shows a terminal session: this arm was not run in agent mode" % tag)
+                continue
+            r.metric("shell_%s" % tag, shell)
+            echo_scenario(ctx, r, tag, n, shell)
+    finally:
+        if original is not None:      # the profile as the pass had it, and a fresh pane (the bash of the macOS arm goes with the old instance)
+            try:
+                relaunch_with(ctx, r, original, "qe_restore")
             except Exception as e:
                 r.check(False, "could not put the profile's settings.toml back and relaunch: %r" % (e,))

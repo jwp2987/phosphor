@@ -3863,6 +3863,59 @@ fn line_editor_markers_update_the_handoffs_account_in_stream_order() {
     );
 }
 
+/// #2052: the marker of a precmd function's `read` is applied to the hand-off on the thread that
+/// parses it, in stream order: after the prompt's Precmd it takes input for the pty and notes the
+/// reader. A marker without a session is not attributable; with the hand-off off nothing happens.
+#[test]
+fn a_tty_reader_marker_notes_the_reader_in_the_handoff_in_stream_order() {
+    let mut terminal = TerminalModel::mock(None, None);
+    {
+        let mut handoff = terminal.typeahead_handoff_mut();
+        handoff.on_precmd();
+        handoff.on_precmd_seq(Some(5), Some(3));
+    }
+    // The hand-off's feature is off: the marker is parsed and changes nothing.
+    {
+        let _off = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        terminal.tty_reader_asks(LineEditorMarkerValue {
+            session_id: Some(5),
+            seq: Some(3),
+        });
+        assert!(!terminal.typeahead_handoff().prompt_reader_asks());
+    }
+
+    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+    terminal.tty_reader_asks(LineEditorMarkerValue {
+        session_id: None,
+        seq: Some(3),
+    });
+    assert!(!terminal.typeahead_handoff().prompt_reader_asks());
+
+    terminal.tty_reader_asks(LineEditorMarkerValue {
+        session_id: Some(5),
+        seq: Some(3),
+    });
+    {
+        let handoff = terminal.typeahead_handoff();
+        assert!(handoff.prompt_reader_asks());
+        assert!(handoff.is_pty_owned());
+        assert!(handoff.secret_reader_has_the_keys());
+        assert!(handoff.marker_reader_news_pending());
+    }
+    // The line editor's marker follows the read in the stream; the reader itself ends at the
+    // signal the controller handles (`release_queued_prompt_hold_on_signal`).
+    terminal.line_editor_reading(LineEditorMarkerValue {
+        session_id: Some(5),
+        seq: Some(3),
+    });
+    let ended = {
+        let mut handoff = terminal.typeahead_handoff_mut();
+        handoff.release_queued_prompt_hold_on_signal();
+        !handoff.prompt_reader_asks()
+    };
+    assert!(ended);
+}
+
 // ---- #1411: the eager key modes follow a block switch and a full reset ----
 
 /// A program that dies with DECCKM set leaves the mode on its finished block only: the prompt's
