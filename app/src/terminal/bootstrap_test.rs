@@ -4340,3 +4340,418 @@ fn test_zsh_env_script_hex_constants_decode_to_the_script() {
     // No substituted placeholder may hide in a constant: those belong in the builtin-encoded middle.
     assert!(!tail.contains("@@"), "{tail}");
 }
+
+/// #1933 (owner 2026-11-09: managed ssh from Windows Git Bash): under `WARP_IN_MSYS2` the wrapper
+/// never starts a ControlMaster (#1551). With a terminal on both ends it runs ONE managed ssh: no
+/// master and no control path, ssh's LocalCommand as the event between login and session, a
+/// nonce in the `auth` stage hook and in the sync token, and a remote command that reads its mode
+/// byte before anything else and announces `single_connection`. That only for a server whose SSH
+/// identification string (read by ssh-keyscan) names POSIX OpenSSH (owner 2026-11-09). Any other
+/// server (Windows OpenSSH, network gear, Dropbear, a look-alike name), no answer, a server
+/// behind a ProxyJump (keyscan is not asked at all), a user's own LocalCommand and the kill
+/// switch run the user's plain ssh, untouched, with the `PlainSSHFallback` verdict. (The #1551
+/// `msys2` case of the test above still pins "no terminal: plain ssh, no config read".)
+#[test]
+#[cfg(unix)]
+fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
+    use std::process::Command;
+
+    if Command::new("bash").arg("--version").output().is_err() {
+        eprintln!("skipping: bash not installed");
+        return;
+    }
+    let source = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    let from = source.find("        function warp_ssh_helper() {").unwrap();
+    let to = from
+        + source[from..]
+            .find("\n        function __warp_ssh_impl")
+            .unwrap();
+    let function = &source[from..to];
+    let hex_from = source.find("    warp_hex_encode_string () {").unwrap();
+    let hex_to = hex_from
+        + source[hex_from..]
+            .find("\n    # Phosphor (fork-free hooks)")
+            .unwrap();
+    let hex_helpers = &source[hex_from..hex_to];
+
+    struct Case {
+        name: &'static str,
+        banner: &'static str,
+        g_extra: &'static str,
+        kill_switch: bool,
+        single: bool,
+        keyscan_runs: bool,
+    }
+    let cases = [
+        Case {
+            name: "posix",
+            banner: "# h:22 SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13",
+            g_extra: "",
+            kill_switch: false,
+            single: true,
+            keyscan_runs: true,
+        },
+        // Owner 2026-11-09: managed ONLY for a POSIX OpenSSH banner. No answer, a server that is
+        // not OpenSSH and a server behind a jump host (keyscan cannot follow) run the plain ssh.
+        Case {
+            name: "old-posix-openssh",
+            banner: "# h:22 SSH-1.99-OpenSSH_3.9p1",
+            g_extra: "",
+            kill_switch: false,
+            single: true,
+            keyscan_runs: true,
+        },
+        Case {
+            name: "no-banner",
+            banner: "",
+            g_extra: "",
+            kill_switch: false,
+            single: false,
+            keyscan_runs: true,
+        },
+        Case {
+            name: "network-gear",
+            banner: "# h:22 SSH-2.0-Cisco-1.25",
+            g_extra: "",
+            kill_switch: false,
+            single: false,
+            keyscan_runs: true,
+        },
+        Case {
+            name: "dropbear",
+            banner: "# h:22 SSH-2.0-dropbear_2022.83",
+            g_extra: "",
+            kill_switch: false,
+            single: false,
+            keyscan_runs: true,
+        },
+        Case {
+            name: "openssh-lookalike",
+            banner: "# h:22 SSH-2.0-OpenSSH_like",
+            g_extra: "",
+            kill_switch: false,
+            single: false,
+            keyscan_runs: true,
+        },
+        Case {
+            name: "windows-server",
+            banner: "# h:22 SSH-2.0-OpenSSH_for_Windows_9.5",
+            g_extra: "",
+            kill_switch: false,
+            single: false,
+            keyscan_runs: true,
+        },
+        Case {
+            name: "behind-a-jump",
+            banner: "# h:22 SSH-2.0-OpenSSH_9.6",
+            g_extra: "proxyjump jump\n",
+            kill_switch: false,
+            single: false,
+            keyscan_runs: false,
+        },
+        Case {
+            name: "user-localcommand",
+            banner: "# h:22 SSH-2.0-OpenSSH_9.6",
+            g_extra: "permitlocalcommand yes\nlocalcommand echo connected\n",
+            kill_switch: false,
+            single: false,
+            keyscan_runs: false,
+        },
+        Case {
+            name: "kill-switch",
+            banner: "# h:22 SSH-2.0-OpenSSH_9.6",
+            g_extra: "",
+            kill_switch: true,
+            single: false,
+            keyscan_runs: false,
+        },
+    ];
+    for (index, case) in cases.iter().enumerate() {
+        let dir = std::env::temp_dir().join(format!("p1933-{index}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("socks")).unwrap();
+        let ssh = dir.join("ssh");
+        std::fs::write(
+            &ssh,
+            r#"#!/bin/sh
+printf 'CALL\n' >> "$OUT"
+for a in "$@"; do printf '%s\n' "$a" >> "$OUT"; done
+case "$1" in
+  -G) printf 'user u\nhostname h\nport 22\n%s' "$G_EXTRA"; exit 0;;
+esac
+printf 'ENV %s|%s|%s|%s|%s\n' "${PHOSPHOR_SSH_AUTH_DONE:+script}" "$PHOSPHOR_SSH_SYNC_TOK" "$SHELL" "$PHOSPHOR_SSH_SYNC_MANAGED_A" "$PHOSPHOR_SSH_SYNC_TA" >> "$LOG"
+exit 0
+"#,
+        )
+        .unwrap();
+        let keyscan = dir.join("ssh-keyscan");
+        std::fs::write(
+            &keyscan,
+            r#"#!/bin/sh
+printf 'KEYSCAN %s\n' "$*" >> "$LOG"
+printf '%s\n' "$BANNER" >&2
+"#,
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            for stub in [&ssh, &keyscan] {
+                std::fs::set_permissions(stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let script = format!(
+            "OSC_START=OSC; DCS_JSON_MARKER=d; OSC_PARAM_SEPARATOR=';'; OSC_END=END; \
+             DCS_START=DCS; DCS_END=DEND; WARP_SSH_REUSE_CONTROL_MASTER=0; \
+             warp_send_json_message(){{ printf 'HOOK %s\\n' \"$1\" >> \"$LOG\"; }}; \
+             SSH_SOCKET_DIR='{}'; WARP_SESSION_ID=77; WARP_HONOR_PS1=1; WARP_IN_MSYS2=true; \
+             WARP_USING_WINDOWS_CON_PTY=true\n{hex_helpers}\n{function}\n\
+             warp_ssh_msys_has_terminal(){{ return 0; }}\n\
+             warp_ssh_helper -p 22 user@host\nexit $?",
+            dir.join("socks").display()
+        );
+        let out_file = dir.join("out");
+        let log_file = dir.join("log");
+        let mut command = Command::new("bash");
+        command
+            .args(["-c", &script])
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    dir.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("HOME", &dir)
+            .env("OUT", &out_file)
+            .env("LOG", &log_file)
+            .env("BANNER", case.banner)
+            .env("G_EXTRA", case.g_extra)
+            .env_remove("PHOSPHOR_MSYS_MANAGED_SSH")
+            .env_remove("PHOSPHOR_MSYS_SSH_TYPEAHEAD")
+            .stdin(std::process::Stdio::null());
+        if case.kill_switch {
+            command.env("PHOSPHOR_MSYS_MANAGED_SSH", "0");
+        }
+        let status = command.status().unwrap();
+        let name = case.name;
+        let recorded = std::fs::read_to_string(&out_file).unwrap_or_default();
+        let log = std::fs::read_to_string(&log_file).unwrap_or_default();
+        assert!(
+            status.success(),
+            "{name}: helper failed: {recorded:?} {log:?}"
+        );
+        let all_calls: Vec<&str> = recorded
+            .split("CALL\n")
+            .filter(|call| !call.is_empty())
+            .collect();
+        let calls: Vec<&str> = all_calls
+            .iter()
+            .copied()
+            .filter(|call| !call.starts_with("-G\n"))
+            .collect();
+        assert_eq!(
+            all_calls.len() - calls.len(),
+            usize::from(!case.kill_switch),
+            "{name}: one ssh -G, none under the kill switch: {recorded:?}"
+        );
+        assert_eq!(
+            calls.len(),
+            1,
+            "{name}: exactly ONE connecting ssh: {recorded:?}"
+        );
+        assert!(
+            !recorded.contains("\n-N\n") && !recorded.contains("ControlMaster=yes"),
+            "{name}: never a master under msys: {recorded:?}"
+        );
+        assert_eq!(
+            log.contains("KEYSCAN "),
+            case.keyscan_runs,
+            "{name}: ssh-keyscan: {log:?}"
+        );
+        if case.keyscan_runs {
+            assert!(
+                log.contains("KEYSCAN -T 5 -t ed25519 -p 22 h\n"),
+                "{name}: keyscan asks the host and port ssh -G resolved: {log:?}"
+            );
+        }
+        let hooks: Vec<&str> = log
+            .lines()
+            .filter_map(|line| line.strip_prefix("HOOK "))
+            .collect();
+        if !case.single {
+            assert_eq!(
+                calls[0], "-p\n22\nuser@host\n",
+                "{name}: the user's plain ssh, untouched: {recorded:?}"
+            );
+            assert_eq!(hooks.len(), 1, "{name}: {hooks:?}");
+            assert!(
+                hooks[0].contains("\"hook\": \"PlainSSHFallback\"")
+                    && hooks[0].contains("\"session_id\": 77"),
+                "{name}: the plain verdict: {hooks:?}"
+            );
+            assert!(
+                !log.contains("ENV script"),
+                "{name}: no LocalCommand script: {log:?}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+            continue;
+        }
+        let call = calls[0];
+        for option in [
+            "ControlMaster=no\n",
+            "ControlPath=none\n",
+            "PermitLocalCommand=yes\n",
+            "LocalCommand=eval \"$PHOSPHOR_SSH_AUTH_DONE\"\n",
+            "-t\n-p\n22\nuser@host\n",
+        ] {
+            assert!(
+                call.contains(option),
+                "{name}: the one ssh lacks {option:?}: {call:?}"
+            );
+        }
+        // The remote command is the last argument: the mode byte is read before anything else,
+        // then the unchanged bootstrap command, whose SSH hook says there is no socket.
+        let remote = &call[call.find("user@host\n").unwrap() + "user@host\n".len()..];
+        assert!(
+            remote.starts_with("warp_m=\n") && remote.contains("dd bs=1 count=1"),
+            "{name}: the remote command reads its mode byte first: {remote:?}"
+        );
+        let mode_read = remote.find("if test \"$warp_m\" != M; then").unwrap();
+        let hook_printed = remote.find("\\\"hook\\\": \\\"SSH\\\"").unwrap();
+        assert!(
+            mode_read < hook_printed,
+            "{name}: mode byte before the SSH hook"
+        );
+        assert!(
+            remote.contains("\\\"socket_path\\\": \\\"\\\"")
+                && remote.contains("\\\"single_connection\\\": true")
+                && remote.contains("export TERM_PROGRAM='WarpTerminal'"),
+            "{name}: {remote:?}"
+        );
+        // One stage hook from the wrapper itself (`auth`), with the nonce the token carries; the
+        // verdict is the LocalCommand's, never printed here.
+        assert_eq!(hooks.len(), 1, "{name}: {hooks:?}");
+        let hook = hooks[0];
+        assert!(
+            hook.contains("\"hook\": \"SSHWrapperSync\"")
+                && hook.contains("\"session_id\": 77")
+                && hook.ends_with("\"stage\": \"auth\"}}"),
+            "{name}: {hook:?}"
+        );
+        let nonce = hook
+            .split("\"nonce\": \"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap();
+        assert!(
+            !nonce.is_empty() && nonce != "0" && nonce.bytes().all(|b| b.is_ascii_digit()),
+            "{name}: nonce {nonce:?}"
+        );
+        let token_hex = hex::encode(format!(":PHX{nonce}:"));
+        let env_line = log.lines().find(|line| line.starts_with("ENV ")).unwrap();
+        let mut env = env_line["ENV ".len()..].split('|');
+        assert_eq!(env.next(), Some("script"), "{name}: {env_line:?}");
+        assert_eq!(env.next(), Some(token_hex.as_str()), "{name}: {env_line:?}");
+        assert!(
+            env.next().is_some_and(|shell| shell.ends_with("bash")),
+            "{name}: LocalCommand runs through this bash: {env_line:?}"
+        );
+        // #1959: the managed stage can carry typed-ahead bytes (the hook up to the hex), and the
+        // typed-ahead kill switch is off unless the user set it.
+        let managed_with_typeahead = hex::encode(format!(
+            "{{\"hook\": \"SSHWrapperSync\", \"value\": {{\"session_id\": 77, \"nonce\": \
+             \"{nonce}\", \"stage\": \"managed\", \"typeahead\": \""
+        ));
+        assert_eq!(
+            env.next(),
+            Some(managed_with_typeahead.as_str()),
+            "{name}: {env_line:?}"
+        );
+        assert_eq!(env.next(), Some(""), "{name}: {env_line:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// #1933: the LocalCommand script of the one-connection ssh, run in a real bash with the console
+/// replaced by a pipe. It prints the `auth_done` hook first, reads up to the sync token and
+/// reports EXACTLY the bytes in front of it: none is the bare managed hook; any (a NUL, a byte
+/// over 0x7f, a quote, a backslash, a newline, another invocation's token) is the managed hook
+/// carrying them as hex inside the hex-encoded hook (#1959, owner 2026-11-09: the app holds them
+/// at the front and the session stays managed), or the plain hook with them when the typed-ahead
+/// kill switch is set (`PHOSPHOR_SSH_SYNC_TA=plain`). Input that ends without the token (no
+/// console) is the plain hook with what was read, whatever the switch says.
+#[test]
+#[cfg(unix)]
+fn msys_ssh_auth_done_script_reports_exactly_what_was_typed_before_the_token() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    if Command::new("bash").arg("--version").output().is_err() {
+        eprintln!("skipping: bash not installed");
+        return;
+    }
+    let source = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    let open = "WARP_SSH_MSYS_AUTH_DONE_SCRIPT='\n";
+    let start = source.find(open).unwrap() + open.len();
+    let end = start + source[start..].find("\n'\n").unwrap();
+    // The one quote the script needs is written `'"'"'` inside the single-quoted assignment.
+    let script = source[start..end].replace("'\"'\"'", "'");
+    assert!(script.contains("__p_drain") && !script.contains("'\"'\"'"));
+
+    let token = b":PHX5:";
+    // (console input, the bytes reported, whether the token was seen)
+    let cases: [(&[u8], &[u8], bool); 6] = [
+        (b":PHX5:", b"", true),
+        (b"ls\r:PHX5:", b"ls\r", true),
+        (
+            b"a\0b\xc3\xa9'\\\n \x7f:PHX5:",
+            b"a\0b\xc3\xa9'\\\n \x7f",
+            true,
+        ),
+        (b":PHX6::PHX5:", b":PHX6:", true),
+        (b":PHX5", b":PHX5", false),
+        (b"ls", b"ls", false),
+    ];
+    for ((input, typeahead, token_seen), keep_plain) in cases
+        .into_iter()
+        .flat_map(|case| [(case, false), (case, true)])
+    {
+        let mut child = Command::new("bash")
+            .args(["-c", "eval \"$PHOSPHOR_SSH_AUTH_DONE\""])
+            .env("PHOSPHOR_SSH_AUTH_DONE", &script)
+            .env("PHOSPHOR_SSH_SYNC_TOK", hex::encode(token))
+            .env("PHOSPHOR_SSH_SYNC_DONE", "d0")
+            .env("PHOSPHOR_SSH_SYNC_MANAGED", "a1")
+            .env("PHOSPHOR_SSH_SYNC_MANAGED_A", "a2")
+            .env(
+                "PHOSPHOR_SSH_SYNC_TA",
+                if keep_plain { "plain" } else { "" },
+            )
+            .env("PHOSPHOR_SSH_SYNC_PLAIN_A", "b2")
+            .env("PHOSPHOR_SSH_SYNC_PLAIN_B", "c3")
+            .env("PHOSPHOR_SSH_SYNC_PRE", "<")
+            .env("PHOSPHOR_SSH_SYNC_SUF", ">")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let output = child.wait_with_output().unwrap();
+        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+        let reported = hex::encode(hex::encode(typeahead));
+        let expected = if token_seen && typeahead.is_empty() {
+            "<d0><a1>".to_owned()
+        } else if token_seen && !keep_plain {
+            format!("<d0><a2{reported}c3>")
+        } else {
+            format!("<d0><b2{reported}c3>")
+        };
+        assert_eq!(
+            printed, expected,
+            "input {input:?}, kill switch {keep_plain}"
+        );
+        assert!(output.status.success(), "input {input:?}");
+    }
+}

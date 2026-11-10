@@ -64,6 +64,11 @@ pub(super) enum DProtoHook {
     PlainSSHFallback {
         value: PreInteractiveSSHSessionValue,
     },
+    /// A stage of the one-connection managed ssh of Git Bash / MSYS2 (#1933), printed on the
+    /// LOCAL side by the wrapper and by ssh's LocalCommand. See [`SSHWrapperSyncValue`].
+    SSHWrapperSync {
+        value: SSHWrapperSyncValue,
+    },
     SSH {
         value: SSHValue,
     },
@@ -149,6 +154,7 @@ impl DProtoHook {
             DProtoHook::PreInteractiveSSHSession { .. } => "PreInteractiveSSHSession",
             DProtoHook::ManagedSSHSessionStarting { .. } => "ManagedSSHSessionStarting",
             DProtoHook::PlainSSHFallback { .. } => "PlainSSHFallback",
+            DProtoHook::SSHWrapperSync { .. } => "SSHWrapperSync",
             DProtoHook::SSH { .. } => "SSH",
             DProtoHook::InitShell { .. } => "InitShell",
             DProtoHook::InputBuffer { .. } => "InputBuffer",
@@ -202,6 +208,7 @@ impl DProtoHook {
             DProtoHook::PreInteractiveSSHSession { value }
             | DProtoHook::ManagedSSHSessionStarting { value }
             | DProtoHook::PlainSSHFallback { value } => value.session_id.map(SessionId::from),
+            DProtoHook::SSHWrapperSync { value } => value.session_id.map(SessionId::from),
             DProtoHook::SSH { value } => value.session_id.map(SessionId::from),
             DProtoHook::InitSubshell { value } => value.session_id.map(SessionId::from),
             DProtoHook::InitSsh { value } => value.session_id.map(SessionId::from),
@@ -233,6 +240,7 @@ impl DProtoHook {
             | DProtoHook::PreInteractiveSSHSession { .. }
             | DProtoHook::ManagedSSHSessionStarting { .. }
             | DProtoHook::PlainSSHFallback { .. }
+            | DProtoHook::SSHWrapperSync { .. }
             | DProtoHook::SSH { .. }
             | DProtoHook::InitShell { .. }
             | DProtoHook::InputBuffer { .. }
@@ -488,6 +496,7 @@ impl DProtoHook {
                     value.external_control_master = v.parse::<bool>().unwrap_or(false)
                 }
                 "raw_bootstrap" => value.raw_bootstrap = v.parse::<bool>().unwrap_or(false),
+                "single_connection" => value.single_connection = v.parse::<bool>().unwrap_or(false),
                 _ => {
                     log::warn!("Tried to add unknown field {key} to SSH hook");
                 }
@@ -1095,6 +1104,31 @@ pub struct SSHValue {
     /// Defaults to `false` for hooks emitted by older bootstrap scripts and for other shells.
     #[serde(default)]
     pub raw_bootstrap: bool,
+    /// `true` when the session runs on ONE ssh connection with no ControlMaster (#1933: Git Bash /
+    /// MSYS2, whose `ssh.exe` cannot multiplex). `socket_path` is empty then: there is no socket
+    /// for the helper or for side commands. Defaults to `false` (every other wrapper path).
+    #[serde(default)]
+    pub single_connection: bool,
+}
+
+/// One stage of the one-connection managed ssh (#1933, `docs/design/1933-windows-managed-ssh.md`).
+/// Printed locally: `auth` by the wrapper before ssh starts, the others by ssh's `LocalCommand`
+/// after the login succeeded and before the session starts.
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, Serialize, Clone)]
+pub struct SSHWrapperSyncValue {
+    #[serde(default)]
+    pub session_id: HookSessionId,
+    /// `auth`, `auth_done`, `managed` or `plain`. Anything else is ignored by the view.
+    #[serde(default)]
+    pub stage: String,
+    /// The invocation's nonce (decimal digits). Minted locally and never sent to the server, so
+    /// text the server prints cannot forge a stage.
+    #[serde(default)]
+    pub nonce: String,
+    /// `managed` and `plain`: the bytes typed before the hold that no login prompt consumed, as
+    /// hex (empty when there were none). #1959: with `managed` the app holds them at the front.
+    #[serde(default)]
+    pub typeahead: String,
 }
 
 /// Received from the pty after the shell session has been initialized, marking

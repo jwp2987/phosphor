@@ -85,6 +85,15 @@ pub enum Event {
         /// The session of the shell that ran the wrapper (the hook's own id).
         session_id: Option<SessionId>,
     },
+    /// A stage of the one-connection managed ssh (#1933, the `SSHWrapperSync` hook): `stage` is
+    /// `auth`, `auth_done`, `managed` or `plain`; `typeahead` (hex) is what the LocalCommand
+    /// drained from the console, set for `plain` and, since #1959, for a `managed` that has some.
+    SshWrapperSync {
+        stage: String,
+        nonce: String,
+        typeahead: String,
+        session_id: Option<SessionId>,
+    },
     /// An indication that a successful SSH connection was initiated via the
     /// SSH wrapper.  The argument is the name of the remote shell.
     SSH(String),
@@ -659,6 +668,10 @@ impl Debug for Event {
                 f,
                 "SshWrapperVerdict(managed: {managed}, session: {session_id:?})"
             ),
+            // Never the nonce or the typed bytes.
+            Event::SshWrapperSync {
+                stage, session_id, ..
+            } => write!(f, "SshWrapperSync(stage: {stage}, session: {session_id:?})"),
             Event::SSH(remote_shell) => write!(f, "SSH(remote shell: {remote_shell}"),
             Event::SSHControlMasterError => write!(f, "SSH ControlMaster error"),
             Event::InputBufferOverflow => write!(f, "Input buffer overflow"),

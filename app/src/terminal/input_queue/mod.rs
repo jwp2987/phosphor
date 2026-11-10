@@ -1006,6 +1006,98 @@ impl InputQueue {
         self.push_gate(host, spec, barrier)
     }
 
+    /// Sets `count` entry ids aside, at this point of the arrival order, for input that was typed
+    /// BEFORE now but whose content is only learnt later (#1959: keys the one-connection ssh
+    /// login left in the console; ssh's LocalCommand reports them after the keys typed since are
+    /// already held). Everything that arrives from now on gets a later id, so
+    /// [`Self::insert_reserved`] can put that input in front of it without renumbering anything.
+    /// Nothing is queued and no gate opens: a reservation that is never filled costs ids only.
+    /// Returns the first reserved id.
+    pub fn reserve_ids(&mut self, count: u64) -> EntryId {
+        let first = EntryId(self.next_id);
+        self.next_id += count;
+        first
+    }
+
+    /// Fills ids reserved by [`Self::reserve_ids`] (`first`, `reserved` of them) with `kinds`, in
+    /// order, as entries held by the gate `spec` names: the front insert of #1959. The entries
+    /// take the reserved ids, so they sit in FRONT of everything that arrived after the
+    /// reservation, and the gate holds them with it: the gate that is open for `(kind, key)` has
+    /// its barrier moved down to `first` (same token, same cap); with no such gate, one is opened
+    /// at `first`. Nothing is delivered and nothing already queued changes its place.
+    ///
+    /// All or nothing. `Err` hands `kinds` back, with the queue untouched, unless the reserved ids
+    /// are PROVABLY the place of that input in the one order:
+    /// - the range was reserved, is large enough and has no entry in it;
+    /// - nothing arrived between the reservation and the gate: the gate opened at the first id
+    ///   after the range (so everything that arrived since is held by it), or, with no gate,
+    ///   nothing has arrived at all. An arrival in between was delivered, dropped or is held by
+    ///   something else, and input put in front of it now could overtake or trail it;
+    /// - the queue stays within its cap.
+    pub fn insert_reserved<H: Host>(
+        &mut self,
+        host: &mut H,
+        spec: GateSpec,
+        first: EntryId,
+        reserved: u64,
+        kinds: Vec<EntryKind>,
+        origin: Origin,
+    ) -> Result<(), Vec<EntryKind>> {
+        let end = EntryId(first.0.saturating_add(reserved));
+        let count = kinds.len() as u64;
+        let gate_index = self
+            .gates
+            .iter()
+            .position(|gate| gate.kind == spec.kind && gate.key == spec.key);
+        let anchored = match gate_index {
+            Some(index) => self.gates[index].barrier == end,
+            None => self.next_id == end.0,
+        };
+        let fits = count <= reserved
+            && end.0 <= self.next_id
+            && anchored
+            && self.entries.len() + kinds.len() <= self.max_entries
+            && !self
+                .entries
+                .iter()
+                .any(|entry| entry.id >= first && entry.id < end);
+        if !fits {
+            return Err(kinds);
+        }
+        if kinds.is_empty() {
+            return Ok(());
+        }
+        let position = self.entries.partition_point(|entry| entry.id < first);
+        let stamp = self.current_stamp;
+        for (offset, kind) in kinds.into_iter().enumerate() {
+            let entry = InputEntry {
+                id: EntryId(first.0 + offset as u64),
+                kind,
+                focus_epoch: self.focus_epoch,
+                arrived_at: Instant::now(),
+                origin,
+                stamp,
+            };
+            self.entries.insert(position + offset, entry);
+        }
+        match gate_index {
+            Some(index) => {
+                self.gates[index].barrier = first;
+                if host.log_enabled() {
+                    host.log(&format!(
+                        "gate_front_insert kind={} key={} barrier={first:?} entries={count}",
+                        spec.kind.name(),
+                        spec.key
+                    ));
+                }
+            }
+            None => {
+                self.push_gate(host, spec, first);
+            }
+        }
+        Ok(())
+    }
+
     /// Turns the open gate `(kind, key)` into `spec` in place: the same barrier, so everything it
     /// holds stays held with no window in which it is not (a take and a re-offer would have one),
     /// under a new token, so the cap timer armed for the old gate finds nothing. With

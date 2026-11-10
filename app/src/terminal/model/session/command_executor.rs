@@ -164,10 +164,12 @@ fn new_command_executor_for_local_tty_session(
     // fall through to the existing ControlMaster-based
     // `RemoteCommandExecutor` below. This preserves the fallback behavior
     // described in specs/APP-3797.
-    let is_legacy_ssh_session_for_remote_server = matches!(
-        session_info.is_legacy_ssh_session,
-        IsLegacySSHSession::Yes { .. }
-    );
+    //
+    // #1933: a one-connection ssh session (Git Bash / MSYS2) has no ControlMaster socket, so it
+    // never gets the helper and there is no ControlMaster executor to "fall back" to; it is not
+    // a remote-server candidate at all and takes the in-band executor below.
+    let is_legacy_ssh_session_for_remote_server =
+        session_info.is_legacy_ssh_session.has_control_socket();
     if FeatureFlag::SshRemoteServer.is_enabled() {
         if is_legacy_ssh_session_for_remote_server {
             let session_id = session_info.session_id;
@@ -230,10 +232,21 @@ fn new_command_executor_for_local_tty_session(
     let should_force_disable_in_band_generators =
         debug_settings.force_disable_in_band_generators.value();
 
-    let is_legacy_ssh_session = matches!(
+    // Whether the ControlMaster executor can serve this session: an ssh session WITH a socket.
+    let is_legacy_ssh_session = uses_control_master_executor(&session_info.is_legacy_ssh_session);
+    if matches!(
         &session_info.is_legacy_ssh_session,
-        IsLegacySSHSession::Yes { .. }
-    );
+        IsLegacySSHSession::Yes {
+            single_connection: true,
+            ..
+        }
+    ) {
+        log::info!(
+            "ssh session {:?} runs on one connection (no ControlMaster, #1933): no remote \
+             helper; side commands use the in-band executor",
+            session_info.session_id
+        );
+    }
 
     let shell_needs_in_band_executor = session_info.shell.force_in_band_command_executor();
     // Docker sandbox sessions run commands inside the container; the host-side
@@ -450,7 +463,13 @@ pub fn register_shell_mode_channel(
     ) {
         return None;
     }
-    let IsLegacySSHSession::Yes { socket_path, .. } = &session_info.is_legacy_ssh_session else {
+    let IsLegacySSHSession::Yes {
+        socket_path,
+        single_connection: false,
+        ..
+    } = &session_info.is_legacy_ssh_session
+    else {
+        // Not ssh, or one connection with no ControlMaster socket (#1933): no out-of-band channel.
         return None;
     };
     if session_info.tmux_control_mode && FeatureFlag::SSHTmuxWrapper.is_enabled() {
@@ -484,6 +503,17 @@ pub fn register_shell_mode_channel(
         "shell mode: ControlMaster registered as the out-of-band channel for {session_id:?}"
     );
     Some(OutOfBandRegistration { router, session_id })
+}
+
+/// Whether the ControlMaster-based `RemoteCommandExecutor` can serve a session: an ssh session
+/// that has a ControlMaster socket. A one-connection session (#1933, Git Bash / MSYS2) has none:
+/// building that executor for it would run `ssh -o ControlPath=<empty>` side commands, each a
+/// NEW connection (and a new login prompt nobody sees).
+#[cfg(feature = "local_tty")]
+pub(crate) fn uses_control_master_executor(
+    is_legacy_ssh_session: &super::IsLegacySSHSession,
+) -> bool {
+    is_legacy_ssh_session.has_control_socket()
 }
 
 /// Whether [`new_command_executor_for_local_tty_session`] should emit

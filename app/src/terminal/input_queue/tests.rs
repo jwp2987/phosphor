@@ -574,6 +574,166 @@ fn held_behind_gate_counts_only_what_waits_behind_that_gate() {
     assert_eq!(h.delivered_ids(), vec![1]);
 }
 
+/// #1959: input typed before a point in time but learnt later takes ids reserved at that point,
+/// so it is delivered in FRONT of what the gate already holds, behind what came before.
+#[test]
+fn reserved_ids_put_earlier_typed_input_in_front_of_what_the_gate_already_holds() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.offer(&mut h, text("before"));
+    let first = q.reserve_ids(8);
+    assert_eq!(first, EntryId(2));
+    assert!(
+        q.is_idle(),
+        "a reservation queues nothing and opens no gate"
+    );
+    let spec = GateSpec::new(GateKind::SshConnect, 7);
+    q.open_gate(&mut h, spec);
+    q.offer(&mut h, text("later"));
+    q.offer(&mut h, EntryKind::Enter);
+    assert_eq!(h.delivered_ids(), vec![1]);
+    let inserted = q.insert_reserved(
+        &mut h,
+        spec,
+        first,
+        8,
+        vec![text("ear"), text("lier")],
+        Origin::Keyboard,
+    );
+    assert!(inserted.is_ok());
+    assert_eq!(h.delivered_ids(), vec![1], "an insert delivers nothing");
+    assert_eq!(
+        q.queued_ids().map(|id| id.0).collect::<Vec<_>>(),
+        vec![2, 3, 10, 11]
+    );
+    assert_eq!(q.held_behind_gate(GateKind::SshConnect, 7), 4);
+    assert_eq!(q.gates().len(), 1, "the same gate, moved down");
+    assert!(q.head_blocked());
+    assert!(q.on_gate_event(&mut h, GateKind::SshConnect, 7));
+    assert_eq!(h.delivered_ids(), vec![1, 2, 3, 10, 11]);
+    assert!(q.is_idle());
+    // The reservation is spent: keys arrived (and left) since, so a second fill has no place.
+    assert!(
+        q.insert_reserved(&mut h, spec, first, 8, vec![text("x")], Origin::Keyboard)
+            .is_err()
+    );
+    assert!(q.is_idle());
+}
+
+/// #1959: nothing was typed after the reservation, so no gate is open yet: the insert opens it
+/// at the first reserved id, and a key typed afterwards waits behind the inserted entries.
+#[test]
+fn a_reservation_with_no_gate_yet_opens_the_gate_and_holds_the_inserted_entries() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    let first = q.reserve_ids(4);
+    let spec = GateSpec::new(GateKind::SshConnect, 3);
+    assert!(
+        q.insert_reserved(&mut h, spec, first, 4, vec![text("a")], Origin::Keyboard)
+            .is_ok()
+    );
+    assert!(h.delivered.is_empty());
+    assert!(q.has_gate(GateKind::SshConnect, 3));
+    assert!(
+        q.insert_reserved(&mut h, spec, first, 4, vec![text("z")], Origin::Keyboard)
+            .is_err(),
+        "a range is filled once"
+    );
+    q.offer(&mut h, text("b"));
+    assert!(h.delivered.is_empty());
+    assert!(q.on_gate_event(&mut h, GateKind::SshConnect, 3));
+    assert_eq!(h.delivered_ids(), vec![1, 5]);
+}
+
+/// #1959: the insert is all or nothing. It is refused, with the queue untouched and the content
+/// handed back, whenever it could put a key in the wrong place.
+#[test]
+fn insert_reserved_refuses_what_could_reorder_and_changes_nothing() {
+    let spec = GateSpec::new(GateKind::SshConnect, 7);
+    // More content than was reserved.
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    let first = q.reserve_ids(1);
+    let back = q.insert_reserved(
+        &mut h,
+        spec,
+        first,
+        1,
+        vec![text("a"), text("b")],
+        Origin::Keyboard,
+    );
+    assert_eq!(back, Err(vec![text("a"), text("b")]));
+    assert!(q.is_idle());
+    // A range that was never reserved.
+    let mut q = InputQueue::new();
+    assert!(
+        q.insert_reserved(
+            &mut h,
+            spec,
+            EntryId(1),
+            4,
+            vec![text("a")],
+            Origin::Keyboard
+        )
+        .is_err()
+    );
+    assert!(q.is_idle());
+    // A key that arrived after the reservation and BEFORE the gate: it is held by another gate
+    // (or was already delivered); the reserved ids in front of it must not come under this one.
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::EnterVerdict, 1));
+    let first = q.reserve_ids(4);
+    q.offer(&mut h, text("between"));
+    q.open_gate(&mut h, spec);
+    q.offer(&mut h, text("held"));
+    assert!(
+        q.insert_reserved(&mut h, spec, first, 4, vec![text("a")], Origin::Keyboard)
+            .is_err()
+    );
+    assert_eq!(q.queued_len(), 2);
+    assert_eq!(q.held_behind_gate(GateKind::SshConnect, 7), 1);
+    // The same with no gate of that kind at all.
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::EnterVerdict, 1));
+    let first = q.reserve_ids(4);
+    q.offer(&mut h, text("between"));
+    assert!(
+        q.insert_reserved(&mut h, spec, first, 4, vec![text("a")], Origin::Keyboard)
+            .is_err()
+    );
+    assert!(!q.has_gate(GateKind::SshConnect, 7));
+    assert_eq!(q.queued_len(), 1);
+    // The gate was open BEFORE the reservation (its barrier is in front of the range).
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, spec);
+    let first = q.reserve_ids(4);
+    assert!(
+        q.insert_reserved(&mut h, spec, first, 4, vec![text("a")], Origin::Keyboard)
+            .is_err()
+    );
+    assert_eq!(q.queued_len(), 0);
+    // The cap.
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.set_max_entries(1);
+    let first = q.reserve_ids(4);
+    assert!(
+        q.insert_reserved(
+            &mut h,
+            spec,
+            first,
+            4,
+            vec![text("a"), text("b")],
+            Origin::Keyboard
+        )
+        .is_err()
+    );
+    assert!(q.is_idle());
+}
+
 #[test]
 fn close_gate_taking_returns_what_waited_without_delivering_it() {
     let mut q = InputQueue::new();

@@ -108,6 +108,81 @@ impl HeldInput {
     }
 }
 
+/// #1959: the held inputs that stand for `bytes`, keys the user typed that were read back from the
+/// tty (the one-connection ssh login left them in the console and ssh's LocalCommand drained
+/// them). They are split the way the live key path would have held them: a printable run is
+/// [`HeldInput::Typed`], a control character (Enter, Backspace, Ctrl-U, ...) is its own
+/// [`HeldInput::Key`], and Tab or an escape sequence (CSI, SS3, ESC + one character) is one
+/// [`HeldInput::Seq`]. The concatenation of the result is `bytes`, in order.
+///
+/// `None` when the bytes cannot be held as keys without changing them: not UTF-8 (the console
+/// gave something no key of ours wrote), or more than a connect may hold. The caller then keeps
+/// them as bytes for the pty (the plain path), which is exact.
+pub(super) fn held_inputs_from_tty_bytes(bytes: &[u8]) -> Option<Vec<HeldInput>> {
+    if bytes.len() > SSH_TYPEAHEAD_MAX_BYTES {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut inputs = Vec::new();
+    let mut run = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if !c.is_control() {
+            run.push(c);
+            continue;
+        }
+        if !run.is_empty() {
+            inputs.push(HeldInput::Typed(std::mem::take(&mut run)));
+        }
+        if c != '\u{1b}' {
+            let mut key = c.to_string();
+            // A `\r\n` pair is one Enter (#1420), as the live path holds it.
+            if c == '\r' && chars.peek() == Some(&'\n') {
+                key.extend(chars.next());
+            }
+            inputs.push(if c == '\t' {
+                HeldInput::Seq(key)
+            } else {
+                HeldInput::Key(key)
+            });
+            continue;
+        }
+        let mut seq = String::from(c);
+        match chars.peek().copied() {
+            // CSI: parameters and intermediates up to the final byte (0x40..=0x7e).
+            Some('[') => {
+                seq.extend(chars.next());
+                while let Some(next) = chars.peek().copied() {
+                    // Anything outside the sequence's alphabet ends a cut-off sequence.
+                    if !('\u{20}'..='\u{7e}').contains(&next) {
+                        break;
+                    }
+                    seq.extend(chars.next());
+                    if ('\u{40}'..='\u{7e}').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            // SS3 (application cursor keys, F1-F4): one more character.
+            Some('O') => {
+                seq.extend(chars.next());
+                if chars.peek().is_some_and(|next| !next.is_control()) {
+                    seq.extend(chars.next());
+                }
+            }
+            // Alt + a key.
+            Some(next) if !next.is_control() => seq.extend(chars.next()),
+            // A lone Escape (or one followed by a control key, which is its own key).
+            _ => {}
+        }
+        inputs.push(HeldInput::Seq(seq));
+    }
+    if !run.is_empty() {
+        inputs.push(HeldInput::Typed(run));
+    }
+    Some(inputs)
+}
+
 /// What [`SshTypeahead::push`] did.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum SshTypeaheadPush {
