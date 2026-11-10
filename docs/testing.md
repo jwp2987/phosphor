@@ -4633,3 +4633,15 @@ Windows run.
   session; the cases are its proof). The cases are unchanged. Next Windows Git Bash run: `hop=subshell_bootstrap_sourced why=msys2_bash_subshell` after
   `subshell_setup_progress kind=InitShell`, no `class=SetupChunked` writes after that hop, `Bootstrapped` within a few seconds, the inner line and the
   `back_` line run, the shell in front after leaving is the root shell.
+- **APP, #2006 (follow-up, owner decision 2 of 2026-11-10 now measured): `subshell_ready_rc_clear` (agent@gitbash, "the setup was written after the
+  clear").** The inner bash drew `LAB$ ` 32 ms BEFORE the setup was armed (`decset_2004 on=true`, then `subshell_setup_armed`, then
+  `decision=Wait(Unknown) ... tail=ShellPrompt ... bytes=0`): on a pane with no tty probe only a prompt drawn SINCE the baseline wrote, so the attempt
+  waited until the user's own line cancelled it (`verdict=Cancel`, `subshell_setup_cancelled why=UserDrove`). The terminal pass of the same case armed
+  20 ms before the prompt and wrote. Measurement asked for by the decision (`hop=decset_2004`, round 10 slices of both cases, both modes):
+  `on=true` arrives in stream order directly before every look that shows the inner shell's prompt, and never between the outer shell's `on=false`
+  and the `Name: ` / `Team: ` questions of `read -p`. So it is built, narrowly: `ReadinessSample::line_editor_announced` (no probe, bracketed paste on
+  in the running block) writes at a shell-shaped tail while NO user byte passed; after user bytes the #2006 rules are unchanged. Switch
+  `PHOSPHOR_SUBSHELL_READY_DECSET_2004=0`. The judged hop gained `line_editor_announced=`. Unit tests `subshell_ready_tests.rs`:
+  `no_probe_writes_at_a_prompt_drawn_before_arming_when_the_line_editor_announced_itself`, `the_line_editor_announcement_is_on_unless_switched_off`.
+  The case is unchanged. Next Windows Git Bash run, agent pass: `subshell_ready_judged source=armed decision=Write(None) ... line_editor_announced=true`
+  when the prompt was there first, the setup written, the inner line runs within 2 s only if the bootstrap is sourced (#2025 above).

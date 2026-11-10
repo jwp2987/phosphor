@@ -3246,6 +3246,9 @@ struct SubshellPaneLook {
     /// continues the row above it (a soft wrap).
     cursor_line: String,
     cursor_row_continues: bool,
+    /// #2006: bracketed paste is on in what the pane shows now (the running command's block):
+    /// a line editor announced that it reads. Used only where there is no tty probe.
+    bracketed_paste: bool,
 }
 
 /// How the keys typed during a PowerShell subshell setup are held (#1048). See
@@ -23535,6 +23538,7 @@ impl TerminalView {
             text_since_marker: model.text_since_setup_marker(),
             cursor_line,
             cursor_row_continues,
+            bracketed_paste: model.is_term_mode_set(TermMode::BRACKETED_PASTE),
         }
     }
 
@@ -23657,6 +23661,9 @@ impl TerminalView {
             elapsed: armed.armed_at.elapsed(),
             no_tty_probe,
             user_line_may_be_at_cursor,
+            line_editor_announced: no_tty_probe
+                && look.bracketed_paste
+                && subshell_ready::line_editor_announcement_enabled(),
         };
         let relay = look.tty.kind == SubshellTtyKind::Relay;
         armed.last_tty = Some(look.tty.clone());
@@ -23701,7 +23708,7 @@ impl TerminalView {
             format!(
                 "source={source} decision={decision:?} kind={:?} leader={:?} comm={:?} tail={:?} \
                  queue_empty={:?} reader_blocked={:?} newline_since_line_end={} bytes={} lines={} \
-                 age_ms={} user_line_at_cursor={}",
+                 age_ms={} user_line_at_cursor={} line_editor_announced={}",
                 look.tty.kind,
                 look.tty.leader,
                 look.tty.leader_comm.as_deref().unwrap_or("-"),
@@ -23712,7 +23719,8 @@ impl TerminalView {
                 armed.ledger.bytes_since_arm,
                 armed.ledger.lines_ended,
                 sample.elapsed.as_millis(),
-                sample.user_line_may_be_at_cursor
+                sample.user_line_may_be_at_cursor,
+                sample.line_editor_announced
             )
         });
         match decision {

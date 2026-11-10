@@ -68,6 +68,37 @@ pub struct ReadinessSample {
     /// before it runs it): see [`user_line_may_be_at_cursor`]. Always `false` with a probe (the
     /// tty facts are that proof there).
     pub user_line_may_be_at_cursor: bool,
+    /// #2006 (owner decision 2 of 2026-11-10, measured in round 10 on Windows Git Bash): on a
+    /// pane with no tty probe, bracketed paste is ON in the running command's block right now.
+    /// readline and zle switch it on when they start reading a line and off when the line is
+    /// accepted; a `read -p` never does (round 10 log: `decset_2004 on=true` in stream order
+    /// directly before every `LAB$ ` look, none before `Name: ` / `Team: `). The one positive
+    /// "a line editor reads" fact such a pane has. Always `false` with a probe, and when
+    /// `PHOSPHOR_SUBSHELL_READY_DECSET_2004` is off.
+    pub line_editor_announced: bool,
+}
+
+/// `PHOSPHOR_SUBSHELL_READY_DECSET_2004`: `0`, `off`, `false` or `no` (any case) keeps the
+/// probe-less judge on the cursor's movement alone, as before round 11.
+pub fn line_editor_announcement_enabled_from_env(value: Option<&str>) -> bool {
+    !matches!(
+        value
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("0" | "off" | "false" | "no")
+    )
+}
+
+/// [`line_editor_announcement_enabled_from_env`] for this process, read once.
+pub fn line_editor_announcement_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        line_editor_announcement_enabled_from_env(
+            std::env::var("PHOSPHOR_SUBSHELL_READY_DECSET_2004")
+                .ok()
+                .as_deref(),
+        )
+    })
 }
 
 /// #2006: what the user's last line end left for the screen to show, on a pane with no tty probe.
@@ -363,6 +394,18 @@ pub fn subshell_ready(
     // #2006: "a prompt drawn since the user's last line end" is not the echo of that line: the
     // cursor's row must not be one that may still show it.
     if sample.no_tty_probe && sample.tty.leader == LeaderKind::Unreadable {
+        // #2006, round 10 (`subshell_ready_rc_clear`, agent pass): the inner shell's prompt was
+        // drawn 32 ms BEFORE the setup was armed, so nothing was "drawn since the baseline" and
+        // the attempt waited until the user's own line cancelled it. With no user byte passed,
+        // a shell-shaped tail under a line editor that announced itself (bracketed paste on) is
+        // the same proof a probe gives on unix (`LineReader` at a prompt). Never after user
+        // bytes: those keep the rules below (the echo of the user's line, #2006).
+        if user.bytes_since_arm == 0
+            && sample.tail == Tail::ShellPrompt
+            && sample.line_editor_announced
+        {
+            return Decision::Write(write_shell_type(trigger, None));
+        }
         let shaped = sample.tail == Tail::ShellPrompt && sample.prompt_moved_since_baseline;
         return if !shaped {
             Decision::Wait(WaitWhy::Unknown)
