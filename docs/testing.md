@@ -4001,3 +4001,12 @@ false fails. Each fix below names its finding (1-12) / cross-cutting letter (A-F
   failure, loss cases keep their `WARN loss case` note, paste-only rows and trace-less runs are not judged. Pin:
   `audit5_accounting_window_runs_to_case_end_and_a_loss_outside_loss_cases_is_noref`. **Not yet run on a real build**: the first Windows pass
   decides whether its call records and the app's key trace line up (a systematic mismatch there would show as many `noref` rows with the same count).
+- **#6 / #7 / D (#1913, #1914) — the harness's probe lines are not a case's commands; comparisons wait for the log.** `Ctx.HARNESS_MARKER_RE`
+  also matches the where / pid probes (the `>> ~/.appci_where` echo, the `sh -c` pid probe into `~/.appci_pid`, PowerShell's `Add-Content ~/.appci_pid`), so
+  `cmds_since(mark)` drops one that the rc hook logged after the next case took its mark ("shell received 31 commands for 30 typed, first
+  mismatch: echo wT... >> ~/.appci_where"). `Ctx.await_commands(mark, n_or_predicate, timeout=5)` returns `cmds_since(mark)` once the shell has
+  logged what the case compares (the `C` line is written with the prompt, after the effect file); the timeout is the give-up net and a pane with no
+  rec.log is not waited on. Used where a count or an exact list is compared: `effect_run` (fast_typing, rollover), the Ctrl-C integrity read, the
+  reference-shell exact count, the cadence audit, `cases_caseintl.check_cmd`, the tmux line of `cases_coverage_a`. Negative checks ("nothing
+  reached the shell") keep their settle time: there is no event for something that must not happen. Pin:
+  `audit6_7_harness_probe_lines_are_not_the_cases_commands_and_comparisons_wait_for_the_log`.

@@ -1776,6 +1776,42 @@ def injector_accounting_parse_and_join():
 
 
 @check
+def audit6_7_harness_probe_lines_are_not_the_cases_commands_and_comparisons_wait_for_the_log():
+    """harness audit #6 (#1913): the where / pid probe lines never count as a case's commands. #7 (#1914): a rec.log that fills 800 ms after the effect
+    file is still read whole (await_commands), and the sites the audit names use it instead of a fixed sleep."""
+    import threading
+    cmds = [(0.0, "echo wAAAA_xyz >> ~/.appci_where"), (0.0, "sh -c 'echo pBBBB_xyz:$PPID >> ~/.appci_pid'"), (0.0, "Add-Content ~/.appci_pid pCCCC_xyz:$PID"),
+            (0.0, "echo t1 >> alive_x.txt"), (0.0, "echo k >> proof_a@b.txt"), (0.0, "echo real >> r_ft10.txt"), (0.0, "cat notes.appci_where.md")]
+    c = types.SimpleNamespace(prof=types.SimpleNamespace(commands=lambda remote=False: list(cmds)),
+                              HARNESS_MARKER_RE=cases.Ctx.HARNESS_MARKER_RE, APP_BOOTSTRAP_RE=cases.Ctx.APP_BOOTSTRAP_RE)
+    c.cmds_since = lambda mark: cases.Ctx.cmds_since(c, mark)
+    c.until = lambda pred, timeout=10, step=0.02: cases.Ctx.until(c, pred, timeout, step)
+    assert c.cmds_since(0) == ["echo real >> r_ft10.txt", "cat notes.appci_where.md"], c.cmds_since(0)      # a user's own line that merely contains the word stays
+    assert all(cases.Ctx.HARNESS_MARKER_RE.search(cases.depth_probe_cmd(p, "pX")) for p in ("bash", "powershell")), "the pid probe's own line is not matched"
+    # #7: three typed commands; the third C line lands 0.8 s after the effect: the comparison must see 3, and must not have slept a fixed time when they are there
+    del cmds[:]
+    cmds += [(0.0, "a"), (0.0, "b")]
+    threading.Timer(0.8, lambda: cmds.append((0.0, "c"))).start()
+    t = time.time()
+    assert cases.Ctx.await_commands(c, 0, 3) == ["a", "b", "c"] and 0.7 <= time.time() - t < 3.0, time.time() - t
+    t = time.time()
+    assert cases.Ctx.await_commands(c, 0, 3) == ["a", "b", "c"] and time.time() - t < 0.2, "await_commands slept although the log was complete"
+    assert cases.Ctx.await_commands(c, 0, lambda cs: "c" in cs) == ["a", "b", "c"]
+    t = time.time()
+    assert cases.Ctx.await_commands(c, 0, 4, timeout=0.3) == ["a", "b", "c"] and 0.25 <= time.time() - t < 1.5        # a real loss: bounded, the caller's comparison reports it
+    del cmds[:]
+    t = time.time()
+    assert cases.Ctx.await_commands(c, 0, 2, timeout=5) == [] and time.time() - t < 0.2, "no rec.log at all (PowerShell pane): no wait"
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "cases.py")).read()
+    er = src[src.index("def effect_run("):src.index("def ", src.index("def effect_run(") + 10)]
+    assert "ctx.await_commands(mark, n)" in er and er.index("ctx.await_commands(mark, n)") < er.index("have = ctx.cmds_since(mark)"), "effect_run compares rec.log without waiting for it"
+    assert "ctx.await_commands(mark, len(cmds))" in src and "ctx.await_commands(mark, len(typed))" in src and "ctx.await_commands(mark, len(want))" in src
+    assert "ctx.await_commands(mark, lambda cs: want_cmd in cs)" in open(os.path.join(here, "cases_caseintl.py")).read()
+    assert "ctx.await_commands(mark, lambda cs: line in cs)" in open(os.path.join(here, "cases_coverage_a.py")).read()
+
+
+@check
 def audit5_accounting_window_runs_to_case_end_and_a_loss_outside_loss_cases_is_noref():
     """harness audit #5 (#1912): a held / slow-classifier Enter processed more than 3 s after the last injector call is still the case's Enter when the
     window ends at the case's end; lost > 0 (or an Enter short) on a case that is not a loss case and has no failure is noref, never a pass."""

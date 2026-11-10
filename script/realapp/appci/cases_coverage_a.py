@@ -217,6 +217,7 @@ def c_alt_programs(ctx, r):
         ctx.until(lambda: ctx.lines("ap_tmux.txt"), 8)
         exact_lines(r, "the shell inside tmux ran the typed line once", [tok], ctx.lines("ap_tmux.txt"))
         if ctx.prof.commands():
+            ctx.await_commands(mark, lambda cs: line in cs)
             r.check(line in ctx.cmds_since(mark), "the shell inside tmux received %r, not %r" % (ctx.cmds_since(mark)[:3], line))
         ctx.exit_nested(base, r, "tmux")                 # the shell inside tmux is not a descendant of the app: the PID probe (root_pid) is what proves it (audit #2)
         ctx.shot("ap_tmux_exited")

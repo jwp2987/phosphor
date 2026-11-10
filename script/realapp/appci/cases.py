@@ -1421,16 +1421,29 @@ class Ctx:
             return None
         return p
 
-    HARNESS_MARKER_RE = re.compile(r"(?:alive|proof)_[\w@.-]*\.txt")
+    # audit #6 (#1913): the where / pid probes (`echo tok >> ~/.appci_where`, `sh -c 'echo tok:$PPID >> ~/.appci_pid'`, `Add-Content ~/.appci_pid ...`) are the
+    # harness's own lines too; the rc hook logs them at the NEXT prompt, which on msys bash / a loaded Mac is after the next case took its mark
+    HARNESS_MARKER_RE = re.compile(r"(?:alive|proof)_[\w@.-]*\.txt|~/\.appci_(?:pid|where)\b")
     # r18u8 (Mac session_restore / crash_kill9_restore): a RESTORED zsh pane gets Phosphor's own bootstrap line typed into it, which the harness's history hook logs
     # as a "command received before any key was sent". That is the app initialising the shell, not a replayed user command, so it is not one of the lines the
     # RE-RUN check is about. Matched on the exact start of the app's init line only.
     APP_BOOTSTRAP_RE = re.compile(r"^command -p stty -echo; WARP_BOOTSTRAP_VAR=")
 
     def cmds_since(self, mark):
-        """what the shell logged after `mark`, minus the harness's OWN marker lines (the key-proof and wedge-probe `echo tok >> proof_*/alive_*.txt`): rec.log can
-        log one of those late, after a case took its mark (r18d2 agent@gitbash fast_typing: 31 commands for 30 typed, every line shifted by that one)"""
+        """what the shell logged after `mark`, minus the harness's OWN marker lines (the key-proof and wedge-probe `echo tok >> proof_*/alive_*.txt`, the where
+        and pid probes): rec.log can log one of those late, after a case took its mark (r18d2 agent@gitbash fast_typing: 31 commands for 30 typed, every
+        line shifted by that one)"""
         return [c for _, c in self.prof.commands()[mark:] if not self.HARNESS_MARKER_RE.search(c) and not self.APP_BOOTSTRAP_RE.search(c)]
+
+    def await_commands(self, mark, n=1, timeout=5.0):
+        """audit #7 / D (#1914): cmds_since(mark), read only once the shell has LOGGED what the case is about to compare. The rc hook writes a command's C line
+        with its prompt, after the command's effect file exists, so a comparison made a fixed 0.5 s after the effect said "shell received n-1 commands"
+        under load. `n`: how many commands are expected, or a predicate over the list. `timeout` is the give-up net (a real loss never reaches n: the
+        comparison then reports it). No wait at all when the pane's shell keeps no rec.log (PowerShell pane, hook not run)."""
+        want = n if callable(n) else (lambda cs: len(cs) >= n)
+        if self.prof.commands():
+            self.until(lambda: want(self.cmds_since(mark)), timeout)
+        return self.cmds_since(mark)
 
     def cmd_mark(self):
         return len(self.prof.commands())
@@ -1794,7 +1807,7 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
     merged = False
     if ctx.prof.commands():
         want0 = [ctx.append_cmd(shell, t, fname) for t in exp]
-        have0 = ctx.cmds_since(mark)
+        have0 = ctx.await_commands(mark, n)        # the n-th C line arrives with its prompt, after the effect file (audit #7)
         merged = any(sum(1 for w in want0 if w in h) >= 2 for h in have0)
     elif not ok:
         merged = len(got) != n
@@ -2236,7 +2249,7 @@ def ctrlc_samples(ctx, n, fname, budget_s=None, flood=False, bail_after=None):
     after = [l for l in ctx.lines(fname) if l.startswith("AFTER")]
     if ctx.prof.commands():
         # a sample that never fired is either a Ctrl-C that did not arrive or a typed LINE that arrived corrupted (no trap, no stamp): tell them apart
-        have = ctx.cmds_since(mark)
+        have = ctx.await_commands(mark, len(typed))
         pairs = [(w, h) for w, h in zip(typed, have) if w != h]
         ctx.cc_integrity[fname] = dict(n=len(typed), got=len(have), bad=len(pairs), examples=[line_evidence(ctx, w, h, t_start, None) for w, h in pairs[:2]])
     if pw and misses:
@@ -3493,7 +3506,7 @@ def run_enter_control(ctx, r, n):
             exact_bad = None
             if ctx.prof.commands():
                 want = [ctx.append_cmd(ctx.pane_shell(), t, fname) for t in exp]
-                have = ctx.cmds_since(mark)
+                have = ctx.await_commands(mark, len(want))
                 exact_bad = sum(1 for w, h in zip(want, have) if w != h) + abs(len(want) - len(have))
             posted = None
             if k0 is not None:
@@ -4576,7 +4589,7 @@ def c_keydown_count(ctx, r):
     r.check(got == exp, "received text not exact: %d/%d lines; first mismatch %s" % (
         len(got), n, next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), None)))
     if ctx.prof.commands():
-        have = ctx.cmds_since(mark)
+        have = ctx.await_commands(mark, len(cmds))
         r.check(have == cmds, "shell rec.log: %d/%d commands exact; first mismatch %s" % (
             sum(1 for a, b in zip(cmds, have) if a == b), n, next(((a, b) for a, b in zip(cmds + [None], have + [None]) if a != b), None)))
 
