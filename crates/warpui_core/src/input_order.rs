@@ -422,6 +422,24 @@ pub fn log_os_key_event(age_ms: f64, enter: bool, ctrl: bool) {
     }
 }
 
+/// `input_order hop=keydown_menu ctrl=true cmd=false t=...` (#2041): a key-down the main menu took
+/// as the key equivalent of one of its items (macOS). Such a key never reaches the view's key
+/// dispatch, so it leaves no `keydown` and no `keydown_keybound` line: Ctrl-C with the input
+/// editor in front is the "Clear editor" item's key equivalent, and without this line a key the
+/// app acted on read as one that reached the app and went nowhere. Flags only, never the key.
+fn menu_key_event_line(ctrl: bool, cmd: bool) -> String {
+    hop_line("keydown_menu", &format!("ctrl={ctrl} cmd={cmd}"))
+}
+
+/// Logs a key-down that triggered a main-menu item (#2041); see [`menu_key_event_line`]. Called
+/// by the menu item's action, only while the event being handled is a key-down (a clicked item
+/// logs nothing).
+pub fn log_menu_key_event(ctrl: bool, cmd: bool) {
+    if enabled() {
+        log::debug!(target: TARGET, "{}", menu_key_event_line(ctrl, cmd));
+    }
+}
+
 /// Epoch microseconds of the last `^C` pty write; 0 means none is being watched (#1838).
 static CTRL_C_WRITE_US: AtomicU64 = AtomicU64::new(0);
 /// Frames logged for the watched `^C` so far.
@@ -721,6 +739,16 @@ mod tests {
         let line = os_key_event_line(0.4126, true, false);
         assert!(
             line.starts_with("input_order hop=os_key_event age_ms=0.413 enter=true ctrl=false t="),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn the_menu_key_event_line_carries_the_flags_only() {
+        // script/realapp/appci/injacct.py _MENU matches `hop=keydown_menu ctrl=<bool> cmd=<bool> t=`.
+        let line = menu_key_event_line(true, false);
+        assert!(
+            line.starts_with("input_order hop=keydown_menu ctrl=true cmd=false t="),
             "{line}"
         );
     }

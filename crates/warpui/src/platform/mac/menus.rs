@@ -142,6 +142,14 @@ extern "C-unwind" fn warp_menu_item_needs_update(item: id, ctx: *mut c_void) {
     unsafe { apply_changes(updated_properties, item) };
 }
 
+/// Logs that the key-down being handled triggered a menu item (#2041), as
+/// `input_order hop=keydown_menu ctrl=<bool> cmd=<bool>`. Called from `itemWasTriggered:` only
+/// when the current event is a key-down; flags only, never the key.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_note_menu_key_event(is_ctrl: std::ffi::c_int, is_cmd: std::ffi::c_int) {
+    warpui_core::input_order::log_menu_key_event(is_ctrl != 0, is_cmd != 0);
+}
+
 #[unsafe(no_mangle)]
 extern "C-unwind" fn warp_menu_item_triggered(_item: id, ctx: *mut c_void) {
     let func = &MenuItemData::read_context(ctx).triggered;
