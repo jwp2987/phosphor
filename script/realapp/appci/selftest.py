@@ -585,6 +585,59 @@ def enter_split_attributes_every_hop():
 
 
 @check
+def enter_split_history_and_appkit_stages_2031():
+    """#2031: the zsh rc's two extra times (first zshaddhistory function, plain preexec()) ride in $__pa_px, so the typed stamp line is
+    unchanged and the stamp file reads `stamp px ah p0 lf`; lf_to_px splits into lf_to_ah + ah_to_p0 + p0_to_px. An older rc's 3-field
+    file and the 2-field bash line parse as before. The app's mac_enter stages split event_to_enter; a missing stage gives no split."""
+    assert cases.stamp_fields(["10.0035", "10.0030", "10.0012", "10.0020", "10.0010"]) == (10.003, 10.001, 10.0012, 10.002)
+    assert cases.stamp_fields(["10.0035", "10.0030", "0", "0", "10.0010"]) == (10.003, 10.001, None, None)       # hooks that never ran print 0
+    assert cases.stamp_fields(["10.0035", "10.0030", "10.0010"]) == (10.003, 10.001, None, None)                   # rc before #2031
+    assert cases.stamp_fields(["10.0035", "0", "10.0010"]) == (None, 10.001, None, None)
+    assert cases.stamp_fields(["10.0035", "10.0010"]) == (None, 10.001, None, None)                                # #1492 bash/zsh split line
+    assert cases.stamp_fields(["10.0035"]) == (None, None, None, None)
+    sp = cases.enter_split_summary([dict(t0=99.8, post=100.0, lf=100.002, ah=100.0025, p0=100.0035, px=100.004, stamp=100.0041)])
+    assert sp["lf_to_ah_ms"] == 0.5 and sp["ah_to_p0_ms"] == 1.0 and sp["p0_to_px_ms"] == 0.5 and sp["lf_to_px_ms"] == 2.0, sp
+    sp = cases.enter_split_summary([dict(t0=99.8, post=100.0, lf=100.002, ah=None, p0=None, px=100.004, stamp=100.0041)])
+    assert "lf_to_ah_ms" not in sp and "ah_to_p0_ms" not in sp and "p0_to_px_ms" not in sp and sp["lf_to_px_ms"] == 2.0, sp
+    # the rc: the two hooks exist, the times ride in __pa_px, and the stamp line the cases type is the old one, byte for byte
+    z = profile.ZSHRC
+    assert "zshaddhistory_functions+=(__pa_ahw)" in z and "precmd_functions+=(__pa_p0def)" in z, "rc hooks"
+    assert '__pa_px="$EPOCHREALTIME ${__pa_ah:-0} ${__pa_p0:-0}"' in z and "__pa_ah=; __pa_p0=; __pa_ran=1" in z, "rc px"
+    assert "[[ -n $__pa_p0 ]] || __pa_p0=$EPOCHREALTIME" in z, "the copy the bootstrap moves behind warp_preexec must not overwrite the first time"
+    mac = types.SimpleNamespace(pane="zsh", be=types.SimpleNamespace(name="mac"), _pane_shell="/bin/zsh")
+    orig = cases.pane_shell
+    try:
+        cases.pane_shell = lambda ctx: "/bin/zsh"
+        assert cases.stamp_line(mac) == "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px:-0} ${__pa_lf:-0} > lat_%d", cases.stamp_line(mac)
+    finally:
+        cases.pane_shell = orig
+    # the AppKit stages of one bound Return (r10a shape): send 1000.0, key equivalent 1000.1, keyDownImpl 1000.25, interpretKeyEvents done 1000.65, enter_begin 1000.75
+    L = ["input_order hop=mac_enter stage=app_send_event keycode=36 ts=1.0 age_ms=0.900 event_window=1 key_window=1 key_window_class=WarpWindow t=1000.0",
+         "input_order hop=mac_enter stage=perform_key_equivalent keycode=36 ts=1.0 key_window=1 t=1000.1",
+         "input_order hop=mac_enter stage=key_down_impl_entry keycode=36 ts=1.0 key_window=1 t=1000.25",
+         "input_order hop=mac_enter stage=after_interpret_key_events keycode=36 ts=1.0 has_marked_text=0 t=1000.65",
+         "input_order hop=core_enter stage=dispatch_keystroke t=1000.7",
+         "input_order hop=enter_begin deferred=false buffer=\"x\" input_type=Shell t=1000.75",
+         "input_order hop=mac_enter stage=after_handle_view_event keycode=36 ts=1.0 handled=1 composing=0 t=1002.0"]
+    s = cases.enter_segments(L, 0)
+    assert s["event_to_enter_ms"] == 0.75 and s["appkit_route_ms"] == 0.1 and s["key_equivalent_ms"] == 0.15, s
+    assert s["interpret_keys_ms"] == 0.4 and s["dispatch_to_enter_ms"] == 0.1 and s["appkit_route_n"] == 1, s
+    assert round(s["appkit_route_ms"] + s["key_equivalent_ms"] + s["interpret_keys_ms"] + s["dispatch_to_enter_ms"], 6) == s["event_to_enter_ms"], s
+    # an unbound Return detours through super and keyDown: before keyDownImpl: the first line of each stage still counts
+    U = L[:2] + ["input_order hop=mac_enter stage=perform_key_equivalent_super_result keycode=36 ts=1.0 handled=0 t=1000.15",
+                 "input_order hop=mac_enter stage=key_down keycode=36 ts=1.0 t=1000.2"] + L[2:]
+    assert cases.enter_segments(U, 0)["key_equivalent_ms"] == 0.15
+    # a stage missing (another platform, an older build): event_to_enter only, never a partial split
+    s = cases.enter_segments([l for l in L if "key_down_impl_entry" not in l], 0)
+    assert s["event_to_enter_ms"] == 0.75 and not any(k in s for k in ("appkit_route_ms", "key_equivalent_ms", "interpret_keys_ms", "dispatch_to_enter_ms")), s
+    # the stages of one Enter never leak into the next one
+    two = L + [L[0].replace("t=1000.0", "t=2000.0"), L[5].replace("t=1000.75", "t=2000.5")]
+    raw = cases.enter_segment_samples(two, 0)
+    assert raw["event_to_enter_ms"] == [0.75, 0.5] and [round(v, 6) for v in raw["interpret_keys_ms"]] == [0.4], raw
+    assert cases.enter_stage_split(1000.0, [("perform_key_equivalent", 999.0)], 1001.0) == {}
+
+
+@check
 def ctrl_c_flood_ab_pure_parts_1838():
     """#1838 A/B: log parsing (skip runs, waits, key->ctrl_c_keydown, flood throughput), merge, summary, verdict and the block order"""
     import cases_ctrlc_ab as ab
@@ -5906,6 +5959,16 @@ def lat_evidence_filter_keeps_only_hop_lines():
     txt, hits, kept = le.evidence("\n".join(big), 20000)
     assert hits == 1000 and kept < 1000 and len(txt) <= 20200 and big[0] in txt and big[-1] in txt and "lat_evidence: %d of 1000" % (1000 - kept) in txt
     assert le.CASE_CAP == 2 * 1024 * 1024 and le.PLATFORM_CAP >= le.CASE_CAP
+    # #2035: the platform budget is shared, not spent in name order. r10a macOS shape: a flood log far over the budget sorts first, then
+    # two ordinary latency logs and an empty one. The small ones are kept whole and the flood gets the rest.
+    assert le.matched_bytes("\n".join(noise[:1] + L + noise[1:])) == sum(len(l) + 1 for l in L) and le.matched_bytes("\n".join(noise)) == 0
+    caps = le.fair_caps([900000000, 5200000, 300000, 0], total=2 * 1024 * 1024, case_cap=2 * 1024 * 1024)
+    assert caps[3] == 0 and caps[2] == 300000 and caps[1] == caps[0] == (2 * 1024 * 1024 - 300000) // 2, caps
+    assert sum(caps) <= 2 * 1024 * 1024
+    assert le.fair_caps([100, 200, 300], total=10000) == [100, 200, 300]                     # everything fits: nothing is cut
+    assert le.fair_caps([5000, 5000, 5000], total=9000) == [3000, 3000, 3000]                 # nothing fits: an even split
+    assert le.fair_caps([5000], total=9000, case_cap=4000) == [4000] and le.fair_caps([]) == []
+    assert le.fair_caps([10, 9000, 9000], total=9000) == [10, 4495, 4495]
 
 
 @check

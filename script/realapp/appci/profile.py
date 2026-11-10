@@ -110,11 +110,24 @@ precmd_functions+=(__pa_rec)
 # (warp_set_title_active_on_preexec) is appended later and runs AFTER __pa_pxh. The latency_enter stamp line prints both times next to
 # its stamp, so Enter -> command start splits into ZLE ingest/accept, warp_preexec, and the title hook + the command, the same way in
 # Phosphor and in the reference terminal. Variables only, no I/O.
-__pa_px=; __pa_lf=
-__pa_pxh() { __pa_px=$EPOCHREALTIME; __pa_ran=1 }
+# #2031: two more times inside zle-line-finish -> __pa_pxh, where r10a's Mac run had 2.34 ms in Phosphor against 0.22 ms in Terminal.app:
+#   __pa_ah  the first zshaddhistory function (this rc's; Phosphor's _warp_zshaddhistory is appended after the rc). zle-line-finish -> here is
+#            the line editor's teardown: the last redisplay and tcsetattr(TCSADRAIN), which on macOS waits for the terminal to read the output.
+#   __pa_p0  a plain preexec() function, which zsh runs before preexec_functions and so before warp_preexec. __pa_ah -> here is the history
+#            step (share_history, which Phosphor's bootstrap sets: lock, read, append, unlock) plus _warp_zshaddhistory; here -> __pa_px is
+#            warp_preexec. The bootstrap moves a preexec() it finds into the array behind warp_preexec (#974), so the function is (re)defined
+#            from precmd whenever it is absent; the copy the bootstrap may have moved runs later and leaves the first time alone.
+# They ride in $__pa_px ("px ah p0"), so the stamp line the cases type is unchanged, byte for byte: a longer line would add to what Phosphor
+# writes and the line editor ingests at Enter, inside the measured interval. The stamp file then reads `stamp px ah p0 lf`.
+__pa_px=; __pa_lf=; __pa_ah=; __pa_p0=
+__pa_pxh() { __pa_px="$EPOCHREALTIME ${__pa_ah:-0} ${__pa_p0:-0}"; __pa_ah=; __pa_p0=; __pa_ran=1 }
 preexec_functions+=(__pa_pxh)
 __pa_lfw() { __pa_lf=$EPOCHREALTIME }
 zle -N zle-line-finish __pa_lfw 2>/dev/null
+__pa_ahw() { __pa_ah=$EPOCHREALTIME }
+zshaddhistory_functions+=(__pa_ahw)
+__pa_p0def() { (( ${+functions[preexec]} )) || preexec() { [[ -n $__pa_p0 ]] || __pa_p0=$EPOCHREALTIME } }
+precmd_functions+=(__pa_p0def)
 # Only a shell that starts in $HOME or / is moved to the work dir: a restored tab keeps its saved cwd (r18u8 session_restore).
 if [[ $PWD == $HOME || $PWD == / ]]; then if [[ -n $APPCI_W ]]; then cd $APPCI_W; else cd $HOME/w; fi; fi
 '''
