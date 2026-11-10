@@ -1567,6 +1567,32 @@ def ssh_trial_facts_name_the_issue():
     # #1292: held, then the line never reached the remote
     v = cases.ssh_trial_facts(ok, line, [])
     assert v["text"].startswith("#1292: the line never reached"), v["text"]
+    # audit #4: a silent remote rec.log with the EFFECT seen is exact (the hook logs the C line after the effect file), never "logged nothing"
+    v = cases.ssh_trial_facts(ssh, line, [], effect_seen=True)
+    assert v["exact"] and v["rec_silent"] and "logged nothing" not in v["text"] and "never reached" not in v["text"], v["text"]
+    assert not cases.ssh_trial_facts(ssh, line, [], effect_seen=False)["exact"]
+    v = cases.ssh_trial_facts(ok, line, [line[:10] + line[11:]], effect_seen=True)        # the log holds a DIFFERENT line: not exact, the effect does not override it
+    assert not v["exact"]
+    # ssh_trial_note: waits for the remote log past r0 when the effect was seen; a verdict/effect disagreement is UNVERIFIABLE (noref), not a note
+    st = {"cmds": [(0.0, "echo w1 >> ~/.appci_where")], "verdict": dict(exact=False, text="#1345/#1394: ONE key lost")}
+    c = types.SimpleNamespace(prof=types.SimpleNamespace(commands=lambda remote=False: st["cmds"]),
+                              ssh_trial_verdict=lambda *a, **k: (st.__setitem__("kw", k), st["verdict"])[1])
+    c.until = lambda pred, timeout=10, step=0.01: cases.Ctx.until(c, pred, timeout, step)
+    import threading
+    threading.Timer(0.1, lambda: st["cmds"].append((1.0, line[:10] + line[11:]))).start()
+    r = cases.Result("t", "terminal")
+    vs = []
+    t = time.time()
+    assert cases.ssh_trial_note(c, r, vs, "trial 1", 0.0, line, 1, effect_seen=True) is st["verdict"]
+    assert time.time() - t >= 0.09 and len(st["cmds"]) == 2, "the verdict did not wait for the remote log to grow past r0"
+    assert st["kw"].get("effect_seen") is True and r.noref and "UNVERIFIABLE" in r.notes[-1] and not r.fails, (r.noref, r.notes)
+    r2 = cases.Result("t", "terminal")
+    cases.ssh_trial_note(c, r2, vs, "trial 2", 0.0, line, 1, effect_seen=False)
+    assert not r2.noref and r2.notes == ["trial 2: #1345/#1394: ONE key lost"], r2.notes
+    st["verdict"] = dict(exact=True, text="exact")
+    r3 = cases.Result("t", "terminal")
+    cases.ssh_trial_note(c, r3, vs, "trial 3", 0.0, line, 1, effect_seen=True)
+    assert not r3.noref and not r3.notes
     # the window reader: a line with no t= takes the t= of the line before it
     d = tempfile.mkdtemp()
     try:

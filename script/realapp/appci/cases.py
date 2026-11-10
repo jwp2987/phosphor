@@ -212,16 +212,19 @@ _SSH_FINISH_RE = re.compile(r"hop=kh_finish_begin\b.*?\bheld_bytes=(\d+)")
 _SSH_HANDED_BACK_RE = re.compile(r"hop=ssh_handed_back\b.*?chars=(\d+) dest=(\w+)")
 
 
-def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
+def ssh_trial_facts(lines, expected, remote_new, enters_before=1, effect_seen=None):
     """Pure: one ssh typeahead trial from its app-log window `lines` (raw, oldest first), the line typed during the connect (`expected`) and
     the commands the remote shell logged in the trial (`remote_new`). `enters_before`: Enters typed before that line (`ssh fake` = 1; a nested
-    `ssh fake` twice = 2). Names the hop where the line went wrong, by issue:
+    `ssh fake` twice = 2). `effect_seen`: whether the line's EFFECT (its token in the remote file) was observed; when the remote rec.log is
+    silent but the effect is there, the trial is exact (audit #4: the hook logs the C line at the NEXT prompt, after the effect file, so a verdict
+    read in between said "logged nothing" under a passing check). Names the hop where the line went wrong, by issue:
     #1614 the ssh Enter itself handed back (ssh never ran: the hold was not exercised); #1292 keys not held / line lost whole;
     #1332 the held Enter refused (HistoryNotAppendable); #1345/#1394 one key lost at the hand-over (index vs held count);
     #1400 a run of keys lost between the hold window and the hand-over; #1596 the held text kept, invisibly, until the ssh session ends."""
     import difflib
     f = dict(exact=False, typed="", app_saw_line=None, enter_handed_back=None, hold_seen=False, held_keys=0, held_bytes=0, deferred_busy=0,
-             handovers=[], finish=[], give_ups=0, refused=0, discards=0, table_drops=0, handed_back=[], remote=None, missing=[], extra=[])
+             handovers=[], finish=[], give_ups=0, refused=0, discards=0, table_drops=0, handed_back=[], remote=None, missing=[], extra=[],
+             effect_seen=effect_seen, rec_silent=False)
     enters, typed, core_pending, after_handover = 0, [], False, False
     for l in lines:
         # a physical Enter: the window's dispatch (`core_enter stage=handle_window_event`, every platform) and, when no binding took it, the
@@ -291,6 +294,8 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
     if expected in got:
         f["exact"] = True
         f["remote"] = expected
+    elif not got and effect_seen:
+        f["exact"], f["remote"], f["rec_silent"] = True, expected, True
     elif got:
         best = max(got, key=lambda c: difflib.SequenceMatcher(None, expected, c, autojunk=False).ratio())
         f["remote"] = best
@@ -309,7 +314,7 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
     else:
         saw = "the app's typed keys %r lack the line (injector/OS loss, or a key dropped before typed_characters)" % f["typed"][:60]
     if f["exact"]:
-        why = "exact"
+        why = "exact" + (" (by its effect in the remote file; the remote rec.log logged no line for it)" if f["rec_silent"] else "")
     elif f["enter_handed_back"]:
         if f.get("handed_back_enter_no", 0) <= enters_before and not f.get("handed_back_after_hold"):
             why = ("#1614: the `ssh` Enter was HANDED BACK to the editor (why=%s) before any ssh hold, so ssh never ran and the ssh typeahead "
@@ -1250,14 +1255,14 @@ class Ctx:
                     out.append(l)
         return out
 
-    def ssh_trial_verdict(self, t0, expected, remote_before, enters_before=1, t1=None):
+    def ssh_trial_verdict(self, t0, expected, remote_before, enters_before=1, t1=None, effect_seen=None):
         """#1292/#1332/#1345/#1394/#1400/#1596/#1614: what ONE ssh typeahead trial did, from the app's own log between t0 and t1 and the remote
         shell's rec.log lines logged after index `remote_before`. -> ssh_trial_facts() dict; its "text" is the one-line verdict."""
         try:
             remote_new = [c for _, c in self.prof.commands(remote=True)[remote_before:] if ".appci_where" not in c]
         except Exception:
             remote_new = []
-        return ssh_trial_facts(self.app_log_window(t0, t1), expected, remote_new, enters_before)
+        return ssh_trial_facts(self.app_log_window(t0, t1), expected, remote_new, enters_before, effect_seen)
 
     def ssh_client_probe(self):
         """r18d8: what the ssh CLIENT says for the same host alias, run now in the app's environment: exit status and the last stderr lines of `ssh -vv fake true`
@@ -2684,17 +2689,26 @@ def loss_report(lost, n, conf=0.95):
     return dict(lost=lost, n=n, rate=round(lost / n, 4) if n else None, upper_bound=round(ub, 4) if ub is not None else None, conf=conf, text=text)
 
 
-def ssh_trial_note(ctx, r, verdicts, label, t0, line, r0, enters_before=1):
+def ssh_trial_note(ctx, r, verdicts, label, t0, line, r0, enters_before=1, effect_seen=None):
     """one ssh typeahead trial's verdict from the app log (ssh_trial_facts): every trial that was not exact is noted with the hop that went
-    wrong; diagnostics never break the case"""
+    wrong; diagnostics never break the case. effect_seen: whether the line's token reached the remote file (the case's own check). Audit #4: the
+    remote rec.log C line is written by the hook at the next prompt, after the effect file, so the verdict first waits (bounded) for the remote log
+    to grow past `r0`; and a trial whose EFFECT succeeded but whose verdict is still not exact (the log holds a different line) is UNVERIFIABLE
+    (status noref), never a pass with a contradicting note."""
     try:
-        v = ctx.ssh_trial_verdict(t0, line, r0, enters_before)
+        if effect_seen:
+            # a where/pid probe's line is not the trial's line: wait for a command the verdict will actually read
+            ctx.until(lambda: any(".appci_" not in c for _, c in ctx.prof.commands(remote=True)[r0:]), 3)
+        v = ctx.ssh_trial_verdict(t0, line, r0, enters_before, effect_seen=effect_seen)
     except Exception as e:
         r.note("%s: trial verdict failed: %r" % (label, e))
         return None
     verdicts.append(v)
     if not v["exact"]:
-        r.note("%s: %s" % (label, v["text"]))
+        if effect_seen:
+            r.unverifiable("%s: the line's effect is in the remote file, yet the trial verdict disagrees: %s" % (label, v["text"]))
+        else:
+            r.note("%s: %s" % (label, v["text"]))
     return v
 
 
@@ -2733,9 +2747,10 @@ def c_ssh(ctx, r):
             ctx.be.type("ssh fake", 12, enter=True)
             time.sleep(gap)
             ctx.be.type(line, 15, enter=True)
-            if not ctx.until(lambda: tok in ctx.lines("rl.txt", remote=True), 20):
+            seen = bool(ctx.until(lambda: tok in ctx.lines("rl.txt", remote=True), 20))
+            if not seen:
                 miss += 1
-            ssh_trial_note(ctx, r, verdicts, "ssh_connect_typing gap %.1f s trial %d" % (gap, i + 1), t0, line, r0)
+            ssh_trial_note(ctx, r, verdicts, "ssh_connect_typing gap %.1f s trial %d" % (gap, i + 1), t0, line, r0, effect_seen=seen)
             if not ctx.leave_remote(r, "ssh_connect_typing (gap %.1f s)" % gap, "rl.txt", tok, base):
                 stop = True
                 break
@@ -2777,8 +2792,8 @@ def c_ssh_enter_immediate(ctx, r):
         t0, r0 = time.time(), len(ctx.prof.commands(remote=True))
         ctx.be.type("ssh fake", 12, enter=True)
         ctx.be.type(line, 12, enter=True)
-        ctx.until(lambda: tok in ctx.lines("rh.txt", remote=True), 20)
-        ssh_trial_note(ctx, r, verdicts, "ssh_enter_then_immediate_command trial %d" % (n + 1), t0, line, r0)
+        seen = bool(ctx.until(lambda: tok in ctx.lines("rh.txt", remote=True), 20))
+        ssh_trial_note(ctx, r, verdicts, "ssh_enter_then_immediate_command trial %d" % (n + 1), t0, line, r0, effect_seen=seen)
         if not ctx.leave_remote(r, "ssh_enter_then_immediate_command", "rh.txt", tok, base):
             break
     ssh_trial_summary(r, verdicts)
@@ -2842,7 +2857,8 @@ def c_ssh_nested(ctx, r):
         give_ups += 1
         r.note("ssh_nested_typeahead: trial %d: the app gave up on an Enter whose shell-or-chat verdict missed its compute cap (50 ms of classifier CPU since #1651; #1577, by design: nothing ran); "
                "leaving the remote shell on a proven `exit` and running the trial again" % (attempt + 1))
-        ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead (given-up trial %d)" % (attempt + 1), t0, line, r0, enters_before=2)
+        ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead (given-up trial %d)" % (attempt + 1), t0, line, r0, enters_before=2,
+                       effect_seen=tok in ctx.lines("rn.txt", remote=True))
         ctx.reset()
         pt = ctx.tok(6)
         for _ in range(2):
@@ -2859,8 +2875,7 @@ def c_ssh_nested(ctx, r):
         except FileNotFoundError:
             pass
     r.metric("verdict_give_up_retries", give_ups)
-    time.sleep(1.0)
-    ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead", t0, line, r0, enters_before=2)
+    ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead", t0, line, r0, enters_before=2, effect_seen=tok in ctx.lines("rn.txt", remote=True))
     ssh_trial_summary(r, verdicts)
     got = ctx.lines("rn.txt", remote=True)
     r.check(got == [tok], "the line typed behind a nested ssh ran exactly once remotely: %r" % got)

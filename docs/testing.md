@@ -3982,3 +3982,11 @@ false fails. Each fix below names its finding (1-12) / cross-cutting letter (A-F
   `audit2_raw_exit_is_banned_outside_ctx_and_the_root_pid_is_recorded_once_per_launch` (source lint: `.type("exit"` only inside `Ctx`,
   `cases_caseremote.leave` or a line marked `reference terminal`; `await_shell` called from two places only; `exit_nested` decision table;
   `record_root_pid` refuses with 2 shells).
+- **#4 (#1911) — the ssh trial verdict waits for the remote log and knows the effect.** The remote rc hook writes a command's `C` line at the
+  NEXT prompt, after the command's effect file exists, so a verdict read right after `until(tok in file)` said "#1292: ... the remote shell logged
+  nothing for the line" under a passing check. `ssh_trial_note(..., effect_seen=)` now takes the case's own effect observation: when the effect
+  was seen it first waits (3 s give-up net) for the remote `rec.log` to hold a non-probe command past the trial's start index; `ssh_trial_facts`
+  treats a SILENT remote log with the effect seen as exact (`rec_silent`, text "exact (by its effect ...)"); and a trial whose effect succeeded
+  while the log holds a DIFFERENT line is `r.unverifiable` (status `noref`), never a pass with a contradicting note. `ssh_connect_typing`,
+  `ssh_enter_then_immediate_command` and `ssh_nested_typeahead` pass their effect; the nested case's fixed 1 s sleep before the verdict is gone.
+  Pin: the audit #4 block of `ssh_trial_facts_name_the_issue`.
