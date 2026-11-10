@@ -1657,6 +1657,30 @@ def ssh_trial_plan_and_loss_report():
 
 
 @check
+def give_up_facts_read_both_shapes_and_the_keep_together_rule():
+    """#1996 (owner decisions 2026-11-09): giveup_keys_reach_shell's pure parts: a give-up's pty write, keys kept with an unrun line, the old marks,
+    and the keep-together rule on the lines that ran (a later line never ran without the line before it)"""
+    import cases_shells
+    log = "\n".join([
+        "x input_order hop=give_up_keys_to_pty why=unready_enter keys=9 bytes=20 written=20 to_editor=0 pty_gone=0 t=1.0",
+        "x input_order hop=give_up_keys_kept_with_line why=enter_gate keys=11 chars=12 line_chars=8 t=2.0",
+        "x input_order hop=give_up_keys_to_pty why=young_hold_cap keys=1 bytes=1 written=0 to_editor=1 pty_gone=1 t=3.0"])
+    ups, old = cases_shells.give_up_facts(log)
+    assert [u["why"] for u in ups] == ["unready_enter", "young_hold_cap"] and ups[0]["written"] == 20 and ups[1]["pty_gone"] and not old, (ups, old)
+    assert cases_shells.kept_with_line_facts(log) == [dict(why="enter_gate", keys=11, chars=12, line_chars=8)]
+    assert cases_shells.kept_with_line_facts("") == [] and cases_shells.kept_with_line_facts(None) == []
+    _, old = cases_shells.give_up_facts("x hop=young_hold_handed_back why=young_hold_cap\nx hop=prompt_hold_handed_back hold=2 kind=PromptSeen why=young_hold_cap")
+    assert "hop=young_hold_handed_back" in old and "hop=prompt_hold_handed_back kind=PromptSeen" in old, old
+    exp = ["a", "b", "c", "d"]
+    assert cases_shells.ran_out_of_order(exp, exp) is None and cases_shells.ran_out_of_order(exp, []) is None
+    assert cases_shells.ran_out_of_order(exp, ["a", "b"]) is None              # the rest stayed in the input with its unrun line: in order
+    assert cases_shells.ran_out_of_order(exp, ["a", "c"]) == (1, "b", "c")     # `c` ran without `b`: the shape the owner ruled out
+    assert cases_shells.ran_out_of_order(exp, ["b"]) == (0, "a", "b")
+    assert cases_shells.ran_out_of_order(exp, ["a", "a"]) == (1, "b", "a")     # a line run twice
+    assert cases_shells.ran_out_of_order(exp, exp + ["e"]) == (4, None, "e")   # a line nobody typed
+
+
+@check
 def ssh_trial_facts_name_the_issue():
     """#1292/#1332/#1345/#1394/#1400/#1596/#1614: one ssh typeahead trial's app-log window -> the hop that went wrong, by issue"""
     line = "echo T1_abc >> ~/rl.txt"
@@ -1675,6 +1699,18 @@ def ssh_trial_facts_name_the_issue():
     mac = ssh + ["x input_order hop=prompt_hold_handed_back hold=25 kind=PromptSeen why=young_hold_cap chunks=1 t=2.5"] + typed + [kd_enter(40.0)]
     v = cases.ssh_trial_facts(mac, line, [])
     assert not v["exact"] and v["text"].startswith("#1614: the `ssh` Enter") and "young_hold_cap" in v["text"] and v["app_saw_line"], v["text"]
+    assert "HANDED BACK" in v["text"] and v["enter_handed_back"] == "young_hold_cap" and v["enter_gave_up_to_pty"] is None, v["text"]
+    # #1996 (owner decision 2026-11-09): the same on a build that hands nothing back: the young cap WRITES the ssh Enter to the pty and logs the new hop
+    gave_up = "x input_order hop=young_hold_gave_up_to_pty hold_id=25 why=young_hold_cap evidence=Some(Window) entries=1 routed=1 command_interactive=false ssh_gate_armed=false ssh_holding=false t=2.5"
+    v = cases.ssh_trial_facts(ssh + [gave_up] + typed + [kd_enter(40.0)], line, [])
+    assert not v["exact"] and v["text"].startswith("#1614: the `ssh` Enter ran to its young hold's cap (why=young_hold_cap)"), v["text"]
+    assert "WRITTEN TO THE PTY" in v["text"] and "HANDED BACK" not in v["text"] and v["enter_handed_back"] is None, v["text"]
+    assert v["enter_gave_up_to_pty"] == "young_hold_cap" and v["gave_up_enter_no"] == 1 and not v["gave_up_after_hold"], v
+    # ... and for an Enter typed AFTER the ssh hold engaged (#1609): the new hop, read with the hold already seen
+    v = cases.ssh_trial_facts(ssh + typed[:10] + [held(3.0 + i) for i in range(10)] + [gave_up] + typed[10:], line, [line])
+    assert v["exact"] and v["enter_gave_up_to_pty"] == "young_hold_cap" and v["gave_up_after_hold"], v["text"]
+    v = cases.ssh_trial_facts(ssh + typed[:10] + [held(3.0 + i) for i in range(10)] + [gave_up] + typed[10:], line, [])
+    assert v["text"].startswith("#1609/#1614: an Enter typed after the ssh hold engaged ran to the local young hold's cap"), v["text"]
     # exact: 10 held, hand-over at precmd, the rest live
     ok = ssh + typed[:10] + [held(3.0 + i) for i in range(10)] + ["x input_order hop=kh_handover seq=9 source=precmd remote_prompt_seen=true held_bytes=10 t=20.0",
                                                                "x input_order hop=kh_finish_end seq=9 delivered=remote buffer_chars=10 t=20.1"] + typed[10:]
@@ -1692,6 +1728,18 @@ def ssh_trial_facts_name_the_issue():
     # #1596: handed back and kept until the ssh block ends
     v = cases.ssh_trial_facts(ok + ["x input_order hop=ssh_handed_back chars=23 dest=stashed_until_block_end remote_prompt_seen=false give_up=true"], line, [])
     assert v["text"].startswith("#1596"), v["text"]
+    # #1996: on a new build a connect give-up hands nothing back: it WRITES the held keys to the pty at the give-up (one give_up_keys_to_pty hop)
+    wrote = ["x input_order hop=kh_ssh_give_up why=no_probe_give_up held_bytes=10 t=21.0",
+             "x input_order hop=give_up_keys_to_pty why=ssh_connect_give_up keys=10 bytes=10 written=10 to_editor=0 pty_gone=0 t=21.1"]
+    v = cases.ssh_trial_facts(ok + wrote, line, [])
+    assert v["text"].startswith("#1996: the ssh connect GAVE UP") and "10 key(s), 10 of 10 byte(s) written, 0 put in the input" in v["text"], v["text"]
+    assert v["give_up_writes"] == [dict(why="ssh_connect_give_up", keys=10, bytes=10, written=10, to_editor=0)] and v["give_ups"] == 1, v
+    # a give-up write of another hold (an Enter gate's) in the window is recorded but is not the connect's: the verdict stays the line's
+    v = cases.ssh_trial_facts(ok + ["x input_order hop=give_up_keys_to_pty why=enter_gate keys=2 bytes=2 written=2 to_editor=0 pty_gone=0"], line, [])
+    assert v["text"].startswith("#1292: the line never reached") and len(v["give_up_writes"]) == 1, v["text"]
+    # the give-up write does not hide an exact line
+    v = cases.ssh_trial_facts(ok + wrote, line, [line])
+    assert v["exact"] and v["text"].startswith("exact"), v["text"]
     # #1292: held, then the line never reached the remote
     v = cases.ssh_trial_facts(ok, line, [])
     assert v["text"].startswith("#1292: the line never reached"), v["text"]

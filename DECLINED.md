@@ -2900,9 +2900,30 @@ paste behind it is being read), and an Enter is an entry, never an answer. The a
 **Current rule (owner decision 2026-11-09, evening).** When a hold or gate for the shell gives up, the
 keys it held are **written to the pty** (the shell, or whatever program reads the tty) in typed order:
 exactly the bytes a plain terminal would have sent all along. Nothing is dropped, and no toast is shown
-for those keys. Only the visible line typed BEFORE an Enter that did not run stays in the editor, as
-before, with its own notice ("... your line is back in the editor"). One log hop per give-up
-(`give_up_keys_to_pty`, counts only).
+for those keys. One log hop per give-up (`give_up_keys_to_pty`, counts only).
+
+**KEEP THEM TOGETHER (owner decision 2026-11-09, second ruling, on the consequence the first one left
+open).** A later line never runs without the line typed before it: `cd build`, Enter, `make clean`,
+Enter must never run `make clean` alone. So the keys typed after an Enter go **where the line before
+that Enter went**:
+
+- **The line ran** (a submitted Enter whose route never settled, a young Enter's hold, a paced
+  CLI-agent submit, an ssh connect): the keys are written to the pty in typed order, as above.
+- **The line did NOT run and stays in the editor, because where it goes is undecided** (its verdict
+  or routing never came, a Tab completion never landed, the shell's report never came, an edit voided
+  the Enter): the keys typed after it **stay WITH it in the editor**, visible, as text on the lines
+  after it, in typed order (the unrun Enter and every Enter among them a line break). Nothing goes to
+  the pty, nothing is dropped, no toast counts keys; the line's own notice says why it did not run,
+  and the hand-back guard holds the first Enter on the buffer ("check the line") so the lines never
+  run as one command unseen. One log hop per such give-up (`give_up_keys_kept_with_line`).
+- **The line did not run but is certainly a shell line** (an Enter held for an unready shell: the
+  destination is the shell, it just was not ready): at the 60 s net the line, its Enter **and
+  everything typed after it** are written to the pty in typed order, like a plain terminal. The
+  editor is left empty and no toast is shown. A bare Enter on an empty line held this way is written
+  too, before the keys after it.
+- **A gate nobody tracks any more** (an Enter gate the input forgot, a report gate the hand-off
+  forgot; defect paths): whether its Enter ran is unknown, so with a line in the editor the keys stay
+  with it, and with an empty editor (no unrun line to run them ahead of) they go to the pty.
 
 Why: plain-terminal parity. No terminal ever drops typed bytes, and on a busy machine or over a VPN the
 nets fire on healthy sessions, so the discard hit people who had done nothing wrong
@@ -2914,14 +2935,24 @@ plain terminal"). The owner saw it on macOS at an EMPTY remote prompt: a toast f
   Enter, a gate the input no longer tracks); the deferred Enter's `HandoffReport` gate (the report
   patience, the uncovered-report patience, the young verdict cap, the report-Tab cap, its 60 s leak
   net); a young Enter's hold cap; the paced CLI-agent submit's cap; the ssh connect give-ups (the
-  gate's ceilings, the first-Precmd wait cap).
+  gate's ceilings, the first-Precmd wait cap); and, by the owner's follow-up decisions of the same
+  day, a pty paste whose clipboard read never answers (the paste has no content and is discarded with
+  its own notice; the keys typed behind it go to the pty), the ssh bootstrap-failure timer (the held
+  keys go to the pty; Phosphor still writes no `stty sane` of its own, #1815) and a signal held in
+  the ssh setup window (written in its place at a give-up). Which of them keeps the keys with an
+  unrun line instead is the rule above: the verdict, Tab-completion and report give-ups, a voided
+  Enter, an untracked gate with a line in the editor.
 - **Where.** `app/src/terminal/view/give_up_to_pty.rs` (`write_given_up_entries_to_pty`,
-  `give_up_gate_keys_to_pty`), `InputQueue::close_gate_for_give_up`, `give_up_deferred_enter_keys`,
-  `give_up_young_hold_keys_to_pty`, `SshDropThen::GiveUpToPty`, `Event::GivenUpKeysToPty` (the input
-  hands its gate's keys to the view, which reaches the pty).
-- **A bare Enter is a key.** An Enter on an empty editor line deferred behind a report that never
-  comes has no line to keep: its `\r` goes to the pty in front of the keys typed after it (the
-  `<Enter>~.` of #1793).
+  `keep_given_up_keys_with_line`, `write_unready_line_and_keys_to_pty`, `give_up_gate_keys_to_pty`),
+  `KeysAfterEnter` (the three destinations, decided in `Input::discard_enter_gate_on_give_up`),
+  `InputQueue::close_gate_for_give_up`, `give_up_deferred_enter_keys`,
+  `give_up_young_hold_keys_to_pty`, `SshDropThen::GiveUpToPty`, `Event::GivenUpKeysToPty` /
+  `GivenUpKeysWithLine` / `GivenUpLineAndKeysToPty` (the input hands its gate's keys to the view,
+  which reaches the pty and the editor; the busy queue's deferred `VoidEnterGate` ends in the same
+  function, `place_given_up_enter_gate_keys`).
+- **A bare Enter is a key.** An Enter on an empty editor line has no line to keep and none to
+  overtake: deferred behind a report that never comes, or held for an unready shell, its `\r` goes
+  to the pty in front of the keys typed after it (the `<Enter>~.` of #1793).
 - **Both kinds of young-hold cap write.** The 10 s net (`YOUNG_HOLD_GIVE_UP`) and the short cap of the
   two holds that end at their cap by design (`young_hold_cap_is_normal_end`: the no-barrier hold, a
   window hold of a session without prompt sequence numbers) both write the held Enter and the keys
@@ -2946,18 +2977,22 @@ plain terminal"). The owner saw it on macOS at an EMPTY remote prompt: a toast f
 - **Not changed (not give-ups, or not drops).** ^C / ^D void typeahead as the tty does (#1571,
   #1584); the multi-line submit dialog's answer discards what was typed over it (#1652, above); the
   subshell / PowerShell setup nets hand their keys back to the editor (#1711, #1679); the ConPTY
-  prompt hold keeps its rules (#1584, #1923); a pty paste whose clipboard read never answers still
-  hands the keys typed behind it back to the editor; an ssh bootstrap failure still hands the held
-  text back.
-- **Accepted consequence, open for the owner.** Where the Enter's own line did not run and stays in the
-  editor, the keys typed after it reach the shell without it. If they hold a second complete command
-  (`cd build`, Enter, `make clean`, Enter), that command runs alone; a plain terminal would have run
-  both. The alternative (send the unrun line too) is not done: the decision keeps the line in the
-  editor. The line's glue guard still holds an Enter on text typed onto it afterwards.
+  prompt hold keeps its rules (#1584, #1923); an ssh bootstrap timer that finds the shell already
+  gone still discards the held keys with a log (#1494: nothing can read them). Left as they are by
+  the owner (2026-11-09): an editor key with no byte form among given-up keys (a cursor motion, a
+  selection) acts on the editor in its place; on ConPTY a give-up's write waits for the line editor
+  only when no prompt hold is already queued.
+- **The consequence the first ruling left open is closed.** Under the first ruling (a few hours on
+  2026-11-09) the unrun line stayed in the editor and the keys typed after it were written to the
+  pty, so a second complete command ran without the first. The owner ruled "keep them together":
+  the two bullets under KEEP THEM TOGETHER above replace it. Do not go back to writing those keys
+  to the pty while their line stays in the editor.
 - Not reopened by: restoring a discard of held keys at a give-up, a toast that counts dropped keys,
-  `text_of_entries_typed_after` or any other held-entry-to-editor-text conversion for an Enter gate's
-  give-up, or a hand-back of a young Enter's keys to the editor at its cap.
-<!-- markers: sym:text_of_entries_typed_after sym:typed_after_enter_discarded_toast sym:discard_gate_keys_after_enter sym:split_line_before_first_enter keep:close_gate_for_give_up keep:write_given_up_entries_to_pty keep:give_up_gate_keys_to_pty keep:give_up_deferred_enter_keys keep:give_up_young_hold_keys_to_pty keep:on_given_up_user_bytes keep:give_up_deferred_gate keep:report_enter_gate_discard keep:YOUNG_HOLD_GIVE_UP keep:young_hold_cap_is_normal_end keep:close_gate_discarding -->
+  writing keys to the pty while the unrun line typed before them stays in the editor, keeping an
+  unready shell's line in the editor while what followed it is sent, or a hand-back of a young
+  Enter's keys to the editor at its cap. (`text_of_entries_typed_after`, #1661's helper, stays
+  deleted; the keys kept with a line are turned into text by `keep_given_up_keys_with_line`.)
+<!-- markers: sym:text_of_entries_typed_after sym:typed_after_enter_discarded_toast sym:discard_gate_keys_after_enter sym:split_line_before_first_enter keep:close_gate_for_give_up keep:write_given_up_entries_to_pty keep:keep_given_up_keys_with_line keep:write_unready_line_and_keys_to_pty keep:place_given_up_enter_gate_keys keep:take_given_up_unready_line keep:KeysAfterEnter keep:give_up_gate_keys_to_pty keep:give_up_deferred_enter_keys keep:give_up_young_hold_keys_to_pty keep:on_given_up_user_bytes keep:give_up_deferred_gate keep:report_enter_gate_discard keep:YOUNG_HOLD_GIVE_UP keep:young_hold_cap_is_normal_end keep:close_gate_discarding -->
 
 ### History: the decision this reverses (#1661, 2026-11-05; resolved #1766, #1767, #1768, #1769, #1770)
 

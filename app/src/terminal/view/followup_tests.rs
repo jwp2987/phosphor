@@ -36,15 +36,19 @@ fn pending_command_shown_after_give_up_is_read_only() {
     }
 }
 
-/// F10 (#1598), owner decision 2026-11-09 (REVERSING #1661, under which this test expected the
-/// keys typed after the Enter discarded): a deferred Enter's give-up leaves its line in the
-/// editor, unrun, and WRITES the keys typed after it to the pty in typed order (never put into
-/// the editor). The line alone arms no Enter guard when nothing was typed after it (the toast's
-/// "press Enter again" is the Enter that sends it); a line with several lines would submit as ONE
-/// command, so its first Enter is held; keys typed behind a one-line buffer arm the glue guard
-/// (text typed onto it next must not run glued to it). Both modes.
+/// F10 (#1598): a deferred Enter's give-up leaves its line in the editor, unrun, and keeps the
+/// keys typed after it WITH the line, on the line after it, in typed order; nothing is written to
+/// the pty. The line alone arms no Enter guard when nothing was typed after it (the toast's
+/// "press Enter again" is the Enter that sends it); a buffer with several lines would submit as
+/// ONE command, so its first Enter is held: that is a line that already had several, and a line
+/// with keys kept after it. Both modes.
+///
+/// Expectation history (re-decided by the owner, never weakened): #1661 expected the keys typed
+/// after the Enter discarded; the first ruling of 2026-11-09 (#1996) expected them at the pty and
+/// the one-line buffer under the glue guard; the second ruling of that day, "keep them together"
+/// (a later line never runs without the line before it), keeps them with the unrun line.
 #[test]
-fn deferred_enter_give_up_guards_only_multi_line_buffers_and_sends_later_keys_to_the_pty() {
+fn deferred_enter_give_up_guards_only_multi_line_buffers_and_keeps_later_keys_with_the_line() {
     use crate::terminal::input::{EnterGuardKind, HANDED_BACK_GUARD_TOAST};
     use crate::terminal::input_queue::{EntryId, EntryKind, InputEntry, Origin, Stamp};
     fn typed(id: u64, text: &str) -> InputEntry {
@@ -58,14 +62,20 @@ fn deferred_enter_give_up_guards_only_multi_line_buffers_and_sends_later_keys_to
         }
     }
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for (line, typed_after, guard) in [
-            ("echo a", false, None),
+        for (line, typed_after, kept, guard) in [
+            ("echo a", false, "echo a", None),
             (
                 "echo a\necho b",
                 false,
+                "echo a\necho b",
                 Some(EnterGuardKind::HandedBackText),
             ),
-            ("echo a", true, Some(EnterGuardKind::Glue)),
+            (
+                "echo a",
+                true,
+                "echo a\nls",
+                Some(EnterGuardKind::HandedBackText),
+            ),
         ] {
             App::test((), move |mut app| async move {
                 let _mode =
@@ -86,16 +96,17 @@ fn deferred_enter_give_up_guards_only_multi_line_buffers_and_sends_later_keys_to
                 });
                 assert_eq!(
                     String::from_utf8_lossy(&pty.borrow().concat()),
-                    if typed_after { "ls" } else { "" },
-                    "{mode:?} {line:?}: the keys typed after the Enter reach the pty in typed \
-                     order; with none typed, nothing is written"
+                    "",
+                    "{mode:?} {line:?} typed_after={typed_after}: the Enter did not run, so \
+                     nothing typed after it is written to the pty"
                 );
                 terminal.read(&app, |view, ctx| {
                     view.input.read(ctx, |input, ctx| {
                         assert_eq!(
                             input.buffer_text(ctx),
-                            line,
-                            "{mode:?}: the line stays and nothing typed after it came back"
+                            kept,
+                            "{mode:?}: the line stays, and what was typed after its Enter stays \
+                             with it on the line after it"
                         );
                         assert_eq!(
                             input.enter_guard_for_test().map(|(kind, _)| kind),

@@ -216,6 +216,11 @@ def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share
 
 
 _SSH_HB_RE = re.compile(r"hop=(?:young_hold_handed_back|prompt_hold_handed_back)\b.*?\bwhy=(\w+)")
+# #1996 (owner decision 2026-11-09, reversing #1661): a build from then on hands nothing back at a give-up. A young Enter that runs to its cap is WRITTEN
+# TO THE PTY with the keys after it (`young_hold_gave_up_to_pty`, where older builds logged the two hand-back hops above), and every give-up's write is
+# one `give_up_keys_to_pty` hop (why=ssh_connect_give_up: the connect's own give-up wrote the held keys to the ssh process). Both generations are read.
+_SSH_YOUNG_GAVE_UP_RE = re.compile(r"hop=young_hold_gave_up_to_pty\b.*?\bwhy=(\w+)")
+_SSH_GIVE_UP_WRITE_RE = re.compile(r"hop=give_up_keys_to_pty\b.*?\bwhy=(\w+) keys=(\d+) bytes=(\d+) written=(\d+) to_editor=(\d+)")
 _SSH_HOLD_RE = re.compile(r"hop=kh_iq_hold\b.*queue=Q7_ssh_typeahead bytes=(\d+)")
 _SSH_HANDOVER_RE = re.compile(r"hop=kh_handover\b.*?source=(\w+).*?held_bytes=(\d+)")
 _SSH_FINISH_RE = re.compile(r"hop=kh_finish_begin\b.*?\bheld_bytes=(\d+)")
@@ -230,11 +235,14 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1, effect_seen=No
     read in between said "logged nothing" under a passing check). Names the hop where the line went wrong, by issue:
     #1614 the ssh Enter itself handed back (ssh never ran: the hold was not exercised); #1292 keys not held / line lost whole;
     #1332 the held Enter refused (HistoryNotAppendable); #1345/#1394 one key lost at the hand-over (index vs held count);
-    #1400 a run of keys lost between the hold window and the hand-over; #1596 the held text kept, invisibly, until the ssh session ends."""
+    #1400 a run of keys lost between the hold window and the hand-over; #1596 the held text kept, invisibly, until the ssh session ends.
+    Builds from #1996 on (owner decision 2026-11-09) hand nothing back at a give-up: the same #1614 / #1609 cases show as `enter_gave_up_to_pty` (the
+    young Enter was written to the pty at its cap, hop young_hold_gave_up_to_pty) and a connect give-up as `give_up_writes` (hop give_up_keys_to_pty
+    why=ssh_connect_give_up: the held keys went to the pty at the give-up, not at the remote prompt). The older hand-back hops are still read."""
     import difflib
-    f = dict(exact=False, typed="", app_saw_line=None, enter_handed_back=None, hold_seen=False, held_keys=0, held_bytes=0, deferred_busy=0,
-             handovers=[], finish=[], give_ups=0, refused=0, discards=0, table_drops=0, handed_back=[], remote=None, missing=[], extra=[],
-             effect_seen=effect_seen, rec_silent=False)
+    f = dict(exact=False, typed="", app_saw_line=None, enter_handed_back=None, enter_gave_up_to_pty=None, hold_seen=False, held_keys=0, held_bytes=0,
+             deferred_busy=0, handovers=[], finish=[], give_ups=0, give_up_writes=[], refused=0, discards=0, table_drops=0, handed_back=[], remote=None,
+             missing=[], extra=[], effect_seen=effect_seen, rec_silent=False)
     enters, typed, core_pending, after_handover = 0, [], False, False
     for l in lines:
         # a physical Enter: the window's dispatch (`core_enter stage=handle_window_event`, every platform) and, when no binding took it, the
@@ -259,6 +267,14 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1, effect_seen=No
             f["enter_handed_back"] = m.group(1)
             f["handed_back_enter_no"] = enters
             f["handed_back_after_hold"] = f["hold_seen"]
+        m = _SSH_YOUNG_GAVE_UP_RE.search(l)
+        if m and f["enter_gave_up_to_pty"] is None:
+            f["enter_gave_up_to_pty"] = m.group(1)
+            f["gave_up_enter_no"] = enters
+            f["gave_up_after_hold"] = f["hold_seen"]
+        m = _SSH_GIVE_UP_WRITE_RE.search(l)
+        if m:
+            f["give_up_writes"].append(dict(why=m.group(1), keys=int(m.group(2)), bytes=int(m.group(3)), written=int(m.group(4)), to_editor=int(m.group(5))))
         if ("kh_holding_set" in l and "holding=true" in l) or "gate_open kind=ssh_connect" in l:
             f["hold_seen"] = True
         m = _SSH_HOLD_RE.search(l)
@@ -332,6 +348,14 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1, effect_seen=No
         else:
             why = ("#1609/#1614: an Enter typed after the ssh hold engaged was HANDED BACK to the editor by the local young hold (why=%s): the "
                    "text reached the remote, its Enter did not" % f["enter_handed_back"])
+    elif f["enter_gave_up_to_pty"]:
+        if f.get("gave_up_enter_no", 0) <= enters_before and not f.get("gave_up_after_hold"):
+            why = ("#1614: the `ssh` Enter ran to its young hold's cap (why=%s) and was WRITTEN TO THE PTY there, late (hop young_hold_gave_up_to_pty; "
+                   "#1996: no hand-back any more), before any ssh hold: the keys typed meanwhile were not held for the connect, so the ssh typeahead "
+                   "hold was NOT exercised as typed" % f["enter_gave_up_to_pty"])
+        else:
+            why = ("#1609/#1614: an Enter typed after the ssh hold engaged ran to the local young hold's cap (why=%s) and was written to the pty "
+                   "there (hop young_hold_gave_up_to_pty, #1996), not delivered with the held line" % f["enter_gave_up_to_pty"])
     elif f["refused"]:
         why = "#1332: the delivered Enter was REFUSED (can_execute_command false / HistoryNotAppendable)"
     elif any(d == "stashed_until_block_end" for _, d in f["handed_back"]):
@@ -340,6 +364,11 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1, effect_seen=No
                % ("kept-text banner: %s" % ",".join(kb) if kb else "NO kept-text banner shown"))
     elif f["handed_back"]:
         why = "held text handed back to the editor as text (%s), not run remotely" % f["handed_back"]
+    elif any(w["why"] == "ssh_connect_give_up" for w in f["give_up_writes"]):
+        w = [w for w in f["give_up_writes"] if w["why"] == "ssh_connect_give_up"]
+        why = ("#1996: the ssh connect GAVE UP on its events (give_ups=%d) and wrote the held keys to the pty at the give-up, not at the remote "
+               "prompt (hop give_up_keys_to_pty: %s)" % (f["give_ups"], ", ".join(
+                   "%d key(s), %d of %d byte(s) written, %d put in the input" % (x["keys"], x["written"], x["bytes"], x["to_editor"]) for x in w)))
     elif f["remote"] is None and not f["hold_seen"]:
         why = "#1292: no ssh hold was seen and the remote shell logged nothing for the line"
     elif f["remote"] is None:

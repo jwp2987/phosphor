@@ -128,14 +128,39 @@ def give_up_facts(log):
     return ups, old
 
 
+# Owner decision 2026-11-09, second ruling ("keep them together"): the give-up of an Enter that did NOT run keeps the keys typed after it WITH its line in
+# the input (one hop per such give-up); nothing of them is written to the pty.
+_KEPT_WITH_LINE_HOP_RE = re.compile(r"hop=give_up_keys_kept_with_line\b.*?\bwhy=(\w+) keys=(\d+) chars=(\d+) line_chars=(\d+)")
+
+
+def kept_with_line_facts(log):
+    """Pure: the give-ups that kept keys with an unrun line in the input (`give_up_keys_kept_with_line`): why, keys, chars (of text they became) and
+    line_chars (the unrun line's length; 0 = an empty input, nothing to run ahead of)."""
+    return [dict(why=m.group(1), keys=int(m.group(2)), chars=int(m.group(3)), line_chars=int(m.group(4))) for m in _KEPT_WITH_LINE_HOP_RE.finditer(log or "")]
+
+
+def ran_out_of_order(exp, got):
+    """Pure: the keep-together rule on the lines that RAN (`got`) against the lines typed (`exp`, in typed order): a line may only have run if every
+    line typed before it ran before it, i.e. `got` is a prefix of `exp`. -> None when it holds, else (index, expected, got) of the first line that ran
+    out of its place (a later line that ran without the line before it, a line run twice, a line nobody typed)."""
+    for i, g in enumerate(got):
+        if i >= len(exp) or exp[i] != g:
+            return (i, exp[i] if i < len(exp) else None, g)
+    return None
+
+
 @case("giveup_keys_reach_shell", order=74)
 def c_giveup_keys_reach_shell(ctx, r):
-    """Owner decision 2026-11-09 (reversing #1661; docs/design/user-annoyance-review.md item 1): keys typed after an Enter are never dropped and never
-    bounced into the input by a timer; whenever a hold for the shell gives up they go to the pty in typed order, as a plain terminal would have sent them.
+    """Owner decisions 2026-11-09 (#1661 reversed, docs/design/user-annoyance-review.md item 1; then "keep them together"): keys typed after an Enter are
+    never dropped, and a later line never runs without the line typed before it. A hold whose line RAN (or is certainly a shell line) gives up by writing
+    its keys to the pty in typed order, as a plain terminal would have sent them; a hold whose line did NOT run keeps the keys typed after it with that
+    line in the input, visible, in typed order (`cd build`, Enter, `make clean`, Enter never runs `make clean` alone).
     Ten rounds of: a line, its Enter, a BARE Enter at the empty prompt, the next line and its Enter with no pause, another bare Enter (10-25 ms/key).
-    (1) every line's effect is in the file exactly once and in typed order; (2) the app log has no discard and no young-Enter hand-back (the old
-    behaviours); (3) every give-up that did happen wrote its bytes to the pty (none became input text while the shell was alive). The number of
-    give-ups is a metric: zero means the timers were not exercised in this run (the lines still have to arrive exactly)."""
+    (1) every line's effect is in the file exactly once and in typed order; (1b) KEEP-TOGETHER, judged on its own so a miss is named: no line ran without
+    every line typed before it (the lines that ran are a prefix of the lines typed); (2) the app log has no discard and no young-Enter hand-back (the old
+    behaviours); (3) every give-up that wrote to the pty wrote all its bytes (none became input text while the shell was alive); (4) a give-up that kept
+    keys with an unrun line is reported with its counts: those lines are in the input by design, not run, so (1) fails for them and says why.
+    The number of give-ups is a metric: zero means the timers were not exercised in this run (the lines still have to arrive exactly)."""
     f = "gup_%s.txt" % ctx.tok(4)
     ctx.rm(f)
     off = ctx.log_size()
@@ -151,9 +176,17 @@ def c_giveup_keys_reach_shell(ctx, r):
         ctx.until(lambda: len(ctx.lines(f)) >= len(exp), 15)
     time.sleep(0.5)
     got = [l.strip().lower() for l in ctx.lines(f)]
-    r.check(got == exp, "%d/%d lines exact and in typed order (got %d lines); first difference: %r" % (
-        sum(1 for x, y in zip(exp, got) if x == y), len(exp), len(got), next(((x, y) for x, y in zip(exp, got) if x != y), None)))
-    ups, old = give_up_facts(ctx.log_since(off))
+    log = ctx.log_since(off)
+    kept = kept_with_line_facts(log)
+    r.metric("give_ups_kept_with_line", len(kept))
+    r.check(got == exp, "%d/%d lines exact and in typed order (got %d lines); first difference: %r%s" % (
+        sum(1 for x, y in zip(exp, got) if x == y), len(exp), len(got), next(((x, y) for x, y in zip(exp, got) if x != y), None),
+        "; %d give-up(s) kept keys with an unrun line in the input (%s): those lines were not run, by the keep-together rule" % (
+            len(kept), ", ".join("%s keys=%d line_chars=%d" % (k["why"], k["keys"], k["line_chars"]) for k in kept)) if kept else ""))
+    bad = ran_out_of_order(exp, got)
+    r.check(bad is None, "KEEP-TOGETHER broken: line %s of the file is %r where %r was typed: a line ran without every line typed before it (or twice)" % (
+        (bad[0] + 1, bad[2], bad[1]) if bad else (0, None, None)))
+    ups, old = give_up_facts(log)
     r.metric("give_ups", len(ups))
     r.check(not old, "a hold gave up the old way (keys discarded, or an Enter handed back to the input with the 'waiting too long' toast): %r" % old)
     bounced = [u for u in ups if u["to_editor"] and not u["pty_gone"]]

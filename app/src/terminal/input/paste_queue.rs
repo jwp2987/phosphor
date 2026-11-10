@@ -192,7 +192,7 @@ impl Host for InputQueueHost<'_, '_> {
     fn arm_give_up(&mut self, token: GateToken, _kind: GateKind, after: Duration) {
         // The ONE timer of a paste gate: a safety net for a reader that never answers. The reader's
         // result closes the gate first in every normal case and this then finds nothing to do.
-        // give-up-net: queue gate cap: a give-up that writes the keys typed after an Enter to the pty in typed order (owner decision 2026-11-09), or hands a setup / paste gate's keys back to the editor
+        // give-up-net: queue gate cap: a give-up that writes the keys typed after an Enter to the pty in typed order (owner decision 2026-11-09), keeps them with an unrun line in the editor, or hands a setup gate.s keys back to the editor
         self.ctx.spawn(Timer::after(after), move |me, _, ctx| {
             me.on_paste_queue_give_up(token, ctx)
         });
@@ -331,9 +331,12 @@ impl Input {
                 return;
             }
         }
-        // An Enter gate this input no longer tracks: the same give-up (the keys typed behind that
-        // Enter go to the pty in typed order), never the queue's own give-up (which would route
-        // each of them by the facts of this moment, some into the editor).
+        // An Enter gate this input no longer tracks: the same give-up, never the queue's own
+        // give-up (which would route each key by the facts of this moment, one by one). Whether
+        // that Enter ran is not known any more, so (owner decision 2026-11-09, "keep them
+        // together") with a line in the editor the keys typed behind the Enter stay with it, and
+        // with an empty editor (no unrun line to run them ahead of) they go to the pty in typed
+        // order.
         let orphan_enter_gate = queue.try_peek().and_then(|queue| {
             queue
                 .gates()
@@ -350,10 +353,15 @@ impl Input {
                 queue.defer(crate::terminal::input_queue::Deferred::GiveUpCap(token));
                 return;
             };
+            let keys = if self.editor.as_ref(ctx).buffer_text(ctx).is_empty() {
+                super::KeysAfterEnter::ToPty
+            } else {
+                super::KeysAfterEnter::WithLine
+            };
             let report = super::EnterDiscard::GiveUp {
                 reason: super::ENTER_GATE_GIVE_UP_TOAST,
                 always: false,
-                glue_if_keys_followed: false,
+                keys,
             };
             let taken = {
                 let mut host = InputQueueHost::new(self, ctx);
@@ -362,12 +370,11 @@ impl Input {
             drop(guard);
             log::warn!(
                 "input queue: the leak net of an Enter gate the input no longer tracks fired \
-                 ({kind:?} {key}); {} entr(ies) behind it go to the pty in typed order",
+                 ({kind:?} {key}); {} entr(ies) behind it: {keys:?}, in typed order",
                 taken.len()
             );
-            if self.report_enter_gate_discard(&taken, report, ctx) > 0 {
-                ctx.emit(super::Event::GivenUpKeysToPty(taken));
-            }
+            self.report_enter_gate_discard(&taken, report, ctx);
+            self.emit_given_up_keys(taken, keys, ctx);
             self.flush_deferred_programmatic_edits(ctx);
             return;
         }

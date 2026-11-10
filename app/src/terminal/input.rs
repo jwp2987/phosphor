@@ -6,8 +6,8 @@ mod common;
 mod enter_queue;
 mod native_completions;
 pub(crate) use enter_queue::{
-    ENTER_GATE_GIVE_UP_TOAST, EnterDiscard, VERDICT_GIVE_UP_TOAST, count_discarded_keys,
-    take_voided_enter_gate,
+    ENTER_GATE_GIVE_UP_TOAST, EnterDiscard, KeysAfterEnter, VERDICT_GIVE_UP_TOAST,
+    count_discarded_keys, take_voided_enter_gate,
 };
 pub mod conversations;
 pub mod decorations;
@@ -1279,12 +1279,24 @@ pub enum Event {
     /// (^C on an unready Enter, the multi-line dialog's answer); their content and routing
     /// records in the view's paste maps go with them.
     DiscardedPtyPastes(Vec<u64>),
-    /// Owner decision 2026-11-09 (reversing #1661): an Enter gate of this input gave up (a
-    /// verdict / completion cap, the unready-shell net, the route-settle net, the leak net, an
-    /// edit that voided the Enter). These are the entries that were typed after the Enter, in
-    /// typed order; the view writes them to the pty (`write_given_up_entries_to_pty`), as a
-    /// plain terminal would have sent them all along. Never discarded.
+    /// Owner decision 2026-11-09 (reversing #1661): an Enter gate of this input gave up after
+    /// its Enter RAN (the route-settle net, the leak net of a submitted Enter). These are the
+    /// entries that were typed after the Enter, in typed order; the view writes them to the pty
+    /// (`write_given_up_entries_to_pty`), as a plain terminal would have sent them all along.
+    /// Never discarded.
     GivenUpKeysToPty(Vec<crate::terminal::input_queue::InputEntry>),
+    /// Owner decision 2026-11-09 ("keep them together"): an Enter gate of this input gave up
+    /// and its Enter did NOT run (a verdict / completion cap, the leak net, an edit that voided
+    /// the Enter); the line stays in the editor. These are the entries typed after the Enter, in
+    /// typed order; the view keeps them WITH the line, as text on the lines after it
+    /// (`keep_given_up_keys_with_line`). Nothing goes to the pty, nothing is discarded.
+    GivenUpKeysWithLine(Vec<crate::terminal::input_queue::InputEntry>),
+    /// Owner decision 2026-11-09 ("keep them together"): the net of an Enter held for an unready
+    /// shell gave up. The line is certainly a shell line: the view takes it
+    /// (`Input::take_given_up_unready_line`) and writes the line, its Enter and these entries
+    /// (typed after it, possibly none) to the pty in typed order
+    /// (`write_unready_line_and_keys_to_pty`).
+    GivenUpLineAndKeysToPty(Vec<crate::terminal::input_queue::InputEntry>),
     /// #1638: `~` and one of ssh's escape characters were typed as the first two characters of an
     /// empty line in a managed ssh session. The editor has been cleared; the view writes these
     /// two bytes to the pty, where the local ssh client reads its escape, as plain ssh would.
@@ -2157,6 +2169,10 @@ pub struct Input {
     /// #1558: the pending command is an Enter the shell could not take yet (its first Precmd had
     /// not arrived), held so it runs when it can instead of being dropped with its text kept.
     held_unready_enter: bool,
+    /// The line of an Enter held for an unready shell whose net gave up, until the terminal view
+    /// writes it to the pty with its Enter and the keys typed after it
+    /// ([`Self::take_given_up_unready_line`]; owner decision 2026-11-09).
+    given_up_unready_line: Option<String>,
     /// The command [`Self::set_pending_command`] was asked to run (#1435): what runs is this, never
     /// whatever the user's keys made of the buffer it was shown in.
     pending_command_text: Option<String>,
@@ -4207,6 +4223,7 @@ impl Input {
             has_pending_command: false,
             pending_command_shown_read_only: false,
             held_unready_enter: false,
+            given_up_unready_line: None,
             pending_command_text: None,
             deferred_programmatic_edits: Vec::new(),
             last_word_insertion,
@@ -14530,8 +14547,9 @@ impl Input {
                      an unready shell; not submitted (#1571)"
                 );
             } else {
-                // The gate is gone from the queue (nothing can release it): hand the held line
-                // back rather than leave it pending, and do not submit it here.
+                // The gate is gone from the queue (nothing can release it): the held line is
+                // given up rather than left pending (it goes to the pty with its Enter, owner
+                // decision 2026-11-09), and nothing is submitted here.
                 self.give_up_unready_enter("gate_gone", ctx);
             }
             return;
@@ -15704,8 +15722,9 @@ impl Input {
                     self.cancel_pending_completions_for_deferred_enter();
                     self.end_deferred_enter_activity();
                 }
-                // Typed behind the void Enter on the queue: written to the pty in typed order
-                // (owner decision 2026-11-09, reversing #1661; #1767: never glued onto the line).
+                // Typed behind the void Enter on the queue: kept with the line in the editor, on
+                // the lines after it, in typed order (owner decision 2026-11-09, "keep them
+                // together"; #1767: never glued onto the line).
                 self.void_enter_gate(ctx);
                 false
             }

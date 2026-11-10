@@ -102,9 +102,9 @@ pub(super) fn subshell_setup_handed_back_toast(held_chunks: usize) -> String {
 
 /// The toast for keys a timer handed back from a gate (#1577), by the give-up's `why`. `None`
 /// when the caller shows its own notice: the stall ceiling's abandon notice (#1119). Since the
-/// owner's decision of 2026-11-09 only the setup gates (subshell, PowerShell, the bootstrap
-/// write) and a pty paste's read cap hand keys back; a young Enter's cap, whose hand-back showed
-/// this toast on every Enter at a prompt without sequence numbers, writes its keys to the pty.
+/// owner's decisions of 2026-11-09 only the setup gates (subshell, PowerShell, the bootstrap
+/// write) hand keys back; a young Enter's cap, whose hand-back showed this toast on every Enter
+/// at a prompt without sequence numbers, and a pty paste's read cap write their keys to the pty.
 pub(super) fn gate_give_up_toast(why: &str) -> Option<&'static str> {
     match why {
         // The setup net shows its own counted toast (`subshell_setup_given_up_toast`).
@@ -318,7 +318,7 @@ pub(super) fn signal_bytes(kind: SignalKind) -> &'static [u8] {
 
 /// Net for the gate that holds the keys typed behind a deferred Enter: the patience timers and the
 /// Enter's own events end the hold long before this; logged when it fires.
-// give-up-net: leak net of a deferred Enter's gate: the deferral is given up and the held keys are written to the pty in typed order (owner decision 2026-11-09)
+// give-up-net: leak net of a deferred Enter's gate: the deferral is given up and the held keys stay with the unrun line in the editor (a bare Enter and its keys go to the pty) (owner decision 2026-11-09)
 const HANDOFF_GATE_LEAK_NET: Duration = Duration::from_secs(60);
 
 /// The spec of the `HandoffReport` gate named `id`.
@@ -689,7 +689,7 @@ impl Host for PtyQueueHost<'_, '_> {
     fn arm_give_up(&mut self, token: GateToken, _kind: GateKind, after: Duration) {
         // The ONE timer of a paste gate: a safety net for a reader that never answers. The reader's
         // result closes the gate first in every normal case and this then finds nothing to do.
-        // give-up-net: queue gate cap: a give-up that writes the keys typed after an Enter to the pty in typed order (owner decision 2026-11-09), or hands a setup / paste gate's keys back to the editor
+        // give-up-net: queue gate cap: a give-up that writes the keys typed after an Enter to the pty in typed order (owner decision 2026-11-09), keeps them with an unrun line in the editor, or hands a setup gate.s keys back to the editor
         self.ctx.spawn(Timer::after(after), move |me, _, ctx| {
             me.on_paste_queue_give_up(token, ctx)
         });
@@ -1076,11 +1076,13 @@ impl TerminalView {
             self.give_up_queued_young_hold(key, ctx);
             return;
         }
-        // Owner decision 2026-11-09 (reversing #1661, and #1577's "a timer never writes" for these
-        // gates): the give-up of a gate that holds keys typed after an Enter (an Enter's verdict /
-        // completion gate, a deferred Enter's report gate, a paced CLI-agent submit) writes those
-        // keys to the pty in typed order, what a plain terminal would have sent all along. The
-        // setup gates and a paste's read cap keep their hand-back to the editor (not a drop).
+        // Owner decisions 2026-11-09 (reversing #1661, and #1577's "a timer never writes" for
+        // these gates; then "keep them together"): the give-up of a gate that holds keys typed
+        // after an Enter (an Enter's verdict / completion gate, a deferred Enter's report gate, a
+        // paced CLI-agent submit) or behind a pty paste whose read never answered drops nothing.
+        // The keys go where the line before them went: to the pty in typed order when it ran (or
+        // is certainly a shell line), with the line in the editor when it did not. The setup
+        // gates keep their hand-back to the editor (not a drop).
         let gate_key = queue
             .try_peek()
             .and_then(|queue| {
@@ -1098,8 +1100,10 @@ impl TerminalView {
                     input.give_up_enter_gate_by_key(kind, gate_key, "leak_net", ctx)
                 });
                 if !handled {
-                    // An Enter gate the input no longer tracks: what was typed behind that Enter
-                    // goes to the pty, as by every Enter give-up (owner decision 2026-11-09).
+                    // An Enter gate the input no longer tracks: whether that Enter ran is not
+                    // known, so what was typed behind it stays with a line the editor still
+                    // holds, and goes to the pty when the editor is empty (owner decision
+                    // 2026-11-09, "keep them together").
                     self.give_up_gate_keys_to_pty(kind, gate_key, "orphan_enter_gate", ctx);
                 }
                 return;
@@ -1115,7 +1119,11 @@ impl TerminalView {
                 // #1353 phase 6 (INP-A4): the paste gave up on its clipboard read, so the reader's
                 // cancel flag is signalled and the blocked-reader count / log reflect it.
                 warpui::clipboard::abandon_pending_reads();
-                self.hand_back_gate_keys(GateKind::PasteReading, gate_key, "paste_cap", ctx);
+                // Owner decision 2026-11-09: the paste has no content and is discarded with its
+                // own notice; the keys typed behind it were typed for the pty and are written to
+                // it in typed order like the rest (they used to be handed back to the editor
+                // with the "Input was waiting too long" toast).
+                self.give_up_gate_keys_to_pty(GateKind::PasteReading, gate_key, "paste_cap", ctx);
                 return;
             }
             Some(GateKind::CliSubmit) => {
@@ -1178,10 +1186,11 @@ impl TerminalView {
 
     /// What happens to the entries `taken` out of a voided Enter gate, as `report` says.
     ///
-    /// * A give-up or an edit of the line ([`EnterDiscard::GiveUp`]; owner decision 2026-11-09,
-    ///   reversing #1661): the input shows the unrun line's own notice and arms its guard, and
-    ///   the keys are WRITTEN TO THE PTY in typed order (`write_given_up_entries_to_pty`). Nothing
-    ///   is discarded.
+    /// * A give-up or an edit of the line ([`EnterDiscard::GiveUp`]; owner decisions 2026-11-09:
+    ///   #1661 reversed, then "keep them together"): the input shows the unrun line's own notice,
+    ///   and the keys go where the give-up says (`place_given_up_enter_gate_keys`): with the
+    ///   unrun line in the editor, or on the pty in typed order (after the line itself for an
+    ///   unready shell's give-up). Nothing is discarded.
     /// * ^C on an Enter held for an unready shell, and the multi-line dialog's answer: they are
     ///   discarded (#1571, #1652): a paste's content waiting in the view's maps goes with them,
     ///   then the input drops its own and reports the count.
@@ -1193,11 +1202,11 @@ impl TerminalView {
         report: EnterDiscard,
         ctx: &mut ViewContext<Self>,
     ) -> usize {
-        if matches!(report, EnterDiscard::GiveUp { .. }) {
+        if let EnterDiscard::GiveUp { keys: then, .. } = report {
             let keys = self.input.update(ctx, |input, ctx| {
                 input.report_enter_gate_discard(&taken, report, ctx)
             });
-            self.write_given_up_entries_to_pty(taken, "enter_gate", ctx);
+            self.place_given_up_enter_gate_keys(taken, then, ctx);
             return keys;
         }
         for entry in &taken {

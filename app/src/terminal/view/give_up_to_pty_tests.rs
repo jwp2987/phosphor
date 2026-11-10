@@ -1,5 +1,10 @@
 //! Owner decision 2026-11-09 (REVERSING #1661): a hold that gives up writes its keys to the pty
 //! in typed order; nothing is dropped and no discard toast is shown (`view/give_up_to_pty.rs`).
+//! Second ruling of that day, KEEP THEM TOGETHER: the keys typed after an Enter go where the
+//! line before it went. A line that did not run and stays in the editor keeps them with it (text
+//! on the lines after it, nothing at the pty); a line that is certainly a shell line (an unready
+//! shell's net) goes to the pty with them, in typed order. Both shapes are tested here, at the
+//! view's two functions, and through the give-up families in the files named next.
 //! The give-up families themselves (an Enter gate's nets, a young Enter's caps, the CLI-agent
 //! submit's cap, the deferred Enter's patiences, the ssh connect give-ups) are in
 //! `group2_timer_tests.rs`, `view_test.rs` and `input_test.rs`, changed for the decision; this
@@ -250,11 +255,17 @@ fn an_enter_gate_give_up_on_a_busy_queue_writes_the_same_keys_to_the_pty() {
 }
 
 /// The leak net of a deferred Enter's `HandoffReport` gate: the hand-off's deferral is given up
-/// with the gate, the Enter's line stays in the editor (not run), and the keys typed behind it are
-/// written to the pty in typed order. A key typed afterwards is not held behind the same gate
-/// again (the hand-off no longer defers), so the pane does not go on holding its keys.
+/// with the gate, the Enter's line stays in the editor (not run), and the keys typed behind it
+/// stay WITH it, on the line after it, in typed order; nothing is written to the pty. A key typed
+/// afterwards is not held behind the same gate again (the hand-off no longer defers), so the pane
+/// does not go on holding its keys.
+///
+/// Expectation history (re-decided by the owner, never weakened): the first ruling of 2026-11-09
+/// (#1996) wrote `ls`, Enter to the pty and left `ho 47` alone in the editor, which this test
+/// expected (`..._writes_its_keys_and_ends_the_deferral`); the second ruling of that day, "keep
+/// them together", keeps them with the unrun line.
 #[test]
-fn the_deferred_enters_gate_leak_net_writes_its_keys_and_ends_the_deferral() {
+fn the_deferred_enters_gate_leak_net_keeps_its_keys_with_the_line_and_ends_the_deferral() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -287,15 +298,20 @@ fn the_deferred_enters_gate_leak_net_writes_its_keys_and_ends_the_deferral() {
                 );
                 assert_eq!(
                     view.input.as_ref(ctx).buffer_text(ctx),
-                    "ho 47",
-                    "{mode:?}: the Enter's line stays, not run"
+                    "ho 47\nls\n",
+                    "{mode:?}: the Enter's line stays, not run, and the keys typed behind it \
+                     stay with it, in typed order, once"
+                );
+                assert!(
+                    view.input.as_ref(ctx).ssh_handover_enter_guard_armed(),
+                    "{mode:?}: the first Enter on the lines is held"
                 );
                 assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
             });
             assert_eq!(
                 written(&pty),
-                "ls\r",
-                "{mode:?}: the keys typed behind the Enter, in typed order, once"
+                "",
+                "{mode:?}: `ls` must not run without the line before it: nothing at the pty"
             );
             terminal.read(&app, |view, _| {
                 assert!(
@@ -307,6 +323,175 @@ fn the_deferred_enters_gate_leak_net_writes_its_keys_and_ends_the_deferral() {
                     "{mode:?}: nothing holds keys behind the same gate again"
                 );
             });
+        });
+    }
+}
+
+/// "Keep them together" (owner decision 2026-11-09), the shape where the line did NOT run and
+/// stays in the editor (a verdict, Tab-completion or report give-up; an edit that voided the
+/// Enter): `cd build`, Enter, `make clean`, Enter. The keys typed after the Enter, in every form
+/// (text typed in the editor, a Backspace and keys typed for the pty, the Enters), stay WITH the
+/// line as text on the lines after it, in typed order, the Enters as line breaks. NOTHING is
+/// written to the pty (`make clean` never runs alone), nothing is dropped, no toast is shown for
+/// them, and the hand-back guard holds the first Enter on the buffer.
+#[test]
+fn keys_typed_after_an_enter_that_did_not_run_stay_with_its_line_in_the_editor() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            let toasts = toast_texts(&mut app);
+            terminal.update(&mut app, |view, ctx| {
+                view.input.update(ctx, |input, ctx| {
+                    input.replace_buffer_content("cd build", ctx)
+                });
+                let entries = vec![
+                    typed(1, "make clex"),
+                    pty_key(2, &[0x7f]),
+                    typed(3, "an"),
+                    enter(4),
+                    pty_key(5, b"ls"),
+                    pty_key(6, b"\r"),
+                ];
+                assert_eq!(
+                    view.keep_given_up_keys_with_line(entries, "test", ctx),
+                    6,
+                    "{mode:?}"
+                );
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "cd build\nmake clean\nls\n",
+                        "{mode:?}: the line, then what was typed after its Enter, in typed order"
+                    );
+                    assert!(
+                        input.ssh_handover_enter_guard_armed(),
+                        "{mode:?}: the first Enter on the lines is held, never run unseen"
+                    );
+                });
+            });
+            assert_eq!(
+                written(&pty),
+                "",
+                "{mode:?}: nothing typed after an Enter that did not run reaches the pty"
+            );
+            assert!(
+                toasts.borrow().is_empty(),
+                "{mode:?}: no toast for the kept keys: {:?}",
+                toasts.borrow()
+            );
+        });
+    }
+}
+
+/// The same with an EMPTY editor (the line was cleared by the edit that voided the Enter): there
+/// is no line to follow, so no line break is put in front; the keys are still kept as text, in
+/// typed order, guarded, and nothing reaches the pty.
+#[test]
+fn keys_kept_in_an_empty_editor_get_no_leading_line_break() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.input.update(ctx, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx);
+                });
+                let entries = vec![typed(1, "ls"), enter(2), typed(3, "pwd")];
+                assert_eq!(
+                    view.keep_given_up_keys_with_line(entries, "test", ctx),
+                    3,
+                    "{mode:?}"
+                );
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "ls\npwd", "{mode:?}");
+                    assert!(input.ssh_handover_enter_guard_armed(), "{mode:?}");
+                });
+            });
+            assert_eq!(written(&pty), "", "{mode:?}");
+        });
+    }
+}
+
+/// "Keep them together" (owner decision 2026-11-09), the shape where the line is certainly a
+/// shell line: the net of an Enter held for an unready shell. `cd build`, Enter, `make clean`,
+/// Enter all go to the pty in typed order, like a plain terminal; the editor is left empty (the
+/// line left for the shell), unguarded, and no toast is shown.
+#[test]
+fn an_unready_shells_give_up_writes_the_line_its_enter_and_the_keys_in_typed_order() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            let toasts = toast_texts(&mut app);
+            terminal.update(&mut app, |view, ctx| {
+                view.input.update(ctx, |input, ctx| {
+                    input.replace_buffer_content("cd build", ctx);
+                    input.set_given_up_unready_line_for_test("cd build");
+                });
+                let entries = vec![typed(1, "make clean"), enter(2)];
+                view.write_unready_line_and_keys_to_pty(entries, "unready_enter", ctx);
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "",
+                        "{mode:?}: the line left for the shell"
+                    );
+                    assert!(!input.ssh_handover_enter_guard_armed(), "{mode:?}");
+                });
+                // A second call finds no line waiting and has nothing to write.
+                view.write_unready_line_and_keys_to_pty(Vec::new(), "unready_enter", ctx);
+            });
+            assert_eq!(
+                written(&pty),
+                "cd build\rmake clean\r",
+                "{mode:?}: the line, its Enter, then what was typed after it, once"
+            );
+            assert!(
+                toasts.borrow().is_empty(),
+                "{mode:?}: no toast: {:?}",
+                toasts.borrow()
+            );
+        });
+    }
+}
+
+/// The unready shell's give-up with the pty GONE: the line and what followed it are still kept
+/// together, as text in this pane's input (the Enters line breaks), guarded; nothing is written.
+#[test]
+fn an_unready_shells_give_up_with_the_pty_gone_keeps_the_line_and_keys_together_as_text() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.pty_gone = true;
+                view.input.update(ctx, |input, ctx| {
+                    input.replace_buffer_content("cd build", ctx);
+                    input.set_given_up_unready_line_for_test("cd build");
+                });
+                let entries = vec![typed(1, "make clean"), enter(2)];
+                view.write_unready_line_and_keys_to_pty(entries, "unready_enter", ctx);
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "cd build\nmake clean\n",
+                        "{mode:?}: together, in typed order, nothing run"
+                    );
+                    assert!(input.ssh_handover_enter_guard_armed(), "{mode:?}");
+                });
+            });
+            assert_eq!(written(&pty), "", "{mode:?}: nothing reads the pty");
         });
     }
 }
@@ -356,6 +541,44 @@ fn an_ssh_connect_give_up_writes_every_held_key_in_typed_order() {
                 "echo one\recho two",
                 "{mode:?}: typed order, the Enter in its place, once"
             );
+        });
+    }
+}
+
+/// Owner decision 3 of 2026-11-09: a BARE Enter on an empty line held for an unready shell is
+/// written at the net too, before the keys typed after it (`\r`, then `~.`: #1793's shape for
+/// this hold). Until then the keys after it were written and that Enter was not.
+#[test]
+fn an_unready_shells_give_up_writes_a_bare_enter_before_the_keys_after_it() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.input.update(ctx, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx);
+                    input.set_given_up_unready_line_for_test("");
+                });
+                let entries = vec![pty_key(1, b"~"), pty_key(2, b".")];
+                view.write_unready_line_and_keys_to_pty(entries, "unready_enter", ctx);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            assert_eq!(
+                written(&pty),
+                "\r~.",
+                "{mode:?}: the Enter first, then the keys"
+            );
+            // With nothing typed after it the bare Enter is still written.
+            pty.borrow_mut().clear();
+            terminal.update(&mut app, |view, ctx| {
+                view.input.update(ctx, |input, _| {
+                    input.set_given_up_unready_line_for_test("");
+                });
+                view.write_unready_line_and_keys_to_pty(Vec::new(), "unready_enter", ctx);
+            });
+            assert_eq!(written(&pty), "\r", "{mode:?}: the bare Enter alone");
         });
     }
 }

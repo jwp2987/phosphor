@@ -986,14 +986,14 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// #1566: how much longer the bootstrap give-up waits, once, when the pending session is
 /// demonstrably progressing (its bootstrap prompt's `Precmd` was seen) and only `Bootstrapped`
 /// is outstanding. A logged give-up net; `Bootstrapped` itself ends the wait.
-// give-up-net: one-off extension of the bootstrap-failed give-up; the failure hands held ssh keys back as text
+// give-up-net: one-off extension of the bootstrap-failed give-up; the failure writes held ssh keys to the pty in typed order
 const BOOTSTRAP_PROGRESS_GRACE: Duration = Duration::from_secs(3);
 /// #1809: the give-up net of an ssh connect window on a pty WITHOUT a tty-read probe (macOS,
 /// others), where no event tells that ssh is reading an echoing answer. After this long the
-/// window is released and the held keys are HANDED BACK to the editor as text (never written to
-/// the pty); the next key then reaches ssh as in a plain terminal. Where the probe works the
+/// window is released and the held keys are WRITTEN TO THE PTY in typed order (owner decision
+/// 2026-11-09, #1996); the next key then reaches ssh as in a plain terminal. Where the probe works the
 /// window has no clock at all.
-// give-up-net: probe-less platforms only; hands held ssh keys back as text, never writes them
+// give-up-net: probe-less platforms only; writes held ssh keys to the pty in typed order (#1996)
 const SSH_CONNECT_NO_PROBE_GIVE_UP: Duration = Duration::from_secs(15);
 /// The ONE give-up net of a subshell setup (#1711, #1712; owner decision 2026-11-08): this long
 /// with no setup PROGRESS and the setup is given up. Progress is an event that proves the shell
@@ -15264,7 +15264,7 @@ impl TerminalView {
             });
             let deadline = Instant::now() + UNCOVERED_REPORT_PATIENCE;
             ctx.spawn(
-                // give-up-net: the Enter does not run and its line stays in the editor; the keys held behind it are written to the pty in typed order (owner decision 2026-11-09)
+                // give-up-net: the Enter does not run and its line stays in the editor; the keys held behind it stay with it in the editor in typed order (a bare Enter and its keys go to the pty) (owner decision 2026-11-09)
                 Timer::after(UNCOVERED_REPORT_PATIENCE),
                 move |me, _, ctx| {
                     log_late_timer_wake("uncovered report patience", deadline);
@@ -15318,7 +15318,7 @@ impl TerminalView {
             )
         });
         ctx.spawn(
-            // give-up-net: report-patience give-up: the Enter does not run and its line stays in the editor; the keys held behind it are written to the pty in typed order (owner decision 2026-11-09)
+            // give-up-net: report-patience give-up: the Enter does not run and its line stays in the editor; the keys held behind it stay with it in the editor in typed order (a bare Enter and its keys go to the pty) (owner decision 2026-11-09)
             Timer::after(TYPEAHEAD_REPORT_PATIENCE),
             move |me, _, ctx| {
                 let gate = me
@@ -15335,19 +15335,21 @@ impl TerminalView {
         );
     }
 
-    /// Owner decision 2026-11-09 (REVERSING #1661): a timer gave up on the deferred Enter before
-    /// the report / verdict it waited for (`why` names which: `report_patience` #1215,
-    /// `uncovered_report` #1104, `report_tab_cap`, `young_verdict_cap`, `handoff_gate_leak_net`).
-    /// `taken` are the entries held behind that Enter, in typed order.
+    /// Owner decisions 2026-11-09 (#1661 REVERSED, then "keep them together"): a timer gave up
+    /// on the deferred Enter before the report / verdict it waited for (`why` names which:
+    /// `report_patience` #1215, `uncovered_report` #1104, `report_tab_cap`, `young_verdict_cap`,
+    /// `handoff_gate_leak_net`). `taken` are the entries held behind that Enter, in typed order.
     ///
     /// * The Enter is not run by the clock (#1577) and its line stays in the editor, with the
-    ///   notice that says so and the line's guard: as before.
-    /// * The keys typed AFTER it are written to the pty in typed order, what a plain terminal
-    ///   would have sent all along. Nothing is discarded, nothing becomes editor text, no toast
-    ///   counts them.
-    /// * A BARE Enter (the editor line is empty: there is no visible line to keep) was a key too:
-    ///   its `\r` goes to the pty in front of the keys typed after it, and no notice is shown.
-    ///   This is the `<Enter>~.` of #1793, and the Enter at an empty remote prompt.
+    ///   notice that says so: as before.
+    /// * The keys typed AFTER it stay WITH the line, as text on the lines after it, in typed
+    ///   order, under the hand-back guard (`keep_given_up_keys_with_line`). Nothing reaches the
+    ///   pty: a later line never runs without the line before it. Nothing is discarded and no
+    ///   toast counts them.
+    /// * A BARE Enter (the editor line is empty: there is no unrun line to keep or to overtake)
+    ///   was a key too: its `\r` goes to the pty in front of the keys typed after it, in typed
+    ///   order, and no notice is shown. This is the `<Enter>~.` of #1793, and the Enter at an
+    ///   empty remote prompt.
     pub(super) fn give_up_deferred_enter_keys(
         &mut self,
         taken: Vec<crate::terminal::input_queue::InputEntry>,
@@ -15359,12 +15361,19 @@ impl TerminalView {
         let keys = crate::terminal::input::count_discarded_keys(&taken);
         let bare_enter = self.input.as_ref(ctx).buffer_text(ctx).is_empty();
         log::warn!(
-            "Enter not run ({why}): bare_enter={bare_enter}; {keys} key(s) typed after it go to \
-             the pty in typed order, none discarded"
+            "Enter not run ({why}): bare_enter={bare_enter}; {keys} key(s) typed after it {}, in \
+             typed order, none discarded",
+            if bare_enter {
+                "go to the pty behind its Enter"
+            } else {
+                "stay with its line in the input"
+            }
         );
         warpui::input_order::log_key_hop("enter_verdict_give_up", || {
             format!(
-                "{why} keys_to_pty={keys} bare_enter={}",
+                "{why} keys_to_pty={} keys_with_line={} bare_enter={}",
+                if bare_enter { keys } else { 0 },
+                if bare_enter { 0 } else { keys },
                 u8::from(bare_enter)
             )
         });
@@ -15390,29 +15399,33 @@ impl TerminalView {
                 EnterDiscard::GiveUp {
                     reason,
                     always: true,
-                    // The line's guard is `guard_line_after_deferred_enter_give_up`'s.
-                    glue_if_keys_followed: false,
+                    keys: crate::terminal::input::KeysAfterEnter::WithLine,
                 },
                 ctx,
             )
         });
-        self.guard_line_after_deferred_enter_give_up(keys, ctx);
+        // The keys stay with the unrun line (and arm the hand-back guard over both); a line with
+        // nothing typed after it keeps the guard of `guard_line_after_deferred_enter_give_up`.
+        self.keep_given_up_keys_with_line(taken, why, ctx);
+        self.guard_line_after_deferred_enter_give_up(ctx);
         self.note_keys_follow_editor_if_text(ctx);
         self.note_editor_took_over();
-        self.write_given_up_entries_to_pty(taken, why, ctx);
         self.redetermine_terminal_focus(ctx);
     }
 
     /// The leak net of `HandoffReport` gate `gate` fired (60 s): nothing ended the deferred
-    /// Enter's hold. The hand-off's deferral is given up with it (left deferred, every key written
-    /// below would be held behind the same gate again), then the gate's keys go to the pty in
-    /// typed order like any deferred Enter's give-up. A gate the hand-off no longer knows is just
-    /// written out.
+    /// Enter's hold. The hand-off's deferral is given up with it (left deferred, every key placed
+    /// below would be held behind the same gate again), then the gate's keys are placed like any
+    /// deferred Enter's give-up (`give_up_deferred_enter_keys`: with the unrun line in the
+    /// editor, or behind a bare Enter on the pty). A gate the hand-off no longer knows: with a
+    /// line in the editor its keys stay with it, with none they are written out
+    /// (`finish_give_up_gate_keys_to_pty`).
     pub(super) fn give_up_handoff_report_gate(&mut self, gate: u64, ctx: &mut ViewContext<Self>) {
         let deferral_given_up = self.handoff.write().give_up_deferred_gate(gate);
         log::warn!(
             "input queue: the leak net of a deferred Enter's gate ({gate}) fired; \
-             deferral_given_up={deferral_given_up}; the held keys go to the pty in typed order"
+             deferral_given_up={deferral_given_up}; the held keys are kept in typed order, none \
+             dropped"
         );
         warpui::input_order::log_hop("handoff_gate_leak_net", || {
             format!(
@@ -15438,24 +15451,14 @@ impl TerminalView {
 
     /// The guard of the line a deferred Enter's give-up left in the editor, unrun (#1598, #1661):
     /// several lines in one buffer would submit as ONE command, so the first Enter on them is held
-    /// with the "check the line" toast; one line is what the user typed and the next Enter sends
-    /// it, unless keys were typed after the Enter (`keys_after`: the user was still typing, and
-    /// they went to the pty): then a key typed now onto its end holds that Enter (the glue guard).
-    fn guard_line_after_deferred_enter_give_up(
-        &mut self,
-        keys_after: usize,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    /// with the "check the line" toast (that includes the keys typed after the Enter, which the
+    /// give-up kept with the line, on the lines after it); one line with nothing typed after it
+    /// is what the user typed and the next Enter sends it.
+    fn guard_line_after_deferred_enter_give_up(&mut self, ctx: &mut ViewContext<Self>) {
         self.input.update(ctx, |input, ctx| {
             let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
             if buffer.contains('\n') {
                 input.arm_handed_back_enter_guard(buffer);
-            } else if keys_after > 0 {
-                input.arm_enter_guard(
-                    buffer,
-                    crate::terminal::input::EnterGuardKind::Glue,
-                    crate::terminal::input::GLUE_GUARD_TOAST,
-                );
             }
         });
     }
@@ -15843,9 +15846,14 @@ impl TerminalView {
                 // #1661 (r18u27): these are keys typed AFTER the deferred Enter. When that Enter
                 // now waits behind its own gate (an unready shell refused the submit, #1571),
                 // they queue behind that gate as typed text, in order: released with it when the
-                // shell is ready, and DISCARDED with it by its give-up (owner decision
-                // 2026-11-05). Inserted, they became a programmatic edit deferred behind the
-                // gate and were applied by the give-up, i.e. handed back to the editor.
+                // shell is ready, and written to the pty behind the line and its Enter at its
+                // give-up (owner decision 2026-11-09, "keep them together"; #1661 discarded
+                // them). Inserted, they became a programmatic edit deferred behind the gate and
+                // were applied by the give-up, i.e. handed back to the editor.
+                //
+                // #1997 (open): the `to_pty` branch above does NOT make this check, so keys
+                // that contain an Enter are written at once even while a non-empty line waits
+                // behind the unready gate, and run before it.
                 //
                 // Not behind the multi-line dialog's gate: that dialog asks about a later Enter,
                 // and keys typed before it opened must not be discarded with its answer.
@@ -15853,8 +15861,8 @@ impl TerminalView {
                 // `submit_next_enter_as_shell_command` is not carried with the queued text: an
                 // `EntryKind::Text` has no room for it, and adding a field to the shared queue's
                 // entry kinds for one flag is not cheap. Released at readiness, the text is
-                // routed as typed keys are at that moment; discarded, no stale flag is left
-                // armed (r18u27 review: decided to leave it).
+                // routed as typed keys are at that moment; written by the give-up, no stale flag
+                // is left armed (r18u27 review: decided to leave it).
                 let queued = input.enter_queue_holds_keys(ctx)
                     && !input.multiline_dialog_gate_open()
                     && if in_mailbox_flush {
@@ -25625,7 +25633,7 @@ impl TerminalView {
     ) {
         let _ = ctx.spawn(
             async move {
-                // give-up-net: bootstrap-failed give-up: marks the session failed and hands held ssh keys back as text
+                // give-up-net: bootstrap-failed give-up: marks the session failed and writes held ssh keys to the pty in typed order (owner decision 2026-11-09)
                 warpui::r#async::Timer::after(duration).await;
                 arm
             },
@@ -25657,11 +25665,13 @@ impl TerminalView {
     /// #1494: the ssh bootstrap timed out with keys held. The remote shell may be alive at a
     /// non-bootstrapped prompt with its tty still raw (the bootstrap's `stty sane` never ran).
     ///
-    /// #1577 (owner decision 2026-11-03): delivering the typing there would be a timer writing a
-    /// command and the user's keys to a pty. The keys are handed back instead (the ssh hand-back:
-    /// the input, or kept for it while the ssh block runs) with a toast naming `stty sane`. When
-    /// no remote shell is provably in front the keys are handed back as unexecuted text; they are
-    /// never run locally.
+    /// Owner decision 2026-11-09 (reversing #1577's hand-back for this timer, like every other
+    /// give-up of a hold for the shell, #1996): the held keys are written to the pty in typed
+    /// order, for whatever reads the tty now, exactly what a plain terminal would have sent all
+    /// along (`SshDropThen::GiveUpToPty`, the write of the connect give-ups; a signal held in the
+    /// setup window is written in its place). Nothing is handed back to the editor and nothing
+    /// is dropped. Phosphor writes no command of its own: no `stty sane` (#1815), only a toast
+    /// naming it when a remote shell is in front.
     fn hand_held_ssh_typeahead_to_unbootstrapped_remote(
         &mut self,
         is_ssh: bool,
@@ -25687,34 +25697,31 @@ impl TerminalView {
         if !ssh_session {
             return;
         }
-        if !(session_pending && self.is_long_running()) {
-            log::warn!(
-                "ssh typeahead: no remote shell is provably in front at the bootstrap timer; \
-                 handing {} held byte(s) back as unexecuted text (#1494)",
-                self.ssh_held_bytes()
-            );
-            self.finish_ssh_typeahead(ctx);
-            return;
-        }
-        // #1577 (owner decision): a timer never writes user bytes or a command to a pty. The
-        // held keys are handed back (to the input, or kept for it while the ssh block runs, like
-        // any ssh hand-back) and nothing is sent: no `stty sane`, no keys. The #1494 delivery and
-        // its PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS switch are deleted (#1815).
+        let remote_in_front = session_pending && self.is_long_running();
         log::warn!(
-            "ssh typeahead: bootstrap failed; handing {} held byte(s) back instead of writing \
-             them to the remote (#1577)",
+            "ssh typeahead: bootstrap failed (remote_in_front={remote_in_front}); writing {} \
+             held byte(s) to the pty in typed order, as a plain terminal would have (owner \
+             decision 2026-11-09)",
             self.ssh_held_bytes()
         );
         warpui::input_order::log_key_hop("kh_bootstrap_giveup", || {
-            format!("handed_back held_bytes={}", self.ssh_held_bytes())
+            format!(
+                "to_pty held_bytes={} remote_in_front={}",
+                self.ssh_held_bytes(),
+                u8::from(remote_in_front)
+            )
         });
-        self.ssh_remote_prompt_seen = false;
+        // The give-up end of `finish_ssh_typeahead`: one write, in typed order, now.
+        let was_giving_up = std::mem::replace(&mut self.ssh_give_up_in_progress, true);
         self.finish_ssh_typeahead(ctx);
-        self.show_ssh_typing_toast(
-            "SSH setup didn't finish; your typed text was not sent. The remote terminal may \
-             be in raw mode: run `stty sane` there",
-            ctx,
-        );
+        self.ssh_give_up_in_progress = was_giving_up;
+        if remote_in_front {
+            self.show_ssh_typing_toast(
+                "SSH setup didn't finish; what you typed was sent to the remote as typed. The \
+                 remote terminal may be in raw mode: run `stty sane` there",
+                ctx,
+            );
+        }
     }
 
     /// Called once the bootstrap timer completes
@@ -33148,8 +33155,30 @@ impl TerminalView {
             }
             InputEvent::GivenUpKeysToPty(entries) => {
                 // Owner decision 2026-11-09 (reversing #1661): an Enter gate of the input gave
-                // up; what was typed after the Enter goes to the pty in typed order.
-                self.write_given_up_entries_to_pty(entries.clone(), "enter_gate", ctx);
+                // up after its Enter ran; what was typed after it goes to the pty in typed order.
+                self.place_given_up_enter_gate_keys(
+                    entries.clone(),
+                    crate::terminal::input::KeysAfterEnter::ToPty,
+                    ctx,
+                );
+            }
+            InputEvent::GivenUpKeysWithLine(entries) => {
+                // "Keep them together": the Enter did not run; what was typed after it stays
+                // with its line in the editor.
+                self.place_given_up_enter_gate_keys(
+                    entries.clone(),
+                    crate::terminal::input::KeysAfterEnter::WithLine,
+                    ctx,
+                );
+            }
+            InputEvent::GivenUpLineAndKeysToPty(entries) => {
+                // "Keep them together": an unready shell's net; the line, its Enter and what was
+                // typed after it go to the pty in typed order.
+                self.place_given_up_enter_gate_keys(
+                    entries.clone(),
+                    crate::terminal::input::KeysAfterEnter::LineAndKeysToPty,
+                    ctx,
+                );
             }
             InputEvent::DiscardedPtyPastes(ids) => {
                 // #1661 review: pty pastes discarded behind an Enter leave no record behind.
@@ -41064,7 +41093,7 @@ fn choice_block_owns_input(
 
 /// How long after the ssh block ended cleanly (the remote shell's first precmd) the gate keeps
 /// holding keys while it waits for the remote session to register (#983).
-// give-up-net: feeds the ssh connect window's give-up deadline; firing hands the held keys back as text
+// give-up-net: feeds the ssh connect window's give-up deadline; firing writes the held keys to the pty in typed order
 const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// How long an Enter deferred behind a report that must cover untracked user bytes waits for it
 /// (#1104) before it is given up on. Reports normally take milliseconds; this only bounds a
@@ -41101,7 +41130,7 @@ const TYPEAHEAD_REPORT_PATIENCE: Duration =
 /// Longest the gate keeps holding after the announced remote session finished bootstrapping
 /// while it waits for that shell's first prompt (#1085). The prompt is one precmd away; this
 /// only bounds a remote whose prompt never comes, so it cannot own the keyboard.
-// give-up-net: feeds the ssh connect window's give-up deadline; firing hands the held keys back as text
+// give-up-net: feeds the ssh connect window's give-up deadline; firing writes the held keys to the pty in typed order
 const SSH_CONNECT_FIRST_PROMPT_GRACE: Duration = Duration::from_secs(2);
 
 /// State of one ssh connect window (#983). Pure so the transitions are unit-testable. Nothing in
