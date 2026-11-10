@@ -1062,6 +1062,7 @@ fn test_routing_rules_are_linear_in_the_text() {
             ran_before_exactly: false,
             denylisted: false,
             typeahead: RoutingTypeahead::None,
+            head_near_installed_command: false,
         }
     }
     fn text_of(kind: &str, bytes: usize) -> String {
