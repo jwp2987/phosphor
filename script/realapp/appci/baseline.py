@@ -13,8 +13,14 @@ import lat  # noqa: E402
 def load(path):
     d = json.load(open(path))
     if "cases" in d:
-        return {k: {"p50": v["phosphor"]["p50"], "p95": v["phosphor"]["p95"], "n": v["phosphor"]["n"], "overhead_ms": v.get("overhead_ms")}
-                for k, v in lat.flat_lat(d).items() if (v.get("phosphor") or {}).get("p50") is not None}
+        out = {k: {"p50": v["phosphor"]["p50"], "p95": v["phosphor"]["p95"], "n": v["phosphor"]["n"], "overhead_ms": v.get("overhead_ms")}
+               for k, v in lat.flat_lat(d).items() if (v.get("phosphor") or {}).get("p50") is not None}
+        for k, v in lat.flat_lat(d).items():
+            # the app's own share, where the case measured one (lat.py "app-share basis"): a promoted baseline carries it so the next runs compare on it
+            a = v.get("app_share") or {}
+            if k in out and a.get("p50") is not None:
+                out[k]["app_share"] = {"what": a.get("what"), "p50": a["p50"], "n": a.get("n")}
+        return out
     return d.get("metrics", {})
 
 

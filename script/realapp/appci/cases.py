@@ -200,7 +200,26 @@ def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share
         if rec.get("budget_kind") == "overhead" and rec.get("overhead_ms") is not None:
             r.check(rec["overhead_ms"] <= MACOS_ENTER_GROSS_OVERHEAD_MS, "%s: Phosphor overhead %.2f ms over %s exceeds the %.0f ms gross-regression bound (report-only on macOS covers the steady ~+20 ms OS gap, not this)" % (
                 label, rec["overhead_ms"], rec.get("reference_name"), MACOS_ENTER_GROSS_OVERHEAD_MS))
-    for tag in ("prev", "baseline"):
+    sh = rec.get("app_share") or {}
+    if sh.get("budget_verdict") == "fail":
+        # the hard bound on the app's own time (lat.py "app-share basis"): it holds whatever the regression basis is and however few samples there are
+        r.check(False, "%s: the app's own share (%s) %.2f ms exceeds its %.1f ms budget (n=%s)" % (label, sh.get("what"), sh["p50"], sh["budget_ms"], sh.get("n")))
+    for tag in ("prev", "baseline") if rec.get("regress_basis") == "app_share" else ():
+        # owner 2026-11-10: judged on the app's own segments, not on the end-to-end median (whose spread is the input tool, the pty layer and the shell)
+        x, m = sh.get(tag) or {}, rec.get(tag) or {}
+        if x.get("verdict") in ("fail", "warn") and x.get("delta_ms") is not None:
+            msg = "%s: the app's own share (%s) %s ms vs %s build %+.2f ms (%+.1f%%)" % (label, sh.get("what"), sh["p50"], tag, x["delta_ms"], x["delta_pct"])
+            if rec.get("remeasure"):
+                msg += "; re-measured once: app share %s (%s)" % (rec["remeasure"]["app_share"].get("p50"), rec["remeasure"][tag]["verdict"])
+            if x["verdict"] == "fail":
+                r.check(False, "REGRESSION " + msg)
+            else:
+                r.note("WARN " + msg)
+        if m.get("median_verdict") in ("fail", "warn") and m.get("delta_ms") is not None:
+            r.note("NOT JUDGED: %s: median %s vs %s build %+.2f ms (%+.1f%%) would be %s on the median gate; judged on the app's own share (%s) instead: %s ms now, %s in that build" % (
+                label, rec["phosphor"]["p50"], tag, m["delta_ms"], m["delta_pct"], m["median_verdict"].upper(), sh.get("what"), sh["p50"],
+                x.get("p50") if x.get("p50") is not None else "not recorded"))
+    for tag in ("prev", "baseline") if rec.get("regress_basis") != "app_share" else ():
         x = rec.get(tag) or {}
         if x.get("verdict") in ("fail", "warn") and x.get("delta_ms") is not None:
             msg = "%s: median %s vs %s build %+.2f ms (%+.1f%%)" % (label, rec["phosphor"]["p50"], tag, x["delta_ms"], x["delta_pct"])
@@ -2510,7 +2529,8 @@ _CC_STAGES = ("keydown", "ctrl_c_keydown", "ctrl_c_to_event_loop", "ctrl_c_recei
 def ctrl_c_segments(txt, skip=0):
     """#1408: the APP's share of Ctrl-C, from its own input_order lines, per press: `keydown key=c ctrl=true` (presenter) -> hop=ctrl_c_keydown
     (TerminalView::ctrl_c) -> hop=ctrl_c_to_event_loop (PtyController) -> hop=ctrl_c_received (pty event loop) -> hop=ctrl_c_pty_write (write(2)
-    returned). -> dict(n, <segment>: stats ms, keydown_to_write: stats ms). A press is closed by its pty write; a stage logged twice before the write
+    returned). -> dict(n, <segment>: stats ms, keydown_to_write: stats ms, handler_to_write: stats ms (ctrl_c_keydown -> ctrl_c_pty_write, the part every
+    platform logs)). A press is closed by its pty write; a stage logged twice before the write
     keeps the first stamp; the first `skip` presses (warm-up) are dropped. Whatever the reference terminal gap is beyond keydown_to_write is outside the app (injector, X server, signal delivery)."""
     samples, cur = [], None
     for line in txt.splitlines():
@@ -2533,7 +2553,41 @@ def ctrl_c_segments(txt, skip=0):
     for a, b in zip(_CC_STAGES, _CC_STAGES[1:]):
         out["%s->%s" % (a, b)] = stats([x[b] - x[a] for x in samples if a in x and b in x])
     out["keydown_to_write"] = stats([x["ctrl_c_pty_write"] - x["keydown"] for x in samples if "keydown" in x])
+    out["handler_to_write"] = stats([x["ctrl_c_pty_write"] - x["ctrl_c_keydown"] for x in samples if "ctrl_c_keydown" in x])
     return out
+
+
+# The hard bound on the app's own share of a Ctrl-C (key event -> write(2) of the ^C returned), ms. The same 2 ms the app's share of an Enter is held to
+# (MACOS_ENTER_APP_SHARE_MAX_MS); measured 0.65 ms on the Windows VM in rounds 9 and 10 (docs/design/r11-win.md section 6).
+CTRLC_APP_SHARE_MAX_MS = 2.0
+
+
+def ctrl_c_app_share(seg):
+    """ctrl_c_segments() output -> dict(what, p50, n) for lat.evaluate(app_share=), or None when the log holds no usable figure. The figure is the whole
+    path, keydown_to_write (presenter keydown -> pty write), when the keydown line was logged for at least 90 % of the presses; otherwise
+    handler_to_write (TerminalView::ctrl_c -> pty write). The name travels with the number: two runs are compared only on the same figure."""
+    n = (seg or {}).get("n") or 0
+    for what in ("keydown_to_write", "handler_to_write"):
+        st = (seg or {}).get(what) or {}
+        if n and st.get("p50") is not None and (st.get("n") or 0) >= 0.9 * n:
+            return dict(what=what, p50=st["p50"], n=st["n"])
+    return None
+
+
+def ctrl_c_regress_basis(ctx, share, n, warm):
+    """owner 2026-11-10: on Windows the Ctrl-C regression verdicts (vs the previous build and the baseline) are judged on the app's own share of the key,
+    not on the end-to-end median. The median there is the input tool's spawn, ConPTY and the shell's trap (87 of 88 ms in the Git Bash pane) and its
+    standard error (4.7 ms in round 10, 7.3 in round 9) is larger than the gate's +5 % / +0.5 ms, so the gate failed on noise with the app's share
+    unchanged (docs/design/r11-win.md section 6). -> the app_share argument of lat.evaluate, or None (other platforms, or no figure in the log: the
+    median gate, as before). The hard bound CTRLC_APP_SHARE_MAX_MS (APPCI_CTRLC_APP_SHARE_MAX_MS) fails the case whenever the share is over it."""
+    if not (ctx.win and share):
+        return None
+
+    def again():
+        off = ctx.log_size()
+        ms = ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:]
+        return dict(ctrl_c_app_share(ctrl_c_segments(ctx.log_since(off), skip=warm)) or {}, samples=ms)
+    return dict(share, budget_ms=float(os.environ.get("APPCI_CTRLC_APP_SHARE_MAX_MS", str(CTRLC_APP_SHARE_MAX_MS))), metric="ctrl_c_app_segments", remeasure=again)
 
 
 @case("ctrl_c_d", order=17)
@@ -2569,8 +2623,11 @@ def c_ctrl(ctx, r):
                    % tuple(cs.get(k, "-") for k in ("ctrl_c_to_prompt", "ctrl_c_to_reading", "line_editor_ready_after_ctrl_c",
                                                      "line_editor_active_after_ctrl_c", "command_written_after_ctrl_c", "preexec_after_ctrl_c")))
     r.metric("ctrl_c_ms", stats(lat_ms))
+    share = None
     if ctx.log_path and os.path.exists(ctx.log_path):
-        r.metric("ctrl_c_app_segments", ctrl_c_segments(ctx.log_since(cc_off), skip=warm))     # #1408: where the app's share of each Ctrl-C goes
+        seg = ctrl_c_segments(ctx.log_since(cc_off), skip=warm)
+        r.metric("ctrl_c_app_segments", seg)     # #1408: where the app's share of each Ctrl-C goes
+        share = ctrl_c_app_share(seg)
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     if ctx.win:
         # #1570: whether this harness (and so the app it started) inherited "ignore Ctrl-C" from the runner. The app clears it for its shells
@@ -2618,7 +2675,7 @@ def c_ctrl(ctx, r):
             r.note("fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode")
         rec = None if (short or not lat_ms) else lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.label, lat_ms, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
                            remeasure=None if short else (lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:]), ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
-                           expected=n,
+                           expected=n, app_share=ctrl_c_regress_basis(ctx, share, n, warm),
                            notes=["same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; "
                                   "absolute Phosphor median %s ms includes the input-tool spawn (harness floor %s ms)" % (stats(lat_ms).get("p50"), ctx.be.key_floor_ms)])
         if rec:

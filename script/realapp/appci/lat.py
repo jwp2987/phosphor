@@ -7,6 +7,11 @@
 #     FAIL when worse by > APPCI_REGRESS_PCT (5) % AND > APPCI_REGRESS_MS (0.5) ms; WARN when worse by 2..5 % AND > 0.5 ms.
 #     A suspected regression is re-measured once; a failure is never dismissed (both measurements stay in the record), a clean
 #     re-measure downgrades it to WARN, not pass.
+#   * app-share basis (owner 2026-11-10, Ctrl-C on Windows): a case may hand evaluate() the APP'S OWN SHARE of the measurement (app_share=: the median
+#     of the app's own segments, from its input_order log). When that figure is usable (n >= APPCI_MIN_SAMPLES and >= 90 % of the samples asked for) the
+#     two regression verdicts are judged on it, with the same thresholds, and the end-to-end median's deltas stay in the record as not judged
+#     (rec[prev|baseline].median_verdict). The share has a hard budget of its own (app_share.budget_ms): over it is a FAIL whatever n is and whatever
+#     the basis. When the share is not usable the median gate applies exactly as before.
 import json, os, statistics
 
 RANK = {"pass": 0, "no-reference": 1, "no-compare": 1, "inconclusive": 1, "pending": 1, "none": 0, "warn": 2, "fail": 3}
@@ -249,14 +254,55 @@ def load_prev():
     return flat_lat(d) if d else {}
 
 
+def prev_case_metric(rid, name):
+    """the previous run's metrics[name] of the case a latency id ("mode/case/key") belongs to, or None. For a figure the previous run recorded as a
+    case metric before it was part of the latency record (the Ctrl-C app share: metrics.ctrl_c_app_segments)."""
+    d = load_json(os.environ.get("APPCI_PREV_RESULTS", ""))
+    parts = rid.split("/")
+    if not d or len(parts) < 3:
+        return None
+    for c in d.get("cases", []):
+        if c.get("mode", "") == parts[0] and c.get("name") == parts[1]:
+            return (c.get("metrics") or {}).get(name)
+    return None
+
+
+def app_share_usable(share, expected=None):
+    """-> (usable, why_not). The app-share figure can carry the regression verdicts only on the evidence a PASS needs (#1514): n >= min_n and
+    >= 90 % of the samples the case asked for."""
+    if not share or share.get("p50") is None:
+        return False, "no app-share figure"
+    n = share.get("n") or 0
+    if n < min_n():
+        return False, "n=%d < %d presses with the app's own segments" % (n, min_n())
+    if expected and n < 0.9 * expected:
+        return False, "only %d of %d presses have the app's own segments (< 90 %%)" % (n, expected)
+    return True, None
+
+
+def old_app_share(what, rec_old, case_metric=None):
+    """the app-share median of an older record (previous run or baseline entry) for the SAME figure `what`, or None. An older record made before the
+    figure was part of the latency record is read from the case metric the run recorded (same key, n >= min_n)."""
+    a = (rec_old or {}).get("app_share") or {}
+    if a.get("what") == what and a.get("p50") is not None and (a.get("n") or 0) >= min_n():
+        return a["p50"]
+    m = (case_metric or {}).get(what) or {}
+    if m.get("p50") is not None and (m.get("n") or 0) >= min_n():
+        return m["p50"]
+    return None
+
+
 def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name=None, floor=None, notes=None, pane_shell=None, ref_shell=None,
-             expected=None, resolution_ms=None, mode="sequential", implausible_neg_ms=None):
+             expected=None, resolution_ms=None, mode="sequential", implausible_neg_ms=None, app_share=None):
     """phos/ref: sample lists (warm-up already dropped). remeasure: callable returning a fresh phos sample list, or None.
     expected: samples the case asked for (a PASS needs >= 90 % of them AND >= min_n, #1514); resolution_ms: the measurement's time quantum
     (a PASS is withheld when it exceeds budget/2). Both only ever turn a pass into 'inconclusive', never a fail into a pass.
     implausible_neg_ms: when set and the overhead is below -implausible_neg_ms (and beyond 2 SE), the reference is judged to be mis-measured (Phosphor
     cannot be that much FASTER than a bare terminal at the same job): verdict 'no-compare' (NOREF), never a PASS. Per-side n and the SE of each
     side's median are always recorded (rec['per_side']).
+    app_share: None, or dict(what=<figure name>, p50, n, budget_ms, metric=<case metric of older runs, optional>, remeasure=<callable -> dict(p50, n,
+    samples=<end-to-end list, optional>), optional>): the app's own share of this measurement (header, "app-share basis"). Usable -> the prev/baseline
+    regression verdicts are judged on it and rec['regress_basis'] == 'app_share'; not usable -> the median gate, as without it. Over budget_ms -> FAIL.
     Returns the latency record (see header)."""
     ps = summarize(phos)
     rec = {"measurement_mode": mode, "phosphor": ps, "reference": summarize(ref) if ref else None, "reference_name": ref_name if ref else None,
@@ -331,7 +377,55 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
         rec["baseline"] = {"status": "ok", "p50": base["p50"], "p95": base.get("p95"), "delta_ms": dm, "delta_pct": dp, "verdict": bsv}
     elif bst == "ok":
         rec["baseline"] = {"status": "ok", "verdict": "none"}
-    if remeasure and "fail" in (pv, bsv):
+    rec["regress_basis"] = "median"
+    share_bv = "none"
+    if app_share:
+        usable, why_not = app_share_usable(app_share, expected)
+        sh = rec["app_share"] = {"what": app_share.get("what"), "p50": app_share.get("p50"), "n": app_share.get("n") or 0, "budget_ms": app_share.get("budget_ms"),
+                                 "usable": usable}
+        if sh["p50"] is not None and sh["budget_ms"] is not None:
+            # the hard bound on the app's own time: a FAIL whatever n is (thin evidence never turns a fail into anything else)
+            share_bv = sh["budget_verdict"] = "fail" if sh["p50"] > sh["budget_ms"] else "pass"
+        if not usable:
+            sh["why_not"] = why_not
+            rec["notes"].append("app share (%s) not usable as the regression basis (%s): the regression gate stays on the median" % (sh["what"], why_not))
+        else:
+            rec["regress_basis"] = "app_share"
+            olds = {"prev": old_app_share(sh["what"], prev, prev_case_metric(rid, app_share["metric"]) if app_share.get("metric") and prev else None),
+                    "baseline": old_app_share(sh["what"], base)}
+            for tag in ("prev", "baseline"):
+                v, dm, dp = regress(sh["p50"], olds[tag])
+                sh[tag] = {"p50": olds[tag], "delta_ms": dm, "delta_pct": dp, "verdict": v}
+                m = rec.get(tag)
+                if isinstance(m, dict) and m.get("delta_ms") is not None:
+                    # the end-to-end median's delta stays in the record; it is no longer the verdict
+                    m["median_verdict"], m["verdict"], m["judged_on"] = m["verdict"], v, "app_share"
+                if olds[tag] is None and isinstance(m, dict) and m.get("delta_ms") is not None:
+                    rec["notes"].append("%s: no app-share figure (%s) in that record: not compared on the app share (median delta %+.2f ms recorded, not judged)" % (
+                        tag, sh["what"], m["delta_ms"]))
+            pv = sh["prev"]["verdict"]
+            bsv = "pending" if bst == "pending" else sh["baseline"]["verdict"]
+            again_fn = app_share.get("remeasure")
+            if again_fn and "fail" in (pv, bsv):
+                again = again_fn() or {}
+                rec["remeasure"] = {"phosphor": summarize(again.get("samples") or []), "app_share": {"p50": again.get("p50"), "n": again.get("n") or 0}}
+                # a second measurement that cannot be judged (no figure, too few presses) does not clear the first
+                judged = app_share_usable(again, expected)[0]
+                for tag in ("prev", "baseline"):
+                    v2, dm, dp = regress(again.get("p50"), olds[tag]) if judged else ("fail", None, None)
+                    rec["remeasure"][tag] = {"verdict": v2, "delta_ms": dm, "delta_pct": dp}
+                if pv == "fail":
+                    pv = "fail" if rec["remeasure"]["prev"]["verdict"] in ("fail", "warn") else "warn"
+                if bsv == "fail":
+                    bsv = "fail" if rec["remeasure"]["baseline"]["verdict"] in ("fail", "warn") else "warn"
+                sh["prev"]["verdict"] = pv
+                if bsv != "pending":
+                    sh["baseline"]["verdict"] = bsv
+                for tag, v in (("prev", pv), ("baseline", bsv)):
+                    m = rec.get(tag)
+                    if isinstance(m, dict) and m.get("judged_on") == "app_share":
+                        m["verdict"] = v
+    if rec["regress_basis"] == "median" and remeasure and "fail" in (pv, bsv):
         again = summarize(remeasure())
         rec["remeasure"] = {"phosphor": again}
         for tag, src in (("prev", prev), ("baseline", base)):
@@ -349,6 +443,6 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
         if rec["baseline"].get("p50") is not None:
             rec["baseline"]["verdict"] = bsv
     rec["prev_verdict"], rec["baseline_verdict"] = pv, bsv
-    v = worst(bv, pv, bsv if bsv != "pending" else "pass")
+    v = worst(bv, pv, bsv if bsv != "pending" else "pass", share_bv)
     rec["verdict"] = v
     return rec

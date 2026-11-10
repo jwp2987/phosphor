@@ -870,6 +870,30 @@ budget, previous build, baseline, verdict, n).
   5 %. A suspected regression is re-measured once; if the second measurement is still regressed it stays `FAIL`, if it is clean it
   becomes `WARN`; both measurements are always kept in the record and the table. A missing previous run or a `pending` baseline is
   shown as such and checks nothing.
+- **Ctrl-C on Windows is judged on the app's own share, not on the median** (owner decision 2026-11-10; `docs/design/r11-win.md` section 6,
+  `docs/design/r12-tests.md`). In the Git Bash pane 87 of the 88 ms are the input tool's spawn, ConPTY and bash's trap; the standard error of
+  that median (4.7 ms in round 10, 7.3 in round 9) is larger than the +5 % / +0.5 ms gate, so `ctrl_c_d` failed "REGRESSION" with the app's
+  share unchanged. Now `ctrl_c_d` hands `lat.evaluate` the app's share of each press, read from its own `input_order` lines
+  (`cases.ctrl_c_segments` -> `ctrl_c_app_share`: `keydown_to_write` when the keydown line was logged for at least 90 % of the presses, else
+  `handler_to_write` = `ctrl_c_keydown` -> `ctrl_c_pty_write`; the figure's name is recorded and two runs are compared only on the same
+  figure). On Windows (`cases.ctrl_c_regress_basis`; both panes):
+  - the two regression verdicts (previous build, baseline) compare **that figure**, with the same thresholds and the same one re-measure
+    (still regressed = `FAIL`, clean = `WARN`, a re-measure with no usable figure clears nothing). The record says so
+    (`regress_basis: "app_share"`, `app_share.{what,p50,n,prev,baseline}`);
+  - the median's delta is still recorded and printed, as `NOT JUDGED` (`prev.median_verdict` / `baseline.median_verdict`; the latency table
+    shows "not judged (median gate: FAIL); app share: PASS");
+  - **hard bound:** the app's share over `APPCI_CTRLC_APP_SHARE_MAX_MS` (2 ms, `cases.CTRLC_APP_SHARE_MAX_MS`; measured 0.65 ms) is a `FAIL`
+    whatever the basis and however few presses there are;
+  - the share carries the regression verdicts only on the evidence a PASS needs (n >= `APPCI_MIN_SAMPLES` and >= 90 % of the presses asked
+    for). Without that (no app log, a scaled run, another platform) **the median gate applies exactly as before**;
+  - an older record with no figure of that name is not compared (verdict `none`, a note says so; the hard bound still holds). A previous run
+    that recorded the figure only as the case metric `ctrl_c_app_segments` is read from there. `baseline.py promote` now stores the figure,
+    so **`baselines/windows.json` has to be promoted again** before the baseline comparison of Ctrl-C checks anything; until then only the
+    previous-build comparison and the hard bound do.
+  The overhead budget (Ctrl-C <= 20 ms over the reference, same session) is unchanged and still judged on the medians. Linux and macOS keep
+  the median gate. Self-test: `ctrl_c_regression_is_judged_on_the_app_share` (the round 10 numbers: +10 % on the median with the share
+  unchanged passes with the delta reported; a regressed share fails; re-measure; hard bound; fallback to the median gate; old records;
+  the promoted baseline), `ctrl_c_segments_split_the_app_share` (`handler_to_write`).
 - **Promote a baseline** (coordinator, from a run on the build the owner judged good):
   `python3 script/realapp/appci/baseline.py promote <results.json> <platform>` then commit the file; `baseline.py compare <old> <new>`
   prints a delta table for two results/baseline files. The seeded files are `"status": "pending"`.

@@ -156,6 +156,8 @@ name is stored with it and two runs are compared only on the same figure.
   failure again (round 10 failed against the baseline). Such a record is not compared, a note
   says so, and the hard bound still holds.
 
+**Issue:** #2033.
+
 **Risk / follow-up.** `baselines/windows.json` has no share figure, so the baseline comparison of
 Ctrl-C checks nothing until the baseline is promoted again (`baseline.py promote` now stores
 it). The first run compares with the previous run only if that run logged the same figure in

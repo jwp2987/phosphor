@@ -806,6 +806,108 @@ def thin_evidence_is_never_a_pass():
 
 
 @check
+def ctrl_c_regression_is_judged_on_the_app_share():
+    """owner 2026-11-10 (docs/design/r11-win.md section 6, r12-tests.md): on Windows the Ctrl-C regression verdicts are judged on the app's own share of the
+    key (its input_order segments), not on the end-to-end median, whose spread is the input tool, ConPTY and the shell. The median's delta stays in the record
+    as NOT JUDGED. A regression of the share itself still FAILs (re-measured once), the share over its hard budget FAILs whatever n is, and without a usable
+    share (other platforms, no log, too few presses) the median gate applies exactly as before."""
+    import lat, baseline
+    tmp = tempfile.mkdtemp()
+    rid = "terminal@gitbash/ctrl_c_d/ctrl_c"
+    now, ref = [88.0] * 40, [80.0] * 40          # median +10 % over the previous build's 80.0: FAIL on the median gate
+    share = lambda p50, n=30, **k: dict(dict(what="handler_to_write", p50=p50, n=n, budget_ms=2.0, metric="ctrl_c_app_segments"), **k)
+    ev = lambda **k: lat.evaluate(rid, now, ref, 20.0, "overhead", "windows-test", expected=30, **k)
+
+    def prev(app_share=None, metric=None):
+        rec = {"phosphor": {"n": 40, "p50": 80.0, "p95": 100.0}}
+        if app_share:
+            rec["app_share"] = app_share
+        case = {"name": "ctrl_c_d", "mode": "terminal@gitbash", "metrics": {"lat": {"ctrl_c": rec}}}
+        if metric:
+            case["metrics"]["ctrl_c_app_segments"] = metric
+        json.dump({"cases": [case]}, open(os.path.join(tmp, "prev.json"), "w"))
+
+    def checks(rec):
+        r = cases.Result("t", "terminal@gitbash")
+        cases.lat_checks(r, rec, "Ctrl-C")
+        return r
+    orig_p = cases.plat
+    try:
+        cases.plat = lambda: "windows"
+        os.environ["APPCI_PREV_RESULTS"] = os.path.join(tmp, "prev.json")
+        prev(dict(what="handler_to_write", p50=0.65, n=30))
+        # 1. no app share handed in: the median gate, as before
+        rec = ev()
+        assert rec["regress_basis"] == "median" and rec["prev_verdict"] == "fail" and "app_share" not in rec, rec
+        r = checks(rec)
+        assert len(r.fails) == 1 and r.fails[0].startswith("REGRESSION Ctrl-C: median 88.0 vs prev build +8.00 ms"), r.fails
+        # 2. the app's share is unchanged (0.66 vs 0.65): the same median is NOT a regression; its delta is kept and reported as not judged
+        rec = ev(app_share=share(0.66))
+        assert rec["regress_basis"] == "app_share" and rec["prev_verdict"] == "pass" and rec["verdict"] == "pass", rec
+        assert rec["prev"]["median_verdict"] == "fail" and rec["prev"]["delta_ms"] == 8.0 and rec["prev"]["judged_on"] == "app_share" and rec["prev"]["verdict"] == "pass", rec["prev"]
+        assert rec["app_share"]["prev"] == {"p50": 0.65, "delta_ms": 0.01, "delta_pct": 1.5, "verdict": "pass"} and rec["app_share"]["budget_verdict"] == "pass", rec["app_share"]
+        r = checks(rec)
+        assert not r.fails and any(n_.startswith("NOT JUDGED: Ctrl-C: median 88.0 vs prev build +8.00 ms (+10.0%) would be FAIL on the median gate") and "0.66 ms now, 0.65 in that build" in n_
+                                   for n_ in r.notes), (r.fails, r.notes)
+        # 3. the app's share itself regressed (1.4 vs 0.65: +0.75 ms, +115 %): FAIL, on the share
+        rec = ev(app_share=share(1.4))
+        assert rec["prev_verdict"] == "fail" and rec["verdict"] == "fail" and rec["prev"]["verdict"] == "fail", rec
+        r = checks(rec)
+        assert len(r.fails) == 1 and r.fails[0].startswith("REGRESSION Ctrl-C: the app's own share (handler_to_write) 1.4 ms vs prev build +0.75 ms"), r.fails
+        # ... re-measured once: still regressed stays FAIL, a clean second measurement is a WARN (never a pass), one that cannot be judged clears nothing
+        rec = ev(app_share=share(1.4, remeasure=lambda: dict(what="handler_to_write", p50=1.5, n=30, samples=[90.0] * 30)))
+        assert rec["prev_verdict"] == "fail" and rec["remeasure"]["app_share"] == {"p50": 1.5, "n": 30} and rec["remeasure"]["phosphor"]["p50"] == 90.0, rec
+        assert "re-measured once: app share 1.5 (fail)" in checks(rec).fails[0]
+        rec = ev(app_share=share(1.4, remeasure=lambda: dict(what="handler_to_write", p50=0.66, n=30)))
+        assert rec["prev_verdict"] == "warn" and rec["verdict"] == "warn" and rec["prev"]["verdict"] == "warn" and rec["app_share"]["prev"]["verdict"] == "warn", rec
+        r = checks(rec)
+        assert not r.fails and any(n_.startswith("WARN Ctrl-C: the app's own share") for n_ in r.notes), (r.fails, r.notes)
+        for bad in (lambda: None, lambda: dict(what="handler_to_write", p50=0.66, n=4)):
+            assert ev(app_share=share(1.4, remeasure=bad))["prev_verdict"] == "fail", "a re-measure with no usable figure must not clear a FAIL"
+        # 4. the hard budget on the share: over it is a FAIL, also with no older figure to compare with and with too few presses to carry the regression verdict
+        rec = ev(app_share=share(2.5))
+        assert rec["app_share"]["budget_verdict"] == "fail" and rec["verdict"] == "fail", rec
+        assert any("the app's own share (handler_to_write) 2.50 ms exceeds its 2.0 ms budget" in f_ for f_ in checks(rec).fails), checks(rec).fails
+        rec = ev(app_share=share(2.5, n=5))
+        assert rec["regress_basis"] == "median" and rec["app_share"]["budget_verdict"] == "fail" and rec["verdict"] == "fail", rec
+        # 5. a share that is not usable (too few presses with the app's segments): the median gate applies as before, and says why
+        rec = ev(app_share=share(0.66, n=5))
+        assert rec["regress_basis"] == "median" and rec["prev_verdict"] == "fail" and rec["app_share"]["usable"] is False, rec
+        assert len(checks(rec).fails) == 1 and any("not usable as the regression basis" in n_ for n_ in rec["notes"]), rec["notes"]
+        rec = ev(app_share=share(None, n=0))
+        assert rec["regress_basis"] == "median" and rec["prev_verdict"] == "fail", rec
+        # 6. an older run that recorded the figure only as the case metric (before it was part of the latency record) is still compared
+        prev(metric={"n": 30, "handler_to_write": {"n": 30, "p50": 0.65, "p95": 0.9}})
+        assert ev(app_share=share(1.4))["prev_verdict"] == "fail" and ev(app_share=share(0.66))["prev_verdict"] == "pass"
+        # ... one with no such figure, or with another figure, is not compared on the share (and not on the median either): no verdict, and a note says so
+        for old in (dict(), dict(app_share=dict(what="keydown_to_write", p50=0.2, n=30)), dict(metric={"n": 3, "handler_to_write": {"n": 3, "p50": 0.1}})):
+            prev(**old)
+            rec = ev(app_share=share(1.4))
+            assert rec["prev_verdict"] == "none" and rec["app_share"]["prev"]["p50"] is None and rec["verdict"] == "pass", (old, rec)
+            assert any("no app-share figure (handler_to_write) in that record" in n_ for n_ in rec["notes"]), rec["notes"]
+        # 7. a promoted baseline carries the figure
+        json.dump({"cases": [{"name": "ctrl_c_d", "mode": "terminal@gitbash", "metrics": {"lat": {"ctrl_c": ev(app_share=share(0.66))}}}]}, open(os.path.join(tmp, "res.json"), "w"))
+        assert baseline.load(os.path.join(tmp, "res.json"))[rid]["app_share"] == {"what": "handler_to_write", "p50": 0.66, "n": 30}
+        assert lat.old_app_share("handler_to_write", baseline.load(os.path.join(tmp, "res.json"))[rid]) == 0.66
+        # 8. the figure the case takes from the log, and where the basis applies
+        seg = lambda n, kd, h: {"n": n, "keydown_to_write": {"n": kd, "p50": 0.9 if kd else None}, "handler_to_write": {"n": h, "p50": 0.65 if h else None}}
+        assert cases.ctrl_c_app_share(seg(30, 30, 30)) == dict(what="keydown_to_write", p50=0.9, n=30)
+        assert cases.ctrl_c_app_share(seg(30, 10, 30)) == dict(what="handler_to_write", p50=0.65, n=30), "a keydown line on a third of the presses is not the figure"
+        assert cases.ctrl_c_app_share(seg(30, 0, 0)) is None and cases.ctrl_c_app_share(seg(0, 0, 0)) is None and cases.ctrl_c_app_share(None) is None
+
+        class Ctx:
+            def __init__(s, win): s.win = win
+        got = cases.ctrl_c_regress_basis(Ctx(True), dict(what="handler_to_write", p50=0.65, n=30), 30, 3)
+        assert got["budget_ms"] == cases.CTRLC_APP_SHARE_MAX_MS == 2.0 and got["metric"] == "ctrl_c_app_segments" and callable(got["remeasure"]), got
+        assert cases.ctrl_c_regress_basis(Ctx(False), dict(what="handler_to_write", p50=0.65, n=30), 30, 3) is None, "other platforms keep the median gate"
+        assert cases.ctrl_c_regress_basis(Ctx(True), None, 30, 3) is None
+    finally:
+        cases.plat = orig_p
+        os.environ.pop("APPCI_PREV_RESULTS", None)
+        shutil.rmtree(tmp)
+
+
+@check
 def previous_run_with_few_samples_is_ignored():
     import lat
     tmp = tempfile.mkdtemp()
@@ -1706,6 +1808,7 @@ def ctrl_c_segments_split_the_app_share():
     assert a["n"] == 2, a
     assert a["keydown->ctrl_c_keydown"]["p50"] == 0.5 and a["ctrl_c_received->ctrl_c_pty_write"]["p50"] == 0.75, a
     assert a["keydown_to_write"]["p50"] == 2.0, a
+    assert a["handler_to_write"] == {"n": 2, "p50": 1.5, "p95": 1.5, "max": 1.5}, a      # ctrl_c_keydown -> pty write: the part every platform logs
     assert cases.ctrl_c_segments("")["n"] == 0
     assert cases.ctrl_c_segments(one(1000.0) + one(2000.0), skip=1)["n"] == 1    # warm-up presses dropped
 

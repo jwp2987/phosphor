@@ -62,6 +62,8 @@ def dcell(x):
         return "ignored (%s)" % x["ignored"]
     if not x or x.get("delta_ms") is None:
         return (x or {}).get("status", "-") if x and x.get("status") in ("pending", "missing") else "-"
+    if x.get("judged_on") == "app_share":       # lat.py "app-share basis": the median's delta is shown, the verdict is the app share's
+        return "%s (%+.2f ms, %+.1f%%) not judged (median gate: %s); app share: %s" % (f(x.get("p50")), x["delta_ms"], x["delta_pct"], str(x.get("median_verdict")).upper(), x["verdict"].upper())
     return "%s (%+.2f ms, %+.1f%%) %s" % (f(x.get("p50")), x["delta_ms"], x["delta_pct"], x["verdict"].upper())
 
 
