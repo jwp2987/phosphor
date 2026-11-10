@@ -85,6 +85,10 @@ shape of the app's counted-read bootstrap). The first arm that passes both is wr
 added to every `ssh_diag` (so to every failing ssh row). If no arm passes, the best one is used
 and the rows say that the test host cannot carry a managed session.
 
+Checked here: the appci self-test, and the relay plus the probe end to end on Linux (the front
+server with its Windows calls stubbed, `linux/bin/fakesshd.py` as the pty host): the 610-byte
+OSC arrives whole, the counted read is exact, exit status, resize and the client leaving work.
+
 The `shell` request (plain ssh, every Windows ssh case that passes today, both panes) is not
 touched. paramiko's own log no longer goes to `fakesshd.stderr`; a connection closed before its
 banner is one `serve err` line in `sshd.log`. The stale `ssh_hint` ("the wrapper starts
@@ -110,9 +114,12 @@ banner is one `serve err` line in `sshd.log`. The stale `ssh_hint` ("the wrapper
 - With a working arm the three "passing" ssh typeahead cases of the Git Bash pane stop passing
   through the 15 s give-up and exercise the managed path for real. New failures there would be
   app findings (#1933 was never run), not harness ones.
-- Still not provable from the harness side: the local leg, msys `ssh.exe` writing the remote's
-  long hooks to the app's console. If an arm passes the probe and the cases still show no SSH
-  hook in the app log, that leg is the next suspect.
+- The local leg (msys `ssh.exe` writing the remote's long hooks to the app's own console host)
+  is the same msys console layer in front of a different console host. Nothing had proved it
+  carries a long sequence. The new PROVING case `gitbash_long_osc_reaches_app` measures it
+  without a server (a bash script prints a 128-byte and a 480-byte `Clear` hook for unknown
+  session ids; the app must log both refusals). If it fails with "APP side", no managed session
+  from Git Bash can start whatever the server is: an app finding against #1933.
 
 ## Owner decisions
 
