@@ -93,9 +93,9 @@ impl AltScreenPaddingMode {
     rename_all = "snake_case"
 )]
 pub enum Osc52ClipboardAccess {
-    #[default]
     #[schemars(description = "Deny all OSC 52 clipboard access.")]
     Deny,
+    #[default]
     #[schemars(description = "Allow terminal programs to write to the clipboard, but not read.")]
     WriteOnly,
     #[schemars(description = "Allow terminal programs to both read and write the clipboard.")]
@@ -117,6 +117,20 @@ impl Osc52ClipboardAccess {
             Self::WriteOnly => "Write only",
             Self::ReadWrite => "Read and write",
         }
+    }
+}
+
+impl TerminalSettings {
+    /// True exactly once per install: the first call records that the one-time "a program set
+    /// your clipboard" notice is due and returns true; every later call returns false.
+    pub fn take_osc52_write_notice(ctx: &mut AppContext) -> bool {
+        if *TerminalSettings::as_ref(ctx).osc52_write_notice_shown {
+            return false;
+        }
+        TerminalSettings::handle(ctx).update(ctx, |settings, ctx| {
+            let _ = settings.osc52_write_notice_shown.set_value(true, ctx);
+        });
+        true
     }
 }
 
@@ -185,7 +199,16 @@ define_settings_group!(TerminalSettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "terminal.osc52_clipboard_access",
-        description: "Controls whether terminal programs can access the system clipboard via OSC 52 escape sequences. Options: deny (default), write_only, read_write.",
+        description: "Controls whether terminal programs can access the system clipboard via OSC 52 escape sequences. Options: deny, write_only (default), read_write.",
+    },
+    // Set once the first OSC 52 clipboard write has shown its one-time notice (annoyance
+    // review item 8a). Per install, never synced.
+    osc52_write_notice_shown: Osc52WriteNoticeShown {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: true,
     },
     // Opt-in toggle for running terminal find on a background thread. Only consulted on
     // channels where `FeatureFlag::AsyncFind` is off; channels with the flag on force the

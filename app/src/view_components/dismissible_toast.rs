@@ -120,6 +120,27 @@ impl<A: Action + Clone> DismissibleToastStack<A> {
     /// - the toast is manually dismissed
     /// whichever comes first.
     pub fn add_ephemeral_toast(&mut self, toast: DismissibleToast<A>, ctx: &mut ViewContext<Self>) {
+        // De-duplicate (display only): the same text while an ephemeral toast with it is still
+        // visible refreshes that toast's timer instead of stacking a second copy (#1964).
+        if toast.object_id.is_none()
+            && let Some(index) = self.toasts.iter().position(|existing| {
+                !existing.dismissible_toast.persistent
+                    && existing.dismissible_toast.main_text == toast.main_text
+            })
+        {
+            let uuid = self.toasts[index].uuid;
+            if let Some(old) = self.toasts[index].abort_handle.take() {
+                old.abort();
+            }
+            let abort_handle = ctx.spawn_abortable(
+                Timer::after(toast.timeout.unwrap_or(self.timeout)),
+                move |view, _, ctx| view.dismiss_toast_by_uuid(&uuid, ctx),
+                |_, _| {},
+            );
+            self.toasts[index].abort_handle = Some(abort_handle);
+            ctx.notify();
+            return;
+        }
         let uuid = Uuid::new_v4();
         let on_shown = toast.on_shown.clone();
         let abort_handle = ctx.spawn_abortable(

@@ -3,8 +3,19 @@ use settings_value::SettingsValue;
 use super::*;
 
 #[test]
-fn osc52_default_is_deny() {
-    assert_eq!(Osc52ClipboardAccess::default(), Osc52ClipboardAccess::Deny);
+fn osc52_default_is_write_only_read_denied() {
+    let default = Osc52ClipboardAccess::default();
+    assert_eq!(default, Osc52ClipboardAccess::WriteOnly);
+    assert!(default.allows_write());
+    assert!(!default.allows_read());
+}
+
+#[test]
+fn osc52_explicit_deny_is_kept() {
+    // An explicit `deny` in settings.toml parses to Deny, not the new default.
+    let deny = Osc52ClipboardAccess::from_file_value(&serde_json::json!("deny")).unwrap();
+    assert_eq!(deny, Osc52ClipboardAccess::Deny);
+    assert!(!deny.allows_write());
 }
 
 #[test]
@@ -45,4 +56,17 @@ fn osc52_deserializes_all_variants_from_settings_value() {
 #[test]
 fn osc52_rejects_unknown_variant() {
     assert!(Osc52ClipboardAccess::from_file_value(&serde_json::json!("allow_all")).is_none());
+}
+
+#[test]
+fn osc52_write_notice_fires_once() {
+    use crate::test_util::settings::initialize_settings_for_tests;
+    warpui::App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.update(|ctx| {
+            assert!(TerminalSettings::take_osc52_write_notice(ctx));
+            assert!(!TerminalSettings::take_osc52_write_notice(ctx));
+            assert!(!TerminalSettings::take_osc52_write_notice(ctx));
+        });
+    });
 }

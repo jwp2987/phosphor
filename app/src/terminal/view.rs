@@ -18414,6 +18414,18 @@ impl TerminalView {
                 if access.allows_write() {
                     ctx.clipboard()
                         .write(ClipboardContent::plain_text(contents.to_owned()));
+                    if TerminalSettings::take_osc52_write_notice(ctx) {
+                        let window_id = ctx.window_id();
+                        if ctx.has_singleton_model::<ToastStack>() {
+                            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                                let toast = DismissibleToast::new(
+                                    crate::t!("terminal-osc52-write-notice"),
+                                    ToastFlavor::Default,
+                                );
+                                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                            });
+                        }
+                    }
                 } else {
                     log::info!(
                         "OSC 52 clipboard write blocked by terminal.osc52_clipboard_access setting"
