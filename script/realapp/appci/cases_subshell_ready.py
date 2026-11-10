@@ -38,16 +38,28 @@ def write_rc(ctx, name, text):
     return "~/w/" + name
 
 
-def hops(ctx, off):
-    """the readiness hops logged since `off`, in order, as (hop, rest-of-line)"""
+# Every hop a case of this module looks up MUST be listed here: hops() drops every other line. Round 10 (macOS and Wayland, both modes):
+# subshell_ready_secret_after_probe failed only "stage 2 waited for the prompt after the probe's hook (hop subshell_stage_two_pending)" while the
+# app log of the same case has that hop, before the Secret cancel, with no write between them: the name was missing from this list, so
+# first_index() could never find it. selftest.py (subshell_ready_hops_cover_every_lookup) reads the names the cases look up from this file.
+HOPS = ("subshell_setup_armed", "subshell_ready_judged", "subshell_ready_line_end", "subshell_setup_ready_write", "subshell_written_judged",
+        "subshell_setup_cancelled", "subshell_setup_unsupported", "subshell_stage_two_pending")
+
+
+def hops_in(text):
+    """pure: the readiness hops of an app-log excerpt, in order, as (hop, line)"""
     out = []
-    for ln in ctx.log_since(off).splitlines():
-        for h in ("subshell_setup_armed", "subshell_ready_judged", "subshell_ready_line_end", "subshell_setup_ready_write",
-                  "subshell_written_judged", "subshell_setup_cancelled", "subshell_setup_unsupported"):
+    for ln in text.splitlines():
+        for h in HOPS:
             if h in ln:
                 out.append((h, ln))
                 break
     return out
+
+
+def hops(ctx, off):
+    """the readiness hops logged since `off`, in order, as (hop, rest-of-line)"""
+    return hops_in(ctx.log_since(off))
 
 
 def first_index(hs, name, contains=None):

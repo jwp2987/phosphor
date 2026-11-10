@@ -4584,3 +4584,29 @@ defects, five are faults of the harness or the job. Everything below is worked, 
   nu no-helper arms past the connect (terminal `lab_fam_agent_context.{fish,nu}` then NOREF like bash / zsh, "no scripted app driver"; the agent-mode nu
   arms expected to FAIL at their first remote tool call, see the owner question above); `lab_agent_remote_flow.bash`, `lab_agent_remote_drop.bash`,
   `lab_fam_agent_delete_conflict.bash` and `lab_fam_agent_edit_endings.bash` judged on the new oracles / the app change; the eight `.helper` rows NOREF.
+
+## Round 11: the macOS app-test failures of round 10 (build/r10a; design `docs/design/r11-mac.md`)
+
+All four rows were TEST faults; no app code changed. Self-test: `r11_mac_round10_test_faults`.
+
+- **`subshell_ready_secret_after_probe` (macOS and Wayland, both modes).** The case asserts the hop `subshell_stage_two_pending`, and the lab's
+  `hops()` kept only a fixed list of hop names that did not have it, so the lookup could never succeed. The list is now the module constant
+  `cases_subshell_ready.HOPS` (with the missing name), `hops_in()` is the pure part, and the self-test reads every hop name the cases look up
+  from the module's source and fails when one is not in `HOPS`.
+- **`md_viewer`, `md_viewer_big`: the viewer tab is closed and the close is proven (`cases.close_file_viewer`).** `uri::open_file` opens a
+  handed-over file in a NEW TAB and focuses it. The cases left it there. On Linux a later case that relaunches the app happened to run before
+  anything typed; on macOS those cases skip, so the next case typed into the viewer. Now, in a `finally`: when the app log since the open shows
+  `dispatching action for "root_view:add_file_pane"`, the tab is closed with `editor_close()` (`APPCI_KEY_CLOSE`; on macOS the command palette's
+  `Close Current Session`, as the editor cases do), and the PID probe must be answered, by the pane's root shell when that pid is recorded
+  (`viewer_close_verdict`). No log line: nothing is pressed (the close acts on whatever is in front). A failed proof FAILS the case with the
+  reason. Second layer: `md_viewer*` is in `cases.DEPTH_PREFIXES`, so the runner's root-shell probe runs after it and relaunches the app when
+  the pane is still not a shell. The case's end-of-case screenshot therefore shows the pane again; the viewer is in `shots/*_md_small.png`.
+  Unproven until a Mac run: that the palette entry closes a viewer tab (it is the same `PaneGroupAction::RemoveActive` as the key).
+- **`ui_vertical_tabs_many`, `ui_vertical_tabs_panel_click`: precondition (`first_tab_in_front`).** Before a tab is opened or the settings file
+  is touched, the pane that has the keyboard must answer `pwd` with the work directory. Otherwise the case stops with that one failure (it is
+  a FAIL: the case did not run), instead of 260 s of typing into the wrong place and a dozen derived failures.
+- **OCR on macOS reads with Apple Vision first (`cases.ocr_engines`).** `ctx.ocr` used tesseract whenever one was on the PATH, on macOS too,
+  and only fell back to `mac/tools/ocr` without it. The Mac runner has a Homebrew tesseract, which reads the agent header but not the small grey
+  model chip; agent `mode_proof` failed "model chip not visible" on a screenshot that shows it. On macOS the Vision read now always comes
+  first and tesseract's read is added to it (as the X11 2x read is added, never replacing). Other platforms are unchanged. The word-box
+  helpers of `cases_ui` (pointer cases, tesseract TSV) are not touched.

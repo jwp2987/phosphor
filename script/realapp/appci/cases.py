@@ -567,7 +567,7 @@ def where_tokens(path, skip=0):
     return raw[skip:].replace(b"\x00", b"").replace(b"\xff\xfe", b"").decode("utf-8", "replace").split()
 
 
-DEPTH_PREFIXES = ("ssh_", "remote_", "subshell", "lab_")
+DEPTH_PREFIXES = ("ssh_", "remote_", "subshell", "lab_", "md_viewer")     # md_viewer*: a viewer TAB is opened in front of the pane (close_file_viewer)
 
 
 def post_case_invariants_apply(status):
@@ -1604,21 +1604,39 @@ class Ctx:
 
     def ocr(self, tag):
         mac_ocr = os.path.join(getattr(self.be, "TOOLS", "") or "", "ocr") if self.be.name == "mac" else ""
-        if not shutil.which("tesseract") and not (mac_ocr and os.access(mac_ocr, os.X_OK)):
+        engines = ocr_engines(self.be.name, bool(shutil.which("tesseract")), bool(mac_ocr and os.access(mac_ocr, os.X_OK)))
+        if not engines:
             return None
         p = self.shot(tag)
         if not p:
             return None
-        if shutil.which("tesseract"):
+        txt = []
+        for eng in engines:
+            if eng == "vision":
+                r = subprocess.run([mac_ocr, p], capture_output=True, timeout=60)          # Apple Vision (mac/tools/ocr.swift)
+                txt.append(r.stdout.decode(errors="replace"))
+                continue
             r = subprocess.run(["tesseract", p, "-"], capture_output=True, timeout=60)
-            txt = r.stdout.decode(errors="replace")
+            txt.append(r.stdout.decode(errors="replace"))
             up = ocr_upscaled(self.be.name, p)
             if up:                         # X11: the 2x read is added to the plain one, never replaces it (ocr_upscaled)
                 r2 = subprocess.run(["tesseract", up, "-"], capture_output=True, timeout=60)
-                txt += "\n" + r2.stdout.decode(errors="replace")
-            return txt
-        r = subprocess.run([mac_ocr, p], capture_output=True, timeout=60)          # Apple Vision (mac/tools/ocr.swift)
-        return r.stdout.decode(errors="replace")
+                txt.append(r2.stdout.decode(errors="replace"))
+        return "\n".join(txt)
+
+
+def ocr_engines(backend_name, have_tesseract, have_vision):
+    """pure: the OCR engines ctx.ocr reads a screenshot with, in order; their texts are joined. macOS reads with Apple Vision (the engine the Mac
+    harness is built around, mac/tools/ocr.swift) and ADDS tesseract's read when a tesseract is on the runner's PATH. Round 10 macOS: a Homebrew
+    tesseract was on the PATH, so it was the ONLY engine used, and agent mode_proof failed "model chip not visible" on a screen that shows the chip
+    (shots/agent_proof_prekey.png: 'CI Ollama / gpt-oss:20b'; Vision reads that line from the same file, tesseract reads the header and misses
+    the small grey chip). Other platforms: tesseract or nothing, as before."""
+    out = []
+    if backend_name == "mac" and have_vision:
+        out.append("vision")
+    if have_tesseract:
+        out.append("tesseract")
+    return out
 
 
 def ocr_upscaled(backend_name, p):
@@ -5862,6 +5880,49 @@ def open_file_in_app(ctx, path):
     return None
 
 
+FILE_PANE_OPENED = 'dispatching action for "root_view:add_file_pane"'      # warpui_core App::dispatch_action (Info): uri::open_file took a handed-over file into a NEW TAB
+
+
+def file_viewer_opened(log):
+    """pure: whether an app-log excerpt shows the app opening a handed-over file in a viewer tab (root_view::add_file_pane -> add_tab_for_file_notebook)"""
+    return FILE_PANE_OPENED in log
+
+
+def viewer_close_verdict(pid, root_pid, has_probe):
+    """pure: after the viewer tab was closed, is a shell pane in front again? -> (ok, text). `pid` is the PID probe's answer (None: nothing answered),
+    `root_pid` the pane's recorded root shell (None: not recorded), `has_probe` whether this pane has a PID probe at all (cmd.exe has none)."""
+    if not has_probe:
+        return None, "this pane has no PID probe: not proven that a shell is in front again"
+    if pid is None:
+        return False, "no shell answered the PID probe: the viewer tab is still in front (the keys of every later case would go to it)"
+    if root_pid is not None and pid != root_pid:
+        return False, "the shell that answers has pid %s, not the pane's root shell %s" % (pid, root_pid)
+    return True, "shell pid %s answers" % pid
+
+
+def close_file_viewer(ctx, r, off, what):
+    """Close the viewer TAB open_file_in_app() opened and PROVE a shell is in front again. Round 10 macOS: md_viewer left its tab open and in front
+    (uri::open_file adds a tab and focuses it); the four cases after it SKIP there, so ui_vertical_tabs_many typed its first line into the viewer
+    (9 tabs for 8, tab 2 = '<none>') and the runner then relaunched the app (pane_not_local_after_ui_vertical_tabs_many). On Linux a case that
+    relaunches the app (zero_network_startup) happened to run in between. Nothing is pressed unless the app log since `off` shows the tab opening
+    (the close acts on whatever is in front). The close is editor_close(): APPCI_KEY_CLOSE, else (macOS) the command palette's 'Close Current
+    Session'. The proof is the PID probe: a shell answers, and it is the pane's root shell when that pid is recorded."""
+    if not ctx.until(lambda: file_viewer_opened(ctx.log_since(off)), 3, step=0.3):
+        r.note("%s: no '%s' line in the app log: no viewer tab is known to be open, nothing was closed" % (what, FILE_PANE_OPENED))
+        return
+    how = editor_close(ctx, r)
+    if not how:
+        r.check(False, "%s: no way to close the viewer tab on this platform (APPCI_KEY_CLOSE and APPCI_KEY_CMD_PALETTE empty): it stays in front of the pane" % what)
+        return
+    time.sleep(1.2)
+    has_probe = depth_probe_cmd(getattr(ctx, "pane", None), "x") is not None
+    ok, text = viewer_close_verdict(ctx.shell_pid() if has_probe else None, getattr(ctx, "root_pid", None), has_probe)
+    if ok is None:
+        r.note("%s: viewer tab closed by %s; %s" % (what, how, text))
+        return
+    r.check(ok, "%s: after closing the viewer tab (%s): %s" % (what, how, text))
+
+
 def wait_for_text(ctx, tag, needles, timeout):
     """Poll OCR until every needle (space-less, lower-case) is on screen. Returns (seconds, found_text) ; seconds None on timeout."""
     t0 = time.time()
@@ -5913,23 +5974,26 @@ def c_md_viewer(ctx, r):
     r.check(err is None, "could not hand the file to the running app: %s" % err)
     if err:
         return
-    note = park_pointer(ctx)
-    if note:
-        r.note(note)
-    time.sleep(2)
-    secs, txt = wait_for_text(ctx, "md_small", MD_SMALL_TEXT, 20)
-    if txt is None:
-        ctx.shot("md_small_noocr")
-        r.note("no OCR engine (tesseract / Apple Vision): screenshot shots/%s_md_small_noocr.png only, table text and diagram labels NOT machine-verified" % ctx.label)
-    else:
-        r.metric("md_small_text_visible_s", round(secs, 2) if secs is not None else None)
-        r.check(secs is not None, "markdown viewer: heading/table text %s not visible within 20 s (OCR saw %r)" % (list(MD_SMALL_TEXT), txt[:300]))
-        _, txt2 = wait_for_text(ctx, "md_small_diagram", MD_SMALL_DIAGRAM, 15)
-        missing = [n for n in MD_SMALL_DIAGRAM if n not in (txt2 or "")]
-        r.check(not missing, "mermaid flowchart node labels not visible (blank / failed diagram block?): missing %s; OCR saw %r" % (missing, (txt2 or "")[:300]))
-    new = ctx.log_since(off)
-    r.check("panicked at" not in new, "app log shows a panic while opening the markdown file")
-    r.check(ctx.app.alive(), "app died while opening the markdown file")
+    try:
+        note = park_pointer(ctx)
+        if note:
+            r.note(note)
+        time.sleep(2)
+        secs, txt = wait_for_text(ctx, "md_small", MD_SMALL_TEXT, 20)
+        if txt is None:
+            ctx.shot("md_small_noocr")
+            r.note("no OCR engine (tesseract / Apple Vision): screenshot shots/%s_md_small_noocr.png only, table text and diagram labels NOT machine-verified" % ctx.label)
+        else:
+            r.metric("md_small_text_visible_s", round(secs, 2) if secs is not None else None)
+            r.check(secs is not None, "markdown viewer: heading/table text %s not visible within 20 s (OCR saw %r)" % (list(MD_SMALL_TEXT), txt[:300]))
+            _, txt2 = wait_for_text(ctx, "md_small_diagram", MD_SMALL_DIAGRAM, 15)
+            missing = [n for n in MD_SMALL_DIAGRAM if n not in (txt2 or "")]
+            r.check(not missing, "mermaid flowchart node labels not visible (blank / failed diagram block?): missing %s; OCR saw %r" % (missing, (txt2 or "")[:300]))
+        new = ctx.log_since(off)
+        r.check("panicked at" not in new, "app log shows a panic while opening the markdown file")
+        r.check(ctx.app.alive(), "app died while opening the markdown file")
+    finally:
+        close_file_viewer(ctx, r, off, "md_viewer")
 
 
 @case("md_viewer_big", modes=("terminal",), order=81, gui=True)
@@ -5950,20 +6014,24 @@ def c_md_viewer_big(ctx, r):
     r.metric("md_bytes", os.path.getsize(path))
     rss0 = ctx.app.cpu_ticks()[1]
     t0 = time.time()
+    off = ctx.log_size()
     err = open_file_in_app(ctx, path)
     r.check(err is None, "could not hand the file to the running app: %s" % err)
     if err:
         return
-    secs, txt = wait_for_text(ctx, "md_big", ("bigdocstart",), 90)
-    if txt is None:
-        raise Skip("no OCR engine: cannot time the render (screenshot only)")
-    rss1 = ctx.app.cpu_ticks()[1]
-    r.metric("md_big_render_s", round(time.time() - t0, 2) if secs is not None else None)
-    r.metric("md_big_rss_delta_mb", round((rss1 - rss0) / 1024.0, 1))
-    # Budgets are first guesses (no measurement yet): tighten after the first CI numbers (docs/testing.md).
-    r.check(secs is not None, "2 MB markdown file: first heading not visible within 90 s")
-    r.check((rss1 - rss0) / 1024.0 < 3000, "2 MB markdown file grew the app by %.0f MB RSS (budget 3000 MB)" % ((rss1 - rss0) / 1024.0))
-    r.check(ctx.app.alive(), "app died rendering the 2 MB markdown file")
+    try:
+        secs, txt = wait_for_text(ctx, "md_big", ("bigdocstart",), 90)
+        if txt is None:
+            raise Skip("no OCR engine: cannot time the render (screenshot only)")
+        rss1 = ctx.app.cpu_ticks()[1]
+        r.metric("md_big_render_s", round(time.time() - t0, 2) if secs is not None else None)
+        r.metric("md_big_rss_delta_mb", round((rss1 - rss0) / 1024.0, 1))
+        # Budgets are first guesses (no measurement yet): tighten after the first CI numbers (docs/testing.md).
+        r.check(secs is not None, "2 MB markdown file: first heading not visible within 90 s")
+        r.check((rss1 - rss0) / 1024.0 < 3000, "2 MB markdown file grew the app by %.0f MB RSS (budget 3000 MB)" % ((rss1 - rss0) / 1024.0))
+        r.check(ctx.app.alive(), "app died rendering the 2 MB markdown file")
+    finally:
+        close_file_viewer(ctx, r, off, "md_viewer_big")
 
 
 @case("md_viewer_ai_answer", modes=("agent",), order=82, gui=True)

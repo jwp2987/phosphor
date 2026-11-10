@@ -6015,6 +6015,93 @@ def subshell_ready_newuser_guard():
     assert "subshell_ready_newuser_guard" in doc and "#2015" in doc
 
 
+@check
+def r11_mac_round10_test_faults():
+    """Round 10 macOS (build/r10a), four rows, all TEST faults (docs/design/r11-mac.md): the hop list of the subshell lab dropped the hop one
+    case asserts; md_viewer left its viewer tab in front of the pane; ui_vertical_tabs_many typed into it; mode_proof read the screen with
+    tesseract alone although the Mac's own engine reads the model chip."""
+    import re
+    import cases_subshell_ready as sr
+    import cases_wrap_vtabs as wv
+    # 1. every hop name the subshell lab looks up is one hops() keeps, and the real lines of the round 10 log are found in order
+    src = open(os.path.join(HERE, "cases_subshell_ready.py")).read()
+    looked_up = set(re.findall(r'first_index\(.+?, "(subshell_[a-z_]+)"', src)) | set(re.findall(r'h == "(subshell_[a-z_]+)"', src))
+    assert "subshell_stage_two_pending" in looked_up and len(looked_up) >= 5, looked_up
+    assert looked_up <= set(sr.HOPS), "hops() drops a hop a case looks up: %s" % sorted(looked_up - set(sr.HOPS))
+    log = ("2026-11-10T08:03:23Z [DEBUG] input_order hop=subshell_setup_ready_write trigger=banner shell=None relay=false bytes_passed=0 age_ms=0 t=1\n"
+           "2026-11-10T08:03:23Z [DEBUG] input_order hop=subshell_stage_two_pending shell=Bash t=2\n"
+           "2026-11-10T08:03:23Z [DEBUG] input_order hop=frame_skip_run skipped=1 t=3\n"
+           "2026-11-10T08:03:24Z [DEBUG] input_order hop=subshell_setup_cancelled why=Secret dest=Editor chunks=35 bytes=35 t=4\n"
+           "2026-11-10T08:03:24Z [DEBUG] input_order hop=subshell_setup_ready_write trigger=banner shell=Some(Bash) relay=false bytes_passed=8 t=5\n")
+    hs = sr.hops_in(log)
+    assert [h for h, _ in hs] == ["subshell_setup_ready_write", "subshell_stage_two_pending", "subshell_setup_cancelled", "subshell_setup_ready_write"], hs
+    pend, cancel = sr.first_index(hs, "subshell_stage_two_pending"), sr.first_index(hs, "subshell_setup_cancelled", "why=Secret")
+    assert pend == 1 and cancel == 2 and not any(h == "subshell_setup_ready_write" for h, _ in hs[pend:cancel])
+    assert sr.hops_in("") == []
+    # 2. the viewer tab: opened only by the app's own log line; the close is proven by the PID probe
+    assert cases.file_viewer_opened('x [INFO] dispatching action for "root_view:add_file_pane"\n') and not cases.file_viewer_opened("hop=ui_item name=other")
+    assert cases.viewer_close_verdict(None, 52149, True)[0] is False and "still in front" in cases.viewer_close_verdict(None, 52149, True)[1]
+    assert cases.viewer_close_verdict(52149, 52149, True)[0] is True and cases.viewer_close_verdict(777, None, True)[0] is True
+    assert cases.viewer_close_verdict(777, 52149, True)[0] is False and cases.viewer_close_verdict(None, None, False)[0] is None
+    proving = set(cases.PROVING)
+    assert cases.wants_depth_check("md_viewer", proving) and cases.wants_depth_check("md_viewer_big", proving)      # the runner's second layer
+    # close_file_viewer: nothing pressed without the log line; with it the close key goes out once and the probe decides
+    sent = []
+    be = types.SimpleNamespace(key=lambda k: sent.append(k), type=lambda *a, **k: sent.append(("type", a)))
+    old = {k: os.environ.get(k) for k in ("APPCI_KEY_CLOSE", "APPCI_KEY_CMD_PALETTE")}
+    orig_sleep, cases.time.sleep = cases.time.sleep, lambda s: None
+    try:
+        os.environ["APPCI_KEY_CLOSE"], os.environ["APPCI_KEY_CMD_PALETTE"] = "ctrl+shift+w", ""
+
+        def ctx_with(log, pid):
+            return types.SimpleNamespace(be=be, pane="bash", root_pid=52149, log_since=lambda off: log, shell_pid=lambda: pid,
+                                         until=lambda fn, t, step=0.2: fn())
+        r = cases.Result("t", "terminal")
+        cases.close_file_viewer(ctx_with("nothing", None), r, 0, "md_viewer")
+        assert sent == [] and not r.fails and any("nothing was closed" in n for n in r.notes), (sent, r.fails, r.notes)
+        opened = 'dispatching action for "root_view:add_file_pane"'
+        r = cases.Result("t", "terminal")
+        cases.close_file_viewer(ctx_with(opened, 52149), r, 0, "md_viewer")
+        assert sent == ["ctrl+shift+w"] and not r.fails, (sent, r.fails)
+        r = cases.Result("t", "terminal")
+        cases.close_file_viewer(ctx_with(opened, None), r, 0, "md_viewer")
+        assert len(r.fails) == 1 and "still in front" in r.fails[0], r.fails
+        del sent[:]
+        os.environ["APPCI_KEY_CLOSE"] = ""
+        r = cases.Result("t", "terminal")
+        cases.close_file_viewer(ctx_with(opened, 52149), r, 0, "md_viewer")
+        assert sent == [] and len(r.fails) == 1 and "no way to close" in r.fails[0], (sent, r.fails)
+    finally:
+        cases.time.sleep = orig_sleep
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    msrc = open(os.path.join(HERE, "cases.py")).read()
+    for name in ("md_viewer", "md_viewer_big"):
+        body = msrc[msrc.index('@case("%s"' % name):]
+        body = body[:body.index("\n@case(", 10)]
+        assert "finally:\n        close_file_viewer(ctx, r, off, \"%s\")" % name in body, name
+    # 3. ui_vertical_tabs_*: the first key's destination is proven before anything is opened
+    assert wv.first_tab_precondition("/w", "/w") is None
+    assert "no shell is in front" in wv.first_tab_precondition("<none>", "/w") and "'/w/x'" in wv.first_tab_precondition("/w/x", "/w")
+    vsrc = open(os.path.join(HERE, "cases_wrap_vtabs.py")).read()
+    for fn in ("def c_vertical_tabs_many", "def c_vertical_tabs_panel_click"):
+        body = vsrc[vsrc.index(fn):]
+        assert 0 < body.index("first_tab_in_front(ctx, r") < body.index("VTabs(ctx, r)"), fn
+    # 4. OCR engines: Apple Vision is always read on macOS when the tool exists; tesseract is added, never the only engine there
+    assert cases.ocr_engines("mac", True, True) == ["vision", "tesseract"] and cases.ocr_engines("mac", False, True) == ["vision"]
+    assert cases.ocr_engines("mac", True, False) == ["tesseract"] and cases.ocr_engines("mac", False, False) == []
+    assert cases.ocr_engines("x11", True, True) == ["tesseract"] and cases.ocr_engines("wayland", False, False) == []
+    vision = "(ESC) for terminal\nNew agent conversation\nCl Ollama / gpt-oss:20b\n"          # the two engines' reads of round 10's agent_proof_prekey.png
+    tess = "at New agent conversation\n@) for help (7) for commands open conversation\n"
+    assert "gpt-oss" not in tess.lower() and "gpt-oss" in " ".join((vision + "\n" + tess).lower().split())
+    assert cases.ocr_agent_markers(" ".join((vision + "\n" + tess).lower().split())) == (True, False)
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
+    assert "r11_mac_round10_test_faults" in doc and "close_file_viewer" in doc and "ocr_engines" in doc
+
+
 def main():
     failed = 0
     for f in CHECKS:

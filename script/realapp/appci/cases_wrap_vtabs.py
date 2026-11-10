@@ -442,12 +442,33 @@ def vt_need(ctx, r):
         r.skip("Windows: the case rewrites the settings file while the app runs, which is not ported there (as ui_settings_live)")
 
 
+def first_tab_precondition(got, want):
+    """pure: None when the pane that answered the first `pwd` is the case's own first tab (cwd = the work dir), else the failure text"""
+    if got == want:
+        return None
+    return ("precondition: before the case opened any tab, the pane that has the keyboard %s, expected the pane's shell in %r: an earlier case left "
+            "another tab or a non-shell pane in front; nothing else was typed (every line of this case would have gone to the wrong place)"
+            % ("answered no command ('<none>': no shell is in front)" if got == "<none>" else "is in %r" % got, want))
+
+
+def first_tab_in_front(ctx, r, tag):
+    """Round 10 macOS: md_viewer had left its viewer tab in front, and this case typed its first line into the viewer, counted 9 tabs for 8 and
+    reported 12 wrong answers 260 s later. The case now proves where its first key will go BEFORE it types or opens anything, and stops with that
+    one failure otherwise (still a FAIL: the case did not run)."""
+    bad = first_tab_precondition(tab_answer(ctx, "pre_" + tag), R.norm_path(ctx.W))
+    if bad:
+        r.check(False, bad)
+    return bad is None
+
+
 @case("ui_vertical_tabs_many", order=87, gui=True)
 def c_vertical_tabs_many(ctx, r):
     """#1990, the owner's layout: vertical tabs on and many tabs. Every tab gets one exact command; every tab is reached by its number key in a shuffled
     order, then by next / previous / last tab; the tab that answers is proven by its own `pwd`. Typing stays exact with all tabs open and after they close."""
     vt_need(ctx, r)
     n = max(3, min(int(os.environ.get("APPCI_VT_TABS", "8")), 8))          # number keys reach tabs 1..8; the 9 key is "last tab"
+    if not first_tab_in_front(ctx, r, "many"):
+        return
     vt = VTabs(ctx, r)
     r.note("vertical tabs: %s" % vt.how)
     opened = False
@@ -503,6 +524,8 @@ def c_vertical_tabs_panel_click(ctx, r):
     m = U.mouse_or_skip(ctx, r)
     U.need_tesseract(r)
     n = 4
+    if not first_tab_in_front(ctx, r, "panel"):
+        return
     vt = VTabs(ctx, r)
     r.note("vertical tabs: %s" % vt.how)
     opened = False
