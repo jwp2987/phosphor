@@ -561,6 +561,30 @@ impl BlockGrid {
         )
     }
 
+    /// The plain-text contents of the rows ending at the CURSOR's row, at most `max_rows` of them,
+    /// read from the cells whether or not the grid was started. [`Self::contents_to_string`] and
+    /// [`Self::contents_through_row_to_string`] go by [`Self::len`], which is 0 until the grid is
+    /// started, and the prompt-and-command grid of a fresh block is started by the Precmd's `ps1`
+    /// or by the prompt's start marker: with the shell's own prompt (honor PS1) the Precmd carries
+    /// no `ps1` and the marker comes with the prompt, so what a precmd function prints in between
+    /// is in the cells of a grid whose length still reads 0 (#1923).
+    pub fn tail_at_cursor_to_string(&self, max_rows: usize) -> String {
+        if max_rows == 0 {
+            return String::new();
+        }
+        let end_row = self.grid_handler.cursor_point().row;
+        let start_row = end_row.saturating_sub(max_rows - 1);
+        let columns = self.grid_handler.columns().saturating_sub(1);
+        self.grid_handler.bounds_to_string(
+            Point::new(start_row, 0),
+            Point::new(end_row, columns),
+            false, /* include_esc_sequences */
+            RespectObfuscatedSecrets::Yes,
+            false, /* force_secrets_obfuscated */
+            RespectDisplayedOutput::Yes,
+        )
+    }
+
     /// Returns the grid's contents from `start_row` (inclusive, clamped to the grid's
     /// bounds) through the end, as plain text with secrets obfuscated -- the same
     /// rendering as [`Self::contents_to_string`] with `max_rows: None`, but addressed

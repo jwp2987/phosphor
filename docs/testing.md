@@ -4818,3 +4818,18 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   step) and appci `lab_helper_from_the_cache_r12`. First run on the box is the first compile of this recipe: expect to adjust it.
 - **`big_paste` budgets are the owner's** (1500 ms paste to Enter, 250 ms largest UI item): see the `big_paste` entry of round 10 group A above.
 
+
+## Round 12: the `key_facts` unit failure of round 11 (build/r11a; design `docs/design/r12-keyfacts.md`; #1923)
+
+- **APP, #1923 (the round 11 fix covered one prompt mode only): unit
+  `key_facts::tests::a_question_printed_after_the_precmd_is_seen_on_the_grid_the_block_writes_to`.** The test's setup is real: its Precmd carries no
+  `ps1`, which is what bash sends with the shell's own prompt (honor PS1 on: `"ps1": ""`, read as `None`). Such a Precmd does not START the fresh
+  block's prompt-and-command grid (`HeaderGrid::prompt_only_precmd`; the prompt's start marker does, and bash prints the prompt after its precmd
+  functions), an unstarted `BlockGrid` has length 0 and `contents_to_string` returns nothing, so `active_block_tail_asks_for_input` was false with
+  `pin: ` in the grid's cells. With the app's prompt (the Windows CI setup) the Precmd carries the PS1, the grid is started and the round 11 fix
+  works as written. Now an unstarted grid is read from its cells, the rows ending at the cursor's row (`BlockGrid::tail_at_cursor_to_string`); a
+  started grid is read as before. The failing test is unchanged except for one added assertion of its premise (the grid is unstarted) and three
+  added checks (a question under other text, an ended line, plain text under an answered question). New:
+  `a_question_printed_after_a_precmd_that_carries_the_prompt_is_seen` (the app-prompt Precmd, a started grid), with the test helper
+  `TerminalModel::finish_block_with_ps1`. No appci case runs with honor PS1 on: `gitbash_precmd_secret` proves the app-prompt mode only, the unit
+  tests are the proof for the other. Next unit run: both tests pass.

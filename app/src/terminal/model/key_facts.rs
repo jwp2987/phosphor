@@ -398,6 +398,14 @@ pub fn output_tail_is_input_prompt(output: &str) -> bool {
 /// read the output grid only, so at the prompt hold's cap the `pin: ` on screen was not seen and
 /// the PIN stayed held (round 10 Windows, `gitbash_precmd_secret`: `prompt_hold_kept_overdue`).
 /// A cursor at column 0 is a finished line: no question.
+///
+/// Round 11 (unit, build/r11a): that grid is not always STARTED when the question is printed.
+/// The Precmd starts it only when it carries a `ps1` (the app's prompt); with the shell's own
+/// prompt (honor PS1) bash sends `"ps1": ""` and the grid is started by the prompt's start
+/// marker, which bash prints AFTER its precmd functions. An unstarted grid's length is 0 and its
+/// `contents_to_string` is empty, so the first version of this fact saw nothing there and the PIN
+/// stayed held for every honor-PS1 user. The cells hold the question either way: an unstarted
+/// grid is read from its cells, the rows ending at the cursor's row.
 pub fn active_block_tail_asks_for_input(block: &Block) -> bool {
     let Some(grid) = block.grid_of_type(block.active_grid_type()) else {
         return false;
@@ -405,7 +413,12 @@ pub fn active_block_tail_asks_for_input(block: &Block) -> bool {
     if grid.grid_handler().cursor_point().col == 0 {
         return false;
     }
-    output_tail_is_input_prompt(&grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS)))
+    let tail = if grid.started() {
+        grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS))
+    } else {
+        grid.tail_at_cursor_to_string(OUTPUT_TAIL_ROWS)
+    };
+    output_tail_is_input_prompt(&tail)
 }
 
 /// #2017: the other prompts of `zsh-newuser-install`, each read as ONE key by the same raw zsh:

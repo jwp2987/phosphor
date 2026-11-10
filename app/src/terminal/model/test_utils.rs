@@ -396,6 +396,37 @@ impl TerminalModel {
     /// Simulates the completion of a block with the given exit code (e.g. 130 for a command
     /// interrupted by ^C). Assumes that a block was running to begin with.
     pub fn finish_block_with_exit_code(&mut self, exit_code: i32) {
+        self.finish_block_with_prompt_metadata(
+            exit_code,
+            PromptMetadata {
+                session_id: Some(0),
+                ..Default::default()
+            },
+        );
+    }
+
+    /// Simulates the completion of a block whose Precmd carries the rendered prompt, as bash's
+    /// does with the app's prompt (`honor_ps1` false: `"ps1"` is the user's PS1, for the prompt
+    /// preview). [`Self::finish_block`] sends a Precmd with no `ps1`, which is what the same
+    /// shell sends with its own prompt (honor PS1). The difference matters to the fresh block:
+    /// only a Precmd with a `ps1` starts its prompt-and-command grid.
+    pub fn finish_block_with_ps1(&mut self, ps1: &str, honor_ps1: bool) {
+        self.finish_block_with_prompt_metadata(
+            0,
+            PromptMetadata {
+                session_id: Some(0),
+                ps1: Some(hex::encode(ps1)),
+                honor_ps1: Some(honor_ps1),
+                ..Default::default()
+            },
+        );
+    }
+
+    fn finish_block_with_prompt_metadata(
+        &mut self,
+        exit_code: i32,
+        prompt_metadata: PromptMetadata,
+    ) {
         let completion_metadata = CompletionMetadata {
             exit_code: ExitCode::from(exit_code),
             next_block_id: BlockId::new(),
@@ -406,10 +437,7 @@ impl TerminalModel {
         });
         self.precmd_with_completion_metadata(PrecmdValue {
             completion_metadata,
-            prompt_metadata: PromptMetadata {
-                session_id: Some(0),
-                ..Default::default()
-            },
+            prompt_metadata,
         });
     }
 
