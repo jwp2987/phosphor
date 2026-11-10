@@ -401,6 +401,11 @@ def enter_segments(lines, t0):
       event_age_ms             `hop=mac_enter stage=app_send_event ... age_ms=` (macOS, #1606): the OS's own timestamp of the Return key-down ->
                                the app dequeuing it on the main thread. Large = the main thread was busy (rendering) when the key arrived.
       event_to_enter_ms        that app_send_event line -> `hop=enter_begin` (AppKit routing + keystroke matching on the main thread)
+      appkit_route_ms          (#2031, macOS) event_to_enter by the `hop=mac_enter stage=` lines the app already logs, in order:
+      key_equivalent_ms          app_send_event -> perform_key_equivalent (AppKit picking the window and asking for a key equivalent),
+      interpret_keys_ms          -> key_down_impl_entry (the binding look-ups), -> after_interpret_key_events (interpretKeyEvents: the input
+      dispatch_to_enter_ms       context / IME), -> enter_begin (view event, keystroke match, action dispatch). Only for an Enter whose
+                               stages all appear in that order (enter_stage_split); absent on other platforms
       enter_to_write_ms        `hop=enter_begin` -> the `pty_write` of the line (> 10 bytes; handoff writes excluded)
       submit_bookkeeping_ms    `hop=try_execute_done` -> `hop=enter_submit_done` (#1606): post-submit model updates that run before the queued
                                ExecuteCommand effect reaches the pty (agent mode measured ~0.7 ms here in r18e4)
@@ -426,7 +431,11 @@ def enter_segments(lines, t0):
 
 
 ENTER_SEGMENT_KEYS = ("event_age_ms", "event_to_enter_ms", "enter_to_write_ms", "submit_bookkeeping_ms", "effect_flush_ms", "write_to_first_read_ms",
-                      "write_to_preexec_ms", "pty_lock_wait_ms")
+                      "write_to_preexec_ms", "pty_lock_wait_ms", "appkit_route_ms", "key_equivalent_ms", "interpret_keys_ms", "dispatch_to_enter_ms")
+# #2031: the mac_enter stages between app_send_event and enter_begin, in the order a Return passes them (window.m performKeyEquivalent ->
+# host_view.m keyDownImpl), each with the segment that ENDS at it
+ENTER_STAGE_SEGMENTS = (("perform_key_equivalent", "appkit_route_ms"), ("key_down_impl_entry", "key_equivalent_ms"),
+                        ("after_interpret_key_events", "interpret_keys_ms"))
 
 
 def enter_segment_samples(lines, t0):
@@ -436,6 +445,7 @@ def enter_segment_samples(lines, t0):
     seg = {k: [] for k in keys}
     pending, wrote, read_seen, chord = None, None, True, False
     sent, executed, submitted, lock_wait = None, None, None, None
+    stages = []           # #2031: (stage, t) of the mac_enter lines since the last app_send_event
     # pty_lock_wait is logged only when a wait happened, so its absence means 0 only in a build that has the #1606 hops (the
     # enter_submit_done hop is logged on every shell submit); an older build reports the key absent, never 0.0
     has_lock_hop = any("hop=enter_submit_done" in l or "hop=pty_lock_wait" in l for l in lines)
@@ -447,15 +457,20 @@ def enter_segment_samples(lines, t0):
         if t / 1000.0 < t0:
             continue
         if "stage=app_send_event" in l:
-            sent = t
+            sent, stages = t, []
             a = re.search(r" age_ms=(-?\d+(?:\.\d+)?)", l)
             if a and 0 <= float(a.group(1)) < 10000:
                 seg["event_age_ms"].append(float(a.group(1)))
+        elif "hop=mac_enter stage=" in l:
+            if sent is not None:
+                stages.append((l.split("hop=mac_enter stage=", 1)[1].split(" ", 1)[0], t))
         elif "hop=enter_begin" in l:
             pending, chord = t, False
             if sent is not None:
                 seg["event_to_enter_ms"].append(t - sent)
-            sent, executed, submitted = None, None, None
+                for k, v in enter_stage_split(sent, stages, t).items():
+                    seg[k].append(v)
+            sent, executed, submitted, stages = None, None, None, []
         elif "hop=pwsh_command_via_pipe" in l and pending is not None:
             # #1581: a PowerShell line goes on the session's pipe and only the 2-byte insert chord is written, so the "> 10 bytes" rule below
             # never matched and r18e4 had no app segment metric for the PowerShell pane at all (#1401)
@@ -487,6 +502,23 @@ def enter_segment_samples(lines, t0):
             seg["write_to_first_read_ms"].append(float(sw.group(1)) if sw else t - wrote)
             read_seen = True          # only the FIRST read after a write counts; `wrote` stays for a later preexec hop
     return seg
+
+
+def enter_stage_split(sent, stages, begin):
+    """#2031: one Enter's app_send_event time, its (stage, t) mac_enter lines up to enter_begin, and the enter_begin time (all ms) -> the
+    ENTER_STAGE_SEGMENTS durations plus dispatch_to_enter_ms. The FIRST line of each stage counts and other stages between them are
+    ignored (an unbound Return goes performKeyEquivalent -> super -> keyDown: -> keyDownImpl; that detour is then inside
+    key_equivalent_ms). {} when a stage is missing or out of order (another platform, a build without the stage lines): never a partial
+    split."""
+    out, prev = {}, sent
+    for stage, key in ENTER_STAGE_SEGMENTS:
+        t = next((t_ for st, t_ in stages if st == stage), None)
+        if t is None or t < prev or t > begin:
+            return {}
+        out[key] = t - prev
+        prev = t
+    out["dispatch_to_enter_ms"] = begin - prev
+    return out
 
 
 def os_key_ages(lines, t0, t1=None, enter=None, ctrl=None):
@@ -3754,11 +3786,10 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, s
             inj = injector_start_wall(ctx, t0)
             ds.append(((v / 1000.0 if v > 1e11 else v) - enter_sample_start(t0, inj)) * 1000)       # PowerShell stamps UTC milliseconds
             if split is not None:
-                # zsh (macOS): stamp px lf; bash/zsh stamp_line (#1492): stamp lf
-                px, lf = (None, _float_or_none(fields, 1)) if len(fields) == 2 else (_float_or_none(fields, 1), _float_or_none(fields, 2))
+                px, lf, ah, p0 = stamp_fields(fields)
                 pm, clock = injector_post_mach(ctx)
                 split.append(dict(t0=t0, inj=inj, stamp=v / 1000.0 if v > 1e11 else v, post=injector_post_wall(ctx), px=_epoch_s(px), lf=_epoch_s(lf),
-                                  post_mach_ms=pm, clock=clock))
+                                  ah=_epoch_s(ah), p0=_epoch_s(p0), post_mach_ms=pm, clock=clock))
         except Exception:
             pass
         if i == 2 and not ds:
@@ -3776,6 +3807,19 @@ def _read_fields(f):
         return open(f, errors="replace").read().replace("\x00", "").split()
     except OSError:
         return []
+
+
+def stamp_fields(fields):
+    """the rc times behind the stamp in a stamp file -> (px, lf, ah, p0), None for one that is absent or 0:
+      `stamp lf`              bash/zsh split line (#1492)
+      `stamp px lf`           zsh rc before #2031 (and a line whose preexec hook never ran: `stamp 0 lf`)
+      `stamp px ah p0 lf`     zsh rc since #2031: $__pa_px carries the first-zshaddhistory time and the plain-preexec() time behind px
+    (profile.ZSHRC), so the typed stamp line did not change."""
+    if len(fields) == 2:
+        return None, _float_or_none(fields, 1), None, None
+    if len(fields) >= 5:
+        return _float_or_none(fields, 1), _float_or_none(fields, 4), _float_or_none(fields, 2), _float_or_none(fields, 3)
+    return _float_or_none(fields, 1), _float_or_none(fields, 2), None, None
 
 
 def _float_or_none(fields, i):
@@ -3907,12 +3951,19 @@ def enter_split_summary(samples):
                         delivery, the terminal's work, the pty write and the line editor ingesting the line (a burst in Phosphor)
       lf_to_stamp       the line accepted -> the stamp: every preexec hook (Phosphor's DEBUG-trap preexec and title hook in bash; none in
                         the reference) and the `date` start
-    A key is absent when no sample had both ends (no post time off macOS, no lf/px from a non-zsh shell)."""
+      lf_to_ah          (#2031, zsh rc) zle-line-finish -> the first zshaddhistory function: the line editor's teardown (last redisplay,
+                        tcsetattr(TCSADRAIN): on macOS it returns when the terminal has read what the shell wrote)
+      ah_to_p0          (#2031) that -> the plain preexec() function, which runs before warp_preexec: the history step (share_history in a
+                        Phosphor pane: lock, read, append, unlock) and Phosphor's _warp_zshaddhistory; plain history in the reference
+      p0_to_px          (#2031) that -> the rc's last preexec hook: warp_preexec (escape, hex, the Preexec message); nothing in the reference
+    The three sum to lf_to_px. A key is absent when no sample had both ends (no post time off macOS, no lf/px from a non-zsh shell, no
+    ah/p0 from an rc older than #2031)."""
     def d(a, b):
         return [(x[b] - x[a]) * 1000.0 for x in samples if x.get(a) is not None and x.get(b) is not None and 0 <= x[b] - x[a] < 1]
     out = {"n": len(samples)}
     for k, a, b in (("t0_to_inj_ms", "t0", "inj"), ("inj_to_post_ms", "inj", "post"), ("t0_to_post_ms", "t0", "post"), ("post_to_lf_ms", "post", "lf"), ("lf_to_px_ms", "lf", "px"), ("px_to_stamp_ms", "px", "stamp"),
-                    ("post_to_stamp_ms", "post", "stamp"), ("post_to_px_ms", "post", "px"), ("t0_to_lf_ms", "t0", "lf"), ("lf_to_stamp_ms", "lf", "stamp")):
+                    ("post_to_stamp_ms", "post", "stamp"), ("post_to_px_ms", "post", "px"), ("t0_to_lf_ms", "t0", "lf"), ("lf_to_stamp_ms", "lf", "stamp"),
+                    ("lf_to_ah_ms", "lf", "ah"), ("ah_to_p0_ms", "ah", "p0"), ("p0_to_px_ms", "p0", "px")):
         v = _med(d(a, b))
         if v is not None:
             out[k] = v
@@ -4064,6 +4115,8 @@ def record_enter_split(r, splits, segs):
     """#1606: the per-hop split of Enter -> command start for both sides, as the metric `enter_split_ms` {phosphor, reference, delta} and one
     note. The SAME shell clock (the rc's zle-line-finish / last-preexec times, enter_split_summary) on both sides, so a gap in post_to_lf
     is key delivery + terminal + line-editor ingest, a gap in lf_to_px is preexec hooks, a gap in px_to_stamp would be the command itself.
+    #2031: lf_to_px is split again by the rc into lf_to_ah (line editor teardown, tty drain), ah_to_p0 (history, share_history) and p0_to_px
+    (warp_preexec), and event_to_enter by the app's mac_enter stages; both ride along in the same metric and note.
     Phosphor's post_to_lf is then split further by the app log (segs: event_age, event_to_enter, enter_to_write). The shell-side medians
     include each interleaved block's discarded lead sample (the sampler cannot see which one run_interleaved drops)."""
     sp = {side: enter_split_summary(v) for side, v in splits.items() if v}
@@ -4072,8 +4125,8 @@ def record_enter_split(r, splits, segs):
     if "phosphor" in sp and "reference" in sp:
         sp["delta"] = {k: round(sp["phosphor"][k] - sp["reference"][k], 2) for k in sp["phosphor"]
                        if k.endswith("_ms") and k in sp["reference"]}
-    app = {k: segs[k] for k in ("event_age_ms", "event_to_enter_ms", "enter_to_write_ms", "submit_bookkeeping_ms", "effect_flush_ms",
-                                "pty_lock_wait_ms") if k in segs}
+    app = {k: segs[k] for k in ("event_age_ms", "event_to_enter_ms", "appkit_route_ms", "key_equivalent_ms", "interpret_keys_ms", "dispatch_to_enter_ms",
+                                "enter_to_write_ms", "submit_bookkeeping_ms", "effect_flush_ms", "pty_lock_wait_ms") if k in segs}
     if app:
         sp["phosphor_app"] = app
     r.metric("enter_split_ms", sp)
