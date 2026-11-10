@@ -994,11 +994,14 @@ impl<T: EventLoopSender> PtyController<T> {
         if !FeatureFlag::TypeaheadHandoff.is_enabled() {
             return;
         }
-        let queued_hold = self
-            .terminal_model
-            .lock()
-            .typeahead_handoff_mut()
-            .release_queued_prompt_hold_on_signal();
+        let (queued_hold, reader_ended) = {
+            let mut model = self.terminal_model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            let reader_asked = handoff.prompt_reader_asks();
+            let queued_hold = handoff.release_queued_prompt_hold_on_signal();
+            let reader_ended = reader_asked && !handoff.prompt_reader_asks();
+            (queued_hold, reader_ended)
+        };
         let released_queued_hold = queued_hold.is_some();
         if let Some(hold_id) = queued_hold {
             ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });
@@ -1028,6 +1031,15 @@ impl<T: EventLoopSender> PtyController<T> {
                 format!("released_queued_hold={released_queued_hold}")
             });
             self.activate_line_editor_on_ready_signal(released_queued_hold, ctx);
+        } else if reader_ended && !released_queued_hold {
+            // #2050: the marker ended a reader ahead of the line editor (a precmd function's
+            // `read -s`) and nothing above decides for this shell. A session that also enables
+            // bracketed paste decides at that signal (the retry does nothing while the decision
+            // awaits it); one that does not (bash 3.2, `enable-bracketed-paste off`) has no later
+            // event, so the hand-off decides now and the editor takes input back. The retry
+            // writes a request only to a line editor proven to be reading.
+            warpui::input_order::log_hop("prompt_reader_end_retry", String::new);
+            self.retry_typeahead_handoff_request(ctx);
         }
     }
 

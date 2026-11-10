@@ -160,6 +160,10 @@ pub struct ForegroundProbe {
     /// As `stream_drained`, for a barrier whose look at the OS can fail (the ConPTY output-pipe
     /// peek): `None` means "cannot tell", and the hand-off then behaves as a plain terminal.
     stream_drained_or_unknown: Option<Arc<dyn Fn() -> Option<bool> + Send + Sync>>,
+    /// #2050: whether the tty is canonical with echo off right now: something reads a secret
+    /// (`read -s`, `sudo`, `ssh-add`). One `tcgetattr`. Installed where the tty can be sampled
+    /// (Unix); on ConPTY nothing is, and the screen fact of #2038 stands in.
+    secret_read: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl ForegroundProbe {
@@ -169,7 +173,30 @@ impl ForegroundProbe {
             prompt_fact: None,
             stream_drained: None,
             stream_drained_or_unknown: None,
+            secret_read: None,
         }
+    }
+
+    /// Adds the secret-read sample (#2050); see `secret_read`.
+    pub fn with_secret_read(mut self, probe: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.secret_read = Some(probe);
+        self
+    }
+
+    /// Whether the secret-read sample is installed (#2050).
+    fn samples_secret_read(&self) -> bool {
+        self.secret_read.is_some()
+    }
+
+    /// Whether something reads a secret from the tty right now (#2050); `false` with no probe.
+    fn reads_secret(&self) -> bool {
+        let Some(probe) = &self.secret_read else {
+            return false;
+        };
+        let started = sample_clock();
+        let secret = probe();
+        log_sample(started, "secret_read", || secret.to_string());
+        secret
     }
 
     /// Adds the richer sample (#1353 phase 6) that also says the line editor is reading.
@@ -273,6 +300,7 @@ impl std::fmt::Debug for ForegroundProbe {
                 || self.prompt_fact.is_some()
                 || self.stream_drained.is_some()
                 || self.stream_drained_or_unknown.is_some()
+                || self.secret_read.is_some()
             {
                 "ForegroundProbe(installed)"
             } else {
@@ -302,6 +330,16 @@ pub const KEYS_FOLLOW_EDITOR_ENV: &str = "PHOSPHOR_KEYS_FOLLOW_EDITOR";
 /// Whether the keys-follow-editor fact is on: it is, unless the kill switch says `0`.
 pub fn keys_follow_editor_env_enabled() -> bool {
     std::env::var(KEYS_FOLLOW_EDITOR_ENV).map_or(true, |value| value.trim() != "0")
+}
+
+/// Environment variable that turns the secret-reader look off when set to `0` (#2050): the tty is
+/// then never asked at a prompt whether something reads a secret, and the keys typed at a precmd
+/// function's `read -s` go to the input editor, as before.
+pub const SECRET_READER_ENV: &str = "PHOSPHOR_SECRET_READER";
+
+/// Whether the secret-reader look is on: it is, unless the kill switch says `0`.
+pub fn secret_reader_env_enabled() -> bool {
+    std::env::var(SECRET_READER_ENV).map_or(true, |value| value.trim() != "0")
 }
 
 /// The wait of a young Enter held by an event ([`TypeaheadHandoff::young_hold_wait`]): the
@@ -1778,6 +1816,74 @@ impl TypeaheadHandoff {
     /// Whether a reader ahead of the line editor is noted for this prompt (#2038).
     pub fn prompt_reader_asks(&self) -> bool {
         self.prompt_reader_asks
+    }
+
+    /// #2050: whether the tty should be asked now if something reads a secret ahead of the
+    /// shell's line editor ([`Self::take_input_for_secret_reader`]). A state fact, no clock and
+    /// no sample: the platform samples the tty (Unix), a Precmd was parsed and neither the line
+    /// editor's marker nor a Preexec since (so no command runs, and the shell's own line editor is
+    /// not the reader), no reader is noted yet, no hold is queued (its keys were typed first and
+    /// its own events decide), and the editor or the pty owns input outright (not a request in
+    /// flight, not an Enter deferred for a report).
+    pub fn secret_reader_look_due(&self) -> bool {
+        !self.prompt_reader_asks
+            && !self.prompt_hold_queued
+            && !self.young_hold_queued
+            && self.deferred_gate.is_none()
+            && self.shell_activity == ShellActivity::Prompt
+            && self.foreground_probe.samples_secret_read()
+            && matches!(
+                self.state,
+                HandoffState::EditorOwned | HandoffState::PtyOwned { .. }
+            )
+    }
+
+    /// #2050 (main thread, at a key about to be routed or at pty output): between a prompt's
+    /// Precmd and its line editor something reads a secret from the tty (a precmd function's
+    /// `read -s`, `sudo`, `ssh-add`: canonical, echo off, an OS fact). On a platform that samples
+    /// the tty the Precmd has already handed input to the editor (nothing defers it there, see
+    /// [`Self::try_commit_at_prompt`]), so the PIN was typed into the editor, shown, and its
+    /// Enter ran it as a command or sent it to the agent. Here the pty takes input back and the
+    /// reader of #2038 is noted: every key from now on is the reader's
+    /// ([`Self::route_prompt_reader_bytes`]), and the editor takes input again at the line
+    /// editor's signal, a Preexec or the next Precmd ([`Self::end_prompt_reader`]).
+    ///
+    /// `None`: nothing reads a secret (or the state does not allow the question), nothing
+    /// changed. `Some(took_from_editor)`: a reader is noted; `true` when the editor owned input
+    /// (the view then moves focus to the terminal).
+    pub fn take_input_for_secret_reader(&mut self) -> Option<bool> {
+        if !self.secret_reader_look_due() || !self.foreground_probe.reads_secret() {
+            return None;
+        }
+        let took_from_editor = self.state == HandoffState::EditorOwned;
+        if took_from_editor {
+            // The prompt's line is answered and nothing the user typed is in the shell's line:
+            // the state a Precmd leaves when it does not commit (as on ConPTY, where #2038 notes
+            // its reader).
+            self.state = HandoffState::PtyOwned {
+                wrote_user_bytes: false,
+                enters_written: 1,
+                precmds_seen: 1,
+            };
+            self.editor_took_over_at = None;
+        }
+        // Text the editor holds stays there; the keys do not follow it into the editor (#1658)
+        // while a secret is read.
+        self.end_keys_follow_editor("secret_reader");
+        self.prompt_reader_asks = true;
+        self.prompt_reader_line_dirty = false;
+        warpui::input_order::log_hop("prompt_reader_asks", || {
+            format!("by=tty_secret took_from_editor={took_from_editor}")
+        });
+        Some(took_from_editor)
+    }
+
+    /// #2050: whether the keys of the pane are a secret reader's whatever view has focus: a
+    /// reader is noted, the pty owns input and the platform samples the tty. (On ConPTY the
+    /// reader of #2038 is noted while the terminal already has focus; nothing is installed
+    /// there and this is `false`.)
+    pub fn secret_reader_has_the_keys(&self) -> bool {
+        self.routes_to_prompt_reader() && self.foreground_probe.samples_secret_read()
     }
 
     /// #2038: an event says the reader of [`Self::note_prompt_reader_asks`] is over (the line

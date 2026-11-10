@@ -28025,6 +28025,175 @@ fn the_look_for_a_reader_at_a_key_never_waits_for_the_parser() {
     })
 }
 
+/// Round 12 Linux, `precmd_secret_honor_ps1` at the moment of its question (#2050): a pane whose
+/// tty the platform samples (`secret` is what one `tcgetattr` would say: canonical, echo off). The
+/// command the editor wrote ran and ended, and its Precmd handed input to the editor, as it does
+/// wherever the prompt hold is not armed (`hop=handoff_commit_at_prompt committed=true`).
+fn sampled_prompt_the_editor_owns(
+    view: &mut TerminalView,
+    secret: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use crate::terminal::model::typeahead_handoff::ForegroundProbe;
+    let reads = secret.clone();
+    let mut model = view.model.lock();
+    {
+        let mut handoff = model.typeahead_handoff_mut();
+        handoff.set_foreground_probe(ForegroundProbe::default().with_secret_read(
+            std::sync::Arc::new(move || reads.load(std::sync::atomic::Ordering::SeqCst)),
+        ));
+        handoff.on_precmd();
+        handoff.on_command_written();
+    }
+    model.simulate_block("touch go.txt", "");
+    let mut handoff = model.typeahead_handoff_mut();
+    assert!(
+        handoff.try_commit_at_prompt(),
+        "no prompt hold: the Precmd hands input to the editor"
+    );
+    assert!(handoff.editor_owns_input());
+}
+
+/// #2050 (round 12 Linux: `pp_hp0_pin.txt holds [\x10pin...]` in terminal mode, the PIN sent to
+/// the model in agent mode): a precmd function reads a secret from the tty after the prompt's
+/// Precmd gave input to the editor. The pane's key sink asks the tty before it routes a key: the
+/// first key takes input back for the pty, and it and every key after it go to the reader as the
+/// separate writes they were typed in, in typed order, also while focus is still reported in the
+/// input's editor. The editor never holds a character of the PIN. The Enter is not a line a
+/// prompt must answer, and the line editor's signal ends the reader. Legacy and Table.
+///
+/// The control arm (`secret_read == false`) is the same prompt with nothing reading a secret: the
+/// key is the editor's, as before, and nothing is written.
+#[test]
+fn a_secret_read_at_a_prompt_takes_the_keys_from_the_focused_editor() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for secret_read in [true, false] {
+            App::test((), move |mut app| async move {
+                let what = format!("{mode:?} secret_read={secret_read}");
+                let what = what.as_str();
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = collect_pty_writes(&mut app, &terminal);
+                let secret = Arc::new(AtomicBool::new(false));
+                let tty = secret.clone();
+                terminal.update(&mut app, |view, ctx| {
+                    register_local_session_for_ssh_test(view, ctx);
+                    sampled_prompt_the_editor_owns(view, &tty);
+                    // The precmd function's `read -s` has the tty (or, in the control, nothing).
+                    tty.store(secret_read, Ordering::SeqCst);
+                    for key in ["p", "i", "n"] {
+                        assert_eq!(
+                            pane_typed(view, key, true, ctx),
+                            PaneKeyOutcome::Consumed,
+                            "{what}"
+                        );
+                    }
+                    let reader = view.handoff.read().prompt_reader_asks();
+                    assert_eq!(reader, secret_read, "{what}: a reader is noted");
+                    if !secret_read {
+                        assert!(view.handoff.read().editor_owns_input(), "{what}");
+                        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "pin", "{what}");
+                        return;
+                    }
+                    assert_eq!(
+                        view.input.as_ref(ctx).buffer_text(ctx),
+                        "",
+                        "{what}: no character of the PIN is in the editor"
+                    );
+                    // Focus followed to the terminal: the Enter is the pane's, not the editor's
+                    // key binding's.
+                    view.keydown_on_terminal("\r", ctx);
+                    let handoff = view.handoff.read();
+                    assert!(handoff.is_pty_owned(), "{what}");
+                    assert!(!handoff.young_hold_queued(), "{what}: no young Enter");
+                    assert!(
+                        !handoff.has_unanswered_lines(),
+                        "{what}: the read's Enter is not a line a prompt must answer"
+                    );
+                    assert!(!handoff.shell_line_may_hold_typed_text(), "{what}");
+                });
+                if !secret_read {
+                    assert!(
+                        pty_writes.borrow().is_empty(),
+                        "{what}: nothing reads a secret, nothing is written: {:?}",
+                        pty_writes.borrow()
+                    );
+                    return;
+                }
+                assert_eq!(
+                    *pty_writes.borrow(),
+                    [&b"p"[..], b"i", b"n", b"\r"]
+                        .map(|key| key.to_vec())
+                        .to_vec(),
+                    "{what}: the PIN and its Enter, one write per key, in typed order"
+                );
+                // The read returned (echo is back on) and the line editor signals.
+                secret.store(false, Ordering::SeqCst);
+                terminal.update(&mut app, |view, ctx| {
+                    line_editor_signal(view, ctx);
+                    assert!(!view.handoff.read().prompt_reader_asks(), "{what}");
+                    assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{what}");
+                });
+                assert_eq!(
+                    pty_writes.borrow().len(),
+                    4,
+                    "{what}: the signal writes nothing more: {:?}",
+                    pty_writes.borrow()
+                );
+            })
+        }
+    }
+}
+
+/// #2050: output is the usual first event of a secret question (`read -s -p "pin: "` prints, then
+/// reads): the wakeup's look takes input back from the editor before any key is typed, so the
+/// keys typed next are routed by the terminal, and a wakeup with nothing reading changes nothing.
+#[test]
+fn a_secret_question_at_a_prompt_takes_input_back_at_its_output() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let secret = Arc::new(AtomicBool::new(false));
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            sampled_prompt_the_editor_owns(view, &secret);
+            assert!(!view.hand_keys_to_a_secret_reader("output", ctx));
+            assert!(view.handoff.read().editor_owns_input());
+            secret.store(true, Ordering::SeqCst);
+            view.model.lock().process_bytes("pin: ");
+            assert!(view.hand_keys_to_a_secret_reader("output", ctx));
+            {
+                let handoff = view.handoff.read();
+                assert!(handoff.is_pty_owned());
+                assert!(handoff.prompt_reader_asks());
+                assert!(handoff.wants_terminal_focus());
+            }
+            assert!(
+                view.hand_keys_to_a_secret_reader("output", ctx),
+                "asked again: the reader still has the keys"
+            );
+            for key in [&b"4"[..], b"2", b"\r"] {
+                view.write_user_bytes_to_pty(key.to_vec(), ctx);
+            }
+        });
+        assert_eq!(
+            *pty_writes.borrow(),
+            [&b"4"[..], b"2", b"\r"].map(|key| key.to_vec()).to_vec()
+        );
+    })
+}
+
 /// No model lock per key while the hold is open: after the key that started it, the queue takes
 /// every key without locking the terminal model (the pty reader holds that lock while it parses).
 #[test]

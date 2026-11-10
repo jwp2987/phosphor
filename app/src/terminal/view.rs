@@ -13496,6 +13496,24 @@ impl TerminalView {
         // AI block awaiting confirmation, the ssh choice card, a question card) binds its own
         // Enter/Tab/Escape and keeps the key. The table decides on the fact (Fable F9).
         facts.settled_ai_focus = focus_snap == input_queue::FocusSnap::SettledAiTarget;
+        // #2050: something reads a secret from the tty ahead of the shell's line editor (a precmd
+        // function's `read -s`): the key is that reader's, whichever of the pane's views has
+        // focus. The terminal's routing takes it (the hand-off, pty-owned from here, writes it to
+        // the reader in typed order). A text field of the pane and a card that binds its own keys
+        // keep theirs. A composition is left where it is shown.
+        if matches!(class, KeyClass::Typed | KeyClass::Control)
+            && !facts.in_text_field
+            && !matches!(
+                focus_snap,
+                input_queue::FocusSnap::SshChoiceCard
+                    | input_queue::FocusSnap::ApprovalCard
+                    | input_queue::FocusSnap::AiBlockAwaitingConfirm
+            )
+            && self.hand_keys_to_a_secret_reader("key", ctx)
+        {
+            facts.editor_focused = false;
+            facts.terminal_focused = true;
+        }
         // #1552: in a focus gap (neither the editor nor the terminal focused) the log names what
         // does have focus, so a run shows which view kept it after a long-running command: the
         // input view itself (its editor not focused), a view inside the input (a chip menu, the
@@ -16244,6 +16262,10 @@ impl TerminalView {
         // #1440: scroll updates keys left while the model was parsing.
         self.flush_deferred_scroll_updates(ctx);
         self.flush_deferred_focus_redeterminations(ctx);
+        // #2050: output is the event a secret question at the prompt arrives with (a precmd
+        // function's `read -s -p`): the pty takes input back from the editor before a key is
+        // typed. One read of the hand-off on any other wakeup.
+        self.hand_keys_to_a_secret_reader("output", ctx);
         // #1384 P5: the first output after the alt screen was entered re-sends the window size.
         #[cfg(feature = "local_tty")]
         if self.alt_screen_resend_pending {
