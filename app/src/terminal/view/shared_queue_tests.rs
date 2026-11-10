@@ -160,6 +160,8 @@ fn an_input_drain_hands_a_pty_key_to_the_view_and_nothing_overtakes() {
                 GateSpec::new(GateKind::PasteReading, 77).with_cap(None),
             );
             assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
+            // In-update recorder read, always empty here: the read after this update (still empty)
+            // carries it.
             assert!(
                 pty_writes.borrow().is_empty(),
                 "the pty key waits behind the pty gate"

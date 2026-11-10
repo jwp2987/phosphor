@@ -101,6 +101,10 @@ guards:
     # Owner rule (2026-11-08): timers on the input path are give-up nets only. PENDING-CONVERSION entries warn here; the release tier runs it --strict (job input-timers-strict).
     - ./script/check_input_path_timers
     - ./script/check_input_path_timers --self-test
+    # r13-pin2 / round 14: a view test may not read its pty-write recorder inside the update that wrote (it is filled when
+    # the update returns, so the read is always empty). Text scan with an allow marker; limits in the script's header.
+    - ./script/check_recorder_reads --self-test
+    - ./script/check_recorder_reads
     # The tree is rustfmt-clean since the Rust 1.99 upgrade; this keeps it that way (whole tree, ~25 s).
     # rustfmt comes from the pinned toolchain through the maintainer's rustup proxy (read-only,
     # as in check-linux); runner shells have no toolchain on PATH.

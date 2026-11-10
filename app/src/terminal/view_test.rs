@@ -16589,6 +16589,8 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
             let block_id = view.model.lock().block_list().active_block().id().clone();
             view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
             assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+            // In-update recorder read, always empty here: the order of the final read (`\x03ls`)
+            // carries it.
             assert!(pty_writes.borrow().is_empty());
             view.write_user_bytes_to_pty(vec![0x03], ctx);
         });
@@ -16673,6 +16675,8 @@ fn keys_held_through_a_stall_are_released_once_when_the_subshell_precmd_complete
             for key in [b"ls".to_vec(), b"\r".to_vec()] {
                 assert!(view.write_user_bytes_to_pty(key, ctx));
             }
+            // In-update recorder read, always empty here: the read after this update (still empty)
+            // carries it.
             assert!(
                 pty_writes.borrow().is_empty(),
                 "echoed bootstrap text is not a prompt: the keys are held"
@@ -17014,6 +17018,8 @@ fn keys_typed_after_a_subshell_setup_ends_follow_the_held_ones_exactly_once() {
             view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
             assert!(view.write_user_bytes_to_pty(b"l".to_vec(), ctx));
             assert!(view.write_user_bytes_to_pty(b"s".to_vec(), ctx));
+            // In-update recorder read, always empty here: the queue holds the keys (next assertion)
+            // and the final read has them once.
             assert!(written.borrow().is_empty());
             assert!(
                 !view.paste_queue.queue.borrow().is_idle(),
@@ -18039,6 +18045,8 @@ fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_w
         terminal.update(&mut app, |view, ctx| {
             hold_after_deferred_enter(view);
             view.write_user_bytes_to_pty(b"ls -l".to_vec(), ctx);
+            // In-update recorder read, always empty here: the order of the final read (the Enter
+            // before `ls -l`) carries it.
             assert!(pty_writes.borrow().is_empty());
             view.handle_typeahead_report_with_handoff(true, ctx);
 
@@ -18049,6 +18057,8 @@ fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_w
             // back as editor text).
             assert!(view.input.as_ref(ctx).unready_enter_gate_open());
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            // In-update recorder read, always empty here: the Enter's gate is open (above) and the
+            // final read has every byte once.
             assert!(pty_writes.borrow().is_empty(), "held until the give-up");
             view.input
                 .update(ctx, |input, ctx| input.give_up_unready_enter("test", ctx));
@@ -18089,6 +18099,8 @@ fn typeahead_handoff_a_command_written_behind_a_deferred_enter_takes_its_gated_k
             });
             view.write_user_bytes_to_pty(b"s\r".to_vec(), ctx);
             view.write_user_bytes_to_pty(b"p".to_vec(), ctx);
+            // In-update recorder read, always empty here: three entries are queued (next assertion)
+            // and the final read is one exact write.
             assert!(pty_writes.borrow().is_empty());
             assert_eq!(view.paste_queue.queue.borrow().queued_len(), 3);
             {
@@ -18308,6 +18320,8 @@ fn a_line_typed_behind_a_deferred_enter_never_reaches_the_pty_before_that_enters
                 view.open_deferred_enter_gate(ctx);
                 // The next line and its Enter, typed on the terminal behind the deferred Enter.
                 view.write_user_bytes_to_pty(b"make clean\r".to_vec(), ctx);
+                // In-update recorder read, always empty here: the read after this update (still
+                // empty) carries it.
                 assert!(pty_writes.borrow().is_empty(), "{mode:?}");
                 view.handle_typeahead_report_with_handoff(true, ctx);
 
@@ -19869,6 +19883,8 @@ fn ssh_bootstrap_timer_racing_the_bootstrap_precmd_does_not_fail_the_session() {
                     "{mode:?}: the timer must not fail a progressing session"
                 );
                 assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                // In-update recorder read, always empty here: the keys are still held (above) and
+                // the final read has the line once, no `stty sane`.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: no stty sane, no keys: {:?}",
@@ -19938,6 +19954,8 @@ fn stale_bootstrap_timer_from_an_earlier_connect_does_not_fail_a_later_one() {
                     "{mode:?}: a stale timer must not act on a later connect"
                 );
                 assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                // In-update recorder read, always empty here: the keys are still held (above) and
+                // the final read has the line once, no `stty sane`.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: no stty sane, no keys: {:?}",
@@ -20423,6 +20441,8 @@ fn ssh_quoted_operator_command_holds_typing_then_hands_back_unexecuted() {
             view.typed_characters_on_terminal("echo X >> f", ctx);
             assert!(view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            // In-update recorder read, always empty here: the read after the last update (still
+            // empty) carries it.
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             let id = view.model.lock().active_block_id().clone();
             view.apply_block_completed_to_ssh_gate(&id, 255);
@@ -20431,6 +20451,8 @@ fn ssh_quoted_operator_command_holds_typing_then_hands_back_unexecuted() {
             assert!(view.deliver_ssh_typeahead_if_ready("test", ctx));
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo X >> f");
             assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            // In-update recorder read, always empty here: the read after the last update (still
+            // empty) carries it.
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             // The Enter of the same burst is consumed, not run.
             editor_key(view, EditorAction::Enter, ctx);
@@ -22875,6 +22897,8 @@ fn nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shel
                     view.ssh_typeahead_holding,
                     "{mode:?}: held for the inner host"
                 );
+                // In-update recorder read: nothing is emitted before it in this update, so it is a
+                // real read of what the earlier updates wrote.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: nothing typed reached the tty before the inner prompt: {:?}",
@@ -23574,6 +23598,8 @@ fn a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive() {
                     young_gate_open(view),
                     "{mode:?}: output in flight, the latch leaves the hold to the barrier (#1889)"
                 );
+                // In-update recorder read, always empty here: the young gate is open (above) and
+                // the final read is one exact write.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: nothing written while the hold stays: {:?}",
@@ -27868,6 +27894,8 @@ fn paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes() {
                 "{mode:?}"
             );
             terminal.update(&mut app, |view, ctx| {
+                // In-update recorder read: nothing is emitted before it in this update, so it is a
+                // real read of what the earlier updates wrote.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: held behind the setup: {:?}",
@@ -28007,6 +28035,8 @@ fn conpty_prompt_hold_releases_on_the_signal_through_the_queue() {
             for key in [&b"l"[..], b"s", b"\r", b"x"] {
                 view.write_user_bytes_to_pty(key.to_vec(), ctx);
             }
+            // In-update recorder read, always empty here: four entries are queued (below) and the
+            // final read has each key once.
             assert!(
                 pty_writes.borrow().is_empty(),
                 "nothing is written ahead of the line editor"
@@ -28732,6 +28762,8 @@ fn a_signal_takes_the_keys_held_for_the_prompt_in_front_of_it() {
                 if signal == 0x03 {
                     view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
                 }
+                // In-update recorder read, always empty here: the final read is one exact write,
+                // which an earlier write would break.
                 assert!(pty_writes.borrow().is_empty());
                 view.write_user_bytes_to_pty(vec![signal], ctx);
                 assert!(!prompt_gate_open(view));
@@ -28777,6 +28809,8 @@ fn the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off() {
                     view.on_paste_queue_give_up(token, ctx);
                     assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
                     assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab", "{mode:?}");
+                    // In-update recorder read, always empty here: the final read is exactly `c`:
+                    // `a` and `b` were never written.
                     assert!(
                         pty_writes.borrow().is_empty(),
                         "{mode:?}: the timer wrote nothing"
@@ -28875,6 +28909,8 @@ fn a_held_segment_with_an_enter_past_the_cap_stays_held_until_the_signal() {
                 view.on_paste_queue_give_up(token, ctx);
                 assert!(prompt_gate_open(view), "{mode:?}: still held");
                 assert_eq!(view.paste_queue.queue.borrow().queued_len(), 4, "{mode:?}");
+                // In-update recorder read, always empty here: four entries are queued (above) and
+                // the final read has them once.
                 assert!(pty_writes.borrow().is_empty(), "{mode:?}: nothing written");
                 assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
                 // The signal releases the segment, once, in typed order.
@@ -29373,6 +29409,8 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
             );
             view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
             view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
+            // In-update recorder read, always empty here: two entries are queued (below) and the
+            // final read has each key once.
             assert!(pty_writes.borrow().is_empty());
             let queue = view.paste_queue.queue.clone();
             let mut host = paste_queue::PtyQueueHost::new(view, ctx);
@@ -29381,6 +29419,8 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
                 crate::terminal::input_queue::GateKind::PasteReading,
                 77,
             );
+            // In-update recorder read, always empty here: two entries are queued (below) and the
+            // final read has each key once.
             assert!(pty_writes.borrow().is_empty(), "held for the prompt now");
             assert!(prompt_gate_open(view));
             assert_eq!(view.paste_queue.queue.borrow().queued_len(), 2);
@@ -29438,6 +29478,8 @@ fn keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty
                 for key in b"ec" {
                     view.write_user_bytes_to_pty(vec![*key], ctx);
                 }
+                // In-update recorder read, always empty here: nine entries are queued (below) and
+                // the final read is byte-exact, once.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: nothing is written ahead of the line editor"
@@ -29458,6 +29500,8 @@ fn keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty
                 }
                 // A key typed after the precmd, before the signal: behind the held keys.
                 view.typed_characters_on_terminal("x", ctx);
+                // In-update recorder read, always empty here: ten entries are queued (below) and
+                // the final read is byte-exact, once.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: still nothing written"
@@ -29532,6 +29576,8 @@ fn a_command_running_past_the_prompt_hold_cap_keeps_its_keys_held_and_the_hold_o
                 for key in b"ec" {
                     view.write_user_bytes_to_pty(vec![*key], ctx);
                 }
+                // In-update recorder read, always empty here: the keys are queued (five entries,
+                // below) and the final read has them once.
                 assert!(pty_writes.borrow().is_empty(), "{mode:?}");
                 assert!(prompt_gate_open(view), "{mode:?}");
                 let token = view.paste_queue.queue.borrow().gates()[0].token;
@@ -29539,6 +29585,8 @@ fn a_command_running_past_the_prompt_hold_cap_keeps_its_keys_held_and_the_hold_o
                 // The cap fires 1.5 s in; the command is still running.
                 view.on_paste_queue_give_up(token, ctx);
                 assert!(prompt_gate_open(view), "{mode:?}: still held");
+                // In-update recorder read, always empty here: the keys are queued (five entries,
+                // below) and the final read has them once.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: nothing is written mid-command"
@@ -30197,6 +30245,9 @@ fn hold_a_young_enter(
 ) {
     view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
     view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+    // Every caller runs this inside a view update, where the recorder is always empty (a pty
+    // write is an event, delivered when the outermost update returns). The two queued entries
+    // (below) and each caller's exact read after its update carry "nothing written yet".
     assert!(
         pty_writes.borrow().is_empty(),
         "nothing is written ahead of the prompt"
@@ -31505,6 +31556,8 @@ fn table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover() {
                 );
             }
             assert_eq!(view.ssh_held_count(), 2);
+            // In-update recorder read, always empty here: two entries are held (above) and the
+            // final read has the ^C once.
             assert!(
                 pty_writes.borrow().is_empty(),
                 "held, not written: {:?}",
@@ -32073,6 +32126,8 @@ fn table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_sh
                 2,
                 "the text and the ^C, in typed order"
             );
+            // In-update recorder read, always empty here: two entries are held (above) and the
+            // final read has the ^C once.
             assert!(
                 pty_writes.borrow().is_empty(),
                 "held, not written: {:?}",
@@ -32169,6 +32224,8 @@ fn table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event() {
                 .simulate_long_running_block("sleep 100", "");
             view.begin_cli_submit_gate(ctx);
             view.keydown_on_terminal("\u{7f}", ctx);
+            // In-update recorder read, always empty here: one entry is queued (next assertion) and
+            // the final read is one exact write.
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             assert_eq!(view.paste_queue.queue.peek().queued_len(), 1);
             view.end_cli_submit_gate(ctx);
