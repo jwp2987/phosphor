@@ -3899,6 +3899,13 @@ pub struct TerminalView {
     active_session: ModelHandle<ActiveSession>,
 
     pty_spawn_failed: bool,
+    /// The shell process is gone (it exited, or its pty never spawned): nothing reads this pane's
+    /// pty any more. Keys a hold gives up on then become text in the input instead of a write
+    /// (`write_given_up_chunks_to_pty`), so they are never dropped silently.
+    pty_gone: bool,
+    /// Set while `write_given_up_chunks_to_pty` writes the keys a hold gave up on: the hand-off
+    /// routes them with `on_given_up_user_bytes` (no new young Enter's hold for them).
+    writing_given_up_keys: bool,
 
     model_events_handle: ModelHandle<ModelEventDispatcher>,
 
@@ -5628,6 +5635,8 @@ impl TerminalView {
             cursor_position_id: format!("terminal_view:cursor_{}", ctx.view_id()),
             active_session,
             pty_spawn_failed: false,
+            pty_gone: false,
+            writing_given_up_keys: false,
             model_events_handle,
             is_todo_popup_visible: false,
             agent_todos_popup,
@@ -12190,10 +12199,12 @@ impl TerminalView {
         };
         if awaiting_first_precmd && !delivery_waits_for_first_precmd(awaiting_first_precmd, waited)
         {
-            // The registration the held keys wait for never came. A timer never delivers (it
-            // wrote the held line, Enter included, into a session that could not take it): the
-            // keys are handed back to the editor as text, not run, with the Enter guard (#1571
-            // review).
+            // The registration the held keys wait for never came. Owner decision 2026-11-09
+            // (reversing #1661, and #1577's hand-back for this give-up): the held keys are
+            // written to the pty in typed order, for whatever reads the tty now (the remote
+            // shell through ssh), as a plain terminal would have sent them all along. The
+            // editor's Enter is not involved: nothing is submitted to a session that cannot
+            // take a command.
             self.note_ssh_give_up("first_precmd_wait_cap");
             warpui::input_order::log_key_hop("kh_finish_begin", || {
                 format!(
@@ -12207,7 +12218,7 @@ impl TerminalView {
             if self.ssh_held_is_empty() {
                 self.ssh_hold_clear();
             } else {
-                self.ssh_hold_hand_back_unexecuted_text(ctx);
+                self.ssh_hold_give_up_to_pty(ctx);
             }
             return true;
         }
@@ -12263,7 +12274,7 @@ impl TerminalView {
         }
         self.ssh_typeahead_deadline_armed = Some(deadline);
         let wait = deadline.saturating_duration_since(now);
-        // give-up-net: ONE event-armed ssh connect give-up: the held keys come back as text and never reach a pty (#1577)
+        // give-up-net: ONE event-armed ssh connect give-up: the held keys are written to the pty in typed order, to the ssh process while it runs (owner decision 2026-11-09)
         ctx.spawn(Timer::after(wait), move |me, _, ctx| {
             if me.ssh_typeahead_deadline_armed == Some(deadline) {
                 me.ssh_typeahead_deadline_armed = None;
@@ -12350,16 +12361,29 @@ impl TerminalView {
             warpui::input_order::log_key_hop("kh_finish_end", || "delivered=local_pty".to_owned());
             return;
         }
-        if self.ssh_remote_prompt_seen && self.ssh_give_up_in_progress {
-            // #1577: the give-up timer never delivers; the held keys are handed back as text (the
-            // release that ended the window was already counted as a give-up).
+        if self.ssh_give_up_in_progress {
+            // Owner decision 2026-11-09 (reversing #1661, and #1577's hand-back for this
+            // give-up): the connect's give-up timer fired with keys held (a ceiling passed, no
+            // signal ended the hold). They are written to the pty NOW, in typed order: to the ssh
+            // process while it is still the foreground program (a plain terminal would have sent
+            // them to it all along), never kept for the local shell that follows a later exit and
+            // never left in the editor with a toast. (The release that ended the window was
+            // already counted as a give-up.)
             warpui::input_order::log_key_hop("kh_finish_begin", || {
                 format!(
-                    "give_up=ceiling remote_prompt_seen=true held_bytes={}",
+                    "give_up=ceiling remote_prompt_seen={} held_bytes={}",
+                    self.ssh_remote_prompt_seen,
                     self.ssh_held_bytes()
                 )
             });
-        } else if self.ssh_remote_prompt_seen {
+            self.log_ssh_typeahead_delivery(self.ssh_held_count());
+            self.ssh_hold_give_up_to_pty(ctx);
+            warpui::input_order::log_key_hop("kh_finish_end", || {
+                "delivered=give_up_pty".to_owned()
+            });
+            return;
+        }
+        if self.ssh_remote_prompt_seen {
             self.log_ssh_typeahead_delivery(self.ssh_held_count());
             // #1353 phase 4: closing the `SshConnect` gate IS the delivery; the queue's one drain
             // writes the held inputs in typed order (the legacy buffer does it in a loop).
@@ -13573,7 +13597,7 @@ impl TerminalView {
     /// (`TypeaheadHandoffChanged`), at the shell's Preexec, when the command's block starts and
     /// (#1661) when it completes. The only timer is the give-up net for a pty that never takes the
     /// command ([`AFTER_ENTER_REPLAY_PTY_WAIT`], 10 s), armed once and logged when it fires; it
-    /// discards the keys (#1661).
+    /// writes the keys to the pty in typed order (owner decision 2026-11-09, reversing #1661).
     /// #1661: the view starts a command. While a submitted Enter's gate holds the keys typed
     /// after it, the active block is the one that runs the Enter's command: it is recorded with
     /// the gate's key (once per gate), so that block's completion releases the keys. Read here,
@@ -13682,7 +13706,7 @@ impl TerminalView {
                     .input
                     .update(ctx, |input, _| input.take_enter_route_cap_arm());
                 if let Some(key) = arm {
-                    // give-up-net: 10 s net of keys typed after a deferred Enter: give_up_enter_route_wait discards them with a count toast
+                    // give-up-net: 10 s net of keys typed after a deferred Enter: give_up_enter_route_wait writes them to the pty in typed order (owner decision 2026-11-09)
                     ctx.spawn(Timer::after(enter_route_wait_net()), move |me, _, ctx| {
                         me.input
                             .update(ctx, |input, ctx| input.give_up_enter_route_wait(key, ctx));
@@ -14237,7 +14261,13 @@ impl TerminalView {
                 } else if facts.shell_reports_line {
                     handoff.note_untracked_line_bytes();
                 }
-                handoff.on_user_bytes(&bytes)
+                if self.writing_given_up_keys {
+                    // Keys a hold gave up on (owner decision 2026-11-09): routed and counted like
+                    // any user write, but never held for another young Enter's net.
+                    handoff.on_given_up_user_bytes(&bytes)
+                } else {
+                    handoff.on_user_bytes(&bytes)
+                }
             };
             if route == UserBytesRoute::Held {
                 // What the held key started, read under this same guard.
@@ -14934,7 +14964,7 @@ impl TerminalView {
             });
             let deadline = Instant::now() + UNCOVERED_REPORT_PATIENCE;
             ctx.spawn(
-                // give-up-net: the Enter does not run and stays in the editor; the keys held behind it follow (#1577)
+                // give-up-net: the Enter does not run and its line stays in the editor; the keys held behind it are written to the pty in typed order (owner decision 2026-11-09)
                 Timer::after(UNCOVERED_REPORT_PATIENCE),
                 move |me, _, ctx| {
                     log_late_timer_wake("uncovered report patience", deadline);
@@ -14946,8 +14976,9 @@ impl TerminalView {
 
     /// The patience of deferral `id` ran out (#1104): the report covering the untracked line bytes
     /// never arrived. #1577: a timer never runs the Enter. The report may still be on its way,
-    /// and the Enter's text is what the user typed: it stays in the editor, the keys held behind
-    /// it follow, and the next Enter runs it.
+    /// and the Enter's text is what the user typed: it stays in the editor and the next Enter runs
+    /// it. The keys held behind it go to the pty in typed order (owner decision 2026-11-09,
+    /// reversing #1661); a bare Enter (an empty line) goes with them, first.
     fn uncovered_report_patience_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
         let (released, accounting) = {
             let mut model = self.model.lock();
@@ -14972,8 +15003,9 @@ impl TerminalView {
     /// #1215: starts the patience timer of an Enter deferred behind the hand-off's own
     /// outstanding report, if one was just armed. When it fires the report is not coming; the
     /// Enter is given up WITHOUT running (the shell's line still holds the head of the typed
-    /// text): the editor keeps its text, the keys held behind the Enter join it as text, and a
-    /// notice says so. A late report is then inserted in front, like any legacy report.
+    /// text): the editor keeps its text and a notice says so. The keys held behind the Enter are
+    /// written to the pty in typed order (owner decision 2026-11-09, reversing #1661). A late
+    /// report is then inserted in front, like any legacy report.
     fn arm_report_deferral_timer(&mut self, ctx: &mut ViewContext<Self>) {
         let id = self.handoff.write().take_report_deferral_started();
         let Some(id) = id else {
@@ -14986,7 +15018,7 @@ impl TerminalView {
             )
         });
         ctx.spawn(
-            // give-up-net: report-patience give-up: the Enter does not run, keys held behind it go back to the editor/are discarded with a toast
+            // give-up-net: report-patience give-up: the Enter does not run and its line stays in the editor; the keys held behind it are written to the pty in typed order (owner decision 2026-11-09)
             Timer::after(TYPEAHEAD_REPORT_PATIENCE),
             move |me, _, ctx| {
                 let gate = me
@@ -14997,102 +15029,128 @@ impl TerminalView {
                 let Some(gate) = gate else {
                     return;
                 };
-                // The keys typed behind the Enter come back to the editor as text.
-                me.take_deferred_gate_keys_then(gate, GateKeysThen::GiveUpToEditor, ctx);
+                // The keys typed behind the Enter go to the pty, in typed order.
+                me.take_deferred_gate_keys_then(gate, GateKeysThen::GiveUp("report_patience"), ctx);
             },
         );
     }
 
-    /// The tail of the report-patience give-up (#1215), with the entries that were held behind the
-    /// Enter: the Enter did not run and its text stays where it is; what was typed after it is
-    /// DISCARDED (owner decision 2026-11-05, #1661), never put into the editor, and the toast
-    /// says the Enter did not run and gives the count.
-    pub(super) fn give_up_deferred_enter_keys_to_editor(
-        &mut self,
-        taken: Vec<crate::terminal::input_queue::InputEntry>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        log::warn!(
-            "Enter not run: the shell did not report its line within {} ms; the text \
-             stays in the input, {} entr(ies) typed after it discarded",
-            TYPEAHEAD_REPORT_PATIENCE.as_millis(),
-            taken.len()
-        );
-        self.input
-            .update(ctx, |input, _| input.clear_handoff_enter_hold());
-        let discarded = self.discard_taken_enter_gate_entries(
-            &taken,
-            EnterDiscard::GiveUp {
-                reason: "Enter not run: the shell did not report its line. The text is in the \
-                         input; press Enter to run it",
-                always: true,
-                // The line's guard is `guard_line_after_deferred_enter_give_up`'s.
-                glue_if_discarded: false,
-            },
-            ctx,
-        );
-        self.guard_line_after_deferred_enter_give_up(discarded, ctx);
-        self.note_keys_follow_editor_if_text(ctx);
-        self.note_editor_took_over();
-        self.redetermine_terminal_focus(ctx);
-    }
-
-    /// #1577: a timer gave up on the deferred Enter before the verdict / report it waited for
-    /// (`why` names which): the Enter does not run and the text stays in the editor. #1661 (owner
-    /// decision 2026-11-05): the entries held behind the Enter are DISCARDED, never put into the
-    /// editor, with a toast that gives the count; it is logged with counts. Nothing is written
-    /// to the pty, nothing is routed by the clock.
-    pub(super) fn hand_back_deferred_enter_keys_to_editor(
+    /// Owner decision 2026-11-09 (REVERSING #1661): a timer gave up on the deferred Enter before
+    /// the report / verdict it waited for (`why` names which: `report_patience` #1215,
+    /// `uncovered_report` #1104, `report_tab_cap`, `young_verdict_cap`, `handoff_gate_leak_net`).
+    /// `taken` are the entries held behind that Enter, in typed order.
+    ///
+    /// * The Enter is not run by the clock (#1577) and its line stays in the editor, with the
+    ///   notice that says so and the line's guard: as before.
+    /// * The keys typed AFTER it are written to the pty in typed order, what a plain terminal
+    ///   would have sent all along. Nothing is discarded, nothing becomes editor text, no toast
+    ///   counts them.
+    /// * A BARE Enter (the editor line is empty: there is no visible line to keep) was a key too:
+    ///   its `\r` goes to the pty in front of the keys typed after it, and no notice is shown.
+    ///   This is the `<Enter>~.` of #1793, and the Enter at an empty remote prompt.
+    pub(super) fn give_up_deferred_enter_keys(
         &mut self,
         taken: Vec<crate::terminal::input_queue::InputEntry>,
         why: &'static str,
         ctx: &mut ViewContext<Self>,
     ) {
-        log::warn!(
-            "Enter not run ({why}): the text stays in the input; {} entr(ies) typed after it \
-             discarded",
-            taken.len()
-        );
-        warpui::input_order::log_key_hop("enter_verdict_give_up", || {
-            format!("{why} discarded_entries={}", taken.len())
-        });
         self.input
             .update(ctx, |input, _| input.clear_handoff_enter_hold());
+        let keys = crate::terminal::input::count_discarded_keys(&taken);
+        let bare_enter = self.input.as_ref(ctx).buffer_text(ctx).is_empty();
+        log::warn!(
+            "Enter not run ({why}): bare_enter={bare_enter}; {keys} key(s) typed after it go to \
+             the pty in typed order, none discarded"
+        );
+        warpui::input_order::log_key_hop("enter_verdict_give_up", || {
+            format!(
+                "{why} keys_to_pty={keys} bare_enter={}",
+                u8::from(bare_enter)
+            )
+        });
+        if bare_enter {
+            let mut chunks = vec![b"\r".to_vec()];
+            chunks.extend(self.given_up_entry_chunks(taken, ctx));
+            self.note_editor_took_over();
+            self.write_given_up_chunks_to_pty(chunks, keys + 1, why, ctx);
+            return;
+        }
         let reason = match why {
+            "report_patience" | "handoff_gate_leak_net" => {
+                "Enter not run: the shell did not report its line. The text is in the input; \
+                 press Enter to run it"
+            }
             "uncovered_report" => "The shell did not report its line; the text stays in the input",
             _ => crate::terminal::input::VERDICT_GIVE_UP_TOAST,
         };
-        let discarded = self.discard_taken_enter_gate_entries(
-            &taken,
-            EnterDiscard::GiveUp {
-                reason,
-                always: true,
-                // The line's guard is `guard_line_after_deferred_enter_give_up`'s.
-                glue_if_discarded: false,
-            },
-            ctx,
-        );
-        self.guard_line_after_deferred_enter_give_up(discarded, ctx);
+        // The input's part: the line's own notice (never a count) and one log hop.
+        self.input.update(ctx, |input, ctx| {
+            input.report_enter_gate_discard(
+                &taken,
+                EnterDiscard::GiveUp {
+                    reason,
+                    always: true,
+                    // The line's guard is `guard_line_after_deferred_enter_give_up`'s.
+                    glue_if_keys_followed: false,
+                },
+                ctx,
+            )
+        });
+        self.guard_line_after_deferred_enter_give_up(keys, ctx);
         self.note_keys_follow_editor_if_text(ctx);
         self.note_editor_took_over();
+        self.write_given_up_entries_to_pty(taken, why, ctx);
         self.redetermine_terminal_focus(ctx);
+    }
+
+    /// The leak net of `HandoffReport` gate `gate` fired (60 s): nothing ended the deferred
+    /// Enter's hold. The hand-off's deferral is given up with it (left deferred, every key written
+    /// below would be held behind the same gate again), then the gate's keys go to the pty in
+    /// typed order like any deferred Enter's give-up. A gate the hand-off no longer knows is just
+    /// written out.
+    pub(super) fn give_up_handoff_report_gate(&mut self, gate: u64, ctx: &mut ViewContext<Self>) {
+        let deferral_given_up = self.handoff.write().give_up_deferred_gate(gate);
+        log::warn!(
+            "input queue: the leak net of a deferred Enter's gate ({gate}) fired; \
+             deferral_given_up={deferral_given_up}; the held keys go to the pty in typed order"
+        );
+        warpui::input_order::log_hop("handoff_gate_leak_net", || {
+            format!(
+                "gate={gate} deferral_given_up={}",
+                u8::from(deferral_given_up)
+            )
+        });
+        if deferral_given_up {
+            self.take_deferred_gate_keys_then(
+                gate,
+                GateKeysThen::GiveUp("handoff_gate_leak_net"),
+                ctx,
+            );
+        } else {
+            self.give_up_gate_keys_to_pty(
+                input_queue::GateKind::HandoffReport,
+                gate,
+                "handoff_gate_leak_net",
+                ctx,
+            );
+        }
     }
 
     /// The guard of the line a deferred Enter's give-up left in the editor, unrun (#1598, #1661):
     /// several lines in one buffer would submit as ONE command, so the first Enter on them is held
     /// with the "check the line" toast; one line is what the user typed and the next Enter sends
-    /// it, unless keys typed after the Enter were discarded (the user was still typing): then a
-    /// key typed now onto its end holds that Enter (the glue guard).
+    /// it, unless keys were typed after the Enter (`keys_after`: the user was still typing, and
+    /// they went to the pty): then a key typed now onto its end holds that Enter (the glue guard).
     fn guard_line_after_deferred_enter_give_up(
         &mut self,
-        discarded: usize,
+        keys_after: usize,
         ctx: &mut ViewContext<Self>,
     ) {
         self.input.update(ctx, |input, ctx| {
             let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
             if buffer.contains('\n') {
                 input.arm_handed_back_enter_guard(buffer);
-            } else if discarded > 0 {
+            } else if keys_after > 0 {
                 input.arm_enter_guard(
                     buffer,
                     crate::terminal::input::EnterGuardKind::Glue,
@@ -15102,9 +15160,9 @@ impl TerminalView {
         });
     }
 
-    /// [`Self::keep_deferred_enter_text`] for a timer's give-up (#1577): the keys behind the Enter
-    /// come back to the editor as text instead of being released to the pty, and the next Enter
-    /// is consumed once with a toast.
+    /// [`Self::keep_deferred_enter_text`] for a timer's give-up (#1577): the Enter is not run and
+    /// its line stays in the editor; the keys behind the Enter are written to the pty in typed
+    /// order ([`Self::give_up_deferred_enter_keys`]; owner decision 2026-11-09).
     fn keep_deferred_enter_text_hand_back(
         &mut self,
         why: &'static str,
@@ -15114,10 +15172,17 @@ impl TerminalView {
             .update(ctx, |input, _| input.clear_handoff_enter_hold());
         let gate = self.handoff.write().release_after_unsubmitted_enter();
         match gate {
-            Some(gate) => {
-                self.take_deferred_gate_keys_then(gate, GateKeysThen::GiveUpHandBack(why), ctx)
+            Some(gate) => self.take_deferred_gate_keys_then(gate, GateKeysThen::GiveUp(why), ctx),
+            // No gate: the hand-off holds no deferred Enter with keys behind it. With a line in
+            // the editor it stays, with its notice; with none there is nothing to keep and no
+            // Enter known to be waiting, so nothing is written (a bare `\r` is sent only for a
+            // deferred Enter the hand-off still had a gate for).
+            None if self.input.as_ref(ctx).buffer_text(ctx).is_empty() => {
+                warpui::input_order::log_key_hop("enter_verdict_give_up", || {
+                    format!("{why} keys_to_pty=0 bare_enter=0 no_gate=1")
+                });
             }
-            None => self.hand_back_deferred_enter_keys_to_editor(Vec::new(), why, ctx),
+            None => self.give_up_deferred_enter_keys(Vec::new(), why, ctx),
         }
     }
 
@@ -17483,6 +17548,9 @@ impl TerminalView {
         termination_type: shell_terminated_banner::TerminationType,
         ctx: &mut ViewContext<Self>,
     ) {
+        // Nothing reads this pane's pty from here on (both callers: the shell exited, the spawn
+        // failed).
+        self.pty_gone = true;
         // If we successfully bootstrapped, show a simple "Shell exited" banner.
         if self.is_login_shell_bootstrapped {
             let banner_id = self.inline_banners_state.next_banner_id();
@@ -32697,6 +32765,11 @@ impl TerminalView {
             InputEvent::ReplayAfterDeferredEnter => {
                 self.replay_after_deferred_enter(ctx);
             }
+            InputEvent::GivenUpKeysToPty(entries) => {
+                // Owner decision 2026-11-09 (reversing #1661): an Enter gate of the input gave
+                // up; what was typed after the Enter goes to the pty in typed order.
+                self.write_given_up_entries_to_pty(entries.clone(), "enter_gate", ctx);
+            }
             InputEvent::DiscardedPtyPastes(ids) => {
                 // #1661 review: pty pastes discarded behind an Enter leave no record behind.
                 for id in ids {
@@ -41181,6 +41254,8 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
 }
 
 mod dest_table;
+/// Owner decision 2026-11-09 (reversing #1661): a hold that gives up writes its keys to the pty.
+mod give_up_to_pty;
 mod paste_queue;
 mod prompt_notice;
 mod route_facts;

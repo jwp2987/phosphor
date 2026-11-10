@@ -36,14 +36,15 @@ fn pending_command_shown_after_give_up_is_read_only() {
     }
 }
 
-/// F10 (#1598) / #1661 (owner decision 2026-11-05): a deferred Enter's give-up leaves its line in
-/// the editor, unrun, and DISCARDS the keys typed after it (never put into the editor). The line
-/// alone arms no Enter guard when nothing was discarded (the toast's "press Enter again" is the
-/// Enter that sends it); a line with several lines would submit as ONE command, so its first
-/// Enter is held; keys discarded behind a one-line buffer arm the glue guard (text typed onto it
-/// next must not run glued to it). Both modes.
+/// F10 (#1598), owner decision 2026-11-09 (REVERSING #1661, under which this test expected the
+/// keys typed after the Enter discarded): a deferred Enter's give-up leaves its line in the
+/// editor, unrun, and WRITES the keys typed after it to the pty in typed order (never put into
+/// the editor). The line alone arms no Enter guard when nothing was typed after it (the toast's
+/// "press Enter again" is the Enter that sends it); a line with several lines would submit as ONE
+/// command, so its first Enter is held; keys typed behind a one-line buffer arm the glue guard
+/// (text typed onto it next must not run glued to it). Both modes.
 #[test]
-fn deferred_enter_hand_back_guards_only_multi_line_buffers() {
+fn deferred_enter_give_up_guards_only_multi_line_buffers_and_sends_later_keys_to_the_pty() {
     use crate::terminal::input::{EnterGuardKind, HANDED_BACK_GUARD_TOAST};
     use crate::terminal::input_queue::{EntryId, EntryKind, InputEntry, Origin, Stamp};
     fn typed(id: u64, text: &str) -> InputEntry {
@@ -71,6 +72,7 @@ fn deferred_enter_hand_back_guards_only_multi_line_buffers() {
                     crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
                 initialize_app_for_terminal_view(&mut app);
                 let terminal = add_window_with_terminal(&mut app, None);
+                let pty = collect_pty_writes(&mut app, &terminal);
                 terminal.update(&mut app, |view, ctx| {
                     view.input.update(ctx, |input, ctx| {
                         input.replace_buffer_content(line, ctx);
@@ -80,8 +82,14 @@ fn deferred_enter_hand_back_guards_only_multi_line_buffers() {
                     } else {
                         Vec::new()
                     };
-                    view.hand_back_deferred_enter_keys_to_editor(taken, "verdict", ctx);
+                    view.give_up_deferred_enter_keys(taken, "verdict", ctx);
                 });
+                assert_eq!(
+                    String::from_utf8_lossy(&pty.borrow().concat()),
+                    if typed_after { "ls" } else { "" },
+                    "{mode:?} {line:?}: the keys typed after the Enter reach the pty in typed \
+                     order; with none typed, nothing is written"
+                );
                 terminal.read(&app, |view, ctx| {
                     view.input.read(ctx, |input, ctx| {
                         assert_eq!(

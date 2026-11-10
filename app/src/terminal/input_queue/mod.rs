@@ -427,6 +427,16 @@ pub enum DeliverOutcome {
     Requeue(GateSpec),
 }
 
+/// What [`InputQueue::close_gate_for_give_up`] hands the caller of a gate that gave up.
+#[derive(Debug, Default)]
+pub struct GaveUpKeys {
+    /// The entries the gate held, in typed order: the caller writes them to the pty now.
+    pub entries: Vec<InputEntry>,
+    /// Entries left queued because an earlier gate still holds the queue (they are delivered in
+    /// order when that gate opens); `entries` is then empty.
+    pub left_in_place: usize,
+}
+
 /// Why an entry was removed without being delivered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiscardReason {
@@ -1192,8 +1202,60 @@ impl InputQueue {
         taken
     }
 
-    /// #1661 review: [`Self::close_gate_taking`] for a gate whose entries are DISCARDED (keys
-    /// typed after an Enter). A paste typed behind the gate whose read is still pending sits at
+    /// Owner decision 2026-11-09 (reverses #1661): the give-up of gate `(kind, key)`. The entries
+    /// that waited behind it are handed to the caller, in typed order, to be WRITTEN TO THE PTY
+    /// (what a plain terminal would have sent all along); nothing is discarded.
+    ///
+    /// Order is the invariant. The caller writes what it is handed at once, so nothing typed
+    /// EARLIER may still be queued: when another gate holds the queue at or in front of this
+    /// gate's barrier, this gate is only closed and its entries stay where they are, behind that
+    /// earlier gate, delivered in order when it opens ([`GaveUpKeys::left_in_place`] says how
+    /// many). A paste typed behind this gate whose read is still pending keeps its own
+    /// `PasteReading` gate and everything typed after it: later in typed order than what is
+    /// handed back, so it follows when its read ends.
+    pub fn close_gate_for_give_up<H: Host>(
+        &mut self,
+        host: &mut H,
+        kind: GateKind,
+        key: u64,
+    ) -> GaveUpKeys {
+        let Some(barrier) = self
+            .gates
+            .iter()
+            .find(|gate| gate.kind == kind && gate.key == key)
+            .map(|gate| gate.barrier)
+        else {
+            return GaveUpKeys::default();
+        };
+        self.give_ups += 1;
+        let earlier_gate_holds = self
+            .gates
+            .iter()
+            .any(|gate| !(gate.kind == kind && gate.key == key) && gate.barrier <= barrier);
+        if earlier_gate_holds {
+            let left_in_place = self.held_behind_gate(kind, key);
+            host.warn(&format!(
+                "input queue gate gave up behind an earlier open gate: kind={} key={key}; its \
+                 {left_in_place} entr(ies) stay queued in typed order behind that gate",
+                kind.name()
+            ));
+            self.close_gates(host, kind, key, "give_up_in_place");
+            self.drain(host);
+            return GaveUpKeys {
+                entries: Vec::new(),
+                left_in_place,
+            };
+        }
+        GaveUpKeys {
+            entries: self.close_gate_taking(host, kind, key),
+            left_in_place: 0,
+        }
+    }
+
+    /// #1661 review: [`Self::close_gate_taking`] for a gate whose entries are DISCARDED (the
+    /// multi-line dialog's answer, #1652; ^C on an Enter held for an unready shell, #1571; a
+    /// give-up no longer discards: [`Self::close_gate_for_give_up`]).
+    /// A paste typed behind the gate whose read is still pending sits at
     /// the barrier of its own `PasteReading` gate, inside what this gate held, with everything
     /// typed after it: that gate is taken too (and each next `PasteReading` gate after it), so
     /// nothing typed after the Enter is left to drain when the read ends. Each unread paste is

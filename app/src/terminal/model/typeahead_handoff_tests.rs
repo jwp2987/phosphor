@@ -1107,6 +1107,75 @@ fn without_a_held_enter_the_editor_owns_keys_while_the_request_is_outstanding() 
     assert!(!handoff.wants_terminal_focus());
 }
 
+/// Owner decision 2026-11-09 (reversing #1661): the leak net of the deferred Enter's gate gives
+/// the DEFERRAL up, not only the gate: input goes back to the editor and the gate id is gone, so
+/// the keys the view then writes to the pty are not held behind the same gate again (left in
+/// `HoldAfterEnter`, every one of them was). Another gate's net changes nothing.
+#[test]
+fn the_leak_net_of_the_deferred_enters_gate_gives_the_deferral_up() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let gate = handoff.deferred_gate().unwrap();
+    assert!(
+        !handoff.give_up_deferred_gate(gate.wrapping_add(1)),
+        "a net for another gate changes nothing"
+    );
+    assert!(matches!(
+        handoff.state(),
+        HandoffState::HoldAfterEnter { .. }
+    ));
+    assert_eq!(
+        handoff.on_given_up_user_bytes(b"ls\r"),
+        UserBytesRoute::Held,
+        "while the Enter is deferred a key is held behind its gate, a given-up key too"
+    );
+    assert_eq!(handoff.take_deferred_key_started(), Some(gate));
+
+    assert!(handoff.give_up_deferred_gate(gate));
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    assert_eq!(handoff.deferred_gate(), None);
+    assert_eq!(
+        handoff.on_given_up_user_bytes(b"ls\r"),
+        UserBytesRoute::Write,
+        "once the deferral is given up the keys are written, not held again"
+    );
+    assert_eq!(handoff.take_deferred_key_started(), None);
+    assert!(!handoff.give_up_deferred_gate(gate), "over already");
+}
+
+/// Owner decision 2026-11-09 (reversing #1661): the keys a hold gave up on are written to the pty
+/// and counted like any user write, but they never start a young Enter's hold: a typed Enter in
+/// the window is held for its prompt, the same Enter given up by a net is written (holding it
+/// again would arm another net for the same keys).
+#[test]
+fn keys_a_hold_gave_up_on_never_start_another_young_hold() {
+    let mut typed = young_after_submit();
+    assert_eq!(
+        typed.on_user_bytes(b"\r"),
+        UserBytesRoute::Held,
+        "a typed Enter in the window is held"
+    );
+    assert!(typed.take_young_hold_started().is_some());
+
+    let mut given_up = young_after_submit();
+    assert_eq!(
+        given_up.on_given_up_user_bytes(b"\rls\r"),
+        UserBytesRoute::WriteCounted
+    );
+    assert_eq!(given_up.take_young_hold_started(), None);
+    assert!(
+        matches!(
+            given_up.state(),
+            HandoffState::PtyOwned {
+                enters_written: 2,
+                ..
+            }
+        ),
+        "both Enters are counted as the lines they are: {:?}",
+        given_up.state()
+    );
+}
+
 /// #1215: an Enter deferred behind the hand-off's own report arms a patience deferral; giving it
 /// up hands input back to the editor with the held keys, without running anything. A report that
 /// arrives first ends the deferral, so a late give-up finds nothing.

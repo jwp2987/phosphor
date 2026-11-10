@@ -192,7 +192,7 @@ impl Host for InputQueueHost<'_, '_> {
     fn arm_give_up(&mut self, token: GateToken, _kind: GateKind, after: Duration) {
         // The ONE timer of a paste gate: a safety net for a reader that never answers. The reader's
         // result closes the gate first in every normal case and this then finds nothing to do.
-        // give-up-net: queue gate cap: a give-up that hands the gate's keys back to the editor or discards them with a count toast
+        // give-up-net: queue gate cap: a give-up that writes the keys typed after an Enter to the pty in typed order (owner decision 2026-11-09), or hands a setup / paste gate's keys back to the editor
         self.ctx.spawn(Timer::after(after), move |me, _, ctx| {
             me.on_paste_queue_give_up(token, ctx)
         });
@@ -318,8 +318,8 @@ impl Input {
         }
         // #1577: the leak net of an Enter's verdict / completion gate is a give-up, and a timer
         // never routes what waited behind the Enter (the queue's own give-up delivers it through
-        // the stages, which can write it to the pty). #1661 (owner decision 2026-11-05): what
-        // waited behind the Enter is discarded, with a toast that gives the count.
+        // the stages by the routing of that moment). Owner decision 2026-11-09 (reversing #1661):
+        // what waited behind the Enter is written to the pty in typed order, by the view.
         if let Some(gate) = self.enter_gate.filter(|gate| !gate.held_unready) {
             let ours = queue.try_peek().is_some_and(|queue| {
                 queue.gates().iter().any(|open| {
@@ -331,8 +331,9 @@ impl Input {
                 return;
             }
         }
-        // #1661: an Enter gate this input no longer tracks: the same discard, never the queue's
-        // own give-up (which would deliver what was typed behind that Enter).
+        // An Enter gate this input no longer tracks: the same give-up (the keys typed behind that
+        // Enter go to the pty in typed order), never the queue's own give-up (which would route
+        // each of them by the facts of this moment, some into the editor).
         let orphan_enter_gate = queue.try_peek().and_then(|queue| {
             queue
                 .gates()
@@ -349,25 +350,24 @@ impl Input {
                 queue.defer(crate::terminal::input_queue::Deferred::GiveUpCap(token));
                 return;
             };
+            let report = super::EnterDiscard::GiveUp {
+                reason: super::ENTER_GATE_GIVE_UP_TOAST,
+                always: false,
+                glue_if_keys_followed: false,
+            };
             let taken = {
                 let mut host = InputQueueHost::new(self, ctx);
-                guard.close_gate_discarding(&mut host, kind, key)
+                super::take_voided_enter_gate(&mut guard, &mut host, kind, key, report)
             };
             drop(guard);
             log::warn!(
                 "input queue: the leak net of an Enter gate the input no longer tracks fired \
-                 ({kind:?} {key}); {} entr(ies) behind it discarded (#1661)",
+                 ({kind:?} {key}); {} entr(ies) behind it go to the pty in typed order",
                 taken.len()
             );
-            self.report_enter_gate_discard(
-                &taken,
-                super::EnterDiscard::GiveUp {
-                    reason: super::ENTER_GATE_GIVE_UP_TOAST,
-                    always: false,
-                    glue_if_discarded: false,
-                },
-                ctx,
-            );
+            if self.report_enter_gate_discard(&taken, report, ctx) > 0 {
+                ctx.emit(super::Event::GivenUpKeysToPty(taken));
+            }
             self.flush_deferred_programmatic_edits(ctx);
             return;
         }

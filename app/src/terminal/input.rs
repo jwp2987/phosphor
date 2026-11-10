@@ -5,7 +5,10 @@ mod cli_agent;
 mod common;
 mod enter_queue;
 mod native_completions;
-pub(crate) use enter_queue::{ENTER_GATE_GIVE_UP_TOAST, EnterDiscard, VERDICT_GIVE_UP_TOAST};
+pub(crate) use enter_queue::{
+    ENTER_GATE_GIVE_UP_TOAST, EnterDiscard, VERDICT_GIVE_UP_TOAST, count_discarded_keys,
+    take_voided_enter_gate,
+};
 pub mod conversations;
 pub mod decorations;
 pub mod inline_history;
@@ -1261,9 +1264,16 @@ pub enum Event {
     /// The Enter has now run; its gate on the pane queue holds the keys typed behind it until the
     /// pty route is settled (`TerminalView::settle_enter_queue`).
     ReplayAfterDeferredEnter,
-    /// #1661 review: pty pastes (their ids) were discarded with the keys typed behind an Enter;
-    /// their content and routing records in the view's paste maps go with them.
+    /// #1661 review: pty pastes (their ids) were discarded with the keys typed behind an Enter
+    /// (^C on an unready Enter, the multi-line dialog's answer); their content and routing
+    /// records in the view's paste maps go with them.
     DiscardedPtyPastes(Vec<u64>),
+    /// Owner decision 2026-11-09 (reversing #1661): an Enter gate of this input gave up (a
+    /// verdict / completion cap, the unready-shell net, the route-settle net, the leak net, an
+    /// edit that voided the Enter). These are the entries that were typed after the Enter, in
+    /// typed order; the view writes them to the pty (`write_given_up_entries_to_pty`), as a
+    /// plain terminal would have sent them all along. Never discarded.
+    GivenUpKeysToPty(Vec<crate::terminal::input_queue::InputEntry>),
     /// #1638: `~` and one of ssh's escape characters were typed as the first two characters of an
     /// empty line in a managed ssh session. The editor has been cleared; the view writes these
     /// two bytes to the pty, where the local ssh client reads its escape, as plain ssh would.
@@ -15626,8 +15636,9 @@ impl Input {
     /// submits exactly the text typed before it; text typed after it is queued, in order, and
     /// replayed once the Enter has run. Returns whether the waiting Enter is still valid; if the
     /// user edited the text itself (Ctrl-C, a Backspace before anything was typed behind it) it
-    /// is void, as before: the buffer stays as edited and what was queued behind the Enter is
-    /// discarded with a toast (#1661).
+    /// is void, as before: the buffer stays as edited and what was queued behind the Enter goes
+    /// to the pty in typed order (owner decision 2026-11-09, reversing #1661; a Ctrl-C has
+    /// already discarded it, as the tty flushes typeahead on INTR).
     fn reconcile_verdict_wait(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let Some(wait) = self.verdict_wait.as_ref() else {
             return false;
@@ -15669,8 +15680,8 @@ impl Input {
                     self.cancel_pending_completions_for_deferred_enter();
                     self.end_deferred_enter_activity();
                 }
-                // Typed behind the void Enter on the queue: discarded, with a toast that gives the
-                // count (owner decision 2026-11-05, #1661 / #1767: never glued onto the line).
+                // Typed behind the void Enter on the queue: written to the pty in typed order
+                // (owner decision 2026-11-09, reversing #1661; #1767: never glued onto the line).
                 self.void_enter_gate(ctx);
                 false
             }

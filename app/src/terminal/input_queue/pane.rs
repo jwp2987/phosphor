@@ -100,23 +100,23 @@ pub enum Deferred {
     TakeGateKeys { gate_id: u64, then: GateKeysThen },
     /// Closes the PowerShell setup gate and hands the keys it held to `then`.
     TakePowershellKeys { then: PowershellKeysThen },
-    /// The waiting Enter's gate is void (a give-up, ^C, an edit of its line): closes it and
-    /// DISCARDS everything typed behind it, reported as `report` says (owner decision 2026-11-05,
-    /// #1661; #1768: the busy queue gives the free one's result).
+    /// The waiting Enter's gate is void (a give-up, ^C, an edit of its line): closes it and takes
+    /// what was typed behind it, as `report` says: a give-up or an edit WRITES it to the pty in
+    /// typed order (owner decision 2026-11-09, reversing #1661); ^C and the multi-line dialog's
+    /// answer discard it (#1571, #1652). #1768: the busy queue gives the free one's result.
     VoidEnterGate {
         kind: GateKind,
         key: u64,
         report: crate::terminal::input::EnterDiscard,
     },
-    /// `TerminalView::discard_gate_keys_after_enter` on a busy queue (#1661 review): closes gate
-    /// `(kind, key)` and DISCARDS what it held (keys typed after an Enter), keeping the line in
-    /// front of the first Enter when `keep_line`. Applied in FIFO order, so a key typed after the
-    /// give-up (deferred behind it) is offered once the gate is gone and is never discarded.
-    DiscardGateKeysAfterEnter {
+    /// `TerminalView::give_up_gate_keys_to_pty` on a busy queue: closes gate `(kind, key)`, whose
+    /// timer gave up, and WRITES what it held to the pty in typed order (owner decision
+    /// 2026-11-09, reversing #1661). Applied in FIFO order, so a key typed after the give-up
+    /// (deferred behind it) is offered once the gate is gone and follows what the gate held.
+    GiveUpGateKeysToPty {
         kind: GateKind,
         key: u64,
         why: &'static str,
-        keep_line: bool,
     },
     /// Drops the ssh connect gate `gate` and the pastes still reading behind it (`paste_ids`),
     /// then does `then` with what they held. The view's own state was already detached.
@@ -132,11 +132,12 @@ pub enum Deferred {
 pub enum GateKeysThen {
     /// The deferred Enter wrote no command: the keys are released (sent on, in order).
     Release,
-    /// The report never came: the keys come back to the editor as text.
-    GiveUpToEditor,
-    /// #1577: a timer gave up on the deferred Enter (the reason names it): the Enter is not run,
-    /// the keys come back to the editor as text, the next Enter is consumed once with a toast.
-    GiveUpHandBack(&'static str),
+    /// A timer gave up on the deferred Enter (the reason names it: the report patience, the
+    /// uncovered-report patience, a verdict cap, the gate's leak net). The Enter is not run and
+    /// its line stays in the editor; the keys typed behind it are WRITTEN TO THE PTY in typed
+    /// order (owner decision 2026-11-09, reversing #1661). A bare Enter (an empty editor line)
+    /// goes to the pty in front of them: it was a key too.
+    GiveUp(&'static str),
 }
 
 /// What happens to the keys of a `Deferred::TakePowershellKeys` once taken.
@@ -159,6 +160,12 @@ pub enum SshDropThen {
     /// ended with no wrapper verdict, as plain ssh in a plain terminal leaves the typeahead in the
     /// tty for the shell (#1641, owner decision after r18u16).
     WriteToLocalPty,
+    /// A connect give-up (the gate's ceilings, the first-Precmd wait cap) fired: written to the
+    /// pty once, in typed order, NOW, for whatever reads the tty at this moment (the ssh process
+    /// while it is still the foreground program), as a plain terminal would have sent the keys
+    /// all along (owner decision 2026-11-09, reversing #1661). Never kept for the local shell
+    /// that follows a later ssh exit.
+    GiveUpToPty,
 }
 
 /// Whether paste `id` belongs to the input editor.

@@ -296,6 +296,7 @@ impl TerminalView {
         &mut self,
         gate: Option<u64>,
         paste_ids: &[u64],
+        for_pty_give_up: bool,
         mut ctx: Option<&mut ViewContext<Self>>,
     ) -> Vec<HeldInput> {
         if gate.is_none() && paste_ids.is_empty() {
@@ -334,6 +335,12 @@ impl TerminalView {
         let mut signals_discarded = 0usize;
         for entry in removed {
             match entry.kind {
+                // Owner decision 2026-11-09 (reversing #1661): a connect give-up writes what was
+                // held to the pty in typed order, as a plain terminal would have sent it all
+                // along, and a held signal is one of those keys (its byte, in its place).
+                EntryKind::Held { class, text } if class == HELD_SIGNAL && for_pty_give_up => {
+                    held.push(HeldInput::Key(text))
+                }
                 // A signal typed during the ssh setup window (OD-5) was meant for the REMOTE
                 // shell. When the held segment ends without one (a prompt, ^C, a connect that
                 // failed) it is never handed back as text and never delivered locally.
@@ -366,9 +373,23 @@ impl TerminalView {
                         ));
                     }
                 }
+                // A give-up's write drops nothing: an Enter and pty bytes that ended up behind the
+                // hold are the bytes they are, in their place.
+                EntryKind::Enter if for_pty_give_up => held.push(HeldInput::Key("\r".to_owned())),
+                EntryKind::PtyBytes { bytes, .. } if for_pty_give_up => {
+                    held.push(HeldInput::Seq(String::from_utf8_lossy(&bytes).into_owned()))
+                }
                 // Enter / EditorKey / Control / Seq / PtyBytes behind a dropped hold are not handed
                 // back yet; whether legacy ever queues them here is open (#1605 follow-up).
-                _ => {}
+                other => {
+                    if for_pty_give_up {
+                        log::warn!(
+                            "ssh hold: a give-up found an entry it has no bytes for ({}); not \
+                             written",
+                            other.tag()
+                        );
+                    }
+                }
             }
         }
         if signals_discarded > 0 {
@@ -394,14 +415,19 @@ impl TerminalView {
                 self.flush_deferred_queue_ops(ctx);
             }
             if !queue.has_deferred() && queue.try_peek().is_some() {
-                let held = self.ssh_drop_detached(gate, &paste_ids, Some(&mut *ctx));
+                let held = self.ssh_drop_detached(
+                    gate,
+                    &paste_ids,
+                    then == SshDropThen::GiveUpToPty,
+                    Some(&mut *ctx),
+                );
                 self.finish_dropped_ssh_gate(held, then, ctx);
                 return;
             }
         } else if !queue.has_deferred() && queue.try_peek().is_some() {
             // Discarding needs no view context.
             debug_assert_eq!(then, SshDropThen::Discard);
-            let dropped = self.ssh_drop_detached(gate, &paste_ids, None);
+            let dropped = self.ssh_drop_detached(gate, &paste_ids, false, None);
             if !dropped.is_empty() {
                 log::info!("ssh hold: discarded {} held input(s)", dropped.len());
             }
@@ -455,6 +481,24 @@ impl TerminalView {
                     self.write_user_bytes_to_pty(bytes.into_bytes(), ctx);
                 }
             }
+            SshDropThen::GiveUpToPty => {
+                // Owner decision 2026-11-09 (reversing #1661): a connect give-up (the gate's
+                // ceilings, the first-Precmd wait cap) writes the held keys to the pty NOW, in
+                // typed order, for whatever reads the tty at this moment: the ssh process while it
+                // is still the foreground program, never the local shell after a later exit. A
+                // paste goes as its text, as in `WriteToLocalPty`.
+                let keys = held.len();
+                let chunks: Vec<Vec<u8>> = held
+                    .into_iter()
+                    .map(|input| match input {
+                        HeldInput::Typed(text)
+                        | HeldInput::Key(text)
+                        | HeldInput::Paste(text)
+                        | HeldInput::Seq(text) => text.into_bytes(),
+                    })
+                    .collect();
+                self.write_given_up_chunks_to_pty(chunks, keys, "ssh_connect_give_up", ctx);
+            }
             SshDropThen::HandBackText => {
                 // Adjacent printable runs are one input.
                 let mut merged = SshTypeahead::default();
@@ -475,7 +519,7 @@ impl TerminalView {
     #[cfg(test)]
     pub(super) fn ssh_hold_take(&mut self) -> Vec<HeldInput> {
         let (gate, paste_ids) = self.ssh_hold_detach();
-        let held = self.ssh_drop_detached(gate, &paste_ids, None);
+        let held = self.ssh_drop_detached(gate, &paste_ids, false, None);
         let mut merged = SshTypeahead::default();
         for input in held {
             merged.push(input);
@@ -501,6 +545,13 @@ impl TerminalView {
     /// is a deferred operation, run when it frees (never a timer).
     pub(super) fn ssh_hold_clear_gate_to_local_pty(&mut self, ctx: &mut ViewContext<Self>) {
         self.ssh_hold_clear_gate(SshDropThen::WriteToLocalPty, Some(ctx));
+    }
+
+    /// Owner decision 2026-11-09 (reversing #1661): a connect give-up fired with keys held. They
+    /// are written to the pty once, in typed order, now (consumes the hold). When the queue is
+    /// busy this is a deferred operation, run when it frees (never a second timer).
+    pub(super) fn ssh_hold_give_up_to_pty(&mut self, ctx: &mut ViewContext<Self>) {
+        self.ssh_hold_clear_gate(SshDropThen::GiveUpToPty, Some(ctx));
     }
 
     /// Number of inputs held (for the log line, never content).

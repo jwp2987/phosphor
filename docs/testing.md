@@ -1600,7 +1600,45 @@ warpify and tmux-install blocks' Interrupt, a rewind) cancels a deferred Enter f
 |---|---|---|
 | view, Legacy and Table | `view_test.rs`: `an_interrupt_ctrl_c_is_not_held_behind_a_deferred_enter` (Stop of a user command, ssh warpify Interrupt, tmux-install Interrupt, rewind) | with an Enter deferred and `x` typed behind it, each path writes exactly one ^C, `x` is never written, the deferred Enter is cancelled |
 
-**#1661 (owner decision 2026-11-05): a give-up DROPS the keys typed after an Enter.** Every give-up of an Enter gate
+**#1996 (owner decision 2026-11-09, REVERSING #1661): a hold that gives up WRITES its keys to the pty.** This is the current
+rule and it supersedes every statement in this file that a give-up "discards" or "drops" the keys typed after an Enter, or
+hands a young Enter back to the editor at its cap (the #1661 paragraph below, the #1666 Tab-completion give-up, the
+#1701/#1702 patiences, the verdict-cap row near the top, the #1658 kept-line note): those describe history. When a hold for
+the shell gives up, the held keys go to the pty in typed order, what a plain terminal would have sent all along; nothing is
+dropped; no toast counts keys; only the line typed BEFORE an Enter that did not run stays in the editor, with its own notice.
+Code: `view/give_up_to_pty.rs` (`write_given_up_entries_to_pty`, `write_given_up_chunks_to_pty`, `give_up_gate_keys_to_pty`),
+`InputQueue::close_gate_for_give_up` (hands the gate's entries out in typed order; behind an EARLIER open gate it only closes
+the gate and leaves them queued; a pending paste behind the gate keeps its own gate), `Input` -> view
+`Event::GivenUpKeysToPty` (free queue) or the deferred `VoidEnterGate` (busy queue), `give_up_deferred_enter_keys` (the
+deferred Enter's report / verdict give-ups and its gate's leak net, which now also gives the hand-off's deferral up:
+`TypeaheadHandoff::give_up_deferred_gate`; a BARE Enter goes to the pty as `\r` in front of the keys behind it),
+`give_up_young_hold_keys_to_pty` (both kinds of young cap, through `release_young_hold_keys`),
+`Deferred::GiveUpGateKeysToPty` (the CLI-agent submit's cap and gates nobody tracks, FIFO on a busy queue),
+`SshDropThen::GiveUpToPty` (the connect ceilings and the first-Precmd wait cap: written at the give-up, to the ssh process
+that still runs). The write goes through `write_user_bytes_to_pty_after_paste_stage` with
+`TypeaheadHandoff::on_given_up_user_bytes`: counted like any user write, never held for another young Enter's net. With the
+pty gone (`TerminalView::pty_gone`, set when the shell exits or its spawn fails) the keys become guarded text in that pane's
+input. Log: one `hop=give_up_keys_to_pty why=... keys= bytes= written= to_editor= pty_gone=` per give-up (counts only);
+`hop=young_hold_gave_up_to_pty` (was `young_hold_handed_back`); `hop=enter_gate_give_up_keys_to_pty` on the input side;
+`hop=give_up_keys_left_in_place` when an earlier gate still holds the queue. The removed toasts: the count toast
+(`typed_after_enter_discarded_toast`), "The Enter was cancelled", the young-hold and CLI-submit reasons.
+`GATE_GIVE_UP_TOAST` ("Input was waiting too long ...") is now shown only by the setup-gate and paste-read hand-backs; the
+young Enter's cap, which showed it for every Enter at a prompt without sequence numbers (the repeated macOS toast), no longer
+hands back. Not changed: ^C / ^D, the multi-line dialog's discard (#1652), the subshell / PowerShell setup nets, the ConPTY
+prompt hold (#1584, #1923), the pty paste's read cap, the ssh bootstrap-failure hand-back. Nothing below was compiled or run
+on the authoring machine (rustfmt only): the first run on the box is the proof.
+
+| layer | test | asserts |
+|---|---|---|
+| queue (pure) | `input_queue/tests.rs`: `close_gate_for_give_up_hands_back_every_held_entry_in_typed_order`, `close_gate_for_give_up_leaves_a_pending_paste_and_what_follows_it_queued`, `close_gate_for_give_up_behind_an_earlier_gate_leaves_its_entries_in_place` | two Enters and the text between them come out in typed order, nothing delivered or discarded, the give-up is counted once; a pending paste keeps its gate and follows when read; behind an earlier gate the entries stay queued and are delivered in typed order when it opens |
+| hand-off (pure) | `typeahead_handoff_tests.rs`: `the_leak_net_of_the_deferred_enters_gate_gives_the_deferral_up`, `keys_a_hold_gave_up_on_never_start_another_young_hold` | the leak net ends the deferral (EditorOwned, gate id gone) so given-up keys are written, not held behind the same gate; a typed young Enter is held, the same Enter given up is written and counted |
+| input, Legacy and Table | `input_test.rs` (expectations changed from "discarded with a count toast"): `test_slow_verdict_cap_hands_the_line_back_and_sends_keys_behind_the_enter_to_the_pty`, `test_tab_then_enter_give_up_sends_the_keys_typed_after_it_to_the_pty`, `test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_per_key`, `test_enter_queue_voided_enter_sends_the_keys_typed_behind_it_to_the_pty`, `test_unready_enter_give_up_keeps_the_line_sends_the_rest_to_the_pty_and_runs_nothing`, `test_route_wait_give_up_sends_the_keys_behind_a_submitted_enter_to_the_pty`, `test_completion_give_up_on_a_busy_queue_acts_like_on_a_free_one`, `test_unready_enter_give_up_never_puts_a_paste_typed_behind_it_into_the_editor` | the line stays with its guard and its own notice (no count, no "discarded" toast; no toast at all when the Enter had run or was voided); `Event::GivenUpKeysToPty` carries every key typed behind the Enter (2, 4, 10, 2, 7, 1 keys); the editor's replay routes nothing |
+| view, Legacy and Table | `group2_timer_tests.rs` (expectations changed): `cli_submit_cap_writes_the_keys_behind_it_to_the_pty_in_typed_order` (`ls⏎pwd⏎`), `enter_gate_leak_net_writes_the_keys_behind_the_enter_to_the_pty` (`xy`), `orphan_enter_gate_leak_net_writes_the_keys_behind_it_to_the_pty` (`x⏎`), `young_hold_cap_writes_the_enter_and_keys_to_the_pty` (window hold, normal end), `young_hold_fish_no_barrier_cap_writes_the_keys_to_the_pty`, `young_hold_net_writes_the_enter_and_the_keys_after_it_to_the_pty` (`⏎ls⏎`, both Enters), `young_hold_net_sends_the_enter_after_the_line_already_at_the_shell` (`ls⏎x` in total), `a_key_typed_after_a_busy_young_hold_give_up_follows_the_held_keys_to_the_pty` (`⏎lsx`), `uncovered_report_patience_keeps_the_text_and_sends_the_keys_behind_the_enter_to_the_pty`, `ssh_give_up_with_the_remote_prompt_seen_writes_the_held_keys_to_the_pty` | the pty receives the held keys byte for byte in typed order, once; the editor gets nothing and no guard; the queue is idle; no command is executed by a timer |
+| view, Legacy and Table (new) | `group2_timer_tests.rs`: `bare_enters_at_a_prompt_without_sequence_numbers_reach_the_pty_with_no_toast` (the macOS report: three bare Enters, each `\r` at the pty, no toast), `a_bare_deferred_enter_and_the_keys_behind_it_reach_the_pty_at_the_give_up` (`⏎~.`, #1793's shape, no toast) | |
+| view, Legacy and Table (new) | `give_up_to_pty_tests.rs`: `given_up_keys_of_every_form_reach_the_pty_in_typed_order_with_no_toast`, `given_up_keys_go_to_the_pty_while_a_secret_is_being_read`, `given_up_keys_become_editor_text_when_the_pty_is_gone` (text `ls\npwd` in that pane's input, guarded; nothing written there or in another pane), `a_give_up_writes_only_to_its_own_panes_pty`, `an_enter_gate_give_up_on_a_busy_queue_writes_the_same_keys_to_the_pty` (free and busy: `ls⏎pwd`), `the_deferred_enters_gate_leak_net_writes_its_keys_and_ends_the_deferral`, `an_ssh_connect_give_up_writes_every_held_key_in_typed_order` (`echo one⏎echo two`, nothing kept for after the ssh exit) | |
+| view | `view_test.rs` (expectations changed): `keys_behind_a_run_enter_are_written_to_the_pty_at_the_net_in_both_modes` (`ls⏎` at the shortened net), `typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_writes_it`, `a_young_enter_and_its_keys_are_written_to_the_pty_when_no_prompt_comes`, `a_young_hold_give_up_asks_for_the_request_decision` (the decision is asked for after the write), `managed_ssh_without_a_tty_read_probe_keeps_the_ceiling_and_writes_the_keys_to_ssh`, `ssh_first_precmd_wait_cap_writes_the_held_keys_to_the_pty`, `table_mode_a_gate_past_its_ceiling_is_released_by_a_logged_give_up`; `followup_tests.rs`: `deferred_enter_give_up_guards_only_multi_line_buffers_and_sends_later_keys_to_the_pty`; `keys_follow_editor_tests.rs`: the kept line now comes from a deferred Enter's give-up (`give_up_deferred_enter_keys`), the young / CLI give-up keeps no line | |
+
+**#1661 (owner decision 2026-11-05; SUPERSEDED 2026-11-09 by #1996 above, kept as history; the tests it names were renamed and their expectations changed, see the table above): a give-up DROPPED the keys typed after an Enter.** Every give-up of an Enter gate
 (the route-settle net, the gate's leak net, an orphan gate's leak net, the verdict / completion give-ups, an unready shell's
 15 s net and its gate-gone path, a void of the waiting Enter, the hand-off's report give-ups) closes the gate and DISCARDS what
 waited behind it in every form (editor text, `PtyBytes`, pastes, Enters), with one toast: the give-up's reason, then

@@ -15614,8 +15614,8 @@ enum AfterRunEnter {
     CommandTaken,
     /// No event: the deferred settle alone releases the keys (the facts say the pty takes them).
     NoEvent,
-    /// No event and the pty does not take keys: the route net (shortened here) DISCARDS them
-    /// (#1661, owner decision 2026-11-05).
+    /// No event and the pty does not take keys: the route net (shortened here) gives up and
+    /// WRITES them to the pty in typed order (owner decision 2026-11-09, reversing #1661).
     PtyNotReady,
     /// #1661: a slow shell: the pty does not take keys at first, and the command is taken 2 s
     /// later, inside the default 10 s net: the keys follow it, in order.
@@ -15729,11 +15729,11 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
             }
             AfterRunEnter::NoEvent | AfterRunEnter::PtyNotReady => {}
         }
+        // Owner decision 2026-11-09 (reversing #1661): the route net's give-up (`PtyNotReady`)
+        // writes the keys to the pty too, so only the block-completed cases end without a write.
         let ends_without_pty = matches!(
             after,
-            AfterRunEnter::PtyNotReady
-                | AfterRunEnter::BlockCompleted
-                | AfterRunEnter::RealBlockCompleted
+            AfterRunEnter::BlockCompleted | AfterRunEnter::RealBlockCompleted
         );
         for _ in 0..400 {
             // r18u27: released AND delivered. A release from the input's side stops the drain at
@@ -15752,15 +15752,15 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         let expected = match after {
             AfterRunEnter::CommandTaken | AfterRunEnter::SlowCommandTaken => "<command>ls\r",
-            AfterRunEnter::NoEvent => "ls\r",
-            AfterRunEnter::PtyNotReady
-            | AfterRunEnter::BlockCompleted
-            | AfterRunEnter::RealBlockCompleted => "",
+            // The net's give-up writes them as the deferred settle does: in typed order, once.
+            AfterRunEnter::NoEvent | AfterRunEnter::PtyNotReady => "ls\r",
+            AfterRunEnter::BlockCompleted | AfterRunEnter::RealBlockCompleted => "",
         };
         assert_eq!(
             String::from_utf8_lossy(&written),
             expected,
-            "{mode:?} {after:?}: once, in order, after the command; a give-up writes nothing"
+            "{mode:?} {after:?}: once, in order, after the command; the net's give-up writes \
+             them to the pty too"
         );
         terminal.read(&app, |view, ctx| {
             let input = view.input.as_ref(ctx);
@@ -15772,7 +15772,7 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
                 AfterRunEnter::PtyNotReady => assert_eq!(
                     input.buffer_text(ctx),
                     "",
-                    "{mode:?}: the net discarded the keys; nothing went to the editor"
+                    "{mode:?}: the net wrote the keys to the pty; nothing went to the editor"
                 ),
                 AfterRunEnter::BlockCompleted | AfterRunEnter::RealBlockCompleted => assert_eq!(
                     input.buffer_text(ctx),
@@ -15804,11 +15804,11 @@ fn keys_behind_a_run_enter_are_released_by_the_deferred_settle_alone_in_both_mod
     }
 }
 
-/// #1630 review / #1661 (owner decision 2026-11-05): the pty never takes the command and no event
-/// comes: the route net DISCARDS the keys (never handed back to the editor) and nothing reaches the
-/// pty.
+/// #1630 review, owner decision 2026-11-09 (REVERSING #1661, under which this test expected the
+/// keys discarded and nothing at the pty): the pty never takes the command and no event comes: the
+/// route net WRITES the keys to the pty in typed order (never handed back to the editor).
 #[test]
-fn keys_behind_a_run_enter_are_discarded_at_the_net_in_both_modes() {
+fn keys_behind_a_run_enter_are_written_to_the_pty_at_the_net_in_both_modes() {
     for mode in [DestMode::Legacy, DestMode::Table] {
         keys_behind_a_run_enter_in(mode, AfterRunEnter::PtyNotReady);
     }
@@ -17971,9 +17971,11 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
 
 /// The report arrived and the submit wrote no command, but only an unfinished line was typed
 /// behind the Enter: it waits behind the held Enter (a shell line would have gone to the pty), and
-/// nothing is written. The hold's give-up DISCARDS it (#1661, owner decision 2026-11-05).
+/// nothing is written while it waits. Owner decision 2026-11-09 (REVERSING #1661, under which
+/// this test expected it discarded and nothing ever written): the hold's give-up WRITES it to the
+/// pty, as typed; it is never handed back as editor text.
 #[test]
-fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_discards_it() {
+fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_writes_it() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -17988,20 +17990,25 @@ fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_d
 
             // #1571: the test view is not ready for a command, so the Enter that ran nothing is
             // held as a gate (a refused Enter of an unready shell); the unfinished line is the
-            // text typed after it and waits behind it, never written to the pty. #1661: the
-            // hold's give-up discards it (never handed back as editor text).
+            // text typed after it and waits behind it, not written to the pty while it waits.
+            // The hold's give-up writes it to the pty (never handed back as editor text).
             assert!(view.input.as_ref(ctx).unready_enter_gate_open());
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(pty_writes.borrow().is_empty(), "held until the give-up");
             view.input
                 .update(ctx, |input, ctx| input.give_up_unready_enter("test", ctx));
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            assert_eq!(
-                view.model.lock().typeahead_handoff().state(),
-                &HandoffState::EditorOwned
-            );
             assert!(view.paste_queue.queue.borrow().is_idle());
         });
-        assert!(pty_writes.borrow().is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&pty_writes.borrow().concat()),
+            "ls -l",
+            "the line typed behind the Enter reaches the pty as typed, once"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(view.paste_queue.queue.borrow().is_idle());
+        });
     })
 }
 
@@ -21266,11 +21273,13 @@ fn managed_ssh_verdict_after_the_old_ceiling_still_delivers_once() {
 
 /// #1641: without a tty-read probe (macOS, others) an echoing answer during the master login
 /// would be held while ssh waits for it, so the wait for the verdict keeps the 15 s silence
-/// ceiling. Its give-up hands the held keys back as text (kept over the running ssh block), never
-/// writes them, and releases the window: the next key reaches ssh once, as in a plain terminal.
-/// Legacy and Table.
+/// ceiling. Owner decision 2026-11-09 (REVERSING #1661 and #1577's hand-back, which this test
+/// expected: the held keys kept as text over the running ssh block, nothing written): its give-up
+/// WRITES the held keys to the pty in typed order, to the ssh process that is still the
+/// foreground program, and releases the window: the next key reaches ssh once, behind them, as
+/// in a plain terminal. Legacy and Table.
 #[test]
-fn managed_ssh_without_a_tty_read_probe_keeps_the_ceiling_and_hands_back() {
+fn managed_ssh_without_a_tty_read_probe_keeps_the_ceiling_and_writes_the_keys_to_ssh() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -21299,18 +21308,28 @@ fn managed_ssh_without_a_tty_read_probe_keeps_the_ceiling_and_hands_back() {
                 assert!(!view.ssh_typeahead_holding, "{mode:?}");
                 assert!(view.ssh_held_is_empty(), "{mode:?}");
                 assert_eq!(
-                    view.input
-                        .as_ref(ctx)
-                        .kept_handed_back_text()
-                        .map(str::trim_end),
-                    Some("echo T258_ok"),
-                    "{mode:?}: handed back as text, kept over the running ssh block"
+                    view.input.as_ref(ctx).kept_handed_back_text(),
+                    None,
+                    "{mode:?}: nothing is kept as text over the running ssh block"
                 );
-                assert!(pty_writes.borrow().is_empty(), "{mode:?}: nothing written");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing is put into the editor"
+                );
                 view.typed_characters_on_terminal("y", ctx);
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-            assert_eq!(written, b"y", "{mode:?}: the next key reaches ssh once");
+            assert!(
+                written.starts_with(b"echo T258_ok") && written.ends_with(b"y"),
+                "{mode:?}: the held keys reach ssh in typed order, then the next key, once: {:?}",
+                String::from_utf8_lossy(&written)
+            );
+            assert_eq!(
+                written.iter().filter(|byte| **byte == b'y').count(),
+                1,
+                "{mode:?}: the next key is written once"
+            );
         })
     }
 }
@@ -21668,11 +21687,14 @@ fn ssh_origin_of_an_in_band_submit_does_not_leak_to_a_later_raw_block() {
     }
 }
 
-/// #1571 review, both modes: the first-Precmd wait cap is a TIMER. It used to deliver the held
-/// line (Enter included) to a session that could not take it; it now hands the keys back to the
-/// editor as text, not run, with the Enter guard, and writes nothing.
+/// #1571 review, both modes: the first-Precmd wait cap is a TIMER. It never submits the held line
+/// through the editor to a session that cannot take a command. Owner decision 2026-11-09
+/// (REVERSING #1661 and #1577's hand-back, which this test expected: the keys back in the editor
+/// with the Enter guard, nothing written): the held keys, Enter included, are WRITTEN TO THE PTY
+/// in typed order, for whatever reads the tty (the remote shell, through ssh), as a plain
+/// terminal would have sent them; nothing goes to the editor.
 #[test]
-fn ssh_first_precmd_wait_cap_hands_the_keys_back_and_writes_nothing() {
+fn ssh_first_precmd_wait_cap_writes_the_held_keys_to_the_pty() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -21699,34 +21721,30 @@ fn ssh_first_precmd_wait_cap_hands_the_keys_back_and_writes_nothing() {
                 view.deliver_ssh_typeahead_if_ready("give_up", ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
             });
-            // The hand-back may be a deferred queue operation: let it run.
+            // The write may be a deferred queue operation: let it run.
             for _ in 0..100 {
-                let back = terminal.read(&app, |view, ctx| {
-                    view.input.as_ref(ctx).buffer_text(ctx).contains("echo hi")
-                });
-                if back {
+                if !pty_writes.borrow().is_empty() {
                     break;
                 }
                 warpui::r#async::Timer::after(Duration::from_millis(5)).await;
             }
             terminal.read(&app, |view, ctx| {
                 assert!(view.ssh_held_is_empty(), "{mode:?}");
-                assert!(
-                    view.input
-                        .as_ref(ctx)
-                        .buffer_text(ctx)
-                        .starts_with("echo hi"),
-                    "{mode:?}: handed back as text"
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing is put into the editor"
                 );
                 assert!(
-                    view.input.as_ref(ctx).ssh_handover_enter_guard_armed(),
-                    "{mode:?}: the first Enter on it is held"
+                    !view.input.as_ref(ctx).ssh_handover_enter_guard_armed(),
+                    "{mode:?}: nothing came back, so nothing is guarded"
                 );
             });
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: the timer wrote nothing: {:?}",
-                pty_writes.borrow()
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                String::from_utf8_lossy(&written),
+                "echo hi\r",
+                "{mode:?}: the held line and its Enter reach the pty in typed order, once"
             );
         })
     }
@@ -22626,12 +22644,13 @@ fn a_late_interactive_event_for_a_finished_block_does_not_mark_the_shell_interac
     })
 }
 
-/// #1614 (review C2): the cap's hand-back asks the controller for the request decision once the
-/// hold is gone (a decision now can only commit the editor or write the request, never held keys):
-/// the decision the stale-count timer had to skip while the hold lived runs, so the pane does not
-/// stay pty-owned with the handed-back text in the editor. Nothing is written to the pty.
+/// #1614 (review C2): the cap's give-up asks the controller for the request decision once the
+/// hold is gone and its keys are written: the decision the stale-count timer had to skip while the
+/// hold lived runs, so the pane does not stay undecided. Owner decision 2026-11-09 (REVERSING
+/// #1661 and #1577's hand-back, under which this test expected nothing written): the held keys go
+/// to the pty in typed order, and the decision is asked for after them.
 #[test]
-fn a_young_hold_hand_back_asks_for_the_request_decision() {
+fn a_young_hold_give_up_asks_for_the_request_decision() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -22661,12 +22680,12 @@ fn a_young_hold_hand_back_asks_for_the_request_decision() {
         assert_eq!(
             *retries.borrow(),
             1,
-            "the hand-back asks for the decision once"
+            "the give-up asks for the decision once"
         );
-        assert!(
-            pty_writes.borrow().is_empty(),
-            "a timer wrote to the pty: {:?}",
-            pty_writes.borrow()
+        assert_eq!(
+            String::from_utf8_lossy(&pty_writes.borrow().concat()),
+            "\rx",
+            "the held Enter and key reach the pty in typed order, once"
         );
     })
 }
@@ -28662,14 +28681,16 @@ fn hold_a_young_enter(
     );
 }
 
-/// No prompt came: the give-up (the gate's cap) HANDS the held Enter and the key behind it back
-/// to the editor as text, once, and writes nothing. (Owner rule 2026-11-01, #1577: a timer may
-/// close a segment and hand text back, never write to a pty. This test asserted the old
-/// typeahead write; the event-driven ends still write, see the tests below.) This pane has no
-/// prompt sequence numbers, so this window hold's cap is its NORMAL end and keeps the hand-back
-/// (owner decision 2026-11-05, #1661; round 2 of #1661 had made it a discard).
+/// No prompt came: the give-up (the gate's cap) WRITES the held Enter and the key behind it to
+/// the pty as typeahead, once, in typed order, and puts nothing into the editor. History of this
+/// expectation: the typeahead write (original), then a hand-back to the editor (owner rule
+/// 2026-11-01, #1577), a discard (#1661 round 2), the hand-back again for this window hold (owner
+/// decision 2026-11-05), and now the typeahead write again: owner decision 2026-11-09, REVERSING
+/// #1661 ("exactly what a plain terminal would have sent all along"). This pane has no prompt
+/// sequence numbers, so this is the window hold whose cap is its normal end: the hold whose
+/// hand-back put a bare Enter into the editor with the "Input was waiting too long" toast.
 #[test]
-fn a_young_enter_and_its_keys_are_handed_back_when_no_prompt_comes() {
+fn a_young_enter_and_its_keys_are_written_to_the_pty_when_no_prompt_comes() {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -28687,14 +28708,15 @@ fn a_young_enter_and_its_keys_are_handed_back_when_no_prompt_comes() {
             assert!(!view.model.lock().typeahead_handoff().has_young_hold());
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
-                "\nx",
-                "the Enter (a newline) and the key, in typed order, once"
+                "",
+                "nothing is put into the editor"
             );
         });
-        assert!(
-            pty_writes.borrow().is_empty(),
-            "a timer wrote to the pty: {:?}",
-            pty_writes.borrow()
+        assert_eq!(
+            String::from_utf8_lossy(&pty_writes.borrow().concat()),
+            "\rx",
+            "the Enter and the key reach the pty in typed order, once (the second timer wrote \
+             nothing)"
         );
     });
 }
@@ -31291,8 +31313,10 @@ fn table_mode_the_remote_prompt_event_hands_over_with_no_timer_and_no_give_up() 
     });
 }
 
-/// The safety net: no prompt ever comes. The give-up releases the window, hands the text back
-/// unexecuted, and is LOGGED (counted).
+/// The safety net: no prompt ever comes. The give-up releases the window and is LOGGED (counted).
+/// Owner decision 2026-11-09 (REVERSING #1661 and #1577's hand-back, which this test expected:
+/// the text back in the editor, nothing written): the held text is WRITTEN TO THE PTY, to the ssh
+/// process that still runs, in typed order.
 #[test]
 fn table_mode_a_gate_past_its_ceiling_is_released_by_a_logged_give_up() {
     App::test((), |mut app| async move {
@@ -31309,14 +31333,23 @@ fn table_mode_a_gate_past_its_ceiling_is_released_by_a_logged_give_up() {
             gate.armed_at = Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
             view.ssh_give_up_fired(ctx);
             assert!(!view.ssh_typeahead_holding);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo lost");
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "nothing is put into the editor"
+            );
             assert_eq!(view.ssh_give_ups, 1);
             assert_eq!(
                 view.ssh_phase.last_release(),
                 Some(crate::terminal::input_queue::SshRelease::GiveUpCeiling)
             );
         });
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            String::from_utf8_lossy(&written),
+            "echo lost",
+            "the held keys reach the pty in typed order, once"
+        );
     });
 }
 
@@ -31445,6 +31478,11 @@ mod group4_prompt_tests;
 // #1411 (control keys translated in the pane key sink, no model lock).
 #[path = "view/group_1411_tests.rs"]
 mod group_1411_tests;
+
+// Owner decision 2026-11-09 (reversing #1661): a hold that gives up writes its keys to the pty;
+// the edge cases of that rule. Declared here for the same reason as group 1.
+#[path = "view/give_up_to_pty_tests.rs"]
+mod give_up_to_pty_tests;
 
 // Group 2 (timers that decided delivery or ran a command, #1577 / #1588). Declared here for the
 // same reason as group 1.

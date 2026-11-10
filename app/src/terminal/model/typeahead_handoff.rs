@@ -25,7 +25,7 @@
 //!
 //! | decision | timing path (kept) | prompt-sequence path |
 //! |---|---|---|
-//! | young Enter held for a prompt? | 600 ms window since the last activity, hold sized by 3x the p90 round trip (only where the platform can sample nothing, see below) | positive evidence only ([`YoungHoldEvidence`], #1614): the request is due (the counts say the prompt is back and nothing is queued, or the sample proves them stale), or a Precmd may be in flight (the line editor reads and the reader-side barrier says the stream is not applied yet); anything else is delivered to the pty as typed. Released by the report, the barrier's next publish, a Preexec, a program taking the tty, a command, a signal; give-up [`YOUNG_HOLD_GIVE_UP`] (10 s) discards the Enter and what followed it, except the fish no-barrier hold (2 s) and a no-sequence window hold, whose cap is their normal end and hands back (#1661) |
+//! | young Enter held for a prompt? | 600 ms window since the last activity, hold sized by 3x the p90 round trip (only where the platform can sample nothing, see below) | positive evidence only ([`YoungHoldEvidence`], #1614): the request is due (the counts say the prompt is back and nothing is queued, or the sample proves them stale), or a Precmd may be in flight (the line editor reads and the reader-side barrier says the stream is not applied yet); anything else is delivered to the pty as typed. Released by the report, the barrier's next publish, a Preexec, a program taking the tty, a command, a signal; give-up [`YOUNG_HOLD_GIVE_UP`] (10 s; the fish no-barrier hold 2 s and a no-sequence window hold its window, whose cap is their normal end) writes the Enter and what followed it to the pty in typed order, as typeahead (owner decision 2026-11-09, reversing #1661) |
 //! | line begun at an unnoticed prompt ("young line")? | began within the window | same facts |
 //! | hand-back after Ctrl-C at the prompt | 250 ms settle | prompt cycle shells: the cycle's Precmd; zsh: the report of a request written behind the interrupt; one 2 s logged give-up |
 //! | Enters consumed by a program | 250 ms quiet period | the finished command was interactive (latch, read on the model thread), the sampled state at decision time; one 5 s logged give-up |
@@ -272,16 +272,19 @@ pub fn keys_follow_editor_env_enabled() -> bool {
 /// prompt's Precmd, or the report, normally releases it within milliseconds, so reaching this
 /// means the signal is not coming. Logged by the view when it fires. It stays the cap of the
 /// fish no-barrier hold ([`YoungHoldEvidence::PrecmdMaybeInFlight`]), whose cap is its NORMAL end
-/// (owner decision 2026-11-05, #1661); every other evidence gets [`YOUNG_HOLD_GIVE_UP`].
-// give-up-net: the no-barrier young hold hands its keys back to the editor at this cap
+/// (owner decision 2026-11-05, #1661); every other evidence gets [`YOUNG_HOLD_GIVE_UP`]. At
+/// either cap the held keys are written to the pty in typed order (owner decision 2026-11-09).
+// give-up-net: the no-barrier young hold writes its keys to the pty in typed order at this cap (owner decision 2026-11-09)
 pub const EVENT_HOLD_GIVE_UP: Duration = Duration::from_secs(2);
 
 /// Owner decision 2026-11-05 (#1661): the give-up net of a queued young hold whose cap is a
 /// GIVE-UP ([`TypeaheadHandoff::young_hold_cap_is_normal_end`] false). The hold is released by
 /// events (the report, the barrier's publish, a Preexec, a program taking the tty, a command, a
-/// signal); its give-up discards the young Enter and the keys typed after it, so it is a long
-/// safety net (a busy machine must not drop typeahead whose release event is merely late).
-// give-up-net: 10 s net of a queued young hold: discards the young Enter and what followed with a count toast (#1661)
+/// signal). Since the owner's decision of 2026-11-09 (reversing #1661) its give-up WRITES the
+/// young Enter and the keys typed after it to the pty in typed order, as the typeahead they are;
+/// it stays a long safety net so a release event that is merely late on a busy machine still
+/// decides where they go.
+// give-up-net: 10 s net of a queued young hold: writes the young Enter and what followed to the pty in typed order (owner decision 2026-11-09)
 pub const YOUNG_HOLD_GIVE_UP: Duration = Duration::from_secs(10);
 
 /// Tags the ids of a deferred Enter's `HandoffReport` gate; a young hold's ids never carry it.
@@ -1896,8 +1899,9 @@ impl TypeaheadHandoff {
     /// Owner decision 2026-11-05 (#1661): whether the current young hold's cap is its NORMAL end,
     /// not a give-up. Two holds end at their cap by design: the no-barrier hold
     /// ([`YoungHoldEvidence::PrecmdMaybeInFlight`]) and the barrier hold of a session without
-    /// prompt sequence numbers; 2 s, with the hand-back of the keys to the editor. Every other
-    /// hold's cap is a real give-up: the 10 s net, which drops the keys (#1661).
+    /// prompt sequence numbers; they keep their short cap. Every other hold's cap is a real
+    /// give-up: the 10 s net. At either cap the keys are written to the pty in typed order (owner
+    /// decision 2026-11-09, reversing #1661); this only decides the cap's length.
     ///
     /// Classified when the hold starts (`young_hold_normal_end`), never recomputed at the
     /// cap (#1661 review).
@@ -2475,6 +2479,28 @@ impl TypeaheadHandoff {
         self.keys_follow_editor = false;
         self.state = HandoffState::EditorOwned;
         self.deferred_gate.take()
+    }
+
+    /// The leak net of the deferred Enter's `HandoffReport` gate `gate` fired (owner decision
+    /// 2026-11-09, reversing #1661): nothing ended the deferral, so it is given up like the report
+    /// patience gives it up ([`Self::give_up_report_deferral`]): the Enter is not run, input goes
+    /// back to the editor, and the view writes the keys held behind the gate to the pty in typed
+    /// order. Without this the hand-off would stay in `HoldAfterEnter` and hold every one of
+    /// those keys behind the same gate again. Returns whether `gate` was the live deferral's.
+    pub fn give_up_deferred_gate(&mut self, gate: u64) -> bool {
+        if self.deferred_gate != Some(gate)
+            || !matches!(self.state, HandoffState::HoldAfterEnter { .. })
+        {
+            return false;
+        }
+        self.report_deferral_id = None;
+        self.uncovered_deferral_id = None;
+        self.deferred_young = false;
+        self.drop_young_hold();
+        self.keys_follow_editor = false;
+        self.state = HandoffState::EditorOwned;
+        self.deferred_gate = None;
+        true
     }
 
     /// The patience timer of deferral `id` ran out: the report covering the untracked bytes
@@ -3142,6 +3168,24 @@ impl TypeaheadHandoff {
     /// and as in flight; in [`HandoffState::HoldAfterEnter`] it is held.
     pub fn on_user_bytes(&mut self, bytes: &[u8]) -> UserBytesRoute {
         self.route_user_bytes(bytes, true)
+    }
+
+    /// A routed user write of keys a hold GAVE UP on (owner decision 2026-11-09, reversing #1661:
+    /// they go to the pty in typed order, `TerminalView::write_given_up_chunks_to_pty`). Routed
+    /// and counted like any user write, but a give-up never starts a young Enter's hold: that
+    /// would hold the same keys for another net. On a ConPTY session whose line editor is not
+    /// reading yet (#1162) they still wait for it, as the first keys of a prompt hold, unless a
+    /// hold is already queued (its keys were typed later; these go first). Behind an Enter
+    /// deferred for the report they are held behind its gate, like any key.
+    pub fn on_given_up_user_bytes(&mut self, bytes: &[u8]) -> UserBytesRoute {
+        if !bytes.iter().any(is_signal_byte)
+            && !self.young_hold_queued
+            && !self.prompt_hold_queued
+            && self.should_hold_for_prompt(true, Instant::now())
+        {
+            return self.route_user_bytes(bytes, true);
+        }
+        self.route_user_bytes_unheld(bytes, true)
     }
 
     /// A routed user write while a full-screen program (the alternate screen) runs. It reads the
@@ -3846,9 +3890,10 @@ impl TypeaheadHandoff {
         YoungHoldExpiry::Release
     }
 
-    /// #1577: the give-up of queued young hold `id` handed its keys back to the editor instead of
-    /// writing them: the hold is over, nothing is routed and no byte is counted as written. Clears
-    /// the queued flag if it is still set for `id` (the expiry already did when it said `Release`).
+    /// The cap of queued young hold `id` gave up: the hold is over. (The name is #1577's, when the
+    /// keys were handed back to the editor; since 2026-11-09 the view writes them to the pty right
+    /// after this, routed and counted by [`Self::route_expired_young_chunks`].) Clears the queued
+    /// flag if it is still set for `id` (the expiry already did when it said `Release`).
     pub fn finish_young_hold_handed_back(&mut self, id: u64) {
         if id != self.young_hold_id {
             return;

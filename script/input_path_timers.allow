@@ -17,9 +17,9 @@ app/src/terminal/input.rs	SLOW_ENTER_HOLD_THRESHOLD	log threshold for a slow Ent
 app/src/terminal/input.rs	TAB_COMPLETION_ENTER_BUDGET	Enter held for a local Tab completion: on expiry the uncompleted line goes back to the editor and nothing runs (#1666)
 app/src/terminal/input.rs	VERDICT_HOLD_BACKSTOP	lost-job net of an Enter held for its verdict: hands the line back to the editor, never submits it (#1577)
 app/src/terminal/input.rs	arm_hold_timer	one-shot give-up timers of an Enter's verdict/Tab hold (backstop, compute cap): hand the line back, never submit
-app/src/terminal/input/enter_queue.rs	ENTER_GATE_LEAK_NET	leak net of the Enter gate: the held Enter is given up (line stays, what followed is discarded with a count toast)
-app/src/terminal/input/enter_queue.rs	UNREADY_ENTER_GIVE_UP	60 s net of an Enter held for an unready shell: the line stays in the editor unrun, what followed is discarded with a toast (#1661)
-app/src/terminal/input/paste_queue.rs	arm_give_up	queue gate cap: a give-up that hands the gate's keys back to the editor or discards them with a count toast
+app/src/terminal/input/enter_queue.rs	ENTER_GATE_LEAK_NET	leak net of the Enter gate: the held Enter is given up (line stays, what followed is written to the pty in typed order, owner decision 2026-11-09 #1996)
+app/src/terminal/input/enter_queue.rs	UNREADY_ENTER_GIVE_UP	60 s net of an Enter held for an unready shell: the line stays in the editor unrun, what followed is written to the pty in typed order (#1996)
+app/src/terminal/input/paste_queue.rs	arm_give_up	queue gate cap: a give-up that writes the keys typed after an Enter to the pty in typed order (#1996), or hands a setup / paste gate's keys back to the editor
 app/src/terminal/input/paste_queue.rs	start_queued_read	delays a Pasting... progress toast; notice only
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_NOTICE_EXPLICIT	shows a 'may be waiting for input -- Take over' notice only (probe unknown); never hands the command over (#1811)
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ	shows a 'may be waiting for input -- Take over' notice only; never hands the command over (#1796)
@@ -27,9 +27,9 @@ app/src/terminal/model/block/interaction_mode.rs	STALL_NOTICE_AFTER	shows a 'may
 app/src/terminal/model/block/interaction_mode.rs	STALL_SNAPSHOT_AFTER	hands the stalled screen to a snapshot-capable model; writes nothing to the pty
 app/src/terminal/model/typeahead_handoff.rs	CONPTY_PROMPT_HOLD_GIVE_UP	prompt-hold give-up: keys with no Enter go back to the editor as text, a segment with an Enter stays held with a toast (#1584)
 app/src/terminal/model/typeahead_handoff.rs	PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK	re-checks the prompt hold's give-up cap while a release is in flight; writes nothing
-app/src/terminal/model/typeahead_handoff.rs	YOUNG_HOLD_GIVE_UP	10 s net of a queued young hold: discards the young Enter and what followed with a count toast (#1661)
+app/src/terminal/model/typeahead_handoff.rs	YOUNG_HOLD_GIVE_UP	10 s net of a queued young hold: writes the young Enter and what followed to the pty in typed order (#1996)
 app/src/terminal/model/typeahead_handoff.rs	YOUNG_DETECTION_CAP	250 ms classifier-CPU cap of a young line's verdict wait: hands the line back to the editor, never submits it (#1577)
-app/src/terminal/view.rs	AFTER_ENTER_REPLAY_PTY_WAIT	10 s net for keys typed after a deferred Enter: discards them with a count toast; never routes or writes (#1661)
+app/src/terminal/view.rs	AFTER_ENTER_REPLAY_PTY_WAIT	10 s net for keys typed after a deferred Enter: writes them to the pty in typed order (#1996)
 app/src/terminal/view.rs	AGENT_INTERRUPT_GRACE	after an ignored ^C, hands the agent's command to the user and leaves the agent view; writes no bytes (#899)
 app/src/terminal/view.rs	ALT_SCREEN_RESEND_GIVE_UP	logged net for an alt-screen winsize re-send; resizes the pty window, no key bytes
 app/src/terminal/view.rs	ALT_SCREEN_SETTLE_GIVE_UP	logged net for the alt-screen paint-settle re-check; resizes the pty window, no key bytes
@@ -53,19 +53,19 @@ app/src/terminal/view.rs	SUBSHELL_BANNER_DELAY_DURATION	delays showing the warpi
 app/src/terminal/view.rs	SUBSHELL_SETUP_CEILING	absolute subshell-setup net: held keys come back to the editor with a count toast; writes nothing (#1711)
 app/src/terminal/view.rs	SUBSHELL_SETUP_QUIET_NET	the one subshell-setup net: held keys come back to the editor with a count toast; writes nothing (#1711)
 app/src/terminal/view.rs	SUBSHELL_SETUP_QUIET_NOTICE	shows the 'setup is waiting' toast; notice only
-app/src/terminal/view.rs	TYPEAHEAD_REPORT_PATIENCE	report-patience give-up: the Enter does not run, keys held behind it go back to the editor/are discarded with a toast
-app/src/terminal/view.rs	UNCOVERED_REPORT_PATIENCE	the Enter does not run and stays in the editor; the keys held behind it follow (#1577)
+app/src/terminal/view.rs	TYPEAHEAD_REPORT_PATIENCE	report-patience give-up: the Enter does not run and its line stays in the editor; the keys held behind it are written to the pty in typed order (#1996)
+app/src/terminal/view.rs	UNCOVERED_REPORT_PATIENCE	uncovered-report patience: the Enter does not run and its line stays in the editor; the keys held behind it are written to the pty in typed order (#1996)
 app/src/terminal/view.rs	YOUNG_DETECTION_BACKSTOP	lost-signal net of a young line's verdict wait: hands the line back to the editor, never submits it (#1577)
 app/src/terminal/view.rs	begin_ssh_warpify_timeout	shows an ssh-warpify timeout error block; no pty write, no keys
 app/src/terminal/view.rs	resize_alt_screen_redundantly	re-sends the alt-screen window size twice; no key bytes
-app/src/terminal/view.rs	schedule_ssh_typeahead_give_up	ONE event-armed ssh connect give-up: the held keys come back as text and never reach a pty (#1577)
-app/src/terminal/view.rs	settle_enter_queue	10 s net of keys typed after a deferred Enter: give_up_enter_route_wait discards them with a count toast
+app/src/terminal/view.rs	schedule_ssh_typeahead_give_up	ONE event-armed ssh connect give-up: the held keys are written to the pty in typed order, to the ssh process while it runs (#1996)
+app/src/terminal/view.rs	settle_enter_queue	10 s net of keys typed after a deferred Enter: give_up_enter_route_wait writes them to the pty in typed order (#1996)
 app/src/terminal/view.rs	spawn_bootstrap_timer	bootstrap-failed give-up: marks the session failed and hands held ssh keys back as text (delivery only behind a kill switch)
 app/src/terminal/view.rs	start_slow_bootstrap_banner_auto_dismiss_timer	auto-dismisses the slow-bootstrap banner; notice only
 app/src/terminal/view.rs	wait_frame_or_give_up	bounds the wait for a drawn frame before the alt-screen re-check; no key bytes
-app/src/terminal/view/paste_queue.rs	CLI_SUBMIT_LEAK_NET	leak net of a paced CLI-agent submit: keys typed behind it are discarded with a count toast (#1661)
-app/src/terminal/view/paste_queue.rs	HANDOFF_GATE_LEAK_NET	leak net of a deferred Enter's gate: hands the held keys back / discards with a count toast
-app/src/terminal/view/paste_queue.rs	arm_give_up	queue gate cap: a give-up that hands the gate's keys back to the editor or discards them with a count toast
+app/src/terminal/view/paste_queue.rs	CLI_SUBMIT_LEAK_NET	leak net of a paced CLI-agent submit: keys typed behind it are written to the pty in typed order (#1996)
+app/src/terminal/view/paste_queue.rs	HANDOFF_GATE_LEAK_NET	leak net of a deferred Enter's gate: the deferral is given up and the held keys are written to the pty in typed order (#1996)
+app/src/terminal/view/paste_queue.rs	arm_give_up	queue gate cap: a give-up that writes the keys typed after an Enter to the pty in typed order (#1996), or hands a setup / paste gate's keys back to the editor
 app/src/terminal/view/paste_queue.rs	hand_back_gate_keys_inner	100 ms re-ask of a hand-back whose queue was busy; the hand-back itself only returns keys to the editor, never writes (owner-listed)
 app/src/terminal/view/paste_queue.rs	rearm_prompt_hold_cap	re-arms the prompt hold's give-up cap; writes nothing
 app/src/terminal/view/ssh_typeahead.rs	SSH_TYPEAHEAD_PRECMD_WAIT_CAP	first-Precmd wait cap: hands the held ssh keys back as text, writes nothing
@@ -83,7 +83,7 @@ app/assets/bundled/bootstrap/zsh_body.sh	warp_read_completion_buffer	first-byte 
 app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_PROMPT_TIMEOUT	2 s prompt timeout only gives up: closes the requester's channel, marks the cancel frame owed and writes nothing (43f2c9a91)
 app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_RESULTS_TIMEOUT	15 s lost-event net: drops the exchange and closes the requesters' channels; writes and releases nothing (the normal ends are events)
 app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog	call site of the prompt and results give-up nets; neither writes or releases a key
-app/src/terminal/model/typeahead_handoff.rs	EVENT_HOLD_GIVE_UP	2 s net of a queued young hold: the no-barrier hold hands its keys back to the editor at its cap; events release it first
+app/src/terminal/model/typeahead_handoff.rs	EVENT_HOLD_GIVE_UP	the no-barrier young hold writes its keys to the pty in typed order at this cap (#1996)
 app/src/terminal/view.rs	arm_young_timer	young-detection timers (compute cap, wall ceiling, backstop): on expiry the line goes back to the editor and the next Enter submits it; never submits or writes
 app/src/search/ai_context_menu/view.rs	SELECT_WAIT_GIVE_UP	10 s net of an @-menu Enter waiting for results: the Enter is not applied, the typed query stays, a toast says so (#1728)
 app/src/search/ai_context_menu/view.rs	SEARCH_DEBOUNCE_PERIOD	debounces the @-menu query into the mixer; an Enter typed meanwhile waits on the results event, never on this clock

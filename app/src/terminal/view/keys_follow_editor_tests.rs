@@ -5,38 +5,24 @@
 
 use super::*;
 use crate::terminal::input_queue::DestinationMode;
-use crate::terminal::input_queue::{EntryId, EntryKind, GateKind, InputEntry, Origin, Stamp};
 
-fn entry(id: u64, kind: EntryKind) -> InputEntry {
-    InputEntry {
-        id: EntryId(id),
-        kind,
-        focus_epoch: 0,
-        arrived_at: std::time::Instant::now(),
-        origin: Origin::Keyboard,
-        stamp: Stamp::default(),
-    }
-}
-
-/// The pty-owned hand-off a young-hold give-up leaves, then the give-up itself keeping `echo hi`
-/// (typed before the Enter) with `ls` typed after it.
+/// A pty-owned hand-off, then a give-up that keeps the line typed before the Enter: `echo hi` is
+/// the line of a deferred Enter whose timer gave up (`give_up_deferred_enter_keys`), with nothing
+/// typed after it.
+///
+/// Until the owner's decision of 2026-11-09 (reversing #1661) this helper used the young-hold /
+/// CLI-submit give-up, which kept the line in front of the Enter and DISCARDED `ls` typed after
+/// it. That give-up now writes everything it held to the pty (`give_up_to_pty_tests.rs` covers
+/// it) and keeps no line, so the kept line here comes from the give-up that still keeps one.
 fn give_up_keeping_a_line(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
     view.model
         .lock()
         .typeahead_handoff_mut()
         .on_command_written();
     assert!(view.model.lock().typeahead_handoff().is_pty_owned());
-    let entries = vec![
-        entry(1, EntryKind::Text("echo hi".to_owned())),
-        entry(
-            2,
-            EntryKind::PtyBytes {
-                bytes: b"\rls".to_vec(),
-                takes_over_agent_control: false,
-            },
-        ),
-    ];
-    view.finish_discard_gate_keys_after_enter(entries, GateKind::CliSubmit, 1, "test", true, ctx);
+    view.input
+        .update(ctx, |input, ctx| input.system_insert("echo hi", ctx));
+    view.give_up_deferred_enter_keys(Vec::new(), "test", ctx);
 }
 
 /// A kept line plus later keys and a hand-off that has not yet decided (the report is late): the
