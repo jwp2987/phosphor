@@ -1,7 +1,7 @@
 use super::{
     AIAgentActionId, AIConversationId, ControlChangeReason, LongRunningCommandControlState, TaskId,
-    TerminalModel, UserTakeOverReason, lrc_handoff_enters_inline_agent_view,
-    needs_byop_monitor_upgrade,
+    TerminalModel, UserTakeOverReason, handback_attaches_block_context,
+    lrc_handoff_enters_inline_agent_view, needs_byop_monitor_upgrade,
 };
 use crate::ai::blocklist::agent_view::{
     AgentViewDisplayMode, AgentViewEntryOrigin, AgentViewState,
@@ -304,4 +304,48 @@ fn lrc_handoff_opens_the_inline_agent_view_only_when_no_agent_view_is_active() {
     assert!(lrc_handoff_enters_inline_agent_view(
         &AgentViewState::Inactive
     ));
+}
+
+// #1926: the hand-back after a password-prompt hand-over used to attach the block (command plus
+// output) to the resumed conversation as USER context. The agent's own command already returns
+// its output as the tool result, and the attached copy carried whatever the program echoed --
+// the `read -s` secret in round 8's `agent_interactive_password` -- as user prose, unredacted
+// with the redaction toggle off. An agent-requested command is never attached on hand-back,
+// whatever the hand-over reason was.
+#[test]
+fn hand_back_of_an_agent_requested_command_attaches_no_block_context() {
+    let mut model = agent_requested_long_running_block(AIConversationId::new());
+    let block = model.block_list_mut().active_block_mut();
+    // The password-prompt hand-over is the only take-over admitted before a control state
+    // exists; the others need the agent to hold control, so they follow the first hand-back.
+    block
+        .take_over_control_for_user(UserTakeOverReason::BlockedOnInput)
+        .unwrap();
+    block.handoff_control_to_agent().unwrap();
+    assert!(block.is_agent_in_control());
+    assert!(
+        !handback_attaches_block_context(block),
+        "BlockedOnInput: the tool result is the only channel for the agent's own command"
+    );
+    for reason in [
+        UserTakeOverReason::TransferFromAgent {
+            reason: "enter password".to_owned(),
+        },
+        UserTakeOverReason::Manual,
+    ] {
+        block.take_over_control_for_user(reason.clone()).unwrap();
+        block.handoff_control_to_agent().unwrap();
+        assert!(!handback_attaches_block_context(block), "{reason:?}");
+    }
+}
+
+// A command the USER ran has no tool result waiting for it, so handing it to an agent still
+// attaches the block: that is the only way the agent learns what the command did.
+#[test]
+fn hand_back_of_a_user_command_still_attaches_the_block() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("sleep 100", "");
+    let block = model.block_list().active_block();
+    assert!(!block.is_agent_requested_command());
+    assert!(handback_attaches_block_context(block));
 }

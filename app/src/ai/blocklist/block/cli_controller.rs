@@ -844,11 +844,20 @@ impl CLISubagentController {
             if !is_viewing_shared_session {
                 let resume_context = {
                     let terminal_model = self.terminal_model.lock();
-                    block_context_from_terminal_model(&terminal_model, &block_id, false)
-                        .map(Box::new)
-                        .map(AIAgentContext::Block)
-                        .into_iter()
-                        .collect()
+                    let attach = terminal_model
+                        .block_list()
+                        .block_index_for_id(&block_id)
+                        .and_then(|index| terminal_model.block_list().block_at(index))
+                        .is_some_and(handback_attaches_block_context);
+                    if attach {
+                        block_context_from_terminal_model(&terminal_model, &block_id, false)
+                            .map(Box::new)
+                            .map(AIAgentContext::Block)
+                            .into_iter()
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
                 };
                 self.controller.update(ctx, |controller, ctx| {
                     controller.resume_conversation(
@@ -1134,6 +1143,20 @@ fn needs_byop_monitor_upgrade(block: &Block) -> bool {
 /// refuses both with `AlreadyInAgentView`, and asking it anyway logged that refusal as an
 /// `ERROR` on every hand-back made from the full-screen agent view (a false error, nothing
 /// failed). The old guard tested `is_inline()` only, so it let the full-screen case through.
+/// Whether handing a long-running command back to the agent attaches the block (command, output,
+/// exit code) to the resumed conversation as USER context (#1926).
+///
+/// Never for the agent's own requested command: its output already returns to the model as the
+/// tool result, and the `<attached_context>` copy rides in a user-role message that bypasses the
+/// tool-result channel. After a `BlockedOnInput` hand-over that copy carried whatever the program
+/// echoed -- a `read -s` secret the command printed, a password mistyped at a visible prompt --
+/// and it goes out unredacted whenever the user's redaction toggle is off (the round-8
+/// `agent_interactive_password` failure). Only a command the user ran and then handed to an agent
+/// has no tool result, so only that block is still attached.
+fn handback_attaches_block_context(block: &Block) -> bool {
+    !block.is_agent_requested_command()
+}
+
 fn lrc_handoff_enters_inline_agent_view(state: &AgentViewState) -> bool {
     !state.is_active()
 }
