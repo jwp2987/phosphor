@@ -127,7 +127,8 @@ stalled (`lrc_alive`; nothing is `Running` then) is still judged as a stop.
 of the turn only in its pending branch (`action_model.rs:1665-1702`); the running branch
 (`:1648-1664`) cancels the one action. So the status bar's Ctrl-C on a running NON-command action
 (a read, an MCP call) with later actions queued leaves their cards to come up, and the step then
-ends `Cancelled` without telling the model. I2b now reports that state if a case reaches it.
+ends `Cancelled` without telling the model. Filed as #2034 (found by reading, nothing changed
+for it). I2b now reports that state if a case reaches it.
 
 ## 3. The Ctrl-C regression gate on Windows
 
