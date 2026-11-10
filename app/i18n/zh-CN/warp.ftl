@@ -2148,6 +2148,7 @@ keybinding-desc-set-input-mode-terminal = 切换输入模式为终端模式
 keybinding-desc-toggle-hide-cli-responses = 切换隐藏 CLI 回应
 keybinding-desc-slash-command = 斜杠命令：{ $name }
 keybinding-desc-take-control-of-running-command = 接管正在运行的命令
+keybinding-desc-take-over-agent-command = 接管正在运行的智能体命令
 
 # --- 终端零状态块（欢迎提示） ---
 terminal-zero-state-title = 新建终端会话

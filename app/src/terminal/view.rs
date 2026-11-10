@@ -1010,6 +1010,38 @@ const SSH_CONNECT_NO_PROBE_GIVE_UP: Duration = Duration::from_secs(15);
 pub(crate) const MAY_BE_WAITING_FOR_INPUT_NOTICE: &str =
     "This command may be waiting for input \u{2014} Take over";
 
+/// #1972: the two facts [`agent_command_take_over`] decides on, from the active block's own
+/// answers: whether a CLI subagent controls the command, and whether it is an agent-requested
+/// command in flight that the agent still drives with no control state (a tool call waiting for
+/// it to complete).
+pub(crate) fn agent_command_take_over_facts(
+    is_agent_in_control: bool,
+    is_agent_requested_command_in_flight: bool,
+    is_agent_driving_command: bool,
+) -> (bool, bool) {
+    (
+        is_agent_in_control,
+        !is_agent_in_control && is_agent_requested_command_in_flight && is_agent_driving_command,
+    )
+}
+
+/// #1972: what a user's "Take over" does to the running agent command, or `None` when there is
+/// nothing to take over. A command a CLI subagent controls is taken over manually, as before; a
+/// command a tool call only waits on is handed over as for a prompt (`BlockedOnInput`), so the
+/// turn stays alive and gets the command's result.
+pub(crate) fn agent_command_take_over(
+    agent_in_control: bool,
+    agent_waits_on_command: bool,
+) -> Option<UserTakeOverReason> {
+    if agent_in_control {
+        Some(UserTakeOverReason::Manual)
+    } else if agent_waits_on_command {
+        Some(UserTakeOverReason::BlockedOnInput)
+    } else {
+        None
+    }
+}
+
 // give-up-net: the one subshell-setup net: held keys come back to the editor with a count toast; writes nothing (#1711)
 const SUBSHELL_SETUP_QUIET_NET: Duration = Duration::from_secs(30);
 /// The absolute ceiling of a subshell setup (#1711): however steady the progress, a setup older
@@ -1130,6 +1162,10 @@ const DEFAULT_AI_BLOCK_HEIGHT: f32 = 96.;
 pub const DEFAULT_ASK_AI_AUTOSUGGESTION_TEXT: &str = "What happened here?";
 
 pub const LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY: &str = "LongRunningRequestedCommand";
+/// #1972: the agent drives the running command: a CLI subagent controls it, or an agent tool
+/// call waits for it to complete (no control state). The states "Take over the running agent
+/// command" acts in.
+pub const AGENT_DRIVES_RUNNING_COMMAND_CONTEXT_KEY: &str = "AgentDrivesRunningCommand";
 pub const LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY: &str =
     "LongRunningRequestedUserTookOverCommand";
 
@@ -12835,10 +12871,16 @@ impl TerminalView {
     }
 
     /// A small non-modal notice on the running agent command: "This command may be waiting for
-    /// input -- Take over". Clicking it does the existing take-over (the same action as the
-    /// long-running command control); nothing else changes, and the command stays with the agent
-    /// until the user acts, the probe says it reads, a marker appears or it completes (#1796).
-    /// Shown only while the agent drives the active block.
+    /// input -- Take over". Clicking it takes the command over
+    /// ([`Self::take_over_agent_command`]); nothing else changes, and the command stays with the
+    /// agent until the user acts, the probe says it reads, a marker appears or it completes
+    /// (#1796). Shown only while the agent drives the active block.
+    ///
+    /// #1972: the click used to dispatch `ToggleLongRunningCommandControl`, which only acts on a
+    /// command with a control state. The notice is shown for commands a tool call WAITS on, and
+    /// those have none for their whole life, so the click did nothing exactly where it was
+    /// offered (an `ssh -tt` whose remote program reads: the local OS cannot see that read, so
+    /// the notice is all the app can offer).
     fn show_may_be_waiting_for_input_notice(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.is_agent_driving_active_block() {
             return;
@@ -12856,11 +12898,61 @@ impl TerminalView {
                 ctx.dispatch_typed_action_for_view(
                     window_id,
                     view_id,
-                    &TerminalAction::ToggleLongRunningCommandControl,
+                    &TerminalAction::TakeOverAgentCommand,
                 );
             });
             toast_stack.add_ephemeral_toast(toast, window_id, ctx);
         });
+    }
+
+    /// #1972: the user takes the running agent command over (the take-over notice's click, the
+    /// command palette's "Take over the running agent command"). A user's act, never a timer.
+    ///
+    /// * A command a CLI subagent controls: the existing manual take-over.
+    /// * A command the agent's tool call only waits on (no control state): the same
+    ///   `BlockedOnInput` hand-over a proven tty read makes. The conversation stays alive and
+    ///   the tool call gets the command's real result when it completes, which is what a user
+    ///   who answers a prompt for the agent wants; a `Manual` take-over would cancel the turn and
+    ///   is refused for such a command anyway (`InteractionMode::take_over_for_user`).
+    /// * Anything else (the user already holds it, no agent command runs): nothing.
+    fn take_over_agent_command(&mut self, ctx: &mut ViewContext<Self>) {
+        let (agent_in_control, agent_waits_on_command) = {
+            let model = self.model.lock();
+            let active_block = model.block_list().active_block();
+            agent_command_take_over_facts(
+                active_block.is_agent_in_control(),
+                active_block.is_agent_requested_command_in_flight(),
+                active_block.is_agent_driving_command(),
+            )
+        };
+        let Some(reason) = agent_command_take_over(agent_in_control, agent_waits_on_command) else {
+            return;
+        };
+        if reason.is_blocked_on_input() {
+            // As for a prompt hand-over: the keys now belong to the command, not the editor.
+            self.end_keys_follow_editor("user_take_over", ctx);
+        }
+        self.cli_subagent_controller.update(ctx, |controller, ctx| {
+            controller.switch_control_to_user(reason, ctx);
+        });
+        ctx.notify();
+    }
+
+    /// #1971: hands the command the user holds back to the agent; nothing when there is none.
+    fn give_control_back_to_agent(&mut self, ctx: &mut ViewContext<Self>) {
+        let eligible = self
+            .model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_eligible_for_agent_handoff();
+        if !eligible {
+            return;
+        }
+        self.cli_subagent_controller.update(ctx, |controller, ctx| {
+            controller.handoff_active_command_control_to_agent(ctx);
+        });
+        ctx.notify();
     }
 
     fn show_ssh_typing_toast(&self, message: &str, ctx: &mut ViewContext<Self>) {
@@ -38860,6 +38952,8 @@ impl TypedActionView for TerminalView {
             | AgentModeSetupSpeedbumpBanner(_)
             | SummarizeConversation
             | ToggleLongRunningCommandControl
+            | GiveControlBackToAgent
+            | TakeOverAgentCommand
             | ToggleHideCliResponses
             | OpenConversationsPalette
             | ExitAgentView
@@ -39849,6 +39943,12 @@ impl TypedActionView for TerminalView {
                 }
                 ctx.notify();
             }
+            GiveControlBackToAgent => {
+                self.give_control_back_to_agent(ctx);
+            }
+            TakeOverAgentCommand => {
+                self.take_over_agent_command(ctx);
+            }
             ToggleHideCliResponses => {
                 self.cli_subagent_controller.update(ctx, |controller, ctx| {
                     controller.toggle_hide_responses(ctx);
@@ -40728,6 +40828,12 @@ impl View for TerminalView {
         }
 
         let active_block = model_lock.block_list().active_block();
+        if active_block.is_agent_in_control()
+            || (active_block.is_agent_requested_command_in_flight()
+                && active_block.is_agent_driving_command())
+        {
+            context.set.insert(AGENT_DRIVES_RUNNING_COMMAND_CONTEXT_KEY);
+        }
         if active_block.is_active_and_long_running() {
             if !model_lock.is_alt_screen_active() {
                 context.set.insert("LongRunningCommand");

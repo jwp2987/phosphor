@@ -5123,3 +5123,18 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
 - **Not covered, filed:** an echoing question from a precmd function on Unix (#2052); an agent conversation does not show the question
   (#2053, the case's `question_on_screen_*` metric: false in the agent pass); an Enter as the very first key while the editor still has
   focus (design note section 5).
+
+## Round 13: agent control: stuck turns, the hand-back key, agent-run ssh with a remote read (design `docs/design/r13-agentctl.md`; #1967 #1971 #1972; nothing compiled or run when written)
+
+- **#1971, unit, `terminal/view/init.rs` (`take_over_binding_tests`):**
+  `give_control_back_key_and_palette_entry_are_live_while_the_user_holds_the_command` (the fixed Cmd-Enter / Ctrl-Shift-Enter binding's
+  predicate and the new palette entry's, on the prompt line and under `AltScreen`),
+  `give_control_back_palette_entry_is_absent_when_the_user_holds_no_agent_command` (agent still drives, the user's own command, a CLI
+  agent session, AI off). **View, `terminal/view_test.rs`:** `give_control_back_action_hands_the_held_command_to_the_agent` (a no-op
+  with nothing held; after a `TransferFromAgent` take-over the action puts the agent back in control).
+- **#1972, unit:** `take_over_palette_entry_follows_who_drives_the_command` (`init.rs`),
+  `take_over_reason_follows_who_drives_the_agent_command` (`view_test.rs`: subagent in control = `Manual`, a waited command =
+  `BlockedOnInput`, held / finished / the user's own = nothing). **View:**
+  `take_over_hands_a_waited_agent_command_to_the_user_and_keeps_the_turn` (a requested command with no control state: the notice's OLD
+  action `ToggleLongRunningCommandControl` leaves it with the agent, which is the defect; `TakeOverAgentCommand` hands it over with
+  `BlockedOnInput`, the conversation is not `Cancelled`, a second take-over changes nothing).

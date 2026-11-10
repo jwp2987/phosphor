@@ -413,6 +413,15 @@ pub enum TerminalAction {
         source: PaletteSource,
     },
     ToggleLongRunningCommandControl,
+    /// #1971: hands a command the user holds (a take-over, or a hand-over for a prompt) back to
+    /// the agent: what the footer's "Give control back to agent" button does, as a named,
+    /// rebindable action. Does nothing when the user holds no agent command.
+    GiveControlBackToAgent,
+    /// #1972: the user takes the running agent command over. Unlike
+    /// [`Self::ToggleLongRunningCommandControl`] this also works for a command the agent's tool
+    /// call is only waiting on (no CLI subagent, so no control state): the take-over notice is
+    /// shown for exactly those commands.
+    TakeOverAgentCommand,
     ToggleHideCliResponses,
     ExitAgentView,
     StartNewAgentConversation,
@@ -731,6 +740,8 @@ impl fmt::Debug for TerminalAction {
             ToggleLongRunningCommandControl => {
                 write!(f, "TakeOverLongRunningCommandControlForUser")
             }
+            GiveControlBackToAgent => write!(f, "GiveControlBackToAgent"),
+            TakeOverAgentCommand => write!(f, "TakeOverAgentCommand"),
             ToggleHideCliResponses => write!(f, "ToggleHideCliResponses"),
             ExitAgentView => write!(f, "ExitAgentView"),
             StartNewAgentConversation => write!(f, "StartNewAgentConversation"),
