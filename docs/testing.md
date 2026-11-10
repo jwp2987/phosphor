@@ -2720,6 +2720,13 @@ Real gaps that remain (each checked against `.gitlab-ci.yml` and `script/realapp
 Owner rule (2026-11-02): every test result is kept in the repo for regression review. `test-results/` is that archive; it is
 append-only history, **retained forever** (it is small by design, see the size rules).
 
+**Trend report (owner, 2026-11-10): `script/ci/results_trend.py` -> `test-results/TREND.md` (generated, never edited).** The measure of progress is the set of
+failing cases, not the issue count. Per platform and run it shows PASS / FAIL / NOREF (split into `injector`: the harness says keys were lost between the
+injector and the app, so no pass can be trusted; and `other`) / SKIP, and compares only (case, mode) pairs judged pass/fail in BOTH runs (fixed and
+regressed). It lists each failing case with its reason and how many runs in a row it has failed, flags the DANGER classes (lost or reordered keys, a
+secret in the wrong place, typeahead, exactness: must be zero FAIL), and the newest run's unit failures. Regenerate after `collect_results.py`:
+`python3 script/ci/results_trend.py`; a run that is not committed yet: `--from <dir with manifest.json>`; `--self-test` checks the logic.
+
 **Launch failures name their cause.** When the pane's shell never shows a prompt, the `launch` row's detail quotes the app log's own error lines (`Bootstrapping failed`, panics, `ERROR`, keyring), redacted, newest last, plus a platform hint (macOS has no `app.stdout`; read `logs/<mode>/phosphor.log`). r18d8's macOS run failed with only "see logs/app.stdout; GPU/Wayland init?" while the real cause, a zsh bootstrap line over macOS's 1024-byte canonical limit, was in phosphor.log.
 
 **Mac and Windows builds start at once.** `ci_seq.py` plays `build-macos-arm64` and `build-windows-x86_64` (both `needs: []`, own machines) before it waits for `check-linux`; only the Linux build and the box suites wait for the box. In r18e4 the Mac and the Windows VM sat idle for over an hour behind a `check-linux` queued on the busy box.
