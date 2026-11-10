@@ -397,3 +397,114 @@ fn the_redirect_cap_event_carries_no_host() {
     assert_eq!(ev[0].outcome, Outcome::Denied);
     assert!(ev[0].host.is_empty() && ev[0].host_hash == 0);
 }
+
+// #1928: a provider request carries that provider's key and the user's custom headers, and
+// reqwest strips only `Authorization`/`Cookie` across hosts. With two providers configured both
+// origins are on the allowlist, so the allowlist alone let provider B's redirect hand its key to
+// provider A's host. An AI_ENDPOINT hop must stay on the origin of the chain's first request.
+#[test]
+fn an_ai_endpoint_redirect_to_another_configured_origin_is_denied() {
+    let g = gate_with(&["https://a.example.com", "https://b.example.net"]);
+    let first = "https://b.example.net/v1/chat/completions";
+    // Both origins are reachable as first requests, and the old hop check allowed the bounce.
+    assert!(g.check_url(first, &AI_ENDPOINT).is_ok());
+    assert!(
+        g.check_url("https://a.example.com/v1/messages", &AI_ENDPOINT)
+            .is_ok()
+    );
+    assert!(
+        g.check_redirect("https://a.example.com/v1/messages", 1, &AI_ENDPOINT)
+            .is_ok()
+    );
+
+    assert!(
+        g.check_redirect_from(first, "https://a.example.com/v1/messages", 1, &AI_ENDPOINT)
+            .is_err(),
+        "another configured origin"
+    );
+    assert!(
+        g.check_redirect_from(first, "https://b.example.net/v2/chat", 1, &AI_ENDPOINT)
+            .is_ok(),
+        "the same origin, another path"
+    );
+    assert!(
+        g.check_redirect_from(first, "https://b.example.net:8443/v2", 1, &AI_ENDPOINT)
+            .is_err(),
+        "the same host on another port is another service"
+    );
+    assert!(
+        g.check_redirect_from(first, "http://b.example.net/v2", 1, &AI_ENDPOINT)
+            .is_err(),
+        "a downgrade to plain http"
+    );
+    assert!(
+        g.check_redirect_from(first, "not a url", 1, &AI_ENDPOINT)
+            .is_err()
+    );
+}
+
+#[test]
+fn an_ai_endpoint_redirect_from_http_to_https_on_the_same_host_is_followed() {
+    let g = gate_with(&["http://llm.example.lan", "https://llm.example.lan"]);
+    let first = "http://llm.example.lan/v1/chat/completions";
+    assert!(
+        g.check_redirect_from(first, "https://llm.example.lan/v1/chat", 1, &AI_ENDPOINT)
+            .is_ok()
+    );
+    assert!(
+        g.check_redirect_from(first, "https://LLM.example.lan/v1/x", 1, &AI_ENDPOINT)
+            .is_ok(),
+        "host comparison ignores case"
+    );
+    assert!(
+        g.check_redirect_from(first, "https://llm.example.lan:8443/v1", 1, &AI_ENDPOINT)
+            .is_err(),
+        "an upgrade does not license an arbitrary port"
+    );
+}
+
+// The same-origin rule is for the credential-carrying purpose only; the other purposes keep
+// their allowlist behaviour, and the rule still ends in the ordinary hop check (cap included).
+#[test]
+fn the_first_origin_rule_binds_only_the_ai_endpoint_purpose() {
+    let g = gate_with(&["https://a.example.com", "https://b.example.net"]);
+    let first = "https://b.example.net/x";
+    assert!(
+        g.check_redirect_from(first, "https://a.example.com/y", 1, &BACKGROUND)
+            .is_ok()
+    );
+    let capped = g.check_redirect_from(first, first, MAX_REDIRECT_HOPS, &AI_ENDPOINT);
+    assert!(capped.is_err(), "the hop cap");
+    assert!(
+        g.check_redirect_from(
+            "https://unlisted.example.org/x",
+            "https://unlisted.example.org/y",
+            1,
+            &AI_ENDPOINT
+        )
+        .is_err(),
+        "a same-origin hop is still held to the allowlist"
+    );
+}
+
+// It protects a key, not the egress policy: switching the gate off does not switch it off. The
+// event names no host, so the UI offers no Allow (allowing the target would not make it legal).
+#[test]
+fn the_first_origin_rule_holds_with_the_gate_off_and_its_event_carries_no_host() {
+    let g = gate_with(&["https://a.example.com", "https://b.example.net"]);
+    g.set_enabled(false);
+    let seen = recorder(&g);
+    assert!(
+        g.check_redirect_from(
+            "https://b.example.net/x",
+            "https://a.example.com/y",
+            1,
+            &AI_ENDPOINT
+        )
+        .is_err()
+    );
+    let ev = seen.lock().unwrap().clone();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].outcome, Outcome::Denied);
+    assert!(ev[0].host.is_empty() && ev[0].host_hash == 0);
+}

@@ -7471,6 +7471,15 @@ impl Input {
             .active_block_mut()
             .set_nld_overridden(nld_overridden);
 
+        {
+            let mut model = self.model.lock();
+            let typed_during_secret_read = model.tty_reading_secret();
+            model
+                .block_list_mut()
+                .active_block_mut()
+                .set_typed_during_secret_read(typed_during_secret_read);
+        }
+
         let did_execute: bool;
         if self
             .model
@@ -10319,9 +10328,9 @@ impl Input {
         if Self::is_nl_ai_autosuggestion_triggering_event(event)
             && FeatureFlag::PredictAMQueries.is_enabled()
             && AISettings::as_ref(ctx).is_natural_language_autosuggestions_enabled(ctx)
-            && is_ai_input_enabled
             // Not `buffer_text(ctx).is_empty()`: that copied the whole buffer on every edit (#1191).
             && !self.editor.as_ref(ctx).is_empty(ctx)
+            && self.may_send_buffer_as_partial_query(ctx)
         {
             // Cancel any pending requests for AM ghosted text predictions.
             if let Some(future_handle) = self.predict_am_queries_future_handle.take() {
@@ -16419,10 +16428,26 @@ impl Input {
         }
     }
 
+    /// Whether the input buffer may leave the machine as the `partial_query` of a query
+    /// prediction (#1927). Read when an edit asks for a prediction and again when the debounced
+    /// request is built, because a secret read can open in between.
+    fn may_send_buffer_as_partial_query(&self, ctx: &AppContext) -> bool {
+        let ai_input_model = self.ai_input_model.as_ref(ctx);
+        partial_query_may_be_sent(
+            ai_input_model.is_ai_input_enabled(),
+            ai_input_model.is_input_type_locked(),
+            || self.model.lock().tty_reading_secret(),
+        )
+    }
+
     fn predict_am_query(&mut self, ctx: &mut ViewContext<Self>) {
         // Cancel any pending requests.
         if let Some(future_handle) = self.predict_am_queries_future_handle.take() {
             future_handle.abort();
+        }
+
+        if !self.may_send_buffer_as_partial_query(ctx) {
+            return;
         }
 
         let block = &self.last_user_block_completed;
@@ -16434,6 +16459,12 @@ impl Input {
             let model = self.model.lock();
             compute(model.block_list())
         });
+        let last_block_may_be_sent = self
+            .model
+            .lock()
+            .block_list()
+            .block_with_id(&serialized_block.id)
+            .is_some_and(|block| !block.typed_during_secret_read());
         let (exit_code, working_dir) = (serialized_block.exit_code, serialized_block.pwd.as_ref());
         let number_of_top_lines_per_grid = 100;
         let number_of_bottom_lines_per_grid = 200;
@@ -16466,23 +16497,25 @@ impl Input {
         let context = WarpAiExecutionContext::new(&session);
 
         // BYOP path: replaces ServerApi::predict_am_queries with a BYOP one-shot completion.
-        let last_block = crate::ai::agent_providers::active_ai::LastBlockSnippet {
-            command: block
-                .command
-                .get_with(|compute| {
-                    let model = self.model.lock();
-                    compute(model.block_list())
-                })
-                .to_owned(),
-            exit_code: exit_code.value(),
-            pwd: working_dir.cloned().unwrap_or_default(),
-        };
+        let last_block = last_block_may_be_sent.then(|| {
+            crate::ai::agent_providers::active_ai::LastBlockSnippet {
+                command: block
+                    .command
+                    .get_with(|compute| {
+                        let model = self.model.lock();
+                        compute(model.block_list())
+                    })
+                    .to_owned(),
+                exit_code: exit_code.value(),
+                pwd: working_dir.cloned().unwrap_or_default(),
+            }
+        });
         let Some(rendered) = crate::ai::agent_providers::active_ai::nld_predict::dispatch(
             ctx,
             Some(self.terminal_view_id),
             crate::ai::agent_providers::active_ai::nld_predict::Input {
                 partial_query: am_query_input_buffer.clone(),
-                last_block: Some(last_block),
+                last_block,
                 system_context: context.to_json_string(),
             },
         ) else {
@@ -18892,6 +18925,20 @@ pub(crate) fn completer_autosuggestion_allowed(buffer_text: &str) -> bool {
             .count()
             <= decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS
         && !decorations::text_exceeds_background_job_token_cap(buffer_text)
+}
+
+/// Whether the input buffer may be sent to the model provider as a query prediction's
+/// `partial_query` (#1927). Only text the user addressed to the agent: the input type must be
+/// AI and locked, because an unlocked AI type is autodetection's guess about text that may still
+/// be a shell line. Never while the tty reads a secret (canonical, echo off): keys that land in
+/// the editor then may be a password, and the prediction would send each prefix of it.
+/// `tty_reading_secret` is only asked when the cheaper facts allow the send.
+pub(crate) fn partial_query_may_be_sent(
+    is_ai_input: bool,
+    is_input_type_locked: bool,
+    tty_reading_secret: impl FnOnce() -> bool,
+) -> bool {
+    is_ai_input && is_input_type_locked && !tty_reading_secret()
 }
 
 impl Autosuggester for Input {

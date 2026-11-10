@@ -4266,8 +4266,13 @@ impl TypedActionView for AISettingsPageView {
                             view.rebuild_current_page(ctx);
                         }
                         Err(e) => {
+                            // A transport error's text names the URL; the log gets the
+                            // host hash (#1930), the toast below keeps the readable text.
                             log::error!(
-                                "Failed to fetch models for provider {provider_id_for_handler}: {e}"
+                                "Failed to fetch models for provider {provider_id_for_handler}: {}",
+                                crate::ai::agent_providers::chat_stream::redact_urls_in_log_text(
+                                    &e.to_string()
+                                )
                             );
                             // Surface it. The error carries the actionable detail (404 on a
                             // wrong path, a refused endpoint, a decode failure); logging it

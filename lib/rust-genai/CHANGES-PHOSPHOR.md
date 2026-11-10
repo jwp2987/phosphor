@@ -217,3 +217,9 @@ change; worth a heads-up if `otel` is ever turned on.
 that `apply_to_builder` turns into a custom redirect policy (a `false` answer stops the chain at
 that hop). The app passes the network gate's redirect check so a provider endpoint cannot bounce a
 request to a host the user did not configure. `None` keeps reqwest's default.
+
+### `RedirectGuard` is told the chain's first URL (#1928)
+
+| file | change |
+|---|---|
+| `client/web_config.rs` | `RedirectGuard`'s function is now `(first_url, url, hops_so_far) -> bool` (was `(url, hops_so_far)`). `first_url` is `attempt.previous()[0]`, the URL the request was built for. reqwest strips only `Authorization`, `Cookie` and `Proxy-Authorization` when a redirect changes host, so an Anthropic `x-api-key`, an Azure `api-key` or a user's custom auth header would follow a hop to another host; the app's guard uses `first_url` to keep an AI-endpoint chain on the origin its credentials belong to (`network_gate::Gate::check_redirect_from`). Signature change only: no behaviour of its own, `None` still keeps reqwest's default. Test `redirect_guard_gets_the_first_url_and_a_refused_hop_is_not_requested` (two loopback listeners, no network). |

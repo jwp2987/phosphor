@@ -38,18 +38,19 @@ pub struct WebConfig {
 	pub gzip: bool,
 	/// Enable TCP_NODELAY (disable Nagle's algorithm). Default: true.
 	pub tcp_nodelay: bool,
-	/// Phosphor: decides whether each redirect hop may be followed (`url`, hops so far).
-	/// `None` keeps reqwest's default policy. A `false` answer stops the chain at that hop.
+	/// Phosphor: decides whether each redirect hop may be followed (the chain's first URL, the
+	/// hop's `url`, hops so far). `None` keeps reqwest's default policy. A `false` answer stops
+	/// the chain at that hop.
 	pub redirect_guard: Option<RedirectGuard>,
 }
 
 /// Phosphor: a redirect decision function (see [`WebConfig::redirect_guard`]). A newtype so
 /// `WebConfig` keeps `Debug` and `Clone`.
 #[derive(Clone)]
-pub struct RedirectGuard(pub std::sync::Arc<dyn Fn(&str, usize) -> bool + Send + Sync>);
+pub struct RedirectGuard(pub std::sync::Arc<dyn Fn(&str, &str, usize) -> bool + Send + Sync>);
 
 impl RedirectGuard {
-	pub fn new(f: impl Fn(&str, usize) -> bool + Send + Sync + 'static) -> Self {
+	pub fn new(f: impl Fn(&str, &str, usize) -> bool + Send + Sync + 'static) -> Self {
 		Self(std::sync::Arc::new(f))
 	}
 }
@@ -170,7 +171,11 @@ impl WebConfig {
 		if let Some(guard) = &self.redirect_guard {
 			let guard = guard.0.clone();
 			builder = builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
-				if guard(attempt.url().as_str(), attempt.previous().len()) {
+				// The first URL is what the request's credentials were meant for; reqwest strips
+				// only `Authorization`/`Cookie` across hosts, so the guard gets it to decide.
+				let previous = attempt.previous();
+				let first = previous.first().map_or(attempt.url().as_str(), |u| u.as_str());
+				if guard(first, attempt.url().as_str(), previous.len()) {
 					attempt.follow()
 				} else {
 					attempt.stop()
@@ -219,5 +224,61 @@ mod tests {
 		// Malformed IPv6 bracket causes reqwest::Proxy::all to return Err.
 		assert!(cfg.set_proxy_settings("http://[invalid", "", "", "").is_err());
 		assert!(cfg.proxy.is_none());
+	}
+
+	// Phosphor #1928: the guard is told where the chain began, and a hop it refuses is never
+	// requested (the caller gets the 3xx). Server A answers 307 to server B, another origin; B
+	// must see no connection, so a key header on the request cannot reach it.
+	#[tokio::test]
+	async fn redirect_guard_gets_the_first_url_and_a_refused_hop_is_not_requested() {
+		use std::io::{Read, Write};
+		use std::sync::{Arc, Mutex};
+
+		let a = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		let b = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		let (a_addr, b_addr) = (a.local_addr().unwrap(), b.local_addr().unwrap());
+		b.set_nonblocking(true).unwrap();
+		let server = std::thread::spawn(move || {
+			let (mut conn, _) = a.accept().unwrap();
+			let mut request = Vec::new();
+			let mut buf = [0u8; 1024];
+			while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+				let n = conn.read(&mut buf).unwrap();
+				if n == 0 {
+					break;
+				}
+				request.extend_from_slice(&buf[..n]);
+			}
+			let reply = format!(
+				"HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{b_addr}/next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+			);
+			conn.write_all(reply.as_bytes()).unwrap();
+		});
+
+		let seen = Arc::new(Mutex::new(Vec::new()));
+		let sink = seen.clone();
+		let cfg = WebConfig {
+			no_proxy: true,
+			redirect_guard: Some(RedirectGuard::new(move |first, url, hops| {
+				sink.lock().unwrap().push((first.to_owned(), url.to_owned(), hops));
+				false
+			})),
+			..WebConfig::default()
+		};
+		let client = cfg.apply_to_builder(reqwest::Client::builder()).build().unwrap();
+		let response = client
+			.get(format!("http://{a_addr}/start"))
+			.header("x-api-key", "not-a-real-key")
+			.send()
+			.await
+			.unwrap();
+		server.join().unwrap();
+
+		assert_eq!(response.status().as_u16(), 307);
+		assert_eq!(
+			*seen.lock().unwrap(),
+			vec![(format!("http://{a_addr}/start"), format!("http://{b_addr}/next"), 1)]
+		);
+		assert!(b.accept().is_err(), "the refused hop's server was never connected to");
 	}
 }

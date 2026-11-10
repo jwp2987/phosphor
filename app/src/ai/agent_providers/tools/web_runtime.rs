@@ -699,14 +699,23 @@ pub async fn run_websearch(
         .json(&body)
         .send()
         .await
-        .with_context(|| format!("Exa POST {url}"))?;
+        // #1929: the URL's query is the API key and this error is the tool result the model
+        // reads, so the URL is never part of it (reqwest's `Display` would add it).
+        .map_err(|e| anyhow::Error::new(e.without_url()).context("Exa POST failed"))?;
 
     let status = resp.status();
     if !status.is_success() {
         let body_text = resp.text().await.unwrap_or_default();
-        bail!("Exa returned HTTP {} ({})", status.as_u16(), body_text);
+        bail!(
+            "Exa returned HTTP {} ({})",
+            status.as_u16(),
+            exa::scrub_api_key(&body_text, api_key)
+        );
     }
-    let body_text = resp.text().await.context("read Exa SSE body")?;
+    let body_text = resp
+        .text()
+        .await
+        .map_err(|e| anyhow::Error::new(e.without_url()).context("read Exa SSE body"))?;
 
     let parsed = exa::parse_sse_body(&body_text)?;
     let results = parsed.unwrap_or_else(|| EMPTY_FALLBACK.to_owned());
