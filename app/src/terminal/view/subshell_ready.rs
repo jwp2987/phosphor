@@ -5,8 +5,9 @@
 //! differ; the rule numbers below are its (R1-R10).
 //!
 //! The principle: a setup line is written only on a sample that proves WHO reads it (the shell's
-//! own line editor; an editor-less shell at a prompt it drew; the first new prompt behind a relay)
-//! and that NOTHING the user passed through is still unread (R1: the slave input queue is empty).
+//! own line editor AT A PROMPT IT DREW, #1934; an editor-less shell at a prompt it drew; the first
+//! new prompt behind a relay) and that NOTHING the user passed through is still unread (R1: the
+//! slave input queue is empty).
 //! An Enter never writes. A secret read, a question, a changed block, the user driving the shell
 //! and the 60 s ceiling end the attempt instead.
 
@@ -100,6 +101,11 @@ pub enum WaitWhy {
     Unknown,
     /// The user's bytes are not proven consumed (R1).
     NotConsumed,
+    /// A line-editor shell with no prompt-shaped tail at the cursor (#1934, review r8 D1a): termios
+    /// cannot tell zle from zsh's own `read -k` / `read -q` / `vared` / `select`, so the line
+    /// editor's raw tty alone is no proof of WHO reads; the shell's prompt on the cursor's row is
+    /// the shape evidence asked for. A line editor with an empty PS1 is the accepted loss.
+    NoPrompt,
     /// A cooked shell with a line editor (bash/zsh/fish/nu/pwsh): a `read` builtin (R3).
     CookedReadBuiltin,
     /// An editor-less shell, cooked, with no new prompt drawn yet.
@@ -180,7 +186,14 @@ pub fn subshell_ready(
         SubshellTtyKind::Secret => Decision::Wait(WaitWhy::Secret),
         SubshellTtyKind::Unknown => Decision::Wait(WaitWhy::Unknown),
         SubshellTtyKind::LineReader => {
-            if consumed_by_line_editor(sample, user) {
+            if sample.tail != Tail::ShellPrompt {
+                // #1934: a raw tty under a shell leader is also zsh-newuser-install's menu, `select`
+                // or `read -q`; without a prompt shape at the cursor nothing says the line editor
+                // reads. The prompt need not have MOVED since the baseline: a banner click at an
+                // idle prompt (the common path) and a ^U (the editor redraws its line, not its
+                // prompt) leave it where it was, and the queue is their consumption proof.
+                Decision::Wait(WaitWhy::NoPrompt)
+            } else if consumed_by_line_editor(sample, user) {
                 Decision::Write(write_shell_type(trigger, Some(comm)))
             } else {
                 Decision::Wait(WaitWhy::NotConsumed)

@@ -99,14 +99,54 @@ fn row_2_a_line_reader_with_nothing_unread_is_written() {
         subshell_ready(&line_reader("-zsh"), &typed(), Some(ShellType::Zsh)),
         Decision::Write(Some(ShellType::Zsh))
     );
-    // No new prompt is asked of a line editor: ^U redraws the line, not the prompt.
+    // No MOVED prompt is asked of a line editor: ^U redraws the line, not the prompt, and a click
+    // at an idle prompt finds it where it was. The prompt shape itself is asked for (#1934).
     let mut s = line_reader("zsh");
     s.prompt_moved_since_baseline = false;
     s.prompt_moved_since_line_end = false;
-    s.tail = Tail::None;
     assert_eq!(
         subshell_ready(&s, &typed(), Some(ShellType::Zsh)),
         Decision::Write(Some(ShellType::Zsh))
+    );
+    assert_eq!(
+        subshell_ready(&s, &no_bytes(), Some(ShellType::Zsh)),
+        Decision::Write(Some(ShellType::Zsh))
+    );
+}
+
+/// #1934 (review r8 D1a): a line-editor shell with NO prompt shape at the cursor waits. zsh's own
+/// `read -k` / `read -q` / `vared` / `select` and zsh-newuser-install's menu are a Shell leader on
+/// a raw tty too; the prompt on the cursor's row is the evidence that the line editor reads. An
+/// input prompt there is the earlier veto; the queue proof still applies behind a prompt.
+#[test]
+fn d1_a_line_reader_without_a_prompt_shape_waits() {
+    for user in [no_bytes(), typed()] {
+        let mut s = line_reader("zsh");
+        s.tail = Tail::None;
+        assert_eq!(
+            subshell_ready(&s, &user, Some(ShellType::Zsh)),
+            Decision::Wait(WaitWhy::NoPrompt),
+            "{user:?}"
+        );
+        s.tail = Tail::InputPrompt;
+        assert_eq!(
+            subshell_ready(&s, &user, Some(ShellType::Zsh)),
+            Decision::Wait(WaitWhy::InputPrompt),
+            "{user:?}"
+        );
+    }
+    // A prompt at the cursor, unmoved since the baseline, nothing typed: the idle click writes.
+    let mut s = line_reader("zsh");
+    s.prompt_moved_since_baseline = false;
+    assert_eq!(
+        subshell_ready(&s, &no_bytes(), Some(ShellType::Zsh)),
+        Decision::Write(Some(ShellType::Zsh))
+    );
+    // Typed bytes behind a prompt need the queue proof, as before.
+    s.tty.queue_empty = Some(false);
+    assert_eq!(
+        subshell_ready(&s, &typed(), Some(ShellType::Zsh)),
+        Decision::Wait(WaitWhy::NotConsumed)
     );
 }
 
@@ -543,8 +583,8 @@ fn every_sample() -> Vec<ReadinessSample> {
     out
 }
 
-/// Over every combination of the facts: a write needs a shell leader at a raw tty or a new prompt
-/// behind an editor-less cooked shell or a raw relay, the block unchanged, no alt screen, no
+/// Over every combination of the facts: a write needs a shell leader at a raw tty with a prompt
+/// shape at the cursor (#1934), or a new prompt behind an editor-less cooked shell or a raw relay, the block unchanged, no alt screen, no
 /// secret, a clean line, no input prompt, the user's bytes consumed, and a young attempt; nothing
 /// else ever writes. The invariants, not the table rows.
 #[test]
@@ -573,6 +613,8 @@ fn exhaustive_a_write_needs_every_precondition_and_a_proof() {
                     let comm = s.tty.leader_comm.as_deref().unwrap_or_default();
                     match s.tty.kind {
                         SubshellTtyKind::LineReader => {
+                            // #1934: the prompt shape at the cursor, moved or not.
+                            assert_eq!(s.tail, Tail::ShellPrompt, "{s:?}");
                             assert!(
                                 user.bytes_since_arm == 0 || s.tty.queue_empty == Some(true),
                                 "{s:?}"

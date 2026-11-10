@@ -32655,6 +32655,8 @@ fn e_question_cancels_and_later_keys_reach_the_pty_in_order_in_both_modes() {
             terminal.update(&mut app, |view, ctx| {
                 view.model.lock().simulate_long_running_block("bash", "");
                 install_subshell_tty_for_test(view, bash_reading());
+                // #1934: the line editor reads AT A PROMPT IT DREW; the shape is asked for.
+                view.model.lock().process_bytes("bash-5.1$ ");
                 view.arm_subshell_setup(
                     SubshellPromptTrigger::Banner {
                         shell_type: Some(ShellType::Bash),
@@ -32719,6 +32721,8 @@ fn e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_promp
         let (token, line0) = terminal.update(&mut app, |view, ctx| {
             view.model.lock().simulate_long_running_block("bash", "");
             install_subshell_tty_for_test(view, bash_reading());
+            // #1934: the line editor reads AT A PROMPT IT DREW; the shape is asked for.
+            view.model.lock().process_bytes("bash-5.1$ ");
             view.arm_subshell_setup(
                 SubshellPromptTrigger::Banner {
                     shell_type: Some(ShellType::Bash),
@@ -32804,6 +32808,8 @@ fn a_marker_between_the_echo_and_the_prompt_keeps_the_written_attempt() {
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().simulate_long_running_block("bash", "");
             install_subshell_tty_for_test(view, bash_reading());
+            // #1934: the line editor reads AT A PROMPT IT DREW; the shape is asked for.
+            view.model.lock().process_bytes("bash-5.1$ ");
             view.arm_subshell_setup(
                 SubshellPromptTrigger::Banner {
                     shell_type: Some(ShellType::Bash),
@@ -33178,6 +33184,8 @@ fn stage_two_is_written_after_the_prompt_that_follows_the_marker_not_on_the_mark
             let token = terminal.update(&mut app, |view, ctx| {
                 view.model.lock().simulate_long_running_block("bash", "");
                 install_subshell_tty_for_test(view, bash_reading());
+                // #1934: the line editor reads AT A PROMPT IT DREW; the shape is asked for.
+                view.model.lock().process_bytes("bash-5.1$ ");
                 view.arm_subshell_setup(
                     SubshellPromptTrigger::Banner {
                         shell_type: Some(ShellType::Bash),
@@ -33233,6 +33241,8 @@ fn a_prompt_command_secret_read_after_stage_one_gets_no_setup_bytes() {
             let (token, tty) = terminal.update(&mut app, |view, ctx| {
                 view.model.lock().simulate_long_running_block("bash", "");
                 let tty = install_subshell_tty_for_test(view, bash_reading());
+                // #1934: the line editor reads AT A PROMPT IT DREW; the shape is asked for.
+                view.model.lock().process_bytes("bash-5.1$ ");
                 view.arm_subshell_setup(
                     SubshellPromptTrigger::Banner {
                         shell_type: Some(ShellType::Bash),
