@@ -1143,6 +1143,50 @@ def routing_typo_head_pure_pieces():
 
 
 @check
+def routing_plain_installed_head_1981():
+    """#1981 (owner 2026-11-10): `make a PR` typed on the PLAIN terminal runs in the shell when `make` is installed. routing_table pins it and reads
+    the surface from the line's keystroke row when no enter row was logged; routing_plain_installed_head judges only PlainTerminal rows"""
+    import inspect
+    w = ca.ambiguous_want
+    assert ca.AMBIGUOUS_EXPECT["make a PR"] == ("shell", "agent")
+    assert w("make a PR", "PlainTerminal", "installed-head (#906/#964)") == "shell" and w("make a PR", "PlainTerminal", None) == "shell"
+    assert w("make a PR", "AgentConversation", "no-evidence-in-conversation (#1183)") == "agent"
+    # no `make` on the machine: the installed-head rule does not apply, so the plain-terminal pin gives no verdict; the conversation pin stands
+    assert w("make a PR", "PlainTerminal", "english-head-not-installed (#696)", installed=False) is None
+    assert w("make a PR", "AgentConversation", "no-evidence-in-conversation (#1183)", installed=False) == "agent"
+    assert w("cat the error log and tell me what is wrong", "PlainTerminal", "request-shape (#834/#965)", installed=False) == "agent"
+    assert w("make a PR", None, None) is None
+    assert ca.head_installed("make a PR", which=lambda n: "/usr/bin/" + n if n == "make" else None) is True
+    assert ca.head_installed("nosuchcmd_zz a PR", which=lambda n: None) is False
+    # the keystroke row gives the surface when the enter stage logged nothing (the Wayland rows up to r12a had surface None)
+    log = ('D keystroke: Shell by installed-head (#906/#964) (PlainTerminal, head "make", 9 bytes)\n'
+           'D keystroke: Agent by no-evidence-in-conversation (#1183) (AgentConversation, head "make", 13 bytes)\n')
+    rows = ca.typo_rows(log, "make a PR")
+    assert len(rows) == 1 and rows[0]["stage"] == "keystroke" and rows[0]["surface"] == "PlainTerminal" and rows[0]["rule"].startswith("installed-head")
+    assert ca.typo_rows(log, "make a README")[0]["surface"] == "AgentConversation"
+    src = inspect.getsource(ca.c_routing_table)
+    assert "seen = enter or (any_rows[-1] if any_rows else None)" in src and "installed=head_installed(line)" in src
+    v = ca.plain_installed_verdict
+    assert v("shell", "PlainTerminal", "installed-head (#906/#964)", True) == (True, None)
+    for bad in ("agent", "BOTH", "lost", "unproven"):
+        assert v(bad, "PlainTerminal", "installed-head (#906/#964)", True) == (False, None), bad
+    assert v("agent", "PlainTerminal", "model", True) == (False, None)                    # the classifier sent an installed head to the agent: a failure
+    ok, why = v("shell", "PlainTerminal", "command-shape (#808/#1203)", True)
+    assert ok and "command-shape" in why
+    assert v("agent", "AgentConversation", "no-evidence-in-conversation (#1183)", True) is None      # not the plain terminal: no verdict (#1183 stands)
+    assert v("shell", None, None, True) is None and v("agent", "PlainTerminal", "english-head-not-installed (#696)", False) is None
+    n = "routing_plain_installed_head"
+    reg = {c["name"]: c for c in cases.CASES}
+    assert n in reg and reg[n]["modes"] == ("terminal", "agent") and n in cases.PROVING and n not in cases.SMOKE and n in winmap.GITBASH_ONLY
+    assert "make a PR" in ca.PLAIN_INSTALLED_LINES
+    body = inspect.getsource(ca.c_routing_plain_installed_head)
+    for needle in ('wait_view_mode(ctx, "terminal")', "plain_installed_verdict(dest, surface, rule, installed)", "r.unverifiable(", "ctx.log_view_mode() == start"):
+        assert needle in body, needle
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md"), encoding="utf-8").read()
+    assert ("`%s`" % n) in doc and "routing_plain_installed_head_1981" in doc
+
+
+@check
 def r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window():
     # the r18d2 failures: find the bug in main.rs ran in the shell inside a conversation by the #1183 evidence rule (main.rs is data-shaped)
     w = ca.ambiguous_want

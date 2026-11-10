@@ -62,6 +62,7 @@ GITBASH_ONLY = {
     "ui_copy_wrapped_output": "#1976: `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (keyboard and clipboard only)",
     "routing_table": "asserts what the shell received from rec.log: runs in the Git Bash pane",
     "routing_typo_head": "asserts what the shell received from rec.log (#1980, agent mode only): runs in the Git Bash pane",
+    "routing_plain_installed_head": "asserts what the shell received from rec.log (#1981): runs in the Git Bash pane",
     "agent_stream_cancel": "uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)",
     "agent_input_exact": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
     "agent_mode_switch": "asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane",

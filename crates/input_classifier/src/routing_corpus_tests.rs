@@ -797,3 +797,69 @@ fn long_lines_route_like_their_short_forms() {
         }
     }
 }
+
+/// #1981 (owner, 2026-11-10, confirming #964): a line typed on the plain terminal whose first word
+/// is a command the session knows runs in the shell, English-looking arguments or not. `make a PR`
+/// is decided by the installed-head rule itself at the keystroke (the completer described the
+/// head) and at Enter (the session said so), never left to the classifier. The two things the
+/// decision keeps: in an agent conversation the same line has no command evidence and is the
+/// agent's (#1183), and a line that reads as a request is the agent's on the plain terminal too
+/// (#834 / #965, owner 2026-11-04).
+#[test]
+fn an_installed_head_with_english_arguments_runs_in_the_shell_on_the_plain_terminal() {
+    fn decide(case: &Case, at_enter: bool) -> routing::Decision {
+        routing::route(&snapshot(case, !at_enter), &routing_context(case, at_enter))
+    }
+    for line in [
+        "make a PR",
+        "make a README",
+        "find the bug in main.rs",
+        "find large files",
+        "rm -rf node_modules, reinstall",
+    ] {
+        let case = Case::cmd(line, "#1981");
+        for at_enter in [false, true] {
+            let decision = decide(&case, at_enter);
+            assert_eq!(
+                decision.route,
+                Route::Shell,
+                "{line:?} ({}): {}",
+                if at_enter { "Enter" } else { "keystroke" },
+                decision.rule
+            );
+        }
+    }
+    let make_a_pr = Case::cmd("make a PR", "#1981");
+    for at_enter in [false, true] {
+        assert_eq!(
+            decide(&make_a_pr, at_enter).rule,
+            routing::Rule::InstalledHead,
+            "{}",
+            if at_enter { "Enter" } else { "keystroke" }
+        );
+        let in_conversation = decide(&make_a_pr.in_conversation(), at_enter);
+        assert_eq!(
+            in_conversation.route,
+            Route::Agent,
+            "in a conversation ({}): {}",
+            if at_enter { "Enter" } else { "keystroke" },
+            in_conversation.rule
+        );
+    }
+    for line in [
+        "cat the error log and tell me what is wrong",
+        "find the process that is eating my memory",
+    ] {
+        let case = Case::cmd(line, "#834 / #965");
+        for at_enter in [false, true] {
+            let decision = decide(&case, at_enter);
+            assert_eq!(
+                decision.route,
+                Route::Agent,
+                "{line:?} ({}): {}",
+                if at_enter { "Enter" } else { "keystroke" },
+                decision.rule
+            );
+        }
+    }
+}

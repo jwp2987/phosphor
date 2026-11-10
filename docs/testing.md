@@ -5208,3 +5208,28 @@ Everything below is worked, unproven: nothing was compiled or run against a buil
   `exit` check is not waived, the six cases connect through it, the DECLINED entry exists under the title the reason quotes).
   **Next Linux lab run:** the four rows `lab_agent_remote_{flow,errors,drop}.nu`, `lab_fam_agent_edit_conflict.nu` NOREF with
   "KNOWN LIMITATION (owner decision, #2019)", no `exit` line; the bash rows unchanged.
+- **#1981, TEST: `make a PR` typed in terminal mode.** Not an app bug: on the plain terminal `routing::route` already sends a line whose
+  first word the session knows to the shell (`Rule::InstalledHead`); the row note that raised the question came from a line typed inside a
+  conversation (the committed `routing_rows` say `surface=AgentConversation`, rule `no-evidence-in-conversation (#1183)`, in every
+  terminal-mode pass on macOS and Windows: `routing_table`'s own prose lines open a conversation in the pane). What pins it now:
+  - unit `an_installed_head_with_english_arguments_runs_in_the_shell_on_the_plain_terminal` (`crates/input_classifier`,
+    `routing_corpus_tests.rs`): `make a PR`, `make a README`, `find the bug in main.rs`, `find large files`,
+    `rm -rf node_modules, reinstall` with an installed head on the plain terminal are Shell at the keystroke and at Enter (`make a PR` by
+    `Rule::InstalledHead`); `make a PR` in a conversation is the agent's (#1183 kept); the request-shaped
+    `cat the error log and tell me what is wrong` and `find the process that is eating my memory` are the agent's on the plain terminal
+    (owner 2026-11-04 kept).
+  - appci `routing_plain_installed_head` (both modes, in `cases.PROVING`; Git Bash pane on Windows): leaves the agent view with Escape
+    (proven by `hop=view_mode mode=terminal`), types `make a PR`, `make a README`, `find the bug in main.rs`, `find large files` at
+    10-25 ms/key with an instant Enter. A line is judged only when its own routing row (`keystroke:` or `enter:`) says `PlainTerminal` and
+    its first word is a program on the machine (`shutil.which`); then the shell's rec.log must hold the exact line and nothing may have gone
+    to the agent. No line judged = UNVERIFIABLE (never a pass). It ends in the view it started in and fails if it cannot get back.
+    Metric `plain_installed_rows`.
+  - `routing_table`: **expectation changed by the owner decision, not weakened:** `make a PR` on the plain terminal was unpinned (either
+    outcome passed) and is now pinned `shell` when `make` is a program on the machine (`AMBIGUOUS_EXPECT`, `ambiguous_want(..., installed)`);
+    the conversation half is unchanged (`agent`). A row with no `enter:` line (the keystroke verdict had settled: every Wayland row up to
+    r12a) now takes surface and rule from the line's `keystroke:` row, so those ambiguous rows get a verdict instead of the note "no routing
+    log line".
+  - self-test `routing_plain_installed_head_1981`.
+  **Next run:** `routing_plain_installed_head` PASS in both modes with `rule=installed-head (#906/#964)` and `surface=PlainTerminal` in
+  `plain_installed_rows`; a FAIL there names a line the app sent to the agent on the plain terminal (then read the rule: `model` means
+  the session could not say the first word is a command). `routing_table` rows on Wayland carry a surface.

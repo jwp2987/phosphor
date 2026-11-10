@@ -49,6 +49,8 @@ PROVING = (
     "ctrl_c_flood_ab",
     # #1980: a mistyped command typed in an agent conversation runs in the shell ("command not found"), a sentence with the same first word does not
     "routing_typo_head",
+    # #1981: on the PLAIN terminal a line whose first word is an installed command runs in the shell, however English its arguments read (`make a PR`)
+    "routing_plain_installed_head",
     # #1848: the macOS key frame drawn at the end of the key press, on vs off in one run (key -> paint, kl3)
     "latency_paint_ab",
     # #1962: a typed character re-renders only the views it changed, on vs off in one run (hop=key_frame_build views= / render_ms)
