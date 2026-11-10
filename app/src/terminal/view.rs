@@ -1010,6 +1010,10 @@ const SSH_CONNECT_NO_PROBE_GIVE_UP: Duration = Duration::from_secs(15);
 pub(crate) const MAY_BE_WAITING_FOR_INPUT_NOTICE: &str =
     "This command may be waiting for input \u{2014} Take over";
 
+/// #1967: shown when a question the agent asked had no card to answer it on and was cancelled.
+pub(crate) const STUCK_QUESTION_TOAST: &str = "The agent asked a question, but its card could \
+     not be shown, so the turn was stopped. Send a message to continue.";
+
 /// #1972: the two facts [`agent_command_take_over`] decides on, from the active block's own
 /// answers: whether a CLI subagent controls the command, and whether it is an agent-requested
 /// command in flight that the agent still drives with no control state (a tool call waiting for
@@ -8925,7 +8929,7 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         match event {
-            BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(_) => {
+            BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(action_id) => {
                 let is_agent_in_control = self
                     .model
                     .lock()
@@ -8935,6 +8939,8 @@ impl TerminalView {
                 if is_agent_in_control {
                     self.redetermine_terminal_focus(ctx);
                 }
+                // #1967: a question that waits for the user must have a card to answer it on.
+                self.watch_blocked_question_card(action_id.clone(), 0, ctx);
             }
             BlocklistAIActionEvent::ExecutingAction(..) => {
                 self.redetermine_focus_after_action_event(ctx);
@@ -12903,6 +12909,89 @@ impl TerminalView {
             });
             toast_stack.add_ephemeral_toast(toast, window_id, ctx);
         });
+    }
+
+    /// #1967: the conversation of `action_id` when it is a question waiting for the user in this
+    /// pane's active conversation and no AI block of the pane holds a question card for it.
+    /// `None` in every other case (answered, cancelled, another kind of action, a card exists,
+    /// a conversation shown elsewhere).
+    fn blocked_question_without_card(
+        &self,
+        action_id: &AIAgentActionId,
+        ctx: &AppContext,
+    ) -> Option<AIConversationId> {
+        let conversation_id = self
+            .ai_action_model
+            .as_ref(ctx)
+            .blocked_question_conversation(action_id)?;
+        if BlocklistAIHistoryModel::as_ref(ctx).active_conversation_id(self.view_id)
+            != Some(conversation_id)
+        {
+            return None;
+        }
+        let has_card = self
+            .rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+            .any(|metadata| {
+                metadata
+                    .ai_block_handle
+                    .as_ref(ctx)
+                    .has_question_card(action_id)
+            });
+        (!has_card).then_some(conversation_id)
+    }
+
+    /// #1967 ("no pending action without a card"): the action model says the question
+    /// `action_id` waits for the user. If no card exists for it, nothing on screen can answer
+    /// it and the turn sits on "Preparing question..." for good. Checked on main-loop hops
+    /// after the event (never a timer): a card is made when the reply's tool call streams in,
+    /// well before the action is blocked, so one that is still missing after
+    /// `turn_invariant::CONFIRM_ROUNDS` hops is not coming. Then the question is cancelled as a
+    /// stop and a toast says why; the user's next message continues the conversation.
+    /// `PHOSPHOR_AGENT_TURN_SELF_HEAL=0` leaves it logged only.
+    fn watch_blocked_question_card(
+        &mut self,
+        action_id: AIAgentActionId,
+        round: u8,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use crate::ai::blocklist::turn_invariant;
+
+        let Some(conversation_id) = self.blocked_question_without_card(&action_id, ctx) else {
+            return;
+        };
+        if round < turn_invariant::CONFIRM_ROUNDS {
+            // A future that is ready at once: the next main-loop turn, no clock.
+            ctx.spawn(async {}, move |me, _, ctx| {
+                me.watch_blocked_question_card(action_id, round + 1, ctx);
+            });
+            return;
+        }
+        let heal = turn_invariant::self_heal_enabled();
+        let fault = turn_invariant::TurnFault::BlockedQuestionWithoutCard {
+            ids: turn_invariant::ids_hash([&action_id]),
+        };
+        // ERROR on purpose: a healed fault is still a defect; the heal must not hide it.
+        log::error!(
+            "hop=agent_turn_stuck fault={} healed={} conversation={conversation_id:?} \
+             id={action_id}",
+            fault.name(),
+            u8::from(heal)
+        );
+        if !heal {
+            return;
+        }
+        // The user's Stop, done for them: every pending action of the turn gets its cancelled
+        // result, the turn ends `Cancelled`, nothing is sent (#1942).
+        self.ai_controller.update(ctx, |controller, ctx| {
+            controller.cancel_conversation_progress(
+                conversation_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+        self.show_error_toast(STUCK_QUESTION_TOAST.to_owned(), ctx);
     }
 
     /// #1972: the user takes the running agent command over (the take-over notice's click, the

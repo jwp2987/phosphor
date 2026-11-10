@@ -328,3 +328,71 @@ fn only_a_user_reject_cancels_the_rest_of_the_turn() {
         assert!(!rejection_cancels_rest_of_turn(reason), "{reason:?}");
     }
 }
+
+/// #1967: the pane's "a waiting question must have a card" check asks about exactly one state:
+/// the question at the front of its conversation's queue, nothing running, in a pane that takes
+/// answers. Everything else (a question queued behind another action, a command, a running
+/// step, a view-only pane) is not a question waiting for the user, so no card is owed for it.
+#[test]
+fn only_a_front_question_with_nothing_running_waits_for_the_user() {
+    let question_id = AIAgentActionId::from("question".to_owned());
+    let shell_id = AIAgentActionId::from("shell".to_owned());
+    let question_first: VecDeque<_> = [
+        pending_action(
+            "question",
+            AIAgentActionType::AskUserQuestion { questions: vec![] },
+        ),
+        pending_action("shell", shell_command()),
+    ]
+    .into_iter()
+    .collect();
+    assert!(front_is_waiting_question(
+        &question_first,
+        false,
+        false,
+        &question_id
+    ));
+    // A command at the front waits on its approval card, which is not this check's business.
+    assert!(!front_is_waiting_question(
+        &question_first,
+        false,
+        false,
+        &shell_id
+    ));
+    // Something of the turn still runs: the front is queued behind it, not blocked.
+    assert!(!front_is_waiting_question(
+        &question_first,
+        true,
+        false,
+        &question_id
+    ));
+    // A view-only pane never blocks on its viewer.
+    assert!(!front_is_waiting_question(
+        &question_first,
+        false,
+        true,
+        &question_id
+    ));
+
+    let question_second: VecDeque<_> = [
+        pending_action("shell", shell_command()),
+        pending_action(
+            "question",
+            AIAgentActionType::AskUserQuestion { questions: vec![] },
+        ),
+    ]
+    .into_iter()
+    .collect();
+    assert!(!front_is_waiting_question(
+        &question_second,
+        false,
+        false,
+        &question_id
+    ));
+    assert!(!front_is_waiting_question(
+        &VecDeque::new(),
+        false,
+        false,
+        &question_id
+    ));
+}

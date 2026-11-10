@@ -320,6 +320,24 @@ pub(super) struct CancelledPendingActions {
 ///
 /// The queue only ever holds one turn: a stream's actions are queued together when it ends,
 /// and a new request cancels whatever is still pending first.
+/// #1967: whether `action_id` is a question waiting for the user in `queue`: the front of the
+/// queue (only the front is ever blocked), with nothing of the conversation running (a running
+/// action makes the front merely queued), in a pane that takes answers (a view-only pane never
+/// blocks on its viewer).
+fn front_is_waiting_question(
+    queue: &VecDeque<AIAgentAction>,
+    something_running: bool,
+    is_view_only: bool,
+    action_id: &AIAgentActionId,
+) -> bool {
+    !is_view_only
+        && !something_running
+        && queue.front().is_some_and(|front| {
+            &front.id == action_id
+                && matches!(front.action, AIAgentActionType::AskUserQuestion { .. })
+        })
+}
+
 fn rejection_cancels_rest_of_turn(reason: CancellationReason) -> bool {
     matches!(
         reason,
@@ -1506,6 +1524,60 @@ impl BlocklistAIActionModel {
         ctx.emit(BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(
             action_id,
         ));
+    }
+
+    /// #1967: how many of `conversation_id`'s actions finished preprocessing with nothing ahead
+    /// of them and still are not pending (`PendingPreprocessedActions::parked_count`).
+    pub(super) fn parked_action_count(&self, conversation_id: AIConversationId) -> usize {
+        self.pending_preprocessed_actions
+            .get(&conversation_id)
+            .map_or(0, |batches| batches.parked_count())
+    }
+
+    /// #1967 self-heal: queues the actions [`Self::parked_action_count`] counts, as the
+    /// completing batch's own handler would have, so their cards surface and the turn goes on.
+    /// Returns how many were released.
+    pub(super) fn release_parked_actions(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) -> usize {
+        let ready = self
+            .pending_preprocessed_actions
+            .get_mut(&conversation_id)
+            .map(|batches| batches.release_ready())
+            .unwrap_or_default();
+        let released = ready.len();
+        if released == 0 {
+            return 0;
+        }
+        log::warn!(
+            "hop=agent_action status=parked released {released} action(s) that finished \
+             preprocessing with nothing ahead and were never queued (#1967)"
+        );
+        self.enqueue_preprocessed_actions(conversation_id, ready, ctx);
+        self.try_to_execute_available_actions(conversation_id, ctx);
+        released
+    }
+
+    /// #1967: the conversation in which `action_id` is a question waiting for the user: the
+    /// front of its queue with nothing running, in a pane that takes answers. `None` for any
+    /// other action or state.
+    pub fn blocked_question_conversation(
+        &self,
+        action_id: &AIAgentActionId,
+    ) -> Option<AIConversationId> {
+        self.pending_actions
+            .iter()
+            .find(|(conversation_id, queue)| {
+                front_is_waiting_question(
+                    queue,
+                    self.running_actions.contains_key(*conversation_id),
+                    self.is_view_only,
+                    action_id,
+                )
+            })
+            .map(|(conversation_id, _)| *conversation_id)
     }
 
     /// Gives stale earlier-turn actions a `cancelled` result without executing them. The result

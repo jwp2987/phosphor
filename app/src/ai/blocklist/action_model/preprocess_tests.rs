@@ -243,3 +243,39 @@ fn live_batch_result_has_no_stale_actions() {
     assert_eq!(queue.len(), 1);
     assert!(stale.is_empty());
 }
+
+/// #1967: `parked_count` is exactly what `release_ready` would hand out: the actions of the
+/// leading batches that are done, up to the first batch still preprocessing. A batch that
+/// waits behind a live one is a wait, not a lost hand-off, and is not counted.
+#[test]
+fn parked_count_counts_only_done_batches_with_nothing_pending_ahead() {
+    let mut actions = PendingPreprocessedActions::default();
+    assert_eq!(actions.parked_count(), 0);
+
+    // first: still preprocessing; second: done, waiting behind it.
+    let (_first_action, first) = batch_of(&mut actions);
+    let (second_action, second) = batch_of(&mut actions);
+    let queued = actions
+        .handle_preprocess_actions_result(second, vec![create_test_action(second_action.clone())]);
+    assert!(queued.is_empty());
+    assert_eq!(
+        actions.parked_count(),
+        0,
+        "done behind a batch that is still preprocessing: a wait"
+    );
+
+    // The first batch is given up on and nothing drains the second: now it is parked with
+    // nothing ahead (the state every caller of `abandon_pending` drains at once).
+    actions.abandon_pending();
+    assert_eq!(actions.parked_count(), 1);
+
+    // `release_ready` hands out exactly those, and nothing is parked afterwards.
+    let released = actions.release_ready();
+    assert_eq!(released.len(), 1);
+    assert_eq!(released[0].id, second_action);
+    assert_eq!(actions.parked_count(), 0);
+    assert!(!actions.has_pending());
+    // The abandoned batch's late result is still dropped, not resurrected.
+    let (queued, stale) = actions.handle_preprocess_actions_result_with_stale(first, Vec::new());
+    assert!(queued.is_empty() && stale.is_empty());
+}

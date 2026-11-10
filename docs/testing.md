@@ -5143,3 +5143,17 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
   `agent_interactive_oracles` gained the arm table (`remote_read_arm`) and checks that the palette words the case types are the
   app's (`keybinding-desc-take-over-agent-command` in `app/i18n/en/warp.ftl`). Hops to read: `may_be_waiting_notice shown=1`, then
   `hop=handover action=<id> reason=blocked_on_input`.
+- **#1967, unit, `ai/blocklist/turn_invariant_tests.rs`** (pure): `a_turn_that_something_still_moves_has_no_fault` (nothing held, a
+  stream in flight, a closing pane), `calls_nothing_holds_and_parked_actions_are_faults`,
+  `a_fault_is_confirmed_after_the_same_fault_on_consecutive_hops` (three hops, one pending at a time, healed once),
+  `a_fault_that_goes_away_or_changes_is_not_confirmed`, `a_healed_fault_that_returns_later_is_counted_again`,
+  `the_kill_switch_is_on_unless_the_environment_says_off`, `the_id_hash_names_a_set_of_calls`, `fault_names_are_the_log_names`.
+  **`action_model/preprocess_tests.rs`:** `parked_count_counts_only_done_batches_with_nothing_pending_ahead`.
+  **`action_model_tests.rs`:** `only_a_front_question_with_nothing_running_waits_for_the_user`.
+- **#1967, not covered by a test of its own:** the controller wiring (`schedule_turn_check` / `check_turn_invariant`) and the pane's
+  question check (`watch_blocked_question_card`) need the fuzz rig or a live pane. Their regression net is the agent fuzzer: a confirmed
+  fault logs `hop=agent_turn_stuck fault=<unsettled_calls|parked_actions|blocked_question_without_card> healed=<0|1>` at ERROR, which I6
+  counts. A fuzz scenario that passed before and now shows that line is either a lost action the 2 s window of I1 tolerated or a false
+  positive of the check: read the scenario before changing an allowance. No appci case was added: the fake model cannot make the app
+  lose a call, a batch or a card, which is what the heal is for.
+- **Kill switch.** `PHOSPHOR_AGENT_TURN_SELF_HEAL=0`: faults are logged (`healed=0`), nothing is healed.
