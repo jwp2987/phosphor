@@ -11,6 +11,10 @@ print the user and hostname into the InitShell JSON before any helper such as
 ESC or other control character produced invalid JSON and relied on the
 receiving-side repair (`repair_hook_json`). They now escape every control
 character with parameter expansion and builtins only (no external process).
+The zsh first-stage line (`zsh_init_shell.sh`) and the zsh one-liner embedded in
+the ssh wrappers later had to fit macOS MAX_CANON and REMOVE control characters
+instead (62a20a056, bafcee901): for those the expected value is the original
+without its control characters, and the payload must still be valid JSON.
 
 WHAT IT DOES
 ------------
@@ -21,6 +25,14 @@ in the real shell, decodes the DCS/OSC payload, and asserts
 `json.loads(payload)["value"]["user"]` equals the original (and likewise
 hostname). Embedded copies are extracted from the wrapper source and un-quoted
 the way the enclosing shell would.
+
+The subshell snippets also report `wsl_name` (bash, zsh and fish; bash since the
+owner decision of 2026-11-10: a Git Bash and a WSL bash started from another
+pane shell are told apart by it). Each `*_init_subshell.sh` is run with
+`WSL_DISTRO_NAME` unset (the payload must carry an empty `wsl_name`) and set to
+a distribution name (it must round-trip); the bash one, which keeps only the
+characters a distribution name may hold (`A-Za-z0-9._-`), also gets the hostile
+values: the payload must stay valid JSON and carry the value without the rest.
 
 pwsh builds the payload with ConvertTo-Json, which escapes everything; it is
 run too when installed.
@@ -100,7 +112,8 @@ def cases():
     # Embedded copies in the ssh wrappers.
     for fname, fish in (("bash_body.sh", False), ("zsh_body.sh", False), ("fish.sh", True)):
         text = read(fname)
-        blk = snippet_lines(text, r"^\s*_hostname=\$\(command -pv hostname", r"^\s*_msg=")
+        # The rcfile snippet prefers the environment's value: `_hostname=${HOSTNAME:-$(command ...)}`.
+        blk = snippet_lines(text, r"^\s*_hostname=\$\{HOSTNAME:-\$\(command -pv hostname", r"^\s*_msg=")
         if fish:
             blk = blk.replace("\\\\", "\\")
         blk = fill(blk)
@@ -108,8 +121,10 @@ def cases():
             blk = blk[:-2]  # closes the enclosing quoting of the ssh wrapper
         # The remote bash rcfile; its _msg is emitted by the next printf, so emit here.
         out.append((fname + " (embedded bash)", "bash", "WARP_SESSION_ID=4242\n" + blk + "\nprintf '\\eP$d%s\\x9c' \"$_msg\"\n"))
-        one = next(l for l in text.split("\n") if "unsetopt ZLE RCS GLOBAL_RCS" in l)
-        out.append((fname + " (embedded zsh)", "zsh", unquote_one_liner(one, fish)))
+        # zsh_body.sh no longer embeds the zsh one-liner (only bash_body.sh and fish.sh do).
+        one = next((l for l in text.split("\n") if "unsetopt ZLE RCS GLOBAL_RCS" in l), None)
+        if one is not None:
+            out.append((fname + " (embedded zsh)", "zsh", unquote_one_liner(one, fish)))
     return out
 
 
@@ -126,9 +141,9 @@ def instrument(sh, text, user, host):
     else:
         for l in text.split("\n"):
             lead = re.match(r"\s*", l).group(0)
-            if re.match(r"\s*_hostname=\$\(", l):
+            if re.match(r"\s*_hostname=\$(\{HOSTNAME:-\$)?\(", l):
                 l = lead + '_hostname=$(printf "%s" "$T_HOST")'
-            elif re.match(r"\s*_user=\$\(", l):
+            elif re.match(r"\s*_user=\$(\{USER:-\$)?\(", l):
                 l = lead + '_user=$(printf "%s" "$T_USER")'
             lines.append(l)
         if "unsetopt ZLE RCS GLOBAL_RCS;" in text:  # one-liner
@@ -139,7 +154,16 @@ def instrument(sh, text, user, host):
     return "\n".join(lines)
 
 
-def expected(sh, v):
+STRIPS_CNTRL = "//[[:cntrl:]]/}"
+
+
+def expected(sh, v, text=""):
+    if STRIPS_CNTRL in text:
+        # The zsh first-stage line and the zsh one-liner of the ssh wrappers REMOVE control
+        # characters instead of escaping them, to stay under macOS MAX_CANON (62a20a056,
+        # bafcee901). The payload must still be valid JSON carrying everything else.
+        v = "".join(c for c in v.rstrip("\n") if not (ord(c) < 32 or ord(c) == 127))
+        return v
     if sh == "fish":
         # fish splits command substitution on newlines and drops the final empty one.
         parts = v.split("\n")
@@ -152,8 +176,10 @@ def expected(sh, v):
 HOOK = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c|\x1b\]9278;d;([0-9a-f]*)\x07")
 
 
-def run(sh, binpath, text, user, host):
+def run(sh, binpath, text, user, host, wsl=None):
     env = {"PATH": os.environ["PATH"], "T_USER": user, "T_HOST": host, "HOME": "/tmp", "LANG": "C.UTF-8"}
+    if wsl is not None:
+        env["WSL_DISTRO_NAME"] = wsl
     if sh == "bash":
         cmd = [binpath, "--noprofile", "--norc", "-c", text]
     elif sh == "zsh":
@@ -187,12 +213,44 @@ def main():
                     if payload is None:
                         raise AssertionError("no hook emitted; stderr=%r" % p.stderr[:200])
                     d = json.loads(payload)["value"]
-                    eu, eh = expected(sh, user), expected(sh, host)
+                    eu, eh = expected(sh, user, text), expected(sh, host, text)
                     if d["user"] != eu or d["hostname"] != eh:
                         raise AssertionError("round-trip %r/%r != %r/%r" % (d["user"], d["hostname"], eu, eh))
                 except Exception as e:  # noqa: BLE001
                     fails += 1
                     print(f"FAIL {label} [{sh}] user={user!r} host={host!r}: {e}")
+    # wsl_name in the subshell payloads.
+    for label, sh in (
+        ("bash_init_subshell.sh", "bash"),
+        ("zsh_init_subshell.sh", "zsh"),
+        ("fish_init_subshell.sh", "fish"),
+    ):
+        if not shells[sh]:
+            continue  # reported (and counted under CI) above
+        text = instrument(sh, fill(read(label)), "user", "host")
+        values = [None, "Ubuntu-22.04", "Debian"]
+        if sh == "bash":
+            # bash filters the value; "" is the unset case's twin.
+            values += [v for v in HOSTILE if v]
+        for wsl in values:
+            total += 1
+            try:
+                payload, p = run(sh, shells[sh], text, "user", "host", wsl)
+                if payload is None:
+                    raise AssertionError("no hook emitted; stderr=%r" % p.stderr[:200])
+                d = json.loads(payload)["value"]
+                if "wsl_name" not in d:
+                    raise AssertionError("payload carries no wsl_name: %r" % sorted(d))
+                want = wsl or ""
+                if sh == "bash":
+                    want = re.sub(r"[^A-Za-z0-9._-]", "", want)
+                if d["wsl_name"] != want:
+                    raise AssertionError("wsl_name %r != %r" % (d["wsl_name"], want))
+                if d["user"] != "user" or d["hostname"] != "host" or d.get("is_subshell") is not True:
+                    raise AssertionError("other fields changed: %r" % d)
+            except Exception as e:  # noqa: BLE001
+                fails += 1
+                print(f"FAIL {label} [{sh}] wsl_name={wsl!r}: {e}")
     pw = shutil.which("pwsh")
     print("pwsh:", pw or "not installed (SKIP; pwsh uses ConvertTo-Json)")
     print(f"{total - fails if fails < total else 0}/{total} cases passed" if not fails else f"{fails} FAILED of {total}")

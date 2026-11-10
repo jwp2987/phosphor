@@ -205,7 +205,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 | `test_nu_agent_pager_env` (#1813) | REAL nushell (0.116.1 checked; skipped cleanly when `nu` is absent, `--nu PATH` to force) in a pty with the real `nu.nu` bootstrap, a throw-away HOME/XDG under `$TMPDIR` and a `config.nu` holding the user's own `pre_prompt`/`pre_execution` hooks. An agent command is typed as Nu's wrapper form (` <command> # __phosphor_ap_pagers`, `NU_PAGER_MARKER`): `cd` and `$env.X =` persist; `PAGER`/`LESS`/... are set during it (nushell and an external child); the user's own `PAGER` is back, and variables the user never had are gone, after a success, after an external command exiting 3 and after a nushell error; an unmarked line is untouched; the user's hooks ran and ours are appended; no agent line is in the history (a control line without the leading space is). In `precheck`. Unit twins in `agent_shell_wrap_tests.rs`: `nushell_commands_are_not_wrapped_in_a_block` (owner-decision expectation change: the Nu line now ends in the marker comment), `nu_bootstrap_matches_the_overrides_and_the_marker` | the script's own checks |
 | `test_bash_bootstrap_builtins` | fork-free `sort -V`/os-release/`shopt` replacements match the commands (#1164) |
 | `test_bash_preexec_large_command` | Preexec escaping of a 3 MB command is linear (#1255) |
-| `test_init_shell_escaping` | InitShell JSON round-trips hostile user/host values (#879) |
+| `test_init_shell_escaping` | InitShell JSON round-trips hostile user/host values (#879); where the script deliberately REMOVES control characters (the zsh first-stage line and the zsh one-liner of the ssh wrappers, macOS MAX_CANON) the value must arrive without them and the payload must still be valid JSON; every `*_init_subshell.sh` reports `wsl_name` (empty when `WSL_DISTRO_NAME` is unset, the distribution name when set; bash keeps only `A-Za-z0-9._-`, so hostile values cannot break the JSON). 330 cases; it had not run since the rcfile snippet changed to `_hostname=${HOSTNAME:-$(...)}` (its search found nothing): repaired 2026-11-10 |
 | `test_hijack_bootstrap` | user `echo/printf/cd/read/pwd` functions never run inside the bootstrap (#929) |
 | `test_line_editor_markers` | `LineEditorReading` / `ContinuationPrompt` OSC markers and `seq` per Precmd (#1390-#1392) |
 | `test_child_ps1` | a command started from a Phosphor bash does not inherit an EMPTY exported PS1 (#1907): exported / `set -a` / plain PS1, Phosphor prompt and user's prompt, and the `warp_change_prompt_modes_to_ps1` switch; fails on the pre-fix bootstrap (child sees `empty`) |
@@ -4491,7 +4491,7 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   (real bootstrap in a pty, `printenv PS1` in a child) fails on the old bootstrap with `empty` and passes now; the other bash script tests were re-run
   (`test_bash_bootstrap_builtins`, `_nounset`, `test_hijack_bootstrap`, `test_bash_preexec_large_command`, `test_line_editor_markers --only bash`, `test_hook_forks`,
   `test_local_counted_bootstrap`, `test_bootstrap_hook_equivalence`, `test_ssh_raw_bootstrap_hook`). `test_init_shell_escaping` fails the same way on the
-  base commit (its `_hostname` snippet search finds nothing in `bash_body.sh`), unrelated to this change. Not covered: the real app's `sh` child in a real
+  base commit (its `_hostname` snippet search finds nothing in `bash_body.sh`), unrelated to this change. (Repaired in round 12, 2026-11-10: see `test_init_shell_escaping` in the script-test table.) Not covered: the real app's `sh` child in a real
   pane (no run yet; worked, unproven).
 
 ## Round 10: `ssh_nested_typeahead` on Linux Wayland (#2013; design `docs/design/r10-wl-ssh-nested.md`)
@@ -4734,3 +4734,15 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   `YOUNG_DETECTION_BACKSTOP`, `arm_young_timer` ("never submits or writes": the bare-Enter case writes), `INTERRUPT_GIVE_UP` ("hands input back via the
   hand-off": it only clears the wait and logs, the pty keeps input). No code path changed; the guard and its self-test pass. The guard checks that a timer
   HAS a comment and an allowlist line, not that the text is true: that stays a review duty (the header now says so).
+- **A bash subshell reports `wsl_name`.** `bash_init_subshell.sh` puts `wsl_name` into its InitShell payload as `zsh_init_subshell.sh` and the fish one
+  do (`WSL_DISTRO_NAME`, empty outside WSL; only `A-Za-z0-9._-` kept, so the payload stays valid JSON and the typed setup stays two chunk lines:
+  1392 of 1400 payload bytes with a 20-digit session id). With it the #2025 rule covers a Git Bash started by plain `bash` from a PowerShell or cmd pane:
+  `bootstrap::pane_shell_runs_windows_bash` (an MSYS2 pane shell as before, or `Executable` launch data on Windows that is not WSL) is what
+  `PtyController::spawned_from_msys2_through_plain_bash` now asks of the chain's sessions, and a plain bash on the way that reports a WSL distribution
+  ends the walk. The WSL launcher's bash (the same `bash` typed in PowerShell on a machine with WSL) reports its distribution and keeps the typed
+  bootstrap. Switch unchanged: `PHOSPHOR_MSYS2_SUBSHELL_SOURCE=0`. Unit tests `bootstrap_test.rs`:
+  `a_plain_bash_under_a_windows_native_pane_shell_is_a_windows_bash`, `the_bash_subshell_init_script_reports_wsl_name`; script test
+  `script/test_init_shell_escaping` (run it directly: `./script/test_init_shell_escaping`). No app case: a PowerShell-pane subshell case needs the
+  Windows harness's banner and leave-inner helpers for a non-bash pane, which do not exist yet. Next Windows run, PowerShell pane, by hand or by a new
+  case: `bash` (Git for Windows first on PATH), Ctrl-I at the banner: `hop=subshell_bootstrap_sourced why=msys2_bash_subshell`, no `class=SetupChunked`
+  writes, `Bootstrapped` within a few seconds.
