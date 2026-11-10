@@ -68,6 +68,8 @@ PROVING = (
     "giveup_keys_reach_shell",
     # #1979: frames and view re-renders caused by pty output (shown tab streaming, hidden tabs streaming), counted from the app's frame_cause log
     "output_frames",
+    # #1976: copy of soft-wrapped lines (keyboard block copy; pointer drag and triple click). #1990: the vertical tabs panel, the owner's layout
+    "ui_copy_wrapped_output", "ui_copy_wrapped_drag", "ui_vertical_tabs_many", "ui_vertical_tabs_panel_click",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -5945,3 +5947,4 @@ import cases_output_frames  # noqa: E402,F401  (#1979: output_frames, frames / w
 import cases_agent_mcp  # noqa: E402,F401  (#1834: agent_mcp_faults, misbehaving fake MCP servers)
 import cases_agent_latency  # noqa: E402,F401  (#1828: agent_latency_key, agent_latency_enter, agent_steer_fast; needs APPCI_FAKE_MODEL=1)
 import cases_win_handover  # noqa: E402,F401  (#1882/#1883/#1891: ps_read_host_secure, gitbash_precmd_secret; Windows secrets and interactive reads on ConPTY)
+import cases_wrap_vtabs  # noqa: E402,F401  (#1976: ui_copy_wrapped_output / _drag, copy of soft-wrapped lines; #1990: ui_vertical_tabs_many / _panel_click)
