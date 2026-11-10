@@ -3667,9 +3667,58 @@ Environment knobs: `AGENT_FUZZ_TIME_SCALE` (default 1.0), `AGENT_FUZZ_HUMAN_SCAL
 * **Cargo.lock:** `crates/fake_llm` adds llmposter (and its axum 0.8 tree). The first box build updates `Cargo.lock`; the coordinator commits it (do not build with `--locked` before that).
 * **cargo-about:** `crates/fake_llm` is a workspace member, so `cargo about` lists llmposter in the third-party notices even though it is dev-only and never in a release binary. Over-attribution; acceptable.
 
-#### Acceptance on the pre-fix base (to run on the box, not done)
+#### Acceptance: the corpus catches the Wave 0 bugs (#1836; runbook for the box, NOT RUN yet)
 
-On `ffdaa4536` (before #1796 / #1797 / #1799) the seeded `wave0_1799_reject_then_transfer`, `wave0_1797_ask_empty_args` and `wave0_1797_ask_valid` must FAIL with I1 / I2a, and unseeded `AGENT_FUZZ_MINUTES=10` must find each class. Method: branch from `ffdaa4536`, cherry-pick this branch's commits (the seam and probes touch `chat_stream.rs`, `action_model.rs`, `block.rs`, `terminal/view.rs`, `shell_command.rs`, `mock_provider`; expect trivial conflicts only in `action_model.rs`), drop `mod prompt_tests;` from `agent_fuzz/mod.rs` (it needs the #1796 `observe` probe argument and does not compile on the base, which is itself the signal for #1796), run `script/agent_fuzz`. On this branch all of them pass.
+A scenario that has only ever passed proves nothing. `script/ci/agent_fuzz_catches_wave0.py` puts each of #1796 / #1797 / #1799 back
+into the tree under test, one at a time, and replays the corpus: the bug's own scenario (or prompt test) must FAIL. Written in round 14
+(`docs/design/r14-hygiene.md` 4) without cargo; the table at the end of this section is empty until the box has run it.
+
+| arm | the bug put back (each edit only disables the branch its fix added) | must fail |
+|---|---|---|
+| `control` | none | nothing: both tests pass, or the run proves nothing |
+| `m1799` | `action_model.rs`: `rejection_cancels_rest_of_turn` is not consulted; `shell_command.rs`: `transfer_resolves_without_approval` is false | corpus `wave0_1799_reject_then_transfer` |
+| `m1797_empty` | `ask_user_question.rs`: `should_autoexecute` ignores `has_no_answerable_questions`, `execute` no longer returns the error for an empty list | corpus `wave0_1797_ask_empty_args` |
+| `m1797_valid` | `ask_user_question.rs`: `execute` drops the answer the card staged and waits on the old channel | corpus `wave0_1797_ask_valid` |
+| `m1796` | `interaction_mode.rs`, `PromptDetector::observe`: silence past the notice window counts as a tty read | `agent_fuzz::prompt_tests::a_prompt_lookalike_is_never_handed_over_while_the_foreground_is_not_reading` |
+
+`wave0_1796_silent_then_handoff` has no arm: L1 has no pty, so it cannot fail there; the detector half of #1796 is the prompt test.
+
+**Procedure (build box only; it runs cargo through `script/agent-cargo`).**
+
+1. Anywhere, no cargo: `python3 script/ci/agent_fuzz_catches_wave0.py --self-test` (the log parser and the verdicts, on fixtures) and
+   `python3 script/ci/agent_fuzz_catches_wave0.py --check` (every edit still matches the source exactly once and every expected
+   scenario / test exists). A failing `--check` means the code moved: update `MUTATIONS` in the script before anything is built.
+2. On the box, in a checkout that has the commit under test:
+   `python3 script/ci/agent_fuzz_catches_wave0.py --run --workdir <dir on real storage> [--commit <rev>] [--label <agent-cargo name>]`.
+   It creates the worktree `<dir>/wt` at the commit (default `HEAD`), and for each arm resets the worktree, applies the edit, and runs
+   `script/agent-cargo <label> nextest run -p fake_llm -p warp --lib --features warp/gui -E 'test(corpus_replays_as_listed_and_reaches_the_wave0_cells) | test(agent_fuzz::prompt_tests)' --no-fail-fast`
+   with the two `PHOSPHOR_BYOP_STREAM_*_TIMEOUT_SECS` at 1 (what `script/agent_fuzz` sets). Five arms, one incremental build of the
+   `warp` lib tests each; the default label `agent-fuzz-proof` has its own, cold, target directory, so pass the label of a target that
+   is warm for this commit if there is one. Never under `/tmp` (the script refuses). `--arms control,m1799` runs a subset; `--keep`
+   leaves the worktree; `--cleanup --workdir <dir>` removes it later.
+3. Read `<dir>/verdict.txt` (also printed) and `<dir>/logs/<arm>.log` (each starts with the edit as a diff). Exit 0 = `PROVEN`.
+
+**Reading the verdicts.**
+
+- `control OK`, every other arm `CAUGHT`: proven. The line names the invariant (`.. fails I2a (..)`) and any other scenario that
+  failed with the same bug; copy the table below and close #1836.
+- `NOT CAUGHT`: the scenario passed with its bug put back. Either a later defence masks the bug (#1851 and #1858-#1861 added
+  several around questions; the edit then has to switch that off too, which is a change to the script, with the reason), or the
+  oracle has a gap. File it; do not edit the scenario until it fails.
+- `INCONCLUSIVE`: the corpus replay timed out or did not run (a hang the rig did not turn into a verdict is still a finding: the
+  oracle should have said I1). `BUILD FAILED`: no test ran; the edit did not compile at this commit (read the log; the edits are
+  `false && ..`, one `.filter(|_| false)` and one `let`).
+- `control FAILED`: the unedited tree is red in these tests; fix that first, the arms mean nothing.
+
+**The pre-fix base (`ffdaa4536`), assessed and not used.** #1836 asked for the replay there. Tried by git alone on 2026-11-10: the
+seven harness commits (`a9d68642c b9c32b7c4 04613e221 855f52bf0 82b0d3c0c d15f9488c 2dcc91d2a`, in that order; without `d15f9488c`
+the last one conflicts in `action_model.rs`) cherry-pick onto `ffdaa4536` with conflicts only in `docs/testing.md`. But that harness
+was never compiled as it stood: six later commits made it build and run (`6f2940b79 4e34183dc 41e70bf6e 2c2b0aaad 32a65d635
+9cadef5f9`), each mixed with unrelated files, and their harness hunks do not apply to the picked tree (`rig.rs` conflicts,
+`mock_wiring.rs` does not exist there); `mod prompt_tests;` must be dropped (it needs the #1796 probe argument). It would take a
+compile loop of unknown length and would test the oracle of 2026-11-08, not today's. Kept here so nobody repeats the attempt blind.
+
+**Result.** Not run. Fill in from `verdict.txt`: commit, date, pipeline or box session, one line per arm.
 
 Question scenarios tolerate either `ask_user_question` flow: the card appearing without an approval step (an owner decision in flight in another change), or after one. The actor answers whatever question is at the front by staging the answers and executing by id; `OnCard` triggers on any actionable card.
 

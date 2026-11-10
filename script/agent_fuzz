@@ -23,8 +23,9 @@
 #   AGENT_FUZZ_TIME_SCALE=F stretch every wait for a slow machine (default 1.0)
 #   AGENT_FUZZ_COVERAGE=1   print the (tool x op x timing) and (chaos x phase) hit table
 #
-# Check that the Wave 0 scenarios catch their bugs (they must FAIL on the pre-fix base): see
-# docs/testing.md "Agent fuzzer and fake model", "Acceptance on the pre-fix base".
+# Check that the Wave 0 scenarios catch their bugs (they must FAIL with each bug put back):
+# script/ci/agent_fuzz_catches_wave0.py, docs/testing.md "Acceptance: the corpus catches the
+# Wave 0 bugs" (#1836).
 #
 # No cargo is run by the agents that write this; the build box runs it.
 

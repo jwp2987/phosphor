@@ -6,9 +6,10 @@
 # fails too (a different bug must be filed, not hidden behind this one). A scenario not listed
 # must pass.
 #
-# It starts empty: #1796, #1797 and #1799 are fixed on this branch. To check that the four
-# wave0 scenarios catch their bugs, run them on the pre-fix base (ffdaa4536); see
-# docs/testing.md "Agent fuzzer and fake model".
+# It starts empty: #1796, #1797 and #1799 are fixed on this branch. To check that the wave0
+# scenarios catch their bugs, put each bug back and replay them:
+# `script/ci/agent_fuzz_catches_wave0.py` (#1836); see docs/testing.md "Acceptance: the corpus
+# catches the Wave 0 bugs".
 #
 # [[known]]
 # scenario  = "corpus_file_stem"
