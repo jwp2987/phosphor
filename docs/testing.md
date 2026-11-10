@@ -4481,10 +4481,14 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   unproven: the next Mac agent-mode run that OCRs blind should now be a pass with the note "OCR was blind; the app's own record says ...".
 - **`big_paste` times the Enter and the largest UI item (#2004, #1191).** The case now sends Return at once behind the 1 MB paste and polls `big.out` for its
   full size (the Enter's effect: the paste's last line has no newline, so cat only gets it on Return): `big_paste_time_to_enter_ms` is that time from the end of
-  the paste. rec.log cannot time it (it stamps `cat > big.out` after Ctrl-D). **PROPOSED budgets, owner to confirm:** time-to-Enter <= 1500 ms
-  (`APPCI_BIGPASTE_ENTER_MS`), judged only on a byte-exact paste; largest single `hop=ui_item` <= 250 ms (`APPCI_BIGPASTE_UI_ITEM_MS`), judged whenever an app
-  log exists. The byte check, the Windows conhost control and both session modes are unchanged. Selftest `big_paste_time_budgets_2004`. Worked, unproven:
-  the next run should print `big_paste_time_to_enter_ms` and `big_paste_ui_items.max_ms`; set the two variables from those numbers once the owner agrees.
+  the paste. rec.log cannot time it (it stamps `cat > big.out` after Ctrl-D). **Budgets, OWNER DECISION 2026-11-10 (they were proposals until then):**
+  time-to-Enter <= 1500 ms (`APPCI_BIGPASTE_ENTER_BUDGET_MS`), judged only on a byte-exact paste; largest single `hop=ui_item` <= 250 ms
+  (`APPCI_BIGPASTE_UI_ITEM_BUDGET_MS`), judged whenever an app log exists. The variables follow `latency_paint`'s pattern (`APPCI_PAINT_BUDGET_MS`): a
+  positive number overrides the budget for a diagnosis run; anything else (a typo, 0, a negative number) is ignored, so the budget can never be voided by
+  accident. The round 10 names `APPCI_BIGPASTE_ENTER_MS` / `APPCI_BIGPASTE_UI_ITEM_MS` are still read when the new one is not set. The metric
+  `big_paste_budgets` records what a run was judged against. The byte check, the Windows conhost control and both session modes are unchanged. Selftest
+  `big_paste_time_budgets_2004`. Worked, unproven: the next run prints `big_paste_time_to_enter_ms`, `big_paste_ui_items.max_ms` and `big_paste_budgets`
+  and FAILS the case over either budget.
 - **Child shells get no PS1 instead of an empty one (#1907).** `bash_body.sh` blanked PS1 after every prompt in the Phosphor-prompt mode; a user who
   exported PS1 (`export PS1=...` or `set -a`) made every child shell (dash / sh / ash read PS1 from the environment) draw no prompt. The blank now un-exports
   PS1 first (`compgen -A export -X '!PS1'` says whether it is exported; builtins only), and `warp_change_prompt_modes_to_ps1` exports it again. `script/test_child_ps1`
@@ -4746,3 +4750,5 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   Windows harness's banner and leave-inner helpers for a non-bash pane, which do not exist yet. Next Windows run, PowerShell pane, by hand or by a new
   case: `bash` (Git for Windows first on PATH), Ctrl-I at the banner: `hop=subshell_bootstrap_sourced why=msys2_bash_subshell`, no `class=SetupChunked`
   writes, `Bootstrapped` within a few seconds.
+- **`big_paste` budgets are the owner's** (1500 ms paste to Enter, 250 ms largest UI item): see the `big_paste` entry of round 10 group A above.
+

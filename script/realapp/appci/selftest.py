@@ -3002,14 +3002,28 @@ def wayland_pointer_gate_follows_the_holder_1789():
 
 @check
 def big_paste_time_budgets_2004():
-    """#2004 (#1191): big_paste's PROPOSED time budgets (time-to-Enter 1500 ms, largest single UI item 250 ms), env-overridable, judged only where measured; time-to-Enter
-    only on a byte-exact paste; poll_file_size measures from t0 and returns None when the file never gets there"""
+    """#2004 (#1191): big_paste's time budgets, OWNER DECISION 2026-11-10 (time-to-Enter 1500 ms, largest single UI item 250 ms), overridable like latency_paint's
+    (APPCI_*_BUDGET_MS), judged only where measured; time-to-Enter only on a byte-exact paste; poll_file_size measures from t0 and returns None when the file never
+    gets there"""
+    import inspect
     import time as _t
     J = cases.judge_big_paste_time
-    assert cases.big_paste_budgets({}) == (1500.0, 250.0) and cases.big_paste_budgets({"APPCI_BIGPASTE_ENTER_MS": "900", "APPCI_BIGPASTE_UI_ITEM_MS": "x"}) == (900.0, 250.0)
+    B = cases.big_paste_budgets
+    assert (cases.BIGPASTE_ENTER_MS, cases.BIGPASTE_UI_ITEM_MS) == (1500.0, 250.0), "the owner's budgets (2026-11-10): change them only on an owner decision"
+    assert B({}) == (1500.0, 250.0) and B({"APPCI_BIGPASTE_ENTER_MS": "900", "APPCI_BIGPASTE_UI_ITEM_MS": "x"}) == (900.0, 250.0)       # the round 10 names still work
+    assert B({"APPCI_BIGPASTE_ENTER_BUDGET_MS": "700", "APPCI_BIGPASTE_UI_ITEM_BUDGET_MS": "120.5"}) == (700.0, 120.5)                # the *_BUDGET_MS names
+    assert B({"APPCI_BIGPASTE_ENTER_BUDGET_MS": "700", "APPCI_BIGPASTE_ENTER_MS": "900"}) == (700.0, 250.0)                           # the new name wins
+    for bad in ("", "x", "0", "-5", "nan", "inf"):                                                                                  # never loosened or voided by a typo
+        assert B({"APPCI_BIGPASTE_ENTER_BUDGET_MS": bad, "APPCI_BIGPASTE_UI_ITEM_BUDGET_MS": bad}) == (1500.0, 250.0), bad
+    assert "BUDGET_MS" in J(1500.1, 10.0, True, {})[0] and "owner budget" in J(1500.1, 10.0, True, {})[0] and "proposed" not in J(9999.0, 9999.0, True, {})[1]
+    body = inspect.getsource(cases.c_big)
+    assert "judge_big_paste_time(" in body and 'r.metric("big_paste_budgets"' in body and "r.check(False, \"big_paste: \" + msg)" in body, "the case must judge both budgets"
+    assert J(1000.0, 200.0, True, {"APPCI_BIGPASTE_ENTER_BUDGET_MS": "500", "APPCI_BIGPASTE_UI_ITEM_BUDGET_MS": "100"}).__len__() == 2
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
+    assert "APPCI_BIGPASTE_ENTER_BUDGET_MS" in doc and "APPCI_BIGPASTE_UI_ITEM_BUDGET_MS" in doc
     assert J(1400.0, 240.0, True, {}) == [] and J(1500.0, 250.0, True, {}) == []                                          # at the budget passes
-    assert len(J(1500.1, 10.0, True, {})) == 1 and "ENTER_MS" in J(1500.1, 10.0, True, {})[0]                            # #1191: Enter 1.4-5 s
-    assert len(J(100.0, 6500.0, True, {})) == 1 and "UI_ITEM_MS" in J(100.0, 6500.0, True, {})[0]                         # #1191: UI froze 6-7 s
+    assert len(J(1500.1, 10.0, True, {})) == 1 and "ENTER_BUDGET_MS" in J(1500.1, 10.0, True, {})[0]                            # #1191: Enter 1.4-5 s
+    assert len(J(100.0, 6500.0, True, {})) == 1 and "UI_ITEM_BUDGET_MS" in J(100.0, 6500.0, True, {})[0]                         # #1191: UI froze 6-7 s
     assert len(J(5000.0, 6500.0, True, {})) == 2
     assert J(5000.0, 10.0, False, {}) == []                                                                              # a shortfall is the byte check's business
     assert len(J(5000.0, 6500.0, False, {})) == 1                                                                         # ... but a frozen UI is judged regardless

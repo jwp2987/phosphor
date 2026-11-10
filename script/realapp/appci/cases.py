@@ -2095,19 +2095,29 @@ def poll_file_size(path, size, timeout, t0, step=0.02):
     return None
 
 
-# #2004 (#1191): PROPOSED budgets, owner to confirm (docs/testing.md). Env-overridable.
+# #2004 (#1191): the big_paste budgets, OWNER DECISION 2026-11-10 (they were proposals since round 10). Pass/fail, both session modes, every platform.
+# Overridable for a diagnosis run the way latency_paint's budget is (APPCI_PAINT_BUDGET_MS): APPCI_BIGPASTE_ENTER_BUDGET_MS, APPCI_BIGPASTE_UI_ITEM_BUDGET_MS.
+# The round 10 names (APPCI_BIGPASTE_ENTER_MS, APPCI_BIGPASTE_UI_ITEM_MS) are still read when the new one is not set.
 BIGPASTE_ENTER_MS = 1500.0       # end of a 1 MB paste -> its Enter takes effect (#1191: Enter took 1.4-5 s)
 BIGPASTE_UI_ITEM_MS = 250.0      # the largest single main-thread item while the paste streamed (#1191: the UI froze 6-7 s)
+BIGPASTE_ENTER_ENV = ("APPCI_BIGPASTE_ENTER_BUDGET_MS", "APPCI_BIGPASTE_ENTER_MS")
+BIGPASTE_UI_ITEM_ENV = ("APPCI_BIGPASTE_UI_ITEM_BUDGET_MS", "APPCI_BIGPASTE_UI_ITEM_MS")
 
 
 def big_paste_budgets(env=None):
+    """(time-to-Enter ms, largest UI item ms): the owner's budgets unless an APPCI_* override names a positive number. An override that is not one (a typo,
+    zero, negative) is ignored, so a mistyped variable can never loosen or void the budget."""
     env = os.environ if env is None else env
-    def f(k, d):
-        try:
-            return float(env.get(k, d))
-        except ValueError:
-            return d
-    return f("APPCI_BIGPASTE_ENTER_MS", BIGPASTE_ENTER_MS), f("APPCI_BIGPASTE_UI_ITEM_MS", BIGPASTE_UI_ITEM_MS)
+    def f(names, d):
+        for k in names:
+            if env.get(k, "") != "":
+                try:
+                    v = float(env[k])
+                except ValueError:
+                    return d
+                return v if v > 0 and v == v and v != float("inf") else d
+        return d
+    return f(BIGPASTE_ENTER_ENV, BIGPASTE_ENTER_MS), f(BIGPASTE_UI_ITEM_ENV, BIGPASTE_UI_ITEM_MS)
 
 
 def judge_big_paste_time(enter_ms, ui_max_ms, byte_exact, env=None):
@@ -2116,9 +2126,9 @@ def judge_big_paste_time(enter_ms, ui_max_ms, byte_exact, env=None):
     enter_b, ui_b = big_paste_budgets(env)
     out = []
     if byte_exact and enter_ms is not None and enter_ms > enter_b:
-        out.append("the Enter took %.0f ms to take effect after the paste (> %.0f ms, APPCI_BIGPASTE_ENTER_MS, proposed; #1191)" % (enter_ms, enter_b))
+        out.append("the Enter took %.0f ms to take effect after the paste (> %.0f ms, owner budget 2026-11-10, APPCI_BIGPASTE_ENTER_BUDGET_MS; #1191)" % (enter_ms, enter_b))
     if ui_max_ms is not None and ui_max_ms > ui_b:
-        out.append("the largest main-thread UI item while the paste streamed took %.0f ms (> %.0f ms, APPCI_BIGPASTE_UI_ITEM_MS, proposed; #1191)" % (ui_max_ms, ui_b))
+        out.append("the largest main-thread UI item while the paste streamed took %.0f ms (> %.0f ms, owner budget 2026-11-10, APPCI_BIGPASTE_UI_ITEM_BUDGET_MS; #1191)" % (ui_max_ms, ui_b))
     return out
 
 
@@ -2164,6 +2174,8 @@ def c_big(ctx, r):
     ui_audit = ui_item_metrics(ctx, r, ui_off, "big_paste")    # #1191: which main-thread items broke the 4 ms budget while the paste streamed
     if enter_s is not None:
         r.metric("big_paste_time_to_enter_ms", round(enter_s * 1000, 1))
+    enter_budget, ui_budget = big_paste_budgets()
+    r.metric("big_paste_budgets", {"time_to_enter_ms": enter_budget, "ui_item_ms": ui_budget})      # what this run was judged against (an override shows here)
     for msg in judge_big_paste_time(None if enter_s is None else enter_s * 1000, None if ui_audit is None else ui_audit["max_ms"], got == (data + "\n").encode()):
         r.check(False, "big_paste: " + msg)
     if enter_s is None:
