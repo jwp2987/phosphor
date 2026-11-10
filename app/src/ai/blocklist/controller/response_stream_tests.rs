@@ -595,3 +595,75 @@ fn exhausted_in_stream_recovery_is_terminal_but_a_mid_stream_drop_still_resumes(
         RecoveryAction::Resume
     );
 }
+
+/// #1943: a request that fails before any client action while the machine is offline parks its
+/// retry until connectivity returns. The failed attempt's transport still ends, and that end must
+/// not be taken for the end of the stream: it used to emit `AfterStreamFinished`, on which the
+/// controller ended the turn with an "unfinished exchange" error and dropped the stream, parked
+/// retry included. Fails on the old code (one `AfterStreamFinished` before the stop). A Stop while
+/// parked still ends the stream, exactly once.
+#[test]
+fn an_offline_failure_parks_the_retry_and_the_dead_attempts_end_is_not_the_streams_end() {
+    use std::sync::Arc;
+
+    use super::ResponseStreamEvent;
+    use crate::ai::agent::CancellationReason;
+    use crate::network::NetworkStatus;
+    use warpui::{App, Entity, ModelContext};
+
+    struct StreamEnds(usize);
+    impl Entity for StreamEnds {
+        type Event = ();
+    }
+
+    App::test((), |mut app| async move {
+        let network = app.add_singleton_model(|_| NetworkStatus::new());
+        network.update(&mut app, |network, ctx| {
+            network.reachability_changed(false, ctx)
+        });
+        let stream =
+            app.add_model(|_| ResponseStream::new_for_test(ResponseStreamId::new_for_test()));
+        let ends = app.add_model(|ctx: &mut ModelContext<StreamEnds>| {
+            ctx.subscribe_to_model(&stream, |me, event, _| {
+                if matches!(event, ResponseStreamEvent::AfterStreamFinished { .. }) {
+                    me.0 += 1;
+                }
+            });
+            StreamEnds(0)
+        });
+        let request_id = stream
+            .read(&app, |stream, _| stream.current_request_id)
+            .expect("a new stream has a current request");
+
+        stream.update(&mut app, |stream, ctx| {
+            let bad_gateway =
+                AIApiError::ErrorStatus(http::StatusCode::BAD_GATEWAY, String::new(), None);
+            stream.handle_response_stream_event(request_id, Err(Arc::new(bad_gateway)), ctx);
+            assert_eq!(
+                stream.current_request_id, None,
+                "the failed attempt is retired while its retry waits for connectivity"
+            );
+            assert!(!stream.cancelled);
+            // The dead attempt's transport ends.
+            stream.on_response_stream_complete(request_id, ctx);
+        });
+        assert_eq!(
+            ends.read(&app, |ends, _| ends.0),
+            0,
+            "the end of the failed attempt must not end the stream: its retry is parked"
+        );
+
+        stream.update(&mut app, |stream, ctx| {
+            stream.cancel(
+                CancellationReason::ManuallyCancelled,
+                AIConversationId::new(),
+                ctx,
+            );
+        });
+        assert_eq!(
+            ends.read(&app, |ends, _| ends.0),
+            1,
+            "a Stop while parked ends the stream, once"
+        );
+    });
+}
