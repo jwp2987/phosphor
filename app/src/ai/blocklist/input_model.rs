@@ -1217,6 +1217,10 @@ impl BlocklistAIInputModel {
                     ran_before_exactly,
                     denylisted,
                     typeahead,
+                    // #1980: this path has no view of the session's command set (its caller
+                    // would have to pass it), so a typo is judged against the rule's built-in
+                    // command sets only.
+                    head_near_installed_command: false,
                 },
             );
             log_routing_decision("enter", surface, &input.buffer_text, &decision);
@@ -1748,6 +1752,14 @@ impl BlocklistAIInputModel {
                 History::as_ref(ctx).ran_before(session_id, input.buffer_text.trim())
                     == RanBefore::Succeeded
             });
+            // #1980: in a conversation, whether an unknown first word is one edit away from a
+            // command the session knows (`kubctl` with `kubectl` installed). Asked only for a head
+            // the rule could take (never a described, lone or English one); one pass over the
+            // command names with a length check and a byte comparison each.
+            let head_near_installed_command = in_active_agent_view
+                && routing::mistyped_head_candidate(&input).is_some_and(|head| {
+                    routing::is_near_a_command(head, completion_context.top_level_commands())
+                });
             let decision = routing::route(
                 &input,
                 &RoutingContext {
@@ -1760,6 +1772,7 @@ impl BlocklistAIInputModel {
                     ran_before_exactly,
                     denylisted: false,
                     typeahead,
+                    head_near_installed_command,
                 },
             );
             log_routing_decision("keystroke", surface, &input.buffer_text, &decision);
@@ -1826,6 +1839,7 @@ impl BlocklistAIInputModel {
                     ran_before_exactly: false,
                     denylisted: false,
                     typeahead,
+                    head_near_installed_command: false,
                 },
                 surface,
             ));

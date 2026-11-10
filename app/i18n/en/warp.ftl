@@ -594,7 +594,10 @@ onboarding-callout-enable-nl-detection = Enable Natural Language Detection
 onboarding-callout-new-agent-title = Introducing Phosphor's new agent experience
 onboarding-callout-new-agent-text = Agent conversations are now their own scoped view outside of your terminal. Simply hit ESC to return to the terminal at any point.
 onboarding-callout-updated-agent-input-title = Updated agent input
-onboarding-callout-updated-agent-input-project-text = Your agent input will detect natural language as well as commands by default. Use ! to lock the input in bash mode to write commands.\n\nSubmit the query below to have the agent initialize this project, or ⊗ to clear the input and start your own!
+onboarding-callout-updated-agent-input-project-text =
+    Your agent input will detect natural language as well as commands by default. Use ! to lock the input in bash mode to write commands.
+
+    Submit the query below to have the agent initialize this project, or ⊗ to clear the input and start your own!
 onboarding-callout-skip-initialization = Skip initialization
 onboarding-callout-initialize = Initialize
 onboarding-callout-updated-agent-input-text = Your agent input will detect natural language as well as commands by default. Use ! to lock the input in bash mode to write commands.
@@ -3520,7 +3523,9 @@ auth-require-login-drive-limit = Library objects are stored locally in Phosphor.
 auth-require-login-share = Sharing is unavailable in local Phosphor builds.
 auth-welcome-title = Welcome to Phosphor!
 auth-sign-up-for-warp = Continue in Phosphor
-auth-browser-sign-in-title = Sign in on your browser\nto continue
+auth-browser-sign-in-title =
+    Sign in on your browser
+    to continue
 auth-open-page-manually-suffix = and open the page manually.
 
 voice-try-input = Try Voice Input
@@ -3562,7 +3567,7 @@ launch-config-save-modal-a11y-title = Save Config Modal
 launch-config-save-modal-a11y-description = Type the name of the file to which you want to save your current configuration of windows, tabs, and panes. Use enter to save the launch configuration, esc to quit the save configuration modal.
 launch-config-save-description-no-keybinding = This will save your current configuration of windows, tabs and panes to a file so you can easily open it again.
 launch-config-save-description-with-keybinding = This will save your current configuration of windows, tabs and panes to a file so you can easily open it again with { $keybinding }.
-launch-config-yaml-saved-to-prefix = \nThe YAML file is saved to{" "}
+launch-config-yaml-saved-to-prefix = The YAML file is saved to{" "}
 notebook-file-could-not-read = Could not read { $name }
 notebook-file-loading = Loading { $name }...
 notebook-file-missing-source = Missing source file

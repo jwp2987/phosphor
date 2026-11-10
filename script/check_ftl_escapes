@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#
+# Fail if a Fluent (.ftl) file contains a backslash escape that Fluent does not have.
+#
+# WHY
+# ---
+# Fluent pattern text has no backslash escapes: `\n` in a value is a backslash and
+# an `n`, and that is what the user sees ("...to save.\nNew requests..." in
+# Settings > Network, the launch-config save modal, the onboarding callout: #1842).
+# The strings were ported from Rust literals, where `\n` is a line break, and
+# nothing complains: the key resolves, the text renders, every test passes.
+#
+# WHAT IS CHECKED
+# ---------------
+# Every tracked `*.ftl` file, every line that is not a comment: no `\n`, `\t` or
+# `\r`. A line break is written as a real one (a multiline value; a blank line
+# inside it is kept):
+#
+#     key =
+#         First paragraph.
+#
+#         Second paragraph.
+#
+# A string that must SHOW a backslash followed by n, t or r (a Windows path such
+# as C:\temp included: the guard cannot tell it from a mistake) writes the
+# backslash as a Fluent string literal, `{"\\"}`, so the file has `{"\\"}temp`
+# or `{"\\n"}`; a doubled backslash is not reported.
+#
+# Exit 0 = clean, 1 = findings (printed as file:line: text), 2 = cannot run.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ftl escapes: FAILED (python3 not available; this guard cannot run)" >&2
+    exit 2
+fi
+
+python3 - "$@" <<'PY'
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ESCAPE = re.compile(r"(?<!\\)\\[ntr]")
+
+
+def findings(text):
+    """(line number, line) for every non-comment line with a backslash n, t or r that is not itself escaped"""
+    out = []
+    for number, line in enumerate(text.split("\n"), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        if ESCAPE.search(line):
+            out.append((number, line))
+    return out
+
+
+def selftest():
+    assert findings("a = one\\ntwo") == [(1, "a = one\\ntwo")]
+    assert findings("a = \\nlead") and findings("a = tab\\there") and findings("a = cr\\r")
+    assert findings("a =\n    one\n\n    two\n") == []
+    assert findings("# a comment about \\n\na = fine") == []
+    assert findings('a = shows {"\\\\n"} literally') == []
+    assert findings("a = C:\\Users\\Public") == []
+    assert findings("a = C:\\temp\\new")        # a path with \t or \n is reported too: write it {"\\t"}emp
+    assert findings("a = ok\nb = bad\\n") == [(2, "b = bad\\n")]
+
+
+selftest()
+if "--self-test" in sys.argv[1:]:
+    print("ftl escapes: self-test ok")
+    sys.exit(0)
+
+try:
+    listed = subprocess.run(["git", "ls-files", "-z", "--", "*.ftl"], capture_output=True, check=True).stdout
+except (OSError, subprocess.CalledProcessError) as err:
+    print("ftl escapes: FAILED (cannot list tracked files: %s)" % err, file=sys.stderr)
+    sys.exit(2)
+files = [Path(name.decode()) for name in listed.split(b"\0") if name]
+if not files:
+    print("ftl escapes: FAILED (no tracked .ftl file found; the guard would pass on nothing)", file=sys.stderr)
+    sys.exit(2)
+
+bad = 0
+for path in files:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as err:
+        print("ftl escapes: FAILED (cannot read %s: %s)" % (path, err), file=sys.stderr)
+        sys.exit(2)
+    for number, line in findings(text):
+        bad += 1
+        print("%s:%d: %s" % (path, number, line[:160]))
+
+if bad:
+    print("ftl escapes: FAILED (%d line(s) with a literal backslash escape; Fluent shows it as typed. "
+          "Write a real line break, see the header of script/check_ftl_escapes)" % bad, file=sys.stderr)
+    sys.exit(1)
+print("ftl escapes: ok (%d files)" % len(files))
+PY

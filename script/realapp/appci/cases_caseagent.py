@@ -548,6 +548,81 @@ def c_routing_table(ctx, r):
     ctx.reset()
 
 
+# ---------------------------------------------------------------- #1980: a mistyped command typed in an agent conversation
+# In a conversation an unknown first word one edit from a command, on a line shaped like that command's, runs in the shell (which prints "command not
+# found") instead of going to the model: rule `mistyped-command-in-conversation (#1980)` (routing.rs reads_as_mistyped_command). The first two are a
+# subcommand CLI plus its own subcommand; the third is near a curated command word with no English argument. The prose twins keep going to the agent.
+TYPO_LINES = ["gti status", "dokcer ps", "gerp -rn foo foo.txt"]
+TYPO_PROSE_LINES = ["gti is broken again"]
+TYPO_RULE = "mistyped-command-in-conversation"
+# keystroke- or enter-stage routing rows (ROUTE_RE reads the enter stage only; a line whose keystroke verdict had already settled logs no enter row)
+ANY_ROUTE_RE = re.compile(r'(keystroke|enter): (\w+) by (.*?) \((\w+), head "(.*?)", (\d+) bytes\)')
+
+
+def typo_rows(text, line):
+    """the routing rows (either stage) an app-log excerpt has for `line`: same first word and byte length, in order"""
+    head = line.split()[0]
+    return [dict(stage=m.group(1), route=m.group(2), rule=m.group(3), surface=m.group(4)) for m in ANY_ROUTE_RE.finditer(text or "")
+            if m.group(5) == head and int(m.group(6)) == len(line.encode())]
+
+
+def typo_verdict(kind, dest, surface, rule):
+    """(ok, note) for one typed line, or None when it was not typed in a conversation (the rule is for that surface only; the plain terminal leaves
+    an unknown head to the classifier). kind 'typo' must reach the shell and nothing else; 'prose' must go to the agent. A typo that reached the shell
+    by another rule (its head is installed on this machine, e.g. the `gti` joke program) passes with a note: the case cannot prove #1980 with it."""
+    if surface != "AgentConversation":
+        return None
+    if kind == "prose":
+        return dest == "agent", None
+    if dest != "shell":
+        return False, None
+    if rule and not rule.startswith(TYPO_RULE):
+        return True, "reached the shell by %s, not by the #1980 rule (is the word a command on this machine?)" % rule
+    return True, None
+
+
+@case("routing_typo_head", modes=("agent",), order=49, gui=True)
+def c_routing_typo_head(ctx, r):
+    """#1980. Agent mode: mistyped commands typed in the conversation (10-25 ms/key, instant Enter) must reach the shell with the exact line in rec.log
+    (the shell then says "command not found"), by the rule the app logs; a sentence with the same mistyped first word must go to the agent and never
+    reach the shell. A line typed while no conversation is the surface has no verdict (noted); with none typed in a conversation the case skips."""
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.skip("no app log at %s: the routing surface and rule cannot be read" % ctx.log_path)
+    open(os.path.join(ctx.W, "foo.txt"), "w").write("foo\nbar\n")
+    results, judged = [], 0
+    for line, kind in [(l, "typo") for l in TYPO_LINES] + [(l, "prose") for l in TYPO_PROSE_LINES]:
+        ctx.reset()
+        off, mark = ctx.log_size(), ctx.cmd_mark()
+        type_fast(ctx, line)
+        if not ctx.until(lambda: [c for c in ctx.cmds_since(mark) if c == line], 3.0 if kind == "typo" else 1.2):
+            time.sleep(0.6)
+        excerpt = ctx.log_since(off)
+        rows = typo_rows(excerpt, line)
+        last = rows[-1] if rows else None
+        reached_shell = any(c == line for c in ctx.cmds_since(mark))
+        dest = classify_dest(reached_shell, [x for x in rows if x["stage"] == "enter"] or rows, enter_begin_types(excerpt))
+        surface = last["surface"] if last else None
+        rule = last["rule"] if last else None
+        verdict = typo_verdict(kind, dest, surface, rule)
+        results.append(dict(line=line, kind=kind, got=dest, surface=surface, rule=rule, stage=last["stage"] if last else None))
+        if verdict is None:
+            r.note("%r: no verdict, surface %s (went to %s by %s)" % (line, surface, dest, rule))
+        else:
+            judged += 1
+            ok, why = verdict
+            r.check(ok, "%r (%s) went to %s by %s (surface %s); the shell received %r" % (line, kind, dest, rule, surface, [c for c in ctx.cmds_since(mark)][:2]))
+            if why:
+                r.note("%r %s" % (line, why))
+        if dest == "agent":
+            ctx.be.key("ctrl+c")            # do not leave a model request running
+            time.sleep(0.4)
+    ctx.shot("routing_typo_head_end")
+    r.metric("typo_rows", results)
+    ctx.reset()
+    if not judged:
+        r.skip("no line was typed with an agent conversation as the routing surface (rows: %s)" % [(x["line"], x["surface"]) for x in results])
+
+
 # ---------------------------------------------------------------- agent input exactness and mid-session mode switches (#1510)
 # The app logs `hop=enter_begin deferred=.. buffer=<Debug string> input_type=Shell|AI` for every Enter (the text only because the harness
 # sets WARP_INPUT_ORDER_LOG_TEXT=1; without it `buffer=<N chars>`), so what the agent input HELD at Enter is machine-readable from the log:

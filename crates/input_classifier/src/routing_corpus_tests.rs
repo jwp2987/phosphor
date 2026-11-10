@@ -382,6 +382,7 @@ fn routing_context(case: &Case, at_enter: bool) -> RoutingContext {
             Typeahead::None => RoutingTypeahead::None,
             Typeahead::Running => RoutingTypeahead::Running,
         },
+        head_near_installed_command: false,
     }
 }
 
@@ -623,6 +624,7 @@ fn every_rule_names_itself() {
         Rule::ShellStructureUnknownHead,
         Rule::RanBefore,
         Rule::NoEvidenceInConversation,
+        Rule::MistypedCommandInConversation,
         Rule::UnknownHeadInConversation,
         Rule::EvidenceInConversation,
         Rule::QuestionHead,
@@ -745,6 +747,7 @@ fn long_lines_route_like_their_short_forms() {
             ran_before_exactly: false,
             denylisted: false,
             typeahead: RoutingTypeahead::None,
+            head_near_installed_command: false,
         }
     }
     fn unparsed(text: &str) -> ParsedTokensSnapshot {

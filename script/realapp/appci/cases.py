@@ -46,6 +46,8 @@ PROVING = (
     "keyring_unavailable_startup", "cb_report_problem", "zero_network_startup", "claude_plugin_offline", "agent_plugins_offline",
     "subshell_sh_probe", "subshell_ready_rc_questions", "subshell_ready_vim_typeahead", "subshell_ready_unsupported_tcsh", "subshell_ready_secret_after_prompt",
     "ctrl_c_flood_ab",
+    # #1980: a mistyped command typed in an agent conversation runs in the shell ("command not found"), a sentence with the same first word does not
+    "routing_typo_head",
     # #1848: the macOS key frame drawn at the end of the key press, on vs off in one run (key -> paint, kl3)
     "latency_paint_ab",
     # #1962: a typed character re-renders only the views it changed, on vs off in one run (hop=key_frame_build views= / render_ms)

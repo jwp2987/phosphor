@@ -804,6 +804,27 @@ def latency_cases_have_a_sample_floor_and_flood_line():
 
 
 @check
+def routing_typo_head_pure_pieces():
+    # #1980: rows of either stage for the typed line only (same head, same byte length), and the per-surface verdict
+    log = ('D keystroke: Shell by mistyped-command-in-conversation (#1980) (AgentConversation, head "gti", 10 bytes)\n'
+           'D enter: Shell by mistyped-command-in-conversation (#1980) (AgentConversation, head "gti", 10 bytes)\n'
+           'D enter: Agent by request-shape (#834/#965) (AgentConversation, head "gti", 19 bytes)\n'
+           'D enter: Shell by installed-head (#906/#964) (PlainTerminal, head "ls", 6 bytes)\n')
+    rows = ca.typo_rows(log, "gti status")
+    assert [x["stage"] for x in rows] == ["keystroke", "enter"] and rows[-1]["rule"].startswith(ca.TYPO_RULE) and rows[-1]["surface"] == "AgentConversation"
+    assert [x["route"] for x in ca.typo_rows(log, "gti is broken again")] == ["Agent"] and ca.typo_rows(log, "dokcer ps") == [] and ca.typo_rows("", "gti status") == []
+    v = ca.typo_verdict
+    assert v("typo", "shell", "AgentConversation", "mistyped-command-in-conversation (#1980)") == (True, None)
+    assert v("typo", "agent", "AgentConversation", "unknown-head-in-conversation (#935)") == (False, None)
+    assert v("typo", "BOTH", "AgentConversation", None) == (False, None) and v("typo", "lost", "AgentConversation", None) == (False, None)
+    ok, why = v("typo", "shell", "AgentConversation", "evidence-in-conversation (#1183)")
+    assert ok and "evidence-in-conversation" in why
+    assert v("prose", "agent", "AgentConversation", "request-shape (#834/#965)") == (True, None) and v("prose", "shell", "AgentConversation", None) == (False, None)
+    assert v("typo", "shell", "PlainTerminal", "model") is None and v("typo", "agent", None, None) is None
+    assert "routing_typo_head" in cases.PROVING and [c for c in cases.CASES if c["name"] == "routing_typo_head"][0]["modes"] == ("agent",)
+
+
+@check
 def r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window():
     # the r18d2 failures: find the bug in main.rs ran in the shell inside a conversation by the #1183 evidence rule (main.rs is data-shaped)
     w = ca.ambiguous_want

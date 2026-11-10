@@ -20,19 +20,19 @@
 //! sentence (owner decision #964). `PHOSPHOR_ROUTING_V1=1` keeps the previous rule set
 //! (`BlocklistAIInputModel` reads it; this module does not).
 
-use natural_language_detection::is_ordinary_english_word;
+use natural_language_detection::{WordDb, is_ordinary_english_word, is_word};
 use warp_completer::ParsedTokensSnapshot;
 
 use super::{
     AMBIGUOUS_LONE_HEADS, FREE_TEXT_ARG_HEADS, QUESTION_HEADS, REQUEST_OPENER_HEADS,
-    SHELL_WORD_TERMINATORS, STRONG_PROSE_WORDS, ShellWord, WRAPPER_HEADS,
-    buffer_has_prose_colon_shape, effective_head_chain, effective_head_index,
+    SHELL_WORD_TERMINATORS, STRONG_PROSE_WORDS, ShellWord, UNAMBIGUOUS_SHELL_COMMAND_WORDS,
+    WRAPPER_HEADS, buffer_has_prose_colon_shape, effective_head_chain, effective_head_index,
     ends_in_sentence_punctuation, has_clear_shell_structure_for_unknown_head,
     has_no_prose_evidence, has_prose_veto_word, is_agent_follow_up_input, is_data_shaped_word,
     is_env_assignment_token, is_explicit_path_token, is_function_word, is_known_shell_command_word,
     is_misplaced_re_command_word, is_non_english_shell_name, is_one_off_natural_language_word,
     is_one_off_shell_command_keyword, is_prose_article, is_prose_word,
-    is_unambiguous_shell_command, lacks_command_evidence_in_agent_conversation,
+    is_unambiguous_shell_command, known_subcommands, lacks_command_evidence_in_agent_conversation,
     lone_word_belongs_to_agent, reads_as_prose_with_unknown_head, reads_as_request_to_agent,
     split_shell_words, starts_with_slash_command_not_path, strip_sentence_punctuation,
     strip_trailing_comment, takes_free_text, word_basename,
@@ -96,6 +96,10 @@ pub struct RoutingContext {
     /// Whether the first word is in the user's autodetection denylist.
     pub denylisted: bool,
     pub typeahead: Typeahead,
+    /// #1980: whether the first word is one edit away from a command the session knows
+    /// ([`mistyped_head_candidate`] and [`is_near_a_command`] over the session's command set).
+    /// `false` when the caller did not look; the rule then has its built-in command sets only.
+    pub head_near_installed_command: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,6 +152,10 @@ pub enum Rule {
     RanBefore,
     /// In a conversation, no positive evidence that the line is a command (#1183).
     NoEvidenceInConversation,
+    /// In a conversation, a head the session does not know that is one edit away from a command,
+    /// on a line shaped like that command's (`gti status`): the shell runs it and says `command
+    /// not found` (#1980).
+    MistypedCommandInConversation,
     /// In a conversation, a head the session does not know and no shell data around it (#935).
     UnknownHeadInConversation,
     /// In a conversation, evidence of a command and nothing that reads as English (#1183).
@@ -186,6 +194,7 @@ impl std::fmt::Display for Rule {
             Rule::ShellStructureUnknownHead => "shell-structure-unknown-head (#1560)",
             Rule::RanBefore => "ran-before (#1203)",
             Rule::NoEvidenceInConversation => "no-evidence-in-conversation (#1183)",
+            Rule::MistypedCommandInConversation => "mistyped-command-in-conversation (#1980)",
             Rule::UnknownHeadInConversation => "unknown-head-in-conversation (#935)",
             Rule::EvidenceInConversation => "evidence-in-conversation (#1183)",
             Rule::QuestionHead => "question-head (#1234)",
@@ -402,6 +411,13 @@ pub fn route(input: &ParsedTokensSnapshot, ctx: &RoutingContext) -> Decision {
             if closes_with_please(args) && !has_shell_structure(text) {
                 return Decision::agent(Rule::UnknownHeadInConversation);
             }
+            // #1980: a typo of a command (`gti status`) is the shell's: it says `command not
+            // found` where the user sees it, instead of the line going to the model.
+            if !multi_line
+                && reads_as_mistyped_command(head, args, text, ctx.head_near_installed_command)
+            {
+                return Decision::shell(Rule::MistypedCommandInConversation);
+            }
             // Shell data around an unknown head (`mytool --json`) is the classifier's call, as
             // before; bare words around it are a message to the agent.
             if args.iter().any(is_data_shaped_word) || has_shell_structure(text) {
@@ -491,6 +507,173 @@ fn closes_with_please(args: &[ShellWord]) -> bool {
         && args.last().is_some_and(|word| {
             !word.quoted && strip_sentence_punctuation(&word.text).eq_ignore_ascii_case("please")
         })
+}
+
+/// The subcommand CLIs of three or more letters that [`known_subcommands`] has a list for: the
+/// commands a mistyped head is compared with when the first argument is one of their subcommands
+/// (#1980). A unit test keeps the two in step.
+const SUBCOMMAND_CLIS: &[&str] = &[
+    "git",
+    "systemctl",
+    "loginctl",
+    "machinectl",
+    "docker",
+    "podman",
+    "nerdctl",
+    "cargo",
+    "npm",
+    "pnpm",
+    "yarn",
+    "bun",
+    "npx",
+    "kubectl",
+    "brew",
+    "apt",
+    "apt-get",
+    "apt-cache",
+    "dnf",
+    "yum",
+    "zypper",
+    "pacman",
+    "pip",
+    "pip3",
+    "pipx",
+    "poetry",
+    "helm",
+    "snap",
+    "flatpak",
+    "vagrant",
+    "terraform",
+    "tofu",
+];
+
+/// The shortest command a mistyped head is compared with, and the shortest head compared with
+/// anything but a subcommand CLI: every two-letter word is one edit from some two-letter command.
+const MIN_TYPO_COMMAND_LEN: usize = 3;
+
+/// The longest head looked at as a typo; no command name is longer.
+const MAX_TYPO_HEAD_LEN: usize = 32;
+
+/// Whether `a` and `b` are different and one edit apart: one byte substituted, inserted or
+/// deleted, or two adjacent bytes swapped (`gti`/`git`, `gitt`/`git`, `gt`/`git`, `gir`/`git`).
+/// Bytewise and case-sensitive, linear in the shorter word.
+pub fn is_one_edit_apart(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    if long.len() - short.len() > 1 {
+        return false;
+    }
+    let prefix = short
+        .iter()
+        .zip(long.iter())
+        .take_while(|(x, y)| x == y)
+        .count();
+    if short.len() == long.len() {
+        if prefix == short.len() {
+            return false;
+        }
+        if short[prefix + 1..] == long[prefix + 1..] {
+            return true;
+        }
+        return prefix + 1 < short.len()
+            && short[prefix] == long[prefix + 1]
+            && short[prefix + 1] == long[prefix]
+            && short[prefix + 2..] == long[prefix + 2..];
+    }
+    short[prefix..] == long[prefix + 1..]
+}
+
+/// Whether `head` could be a mistyped command name (#1980): 2 to [`MAX_TYPO_HEAD_LEN`] lowercase
+/// ASCII letters, digits, `-` or `_` starting with a letter, and not a word a person would open a
+/// message with (an English or StackOverflow-vocabulary word, a question word, a request opener,
+/// a one-off natural-language word, an ambiguous lone head).
+fn is_typo_candidate_word(head: &str) -> bool {
+    (2..=MAX_TYPO_HEAD_LEN).contains(&head.len())
+        && head.starts_with(|c: char| c.is_ascii_lowercase())
+        && head
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+        && !QUESTION_HEADS.contains(&head)
+        && !REQUEST_OPENER_HEADS.contains(&head)
+        && !AMBIGUOUS_LONE_HEADS.contains(&head)
+        && !is_one_off_natural_language_word(head)
+        && head != "please"
+        && !is_ordinary_english_word(head)
+        && !is_word(head, WordDb::StackOverflow)
+}
+
+/// The first word of `input` when it is worth comparing with the session's command set (#1980):
+/// the line has a second word, the completer did not describe the first one (a described head is
+/// a command, not a typo of one) and [`is_typo_candidate_word`] holds. `None` otherwise, so the
+/// caller does not walk the command set for a line the rule would not take anyway.
+pub fn mistyped_head_candidate(input: &ParsedTokensSnapshot) -> Option<&str> {
+    if head_token_described(input) {
+        return None;
+    }
+    let mut words = input.buffer_text.split_whitespace();
+    let head = words.next()?;
+    words.next()?;
+    (head.len() >= MIN_TYPO_COMMAND_LEN && is_typo_candidate_word(head)).then_some(head)
+}
+
+/// Whether `head` is one edit away from one of `commands` (names of [`MIN_TYPO_COMMAND_LEN`] or
+/// more bytes only). One pass, a length check and at most one byte comparison per name.
+pub fn is_near_a_command<'a>(head: &str, commands: impl IntoIterator<Item = &'a str>) -> bool {
+    head.len() >= MIN_TYPO_COMMAND_LEN
+        && commands.into_iter().any(|command| {
+            command.len() >= MIN_TYPO_COMMAND_LEN && is_one_edit_apart(head, command)
+        })
+}
+
+/// #1980: in a conversation, a line whose unknown head is a typo of a command and whose
+/// arguments are that command's kind (`gti status`, `dokcer ps`, `gerp -rn TODO src/`). The
+/// caller has established that the head is not installed, curated, a keyword or a path, and that
+/// the line does not close on `please`.
+///
+/// The head must be a typo candidate ([`is_typo_candidate_word`]) with at least one argument, on
+/// a line that does not end in `?` and has no prose veto word ([`has_prose_veto_word`]) and no
+/// [`STRONG_PROSE_WORDS`] member among the arguments. Then either
+///
+/// - the head is one edit from a [`SUBCOMMAND_CLIS`] member and the first argument is one of that
+///   CLI's [`known_subcommands`], or
+/// - the head has [`MIN_TYPO_COMMAND_LEN`] or more letters, is one edit from a curated command
+///   word or (`near_installed_command`) from a command the session knows, and no argument reads
+///   as an English word ([`is_prose_word`]): `helo world` and `lets go` stay with the agent.
+fn reads_as_mistyped_command(
+    head: &str,
+    args: &[ShellWord],
+    text: &str,
+    near_installed_command: bool,
+) -> bool {
+    let Some(first) = args.first() else {
+        return false;
+    };
+    if text.ends_with('?') || !is_typo_candidate_word(head) || has_prose_veto_word(head, args) {
+        return false;
+    }
+    if args.iter().any(|word| {
+        !word.quoted
+            && STRONG_PROSE_WORDS.contains(
+                &strip_sentence_punctuation(&word.text)
+                    .to_lowercase()
+                    .as_str(),
+            )
+    }) {
+        return false;
+    }
+    if !first.quoted
+        && SUBCOMMAND_CLIS.iter().any(|cli| {
+            is_one_edit_apart(head, cli)
+                && known_subcommands(cli)
+                    .is_some_and(|subcommands| subcommands.contains(&first.text.as_str()))
+        })
+    {
+        return true;
+    }
+    head.len() >= MIN_TYPO_COMMAND_LEN
+        && !args.iter().any(is_prose_word)
+        && (near_installed_command
+            || is_near_a_command(head, UNAMBIGUOUS_SHELL_COMMAND_WORDS.iter().copied()))
 }
 
 fn is_question_or_opener_head(head_lower: &str) -> bool {
@@ -1091,3 +1274,7 @@ fn is_capitalised_word(bare: &str) -> bool {
         && bare.len() >= 2
         && chars.all(|c| c.is_ascii_lowercase())
 }
+
+#[cfg(test)]
+#[path = "routing_tests.rs"]
+mod tests;

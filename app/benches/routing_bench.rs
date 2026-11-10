@@ -54,6 +54,7 @@ fn context(surface: Surface) -> RoutingContext {
         ran_before_exactly: false,
         denylisted: false,
         typeahead: RoutingTypeahead::None,
+        head_near_installed_command: false,
     }
 }
 
