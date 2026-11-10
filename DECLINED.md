@@ -3010,7 +3010,11 @@ work to race and nothing drains the main queue, so such a read runs in place.
   `Cancelled`, as before. A reject of an action that is already running, and a reject that
   takes the command over, are stops. A follow-up the user asked for explicitly still goes out
   after a Reject; a Stop withdraws it (#1950) and drops a request stashed for the stopped call
-  (#1948). Calls of a reply whose stream was stopped between its
+  (#1948). **A typed prompt is never lost to that drop** (third part of the decision): when
+  the stashed request carries a prompt the user typed, it is still not sent, but its text
+  goes back into the input with a notice (`StashedPromptRestored`; appended after a draft,
+  never over it). Automatic stashed requests (a resume, a completion report, tool results)
+  are dropped as before. Calls of a reply whose stream was stopped between its
   end and its hand-off to the action queue get their cancelled results at once (#1946), and a
   conversation restored with unanswered tool calls is `Cancelled`, not `Success` (#1951).
   **Not changed:** a step nobody stopped (a tool cancelled itself, a command took a ^C, a

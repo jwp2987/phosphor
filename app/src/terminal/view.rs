@@ -7045,9 +7045,17 @@ impl TerminalView {
         }
         if let BlocklistAIControllerEvent::QueuedPromptsReleased { conversation_id } = event {
             // A blocked action ended with no follow-up request, so no turn end will drain the
-            // queue (#1026). Restore the head into the input like every other cancel; a Reject
-            // and a Stop look the same here, so nothing is sent on the user's behalf.
+            // queue (#1026). Restore the head into the input like every other cancel: the turn
+            // ended cancelled (a Stop, or a Reject with nothing to send back), so nothing is
+            // sent on the user's behalf.
             self.drain_queued_prompts(*conversation_id, FinishReason::Cancelled, ctx);
+        }
+        if let BlocklistAIControllerEvent::StashedPromptRestored {
+            conversation_id,
+            text,
+        } = event
+        {
+            self.restore_stashed_prompt(*conversation_id, text, ctx);
         }
         if let BlocklistAIControllerEvent::ResumedOnBlockCompletion { conversation_id } = event {
             // The same record `on_user_block_completed` keeps for its own resume: the
@@ -31237,6 +31245,40 @@ impl TerminalView {
             rows.len()
         );
         self.put_queue_rows_in_input(rows, notice, ctx);
+    }
+
+    /// Puts a prompt the user typed back into this view's input, with a notice, when the request
+    /// that carried it was dropped unsent (#1948, owner decision 2026-11-09: it was waiting
+    /// behind a tool call when the user stopped the conversation, or a newer request replaced
+    /// it). The prompt is in no exchange, so this is the only place it survives. Appended on a
+    /// line of its own when the input already holds text, as for dropped queue rows (#1026);
+    /// never sent from here. Also done for a closed pane: the text is there if the close is
+    /// undone.
+    fn restore_stashed_prompt(
+        &mut self,
+        conversation_id: AIConversationId,
+        text: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if text.trim().is_empty() {
+            return;
+        }
+        let existing = self.input.as_ref(ctx).buffer_text(ctx);
+        let combined = if existing.is_empty() {
+            text.to_owned()
+        } else {
+            format!("{existing}\n{text}")
+        };
+        self.input.update(ctx, |input, ctx| {
+            input.replace_buffer_content(&combined, ctx);
+        });
+        self.notify_queue_notice(
+            Some(conversation_id),
+            "Your message was waiting for a tool call and was not sent; its text is back in \
+             the input."
+                .to_owned(),
+            ctx,
+        );
     }
 
     /// Appends the text (and prompt attachments) of `rows` to this view's input and shows

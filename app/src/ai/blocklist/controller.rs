@@ -544,6 +544,16 @@ pub enum BlocklistAIControllerEvent {
     /// to send back), and a cancelled turn never sends on the user's behalf.
     QueuedPromptsReleased { conversation_id: AIConversationId },
 
+    /// A request that carried the user's own typed prompt was waiting behind a live tool call
+    /// (`pending_byop_requests`) and was dropped unsent: the user stopped the conversation, the
+    /// pane was closed, or a newer request took its place. The prompt is in no exchange, so the
+    /// terminal view puts `text` back into the input with a notice: a typed prompt is never
+    /// lost (#1948, owner decision 2026-11-09). Never emitted for an automatic request.
+    StashedPromptRestored {
+        conversation_id: AIConversationId,
+        text: String,
+    },
+
     /// Emitted when the export-to-file slash command is executed.
     ExportConversationToFile { filename: Option<String> },
 
@@ -1069,6 +1079,21 @@ struct PendingByopRequest {
     is_queued_prompt: bool,
 }
 
+/// The prompt the user typed that a stashed request carries, as they would type it again (a
+/// plan-mode prompt keeps its `/plan` prefix); `None` for an automatic request (a resume, a
+/// completion report, tool results alone). Several typed prompts in one request come back one
+/// per line. This is what decides whether dropping a stashed request must put text
+/// back into the input (#1948, owner decision 2026-11-09).
+pub(crate) fn stashed_user_prompt(request_input: &RequestInput) -> Option<String> {
+    let prompts = request_input
+        .all_inputs()
+        .filter(|input| input.is_user_query())
+        .filter_map(|input| input.user_query())
+        .filter(|prompt| !prompt.trim().is_empty())
+        .collect_vec();
+    (!prompts.is_empty()).then(|| prompts.join("\n"))
+}
+
 /// Everything `send_query` has decided by the time it needs the attachments' content, carried
 /// across the (off-thread) attachment read.
 struct UserQuerySend {
@@ -1306,26 +1331,32 @@ impl BlocklistAIController {
             // follow-up, so a step whose last live call ended cancelled (plan `None`) dropped
             // the stashed prompt on the floor. A user stop is the exception: Stop means stop
             // (`cancel_conversation_progress` already dropped the stash for it), and a shell
-            // exit ends the conversation as an error and sends nothing either. A user's own
-            // submit never waits behind a card the user can reject -- `send_query` cancels
-            // every pending action first -- so the stash a stop drops is an automatic request
-            // (a resume, a completion report).
+            // exit ends the conversation as an error and sends nothing either. The stash a stop
+            // drops is normally an automatic request (a resume, a completion report): a user's
+            // own submit cancels every pending action first (`send_query`). When it does carry
+            // the user's typed prompt (the call it waited on was still winding down), the
+            // prompt is not sent and not lost: its text goes back into the input
+            // (`drop_stashed_byop_request`, owner decision 2026-11-09).
             // A Reject is not a stop: when it sends the step's results back (an earlier result
             // had finished), the stashed request is the one request that carries them. A Reject
             // with nothing to report ends the turn, and an automatic request stashed behind
-            // the rejected card must not restart it.
+            // the rejected card must not restart it; a stashed prompt the user typed still
+            // goes out, the reject having answered the card it waited on.
+            let stash_has_user_prompt = me
+                .pending_byop_requests
+                .get(conversation_id)
+                .is_some_and(|pending| stashed_user_prompt(&pending.request_input).is_some());
             let turn_was_stopped = cancellation_reason.is_some_and(|reason| {
                 reason.is_user_stop()
                     || reason.conversation_outcome() == CancellationOutcome::FinalizedExternally
-                    || (reason.is_rejected() && plan.follow_up.is_none())
+                    || (reason.is_rejected() && plan.follow_up.is_none() && !stash_has_user_prompt)
             });
             if turn_was_stopped {
-                if me.pending_byop_requests.remove(conversation_id).is_some() {
-                    log::info!(
-                        "[byop-readiness] dropping the request stashed for conversation \
-                         {conversation_id:?}: the turn it waited on was stopped"
-                    );
-                }
+                me.drop_stashed_byop_request(
+                    *conversation_id,
+                    "the turn it waited on was stopped",
+                    ctx,
+                );
             } else if me.flush_pending_byop_request_after_finished_action(*conversation_id, ctx) {
                 return;
             }
@@ -1871,7 +1902,9 @@ impl BlocklistAIController {
         conversation_id: AIConversationId,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.pending_byop_requests.remove(&conversation_id);
+        // A stashed prompt the user typed goes back into this pane's input (hidden while the
+        // pane is closed; it is there if the close is undone) rather than vanish (#1948).
+        self.drop_stashed_byop_request(conversation_id, "the pane was closed", ctx);
         self.pending_passive_follow_ups.remove(&conversation_id);
         self.pending_passive_suggestion_results
             .remove(&conversation_id);
@@ -3356,6 +3389,43 @@ impl BlocklistAIController {
         }
 
         self.pending_passive_follow_ups.remove(&conversation_id);
+    }
+
+    /// Drops the request stashed for `conversation_id`, if any, without sending it (`why` is for
+    /// the log). An automatic request just goes. One that carries a prompt the user typed is
+    /// never lost (#1948, owner decision 2026-11-09): the prompt was not sent and is in no
+    /// exchange, so its text is handed to the terminal view, which puts it back into the input
+    /// with a notice (`StashedPromptRestored`). Returns whether a request was dropped.
+    fn drop_stashed_byop_request(
+        &mut self,
+        conversation_id: AIConversationId,
+        why: &str,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let Some(pending) = self.pending_byop_requests.remove(&conversation_id) else {
+            return false;
+        };
+        match stashed_user_prompt(&pending.request_input) {
+            Some(text) => {
+                log::info!(
+                    "[byop-readiness] not sending the request stashed for conversation \
+                     {conversation_id:?} ({why}); it carries the user's prompt ({} chars), \
+                     which goes back into the input",
+                    text.chars().count()
+                );
+                ctx.emit(BlocklistAIControllerEvent::StashedPromptRestored {
+                    conversation_id,
+                    text,
+                });
+            }
+            None => {
+                log::info!(
+                    "[byop-readiness] dropping the request stashed for conversation \
+                     {conversation_id:?}: {why}"
+                );
+            }
+        }
+        true
     }
 
     /// When a conversation's live action finishes, if that conversation previously
@@ -4965,8 +5035,11 @@ impl BlocklistAIController {
         };
         // At the start of a new request round, first drop any old request stashed
         // earlier due to readiness Pending; if this preflight hits
-        // PendingToolResults again, it'll be written back below.
-        self.pending_byop_requests.remove(&conversation_id);
+        // PendingToolResults again, it'll be written back below. (A flush takes its request
+        // out of the stash before it gets here, so anything found now is a different, older
+        // request that this one replaces. If that one carried a prompt the user typed, the
+        // text goes back into the input instead of being lost, #1948.)
+        self.drop_stashed_byop_request(conversation_id, "a newer request replaced it", ctx);
 
         // Make sure there's no existing response stream for the conversation. If
         // there is, something has gone wrong.
@@ -5357,20 +5430,17 @@ impl BlocklistAIController {
         // sends a request after a Stop / Ctrl-C / Delete / submit elsewhere. A requested
         // passive follow-up (#1950) used to survive here and turn a later Stop or Reject into
         // a `UserRequested` follow-up; a BYOP request stashed for a live call (#1948) would be
-        // flushed by the stopped call's own `FinishedAction`. Both go.
+        // flushed by the stopped call's own `FinishedAction`. Both go. A stashed request that
+        // carries a prompt the user typed is not sent either, but its text goes back into the
+        // input: never lost (`drop_stashed_byop_request`).
         let stopped_by_user = reason.is_user_stop();
         if stopped_by_user {
             self.pending_passive_follow_ups.remove(&conversation_id);
-            if self
-                .pending_byop_requests
-                .remove(&conversation_id)
-                .is_some()
-            {
-                log::info!(
-                    "[byop-readiness] dropping the request stashed for conversation \
-                     {conversation_id:?}: the user stopped the conversation ({reason})"
-                );
-            }
+            self.drop_stashed_byop_request(
+                conversation_id,
+                &format!("the user stopped the conversation ({reason})"),
+                ctx,
+            );
         }
 
         if !self

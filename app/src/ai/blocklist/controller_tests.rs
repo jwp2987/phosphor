@@ -3423,3 +3423,277 @@ fn file_tools_are_withdrawn_for_a_server_without_file_context_and_offered_for_a_
         !super::SessionContext::new_warpified_remote_for_test(true).is_remote_without_file_tools()
     );
 }
+
+/// #1948, owner decision 2026-11-09: a request stashed behind a live tool call that carries the
+/// user's own typed prompt is never dropped on Stop. It is not sent (Stop means stop), and its
+/// text goes back into the input with a notice. An automatic stashed request is still dropped.
+mod stashed_prompt {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use super::super::{PendingByopRequest, RequestInput, stashed_user_prompt};
+    use super::*;
+    use crate::ai::agent::conversation::AIConversationId;
+
+    fn user_query(query: &str, user_query_mode: UserQueryMode) -> AIAgentInput {
+        AIAgentInput::UserQuery {
+            query: query.to_owned(),
+            context: Arc::from(Vec::<AIAgentContext>::new()),
+            static_query_type: None,
+            referenced_attachments: HashMap::new(),
+            user_query_mode,
+            running_command: None,
+            intended_agent: None,
+        }
+    }
+
+    fn resume() -> AIAgentInput {
+        AIAgentInput::ResumeConversation {
+            context: Arc::from(Vec::<AIAgentContext>::new()),
+        }
+    }
+
+    fn command_result() -> AIAgentInput {
+        AIAgentInput::ActionResult {
+            result: crate::ai::agent::AIAgentActionResult {
+                id: AIAgentActionId::from("call_1".to_owned()),
+                task_id: TaskId::new("root-task".to_owned()),
+                result: crate::ai::agent::AIAgentActionResultType::RequestCommandOutput(
+                    crate::ai::agent::RequestCommandOutputResult::CancelledBeforeExecution,
+                ),
+            },
+            context: Arc::from(Vec::<AIAgentContext>::new()),
+        }
+    }
+
+    fn request_with(conversation_id: AIConversationId, inputs: Vec<AIAgentInput>) -> RequestInput {
+        RequestInput {
+            conversation_id,
+            input_messages: HashMap::from([(TaskId::new("root-task".to_owned()), inputs)]),
+            working_directory: None,
+            model_id: LLMId::from("test-model"),
+            coding_model_id: LLMId::from("test-coding-model"),
+            cli_agent_model_id: LLMId::from("test-cli-agent-model"),
+            computer_use_model_id: LLMId::from("test-computer-use-model"),
+            shared_session_response_initiator: None,
+            request_start_ts: chrono::Local::now(),
+            supported_tools_override: None,
+        }
+    }
+
+    fn stash(request_input: RequestInput) -> PendingByopRequest {
+        PendingByopRequest {
+            request_input,
+            query_metadata: None,
+            default_to_follow_up_on_success: false,
+            recovery: RecoveryBudget::fresh(),
+            is_queued_prompt: false,
+        }
+    }
+
+    /// Which stashed requests carry a prompt the user typed, and the text that comes back.
+    #[test]
+    fn only_a_typed_prompt_counts_as_the_users_own() {
+        let conversation_id = AIConversationId::new();
+        let typed = request_with(
+            conversation_id,
+            vec![
+                command_result(),
+                user_query("fix the failing test", UserQueryMode::Normal),
+            ],
+        );
+        assert_eq!(
+            stashed_user_prompt(&typed).as_deref(),
+            Some("fix the failing test")
+        );
+        // A plan-mode prompt comes back the way the user would type it again.
+        let planned = request_with(
+            conversation_id,
+            vec![user_query("refactor the parser", UserQueryMode::Plan)],
+        );
+        let restored = stashed_user_prompt(&planned).expect("a typed prompt");
+        assert!(restored.ends_with("refactor the parser"), "{restored:?}");
+        assert_ne!(restored, "refactor the parser", "the plan prefix is kept");
+        // Automatic requests: tool results alone, a resume, nothing at all.
+        for automatic in [vec![command_result()], vec![resume()], vec![]] {
+            assert_eq!(
+                stashed_user_prompt(&request_with(conversation_id, automatic)),
+                None
+            );
+        }
+        // A blank prompt is nothing to put back.
+        let blank = request_with(
+            conversation_id,
+            vec![user_query("  ", UserQueryMode::Normal)],
+        );
+        assert_eq!(stashed_user_prompt(&blank), None);
+    }
+
+    type Restored = Rc<RefCell<Vec<(AIConversationId, String)>>>;
+    type Terminal = warpui::ViewHandle<crate::terminal::TerminalView>;
+
+    fn setup(app: &mut App) -> (Terminal, AIConversationId, Restored) {
+        initialize_app_for_terminal_view(app);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+        // The restore shows a notice; production registers the toast stack.
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(app, None);
+        let terminal_view_id = terminal.read(app, |view, _| view.id());
+        let conversation_id = BlocklistAIHistoryModel::handle(app).update(app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let controller = terminal.read(app, |view, _| view.ai_controller().clone());
+        let restored: Restored = Rc::new(RefCell::new(Vec::new()));
+        let restored_sub = restored.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&controller, move |_, event, _| {
+                if let BlocklistAIControllerEvent::StashedPromptRestored {
+                    conversation_id,
+                    text,
+                } = event
+                {
+                    restored_sub
+                        .borrow_mut()
+                        .push((*conversation_id, text.clone()));
+                }
+            });
+        });
+        (terminal, conversation_id, restored)
+    }
+
+    fn input_text(app: &App, terminal: &Terminal) -> String {
+        terminal.read(app, |view, ctx| view.input().as_ref(ctx).buffer_text(ctx))
+    }
+
+    /// Stashes `inputs` as the conversation's waiting request, types `draft` into the input,
+    /// cancels with `reason`, and returns (stash still held, restore events, input text, a
+    /// stream was opened).
+    fn cancel_with_stash(
+        inputs: Vec<AIAgentInput>,
+        draft: &'static str,
+        reason: CancellationReason,
+    ) -> (bool, Vec<String>, String, bool) {
+        App::test((), |mut app| async move {
+            let (terminal, conversation_id, restored) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            if !draft.is_empty() {
+                terminal.update(&mut app, |view, ctx| {
+                    view.input().update(ctx, |input, ctx| {
+                        input.replace_buffer_content(draft, ctx);
+                    });
+                });
+            }
+            let (still_stashed, stream_opened) = controller.update(&mut app, |controller, ctx| {
+                controller.pending_byop_requests.insert(
+                    conversation_id,
+                    stash(request_with(conversation_id, inputs)),
+                );
+                controller.cancel_conversation_progress(conversation_id, reason, ctx);
+                (
+                    controller
+                        .pending_byop_requests
+                        .contains_key(&conversation_id),
+                    controller.has_active_stream_for_conversation(conversation_id, ctx),
+                )
+            });
+            let events: Vec<String> = restored
+                .borrow()
+                .iter()
+                .map(|(restored_for, text)| {
+                    assert_eq!(*restored_for, conversation_id);
+                    text.clone()
+                })
+                .collect();
+            let input = input_text(&app, &terminal);
+            (still_stashed, events, input, stream_opened)
+        })
+    }
+
+    /// Stop with the user's prompt stashed: nothing is sent, the stash is gone, and the prompt
+    /// is back in the input. Fails on the code before this change, which dropped the stash and
+    /// the prompt with it (the input stayed empty and nothing said where the text went).
+    #[test]
+    fn stop_puts_a_stashed_typed_prompt_back_into_the_input() {
+        let (still_stashed, events, input, stream_opened) = cancel_with_stash(
+            vec![user_query("fix the failing test", UserQueryMode::Normal)],
+            "",
+            CancellationReason::ManuallyCancelled,
+        );
+        assert!(!still_stashed, "the stopped conversation keeps no stash");
+        assert!(!stream_opened, "Stop means stop: the request is not sent");
+        assert_eq!(
+            events,
+            vec!["fix the failing test".to_owned()],
+            "the typed prompt is handed back exactly once"
+        );
+        assert_eq!(input, "fix the failing test");
+    }
+
+    /// The restore never overwrites what the user is typing: the prompt goes on a line of its
+    /// own after the draft.
+    #[test]
+    fn the_restored_prompt_is_appended_to_a_draft() {
+        let (still_stashed, events, input, stream_opened) = cancel_with_stash(
+            vec![
+                command_result(),
+                user_query("and run the linter", UserQueryMode::Normal),
+            ],
+            "a draft",
+            CancellationReason::ManuallyCancelled,
+        );
+        assert!(!still_stashed);
+        assert!(!stream_opened);
+        assert_eq!(events, vec!["and run the linter".to_owned()]);
+        assert_eq!(input, "a draft\nand run the linter");
+    }
+
+    /// Deleting the conversation is a stop too, and the typed prompt still comes back, as the
+    /// queued prompts of a deleted conversation do (#1026).
+    #[test]
+    fn delete_puts_a_stashed_typed_prompt_back_into_the_input() {
+        let (still_stashed, events, input, stream_opened) = cancel_with_stash(
+            vec![user_query("fix the failing test", UserQueryMode::Normal)],
+            "",
+            CancellationReason::Deleted,
+        );
+        assert!(!still_stashed);
+        assert!(!stream_opened);
+        assert_eq!(events, vec!["fix the failing test".to_owned()]);
+        assert_eq!(input, "fix the failing test");
+    }
+
+    /// An automatic stashed request (tool results, a resume) is still dropped on Stop, silently:
+    /// nothing is sent, nothing is put into the input.
+    #[test]
+    fn stop_still_drops_an_automatic_stashed_request() {
+        let (still_stashed, events, input, stream_opened) = cancel_with_stash(
+            vec![command_result(), resume()],
+            "",
+            CancellationReason::ManuallyCancelled,
+        );
+        assert!(!still_stashed);
+        assert!(!stream_opened);
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(input, "");
+    }
+
+    /// A same-conversation follow-up is not a stop: the stash is left for the finishing call to
+    /// flush (#1948), neither dropped nor restored.
+    #[test]
+    fn a_follow_up_in_the_same_conversation_keeps_the_stash() {
+        let (still_stashed, events, input, _) = cancel_with_stash(
+            vec![user_query("keep going", UserQueryMode::Normal)],
+            "",
+            CancellationReason::FollowUpSubmitted {
+                is_for_same_conversation: true,
+            },
+        );
+        assert!(still_stashed);
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(input, "");
+    }
+}
