@@ -22400,6 +22400,7 @@ fn ssh_origin_of_an_in_band_submit_does_not_leak_to_a_later_raw_block() {
                     &ModelEvent::AfterBlockStarted {
                         block_id: BlockId::from("in-band-1579".to_string()),
                         command: "ls".to_owned(),
+                        reported_command: "ls".to_owned(),
                         is_for_in_band_command: true,
                     },
                     ctx,
@@ -32219,6 +32220,147 @@ fn a_non_ssh_command_starting_releases_the_window_by_event() {
             assert!(view.ssh_phase.armed());
             view.ssh_connect_gate = None;
             view.ssh_on_other_command_started(ctx);
+            assert!(!view.ssh_phase.armed());
+            assert_eq!(
+                view.ssh_phase.last_release(),
+                Some(crate::terminal::input_queue::SshRelease::OtherCommand)
+            );
+            assert_eq!(view.ssh_give_ups, 0);
+        });
+    });
+}
+
+/// #2013 (ssh_nested_typeahead, Linux Wayland round 9b): the decision itself. The submitted ssh's
+/// block is recognised by the Preexec hook's own report when the echo is polluted; everything else
+/// is left to the echoed text, as before.
+#[test]
+fn ssh_submit_is_recognised_in_its_started_block_by_the_hooks_report_not_the_echo() {
+    // The round 9b shape: the remote tty echoed the written line itself (clear-line key in caret
+    // notation), then the line editor echoed it again.
+    let polluted = "^Pssh fake\nssh fake";
+    assert!(crate::terminal::ssh::util::parse_interactive_ssh_command(polluted).is_none());
+    assert_eq!(
+        ssh_submit_running_in_started_block(polluted, Some("ssh fake"), "ssh fake"),
+        Some("ssh fake"),
+        "the hook reports the submitted command: the block is the ssh's"
+    );
+    assert_eq!(
+        ssh_submit_running_in_started_block(polluted, Some("ssh fake"), " ssh fake \n"),
+        Some("ssh fake"),
+        "surrounding white space in the report does not matter"
+    );
+    assert_eq!(
+        ssh_submit_running_in_started_block(polluted, Some("ssh fake"), "ssh -A fake"),
+        Some("ssh fake"),
+        "the shell expanded an alias: the report is still an interactive ssh"
+    );
+    // Another command's block: the stale-window rule (#983) still applies.
+    assert_eq!(
+        ssh_submit_running_in_started_block("ls", Some("ssh fake"), "ls"),
+        None
+    );
+    assert_eq!(
+        ssh_submit_running_in_started_block(polluted, Some("ssh fake"), "ls"),
+        None,
+        "a polluted echo alone proves nothing: the hook must report the ssh"
+    );
+    // A hook that reports no command: as before.
+    assert_eq!(
+        ssh_submit_running_in_started_block(polluted, Some("ssh fake"), ""),
+        None
+    );
+    // No submit is waiting for its block (a window armed at preexec, or a later block).
+    assert_eq!(
+        ssh_submit_running_in_started_block(polluted, None, "ssh fake"),
+        None
+    );
+    // A clean echo already shows the ssh: the echoed text is used, as before.
+    assert_eq!(
+        ssh_submit_running_in_started_block("ssh fake", Some("ssh fake"), "ssh fake"),
+        None
+    );
+}
+
+/// #2013: the window the user's ssh submit armed is NOT released as "another command started"
+/// when that ssh's own block starts with a polluted echo (the nested ssh of round 9b: its typed
+/// line was split between the kept-text banner and the inner shell). The block is taken as the
+/// ssh's: the window stays armed and the pending ssh is recorded from the submitted command.
+#[test]
+fn an_ssh_window_survives_its_own_block_start_with_a_polluted_echo() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh fake", ctx);
+            assert!(view.ssh_phase.armed());
+            assert_eq!(
+                view.ssh_connect_gate
+                    .as_ref()
+                    .and_then(|gate| gate.submitted_command.as_deref()),
+                Some("ssh fake")
+            );
+            let block_id = view.model.lock().active_block_id().clone();
+            view.handle_terminal_event(
+                &ModelEvent::AfterBlockStarted {
+                    block_id,
+                    command: "^Pssh fake\nssh fake".to_owned(),
+                    reported_command: "ssh fake".to_owned(),
+                    is_for_in_band_command: false,
+                },
+                ctx,
+            );
+            assert!(
+                view.ssh_connect_gate.is_some(),
+                "the window of the submitted ssh is still open"
+            );
+            assert!(view.ssh_phase.armed());
+            assert_ne!(
+                view.ssh_phase.last_release(),
+                Some(crate::terminal::input_queue::SshRelease::OtherCommand)
+            );
+            assert_eq!(
+                view.warpify_state.get_pending_ssh_host().as_deref(),
+                Some("fake"),
+                "the block was taken as the ssh's (from the submitted command)"
+            );
+            assert!(
+                view.ssh_connect_gate
+                    .as_ref()
+                    .is_some_and(|gate| gate.submitted_command.is_none()),
+                "taken once, by the first block that started"
+            );
+            assert_eq!(view.ssh_give_ups, 0);
+        });
+    });
+}
+
+/// #2013, the other side: #983's rule is unchanged. A block whose hook reports ANOTHER command
+/// ends the unmanaged window by event, also right after an ssh submit.
+#[test]
+fn an_ssh_window_is_still_released_when_another_commands_block_starts() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh fake", ctx);
+            assert!(view.ssh_phase.armed());
+            let block_id = view.model.lock().active_block_id().clone();
+            view.handle_terminal_event(
+                &ModelEvent::AfterBlockStarted {
+                    block_id,
+                    command: "ls".to_owned(),
+                    reported_command: "ls".to_owned(),
+                    is_for_in_band_command: false,
+                },
+                ctx,
+            );
+            assert!(view.ssh_connect_gate.is_none());
             assert!(!view.ssh_phase.armed());
             assert_eq!(
                 view.ssh_phase.last_release(),

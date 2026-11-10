@@ -44,7 +44,12 @@ pub enum Event {
     /// Send on DProtoHook::Preexec, but only for blocks after bootstrapping
     AfterBlockStarted {
         block_id: BlockId,
+        /// The block's command as the shell ECHOED it (the command grid). A screen read: a tty
+        /// that echoed the written bytes itself can add to it (#2013).
         command: String,
+        /// The command the Preexec hook itself reported (for bash only up to the first control
+        /// operator, see `PreexecValue::command`). Never read from the screen (#2013).
+        reported_command: String,
         is_for_in_band_command: bool,
     },
     /// Sent when a new block is created.
