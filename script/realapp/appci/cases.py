@@ -48,6 +48,8 @@ PROVING = (
     "ctrl_c_flood_ab",
     # #1848: the macOS key frame drawn at the end of the key press, on vs off in one run (key -> paint, kl3)
     "latency_paint_ab",
+    # #1962: a typed character re-renders only the views it changed, on vs off in one run (hop=key_frame_build views= / render_ms)
+    "latency_key_views_ab",
     # the ask_user_question card never hangs on "Preparing question..." (#1851)
     "agent_question_answer", "agent_question_cut", "agent_question_nodone", "agent_question_trunc", "agent_question_empty", "agent_question_slow",
     "agent_question_ctrl_c", "agent_question_steer", "agent_question_after_command", "agent_question_steer_at_end",
@@ -5825,6 +5827,7 @@ import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen prog
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
 import cases_ctrlc_ab  # noqa: E402,F401  (#1838: ctrl_c_flood_ab, the macOS blocked-frame gate on/off A/B)
 import cases_keyframe_ab  # noqa: E402,F401  (#1848: latency_paint_ab, the macOS key frame at the end of the key press on/off A/B)
+import cases_viewskip_ab  # noqa: E402,F401  (#1962: latency_key_views_ab, the per-view re-render skips on/off A/B)
 import cases_win_input  # noqa: E402,F401  (#1884/#1888/#1889: Windows input-parity cases: ssh wrapper variants, ps_ctrl_break, ps_fast_command_young_enter)
 import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)
 import cases_lab_helper  # noqa: E402,F401  (P10: helper lifecycle / capability / routing and no-helper lab cases)
