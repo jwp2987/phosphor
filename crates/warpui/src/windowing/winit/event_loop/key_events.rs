@@ -111,11 +111,14 @@ pub fn convert_keyboard_input_event(
     let shift = window_state.modifiers.shift_key();
 
     let logical_key = match &input.logical_key {
-        // Ctrl+Break is VK_CANCEL, which winit's Windows layer reports as `Unidentified` (its source
-        // comment: "I don't think this can be represented with a Key"), so `convert_key` dropped the
-        // key before any binding or the pty saw it (#1888 / #1906). Name it `Cancel` here.
+        // Ctrl+Break is VK_CANCEL. The Break key itself (scan code E0 46) arrives from winit as
+        // `Pause`; Ctrl+ScrollLock (scan code 46, the same VK_CANCEL, and Ctrl+Break to a Windows
+        // console) arrives as `ScrollLock`, which `convert_key` cannot name, so the key was dropped
+        // before any binding or the pty saw it (#1888 / #1906). Name both `Cancel` here.
         #[cfg(windows)]
-        key if is_windows_vk_cancel(key) => Key::Named(NamedKey::Cancel),
+        key if is_windows_ctrl_break(key, window_state.modifiers.control_key()) => {
+            Key::Named(NamedKey::Cancel)
+        }
         // When keystrokes with ctrl-alt are pressed on Windows, `input.logical_key` is
         // Unidentified.
         #[cfg(windows)]
@@ -274,6 +277,43 @@ const VK_CANCEL_CODE: u16 = 0x03;
 #[cfg(any(windows, test))]
 fn is_windows_vk_cancel(key: &Key) -> bool {
     matches!(key, Key::Unidentified(NativeKey::Windows(vk)) if *vk == VK_CANCEL_CODE)
+}
+
+/// Whether `key` is a Windows Ctrl+Break that winit did not name `Pause` (#1906).
+///
+/// winit takes the physical key from the scan code. The Break key (E0 46) with Ctrl held is
+/// reported as `Pause`, which `convert_key` knows. Ctrl+ScrollLock (scan code 46) is also
+/// VK_CANCEL, but winit finds `ScrollLock` for that physical key in its layout map before it
+/// would report `Unidentified(Windows(VK_CANCEL))`. Hardware cannot send VK_SCROLL with Ctrl held
+/// (the system turns it into VK_CANCEL), so ScrollLock with Ctrl is Ctrl+Break. ScrollLock alone
+/// is not.
+#[cfg(any(windows, test))]
+fn is_windows_ctrl_break(key: &Key, ctrl: bool) -> bool {
+    is_windows_vk_cancel(key) || (ctrl && matches!(key, Key::Named(NamedKey::ScrollLock)))
+}
+
+/// What a pressed key that became no UI event was, for the `key_unconverted` log hop (#1906):
+/// the names winit gave it and the held modifiers, never text. A key that carries a character
+/// prints `char` for both names.
+pub fn describe_unconverted_key(
+    logical_key: &Key,
+    physical_key: &winit::keyboard::PhysicalKey,
+    modifiers: ModifiersState,
+) -> String {
+    let (logical, physical) = match logical_key {
+        Key::Named(named) => (format!("{named:?}"), format!("{physical_key:?}")),
+        Key::Unidentified(native) => (format!("{native:?}"), format!("{physical_key:?}")),
+        Key::Character(_) | Key::Dead(_) => ("char".to_owned(), "char".to_owned()),
+    };
+    format!(
+        "logical={} physical={} ctrl={} alt={} shift={} cmd={}",
+        logical.replace(' ', ""),
+        physical.replace(' ', ""),
+        modifiers.control_key(),
+        modifiers.alt_key(),
+        modifiers.shift_key(),
+        modifiers.super_key()
+    )
 }
 
 /// Converts a winit [`winit::keyboard::Key`] to the corresponding string version

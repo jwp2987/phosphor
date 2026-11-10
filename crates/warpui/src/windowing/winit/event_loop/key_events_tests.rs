@@ -1,5 +1,6 @@
 use super::{
-    get_input_key, is_windows_vk_cancel, mark_composing, text_fallback_event_for_unconverted_key,
+    convert_key, describe_unconverted_key, get_input_key, is_windows_ctrl_break,
+    is_windows_vk_cancel, mark_composing, text_fallback_event_for_unconverted_key,
     typed_characters_follow_keydown, us_qwerty_fallback_for_chord,
 };
 use winit::event::ElementState;
@@ -323,4 +324,83 @@ fn test_windows_vk_cancel_is_recognised() {
     assert!(!is_windows_vk_cancel(&Key::Unidentified(
         NativeKey::Unidentified
     )));
+}
+
+/// #1906: Ctrl+ScrollLock is VK_CANCEL on Windows, and winit reports it as `ScrollLock` (the
+/// physical key of scan code 46), not as `Unidentified(Windows(3))`. With Ctrl held it is
+/// Ctrl+Break; alone it is not. The Break key itself arrives as `Pause`, which needs no renaming.
+#[test]
+fn test_windows_ctrl_scroll_lock_is_ctrl_break() {
+    use winit::keyboard::{Key, NamedKey};
+    assert!(is_windows_ctrl_break(
+        &Key::Named(NamedKey::ScrollLock),
+        true
+    ));
+    assert!(!is_windows_ctrl_break(
+        &Key::Named(NamedKey::ScrollLock),
+        false
+    ));
+    assert!(is_windows_ctrl_break(
+        &Key::Unidentified(NativeKey::Windows(0x03)),
+        true
+    ));
+    assert!(!is_windows_ctrl_break(&Key::Named(NamedKey::Pause), true));
+    assert!(!is_windows_ctrl_break(&Key::Named(NamedKey::Enter), true));
+}
+
+/// #1906: every name the Break key can arrive under becomes `pause`, the key the win32-input
+/// encoder matches; ScrollLock itself stays unnamed (it is only Break with Ctrl held).
+#[test]
+fn test_break_key_names_convert_to_pause() {
+    use winit::keyboard::{Key, NamedKey};
+    assert_eq!(
+        convert_key(Key::Named(NamedKey::Pause)).as_deref(),
+        Some("pause")
+    );
+    assert_eq!(
+        convert_key(Key::Named(NamedKey::Cancel)).as_deref(),
+        Some("pause")
+    );
+    assert_eq!(convert_key(Key::Named(NamedKey::ScrollLock)), None);
+}
+
+/// #1906: the `key_unconverted` hop names the key and the modifiers and never prints a character.
+#[test]
+fn test_describe_unconverted_key_names_keys_and_hides_text() {
+    use winit::keyboard::{Key, NamedKey};
+    let named = describe_unconverted_key(
+        &Key::Named(NamedKey::ScrollLock),
+        &PhysicalKey::Code(KeyCode::ScrollLock),
+        ModifiersState::CONTROL,
+    );
+    assert_eq!(
+        named,
+        "logical=ScrollLock physical=Code(ScrollLock) ctrl=true alt=false shift=false cmd=false"
+    );
+    let native = describe_unconverted_key(
+        &Key::Unidentified(NativeKey::Windows(0x03)),
+        &PhysicalKey::Unidentified(NativeKeyCode::Windows(0x46)),
+        ModifiersState::empty(),
+    );
+    assert!(
+        native.starts_with("logical=Windows(0x0003) physical="),
+        "{native}"
+    );
+    assert!(
+        native.ends_with(" ctrl=false alt=false shift=false cmd=false"),
+        "{native}"
+    );
+    let character = describe_unconverted_key(
+        &Character(SmolStr::from("q")),
+        &PhysicalKey::Code(KeyCode::KeyQ),
+        ModifiersState::CONTROL,
+    );
+    assert!(
+        character.starts_with("logical=char physical=char "),
+        "{character}"
+    );
+    assert!(
+        !character.contains('q') && !character.contains("KeyQ"),
+        "{character}"
+    );
 }
