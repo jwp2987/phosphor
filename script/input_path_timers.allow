@@ -34,8 +34,8 @@ app/src/terminal/view.rs	AFTER_ENTER_REPLAY_PTY_WAIT	10 s net for keys typed aft
 app/src/terminal/view.rs	AGENT_INTERRUPT_GRACE	after an ignored ^C, hands the agent's command to the user and leaves the agent view; writes no bytes (#899)
 app/src/terminal/view.rs	ALT_SCREEN_RESEND_GIVE_UP	logged net for an alt-screen winsize re-send; resizes the pty window, no key bytes
 app/src/terminal/view.rs	ALT_SCREEN_SETTLE_GIVE_UP	logged net for the alt-screen paint-settle re-check; resizes the pty window, no key bytes
-app/src/terminal/view.rs	BOOTSTRAP_PROGRESS_GRACE	one-off extension of the bootstrap-failed give-up; the failure hands held ssh keys back as text
-app/src/terminal/view.rs	SSH_CONNECT_NO_PROBE_GIVE_UP	probe-less platforms only (no tty-read probe): hands the held ssh keys back as text and releases the window; never writes them
+app/src/terminal/view.rs	BOOTSTRAP_PROGRESS_GRACE	one-off extension of the bootstrap-failed give-up; the failure writes held ssh keys to the pty in typed order
+app/src/terminal/view.rs	SSH_CONNECT_NO_PROBE_GIVE_UP	probe-less platforms only (no tty-read probe): writes the held ssh keys to the pty in typed order and releases the window (#1996)
 app/src/terminal/view.rs	CLIPBOARD_WRITE_SLOW_TOAST_DELAY	delays a 'clipboard owner not answering' toast; notice only
 app/src/terminal/view.rs	EDITOR_TAKEOVER_GIVE_UP	logged net for the editor-takeover window (ends on the focus event); writes nothing
 app/src/terminal/view.rs	INTERRUPT_GIVE_UP	logged give-up for an interrupt's expected prompt cycle that never came; hands input back via the hand-off, writes nothing
@@ -61,7 +61,7 @@ app/src/terminal/view.rs	begin_ssh_warpify_timeout	shows an ssh-warpify timeout 
 app/src/terminal/view.rs	resize_alt_screen_redundantly	re-sends the alt-screen window size twice; no key bytes
 app/src/terminal/view.rs	schedule_ssh_typeahead_give_up	ONE event-armed ssh connect give-up: the held keys are written to the pty in typed order, to the ssh process while it runs (#1996)
 app/src/terminal/view.rs	settle_enter_queue	10 s net of keys typed after a deferred Enter: give_up_enter_route_wait writes them to the pty in typed order (#1996)
-app/src/terminal/view.rs	spawn_bootstrap_timer	bootstrap-failed give-up: marks the session failed and hands held ssh keys back as text (delivery only behind a kill switch)
+app/src/terminal/view.rs	spawn_bootstrap_timer	bootstrap-failed give-up: marks the session failed and writes held ssh keys to the pty in typed order (#1996)
 app/src/terminal/view.rs	start_slow_bootstrap_banner_auto_dismiss_timer	auto-dismisses the slow-bootstrap banner; notice only
 app/src/terminal/view.rs	wait_frame_or_give_up	bounds the wait for a drawn frame before the alt-screen re-check; no key bytes
 app/src/terminal/view/paste_queue.rs	CLI_SUBMIT_LEAK_NET	leak net of a paced CLI-agent submit: keys typed behind it are written to the pty in typed order (#1996)

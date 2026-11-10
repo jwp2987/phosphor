@@ -19461,13 +19461,19 @@ fn ssh_pane_with_held_typeahead_for_test(
     assert!(!view.ssh_held_is_empty());
 }
 
-/// #1494 / #1577 (owner decision): the ssh bootstrap timed out with typing held and the remote
-/// shell is alive at a non-bootstrapped prompt. A timer no longer writes anything there: no
-/// ` stty sane`, no keys. The held text is handed back (kept for the input while the ssh block
-/// runs, like any ssh hand-back), nothing reaches the pty, nothing runs, and the delivery is not
-/// marked committed. Legacy and Table.
+/// #1494: the ssh bootstrap timed out with typing held and the remote shell is alive at a
+/// non-bootstrapped prompt. The held keys are WRITTEN TO THE PTY in typed order, the Enter in its
+/// place, exactly what a plain terminal would have sent all along; Phosphor adds no command of
+/// its own (no ` stty sane`, #1815), nothing is put into or kept for the editor, the editor
+/// submits nothing, and the write is not marked as a committed hand-over. Legacy and Table.
+///
+/// Expectation history (re-decided by the owner, never weakened): #1577 (2026-11-03) handed the
+/// held text back and wrote nothing, which this test expected under the name
+/// `ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane`; owner decision
+/// 2026-11-09 (#1996, decision 2 of the follow-up) makes this timer write the keys to the pty
+/// like every other give-up of a hold for the shell.
 #[test]
-fn ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane() {
+fn ssh_bootstrap_failure_writes_held_typeahead_to_the_pty_without_stty_sane() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -19514,18 +19520,18 @@ fn ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane() {
                         .lock()
                         .typeahead_handoff()
                         .committed_delivery_pending(),
-                    "{mode:?}: nothing was delivered"
+                    "{mode:?}: a give-up's write is not a committed hand-over delivery"
                 );
             });
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: a timer wrote to the pty: {:?}",
-                pty_writes.borrow()
+            let text = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+            assert_eq!(
+                text, "echo hi\r",
+                "{mode:?}: the held keys, in typed order, once, and nothing else (no `stty sane`)"
             );
             assert_eq!(
                 *executed.borrow(),
                 ran_during_setup,
-                "{mode:?}: nothing ran after the pane's own `ssh host`"
+                "{mode:?}: the editor submitted nothing after the pane's own `ssh host`"
             );
         })
     }
@@ -19665,9 +19671,10 @@ fn stale_bootstrap_timer_from_an_earlier_connect_does_not_fail_a_later_one() {
     }
 }
 
-/// #1566 / #1577: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes,
-/// the second expiry fails the session, and (owner decision) hands the held text back instead of
-/// writing it after `stty sane`: nothing reaches the pty.
+/// #1566: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes, the
+/// second expiry fails the session and writes the held keys to the pty in typed order, with no
+/// `stty sane` (owner decision 2026-11-09, #1996; under #1577 this test expected the held text
+/// handed back and nothing at the pty).
 #[test]
 fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
     App::test((), |mut app| async move {
@@ -19696,15 +19703,14 @@ fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
             assert!(view.ssh_held_is_empty());
             let input = view.input.as_ref(ctx);
             assert!(
-                input.handed_back_text_for_test() == Some("echo hi")
-                    || input.buffer_text(ctx) == "echo hi",
-                "the held text is handed back"
+                input.handed_back_text_for_test().is_none() && input.buffer_text(ctx).is_empty(),
+                "the held text went to the pty, not back to the editor"
             );
         });
-        assert!(
-            pty_writes.borrow().is_empty(),
-            "no `stty sane`, no keys: {:?}",
-            pty_writes.borrow()
+        assert_eq!(
+            String::from_utf8_lossy(&pty_writes.borrow().concat()),
+            "echo hi\r",
+            "the held keys in typed order, once; no `stty sane`"
         );
     })
 }

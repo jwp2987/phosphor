@@ -102,9 +102,9 @@ pub(super) fn subshell_setup_handed_back_toast(held_chunks: usize) -> String {
 
 /// The toast for keys a timer handed back from a gate (#1577), by the give-up's `why`. `None`
 /// when the caller shows its own notice: the stall ceiling's abandon notice (#1119). Since the
-/// owner's decision of 2026-11-09 only the setup gates (subshell, PowerShell, the bootstrap
-/// write) and a pty paste's read cap hand keys back; a young Enter's cap, whose hand-back showed
-/// this toast on every Enter at a prompt without sequence numbers, writes its keys to the pty.
+/// owner's decisions of 2026-11-09 only the setup gates (subshell, PowerShell, the bootstrap
+/// write) hand keys back; a young Enter's cap, whose hand-back showed this toast on every Enter
+/// at a prompt without sequence numbers, and a pty paste's read cap write their keys to the pty.
 pub(super) fn gate_give_up_toast(why: &str) -> Option<&'static str> {
     match why {
         // The setup net shows its own counted toast (`subshell_setup_given_up_toast`).
@@ -1119,7 +1119,11 @@ impl TerminalView {
                 // #1353 phase 6 (INP-A4): the paste gave up on its clipboard read, so the reader's
                 // cancel flag is signalled and the blocked-reader count / log reflect it.
                 warpui::clipboard::abandon_pending_reads();
-                self.hand_back_gate_keys(GateKind::PasteReading, gate_key, "paste_cap", ctx);
+                // Owner decision 2026-11-09: the paste has no content and is discarded with its
+                // own notice; the keys typed behind it were typed for the pty and are written to
+                // it in typed order like the rest (they used to be handed back to the editor
+                // with the "Input was waiting too long" toast).
+                self.give_up_gate_keys_to_pty(GateKind::PasteReading, gate_key, "paste_cap", ctx);
                 return;
             }
             Some(GateKind::CliSubmit) => {

@@ -986,14 +986,14 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// #1566: how much longer the bootstrap give-up waits, once, when the pending session is
 /// demonstrably progressing (its bootstrap prompt's `Precmd` was seen) and only `Bootstrapped`
 /// is outstanding. A logged give-up net; `Bootstrapped` itself ends the wait.
-// give-up-net: one-off extension of the bootstrap-failed give-up; the failure hands held ssh keys back as text
+// give-up-net: one-off extension of the bootstrap-failed give-up; the failure writes held ssh keys to the pty in typed order
 const BOOTSTRAP_PROGRESS_GRACE: Duration = Duration::from_secs(3);
 /// #1809: the give-up net of an ssh connect window on a pty WITHOUT a tty-read probe (macOS,
 /// others), where no event tells that ssh is reading an echoing answer. After this long the
-/// window is released and the held keys are HANDED BACK to the editor as text (never written to
-/// the pty); the next key then reaches ssh as in a plain terminal. Where the probe works the
+/// window is released and the held keys are WRITTEN TO THE PTY in typed order (owner decision
+/// 2026-11-09, #1996); the next key then reaches ssh as in a plain terminal. Where the probe works the
 /// window has no clock at all.
-// give-up-net: probe-less platforms only; hands held ssh keys back as text, never writes them
+// give-up-net: probe-less platforms only; writes held ssh keys to the pty in typed order (#1996)
 const SSH_CONNECT_NO_PROBE_GIVE_UP: Duration = Duration::from_secs(15);
 /// The ONE give-up net of a subshell setup (#1711, #1712; owner decision 2026-11-08): this long
 /// with no setup PROGRESS and the setup is given up. Progress is an event that proves the shell
@@ -25628,7 +25628,7 @@ impl TerminalView {
     ) {
         let _ = ctx.spawn(
             async move {
-                // give-up-net: bootstrap-failed give-up: marks the session failed and hands held ssh keys back as text
+                // give-up-net: bootstrap-failed give-up: marks the session failed and writes held ssh keys to the pty in typed order (owner decision 2026-11-09)
                 warpui::r#async::Timer::after(duration).await;
                 arm
             },
@@ -25660,11 +25660,13 @@ impl TerminalView {
     /// #1494: the ssh bootstrap timed out with keys held. The remote shell may be alive at a
     /// non-bootstrapped prompt with its tty still raw (the bootstrap's `stty sane` never ran).
     ///
-    /// #1577 (owner decision 2026-11-03): delivering the typing there would be a timer writing a
-    /// command and the user's keys to a pty. The keys are handed back instead (the ssh hand-back:
-    /// the input, or kept for it while the ssh block runs) with a toast naming `stty sane`. When
-    /// no remote shell is provably in front the keys are handed back as unexecuted text; they are
-    /// never run locally.
+    /// Owner decision 2026-11-09 (reversing #1577's hand-back for this timer, like every other
+    /// give-up of a hold for the shell, #1996): the held keys are written to the pty in typed
+    /// order, for whatever reads the tty now, exactly what a plain terminal would have sent all
+    /// along (`SshDropThen::GiveUpToPty`, the write of the connect give-ups; a signal held in the
+    /// setup window is written in its place). Nothing is handed back to the editor and nothing
+    /// is dropped. Phosphor writes no command of its own: no `stty sane` (#1815), only a toast
+    /// naming it when a remote shell is in front.
     fn hand_held_ssh_typeahead_to_unbootstrapped_remote(
         &mut self,
         is_ssh: bool,
@@ -25690,34 +25692,31 @@ impl TerminalView {
         if !ssh_session {
             return;
         }
-        if !(session_pending && self.is_long_running()) {
-            log::warn!(
-                "ssh typeahead: no remote shell is provably in front at the bootstrap timer; \
-                 handing {} held byte(s) back as unexecuted text (#1494)",
-                self.ssh_held_bytes()
-            );
-            self.finish_ssh_typeahead(ctx);
-            return;
-        }
-        // #1577 (owner decision): a timer never writes user bytes or a command to a pty. The
-        // held keys are handed back (to the input, or kept for it while the ssh block runs, like
-        // any ssh hand-back) and nothing is sent: no `stty sane`, no keys. The #1494 delivery and
-        // its PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS switch are deleted (#1815).
+        let remote_in_front = session_pending && self.is_long_running();
         log::warn!(
-            "ssh typeahead: bootstrap failed; handing {} held byte(s) back instead of writing \
-             them to the remote (#1577)",
+            "ssh typeahead: bootstrap failed (remote_in_front={remote_in_front}); writing {} \
+             held byte(s) to the pty in typed order, as a plain terminal would have (owner \
+             decision 2026-11-09)",
             self.ssh_held_bytes()
         );
         warpui::input_order::log_key_hop("kh_bootstrap_giveup", || {
-            format!("handed_back held_bytes={}", self.ssh_held_bytes())
+            format!(
+                "to_pty held_bytes={} remote_in_front={}",
+                self.ssh_held_bytes(),
+                u8::from(remote_in_front)
+            )
         });
-        self.ssh_remote_prompt_seen = false;
+        // The give-up end of `finish_ssh_typeahead`: one write, in typed order, now.
+        let was_giving_up = std::mem::replace(&mut self.ssh_give_up_in_progress, true);
         self.finish_ssh_typeahead(ctx);
-        self.show_ssh_typing_toast(
-            "SSH setup didn't finish; your typed text was not sent. The remote terminal may \
-             be in raw mode: run `stty sane` there",
-            ctx,
-        );
+        self.ssh_give_up_in_progress = was_giving_up;
+        if remote_in_front {
+            self.show_ssh_typing_toast(
+                "SSH setup didn't finish; what you typed was sent to the remote as typed. The \
+                 remote terminal may be in raw mode: run `stty sane` there",
+                ctx,
+            );
+        }
     }
 
     /// Called once the bootstrap timer completes

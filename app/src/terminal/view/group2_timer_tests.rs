@@ -138,16 +138,22 @@ fn cli_submit_cap_writes_the_keys_behind_it_to_the_pty_in_typed_order() {
     }
 }
 
-/// A3 (#1577): the cap of a pty paste whose clipboard read never answered discards the paste (as
-/// before) and hands the keys typed behind it back; nothing is written.
+/// The cap of a pty paste whose clipboard read never answered discards the paste (as before: it
+/// has no content) and WRITES the keys typed behind it to the pty in typed order; nothing goes
+/// to the editor and nothing is dropped.
+///
+/// Expectation history (re-decided by the owner, never weakened): under #1577 (A3) this test
+/// (`paste_cap_hands_the_keys_behind_the_unread_paste_back`) expected the key handed back to the
+/// editor under the guard and nothing written; owner decision 2026-11-09 (#1996, decision 2 of
+/// the follow-up) makes the paste-read give-up write to the pty like every other give-up.
 #[test]
-fn paste_cap_hands_the_keys_behind_the_unread_paste_back() {
+fn paste_cap_writes_the_keys_behind_the_unread_paste_to_the_pty() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
-            let writes = record_pty_writes(&mut app, &terminal);
+            let pty = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 let id = view
                     .paste_queue
@@ -166,10 +172,20 @@ fn paste_cap_hands_the_keys_behind_the_unread_paste_back() {
                     );
                 }
                 assert!(view.write_user_bytes_to_pty(b"b".to_vec(), ctx));
+                assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+                assert!(
+                    pty_writes_are_empty(&pty),
+                    "{mode:?}: held behind the paste's read"
+                );
                 let token = gate_token_of(view, input_queue::GateKind::PasteReading);
                 view.on_paste_queue_give_up(token, ctx);
+                assert!(
+                    view.paste_queue.payloads.is_empty()
+                        && view.paste_queue.routed_pastes.is_empty(),
+                    "{mode:?}: the unread paste left no record behind"
+                );
             });
-            assert_handed_back(&terminal, &app, &writes, "b");
+            assert_given_up_to_pty(&terminal, &app, &pty, b"b\r");
         });
     }
 }
