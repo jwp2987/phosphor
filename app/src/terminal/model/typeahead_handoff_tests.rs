@@ -304,10 +304,13 @@ fn an_unengaged_user_command_releases_the_deferred_gate_and_its_held_keys() {
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
 }
 
-/// The young hold's keys follow an unengaged user command instead of being dropped.
+/// The young hold's keys follow an unengaged user command instead of being dropped. The Enter ends
+/// a line with content (`frob`): a bare Enter on an empty shell line is never a young hold
+/// (`should_hold_young_enter`), which is why this test, written without it, could not hold one.
 #[test]
 fn an_unengaged_user_command_makes_a_young_hold_follow_not_drop() {
     let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"frob");
     let (id, _) = hold_young_enter(&mut handoff, b"\r");
     handoff.on_unengaged_user_command_written();
     handoff.on_uncounted_command_written();
@@ -1147,9 +1150,21 @@ fn the_leak_net_of_the_deferred_enters_gate_gives_the_deferral_up() {
 /// and counted like any user write, but they never start a young Enter's hold: a typed Enter in
 /// the window is held for its prompt, the same Enter given up by a net is written (holding it
 /// again would arm another net for the same keys).
+///
+/// Test faults corrected after its first run (it was written without a compiler; the rule it
+/// asserts is unchanged): both arms now type `frob` first, because only an Enter on a line with
+/// content is ever a young hold (`should_hold_young_enter`), and the count of Enters is compared
+/// with the count before the give-up, which already holds the command's own Enter (the literal 2
+/// forgot it).
 #[test]
 fn keys_a_hold_gave_up_on_never_start_another_young_hold() {
+    let enters_written = |handoff: &TypeaheadHandoff| match handoff.state() {
+        HandoffState::PtyOwned { enters_written, .. } => *enters_written,
+        other => panic!("the pty owns input: {other:?}"),
+    };
+
     let mut typed = young_after_submit();
+    type_and_flush(&mut typed, b"frob");
     assert_eq!(
         typed.on_user_bytes(b"\r"),
         UserBytesRoute::Held,
@@ -1158,19 +1173,17 @@ fn keys_a_hold_gave_up_on_never_start_another_young_hold() {
     assert!(typed.take_young_hold_started().is_some());
 
     let mut given_up = young_after_submit();
+    type_and_flush(&mut given_up, b"frob");
+    let enters_before = enters_written(&given_up);
     assert_eq!(
         given_up.on_given_up_user_bytes(b"\rls\r"),
         UserBytesRoute::WriteCounted
     );
     assert_eq!(given_up.take_young_hold_started(), None);
-    assert!(
-        matches!(
-            given_up.state(),
-            HandoffState::PtyOwned {
-                enters_written: 2,
-                ..
-            }
-        ),
+    assert!(!given_up.young_hold_queued());
+    assert_eq!(
+        enters_written(&given_up),
+        enters_before + 2,
         "both Enters are counted as the lines they are: {:?}",
         given_up.state()
     );
@@ -4071,10 +4084,22 @@ fn the_prompt_does_not_commit_to_the_editor_over_keys_held_for_the_shell() {
 }
 
 /// The commit at the prompt is back as soon as no hold is live: nothing typed can be in the line.
+///
+/// Expectation changed by the owner decision of 2026-11-09 (#1923), not weakened: this session's
+/// shell signals its line editor, so the Precmd alone no longer hands input to the editor (a precmd
+/// function may be reading a secret); the commit is back at the line editor's signal. Until #1923
+/// this test expected the commit at the Precmd.
 #[test]
 fn the_prompt_commits_to_the_editor_when_no_keys_are_held() {
     let mut handoff = conpty_command_running_in_the_enter_window();
     handoff.on_precmd();
+    assert!(
+        !handoff.try_commit_at_prompt(),
+        "#1923: no commit while the line editor's signal is awaited"
+    );
+    assert!(handoff.is_pty_owned());
+    // The signal, with no keys held: nothing to release, and the wait is over.
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
     assert!(handoff.try_commit_at_prompt());
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
 }
@@ -5343,7 +5368,17 @@ fn a_command_the_latch_calls_interactive_gets_its_enter_and_releases_a_live_hold
         assert_eq!(handoff.take_young_hold_started(), None);
     }
 
+    // #1889: `queued_young_hold` leaves the stream unapplied, and where nothing samples the shell
+    // the latch leaves such a hold to the barrier (the command's Precmd may be in that output).
+    // The latch ends the hold, as this test has always asserted, once the stream is applied.
     let (mut handoff, id) = queued_young_hold();
+    handoff.note_command_interactive();
+    assert!(
+        handoff.young_hold_queued(),
+        "output in flight: the latch leaves the hold to the barrier"
+    );
+    assert!(handoff.take_young_hold_ends().is_empty());
+    RawReadProbe::new(ShellPromptFact::Unknown, Some(true)).install_unsampled(&mut handoff);
     handoff.note_command_interactive();
     assert!(!handoff.young_hold_queued());
     assert_eq!(

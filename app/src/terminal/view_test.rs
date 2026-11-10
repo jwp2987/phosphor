@@ -15655,13 +15655,15 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
             }
             view.input.update(ctx, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx);
-                // Where the keys end in the editor, only text (an Enter would submit it).
+                // Where the keys end in the editor, only text (an Enter would submit it). The
+                // net's give-up (`PtyNotReady`) writes the keys to the pty since the owner decision
+                // of 2026-11-09 (#1996), so its Enter is queued too: the scenario expects `ls\r`
+                // and, until this was corrected, queued only `ls` (the #1661 setup, kept by
+                // mistake when the expectation changed).
                 let mut queued = vec![AfterEnterInput::Text("ls".to_string())];
                 if !matches!(
                     after,
-                    AfterRunEnter::PtyNotReady
-                        | AfterRunEnter::BlockCompleted
-                        | AfterRunEnter::RealBlockCompleted
+                    AfterRunEnter::BlockCompleted | AfterRunEnter::RealBlockCompleted
                 ) {
                     queued.push(AfterEnterInput::Enter);
                 }
@@ -16109,13 +16111,18 @@ fn an_interrupt_ctrl_c_is_not_held_behind_a_deferred_enter() {
     }
 }
 
-/// #1331/#1577: a terminal-bound paste whose clipboard read never answers fails at the backstop;
-/// the keys typed meanwhile are HANDED BACK to the editor in typing order (none dropped, the Enter
-/// a new line after the fragment it followed, the next Enter held with a toast), not written to
-/// the pty by the timer (owner rule 2026-11-01; this test used to assert the pty write). The
-/// reader's late answer writes nothing. Not compiled/run when written (no builds in the fix pass).
+/// #1331: a terminal-bound paste whose clipboard read never answers fails at the backstop; the
+/// keys typed meanwhile are WRITTEN TO THE PTY in typed order, once (none dropped, none handed to
+/// the editor), and the reader's late answer writes nothing.
+///
+/// Expectation history (re-decided by the owner, never weakened): the pty write (original); a
+/// hand-back to the editor (`ls\n` in the buffer, nothing at the pty: owner rule 2026-11-01,
+/// #1577, when this test was named
+/// `stalled_pty_paste_hands_held_keys_back_in_order_at_the_backstop`);
+/// and the pty write again: owner decision 2 of 2026-11-09 (#1996 follow-up: the paste has no
+/// content and is discarded with its own notice, the keys typed behind it go to the pty).
 #[test]
-fn stalled_pty_paste_hands_held_keys_back_in_order_at_the_backstop() {
+fn stalled_pty_paste_writes_held_keys_to_the_pty_in_order_at_the_backstop() {
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
@@ -16158,16 +16165,24 @@ fn stalled_pty_paste_hands_held_keys_back_in_order_at_the_backstop() {
         }
         let buffer_of =
             |app: &App| terminal.read(app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
-        assert!(
-            pty_writes.borrow().is_empty(),
-            "the backstop wrote to the pty: {:?}",
-            pty_writes.borrow()
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            b"ls\r".to_vec(),
+            "the backstop writes the held keys to the pty, once, in typed order"
         );
-        assert_eq!(buffer_of(&app), "ls\n", "held keys handed back in order");
+        assert_eq!(buffer_of(&app), "", "nothing is handed to the editor");
         release.send(()).unwrap();
         warpui::r#async::Timer::after(Duration::from_millis(100)).await;
-        assert!(pty_writes.borrow().is_empty());
-        assert_eq!(buffer_of(&app), "ls\n", "the late answer is ignored");
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            b"ls\r".to_vec(),
+            "the late answer is ignored: the paste is never written"
+        );
+        assert_eq!(
+            buffer_of(&app),
+            "",
+            "the late answer puts nothing into the editor"
+        );
     })
 }
 
@@ -16259,24 +16274,26 @@ async fn pty_paste_bytes(app: &mut App, scenario: PtyPasteScenario) -> Vec<u8> {
                 }
                 warpui::r#async::Timer::after(Duration::from_millis(5)).await;
             }
-            // #1577: the keys typed behind the paste are handed back to the editor at the
-            // backstop, not written by the timer; only the key typed before the paste was sent.
+            // Owner decision 2 of 2026-11-09 (#1996 follow-up, reversing #1577's hand-back, under
+            // which this scenario expected only `a` at the pty and `ls\n` in the editor): the
+            // paste has no content and is discarded; the keys typed behind it are written to the
+            // pty at the backstop, in typed order, after the key typed before the paste.
             assert_eq!(
                 flat(&pty_writes),
-                b"a".to_vec(),
-                "nothing was written at the backstop"
+                b"als\r".to_vec(),
+                "the keys behind the unread paste are written at the backstop, in typed order"
             );
             assert_eq!(
                 terminal.read(app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx)),
-                "ls\n",
-                "keys handed back to the editor at the backstop"
+                "",
+                "nothing is handed to the editor at the backstop"
             );
             release.send(()).unwrap();
             warpui::r#async::Timer::after(Duration::from_millis(100)).await;
             assert_eq!(
                 flat(&pty_writes),
-                b"a".to_vec(),
-                "the late result is ignored"
+                b"als\r".to_vec(),
+                "the late result is ignored: the paste is never written"
             );
         }
         PtyPasteScenario::SlowRead
@@ -16407,14 +16424,16 @@ fn pty_paste_ctrl_c_during_a_pending_read_cancels_it() {
     });
 }
 
-/// #1353 phase 1 / #1577: the backstop gives up once, hands the keys behind the paste back to the
-/// editor (the scenario asserts the editor's text) and the reader's late answer writes nothing.
-/// Only the key typed before the paste reaches the pty.
+/// #1353 phase 1: the backstop gives up once and the reader's late answer writes nothing: the
+/// paste never reaches the pty. Owner decision 2 of 2026-11-09 (#1996 follow-up; expectation
+/// changed, not weakened: under #1577 the keys behind the paste were handed back to the editor and
+/// only `a` reached the pty): the keys typed behind the unread paste are written to the pty at the
+/// backstop, in typed order (the scenario asserts the empty editor too).
 #[test]
 fn pty_paste_backstop_gives_up_then_the_late_result_is_ignored() {
     App::test((), move |mut app| async move {
         let written = pty_paste_bytes(&mut app, PtyPasteScenario::BackstopThenLateResult).await;
-        assert_eq!(written, b"a".to_vec());
+        assert_eq!(written, b"als\r".to_vec());
     });
 }
 
@@ -23298,6 +23317,11 @@ fn ssh_line_typed_at_once_after_the_ssh_enter_is_held_and_delivered_once_to_the_
 /// the event. A young Enter and the keys behind it held when it arrives are written to the pty as
 /// typeahead, in typed order, as one write; nothing is handed back and no timer is involved. Legacy
 /// and Table.
+///
+/// #1889 (2026-11-09): where nothing samples the shell, the latch leaves the hold alone while the
+/// stream barrier says output is in flight (the command's Precmd may be in it). This pane's hold is
+/// made in exactly that state, so the event is sent twice: with the stream unapplied it changes
+/// nothing, and once the stream is applied it ends the hold as this test has always asserted.
 #[test]
 fn a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive() {
     use crate::terminal::input_queue::DestinationMode;
@@ -23312,6 +23336,26 @@ fn a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive() {
                 young_enter_setup(view);
                 hold_a_young_enter(view, &pty_writes, ctx);
                 let block_id = view.model.lock().active_block_id().clone();
+                view.handle_terminal_event(
+                    &ModelEvent::CommandBecameInteractive {
+                        block_id: block_id.clone(),
+                    },
+                    ctx,
+                );
+                assert!(
+                    young_gate_open(view),
+                    "{mode:?}: output in flight, the latch leaves the hold to the barrier (#1889)"
+                );
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing written while the hold stays: {:?}",
+                    pty_writes.borrow()
+                );
+                // The reader applied the stream: no Precmd is in flight any more.
+                view.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .age_last_activity_for_test();
                 view.handle_terminal_event(&ModelEvent::CommandBecameInteractive { block_id }, ctx);
                 assert!(
                     !young_gate_open(view),
@@ -27512,6 +27556,11 @@ fn ssh_paste_between_held_keys_keeps_typed_order_in_both_modes() {
 
 /// #1853: a paste made during a subshell setup waits behind the keys held before it and is
 /// delivered after them, in both destination modes.
+///
+/// Setup corrected after its first run (the test was written without a compiler; its assertions
+/// are unchanged): a subshell setup belongs to a running command (`bash`), so the pane gets that
+/// block, as the other subshell tests do. Without it the pane was at an idle prompt, where the
+/// legacy route of a paste is the input editor and `-la` never reached the pty.
 #[test]
 fn paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes() {
     use crate::terminal::input_queue::DestinationMode;
@@ -27520,8 +27569,10 @@ fn paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes() {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
+            drain_model_startup_events(&mut app, &terminal).await;
             let pty_writes = record_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("bash", "");
                 let block_id = view.model.lock().block_list().active_block().id().clone();
                 view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
                 assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
