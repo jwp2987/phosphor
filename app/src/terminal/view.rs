@@ -14624,6 +14624,12 @@ impl TerminalView {
             bytes.contains(&0x03),
         );
         let mut hold_start = HandoffHoldStart::default();
+        // #2038: at a prompt whose line editor has not signalled, a question on screen means a
+        // reader ahead of it (a precmd function's `read -s`): the hand-off is told before it
+        // routes this key. One read of the hand-off on any other key.
+        if FeatureFlag::TypeaheadHandoff.is_enabled() && !facts.alt_screen {
+            self.note_prompt_reader_if_the_screen_asks();
+        }
         let handoff_route = if FeatureFlag::TypeaheadHandoff.is_enabled() {
             let mut handoff = self.handoff.write();
             let route = if facts.alt_screen {

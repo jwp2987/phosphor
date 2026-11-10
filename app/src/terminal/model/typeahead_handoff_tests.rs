@@ -4270,6 +4270,264 @@ fn a_hold_in_a_shell_that_has_signalled_is_kept_never_handed_to_the_editor() {
     assert!(never.prompt_hold_can_hand_back(id));
 }
 
+// ---- #2038: a reader ahead of the line editor (round 11 Windows, `gitbash_precmd_secret`) -------
+
+/// The hand-off of the round 11 Windows log at `hop=precmd_seen ... enters=1 precmds=0` after
+/// `touch gbgo.txt`: Git Bash on ConPTY with prompt sequence numbers, a shell whose line editor
+/// signalled at the prompt before, the command written by the app, its Preexec and its Precmd
+/// parsed, the stream applied, and no signal yet for this prompt (a precmd function's
+/// `read -s -p "pin: "` is reading).
+fn conpty_prompt_after_a_command_in_a_shell_that_signalled() -> TypeaheadHandoff {
+    let mut handoff = conpty_awaiting_line_editor();
+    handoff.set_conpty_enter_window_hold(true);
+    handoff.set_prompt_seq_enabled(true);
+    handoff.on_precmd_seq(Some(7), Some(1));
+    // The first prompt: its line editor signals and the editor takes input.
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+    // `touch gbgo.txt` from the editor, its Preexec, its Precmd.
+    handoff.on_command_written();
+    handoff.on_preexec(false);
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(2));
+    handoff.age_last_activity_for_test();
+    assert!(handoff.is_pty_owned());
+    assert!(handoff.awaiting_line_editor_signal());
+    handoff
+}
+
+/// The control: what the same keys did BEFORE the reader was told to the hand-off (#2038, read
+/// from the code after the round 11 run). The released half of the PIN is the shell's line, so
+/// the Enter that ends the `read` is a young Enter held for a line report that cannot be asked
+/// for (10 s net), and once written it is a line no prompt answers.
+#[test]
+fn without_the_reader_the_pin_is_the_shells_line_and_its_enter_is_held_for_a_report() {
+    let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert_eq!(handoff.on_user_bytes(b"p"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a prompt hold");
+    // The cap releases the keys to the pty with nothing said about a reader.
+    assert!(handoff.expire_queued_prompt_hold(id));
+    assert!(handoff.route_released_chunk(b"p"));
+    handoff.finish_queued_prompt_hold(id);
+    assert!(
+        handoff.shell_line_may_hold_typed_text(),
+        "the PIN is counted as the shell's line"
+    );
+    assert_eq!(handoff.on_user_bytes(b"i"), UserBytesRoute::WriteCounted);
+    assert_eq!(
+        handoff.on_user_bytes(b"\r"),
+        UserBytesRoute::Held,
+        "the read's Enter is held as a young Enter"
+    );
+    assert_eq!(
+        handoff.young_hold_evidence(),
+        Some(YoungHoldEvidence::RequestDue)
+    );
+}
+
+/// #2038, the real sequence of `gitbash_precmd_secret`: the first half of the PIN is typed inside
+/// the prompt hold's cap and held; at the cap the screen asks for input, the view tells the
+/// hand-off and releases the hold; the second half and the Enter are typed later. Every key goes
+/// to the pty when it is typed (or released), in typed order; none is the shell's line, the Enter
+/// is not a line a prompt must answer and opens no enter window. The line editor's signal for the
+/// same prompt then hands input to the editor, and the next prompt holds again.
+#[test]
+fn a_reader_ahead_of_the_line_editor_gets_every_key_and_the_signal_hands_input_to_the_editor() {
+    let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    // The first key starts the hold; the view's queue takes `i` and `n` behind it.
+    assert_eq!(handoff.on_user_bytes(b"p"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a prompt hold");
+    assert!(
+        !handoff.prompt_reader_look_due(),
+        "with a hold queued the hold's cap looks at the screen, not the key"
+    );
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::GiveUp
+    );
+    assert!(
+        !handoff.prompt_hold_can_hand_back(id),
+        "#1883: never editor text in a shell that signalled"
+    );
+    // The view: `screen_tail_asks_for_input()` is true, so the reader is noted, then the release.
+    assert!(handoff.note_prompt_reader_asks());
+    assert!(handoff.expire_queued_prompt_hold(id));
+    for key in [&b"p"[..], b"i", b"n"] {
+        assert!(handoff.route_released_chunk(key), "released in typed order");
+    }
+    handoff.finish_queued_prompt_hold(id);
+    assert_eq!(handoff.writes_in_flight(), 3);
+    assert!(
+        !handoff.shell_line_may_hold_typed_text(),
+        "the reader's keys are not the shell's line"
+    );
+    assert!(
+        !handoff.try_commit_at_prompt(),
+        "the editor does not take input while the reader has the tty"
+    );
+    assert!(matches!(
+        handoff.on_line_editor_active(true, false),
+        ActiveDecision::Wait { .. }
+    ));
+    // The second half, 2.7 s later, and the Enter that ends the `read`.
+    for key in [&b"4"[..], b"2", b"\r"] {
+        assert_eq!(
+            handoff.peek_user_bytes_route(key, true, Instant::now()),
+            UserBytesRoute::WriteCounted
+        );
+        assert_eq!(
+            handoff.on_user_bytes(key),
+            UserBytesRoute::WriteCounted,
+            "{key:?} goes to the reader at once"
+        );
+    }
+    assert!(!handoff.has_prompt_hold());
+    assert!(!handoff.young_hold_queued(), "no young Enter");
+    assert!(
+        !handoff.has_unanswered_lines(),
+        "the read's Enter is not a line a prompt must answer"
+    );
+    // The `read` returned: the precmd stage ends and the line editor signals (the marker and
+    // the bracketed-paste enable both take this path; the second finds nothing to do).
+    assert!(handoff.on_line_editor_reading(Some(7), Some(2)));
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert!(!handoff.prompt_reader_asks(), "the signal ends the reader");
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed,
+        "an empty line at a signalled prompt: the editor takes input, nothing is requested"
+    );
+    assert!(handoff.editor_owns_input());
+    // The next command and its prompt: held for its line editor as before.
+    handoff.on_command_written();
+    handoff.on_preexec(false);
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(3));
+    assert!(!handoff.prompt_reader_asks());
+    assert_eq!(handoff.on_user_bytes(b"e"), UserBytesRoute::Held);
+}
+
+/// #2038, the PIN typed with no hold at all: the question is already on screen when the first key
+/// comes (also later than the hold's cap, when no key is held any more), so the view's look at
+/// that key notes the reader and the keys go straight to it. A key at a prompt with no question
+/// is held for the line editor exactly as before.
+#[test]
+fn a_question_already_on_screen_sends_the_first_key_to_the_reader_without_a_hold() {
+    for late in [false, true] {
+        let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+        if late {
+            handoff.awaiting_line_editor_since =
+                Some(Instant::now() - CONPTY_PROMPT_HOLD_GIVE_UP - Duration::from_millis(1));
+        }
+        assert!(handoff.prompt_reader_look_due(), "late={late}");
+        assert!(handoff.note_prompt_reader_asks(), "late={late}");
+        assert!(!handoff.prompt_reader_look_due(), "one look per reader");
+        for key in [&b"p"[..], b"i", b"n", b"\r"] {
+            assert_eq!(
+                handoff.on_user_bytes(key),
+                UserBytesRoute::WriteCounted,
+                "late={late} {key:?}"
+            );
+        }
+        assert!(!handoff.has_prompt_hold(), "late={late}");
+        assert!(!handoff.young_hold_queued(), "late={late}");
+        assert!(!handoff.has_unanswered_lines(), "late={late}");
+        assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+        assert_eq!(
+            handoff.on_line_editor_active(true, true),
+            ActiveDecision::Committed,
+            "late={late}"
+        );
+    }
+    // No question on screen: the view notes nothing and the key is held, as before.
+    let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert!(handoff.prompt_reader_look_due());
+    assert_eq!(handoff.on_user_bytes(b"l"), UserBytesRoute::Held);
+}
+
+/// #2038: where no reader can be ahead of the line editor, a question on screen changes nothing:
+/// the editor owns input, the line editor already signalled (also when only the model thread has
+/// parsed its marker so far), the session's shell does not signal, or the platform is not ConPTY.
+#[test]
+fn a_reader_is_noted_only_between_a_precmd_and_its_line_editors_signal() {
+    let mut signalled = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert_eq!(signalled.release_queued_prompt_hold_on_signal(), None);
+    assert!(!signalled.prompt_reader_look_due());
+    assert!(!signalled.note_prompt_reader_asks());
+
+    let mut marker_parsed = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert!(marker_parsed.on_line_editor_reading(Some(7), Some(2)));
+    assert!(!marker_parsed.prompt_reader_look_due());
+    assert!(!marker_parsed.note_prompt_reader_asks());
+
+    let mut editor = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert_eq!(editor.release_queued_prompt_hold_on_signal(), None);
+    assert_eq!(
+        editor.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+    assert!(!editor.note_prompt_reader_asks());
+
+    let mut unix = after_submit();
+    unix.on_precmd();
+    assert!(!unix.prompt_reader_look_due());
+    assert!(!unix.note_prompt_reader_asks());
+
+    let mut silent_shell = young_after_submit();
+    silent_shell.set_conpty_input(true);
+    silent_shell.set_conpty_prompt_hold(true);
+    silent_shell.on_precmd();
+    assert!(!silent_shell.note_prompt_reader_asks());
+}
+
+/// #2038: keys written to the reader after its last Enter may be unread when it ends (typed
+/// ahead of the prompt, or the question was not one); they are in the tty for the shell's line
+/// editor. When the line editor signals they count as the shell's line, so the decision asks the
+/// shell for them (a proven reader) instead of leaving them behind an editor that took over.
+#[test]
+fn keys_the_reader_left_unread_are_the_shells_line_once_the_line_editor_signals() {
+    let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert!(handoff.note_prompt_reader_asks());
+    for key in [&b"p"[..], b"\r", b"l", b"s"] {
+        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::WriteCounted);
+        handoff.on_user_write_flushed();
+    }
+    assert!(!handoff.shell_line_may_hold_typed_text());
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert!(
+        handoff.shell_line_may_hold_typed_text(),
+        "`ls` was typed after the read's Enter: it is in the shell's line"
+    );
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest,
+        "the line is asked for, not left in the shell"
+    );
+
+    // A ^C to the reader ends its line: nothing is left for the shell.
+    let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert!(handoff.note_prompt_reader_asks());
+    for key in [&b"p"[..], b"\x03"] {
+        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::WriteCounted);
+    }
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert!(!handoff.shell_line_may_hold_typed_text());
+
+    // A Preexec and a new session end the reader too.
+    let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert!(handoff.note_prompt_reader_asks());
+    handoff.on_preexec(true);
+    assert!(!handoff.prompt_reader_asks());
+    let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert!(handoff.note_prompt_reader_asks());
+    handoff.on_new_session();
+    assert!(!handoff.prompt_reader_asks());
+}
+
 /// A hold kept past its cap (an Enter among its keys) keeps its wait, so the line editor's signal
 /// still releases it; a shell that had never signalled is switched off meanwhile, and back on when
 /// the signal shows it does signal.

@@ -4894,3 +4894,26 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   on every platform: the first run is its first execution. To read in that run: a FAIL in `hp1` only is the honor-PS1 path; a FAIL in both arms
   is the precmd read itself on that platform (on Linux and macOS no root-pane precmd `read -s` was ever tested: the prompt hold is ConPTY-only,
   there the pty's termios facts have to route the keys).
+
+## Round 12: a reader ahead of the line editor gets the keys (design `docs/design/r12-pin.md`; #2038, behind #1923; nothing compiled or run when written)
+
+- **Why.** Round 11 Windows, `gitbash_precmd_secret` (the only failing Windows app case): every key stayed held (`prompt_hold_kept_overdue`).
+  1d389cfa4 makes the screen fact read the right block. Read from the code, the case would then still fail its last check: the released PIN
+  is counted as the shell's line, the Enter that ends the `read` is held as a young Enter (10 s net), then counted as a line no prompt
+  answers and opens an enter window nothing closes; the next typed line is held with no event to release it (#2038).
+- **Unit, `model/typeahead_handoff_tests.rs`** (fixture `conpty_prompt_after_a_command_in_a_shell_that_signalled`: the hand-off of the round 11
+  log at the question): `without_the_reader_the_pin_is_the_shells_line_and_its_enter_is_held_for_a_report` (the control: the defect's first
+  two steps, on code this round did not change; if it fails, the diagnosis is wrong),
+  `a_reader_ahead_of_the_line_editor_gets_every_key_and_the_signal_hands_input_to_the_editor` (hold, cap, note, release, second half, Enter,
+  signal, `Committed`, next prompt held again), `a_question_already_on_screen_sends_the_first_key_to_the_reader_without_a_hold` (inside and
+  past the cap), `a_reader_is_noted_only_between_a_precmd_and_its_line_editors_signal`,
+  `keys_the_reader_left_unread_are_the_shells_line_once_the_line_editor_signals` (no typed key is left in the shell: `SendRequest`).
+- **View, `terminal/view_test.rs`**: `a_precmd_functions_question_sends_the_pin_and_its_enter_to_the_read` (question first as the case runs,
+  and keys first then the hold's cap; Legacy and Table; one pty write per key in typed order, the editor empty, no gate left, no unanswered
+  line), `the_look_for_a_reader_at_a_key_never_waits_for_the_parser` (the look is `try_lock`: with the model held by another thread the key
+  is held as before and no blocking key-path lock is counted).
+- **appci.** No case changed. `gitbash_precmd_secret` and `precmd_secret_honor_ps1` (PROVING) are the proof. New hops to read in their logs:
+  `prompt_key_screen_asks reader_noted=true` (or `prompt_hold_screen_asks` when keys were held first), `prompt_reader_asks`,
+  `hand_route reason=prompt_reader bytes_len=1` per key (length only), `prompt_reader_end why=line_editor_signal line_dirty=false`, then
+  `handoff_decision decision=Committed`. A `young_hold_cap` warning or a second `prompt_hold_kept_overdue` in these cases is a FAIL of this
+  change.

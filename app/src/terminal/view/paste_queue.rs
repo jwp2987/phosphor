@@ -1047,7 +1047,16 @@ impl TerminalView {
             // (`pin: `, `Password:`): something other than the line editor is reading (a precmd
             // function's `read -s`). Those keys are its answer, not editor text and not a command:
             // a screen fact, not the clock, sends them to the pty, in typed order.
+            // #2038: the fact is also told to the hand-off, BEFORE the release: the held keys and
+            // every key typed after them (the Enter that ends the `read` too) are that reader's,
+            // not the shell's line, until this prompt's line editor signals. Counted as the
+            // shell's line, the Enter waited for the young hold's 10 s net and opened an enter
+            // window nothing closed, which held the next typed line with no event to release it.
             if self.screen_tail_asks_for_input() {
+                let noted = self.handoff.write().note_prompt_reader_asks();
+                warpui::input_order::log_hop("prompt_hold_screen_asks", || {
+                    format!("hold={key} reader_noted={noted}")
+                });
                 self.release_queued_prompt_hold(key, PromptHoldEnd::GaveUp, ctx);
                 return;
             }
@@ -2189,6 +2198,33 @@ impl TerminalView {
         crate::terminal::model::key_facts::block_tail_asks_for_input(
             model.block_list().block_receiving_output(),
         )
+    }
+
+    /// #2038: a key is about to be routed at a prompt whose line editor has not signalled (ConPTY,
+    /// a shell that signals) and no hold is queued: if the screen ends in a question for input,
+    /// a reader ahead of the line editor has the tty (a precmd function's `read -s`) and the
+    /// hand-off is told, so this key and the ones after it go to that reader at once instead of
+    /// being held for a signal that only comes after the answer. The hold's cap asks the same
+    /// question for keys that were held before the question was printed.
+    ///
+    /// No clock, and no wait: the model is read only if it is free (`try_lock`; the pty reader
+    /// holds it while it parses). When it is not, nothing is noted and the key is routed as
+    /// before (held for the prompt, where the cap looks again).
+    pub(super) fn note_prompt_reader_if_the_screen_asks(&mut self) {
+        if !self.handoff.read().prompt_reader_look_due() {
+            return;
+        }
+        let asks = self.model.try_lock().is_some_and(|model| {
+            crate::terminal::model::key_facts::block_tail_asks_for_input(
+                model.block_list().block_receiving_output(),
+            )
+        });
+        if asks {
+            let noted = self.handoff.write().note_prompt_reader_asks();
+            warpui::input_order::log_hop("prompt_key_screen_asks", || {
+                format!("reader_noted={noted}")
+            });
+        }
     }
 
     /// #1584: the give-up of prompt hold `hold_id` with keys that may go back to the editor: the

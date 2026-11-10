@@ -810,6 +810,19 @@ pub struct TypeaheadHandoff {
     /// answered (it was emitted before the Enter and only parsed after it): it proves nothing about
     /// the NEXT read, which may be `Read-Host -AsSecureString` reading a secret.
     enter_prompt_seq: Option<u64>,
+    /// #2038: between this prompt's Precmd and its line editor's signal the screen ended in a
+    /// question for input (`pin: `): something other than the line editor reads the tty (a precmd
+    /// function's `read -s`), which bash announces nothing for and ConPTY cannot sample. Set by
+    /// the view from that screen fact ([`Self::note_prompt_reader_asks`]); while set, user keys
+    /// are that reader's: written at once in typed order, never held, never counted as the
+    /// shell's line or as an Enter a prompt must answer. Ended by events only: the line editor's
+    /// signal, a Preexec, the next Precmd, a new session ([`Self::end_prompt_reader`]).
+    prompt_reader_asks: bool,
+    /// #2038: keys written while [`Self::prompt_reader_asks`] since the last Enter / line kill
+    /// among them. The reader may not have taken them (it ended first, or the question was not
+    /// one), and then they are in the tty for the shell's line editor: when the reader ends they
+    /// become the shell's line (`wrote_user_bytes`), so the report request collects them.
+    prompt_reader_line_dirty: bool,
     /// #1882: a command announced that it reads the tty itself (`TtyRead` marker, e.g.
     /// `Read-Host`; `Some(secret)`), until its `TtyReadEnd` or the next Precmd/Preexec. While set,
     /// the counts are never proven stale: the line editor is not the reader, so no later key may
@@ -1404,6 +1417,11 @@ impl TypeaheadHandoff {
     /// Enter's gate ([`Self::take_deferred_key_started`]). The view's queue releases a queued prompt
     /// hold chunk by chunk through this (#1353 phase 5).
     pub fn route_released_chunk(&mut self, chunk: &[u8]) -> bool {
+        // #2038: a hold released because the screen asks for input: its keys are the reader's.
+        if self.routes_to_prompt_reader() {
+            self.route_prompt_reader_bytes(chunk);
+            return true;
+        }
         match self.route_user_bytes_unheld(chunk, true) {
             UserBytesRoute::WriteCounted => true,
             UserBytesRoute::Write => {
@@ -1424,6 +1442,8 @@ impl TypeaheadHandoff {
     /// paste itself, or a second signal for the same prompt) releases nothing.
     pub fn release_queued_prompt_hold_on_signal(&mut self) -> Option<u64> {
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::LineEditorReady);
+        // #2038: the line editor reads now, so whatever asked before it is done.
+        self.end_prompt_reader("line_editor_signal");
         if self.awaiting_line_editor_since.take().is_none() {
             return None;
         }
@@ -1710,6 +1730,100 @@ impl TypeaheadHandoff {
         if id == self.prompt_hold_id {
             self.prompt_hold_queued = false;
         }
+    }
+
+    /// #2038: whether a key about to be routed should first have the screen looked at
+    /// ([`Self::note_prompt_reader_asks`]): the prompt hold is armed (ConPTY, a shell that
+    /// signals), the pty owns input, this prompt's line editor has not signalled, no reader is
+    /// known yet, and no hold is queued (a queued hold's keys were typed first: its own events and
+    /// its cap decide for them, and the keys typed behind it follow). A state fact, no clock.
+    pub fn prompt_reader_look_due(&self) -> bool {
+        !self.prompt_reader_asks
+            && !self.prompt_hold_queued
+            && !self.young_hold_queued
+            && self.prompt_reader_may_ask()
+    }
+
+    /// The state in which a question on screen means a reader ahead of the line editor: see
+    /// [`Self::prompt_reader_look_due`]. `Reading` is the model thread's account of the line
+    /// editor's marker: once it is parsed the line editor reads, whatever the screen still shows.
+    fn prompt_reader_may_ask(&self) -> bool {
+        self.prompt_hold_armed()
+            && matches!(self.state, HandoffState::PtyOwned { .. })
+            && self.awaiting_line_editor_since.is_some()
+            && self.shell_activity != ShellActivity::Reading
+    }
+
+    /// #2038 (main thread): the screen ends in a question for input while this prompt's line
+    /// editor has not signalled (`key_facts::block_tail_asks_for_input`, read by the view at a
+    /// key or at the prompt hold's cap, BEFORE the hold's keys are released). From here the keys
+    /// are the reader's ([`Self::prompt_reader_asks`]). Returns whether a reader is noted; `false`
+    /// when the state does not allow one (the line editor signalled meanwhile, the editor owns
+    /// input), and then nothing changes.
+    pub fn note_prompt_reader_asks(&mut self) -> bool {
+        if self.prompt_reader_asks {
+            return true;
+        }
+        if !self.prompt_reader_may_ask() {
+            return false;
+        }
+        self.prompt_reader_asks = true;
+        self.prompt_reader_line_dirty = false;
+        warpui::input_order::log_hop("prompt_reader_asks", || {
+            format!("hold_queued={}", self.prompt_hold_queued)
+        });
+        true
+    }
+
+    /// Whether a reader ahead of the line editor is noted for this prompt (#2038).
+    pub fn prompt_reader_asks(&self) -> bool {
+        self.prompt_reader_asks
+    }
+
+    /// #2038: an event says the reader of [`Self::note_prompt_reader_asks`] is over (the line
+    /// editor's signal, a Preexec, the next Precmd). Keys written to it after its last Enter may
+    /// be unread in the tty, where the shell's line editor takes them: they count as the shell's
+    /// line from here, so the request decision asks for them instead of leaving them behind.
+    fn end_prompt_reader(&mut self, why: &'static str) {
+        if !mem::take(&mut self.prompt_reader_asks) {
+            return;
+        }
+        let dirty = mem::take(&mut self.prompt_reader_line_dirty);
+        if dirty
+            && let HandoffState::PtyOwned {
+                wrote_user_bytes, ..
+            } = &mut self.state
+        {
+            *wrote_user_bytes = true;
+        }
+        warpui::input_order::log_hop("prompt_reader_end", || {
+            format!("why={why} line_dirty={dirty}")
+        });
+    }
+
+    /// #2038: routes a user write to the reader ahead of the line editor: written now, in flight,
+    /// neither line content nor an Enter for the shell (as a full-screen program's keys). The log
+    /// carries the length only: the keys may be a secret.
+    fn route_prompt_reader_bytes(&mut self, bytes: &[u8]) -> UserBytesRoute {
+        let (_, dirty) = scan_line_terminators(
+            bytes,
+            self.prompt_reader_line_dirty,
+            !self.ctrl_u_not_line_kill,
+        );
+        self.prompt_reader_line_dirty = dirty;
+        warpui::input_order::log_hop("hand_route", || {
+            format!(
+                "reason=prompt_reader state=pty_owned bytes_len={} line_dirty={dirty}",
+                bytes.len()
+            )
+        });
+        self.writes_in_flight = self.writes_in_flight.saturating_add(1);
+        UserBytesRoute::WriteCounted
+    }
+
+    /// Whether a user write goes to the reader ahead of the line editor (#2038).
+    fn routes_to_prompt_reader(&self) -> bool {
+        self.prompt_reader_asks && matches!(self.state, HandoffState::PtyOwned { .. })
     }
 
     /// Whether, on a ConPTY session, a line is in progress -- the user's keys are in the shell's
@@ -2008,6 +2122,9 @@ impl TypeaheadHandoff {
         self.reading_seq = None;
         self.enter_prompt_seq = None;
         self.tty_read_marker = None;
+        // #2038: the reader, and the keys written to it, were the old session's.
+        self.prompt_reader_asks = false;
+        self.prompt_reader_line_dirty = false;
         self.line_editor_markers_live = false;
         self.last_parsed_hook = None;
         // ... and the latch of the command that handed the pty over is the old session's.
@@ -2849,6 +2966,8 @@ impl TypeaheadHandoff {
 
     /// The shell emitted a precmd hook (model thread).
     pub fn on_precmd(&mut self) {
+        // #2038: a new prompt cycle: the reader of the last one is over.
+        self.end_prompt_reader("precmd");
         self.shell_activity = ShellActivity::Prompt;
         self.reading_seq = None;
         self.activity_generation = self.activity_generation.wrapping_add(1);
@@ -2922,6 +3041,8 @@ impl TypeaheadHandoff {
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Preexec);
         self.session_emits_preexec = true;
         self.end_keys_follow_editor("preexec");
+        // #2038: the shell started a command: nothing reads ahead of its line editor any more.
+        self.end_prompt_reader("preexec");
         self.shell_activity = ShellActivity::Running;
         // #1793: a command runs; a `\r` now would be its input.
         self.line_empty_at_writes = None;
@@ -3056,6 +3177,13 @@ impl TypeaheadHandoff {
             warpui::input_order::log_hop("commit_deferred_awaiting_line_editor", String::new);
             return false;
         }
+        // #2038: a reader ahead of the line editor has the tty (the wait above may be over: the
+        // hold's cap ended it when it released the keys to that reader). The editor takes input
+        // at the line editor's signal, not before.
+        if self.prompt_reader_asks {
+            warpui::input_order::log_hop("commit_deferred_prompt_reader", String::new);
+            return false;
+        }
         match self.owner() {
             Owner::Pty {
                 wrote_user_bytes: false,
@@ -3103,6 +3231,15 @@ impl TypeaheadHandoff {
                     // #1353 phase 5: keys typed since the prompt wait in the view's queue and
                     // have not been counted yet, so the shell's line looks empty. Decide nothing
                     // until the view has released them (it asks for a retry then).
+                    return ActiveDecision::Wait {
+                        activity_generation: self.activity_generation,
+                    };
+                }
+                if self.prompt_reader_asks {
+                    // #2038: a reader ahead of the line editor has the tty; the line editor's
+                    // signal ends it (`release_queued_prompt_hold_on_signal`, called before the
+                    // decision that signal starts) and decides again. Nothing is requested from,
+                    // or committed over, a `read -s`.
                     return ActiveDecision::Wait {
                         activity_generation: self.activity_generation,
                     };
@@ -3229,6 +3366,9 @@ impl TypeaheadHandoff {
     /// hold is already queued (its keys were typed later; these go first). Behind an Enter
     /// deferred for the report they are held behind its gate, like any key.
     pub fn on_given_up_user_bytes(&mut self, bytes: &[u8]) -> UserBytesRoute {
+        if self.routes_to_prompt_reader() && !self.prompt_hold_queued && !self.young_hold_queued {
+            return self.route_prompt_reader_bytes(bytes);
+        }
         if !bytes.iter().any(is_signal_byte)
             && !self.young_hold_queued
             && !self.prompt_hold_queued
@@ -3247,6 +3387,12 @@ impl TypeaheadHandoff {
     }
 
     fn route_user_bytes(&mut self, bytes: &[u8], reaches_shell_line: bool) -> UserBytesRoute {
+        // #2038: a reader ahead of the line editor asks for input (a precmd function's `read -s`):
+        // every key is its, a signal byte and an Enter included, at once and in typed order. With
+        // a hold queued the key waits behind it as below (the keys before it are not out yet).
+        if self.routes_to_prompt_reader() && !self.prompt_hold_queued && !self.young_hold_queued {
+            return self.route_prompt_reader_bytes(bytes);
+        }
         // A signal or EOF byte is never held for a prompt or a young Enter: it drops a held Enter
         // and goes out at once. Behind an Enter deferred for the report (`HoldAfterEnter` with its
         // gate) it is routed like any key there: held behind the gate, after the keys typed before
@@ -3513,6 +3659,9 @@ impl TypeaheadHandoff {
         reaches_shell_line: bool,
         now: Instant,
     ) -> UserBytesRoute {
+        if self.routes_to_prompt_reader() && !self.prompt_hold_queued && !self.young_hold_queued {
+            return UserBytesRoute::WriteCounted;
+        }
         if bytes.iter().any(is_signal_byte) {
             return self.peek_user_bytes_unheld();
         }

@@ -27831,6 +27831,163 @@ fn a_precmd_does_not_commit_input_to_the_editor_so_a_precmd_read_gets_the_pin() 
     }
 }
 
+/// Round 11 Windows, `gitbash_precmd_secret` at the moment of its question (#1923, #2038): a Git
+/// Bash pane on ConPTY whose line editor signalled at an earlier prompt; the command the editor
+/// wrote ran and ended (its Preexec, CommandFinished and Precmd go through the model, which
+/// tells the hand-off), and this prompt's line editor has not signalled.
+fn conpty_prompt_after_a_command_with_no_signal_yet(view: &mut TerminalView) {
+    let mut model = view.model.lock();
+    {
+        let mut handoff = model.typeahead_handoff_mut();
+        handoff.set_conpty_input(true);
+        handoff.set_conpty_prompt_hold(true);
+        handoff.set_conpty_prompt_hold_shell_signals(true);
+        handoff.set_conpty_enter_window_hold(true);
+        handoff.on_precmd();
+        let _ = handoff.release_queued_prompt_hold_on_signal();
+        handoff.on_command_written();
+    }
+    model.simulate_block("touch gbgo.txt", "");
+}
+
+/// #1923 / #2038, the sequence of `gitbash_precmd_secret` (rounds 10 and 11 Windows: the PIN
+/// stayed held, `prompt_hold_kept_overdue`, with `pin: ` on screen): a precmd function prints
+/// `pin: ` after the prompt's Precmd and reads the tty. The question is early output, written to
+/// a background block, not to the active block the screen fact used to read.
+///
+/// * `question_first` (the case as it runs): the question is on screen when the first key is
+///   typed. The key's look at the screen tells the hand-off; no key is held.
+/// * otherwise: the first half is typed before the question is printed and is held for the line
+///   editor; at the hold's cap the screen asks, and the held keys are released.
+///
+/// Either way every key of the PIN and its Enter reach the pty as the separate writes they were
+/// typed in, in typed order, the keys after the release at once (no hold, no young Enter); the
+/// editor never holds a character; the Enter is not a line a prompt must answer; and the line
+/// editor's signal ends the reader. Legacy and Table.
+#[test]
+fn a_precmd_functions_question_sends_the_pin_and_its_enter_to_the_read() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for question_first in [true, false] {
+            App::test((), move |mut app| async move {
+                let what = format!("{mode:?} question_first={question_first}");
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = collect_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    register_local_session_for_ssh_test(view, ctx);
+                    conpty_prompt_after_a_command_with_no_signal_yet(view);
+                    if question_first {
+                        view.model.lock().process_bytes("pin: ");
+                    }
+                    for key in [&b"p"[..], b"i", b"n"] {
+                        view.write_user_bytes_to_pty(key.to_vec(), ctx);
+                    }
+                    if question_first {
+                        assert!(!prompt_gate_open(view), "{what}: nothing is held");
+                    } else {
+                        assert!(prompt_gate_open(view), "{what}: held for the line editor");
+                        assert!(pty_writes.borrow().is_empty(), "{what}");
+                        view.model.lock().process_bytes("pin: ");
+                        let token = view.paste_queue.queue.borrow().gates()[0].token;
+                        view.on_paste_queue_give_up(token, ctx);
+                        assert!(!prompt_gate_open(view), "{what}: released at the cap");
+                    }
+                    assert_eq!(
+                        *pty_writes.borrow(),
+                        vec![b"p".to_vec(), b"i".to_vec(), b"n".to_vec()],
+                        "{what}: the first half is with the read"
+                    );
+                    assert!(
+                        view.handoff.read().prompt_reader_asks(),
+                        "{what}: the hand-off knows a reader has the tty"
+                    );
+                    // The second half and the Enter, typed later.
+                    for key in [&b"4"[..], b"2", b"\r"] {
+                        view.write_user_bytes_to_pty(key.to_vec(), ctx);
+                    }
+                    assert!(!prompt_gate_open(view), "{what}");
+                    assert!(view.paste_queue.queue.borrow().is_idle(), "{what}");
+                    assert_eq!(
+                        *pty_writes.borrow(),
+                        [&b"p"[..], b"i", b"n", b"4", b"2", b"\r"]
+                            .map(|key| key.to_vec())
+                            .to_vec(),
+                        "{what}: the PIN and its Enter, one write per key, in typed order"
+                    );
+                    assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{what}");
+                    {
+                        let handoff = view.handoff.read();
+                        assert!(handoff.is_pty_owned(), "{what}");
+                        assert!(!handoff.young_hold_queued(), "{what}: no young Enter");
+                        assert!(
+                            !handoff.has_unanswered_lines(),
+                            "{what}: the read's Enter is not a line a prompt must answer"
+                        );
+                        assert!(!handoff.shell_line_may_hold_typed_text(), "{what}");
+                    }
+                    // The read returned and the line editor signals.
+                    line_editor_signal(view, ctx);
+                    assert!(!view.handoff.read().prompt_reader_asks(), "{what}");
+                });
+            })
+        }
+    }
+}
+
+/// #2038: the look at the screen for a key at a prompt whose line editor has not signalled takes
+/// the model only if it is free. With the pty reader inside the lock the key does not wait: it is
+/// held for the line editor as before, and the hold's cap looks again.
+#[test]
+fn the_look_for_a_reader_at_a_key_never_waits_for_the_parser() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            conpty_prompt_after_a_command_with_no_signal_yet(view);
+            {
+                let mut model = view.model.lock();
+                model.process_bytes("pin: ");
+                model.publish_key_facts();
+            }
+            let model = view.model.clone();
+            let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let parser = std::thread::spawn(move || {
+                let _parsing = model.lock();
+                held_tx.send(()).unwrap();
+                let _ = done_rx.recv_timeout(Duration::from_secs(3));
+            });
+            held_rx.recv().unwrap();
+            let before = crate::terminal::model_lock_trace::key_path_lock_count();
+            let started = Instant::now();
+            view.write_user_bytes_to_pty(b"p".to_vec(), ctx);
+            let waited = started.elapsed();
+            done_tx.send(()).unwrap();
+            parser.join().unwrap();
+            assert!(
+                waited < Duration::from_secs(1),
+                "the key waited {waited:?} for the parser"
+            );
+            assert_eq!(
+                crate::terminal::model_lock_trace::key_path_lock_count(),
+                before,
+                "no blocking model lock on the key path"
+            );
+            assert!(!view.handoff.read().prompt_reader_asks());
+            assert!(
+                prompt_gate_open(view),
+                "held for the line editor, as before"
+            );
+        });
+    })
+}
+
 /// No model lock per key while the hold is open: after the key that started it, the queue takes
 /// every key without locking the terminal model (the pty reader holds that lock while it parses).
 #[test]
