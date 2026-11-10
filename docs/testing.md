@@ -4392,3 +4392,12 @@ about the test machine's process count and not about the app.
 about 0.1 ms as on macOS for the keys that take no sample; `typing_prompt_samples.samples` about one per `cat` line typed (its first key),
 not one per key, with `lookups` showing `list_confirm` for `cat` (reads = 7; its `us` is the list's cost on that machine, expect a few
 hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and never `walk` for a plain program.
+
+## Round 10 group A (#1966 #1985 #2004; design `docs/design/r10-groupa.md`)
+
+- **Windows RUST_LOG covers every module whose `hop=` lines a case reads (#1966).** The Windows launcher's `warn` base hid the plain `log::info!`
+  `hop=agent_action` line (module `warp::ai::blocklist::action_model`), so `agent_question` on Git Bash judged a shown card `hung`. The string is now
+  `app.WINDOWS_RUST_LOG` with an `=info` directive for each of the 13 modules that emit a case-read `hop=` through a plain log call. Selftest
+  `windows_rust_log_enables_every_hop_module_1966` scans the Rust sources and fails when such a module is not enabled (a new plain-log hop needs its
+  module added to the constant); it also proves the pre-fix string hid `action_model`. Worked, unproven: no Windows run yet; the next Git Bash
+  `agent_question` run should show `hop=agent_action ... status=blocked` and verdict `answerable`.

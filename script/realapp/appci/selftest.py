@@ -2973,6 +2973,55 @@ def wayland_pointer_gate_follows_the_holder_1789():
 
 
 @check
+def windows_rust_log_enables_every_hop_module_1966():
+    """#1966: the Windows launcher's RUST_LOG (bare `warn` base) enables every module that emits, with a plain `log::info!`/`debug!`, a `hop=` line some appci
+    case reads. Scans the Rust sources; the module path comes from the file path (app -> warp, crates/x -> x). `backend_route` is logged through a helper
+    (`route_log_line`) so it is listed by hand. Also proves the matcher: the pre-fix string hid action_model, the longest prefix wins, no default = off"""
+    import re
+    import app as A
+    root = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+    read = set()
+    for fn in os.listdir(HERE):
+        if fn.endswith(".py") and fn != "selftest.py":
+            read |= set(re.findall(r"hop=([a-z_0-9]+)", open(os.path.join(HERE, fn), encoding="utf-8").read()))
+    assert "agent_action" in read, "the scan found no hops: the case sources moved?"
+    pat = re.compile(r'log::(info|debug|trace)!\(\s*(?:target:[^,]*,\s*)?"([^"]*)"', re.S)
+
+    def module_of(rel):
+        parts = rel.replace(os.sep, "/").split("/")
+        if parts[0] == "app":
+            crate, parts = "warp", parts[2:]
+        else:
+            crate, parts = parts[1].replace("-", "_"), parts[3:]
+        parts[-1] = parts[-1][:-3]
+        if parts[-1] in ("mod", "lib", "main"):
+            parts = parts[:-1]
+        return "::".join([crate] + parts)
+    found = {("remote_server::backend::router", "info", "backend_route")}
+    for top in ("app/src", "crates"):
+        for d, _, fs in os.walk(os.path.join(root, top)):
+            for fn in fs:
+                if not fn.endswith(".rs") or "_test" in fn or "/target" in d:
+                    continue
+                p = os.path.join(d, fn)
+                if not re.search(r"hop=", open(p, encoding="utf-8", errors="replace").read()):
+                    continue
+                for m in pat.finditer(open(p, encoding="utf-8", errors="replace").read()):
+                    for h in re.findall(r"hop=([a-z_0-9]+)", m.group(2)):
+                        if h in read:
+                            found.add((module_of(os.path.relpath(p, root)), m.group(1), h))
+    assert len(found) >= 10, found
+    hidden = sorted(x for x in found if not A.rust_log_enabled(A.WINDOWS_RUST_LOG, x[0], x[1]))
+    assert not hidden, "hop lines the cases read are hidden by the Windows RUST_LOG (add the module to app.WINDOWS_RUST_LOG): %r" % (hidden,)
+    pre_fix = "warn,winit=info,warp::ai::agent_providers=info,warp::ai::blocklist::controller=info,warp::input_order=debug"
+    assert not A.rust_log_enabled(pre_fix, "warp::ai::blocklist::action_model", "info")      # the #1966 defect, still detectable
+    assert A.rust_log_enabled(pre_fix, "warp::input_order", "info") and not A.rust_log_enabled(pre_fix, "warp::input_order_x", "info")
+    assert A.rust_log_enabled("warn,warp::a=info,warp::a::b=warn", "warp::a::c", "info")
+    assert not A.rust_log_enabled("warn,warp::a=info,warp::a::b=warn", "warp::a::b", "info")      # longest prefix wins
+    assert not A.rust_log_enabled("warp::a=info", "other", "warn")                                 # no default: off
+
+
+@check
 def app_find_hook_harness_side_1789():
     """#1789 app find hook, harness side: RUST_LOG carries the hook's log target; hook_find reads only lines after `since`; find_token uses the hook on
     X11 and Wayland (OCR is not called when the hook has the token), and notes the OCR fallback on `r` when it does not; x11_window_origin is None
