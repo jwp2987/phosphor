@@ -40747,40 +40747,41 @@ impl Drop for TerminalView {
         {
             log::warn!("{line}");
         }
-        if let Some((is_bootstrapped, pending_shell, has_pending_ssh_session)) =
-            self.model.try_lock().map(|model| {
-                (
-                    model.block_list().is_bootstrapped(),
-                    model.pending_shell_type(),
-                    model.has_pending_ssh_session(),
-                )
-            })
+        // #1983: the line is about THIS view, the one being dropped, never about the session the
+        // user is in; a view that never had a shell (a transcript viewer) is not a session. The
+        // rule is `abandoned_session::abandoned_before_bootstrap_level`.
+        if let Some((facts, pending_shell)) = self.model.try_lock().map(|model| {
+            (
+                abandoned_session::DroppedViewFacts {
+                    is_bootstrapped: model.block_list().is_bootstrapped(),
+                    has_pending_ssh_session: model.has_pending_ssh_session(),
+                    is_transcript_viewer: model.is_conversation_transcript_viewer(),
+                    was_ever_visible: self.was_ever_visible,
+                },
+                model.pending_shell_type(),
+            )
+        }) && let Some(log_level) = abandoned_session::abandoned_before_bootstrap_level(facts)
         {
-            if has_pending_ssh_session || !is_bootstrapped {
-                // Only treat session abandonment as an error if the session was
-                // visible to the user at some point.  This filters out
-                // bootstrap "failures" such as oh-my-zsh prompting the user
-                // about an update while we're sourcing their rcfiles - we'll
-                // never technically finish bootstrapping the shell.  If that
-                // occurs in some non-visible tab, we don't want to conflate it
-                // (an unanswered prompt) with an actual failure to bootstrap
-                // the shell.
-                let log_level = if self.was_ever_visible {
-                    log::Level::Error
-                } else {
-                    log::Level::Warn
-                };
-                log::log!(
-                    log_level,
-                    "Session abandoned before bootstrap for shell {pending_shell:?} on ssh {has_pending_ssh_session}"
-                );
+            // Only treat session abandonment as an error if the session was
+            // visible to the user at some point.  This filters out
+            // bootstrap "failures" such as oh-my-zsh prompting the user
+            // about an update while we're sourcing their rcfiles - we'll
+            // never technically finish bootstrapping the shell.  If that
+            // occurs in some non-visible tab, we don't want to conflate it
+            // (an unanswered prompt) with an actual failure to bootstrap
+            // the shell.
+            let has_pending_ssh_session = facts.has_pending_ssh_session;
+            log::log!(
+                log_level,
+                "Session abandoned before bootstrap for shell {pending_shell:?} on ssh {has_pending_ssh_session} (dropped terminal view {:?})",
+                self.view_id
+            );
 
-                log::debug!(
-                    "Session abandoned before bootstrap details: pending_shell={pending_shell:?}, has_pending_ssh_session={has_pending_ssh_session}, was_ever_visible={}",
-                    self.was_ever_visible,
-                );
-            }
-        };
+            log::debug!(
+                "Session abandoned before bootstrap details: pending_shell={pending_shell:?}, has_pending_ssh_session={has_pending_ssh_session}, was_ever_visible={}",
+                self.was_ever_visible,
+            );
+        }
     }
 }
 
@@ -41722,6 +41723,8 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
         .collect();
 }
 
+/// #1983: when a dropped view is an abandoned session, and at which log level.
+mod abandoned_session;
 mod dest_table;
 /// Owner decision 2026-11-09 (reversing #1661): a hold that gives up writes its keys to the pty.
 mod give_up_to_pty;
