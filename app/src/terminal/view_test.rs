@@ -27033,9 +27033,37 @@ fn ssh_queue_is_idle(view: &TerminalView) -> bool {
 }
 
 /// Runs `body` on a fresh view with the ssh hold on the given path.
+///
+/// `body` runs inside ONE view update, and a pty write is an event: its subscribers run when the
+/// outermost update returns. So `body` gets no pty-write recorder (read in there it is always
+/// empty, whatever the app did). A scenario that must leave the pty untouched uses
+/// [`ssh_hold_path_writes_nothing`], which reads the recorder after the update.
 fn with_ssh_hold_path(
-    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>, &Rc<RefCell<Vec<Vec<u8>>>>)
-    + 'static,
+    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>) + 'static,
+) {
+    run_on_ssh_hold_path(None, body)
+}
+
+/// [`with_ssh_hold_path`] for a scenario in which nothing may be written to the pty (the keys
+/// stay held, or end in the input editor): after the update `body` ran in, when the write events
+/// it emitted have been delivered, the recorder must be empty.
+fn ssh_hold_path_writes_nothing(
+    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>) + 'static,
+) {
+    run_on_ssh_hold_path(Some(String::new()), body)
+}
+
+/// [`ssh_hold_path_writes_nothing`] with a label for the failure message (the arm of a loop).
+fn ssh_hold_path_writes_nothing_in(
+    label: &str,
+    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>) + 'static,
+) {
+    run_on_ssh_hold_path(Some(label.to_owned()), body)
+}
+
+fn run_on_ssh_hold_path(
+    writes_nothing: Option<String>,
+    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>) + 'static,
 ) {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
@@ -27044,8 +27072,15 @@ fn with_ssh_hold_path(
         let pty_writes = record_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
-            body(view, ctx, &pty_writes);
+            body(view, ctx);
         });
+        if let Some(label) = writes_nothing {
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{label}: nothing may be written to the pty: {:?}",
+                pty_writes.borrow()
+            );
+        }
     })
 }
 
@@ -27053,7 +27088,7 @@ fn with_ssh_hold_path(
 /// (focus already in the editor) before the precmd hand-over: all 29 are delivered once, in
 /// typed order, and the editor's buffer is not wiped by the hand-over.
 fn ssh_key_via_editor_route_before_handover_joins_the_hold() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         let line = "echo zqTR31 >> /tmp/zq-mac.log";
         let (head, rest) = line.split_at(28);
@@ -27078,7 +27113,6 @@ fn ssh_key_via_editor_route_before_handover_joins_the_hold() {
         // A key typed after the hand-over follows, once.
         editor_text(view, &rest[1..], ctx);
         assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), line);
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27123,7 +27157,7 @@ fn pane_typed(
 /// the ssh hold takes it. Hand-over: all 29, once, in typed order, nothing left in the editor's
 /// side queue.
 fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         let line = "echo RTtm0 >> ~/rl_tm0.1.txt";
         let chars: Vec<String> = line.chars().map(|c| c.to_string()).collect();
@@ -27148,7 +27182,6 @@ fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order() {
         assert!(view.ssh_held_is_empty());
         assert!(ssh_queue_is_idle(view));
         assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), line);
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27240,7 +27273,7 @@ fn pane_key_typed_into_a_text_field_inside_the_pane_is_not_the_sinks() {
 /// neither the terminal nor the editor (the focus gap before the remote shell's first prompt) are
 /// all held, in order, none lost.
 fn ssh_keys_in_a_focus_gap_join_the_hold() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         for c in ["e", "c", "h", "o"] {
             let key = PaneKey {
@@ -27261,7 +27294,6 @@ fn ssh_keys_in_a_focus_gap_join_the_hold() {
         }
         assert!(view.ssh_typeahead_holding);
         assert_eq!(view.ssh_held_bytes(), 4, "no key lost, none doubled");
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27363,7 +27395,7 @@ fn key_path_reads_do_not_wait_for_the_pty_reader() {
 }
 
 fn ssh_keys_during_connect_are_delivered_once_in_order() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         assert!(!ssh_gate_open(view), "nothing held yet: no gate");
         view.typed_characters_on_terminal("echo ", ctx);
@@ -27388,7 +27420,6 @@ fn ssh_keys_during_connect_are_delivered_once_in_order() {
         assert!(view.ssh_held_is_empty());
         assert!(!ssh_gate_open(view));
         assert!(ssh_queue_is_idle(view), "nothing left queued");
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27398,7 +27429,7 @@ fn ssh_queue_keys_during_connect_are_delivered_once_in_order() {
 }
 
 fn ssh_key_queued_in_the_prompt_turn_lands_after_the_held_keys() {
-    with_ssh_hold_path(move |view, ctx, _| {
+    with_ssh_hold_path(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("echo ab", ctx);
         view.ssh_remote_prompt_seen = true;
@@ -27462,7 +27493,7 @@ fn ssh_queue_secret_read_at_ownership_discards_held_keys_and_next_key_reaches_th
 }
 
 fn ssh_failed_connect_returns_the_text_to_the_input() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("echo hi", ctx);
         view.keydown_on_terminal("\r", ctx);
@@ -27478,7 +27509,6 @@ fn ssh_failed_connect_returns_the_text_to_the_input() {
         );
         assert!(!ssh_gate_open(view));
         assert!(ssh_queue_is_idle(view));
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27488,7 +27518,7 @@ fn ssh_queue_failed_connect_returns_the_text_to_the_input() {
 }
 
 fn ssh_repeated_connects_each_get_their_own_hold() {
-    with_ssh_hold_path(move |view, ctx, _| {
+    with_ssh_hold_path(move |view, ctx| {
         for round in ["one", "two", "three"] {
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal(round, ctx);
@@ -27513,7 +27543,7 @@ fn ssh_queue_repeated_connects_each_get_their_own_hold() {
 }
 
 fn ssh_interrupt_discards_the_held_keys() {
-    with_ssh_hold_path(move |view, ctx, _| {
+    with_ssh_hold_path(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("abc", ctx);
         release_ssh_gate_for_test(view);
@@ -27533,7 +27563,7 @@ fn ssh_queue_interrupt_discards_the_held_keys() {
 }
 
 fn ssh_overflow_drops_the_whole_run() {
-    with_ssh_hold_path(move |view, ctx, _| {
+    with_ssh_hold_path(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         let big = "x".repeat(40 * 1024);
         view.ssh_typeahead_holding = true;
@@ -27572,7 +27602,7 @@ fn ssh_queue_overflow_drops_the_whole_run() {
 /// drains, everything lands once, in typed order.
 #[test]
 fn ssh_paste_with_a_pending_read_keeps_typed_order_around_it() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("a", ctx);
         assert!(ssh_gate_open(view));
@@ -27617,7 +27647,6 @@ fn ssh_paste_with_a_pending_read_keeps_typed_order_around_it() {
         view.deliver_ssh_typeahead_if_ready("precmd", ctx);
         assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "aPb");
         assert!(ssh_queue_is_idle(view));
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27625,7 +27654,7 @@ fn ssh_paste_with_a_pending_read_keeps_typed_order_around_it() {
 /// answer is pasted nowhere.
 #[test]
 fn ssh_paste_with_a_pending_read_is_cancelled_with_the_hold() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("a", ctx);
         let id = view
@@ -27659,7 +27688,6 @@ fn ssh_paste_with_a_pending_read_is_cancelled_with_the_hold() {
             ctx,
         );
         assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -30419,7 +30447,7 @@ fn queued_texts(view: &TerminalView) -> Vec<String> {
 /// the queue cannot take a new entry: it used to log "a key was not held" and drop the text.
 #[test]
 fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         // `ls` waits behind the Enter's gate; the Enter's command is `ssh host`.
         hold_text_behind_test_gate(view, "ls", ctx);
         submit_command(view, "ssh host", ctx);
@@ -30433,7 +30461,6 @@ fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
         assert_eq!(queued_texts(view), vec!["ls".to_owned()]);
         assert_eq!(view.ssh_held_count(), 1);
         assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
         // The remote shell's first prompt delivers it, once.
         view.ssh_remote_prompt_seen = true;
         first_precmd_processed_for_test(view, ctx);
@@ -30453,7 +30480,7 @@ fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
 fn ssh_key_offered_while_the_queue_is_busy_is_held_in_order() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        with_ssh_hold_path(move |view, ctx, pty_writes| {
+        ssh_hold_path_writes_nothing_in(&format!("{mode:?}"), move |view, ctx| {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("ab", ctx);
@@ -30481,11 +30508,6 @@ fn ssh_key_offered_while_the_queue_is_busy_is_held_in_order() {
                 view.ssh_hold_take(),
                 vec![HeldInput::Typed("abcd".to_owned())],
                 "{mode:?}: in typed order, once"
-            );
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: {:?}",
-                pty_writes.borrow()
             );
         });
     }

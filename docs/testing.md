@@ -5240,3 +5240,13 @@ now reads the recorder after the update, at the same point of the same sequence.
   write the test's author never saw), or the test's claim was never true of the sequence it builds (TEST). A split delivers the first
   half's events before the second half runs, as the app does between two keys; only the test's recorder subscribes to the view's
   events in these tests, and nothing between the halves awaits, so timers and model events do not run there.
+- **`with_ssh_hold_path` no longer hands its body the recorder.** The helper runs the whole body in one update, so all nine bodies
+  that asserted `pty_writes.borrow().is_empty()` asserted nothing. Those nine now use `ssh_hold_path_writes_nothing` (or
+  `ssh_hold_path_writes_nothing_in(label, ..)` in a loop over modes), which reads the recorder after the update and fails with what was
+  written: `ssh_key_via_editor_route_before_handover_joins_the_hold`, `ssh_keys_by_every_route_before_handover_are_delivered_once_in_order`,
+  `ssh_keys_in_a_focus_gap_join_the_hold`, `ssh_keys_during_connect_are_delivered_once_in_order`,
+  `ssh_failed_connect_returns_the_text_to_the_input`, `ssh_paste_with_a_pending_read_keeps_typed_order_around_it`,
+  `ssh_paste_with_a_pending_read_is_cancelled_with_the_hold`, `text_replayed_into_a_new_ssh_connect_is_held_not_dropped`,
+  `ssh_key_offered_while_the_queue_is_busy_is_held_in_order`. In each the keys stay held or end in the input editor, so "nothing
+  written by the end of the update" is the claim the body made. The four bodies that never looked at the recorder keep
+  `with_ssh_hold_path`. A new scenario that expects a pty write reads its own recorder after its own update (not through these helpers).
