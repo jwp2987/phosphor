@@ -6242,6 +6242,89 @@ def agent_mcp_pure_pieces():
 
 
 @check
+def mcp_config_is_where_the_app_reads_it():
+    """#2065: agent_mcp_faults was SKIP on every platform in every run because the harness wrote `~/.warp/.mcp.json` and the app under test (Channel::Oss)
+    reads `<home>/.phosphor/.mcp.json`. The directory name is pinned against the app's source, so a renamed directory fails here and not as a silent skip;
+    the Windows home is the profile folder (not HOME); a leftover of a killed run is told apart from a user's own file; both cases are in the fake pass."""
+    import re
+    import cases_agent_mcp as MC, winapi
+    root = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+    paths = open(os.path.join(root, "crates", "warp_core", "src", "paths.rs"), encoding="utf-8").read()
+    m = re.search(r'Channel::Oss => "([^"]+)"\.to_owned\(\)', paths)
+    assert m and m.group(1) == MC.APP_CONFIG_DIR, "paths.rs names the Oss config directory %r, the harness writes the MCP config under %r" % (m and m.group(1), MC.APP_CONFIG_DIR)
+    assert 'warp_home_config_dir().map(|warp_config_dir| warp_config_dir.join(".mcp.json"))' in paths, "the app's MCP config file name moved"
+    assert "Channel::Oss" in open(os.path.join(root, "app", "src", "bin", "phosphor_oss.rs"), encoding="utf-8").read()
+    assert MC.mcp_config_path("/h") == os.path.join("/h", ".phosphor", ".mcp.json")
+
+    class Ctx:
+        def __init__(self, win):
+            self.win, self.prof = win, type("P", (), {"home": "/scratch/home"})()
+    assert MC.app_home(Ctx(False)) == "/scratch/home"
+    if os.name != "nt":            # off Windows profile_dir is the environment's answer; on Windows it is the known folder (cannot be faked here)
+        assert winapi.profile_dir({"USERPROFILE": "C:\\Users\\ci"}) == "C:\\Users\\ci"
+        saved = os.environ.get("USERPROFILE")
+        os.environ["USERPROFILE"] = "C:\\Users\\ci"
+        try:
+            assert MC.app_home(Ctx(True)) == "C:\\Users\\ci", "on Windows the config goes under the profile folder, never under the pane's scratch HOME"
+        finally:
+            if saved is None:
+                del os.environ["USERPROFILE"]
+            else:
+                os.environ["USERPROFILE"] = saved
+    one = MC.mcp_config("py", "fakemcp.py", "/s", servers=[("fxok", "ok")])
+    assert list(json.loads(one)["mcpServers"]) == ["fxok"]
+    assert MC.harness_owned(one) and MC.harness_owned(MC.mcp_config("py", "f", "/s"))
+    assert not MC.harness_owned('{"mcpServers": {"github": {"command": "x"}}}') and not MC.harness_owned('{"mcpServers": {"fxok": {}, "mine": {}}}')
+    assert not MC.harness_owned('{"mcpServers": {}}') and not MC.harness_owned("not json") and not MC.harness_owned("[]") and not MC.harness_owned("")
+    log = "INFO started\nWARN Failed to spawn MCP server fxok: no such file\nDEBUG input_order keydown\nINFO file_based_mcp parsed 1 server"
+    assert MC.mcp_log_lines(log) == ["WARN Failed to spawn MCP server fxok: no such file", "INFO file_based_mcp parsed 1 server"], MC.mcp_log_lines(log)
+    for n in ("mcp_basic", "agent_mcp_faults"):
+        assert n in cases.PROVING and n in cases.PROVING_FAKE, n
+        assert winmap.skip_reason(n, "gitbash") is None and "Git Bash" in winmap.skip_reason(n, "powershell"), n
+        assert [c["modes"] for c in cases.CASES if c["name"] == n] == [("agent",)], n
+    src = open(os.path.join(HERE, "cases_agent_mcp.py"), encoding="utf-8").read()
+    assert '".warp"' not in src and "r.skip(\"precondition" not in src, "the control is a check: no skip on an unloaded config, no write to ~/.warp"
+
+    # the control's steps are checks: a server that never starts FAILS with the evidence in the message
+    class R:
+        def __init__(self):
+            self.fails, self.notes, self.metrics = [], [], {}
+
+        def check(self, ok, msg):
+            if not ok:
+                self.fails.append(msg)
+            return ok
+
+        def note(self, msg):
+            self.notes.append(msg)
+
+        def metric(self, k, v):
+            self.metrics[k] = v
+
+    class C2:
+        W, win = tempfile.mkdtemp(prefix="mcpst_"), False
+        prof = type("P", (), {"home": tempfile.mkdtemp(prefix="mcph_")})()
+
+        def until(self, pred, timeout, step=0.2):
+            return pred()
+
+        def log_size(self):
+            return 0
+
+        def log_since(self, off):
+            return "WARN MCP server fxok failed to start"
+
+        def shot(self, tag):
+            return None
+    c2, r2 = C2(), R()
+    sess = MC.McpSession(c2, r2, "t", [("fxok", "ok")])
+    assert sess.cfg == os.path.join(c2.prof.home, ".phosphor", ".mcp.json")
+    assert MC.control_call(c2, r2, None, sess, "basic") is False
+    assert len(r2.fails) == 1 and "never started the healthy MCP server" in r2.fails[0] and "config <app home>/.phosphor/.mcp.json MISSING" in r2.fails[0] \
+        and "MCP server fxok failed to start" in r2.fails[0], r2.fails
+
+
+@check
 def agent_latency_pure_parts():
     """#1828: key->frame and Enter->enter_begin pairing, the steer judges, the fake model's slow stream and request log"""
     import cases_agent_latency as AL

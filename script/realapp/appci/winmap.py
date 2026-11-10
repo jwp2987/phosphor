@@ -81,6 +81,10 @@ GITBASH_ONLY = {
     "ssh_gitbash_typeahead_managed": "keys typed during a one-connection managed ssh login stay managed (#1959): only the Git Bash pane has the wrapper",
     "ssh_gitbash_kill_switch": "the default and PHOSPHOR_MSYS_MANAGED_SSH=0 in the bash pane are plain ssh (#1933, #2051): only the Git Bash pane has the wrapper",
     "agent_approval": "uses rec.log and effect files in bash syntax: runs in the Git Bash pane (needs the CI model)",
+    # #2065: the app's global MCP config is under the user's profile folder (winapi.profile_dir), the servers are started by the app itself, and nothing in
+    # the two cases depends on the pane's shell: one pane is enough, and the fake-model pass of the Git Bash pane is the one that carries them
+    "mcp_basic": "the MCP path does not depend on the pane's shell: runs once, in the Git Bash pane's fake-model pass (#2065)",
+    "agent_mcp_faults": "the MCP path does not depend on the pane's shell: runs once, in the Git Bash pane's fake-model pass (#1834, #2065)",
 }
 # PowerShell-only: the same idea as a case that already exists for the other pane
 PS_ONLY = {
@@ -102,7 +106,6 @@ NOT_WINDOWS = {
     "agent_edit_conflict": "#1835: same as agent_edit_accept",
     "agent_edit_endings": "#1835: same as agent_edit_accept",
     "agent_multitab_streaming": "#1833: needs the rc-hook received-command proof and the pty-echo frame pairing, neither verified for a Windows pane; Linux and macOS run it",
-    "agent_mcp_faults": "#1834: the fake MCP servers are configured through the HOME-relative ~/.warp/.mcp.json, which the Windows profile does not use in this harness",
     "agent_edit_touch_only": "#1835: same as agent_edit_accept",
     "subshells": "uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)",
     "ctrl_c_flood_ab": "#1838: the blocked-frame gate it A/Bs exists only in the macOS renderer",

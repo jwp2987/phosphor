@@ -36,6 +36,8 @@ PROVING = (
     "agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover",
     "agent_interactive_ssh_takeover",        # #1972: the user's take-over after the notice (a remote read cannot be proven locally)
     "agent_latency_key", "agent_latency_enter", "agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming",
+    # #2065: the healthy MCP server alone (started, offered, called, result returned); agent_mcp_faults had never been judged (it wrote the config where no build reads it)
+    "mcp_basic",
     # network gate (#1830): the provider key never leaves, deny / allow, gate off live, notice toast, settings page by keyboard
     "agent_gate_deny_allow", "agent_gate_off_live", "agent_gate_key_never_leaves", "network_gate_notice", "network_gate_switch",
     # agent fault injection and restarts
@@ -90,7 +92,7 @@ PROVING = (
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
 PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_interactive_", "agent_noninteractive_", "agent_latency_", "agent_fault_", "agent_restart_",
-                                                         "agent_gate_", "agent_question_")) or n in ("agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming", "network_gate_notice"))
+                                                         "agent_gate_", "agent_question_")) or n in ("agent_steer_fast", "agent_mcp_faults", "mcp_basic", "agent_multitab_streaming", "network_gate_notice"))
 # The PROVING lab cases (cases_lab*.py, the fake ssh lab). Globs, as --cases takes them. The fix tier plays app-test-lab-linux with these
 # (script/ci/ci_seq.py LAB_FIX_CASES), Linux only, APPCI_FAKE_MODEL=1, APPCI_LAB_MATRIX=quick.
 # #1970 / #1983 (round 10): the slow-link and Ctrl-C lab cases had existed since 2026-11-08 but no tier ever played them. lab_enter_no_network_wait is new;
