@@ -4455,3 +4455,21 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   `test_local_counted_bootstrap`, `test_bootstrap_hook_equivalence`, `test_ssh_raw_bootstrap_hook`). `test_init_shell_escaping` fails the same way on the
   base commit (its `_hostname` snippet search finds nothing in `bash_body.sh`), unrelated to this change. Not covered: the real app's `sh` child in a real
   pane (no run yet; worked, unproven).
+
+## Round 10: `subshell_ready_zsh_newuser_install` on Linux (#2015, #2016, #2017; design `docs/design/r10-wl-zsh-newuser.md`)
+
+- **The case never showed the menu (#2015, TEST fault; rounds 7, 8 and 9b, Wayland, both modes).** The Linux app is started with `ZDOTDIR` = the scratch
+  home (`app.py`), which has a `.zshrc`; zsh looks for its startup files in `$ZDOTDIR` first, so `HOME=~/w/lab_zsh_home zsh` started at a plain prompt and
+  the setup was rightly written there (`subshell_ready_judged ... kind=LineReader tail=ShellPrompt decision=Write`). The guard ran in the harness's
+  environment (no ZDOTDIR), saw a menu and did not skip. The case's `q` then ran as `qecho ...`, and with HOME changed the PID probe (`~/.appci_pid`) answered
+  into the inner HOME: "got none", `pane_not_local_after_*`.
+- **What changed in the case.** It types `ZDOTDIR=~/w/lab_zsh_home zsh` (HOME untouched, so the probes answer where the harness reads). The guard
+  `zsh_runs_newuser_install(dotdir, home)` starts its zsh with the same two variables on a 24x80 pty and looks for the menu's footer. Before Ctrl-I the case
+  reads the pane's zsh from the OS (`pane_zsh_facts`: `ZDOTDIR` in `/proc/<pid>/environ`, the tty size by `TIOCGWINSZ`; Linux): another `ZDOTDIR` FAILS as
+  `TEST precondition: ...` and the case stops; a pane under 15x72 (zsh-newuser-install shows no menu there) skips; no `/proc` is a note. Every check the
+  case made is still made, unchanged.
+- **Self-test `subshell_ready_newuser_guard`**: the guard's environment, the `/proc` environ parser, the precondition verdicts, that `app.py` still exports
+  `ZDOTDIR` and the case overrides exactly that, and on a machine with zsh a real zsh on a real pty: startup files in `ZDOTDIR` = no menu whatever HOME
+  holds; an empty `ZDOTDIR` = the menu although HOME has a `.zshrc` (Linux).
+- Worked, unproven: no app run yet. The next Linux run must show `tail=InputPrompt decision=Wait(InputPrompt)` at Ctrl-I, no
+  `subshell_setup_ready_write` before the `q`, then the write, the typed line in `lab_zshnew.txt`, one `exit` and the root shell in front.

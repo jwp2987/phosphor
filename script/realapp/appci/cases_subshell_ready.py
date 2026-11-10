@@ -480,20 +480,37 @@ def c_ready_docker_t_without_i(ctx, r):
     r.check(ctx.lines(f) == [tok], "the line ran exactly once: %r" % ctx.lines(f))
 
 
-def zsh_runs_newuser_install(home, wait=4.0):
-    """True when an interactive zsh with the (empty) HOME `home` shows the zsh-newuser-install menu on a real pty. Judged by the menu text;
-    the zsh is killed and the pty closed, nothing is typed into it (a key would pick an option)."""
-    import pty, select, signal
+NEWUSER_FOOTER = b"Type one of the keys in parentheses"     # the last line of zsh-newuser-install's first screen
+NEWUSER_MIN_TTY = (15, 72)      # zsh-newuser-install returns at once on a smaller terminal ("Don't run unless terminal is sane")
+
+
+def newuser_probe_env(environ, dotdir, home):
+    """The environment of the zsh the guard starts: the caller's, with ZDOTDIR = the empty directory and HOME = the pane's HOME. zsh looks for its
+    startup files in $ZDOTDIR and only without one in $HOME, so both are set exactly as the case's own command line leaves them in the pane."""
+    env = dict(environ)
+    env["ZDOTDIR"] = dotdir
+    env["HOME"] = home
+    return env
+
+
+def zsh_runs_newuser_install(dotdir, home, wait=4.0):
+    """True when an interactive zsh whose startup-file directory (ZDOTDIR) is the EMPTY `dotdir` shows the zsh-newuser-install menu on a real pty
+    (24x80: the menu refuses a terminal under 15x72). Judged by the menu's footer (the word "newuser" is also in the function's error messages); the
+    zsh is killed and the pty closed, nothing is typed into it (a key would pick an option). `dotdir` is emptied again afterwards (zsh leaves a
+    .zcompdump). Rounds 7-9b (#2015): this ran with only HOME set, in the harness's environment; the PANE has ZDOTDIR = the scratch home (app.py),
+    whose .zshrc zsh read instead, so the guard saw a menu the pane never showed."""
+    import fcntl, pty, select, signal, struct, termios
+    env = newuser_probe_env(os.environ, dotdir, home)
     pid, fd = pty.fork()
     if pid == 0:
-        os.environ["HOME"] = home
         try:
-            os.execvp("zsh", ["zsh", "-i"])
+            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+            os.execvpe("zsh", ["zsh", "-i"], env)
         finally:
             os._exit(127)
     seen, end = b"", time.time() + wait
     try:
-        while time.time() < end and b"newuser" not in seen:
+        while time.time() < end and NEWUSER_FOOTER not in seen:
             if select.select([fd], [], [], 0.2)[0]:
                 try:
                     chunk = os.read(fd, 4096)
@@ -512,33 +529,105 @@ def zsh_runs_newuser_install(home, wait=4.0):
         except OSError:
             pass
         os.close(fd)
-        shutil.rmtree(home, ignore_errors=True)
-        os.makedirs(home, exist_ok=True)
-    return b"newuser" in seen
+        shutil.rmtree(dotdir, ignore_errors=True)
+        os.makedirs(dotdir, exist_ok=True)
+    return NEWUSER_FOOTER in seen
+
+
+def environ_value(raw, var):
+    """the value of `var` in a /proc/<pid>/environ image (NUL-separated KEY=VALUE bytes), or None when it is not set"""
+    key = var.encode() + b"="
+    for kv in raw.split(b"\0"):
+        if kv.startswith(key):
+            return kv[len(key):].decode("utf-8", "replace")
+    return None
+
+
+def pane_zsh_facts(root_pid):
+    """What the OS says about the zsh started under the pane's ROOT shell (Linux /proc): {"zdotdir": ZDOTDIR of its environment or None, "rows",
+    "cols": its tty's size or None}. None when it cannot be told (no root pid, no /proc, no zsh child yet, a process of another user). Nothing is
+    typed and the pty is not written: the environment is read from /proc/<pid>/environ, the size by TIOCGWINSZ on the zsh's own stdin."""
+    if root_pid is None or not os.path.isdir("/proc/self"):
+        return None
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return None
+    pid = None
+    for l in out.splitlines():
+        f = l.split(None, 2)
+        if len(f) == 3 and f[0].isdigit() and f[1] == str(root_pid) and os.path.basename(f[2].strip()).lstrip("-") == "zsh":
+            pid = int(f[0])
+    if pid is None:
+        return None
+    try:
+        with open("/proc/%d/environ" % pid, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    rows = cols = None
+    try:
+        import fcntl, struct, termios
+        fd = os.open("/proc/%d/fd/0" % pid, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+        try:
+            rows, cols = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+        finally:
+            os.close(fd)
+    except (OSError, ImportError):
+        pass
+    return {"zdotdir": environ_value(raw, "ZDOTDIR"), "rows": rows, "cols": cols}
+
+
+def newuser_precondition(facts, dotdir):
+    """Is the zsh in the pane one that shows the menu? -> (verdict, text): "ok"; "unknown" (the OS could not be asked: the case goes on, with a
+    note); "wrong_env" (its ZDOTDIR is not the empty directory: it read some other startup files and sits at a prompt, a TEST fault, #2015);
+    "small" (its terminal is under 15x72: zsh-newuser-install returns without a menu)."""
+    if facts is None:
+        return "unknown", "the pane's zsh could not be inspected (no /proc, no root pid or no zsh under the root shell): its environment is not proven"
+    got = facts.get("zdotdir")
+    if got is None or os.path.realpath(got) != os.path.realpath(dotdir):
+        return "wrong_env", "the pane's zsh was not started with the empty startup directory (ZDOTDIR=%r, wanted %r): no menu can show" % (got, dotdir)
+    rows, cols = facts.get("rows"), facts.get("cols")
+    if rows and cols and (rows < NEWUSER_MIN_TTY[0] or cols < NEWUSER_MIN_TTY[1]):
+        return "small", "the pane is %dx%d: zsh-newuser-install shows no menu under %dx%d" % (rows, cols, NEWUSER_MIN_TTY[0], NEWUSER_MIN_TTY[1])
+    return "ok", "the pane's zsh has ZDOTDIR=%s on a %sx%s tty" % (got, rows, cols)
 
 
 @case("subshell_ready_zsh_newuser_install", order=22)
 @guarded
 def c_ready_zsh_newuser_install(ctx, r):
-    """reviewer R6: a zsh with an EMPTY home runs zsh-newuser-install, whose menu reads ONE key: a setup written there picks an option
+    """reviewer R6: a zsh with NO startup files runs zsh-newuser-install, whose menu reads ONE key: a setup written there picks an option
     (the probe's `2` of `2>&1` would populate ~/.zshrc). The footer counts as an InputPrompt: nothing is written until the user
-    answers `q`, no ~/.zshrc appears, and the setup is written at the zle prompt that follows; the typed line runs in zsh."""
+    answers `q`, no .zshrc appears, and the setup is written at the zle prompt that follows; the typed line runs in zsh.
+    #2015 (rounds 7-9b, Linux): zsh looks for its startup files in $ZDOTDIR, and the pane has ZDOTDIR = the scratch home (app.py), which has a
+    .zshrc. `HOME=<empty dir> zsh` therefore never showed a menu, the case's `q` ran as part of the next command, and with HOME changed the PID
+    probe (`~/.appci_pid`) answered where the harness does not read. The case now empties the directory zsh really looks in (ZDOTDIR) and leaves
+    HOME alone; the guard starts its zsh the same way, and the pane's zsh is inspected (its environment, its tty size) before anything is judged."""
     need_posix(ctx, r)
     if not shutil.which("zsh"):
         r.skip("zsh is not installed")
-    home = os.path.join(ctx.W, "lab_zsh_home")
+    home = os.path.join(ctx.W, "lab_zsh_home")          # the EMPTY directory zsh looks for its startup files in (ZDOTDIR), not a HOME
     shutil.rmtree(home, ignore_errors=True)
     os.makedirs(home)
-    if not zsh_runs_newuser_install(home):
-        # Mac round 7: Apple's zsh starts at a plain prompt with an empty HOME (no menu), so the setup is rightly written at once and the
+    if not zsh_runs_newuser_install(home, ctx.prof.home):
+        # Mac round 7: Apple's zsh starts at a plain prompt with no startup files (no menu), so the setup is rightly written at once and the
         # `q` this case types for the menu ran as a command ("qecho ...: command not found"). No menu = nothing to test here.
-        r.skip("this zsh runs no zsh-newuser-install with an empty HOME (proved on a pty before the case types anything)")
+        r.skip("this zsh runs no zsh-newuser-install with an empty startup directory (proved on a pty before the case types anything)")
     f = "lab_zshnew.txt"
     ctx.rm(f)
     off = ctx.log_size()
-    ctx.be.type("HOME=~/w/lab_zsh_home zsh", 12, enter=True)
+    ctx.be.type("ZDOTDIR=~/w/lab_zsh_home zsh", 12, enter=True)
     time.sleep(BANNER_S)
     ctx.shot("zsh_newuser_menu")
+    verdict, text = newuser_precondition(pane_zsh_facts(getattr(ctx, "root_pid", None)), home)
+    if verdict == "small":
+        r.skip(text)
+    if verdict == "unknown":
+        r.note(text)
+    else:
+        r.check(verdict == "ok", "TEST precondition: " + text)
+        if verdict != "ok":
+            return                                            # every check below would be judged against a zsh that shows no menu
     ctx.be.key("ctrl+i")
     time.sleep(1.0)
     r.check(first_index(hops(ctx, off), "subshell_setup_ready_write") is None, "nothing was written into the newuser-install menu")
