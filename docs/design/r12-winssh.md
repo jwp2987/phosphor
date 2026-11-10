@@ -14,7 +14,7 @@ Nothing was run on Windows when this was written. Python selftests only.
 
 - Round 9 (build/r18w9 41340e2fd): the server ran (`ssh_connect_typing` PASS x4; its stderr holds paramiko banner noise, not a start failure).
 - `git merge-base --is-ancestor 1766c6a2b`: not in r18w9, in r10a and r11a. 1766c6a2b (#2007) added `import ptyhost` at
-  `script/realapp/appci/fakesshd_win.py:26` (now line 31). `ptyhost.py` is tracked and sits next to it.
+  `script/realapp/appci/fakesshd_win.py:26` (now line 30). `ptyhost.py` is tracked and sits next to it.
 - `script/ci/nodes/windows.ps1:44`: the Windows machine's Python is the python.org embeddable layout (`python312.zip` + `._pth`). With a `._pth`
   file `sys.path` is exactly the file's entries; the folder of the script being run is not added. `run.py:13` and every case module insert
   their own folder, which is why the harness itself and `sshd.py`'s own `import ptyhost` (inside the `run.py` process) work.
