@@ -5,7 +5,7 @@
 import re
 
 CASE_CAP = 2 * 1024 * 1024            # bytes of kept lines per case log (head and tail halves when over)
-PLATFORM_CAP = 2 * 1024 * 1024        # bytes of evidence per platform and run (cases are visited in name order, each capped by what is left)
+PLATFORM_CAP = 2 * 1024 * 1024        # bytes of evidence per platform and run, shared between the platform's latency logs by fair_caps (#2035)
 # cases whose metrics come from input_order / frame hops (script/realapp/appci/cases*.py)
 LATENCY_CASES = {"latency_paint", "latency_paint_ab", "latency_enter", "latency_key_log", "agent_latency_key", "agent_latency_enter", "ctrl_c_flood_ab"}
 LOG_PATH = re.compile(r"^(?:run|run_slim)/logs/[^/]+/case_([^/]+)\.log$")
@@ -20,6 +20,25 @@ def case_of(rel):
     """case name when `rel` (a path inside the platform's artifact folder) is a per-case app log of a latency case, else None"""
     m = LOG_PATH.match(rel)
     return m.group(1) if m and is_latency_case(m.group(1)) else None
+
+
+def matched_bytes(text):
+    """bytes the matching lines of `text` would take in the archive (each line plus its newline), before any cap"""
+    return sum(len(l) + 1 for l in text.splitlines() if LINE.search(l))
+
+
+def fair_caps(sizes, total=PLATFORM_CAP, case_cap=CASE_CAP):
+    """#2035: the cap of each latency log of one platform, given the bytes its matching lines take (`sizes`, in the logs' order) -> caps in
+    the same order. The platform budget `total` is shared: the smallest logs are kept whole, and what they leave is split evenly between
+    the rest (never above `case_cap`). r10a macOS spent the budget in name order, so ctrl_c_flood_ab (an output flood, far over the
+    budget on its own) left latency_enter 320 bytes of 52555 hop lines and the terminal-mode logs nothing. A log with no matching line
+    gets 0; the caps never sum to more than `total`."""
+    caps, left = [0] * len(sizes), total
+    order = sorted(range(len(sizes)), key=lambda i: (sizes[i], i))
+    for pos, i in enumerate(order):
+        caps[i] = max(0, min(sizes[i], case_cap, left // (len(order) - pos)))
+        left -= caps[i]
+    return caps
 
 
 def evidence(text, cap=CASE_CAP):

@@ -5783,6 +5783,16 @@ def lat_evidence_filter_keeps_only_hop_lines():
     txt, hits, kept = le.evidence("\n".join(big), 20000)
     assert hits == 1000 and kept < 1000 and len(txt) <= 20200 and big[0] in txt and big[-1] in txt and "lat_evidence: %d of 1000" % (1000 - kept) in txt
     assert le.CASE_CAP == 2 * 1024 * 1024 and le.PLATFORM_CAP >= le.CASE_CAP
+    # #2035: the platform budget is shared, not spent in name order. r10a macOS shape: a flood log far over the budget sorts first, then
+    # two ordinary latency logs and an empty one. The small ones are kept whole and the flood gets the rest.
+    assert le.matched_bytes("\n".join(noise[:1] + L + noise[1:])) == sum(len(l) + 1 for l in L) and le.matched_bytes("\n".join(noise)) == 0
+    caps = le.fair_caps([900000000, 5200000, 300000, 0], total=2 * 1024 * 1024, case_cap=2 * 1024 * 1024)
+    assert caps[3] == 0 and caps[2] == 300000 and caps[1] == caps[0] == (2 * 1024 * 1024 - 300000) // 2, caps
+    assert sum(caps) <= 2 * 1024 * 1024
+    assert le.fair_caps([100, 200, 300], total=10000) == [100, 200, 300]                     # everything fits: nothing is cut
+    assert le.fair_caps([5000, 5000, 5000], total=9000) == [3000, 3000, 3000]                 # nothing fits: an even split
+    assert le.fair_caps([5000], total=9000, case_cap=4000) == [4000] and le.fair_caps([]) == []
+    assert le.fair_caps([10, 9000, 9000], total=9000) == [10, 4495, 4495]
 
 
 @check

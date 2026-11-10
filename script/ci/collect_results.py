@@ -222,15 +222,19 @@ def collect_app(job, dest_root, notes):
         # latency evidence (owner 2026-11-09): the per-case app log of a latency case, reduced to its hop lines (lat_evidence.py), scrubbed below
         lat_logs = [(n, n[len(base):]) for n in names if n.startswith(base) and lat_evidence.case_of(n[len(base):])]
         keep += [("appci-out/reused_build.json", "reused_build.json")] if "appci-out/reused_build.json" in names and plat == plats[0] else []
-        budget = lat_evidence.PLATFORM_CAP                      # per platform, so three platforms stay well under check_test_results' 10 MB per run
-        for n, rel in sorted(lat_logs):
-            if budget <= 0:
-                notes.append("%s/%s: latency evidence skipped (platform budget %d KB spent)" % (plat, rel, lat_evidence.PLATFORM_CAP // 1024))
-                continue
-            kept, hits, nkept = lat_evidence.evidence(z.read(n).decode(errors="replace"), min(lat_evidence.CASE_CAP, budget))
+        # The platform budget (so three platforms stay well under check_test_results' 10 MB per run) is shared between the logs by
+        # lat_evidence.fair_caps (#2035): spent in name order, ctrl_c_flood_ab's flood left latency_enter 320 bytes and the next mode nothing.
+        lat_logs = sorted(lat_logs)
+        caps = lat_evidence.fair_caps([lat_evidence.matched_bytes(z.read(n).decode(errors="replace")) for n, _ in lat_logs])
+        for (n, rel), cap in zip(lat_logs, caps):
+            if cap <= 0:
+                continue                                           # no hop line in this log
+            kept, hits, nkept = lat_evidence.evidence(z.read(n).decode(errors="replace"), cap)
             if not kept:
                 continue
-            budget -= len(kept)
+            if nkept < hits:
+                notes.append("%s/%s: latency evidence capped at %d KB (%d of %d hop lines kept; the platform budget of %d KB is shared between %d logs)" % (
+                    plat, rel, cap // 1024, nkept, hits, lat_evidence.PLATFORM_CAP // 1024, len(lat_logs)))
             text = results_scrub.scrub(kept)
             try:
                 import ci_env
