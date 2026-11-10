@@ -26,6 +26,10 @@ uint64_t warp_key_frame_mark(WarpHostView *);
 BOOL warp_key_frame_begin(WarpHostView *, uint64_t);
 void warp_key_frame_finish(WarpHostView *, double);
 BOOL warp_redraw_request_already_drawn(WarpHostView *, uint64_t);
+void warp_echo_frame_arm(WarpHostView *, uint64_t);
+BOOL warp_echo_frame_due(WarpHostView *, uint64_t);
+BOOL warp_echo_frame_begin(WarpHostView *, uint64_t, uint64_t);
+BOOL warp_echo_frame_finish(WarpHostView *, double);
 
 // Draw-latency instrumentation (#1148). Intervals/events show up in Instruments under
 // "Points of Interest": keyDown -> displayLayer -> nextDrawable -> presented.
@@ -479,6 +483,10 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     }
 
     if (keyFrameTracked) [self drawKeyFrameNowSince:redrawRequestAtKeyStart];
+    // #2039: from here on the first redraw this window is asked for is the key's echo (a key typed
+    // into a running program changes nothing until the program answers). The key may have closed
+    // the window: the state is gone then.
+    if (keyFrameTracked && self.readyForWarp) warp_echo_frame_arm(self, keyNowNs);
 
     WARP_LOG_ENTER(event, "key_down_impl_exit",
                    @"keycode=%u ts=%.9f handled=%d text_to_insert_len=%lu has_marked_text=%d",
@@ -499,15 +507,8 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
 // (that present belongs inside AppKit's display pass), or when the view is not in a window.
 // Kill switch: PHOSPHOR_MAC_KEY_FRAME_NOW=0 (read on the Rust side, `key_frame_now_enabled`).
 - (void)drawKeyFrameNowSince:(uint64_t)redrawRequestAtKeyStart {
-    // The key may have closed the window: the state is gone then.
-    if (testMode || !self.readyForWarp || self.window == nil) return;
-    CALayer *layer = self.layer;
-    if (![layer isKindOfClass:[CAMetalLayer class]]) return;
-    if (self.inLiveResize || ((CAMetalLayer *)layer).presentsWithTransaction) return;
-    // A frame is still on its way to the screen: this one could not be presented before it (the
-    // #1838 gate would skip it after the scene was built). Left to the display pass, which also
-    // keeps a burst of keys at one frame per presented frame instead of one scene build per key.
-    if (warp_frame_gate_unpresented((CAMetalLayer *)layer) >= 1) return;
+    CAMetalLayer *layer = [self layerForFrameNow];
+    if (layer == nil) return;
     if (!warp_key_frame_begin(self, redrawRequestAtKeyStart)) return;
     uint64_t startNs = warpNowNs();
     @try {
@@ -520,11 +521,58 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     }
 }
 
+// The layer a frame can be drawn into right now, outside AppKit's display pass (#1848, #2039), or
+// nil when the frame must be left to the display pass as before.
+- (CAMetalLayer *)layerForFrameNow {
+    // A key may have closed the window: the state is gone then.
+    if (testMode || !self.readyForWarp || self.window == nil) return nil;
+    CALayer *layer = self.layer;
+    if (![layer isKindOfClass:[CAMetalLayer class]]) return nil;
+    // A live resize, or any other time the layer presents with the CA transaction: that present
+    // belongs inside AppKit's display pass.
+    if (self.inLiveResize || ((CAMetalLayer *)layer).presentsWithTransaction) return nil;
+    // A frame is still on its way to the screen: this one could not be presented before it (the
+    // #1838 gate would skip it after the scene was built). Left to the display pass, which also
+    // keeps a burst of keys at one frame per presented frame instead of one scene build per key.
+    if (warp_frame_gate_unpresented((CAMetalLayer *)layer) >= 1) return nil;
+    return (CAMetalLayer *)layer;
+}
+
+// #2039: draws the echo frame of a key typed into a running program (cat, vim, ssh) when the
+// redraw request's posted block runs, instead of at AppKit's next display pass (measured: a
+// median 4-6 ms wait, `hop=key_frame_sched`; key -> frame 7.3 ms against 1.5 ms for an editor key
+// under #1848). Only the first request made after a key press has been handled, once per key
+// press, and only while that key is young (`RedrawRequests::begin_echo_frame`): every other frame
+// (command output, floods, hidden tabs, animations) keeps the display pass. Same conditions as a
+// key frame (`layerForFrameNow`). Returns YES when the frame went to the compositor; on NO the
+// caller asks for a display pass exactly as before, so no frame can be lost.
+// Kill switch: PHOSPHOR_MAC_ECHO_FRAME_NOW=0 (read on the Rust side, `echo_frame_now_enabled`).
+// docs/design/r14-echoframe.md.
+- (BOOL)drawEchoFrameNowForRequest:(uint64_t)request {
+    if (!warp_echo_frame_due(self, request)) return NO;
+    CAMetalLayer *layer = [self layerForFrameNow];
+    if (layer == nil) return NO;
+    uint64_t startNs = warpNowNs();
+    if (!warp_echo_frame_begin(self, request, startNs)) return NO;
+    BOOL drawn = NO;
+    @try {
+        [self displayLayer:layer];
+    } @finally {
+        // Always ended, so a later key press is never refused as "inside another frame".
+        if (self.readyForWarp) {
+            drawn = warp_echo_frame_finish(self, (double)(warpNowNs() - startNs) / 1e6);
+        }
+    }
+    return drawn;
+}
+
 - (void)setNeedsDisplayAsyncForRequest:(uint64_t)request {
     dispatch_async(dispatch_get_main_queue(), ^{
-      // #1848: a key frame drawn since this request was made already shows it.
-      if (request != 0 && self.readyForWarp && warp_redraw_request_already_drawn(self, request)) {
-          return;
+      if (request != 0 && self.readyForWarp) {
+          // #1848: a key frame drawn since this request was made already shows it.
+          if (warp_redraw_request_already_drawn(self, request)) return;
+          // #2039: the first request after a key press is drawn now, not at the display pass.
+          if ([self drawEchoFrameNowForRequest:request]) return;
       }
       [self setNeedsDisplay:YES];
     });

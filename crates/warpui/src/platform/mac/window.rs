@@ -1457,7 +1457,11 @@ extern "C-unwind" fn warp_update_layer(this: &Object) {
         return;
     }
     // SAFETY: as above.
-    unsafe { get_window_state(this) }.draw_owed.note_draw_ran();
+    let window = unsafe { get_window_state(this) };
+    window.draw_owed.note_draw_ran();
+    // #2039: a frame that starts with a request made after the last key press outstanding is that
+    // key's echo frame, whoever asked for the draw.
+    window.redraw_requests.note_frame_started();
     // The draw runs: when it was requested by a key press, report how long it waited to get here
     // (`request_redraw` -> `displayLayer:`). Measurement only.
     frame_latency::log_key_frame_sched();
@@ -1558,6 +1562,54 @@ extern "C-unwind" fn warp_redraw_request_already_drawn(this: &Object, request: u
     unsafe { get_window_state(this) }
         .redraw_requests
         .already_drawn(request)
+}
+
+/// #2039, end of a key press (`keyDownImpl`, after its own frame if it drew one): the first redraw
+/// requested from here on is the key's echo. `key_ns` is when the key was pressed, on the view's
+/// clock (`warpNowNs`).
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_echo_frame_arm(this: &Object, key_ns: u64) {
+    // SAFETY: `this` is a WarpHostView whose window state is set (`readyForWarp`).
+    unsafe { get_window_state(this) }
+        .redraw_requests
+        .note_key_handled(key_ns);
+}
+
+/// #2039: whether the posted redraw request `request` could be the echo of a handled key press.
+/// Asked by every posted block; cheap when no key is waiting for its echo.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_echo_frame_due(this: &Object, request: u64) -> bool {
+    // SAFETY: as above; the caller checks `readyForWarp` first.
+    unsafe { get_window_state(this) }
+        .redraw_requests
+        .echo_frame_due(request)
+}
+
+/// #2039: the posted block of `request` runs at `now_ns` (the view's clock) and the view could
+/// draw now. Returns whether it does (`displayLayer:`, then [`warp_echo_frame_finish`]) instead of
+/// asking AppKit for a display pass. Kill switch: `PHOSPHOR_MAC_ECHO_FRAME_NOW=0`.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_echo_frame_begin(this: &Object, request: u64, now_ns: u64) -> bool {
+    // SAFETY: as above.
+    unsafe { get_window_state(this) }
+        .redraw_requests
+        .begin_echo_frame(frame_latency::echo_frame_now_enabled(), request, now_ns)
+}
+
+/// #2039: the draw started after [`warp_echo_frame_begin`] returned. Returns whether a frame was
+/// handed to the compositor (then the requests made before it began are covered; otherwise the
+/// caller asks AppKit for a display pass as before) and logs
+/// `input_order hop=echo_frame_now drawn=<0|1> ms=<draw time> key_age_ms=<key press -> draw>`.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_echo_frame_finish(this: &Object, elapsed_ms: f64) -> bool {
+    // SAFETY: as above.
+    let requests = &unsafe { get_window_state(this) }.redraw_requests;
+    let drawn = requests.finish_key_frame();
+    let key_age_ms = requests.echo_key_age_ns() as f64 / 1_000_000.0;
+    warpui_core::input_order::log_hop("echo_frame_now", || {
+        frame_latency::echo_frame_now_detail(drawn, elapsed_ms, key_age_ms)
+    });
+    drawn
 }
 
 /// Logs one stage of a Return/Enter key press as seen by the Objective-C layer (#1482), as

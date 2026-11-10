@@ -294,6 +294,23 @@ pub(super) fn key_frame_now_enabled_from_env(value: Option<&str>) -> bool {
     value.is_none_or(|value| value.trim() != "0")
 }
 
+/// Kill switch for drawing the echo frame of a key at once (#2039):
+/// `PHOSPHOR_MAC_ECHO_FRAME_NOW=0` restores the old behaviour (the first frame requested after a
+/// key press waits for AppKit's display pass like every other). On by default.
+pub(super) fn echo_frame_now_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        key_frame_now_enabled_from_env(std::env::var("PHOSPHOR_MAC_ECHO_FRAME_NOW").ok().as_deref())
+    })
+}
+
+/// A redraw requested later than this after a key press is not that key's echo (#2039): a key
+/// that got no echo (a password prompt, a key the program ignored) must not make an unrelated
+/// frame minutes later the "echo". Compared against two event timestamps (the key press and the
+/// run of the request's posted block); nothing fires when it elapses. Covers a slow ssh round
+/// trip; one frame per key press is the bound on cost, not this.
+pub(super) const ECHO_FRAME_KEY_AGE_MAX_NS: u64 = 250_000_000;
+
 /// A window's redraw requests, numbered, so that the frame a key press draws at once can stand in
 /// for the display passes its own requests asked for (#1848).
 ///
@@ -310,6 +327,13 @@ pub(super) fn key_frame_now_enabled_from_env(value: Option<&str>) -> bool {
 /// [`Self::begin_key_frame`] and [`Self::finish_key_frame`]). A key frame that did not draw (the
 /// #1838 gate skipped it, the app was borrowed, no drawable) covers nothing, and the posted
 /// requests run as before. Main thread only.
+///
+/// The echo frame (#2039) uses the same bookkeeping. A key typed into a running program changes
+/// nothing while it is handled; the change is the program's echo, whose redraw request arrives
+/// after the press has ended and used to wait for the display pass (median 4-6 ms). The end of a
+/// key press leaves a mark ([`Self::note_key_handled`]); the first request numbered above it is
+/// drawn when its posted block runs ([`Self::begin_echo_frame`], then [`Self::finish_key_frame`]),
+/// once per key press. docs/design/r14-echoframe.md.
 #[derive(Debug, Default)]
 pub(super) struct RedrawRequests {
     /// Number of the latest request (0 = none yet).
@@ -318,8 +342,14 @@ pub(super) struct RedrawRequests {
     drawn_through: Cell<u64>,
     /// Frames handed to the compositor (a drawable acquired, about to be presented).
     frames_submitted: Cell<u64>,
-    /// The key frame being drawn now: (latest request when it began, frames submitted before it).
+    /// The frame being drawn at once now (a key frame or an echo frame): (latest request when it
+    /// began, frames submitted before it).
     key_frame: Cell<Option<(u64, u64)>>,
+    /// The last handled key press whose echo has not been drawn: (latest request when its
+    /// handling ended, when it was pressed in ns on the caller's clock).
+    echo_key: Cell<Option<(u64, u64)>>,
+    /// Age of the key press when the last echo frame began (measurement only).
+    echo_key_age_ns: Cell<u64>,
 }
 
 impl RedrawRequests {
@@ -372,12 +402,79 @@ impl RedrawRequests {
     pub(super) fn already_drawn(&self, number: u64) -> bool {
         number != 0 && number <= self.drawn_through.get()
     }
+
+    /// A key press has been handled (its own frame, if it asked for one, is behind us): the first
+    /// redraw requested from here on is its echo. `key_ns` is when the key was pressed. A newer
+    /// key press replaces the mark of an older one whose echo never came.
+    pub(super) fn note_key_handled(&self, key_ns: u64) {
+        self.echo_key.set(Some((self.latest.get(), key_ns)));
+    }
+
+    /// A frame is starting (`warp_update_layer`, for whatever reason). If a request made after the
+    /// marked key press is outstanding, this frame shows it: the display pass got there first, and
+    /// the mark is cleared so that a later frame is not taken for the echo.
+    pub(super) fn note_frame_started(&self) {
+        let latest = self.latest.get();
+        if self.echo_key.get().is_some_and(|(mark, _)| latest > mark) {
+            self.echo_key.set(None);
+        }
+    }
+
+    /// Whether the posted request `number` could be the echo of a handled key press. One `Cell`
+    /// read when no key is waiting for its echo: asked by every posted block, before the caller
+    /// looks at the layer or the clock.
+    pub(super) fn echo_frame_due(&self, number: u64) -> bool {
+        self.echo_key.get().is_some_and(|(mark, _)| number > mark)
+    }
+
+    /// The posted block of request `number` runs at `now_ns`. Returns whether its frame is drawn
+    /// now instead of at the display pass: only for the first request after a handled key press
+    /// that is at most [`ECHO_FRAME_KEY_AGE_MAX_NS`] old, not already shown, and never from inside
+    /// another frame drawn at once. The mark is spent by the attempt, so a key press draws at most
+    /// one echo frame at once. On `true` the caller draws and then calls
+    /// [`Self::finish_key_frame`], which covers the requests made before the draw began if the
+    /// frame went out, and nothing if it did not.
+    pub(super) fn begin_echo_frame(&self, enabled: bool, number: u64, now_ns: u64) -> bool {
+        if self.key_frame.get().is_some() {
+            return false;
+        }
+        let Some((mark, key_ns)) = self.echo_key.get() else {
+            return false;
+        };
+        if number <= mark {
+            return false;
+        }
+        self.echo_key.set(None);
+        let key_age_ns = now_ns.saturating_sub(key_ns);
+        if !enabled || self.already_drawn(number) || key_age_ns > ECHO_FRAME_KEY_AGE_MAX_NS {
+            return false;
+        }
+        self.echo_key_age_ns.set(key_age_ns);
+        self.key_frame
+            .set(Some((self.latest.get(), self.frames_submitted.get())));
+        true
+    }
+
+    /// How old the key press was when the last echo frame began ([`Self::begin_echo_frame`]
+    /// returned true), for the `key_age_ms` of `hop=echo_frame_now`.
+    pub(super) fn echo_key_age_ns(&self) -> u64 {
+        self.echo_key_age_ns.get()
+    }
 }
 
 /// Detail of `hop=key_frame_now` (macOS): whether the frame was handed to the compositor and how
 /// long the synchronous draw took (scene build + encode).
 pub(super) fn key_frame_now_detail(drawn: bool, elapsed_ms: f64) -> String {
     format!("drawn={} ms={elapsed_ms:.2}", u8::from(drawn))
+}
+
+/// Detail of `hop=echo_frame_now` (#2039): whether the frame was handed to the compositor, how
+/// long the synchronous draw took, and how old the key press was when the draw began.
+pub(super) fn echo_frame_now_detail(drawn: bool, elapsed_ms: f64, key_age_ms: f64) -> String {
+    format!(
+        "drawn={} ms={elapsed_ms:.2} key_age_ms={key_age_ms:.2}",
+        u8::from(drawn)
+    )
 }
 
 static LIMITER: Mutex<SlowFrameLimiter> = Mutex::new(SlowFrameLimiter::new());
