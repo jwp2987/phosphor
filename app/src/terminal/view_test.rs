@@ -28303,6 +28303,136 @@ fn the_look_for_a_reader_at_a_key_never_waits_for_the_parser() {
     })
 }
 
+/// #2047 (r13-pin2, race 3), the state the missed looks leave: Git Bash on ConPTY with prompt
+/// sequence numbers, this prompt's line editor has not signalled and its wait is older than the
+/// prompt hold's cap; the first key of the answer went to the pty as the shell's line (no reader
+/// was noted for it) and the Enter is held as a young Enter (`RequestDue`), in the view's queue
+/// behind its `PromptSeen` gate. The hand-off is driven as the pty controller and the model
+/// drive it; nothing is on screen yet. Returns the hold's id.
+fn conpty_young_enter_held_with_no_reader_noted(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) -> u64 {
+    use crate::terminal::model::typeahead_handoff::{
+        ForegroundProbe, UserBytesRoute, YOUNG_HOLD_GIVE_UP,
+    };
+    let hold_id = {
+        let mut model = view.model.lock();
+        {
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.set_foreground_probe(ForegroundProbe::default());
+            handoff.set_conpty_input(true);
+            handoff.set_conpty_prompt_hold(true);
+            handoff.set_conpty_prompt_hold_shell_signals(true);
+            handoff.set_conpty_enter_window_hold(true);
+            handoff.set_prompt_seq_enabled(true);
+            handoff.on_precmd();
+            handoff.on_precmd_seq(Some(7), Some(1));
+            let _ = handoff.release_queued_prompt_hold_on_signal();
+            handoff.on_command_written();
+        }
+        model.simulate_block("touch gbgo.txt", "");
+        let mut handoff = model.typeahead_handoff_mut();
+        handoff.on_precmd_seq(Some(7), Some(2));
+        handoff.age_last_activity_for_test();
+        handoff.age_line_editor_wait_past_the_cap_for_test();
+        assert_eq!(
+            handoff.on_user_bytes(b"p"),
+            UserBytesRoute::WriteCounted,
+            "past the cap and no reader noted: the shell's line"
+        );
+        handoff.on_user_write_flushed();
+        assert_eq!(
+            handoff.on_user_bytes(b"\r"),
+            UserBytesRoute::Held,
+            "the Enter is held as a young Enter"
+        );
+        handoff
+            .take_young_hold_started()
+            .expect("a young hold started")
+    };
+    view.hold_young_keys_in_queue(hold_id, YOUNG_HOLD_GIVE_UP, b"\r".to_vec(), true, ctx);
+    assert!(young_gate_open(view));
+    hold_id
+}
+
+/// #2047: a young Enter is held and the question of a reader ahead of the line editor (`pin: `, a
+/// precmd function's `read -s`) is on screen: the Enter is the reader's. The hold looks at the
+/// screen at the events it has, and at each of them the Enter goes to the pty at once, routed as
+/// the reader's: no 10 s net, not a line a prompt must answer, nothing left held.
+/// * `cap`: the hold's own net (the model is waited for there);
+/// * `output`: a terminal wakeup;
+/// * `key`: a key typed behind the hold; it follows the Enter to the reader, in typed order.
+/// Without a question on screen the look changes nothing and the hold stays.
+#[test]
+fn a_young_enter_goes_to_the_reader_ahead_of_the_line_editor_when_the_screen_asks() {
+    for site in ["cap", "output", "key"] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                conpty_young_enter_held_with_no_reader_noted(view, ctx);
+                // Nothing asks: the hold is an ordinary young Enter's.
+                assert!(
+                    !view.give_young_hold_to_a_reader_ahead_of_the_line_editor("output", ctx),
+                    "{site}: no question on screen"
+                );
+                assert!(young_gate_open(view), "{site}");
+                assert!(!view.handoff.read().prompt_reader_asks(), "{site}");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{site}: held: {:?}",
+                pty_writes.borrow()
+            );
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().process_bytes("pin: ");
+                match site {
+                    "cap" => {
+                        let token = view.paste_queue.queue.borrow().gates()[0].token;
+                        view.on_paste_queue_give_up(token, ctx);
+                    }
+                    "output" => assert!(
+                        view.give_young_hold_to_a_reader_ahead_of_the_line_editor("output", ctx)
+                    ),
+                    _ => {
+                        view.write_user_bytes_to_pty(b"4".to_vec(), ctx);
+                    }
+                }
+                assert!(!young_gate_open(view), "{site}: the hold is released");
+                assert!(view.paste_queue.queue.borrow().is_idle(), "{site}");
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{site}");
+                let handoff = view.handoff.read();
+                assert!(handoff.prompt_reader_asks(), "{site}: the reader is noted");
+                assert!(!handoff.young_hold_queued(), "{site}");
+                assert!(handoff.is_pty_owned(), "{site}");
+                assert!(
+                    !handoff.has_unanswered_lines(),
+                    "{site}: the read's Enter is not a line a prompt must answer"
+                );
+            });
+            let expected: Vec<Vec<u8>> = if site == "key" {
+                vec![b"\r".to_vec(), b"4".to_vec()]
+            } else {
+                vec![b"\r".to_vec()]
+            };
+            assert_eq!(
+                *pty_writes.borrow(),
+                expected,
+                "{site}: the Enter (and the key typed behind it) reach the read, in typed order"
+            );
+            // The read returned and the line editor signals: the reader ends.
+            terminal.update(&mut app, |view, ctx| {
+                line_editor_signal(view, ctx);
+                assert!(!view.handoff.read().prompt_reader_asks(), "{site}");
+            });
+        });
+    }
+}
+
 /// Round 12 Linux, `precmd_secret_honor_ps1` at the moment of its question (#2050): a pane whose
 /// tty the platform samples (`secret` is what one `tcgetattr` would say: canonical, echo off). The
 /// command the editor wrote ran and ended, and its Precmd handed input to the editor, as it does
@@ -30950,6 +31080,109 @@ fn synced_ness_at_delivery_is_the_entrys_not_the_enclosing_arrivals() {
             view.paste_queue.delivering_synced = false;
         });
     })
+}
+
+/// #1900: synced input that waits in the pane queue is still synced input when it is delivered.
+/// Behind an Enter's gate it was offered by the input's own route as a keyboard entry, and for an
+/// ssh connect as a keyboard `Held` entry; the delivery reads the entry's origin
+/// (`delivering_synced`), so the relay took over an agent-run command in the synced pane. The
+/// user's own keys are keyboard entries, as before, and so is everything with the kill switch
+/// off (`held_origin_for(_, false)`).
+#[test]
+fn synced_input_held_in_the_pane_queue_keeps_its_synced_origin() {
+    use crate::terminal::input_queue::{GateKind, Origin};
+    assert_eq!(dest_table::held_origin_for(true, true), Origin::Synced);
+    assert_eq!(dest_table::held_origin_for(false, true), Origin::Keyboard);
+    assert_eq!(
+        dest_table::held_origin_for(true, false),
+        Origin::Keyboard,
+        "PHOSPHOR_QUEUE_KEEP_SYNCED_ORIGIN=0"
+    );
+    assert_eq!(dest_table::held_origin_for(false, false), Origin::Keyboard);
+
+    // Behind an Enter that waits for its verdict.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            assert!(
+                !view.queue_synced_behind_enter(AfterEnterInput::Text("x".to_owned()), None, ctx),
+                "no Enter gate: nothing is queued, the caller goes on"
+            );
+            let queue = view.paste_queue.queue.clone();
+            assert!(queue.borrow().is_idle());
+            view.input.update(ctx, |input, ctx| {
+                input.open_waiting_enter_gate_for_test(ctx);
+                // The user's own key, by the input's route.
+                assert!(input.queue_behind_enter(AfterEnterInput::Text("u".to_owned()), ctx));
+            });
+            assert_eq!(view.held_input_origin(), Origin::Keyboard);
+            {
+                let _synced = dest_table::set_arrival_origin(Origin::Synced);
+                assert_eq!(view.held_input_origin(), Origin::Synced);
+                assert!(view.queue_synced_behind_enter(
+                    AfterEnterInput::Text("ab".to_owned()),
+                    None,
+                    ctx
+                ));
+                assert!(view.queue_synced_behind_enter(AfterEnterInput::Enter, None, ctx));
+            }
+            let held: Vec<_> = queue
+                .borrow()
+                .entries()
+                .map(|entry| (entry.kind.tag(), entry.kind.len(), entry.origin))
+                .collect();
+            assert_eq!(
+                held,
+                vec![
+                    ("text", 1, Origin::Keyboard),
+                    ("text", 2, Origin::Synced),
+                    ("enter", 0, Origin::Synced),
+                ],
+                "typed order, each with the origin it arrived with"
+            );
+            assert!(queue.borrow().has_gate_kind(GateKind::EnterVerdict));
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "held, not written: {:?}",
+            pty_writes.borrow()
+        );
+    });
+
+    // Held for an ssh connect.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(
+                view.ssh_hold_push(HeldInput::Typed("me".to_owned()), ctx),
+                SshTypeaheadPush::Held
+            );
+            {
+                let _synced = dest_table::set_arrival_origin(Origin::Synced);
+                assert_eq!(
+                    view.ssh_hold_push(HeldInput::Typed("them".to_owned()), ctx),
+                    SshTypeaheadPush::Held
+                );
+            }
+            let queue = view.paste_queue.queue.clone();
+            assert!(queue.borrow().has_gate_kind(GateKind::SshConnect));
+            let held: Vec<_> = queue
+                .borrow()
+                .entries()
+                .map(|entry| (entry.kind.tag(), entry.kind.len(), entry.origin))
+                .collect();
+            assert_eq!(
+                held,
+                vec![("held", 2, Origin::Keyboard), ("held", 4, Origin::Synced)]
+            );
+            // Nothing of this test's connect is left for another.
+            view.ssh_hold_clear();
+            assert!(queue.borrow().is_idle());
+        });
+    });
 }
 
 /// #1431: the agent's pty writes are refused while a subshell / PowerShell setup is in progress

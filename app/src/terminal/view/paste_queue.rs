@@ -51,11 +51,11 @@ use crate::terminal::input_queue::{
     Deferred, DeliverOutcome, DestFacts, Destination, DestinationMode, DiscardReason, EntryKind,
     FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, HELD_KEY, HELD_SEQ, HELD_TYPED, Host,
     InputEntry, Origin, PaneQueue, PasteOwner, PowershellKeysThen, SignalKind, SshDropThen, Stamp,
-    destination_mode, is_editor_paste_id, is_pty_entry, trace,
+    destination_mode, is_editor_paste_id, is_pty_entry, switches, trace,
 };
 use crate::terminal::model::typeahead_handoff::{
     CONPTY_PROMPT_HOLD_GIVE_UP, PromptHoldCap, YoungHoldEnd, YoungHoldEvidence, YoungHoldExpiry,
-    forces_shell_submit, text_for_editor,
+    YoungHoldReaderLook, forces_shell_submit, text_for_editor,
 };
 use crate::terminal::paste_sequencer::PasteFailure;
 
@@ -1511,6 +1511,68 @@ impl TerminalView {
         if ended {
             self.drain_young_hold_ends(ctx);
         }
+        // #2047: a hold still live may be a reader's (the look at its Enter missed): this key is
+        // an event to look again on, before it queues behind an Enter that waits for nothing.
+        if self.young_hold_gate_open() {
+            self.give_young_hold_to_a_reader_ahead_of_the_line_editor("key", ctx);
+        }
+    }
+
+    /// #2047: a young Enter is held, and something other than the shell's line editor may be
+    /// reading the tty (a precmd function's `read -s`): the Enter that ends such a read is the
+    /// reader's, not a line typed at a prompt the app has yet to notice. The look that says so at
+    /// a key (#2038 on ConPTY: the screen, only if the model is free; #2050 where the tty is
+    /// sampled) can miss, and is not due once a hold is queued. Then the Enter waited for a line
+    /// report that cannot be asked for, its 10 s net wrote it as the shell's line (a line no
+    /// prompt answers), and the next typed line was held with no event left to release it.
+    ///
+    /// Here the hold itself looks again, in the states those two looks are allowed in
+    /// (`TypeaheadHandoff::young_hold_reader_look`), at the events it has:
+    /// - `site` "key": a key about to be queued behind the hold;
+    /// - `site` "output": a terminal wakeup (the parser that held the model at the Enter has
+    ///   released it; a question printed after the keys were typed arrives with one);
+    /// - `site` "cap": the hold's own give-up net, before it writes the keys as the shell's
+    ///   line. The net is not on a key, so there the model is waited for, as the prompt hold's
+    ///   cap does; at a key and at a wakeup it is read only if it is free.
+    /// No new timer, and no clock in the decision. When the fact holds the hand-off notes the
+    /// reader and the hold's keys go to the pty at once, in typed order, routed as the reader's
+    /// (`route_expired_young_chunks`); every key typed after them takes #2038's route.
+    ///
+    /// Returns whether the hold was given to a reader. Kill switch:
+    /// `PHOSPHOR_YOUNG_HOLD_READER_LOOK=0` (the hold then ends only as before).
+    pub(super) fn give_young_hold_to_a_reader_ahead_of_the_line_editor(
+        &mut self,
+        site: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !switches::young_hold_reader_look() {
+            return false;
+        }
+        let Some(look) = self.handoff.read().young_hold_reader_look() else {
+            return false;
+        };
+        let asks = match look {
+            YoungHoldReaderLook::Tty => self.handoff.read().tty_reads_secret(),
+            YoungHoldReaderLook::Screen if site == "cap" => self.screen_tail_asks_for_input(),
+            YoungHoldReaderLook::Screen => self.model.try_lock().is_some_and(|model| {
+                crate::terminal::model::key_facts::block_tail_asks_for_input(
+                    model.block_list().block_receiving_output(),
+                )
+            }),
+        };
+        if !asks {
+            return false;
+        }
+        let Some(hold_id) = self.handoff.write().give_young_hold_to_prompt_reader() else {
+            return false;
+        };
+        warpui::input_order::log_hop("young_hold_reader_asks", || {
+            format!("site={site} hold_id={hold_id} look={look:?}")
+        });
+        self.release_young_hold_keys(hold_id, true, ctx);
+        // #2053: the question is shown in an agent conversation from here.
+        self.show_question_of_tty_reader(site, ctx);
+        true
     }
 
     /// Applies, to the gate of the queue, every end the hand-off recorded for a young Enter's
@@ -1866,6 +1928,12 @@ impl TerminalView {
         {
             return;
         }
+        // #2047: before the net writes the held Enter as the shell's line, the tty is asked
+        // whether a reader ahead of the line editor has it (the look at the Enter may have
+        // missed). Then the keys are that reader's: written now, in typed order, by its route.
+        if self.give_young_hold_to_a_reader_ahead_of_the_line_editor("cap", ctx) {
+            return;
+        }
         let (expiry, evidence, normal_end) = {
             let mut handoff = self.handoff.write();
             let evidence = handoff.young_hold_evidence();
@@ -1991,12 +2059,23 @@ impl TerminalView {
                 chunks
             }
         };
-        // The give-up safety net fired: no prompt arrived in time. Ids and counts only, never bytes.
-        log::warn!(
-            "typeahead young hold {hold_id} expired with no prompt: releasing {} chunk(s), {} byte(s) to the pty",
-            writes.len(),
-            writes.iter().map(Vec::len).sum::<usize>()
-        );
+        if self.handoff.read().prompt_reader_asks() {
+            // #2047: not a give-up: the hold's keys went to the reader ahead of the line editor.
+            log::info!(
+                "typeahead young hold {hold_id}: a reader ahead of the line editor has the tty; \
+                 {} chunk(s), {} byte(s) go to it in typed order",
+                writes.len(),
+                writes.iter().map(Vec::len).sum::<usize>()
+            );
+        } else {
+            // The give-up safety net fired: no prompt arrived in time. Ids and counts only, never
+            // bytes.
+            log::warn!(
+                "typeahead young hold {hold_id} expired with no prompt: releasing {} chunk(s), {} byte(s) to the pty",
+                writes.len(),
+                writes.iter().map(Vec::len).sum::<usize>()
+            );
+        }
         self.input
             .update(ctx, |input, _| input.clear_handoff_enter_hold());
         trace::release(
@@ -3177,12 +3256,7 @@ impl TerminalView {
                         then,
                     });
                 }
-                let held = self.ssh_drop_detached(
-                    gate,
-                    &paste_ids,
-                    then == SshDropThen::GiveUpToPty,
-                    Some(&mut *ctx),
-                );
+                let held = self.ssh_drop_detached(gate, &paste_ids, then, Some(&mut *ctx));
                 self.finish_dropped_ssh_gate(held, then, ctx);
             }
             Deferred::FlushProgrammaticEdits => {

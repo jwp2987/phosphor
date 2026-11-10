@@ -16550,6 +16550,10 @@ impl TerminalView {
         // function's `read -s -p`): the pty takes input back from the editor before a key is
         // typed. One read of the hand-off on any other wakeup.
         self.hand_keys_to_a_secret_reader("output", ctx);
+        // #2047: a young Enter held while a reader ahead of the line editor has the tty is that
+        // reader's: output (the parser has let go of the model; a question printed after the
+        // keys) is an event to look on. One read of the hand-off on any other wakeup.
+        self.give_young_hold_to_a_reader_ahead_of_the_line_editor("output", ctx);
         // #2053: while a reader ahead of the line editor has the keys, the question it printed is
         // shown in an agent conversation too; the wakeup after the event that ends the reader
         // hides it there again. One read of the hand-off on any other wakeup.
@@ -40341,6 +40345,15 @@ impl pane_key::TypedRouteProbes for TypedKeyProbes<'_, '_> {
             return false;
         }
         let characters = self.characters;
+        // #1900: synced input keeps its origin behind the Enter's gate (a relay must stay passive
+        // when it is delivered).
+        if self.view.held_input_origin() == input_queue::Origin::Synced {
+            return self.view.queue_synced_behind_enter(
+                AfterEnterInput::Text(characters.to_string()),
+                None,
+                self.ctx,
+            );
+        }
         self.view.input.update(self.ctx, |input, ctx| {
             input.queue_behind_enter(AfterEnterInput::Text(characters.to_string()), ctx)
         })

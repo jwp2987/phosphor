@@ -45,11 +45,100 @@ use warpui::ViewContext;
 
 use super::TerminalView;
 use super::paste_queue::{PtyQueueHost, signal_bytes};
-use super::ssh_typeahead::{HeldInput, SSH_TYPEAHEAD_MAX_BYTES, SshTypeahead, SshTypeaheadPush};
+use super::ssh_typeahead::{
+    HeldInput, SSH_TYPEAHEAD_MAX_BYTES, SshTypeahead, SshTypeaheadPush, held_inputs_from_tty_bytes,
+};
 use crate::terminal::input_queue::{
     Deferred, EntryId, EntryKind, GateKind, GateSpec, HELD_SIGNAL, Origin, SignalKind, SshDropThen,
-    trace,
+    switches, trace,
 };
+
+/// #1998: what one entry found behind a dropped connect hold becomes
+/// ([`dropped_entry_inputs`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum DroppedEntry {
+    /// The held inputs it stands for, in order (possibly several: pty bytes are split the way
+    /// the live key path would have held them).
+    Inputs(Vec<HeldInput>),
+    /// A held signal that is never delivered locally (OD-5).
+    SignalDiscarded,
+    /// Nothing can stand for it where the hold's keys go now: counted and logged by the caller,
+    /// never skipped in silence. The tag is the entry kind's (never its content).
+    NoForm(&'static str),
+}
+
+/// #1998: the held inputs an entry behind a dropped ssh connect hold stands for, by what happens
+/// to the hold's keys (`then`). A paste is not decided here (its content lives in the view's and
+/// the editor's stores): the caller handles `EntryKind::Paste` itself.
+///
+/// The hold's own `Held` entries and typed text were always handed on. An entry of another kind
+/// that ended up in the hold's segment of the shared queue (an Enter, pty bytes, a control key, a
+/// sequence, an editor key) was turned into what it is only by the give-up write, and only an
+/// Enter and pty bytes; on the hand-back and local-shell paths it was skipped with no log line: a
+/// lost key. With `accounts` (the kill switch `PHOSPHOR_SSH_DROP_ACCOUNTS_ENTRIES`, on by
+/// default) every path accounts for every entry:
+/// - written to the pty (the give-up, the local shell): the bytes it is, in its place;
+/// - handed back as text: pty bytes and an editor key's text are split into the keys the live
+///   path would have held (an Enter becomes the line break `unexecuted_text` gives it), a control
+///   key and a sequence are the keys they are;
+/// - discarded on purpose (a prompt appeared, ^C, the 64 KiB bound): nothing is handed on, as
+///   before.
+/// What has no form at all (a cursor action of the editor, passive pty-only bytes such as a mouse
+/// report, bytes that are not UTF-8 on the text path) is [`DroppedEntry::NoForm`].
+pub(super) fn dropped_entry_inputs(
+    kind: EntryKind,
+    then: SshDropThen,
+    accounts: bool,
+) -> DroppedEntry {
+    let for_pty_give_up = then == SshDropThen::GiveUpToPty;
+    // The paths that write the hold's keys to the pty as the bytes they are.
+    let as_bytes = for_pty_give_up || (accounts && then == SshDropThen::WriteToLocalPty);
+    let as_text = accounts && then == SshDropThen::HandBackText;
+    let one = |input: HeldInput| DroppedEntry::Inputs(vec![input]);
+    match kind {
+        // Owner decision 2026-11-09 (reversing #1661): a connect give-up writes what was held to
+        // the pty in typed order, as a plain terminal would have sent it all along, and a held
+        // signal is one of those keys (its byte, in its place).
+        EntryKind::Held { class, text } if class == HELD_SIGNAL && for_pty_give_up => {
+            one(HeldInput::Key(text))
+        }
+        // A signal typed during the ssh setup window (OD-5) was meant for the REMOTE shell. When
+        // the held segment ends without one (a prompt, ^C, a connect that failed) it is never
+        // handed back as text and never delivered locally.
+        EntryKind::Held { class, .. } if class == HELD_SIGNAL => DroppedEntry::SignalDiscarded,
+        EntryKind::Held { class, text } => one(HeldInput::from_parts(class, text)),
+        // Legacy leaves typed text that was queued behind an Enter's gate as it is when that
+        // Enter opens the connect (the table turns it into held inputs at delivery): it was typed
+        // for the connect, so it comes back in typed order like the held keys, never dropped.
+        EntryKind::Text(text) => one(HeldInput::Typed(text)),
+        // An Enter and pty bytes that ended up behind the hold are the bytes they are, in their
+        // place.
+        EntryKind::Enter if as_bytes || as_text => one(HeldInput::Key("\r".to_owned())),
+        EntryKind::PtyBytes { bytes, .. } if as_bytes => {
+            one(HeldInput::Seq(String::from_utf8_lossy(&bytes).into_owned()))
+        }
+        EntryKind::PtyBytes { bytes, .. } if as_text => match held_inputs_from_tty_bytes(&bytes) {
+            Some(inputs) => DroppedEntry::Inputs(inputs),
+            None => DroppedEntry::NoForm("pty_bytes"),
+        },
+        EntryKind::Control(key) if accounts && (as_bytes || as_text) => {
+            one(HeldInput::Key(key.to_owned()))
+        }
+        EntryKind::Seq(seq) if accounts && (as_bytes || as_text) => {
+            one(HeldInput::Seq(seq.to_owned()))
+        }
+        EntryKind::EditorKey(key) if accounts && (as_bytes || as_text) => {
+            match key
+                .text_form()
+                .and_then(|text| held_inputs_from_tty_bytes(text.as_bytes()))
+            {
+                Some(inputs) => DroppedEntry::Inputs(inputs),
+                None => DroppedEntry::NoForm("editor_key"),
+            }
+        }
+        other => DroppedEntry::NoForm(other.tag()),
+    }
+}
 
 /// What the ssh hold keeps next to the queue itself: which gate is open. What it holds is read
 /// from the queue (entries of both origins).
@@ -171,6 +260,8 @@ impl TerminalView {
         let (class, text) = input.into_parts();
         trace::hold(trace::legacy::SSH, len);
         let kind = EntryKind::Held { class, text };
+        // #1900: synced input held for the connect stays synced (passive at the hand-over).
+        let origin = self.held_input_origin();
         // `try_lock_ordered`: an offer recorded in the mailbox earlier (a key held while the queue
         // was busy) must not be overtaken by this one, so with anything deferred this key is
         // deferred behind it. Not flushed here: a deferred hand-over could run first and a gate it
@@ -179,13 +270,13 @@ impl TerminalView {
             // Held in order by the next operation (never dropped, never written as typed).
             queue.defer(Deferred::Offer {
                 kind,
-                origin: Origin::Keyboard,
+                origin,
                 stamp: queue.stamp_now(),
             });
             return SshTypeaheadPush::Held;
         };
         let mut host = PtyQueueHost::new(self, ctx);
-        guard.offer(&mut host, kind);
+        guard.offer_with_origin(&mut host, kind, origin);
         SshTypeaheadPush::Held
     }
 
@@ -211,7 +302,8 @@ impl TerminalView {
         });
         queue.defer(Deferred::Offer {
             kind: EntryKind::Held { class, text },
-            origin: Origin::Keyboard,
+            // #1900: synced input held for the connect stays synced.
+            origin: self.held_input_origin(),
             stamp: queue.stamp_now(),
         });
         SshTypeaheadPush::Held
@@ -404,7 +496,7 @@ impl TerminalView {
         &mut self,
         gate: Option<u64>,
         paste_ids: &[u64],
-        for_pty_give_up: bool,
+        then: SshDropThen,
         mut ctx: Option<&mut ViewContext<Self>>,
     ) -> Vec<HeldInput> {
         if gate.is_none() && paste_ids.is_empty() {
@@ -428,7 +520,9 @@ impl TerminalView {
                 self.paste_queue.queue.defer(Deferred::DropSshGate {
                     gate,
                     paste_ids: paste_ids.to_vec(),
-                    then: SshDropThen::Discard,
+                    // #1998: the deferred drop does what this one was asked to do with the keys
+                    // (it used to discard them whatever the caller wanted).
+                    then,
                 });
                 return Vec::new();
             }
@@ -441,24 +535,14 @@ impl TerminalView {
         }
         let mut held = Vec::new();
         let mut signals_discarded = 0usize;
+        // #1998: entries nothing can stand for where the hold's keys go now, by kind.
+        let mut no_form: Vec<&'static str> = Vec::new();
+        let accounts = switches::ssh_drop_accounts_entries();
         for entry in removed {
             match entry.kind {
-                // Owner decision 2026-11-09 (reversing #1661): a connect give-up writes what was
-                // held to the pty in typed order, as a plain terminal would have sent it all
-                // along, and a held signal is one of those keys (its byte, in its place).
-                EntryKind::Held { class, text } if class == HELD_SIGNAL && for_pty_give_up => {
-                    held.push(HeldInput::Key(text))
-                }
-                // A signal typed during the ssh setup window (OD-5) was meant for the REMOTE
-                // shell. When the held segment ends without one (a prompt, ^C, a connect that
-                // failed) it is never handed back as text and never delivered locally.
-                EntryKind::Held { class, .. } if class == HELD_SIGNAL => signals_discarded += 1,
-                EntryKind::Held { class, text } => held.push(HeldInput::from_parts(class, text)),
-                // Legacy leaves typed text and editor pastes that were queued behind an Enter's
-                // gate as they are when that Enter opens the connect (the table turns them into
-                // held inputs at delivery): they were typed for the connect, so they come back
-                // in typed order like the held keys, never dropped.
-                EntryKind::Text(text) => held.push(HeldInput::Typed(text)),
+                // An editor paste queued behind an Enter's gate when that Enter opened the
+                // connect, or a paste read behind the hold: typed for the connect, so it comes
+                // back in typed order like the held keys, never dropped.
                 EntryKind::Paste { paste_id, payload } => {
                     self.paste_queue.routed_pastes.remove(&paste_id);
                     self.paste_queue.refused.remove(&paste_id);
@@ -481,24 +565,34 @@ impl TerminalView {
                         ));
                     }
                 }
-                // A give-up's write drops nothing: an Enter and pty bytes that ended up behind the
-                // hold are the bytes they are, in their place.
-                EntryKind::Enter if for_pty_give_up => held.push(HeldInput::Key("\r".to_owned())),
-                EntryKind::PtyBytes { bytes, .. } if for_pty_give_up => {
-                    held.push(HeldInput::Seq(String::from_utf8_lossy(&bytes).into_owned()))
-                }
-                // Enter / EditorKey / Control / Seq / PtyBytes behind a dropped hold are not handed
-                // back yet; whether legacy ever queues them here is open (#1605 follow-up).
-                other => {
-                    if for_pty_give_up {
-                        log::warn!(
-                            "ssh hold: a give-up found an entry it has no bytes for ({}); not \
-                             written",
-                            other.tag()
-                        );
-                    }
-                }
+                // Every other kind: `dropped_entry_inputs` (#1998).
+                kind => match dropped_entry_inputs(kind, then, accounts) {
+                    DroppedEntry::Inputs(inputs) => held.extend(inputs),
+                    DroppedEntry::SignalDiscarded => signals_discarded += 1,
+                    DroppedEntry::NoForm(tag) => no_form.push(tag),
+                },
             }
+        }
+        // A discard hands nothing on by design; every other path says what it could not carry
+        // (kinds and a count, never content). With the kill switch off only the give-up warns, as
+        // before #1998.
+        if !no_form.is_empty()
+            && (then == SshDropThen::GiveUpToPty || (accounts && then != SshDropThen::Discard))
+        {
+            no_form.sort_unstable();
+            let entries = no_form.len();
+            no_form.dedup();
+            log::warn!(
+                "ssh hold: {entries} entr(ies) behind the dropped hold have no form for {then:?} \
+                 ({}); not handed on",
+                no_form.join(",")
+            );
+            warpui::input_order::log_key_hop("kh_ssh_drop_no_form", || {
+                format!(
+                    "then={then:?} entries={entries} kinds={}",
+                    no_form.join(",")
+                )
+            });
         }
         if signals_discarded > 0 {
             log::info!(
@@ -523,19 +617,14 @@ impl TerminalView {
                 self.flush_deferred_queue_ops(ctx);
             }
             if !queue.has_deferred() && queue.try_peek().is_some() {
-                let held = self.ssh_drop_detached(
-                    gate,
-                    &paste_ids,
-                    then == SshDropThen::GiveUpToPty,
-                    Some(&mut *ctx),
-                );
+                let held = self.ssh_drop_detached(gate, &paste_ids, then, Some(&mut *ctx));
                 self.finish_dropped_ssh_gate(held, then, ctx);
                 return;
             }
         } else if !queue.has_deferred() && queue.try_peek().is_some() {
             // Discarding needs no view context.
             debug_assert_eq!(then, SshDropThen::Discard);
-            let dropped = self.ssh_drop_detached(gate, &paste_ids, false, None);
+            let dropped = self.ssh_drop_detached(gate, &paste_ids, SshDropThen::Discard, None);
             if !dropped.is_empty() {
                 log::info!("ssh hold: discarded {} held input(s)", dropped.len());
             }
@@ -627,7 +716,7 @@ impl TerminalView {
     #[cfg(test)]
     pub(super) fn ssh_hold_take(&mut self) -> Vec<HeldInput> {
         let (gate, paste_ids) = self.ssh_hold_detach();
-        let held = self.ssh_drop_detached(gate, &paste_ids, false, None);
+        let held = self.ssh_drop_detached(gate, &paste_ids, SshDropThen::Discard, None);
         let mut merged = SshTypeahead::default();
         for input in held {
             merged.push(input);
@@ -717,3 +806,7 @@ impl TerminalView {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "ssh_queue_tests.rs"]
+mod tests;

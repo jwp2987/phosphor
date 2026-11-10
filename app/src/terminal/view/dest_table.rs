@@ -723,6 +723,65 @@ impl TerminalView {
             arrival_is_synced()
         }
     }
+
+    /// #1900: the origin an input held in the pane queue is offered with. Synced input stays
+    /// [`Origin::Synced`] while it waits (behind an ssh connect, behind an Enter's gate), because
+    /// the delivery reads the ENTRY's origin to keep a relay passive (`delivering_synced`, #1893):
+    /// offered as a keyboard entry it took over an agent-run command when it was delivered.
+    /// Everything else is a keyboard entry, as before.
+    pub(super) fn held_input_origin(&self) -> Origin {
+        held_origin_for(
+            self.input_is_synced(),
+            crate::terminal::input_queue::switches::keep_synced_origin(),
+        )
+    }
+
+    /// #1900: the input's `queue_behind_enter` (`input/enter_queue.rs`) for SYNCED input: the text
+    /// (or Enter) goes behind the Enter whose gate is open, in arrival order, as an entry that
+    /// still says it is synced. The input's own offer has no origin to give (it is the editor's
+    /// route for typed keys), so the view offers to the same pane queue itself. `stamp` is the
+    /// key's own when the caller has one. False when no Enter gate holds the queue (the caller
+    /// goes on, as after `queue_behind_enter`).
+    pub(super) fn queue_synced_behind_enter(
+        &mut self,
+        after: AfterEnterInput,
+        stamp: Option<Stamp>,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
+            return false;
+        }
+        let kind = match after {
+            AfterEnterInput::Text(text) => EntryKind::Text(text),
+            AfterEnterInput::Enter => EntryKind::Enter,
+        };
+        let queue = self.paste_queue.queue.clone();
+        // Ordered: an offer still in the mailbox was typed first (as `queue_behind_enter`).
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            queue.defer(Deferred::Offer {
+                kind,
+                origin: Origin::Synced,
+                stamp: stamp.unwrap_or_else(|| queue.stamp_now()),
+            });
+            return true;
+        };
+        let mut host = PtyQueueHost::new(self, ctx);
+        match stamp {
+            Some(stamp) => guard.offer_stamped(&mut host, kind, Origin::Synced, stamp),
+            None => guard.offer_with_origin(&mut host, kind, Origin::Synced),
+        };
+        true
+    }
+}
+
+/// [`TerminalView::held_input_origin`] as a pure function: `synced` is whether the input being
+/// held is synced input, `keep_synced` the kill switch (`PHOSPHOR_QUEUE_KEEP_SYNCED_ORIGIN`).
+pub(super) fn held_origin_for(synced: bool, keep_synced: bool) -> Origin {
+    if synced && keep_synced {
+        Origin::Synced
+    } else {
+        Origin::Keyboard
+    }
 }
 
 /// A live input arriving at one of the three legacy entry points.
@@ -962,9 +1021,13 @@ impl TerminalView {
                     _ => None,
                 };
                 if let Some(after) = after {
-                    let queued = self
-                        .input
-                        .update(ctx, |input, ctx| input.queue_behind_enter(after, ctx));
+                    // #1900: synced input keeps its origin behind the Enter's gate.
+                    let queued = if self.held_input_origin() == Origin::Synced {
+                        self.queue_synced_behind_enter(after, Some(stamp), ctx)
+                    } else {
+                        self.input
+                            .update(ctx, |input, ctx| input.queue_behind_enter(after, ctx))
+                    };
                     if queued {
                         return;
                     }

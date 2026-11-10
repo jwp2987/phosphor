@@ -4528,6 +4528,171 @@ fn keys_the_reader_left_unread_are_the_shells_line_once_the_line_editor_signals(
     assert!(!handoff.prompt_reader_asks());
 }
 
+// ---- #2047: a young Enter held while a reader ahead of the line editor has the tty -------------
+
+/// #2047 on ConPTY (r13-pin2, race 3): this prompt's wait for the line editor is older than the
+/// prompt hold's cap, and the look at the screen missed at every key of the answer (the model was
+/// busy at each: #2038's key-time look takes it only if it is free). The first key is then the
+/// shell's line, and the Enter that ends the `read -s` is held as a young Enter for a report
+/// that cannot be asked for. Before the fix it sat for the 10 s net and was then written as a
+/// line no prompt answers (the control above this section).
+///
+/// With a hold queued the key-time look is not due, so the HOLD says when the tty may be looked
+/// at again (`young_hold_reader_look`); the view looks at a key behind the hold, at a wakeup and
+/// at the hold's net. When the screen asks, the hold is given to the reader: its Enter is routed
+/// as the reader's (in flight, not a line a prompt must answer, no enter window), and the line
+/// editor's signal for the same prompt asks the shell for the line the first key left there.
+#[test]
+fn a_young_enter_that_ends_a_precmd_read_is_given_to_the_reader_the_screen_shows() {
+    let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    handoff.age_line_editor_wait_past_the_cap_for_test();
+    assert_eq!(handoff.young_hold_reader_look(), None, "no hold, no look");
+    // The looks at these keys missed: the view noted no reader.
+    assert_eq!(
+        type_and_flush(&mut handoff, b"p"),
+        UserBytesRoute::WriteCounted
+    );
+    assert!(handoff.shell_line_may_hold_typed_text());
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(
+        handoff.young_hold_evidence(),
+        Some(YoungHoldEvidence::RequestDue)
+    );
+    let hold = handoff
+        .take_young_hold_started()
+        .expect("the Enter is held as a young Enter");
+    assert!(
+        !handoff.prompt_reader_look_due(),
+        "with a hold queued the key-time look is not due: the hold looks"
+    );
+    assert_eq!(
+        handoff.young_hold_reader_look(),
+        Some(YoungHoldReaderLook::Screen)
+    );
+    assert!(!handoff.tty_reads_secret(), "ConPTY samples no tty");
+
+    // The view: the screen ends in `pin: `.
+    assert_eq!(handoff.give_young_hold_to_prompt_reader(), Some(hold));
+    assert!(!handoff.young_hold_queued(), "the hold is over");
+    assert_eq!(handoff.young_hold_evidence(), None);
+    assert!(handoff.prompt_reader_asks());
+    assert_eq!(handoff.young_hold_reader_look(), None, "one look per hold");
+    assert_eq!(handoff.give_young_hold_to_prompt_reader(), None);
+    let in_flight = handoff.writes_in_flight();
+    assert_eq!(
+        handoff.route_expired_young_chunks(vec![b"\r".to_vec()]),
+        vec![b"\r".to_vec()],
+        "written as typed"
+    );
+    assert_eq!(handoff.writes_in_flight(), in_flight + 1);
+    assert!(
+        !handoff.has_unanswered_lines(),
+        "the read's Enter is not a line a prompt must answer"
+    );
+    handoff.on_user_write_flushed();
+    assert!(
+        !handoff.try_commit_at_prompt(),
+        "the editor does not take input while the reader has the tty"
+    );
+
+    // The `read` returned: the line editor signals for the same prompt. The `p` the missed look
+    // left in the shell's line is asked for; nothing waits for an event that will not come.
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert!(!handoff.prompt_reader_asks(), "the signal ends the reader");
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+}
+
+/// #2047 where the tty is sampled (Linux, macOS): a line typed ahead of a precmd function's
+/// `read -s` and its Enter. While nothing reads a secret the Enter is an ordinary young Enter
+/// (the request is due) and the look changes nothing; once the tty is canonical with echo off
+/// the hold is the reader's.
+#[test]
+fn a_young_enter_is_given_to_a_secret_reader_where_the_tty_is_sampled() {
+    let secret = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut handoff = sampled_prompt_after_a_command(&secret);
+    assert_eq!(
+        type_and_flush(&mut handoff, b"p"),
+        UserBytesRoute::WriteCounted
+    );
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let hold = handoff
+        .take_young_hold_started()
+        .expect("the Enter is held as a young Enter");
+    assert_eq!(
+        handoff.young_hold_reader_look(),
+        Some(YoungHoldReaderLook::Tty)
+    );
+    assert!(
+        !handoff.tty_reads_secret(),
+        "nothing reads a secret: the view leaves the hold to its own events"
+    );
+    assert!(handoff.young_hold_queued());
+
+    secret.store(true, Ordering::SeqCst);
+    assert!(handoff.tty_reads_secret());
+    assert_eq!(handoff.give_young_hold_to_prompt_reader(), Some(hold));
+    assert!(handoff.prompt_reader_asks());
+    assert!(handoff.secret_reader_has_the_keys());
+    assert_eq!(
+        handoff.route_expired_young_chunks(vec![b"\r".to_vec()]),
+        vec![b"\r".to_vec()]
+    );
+    assert!(!handoff.has_unanswered_lines());
+    assert!(!handoff.young_hold_queued());
+}
+
+/// #2047: the hold is given to a reader only in the states #2038 and #2050 allow a reader in.
+/// At a prompt whose line editor has signalled (ConPTY, nothing sampled) a young Enter is a line
+/// at the shell's own editor: no look is due, and its net writes it as the shell's line, counted,
+/// as before. A hold given to a reader whose reader ended before the keys were routed (the
+/// release waited in the view queue's mailbox) is the shell's line too.
+#[test]
+fn a_young_hold_is_not_a_readers_outside_the_states_a_reader_can_be_in() {
+    let mut signalled = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    assert_eq!(signalled.release_queued_prompt_hold_on_signal(), None);
+    assert_eq!(
+        type_and_flush(&mut signalled, b"l"),
+        UserBytesRoute::WriteCounted
+    );
+    assert_eq!(signalled.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let hold = signalled
+        .take_young_hold_started()
+        .expect("a young Enter at a signalled prompt");
+    assert_eq!(signalled.young_hold_reader_look(), None);
+    assert_eq!(signalled.give_young_hold_to_prompt_reader(), None);
+    assert!(signalled.young_hold_queued(), "nothing changed");
+    assert_eq!(
+        signalled.expire_queued_young_hold(hold),
+        YoungHoldExpiry::Release
+    );
+    signalled.route_expired_young_chunks(vec![b"\r".to_vec()]);
+    assert!(
+        signalled.has_unanswered_lines(),
+        "the net's write is the shell's line, as before"
+    );
+
+    // Given to the reader, but the line editor signalled before the keys were routed.
+    let mut late = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    late.age_line_editor_wait_past_the_cap_for_test();
+    assert_eq!(
+        type_and_flush(&mut late, b"p"),
+        UserBytesRoute::WriteCounted
+    );
+    assert_eq!(late.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert!(late.take_young_hold_started().is_some());
+    assert!(late.give_young_hold_to_prompt_reader().is_some());
+    assert_eq!(late.release_queued_prompt_hold_on_signal(), None);
+    assert!(!late.prompt_reader_asks());
+    late.route_expired_young_chunks(vec![b"\r".to_vec()]);
+    assert!(
+        late.has_unanswered_lines(),
+        "the line editor reads: the Enter submits the shell's line"
+    );
+}
+
 // ---- #2050: a secret read ahead of the line editor where the tty is sampled (round 12 Linux) ---
 
 /// The hand-off of the round 12 Linux log at `hop=precmd_seen ... enters=1 precmds=0` after

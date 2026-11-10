@@ -5319,3 +5319,46 @@ Everything below is worked, unproven: nothing was compiled or run against a buil
   line within effect_run's wait is not a lost one). Metric `typeahead_reps` lists the reps with a bad line. `winmap` skips it in the
   PowerShell pane with the reason. Estimated +4 min per mode on `app-test-windows`, not measured. The plain-ssh connect window from the
   Git Bash pane stays with `ssh_connect_typing` and `ssh_nested_typeahead` (SMOKE), whose Git Bash result after #2051 no run has yet.
+## Round 14: the open input-queue issues (design `docs/design/r14-queueres.md`; #1900 #1998 #2047; nothing compiled or run when written)
+Kill switches of the round, all in `app/src/terminal/input_queue/switches.rs` (read once per process; `0` / `off` / `false` / `no` turn
+the fix off; `input_queue/switches_tests.rs`: `a_kill_switch_is_off_only_for_the_off_words`, `the_switch_names_are_stable`):
+`PHOSPHOR_QUEUE_KEEP_SYNCED_ORIGIN` (#1900), `PHOSPHOR_SSH_DROP_ACCOUNTS_ENTRIES` (#1998), `PHOSPHOR_YOUNG_HOLD_READER_LOOK` (#2047).
+A switch is read once, so a unit test cannot flip it: each fix has a pure function that takes the switch as an argument, and the
+tests cover both values there.
+- **#1900, synced input held in the pane queue keeps `Origin::Synced`.** Unit, `terminal/input_queue/tests.rs`:
+  `a_follow_up_of_a_synced_entry_is_synced_input_too` (`follow_up_origin` for every origin and both switch values; through the queue, a
+  synced entry's re-offered key is `Synced`, a keyboard entry's is `Replay`). View, `terminal/view_test.rs`:
+  `synced_input_held_in_the_pane_queue_keeps_its_synced_origin` (`held_origin_for` for both switch values; behind an Enter that waits
+  for its verdict the user's key is a `Keyboard` entry and synced text and a synced Enter are `Synced` entries, in typed order, nothing
+  written; for an ssh connect a held key is `Keyboard` and a synced one `Synced`). Not covered: a synced pane's relay arriving through
+  `write_to_pty_for_syncing_long_running_commands` while an Enter gate is open (needs a long-running command and an Enter gate in one
+  pane; no fixture builds that today), and the delivery staying passive for such an entry (that half is #1893's
+  `synced_ness_at_delivery_is_the_entrys_not_the_enclosing_arrivals`). No appci case: synced panes are not driven by the harness.
+- **#1998, every entry behind a dropped ssh hold is handed on or counted.** Unit, `terminal/view/ssh_queue_tests.rs` (pure, on
+  `dropped_entry_inputs`): `an_enter_and_pty_bytes_behind_a_dropped_hold_are_handed_on_by_every_path` (the issue's case: held text, an
+  Enter entry, a pty-bytes entry and typed text in one segment; the handed-back text is `ls\npwd\necho hi`, the local-shell write and
+  the give-up write are `ls\rpwd\recho hi`), `each_entry_kind_behind_a_dropped_hold_has_a_form_or_is_counted` (every `EntryKind` but a
+  paste against every `SshDropThen`: the hold's own forms unchanged, a held signal only at the give-up, control keys / sequences /
+  editor keys as the keys they are, pty bytes as bytes for a write and as split keys for text, non-UTF-8 bytes and passive `Raw` bytes
+  counted, a discard handing on only what it did), `the_kill_switch_restores_the_old_skips`. Not covered: `ssh_drop_detached` itself
+  with such entries in a real queue (whether legacy can put them behind the hold is still not established, so no fixture does), and the
+  paste arm, which is unchanged. Hop to read if it ever happens in a run: `kh_ssh_drop_no_form then=<..> entries=<n> kinds=<..>`.
+- **#2047, a young Enter held while a reader ahead of the line editor has the tty goes to that reader.** Unit,
+  `terminal/model/typeahead_handoff_tests.rs`: `a_young_enter_that_ends_a_precmd_read_is_given_to_the_reader_the_screen_shows` (ConPTY,
+  the #2038 fixture with the wait older than the cap: the first key is the shell's line, the Enter a young Enter with `RequestDue`;
+  `young_hold_reader_look` says `Screen` while `prompt_reader_look_due` is false; given to the reader, the Enter is in flight, not a
+  line a prompt must answer, the editor does not commit, and the line editor's signal asks for the line: `SendRequest`),
+  `a_young_enter_is_given_to_a_secret_reader_where_the_tty_is_sampled` (the #2050 fixture: the look says `Tty`, nothing changes while
+  the tty reads no secret, then the hold is the reader's), `a_young_hold_is_not_a_readers_outside_the_states_a_reader_can_be_in` (a
+  signalled prompt: no look, the net's write is the shell's line as before; a hold given to a reader that ended before the keys were
+  routed is the shell's line). The control that shows the state before the fix is unchanged:
+  `without_the_reader_the_pin_is_the_shells_line_and_its_enter_is_held_for_a_report`. View, `terminal/view_test.rs`:
+  `a_young_enter_goes_to_the_reader_ahead_of_the_line_editor_when_the_screen_asks` (fixture
+  `conpty_young_enter_held_with_no_reader_noted`: the hand-off driven as the unit fixture, the Enter behind its `PromptSeen` gate; with
+  no question on screen the look changes nothing; with `pin: ` printed, at each site (`cap` through `on_paste_queue_give_up`, `output`
+  through the wakeup's call, `key` by typing `4` behind the hold) the gate is released, the reader noted, the Enter not an unanswered
+  line, and the writes are `\r` (and then `4`), read after the update). Not covered: the model held by another thread at the Enter
+  itself (the fixture reaches the same state by printing the question after the keys), and the kill switch in the view (read once per
+  process). No appci case: the race needs another holder of the model at one key. Hop that names the rescue in a log:
+  `young_hold_reader_asks site=<cap|key|output> hold_id=<n> look=<Screen|Tty>`; `gitbash_precmd_secret` and `precmd_secret_honor_ps1`
+  should pass without it.

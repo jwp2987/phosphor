@@ -152,6 +152,7 @@ mod gates;
 mod pane;
 pub mod shadow;
 pub mod ssh_phase;
+pub mod switches;
 pub mod table;
 pub mod trace;
 
@@ -252,6 +253,17 @@ impl EditorKeyPayload {
                 matches!(action, crate::editor::EditorAction::Enter)
             }
             None => false,
+        }
+    }
+
+    /// #1998: the key as the text it stands for, left in place: typed text as it is, an Enter as
+    /// `\r`. `None` for any other editor action (a cursor move, a deletion by display position:
+    /// no text form outside the editor) and once the key was delivered.
+    pub fn text_form(&self) -> Option<String> {
+        match self.0.borrow().as_ref() {
+            Some(HeldPasteKey::Text(text)) => Some(text.clone()),
+            Some(HeldPasteKey::Action(crate::editor::EditorAction::Enter)) => Some("\r".to_owned()),
+            Some(HeldPasteKey::Action(_)) | None => None,
         }
     }
 
@@ -1692,13 +1704,14 @@ impl InputQueue {
                 self.push_gate(host, spec, entry.id);
             }
         }
-        self.apply_follow_ups(host, entry.id, entry.stamp, follow);
+        self.apply_follow_ups(host, entry.id, entry.origin, entry.stamp, follow);
     }
 
     fn apply_follow_ups<H: Host>(
         &mut self,
         host: &mut H,
         from: EntryId,
+        from_origin: Origin,
         stamp: Stamp,
         follow: FollowUps,
     ) {
@@ -1706,7 +1719,9 @@ impl InputQueue {
             match item {
                 Follow::Offer(kind) => {
                     // A follow-up takes the stamp of the entry it follows (the focus rows).
-                    let entry = self.make_entry(kind, Origin::Replay(from), stamp);
+                    let origin =
+                        follow_up_origin(from, from_origin, switches::keep_synced_origin());
+                    let entry = self.make_entry(kind, origin, stamp);
                     self.entries.push_back(entry);
                 }
                 Follow::OpenGate(spec) => {
@@ -1822,6 +1837,20 @@ impl InputQueue {
         for entry in removed {
             host.discarded(&entry, why);
         }
+    }
+}
+
+/// The origin of an entry re-offered by the delivery of entry `from` ([`FollowUps::offer`]):
+/// [`Origin::Replay`], except that what a SYNCED entry's delivery re-offers is synced input too
+/// (#1900). Synced-ness is the one origin fact a delivery still reads (`delivering_synced`: a
+/// synced relay never takes over an agent-run command, #1855 / #1893); as a plain replay the
+/// re-offered part of the same relay would. `keep_synced` is the kill switch
+/// ([`switches::keep_synced_origin`]).
+pub fn follow_up_origin(from: EntryId, from_origin: Origin, keep_synced: bool) -> Origin {
+    if keep_synced && from_origin == Origin::Synced {
+        Origin::Synced
+    } else {
+        Origin::Replay(from)
     }
 }
 
