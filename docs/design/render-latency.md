@@ -52,7 +52,7 @@ Same winit path, DX12 with desired_maximum_frame_latency=1: streaming 1.5 ms vs 
 
 H1 (mac, #1848, likely 1-3 ms): two asynchronous hops between the key's invalidation and the frame build (dispatch_async turn + CA commit observer). Measure: `hop=key_frame_sched ms=` = time from request_redraw (stamp an atomic in window.rs:1216 when warpNextFrameFromKey is set) to displayLayer: entry (host_view.m:324 / warp_update_layer). Confirms if p50 >= 1 ms at idle.
 
-H2 (mac+linux, ~4 ms, shared with terminal editor): full layout+paint per keystroke (build_scene_inner app.rs:3463; skip_layout only for paint-only timers). Already measured (ui_item frame 4.0-4.35). Not render-pipeline; note only. Confirm on mac by `ui_item kind=frame` lines in the latency_paint window.
+H2 (mac+linux, ~4 ms, shared with terminal editor): full layout+paint per keystroke (build_scene_inner app.rs:3463; skip_layout only for paint-only timers). Already measured (ui_item frame 4.0-4.35). Not render-pipeline; note only. Confirm on mac by `ui_item kind=frame` lines in the latency_paint window. **Corrected 2026-11-09:** `ui_item` only logs frames of 4 ms or more, so 4.0-4.35 is the slow tail; the round-8 median per key is 0.8-2.0 ms (`docs/design/key-scene-build.md` section 1).
 
 H3 (mac, 3.4 ms at idle): os_key_event age at idle is too large for an idle main thread; either blink paint-only frames (paint ~0.5-1 ms + nextDrawable) occupy the thread when the key arrives, or it is WindowServer->app IPC Terminal.app pays too. Measure: A/B latency_paint with cursor blink disabled (settings) vs enabled, reading `key_event_age_ms` (already a metric, cases.py:4177). If age drops to <1 ms with blink off, blink frames are stealing the dequeue.
 

@@ -638,6 +638,30 @@ def render_latency_step_a_hops_parse():
 
 
 @check
+def key_frame_build_hop_parses():
+    """docs/design/key-scene-build.md: the per-key build split hop parses into stage metrics (the first line is the text the Rust unit test
+    frame_split_tests::the_detail_is_the_line_the_harness_parses asserts), `other` is total minus the stages, a second pass is counted, the top view types
+    are a mean per key frame, a window filters by t=, and a build without the hop gives none of the names"""
+    import render_hops as rh
+    B = ["input_order hop=key_frame_build passes=1 layout_passes=1 views=4 mounted=57 render_ms=0.21 layout_ms=0.63 after_layout_ms=0.02 paint_ms=0.48 "
+         "hover_ms=0.31 total_ms=1.80 layout_top=Terminal:0.31,Workspace:0.10,EditorView:0.08 paint_top=Terminal:0.22 t=1000000.0",
+         "input_order hop=key_frame_build passes=2 layout_passes=2 views=6 mounted=57 render_ms=0.41 layout_ms=1.23 after_layout_ms=0.04 paint_ms=0.92 "
+         "hover_ms=0.60 total_ms=3.40 layout_top=Terminal:0.51,EditorView:0.30,Input:0.12 paint_top=- t=1000001.0",
+         "input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=9 render_ms=9.00 layout_ms=9.00 after_layout_ms=9.00 paint_ms=9.00 "
+         "hover_ms=9.00 total_ms=99.00 layout_top=- paint_top=- t=5.0"]                                # before t0
+    m = rh.render_hop_metrics(B, 1000.0)
+    assert m["key_frame_builds"] == 2 and m["key_frame_builds_multi_pass"] == 1, m
+    assert m["key_frame_build_total_ms"] == dict(n=2, p50=2.6, p95=3.4, max=3.4) and m["key_frame_build_layout_ms"]["max"] == 1.23, m
+    assert m["key_frame_build_hover_ms"]["max"] == 0.6 and m["key_frame_build_render_ms"]["n"] == 2 and m["key_frame_build_paint_ms"]["max"] == 0.92, m
+    assert m["key_frame_build_other_ms"]["max"] == 0.2 and m["key_frame_build_views"]["max"] == 6 and m["key_frame_build_mounted"]["p50"] == 57, m
+    assert m["key_frame_build_layout_top_ms"] == {"Terminal": 0.41, "EditorView": 0.19, "Input": 0.06, "Workspace": 0.05}, m
+    assert m["key_frame_build_paint_top_ms"] == {"Terminal": 0.11}, m
+    assert rh.render_hop_metrics(B[2:])["key_frame_builds"] == 1 and "key_frame_build_layout_top_ms" not in rh.render_hop_metrics(B[2:])
+    old = rh.render_hop_metrics(["input_order hop=key_frame layout=true t=1000000.0", "input_order hop=key_frame_now wait_ms=0.3 t=1000000.0"])
+    assert not [k for k in old if k.startswith("key_frame_build")] and old["key_frames_now"] == 1, old
+
+
+@check
 def injector_failures_are_errors():
     import backend
     assert backend.is_injector(["wtype", "-k", "a"]) and backend.is_injector(["xdotool", "type", "x"]) and not backend.is_injector(["xdotool", "windowfocus", "1"])

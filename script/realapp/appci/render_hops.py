@@ -7,6 +7,9 @@
 #   Linux  hop=key_frame_now wait_ms=        a key's frame drawn ahead of the compositor's frame callback (wait = acquire + present of that frame)
 #   Linux  hop=key_frame_now_off wait_ms=    that path turned itself off for the window (two blocked frames in a row)
 #   macOS  hop=key_frame_now drawn=<0|1> ms= a key's frame drawn at the end of its key press (drawn=0: the frame did not go out, the display pass draws it)
+#   per-key frame build split (docs/design/key-scene-build.md; crates/warpui_core/src/frame_split.rs), every platform, the first frame built after a key-down:
+#   hop=key_frame_build passes= layout_passes= views= mounted= render_ms= layout_ms= after_layout_ms= paint_ms= hover_ms= total_ms= layout_top= paint_top=
+#     views = views re-rendered, mounted = views in the tree, hover_ms = the synthetic mouse-move after the build, *_top = `ViewType:ms,...` (largest self time)
 # A build before step A logs none of the new fields: every function returns an empty dict then, and callers say so (the empty result reads like "no samples").
 import re, statistics
 
@@ -18,6 +21,10 @@ _SKIP_RUN = re.compile(r"hop=frame_skip_run skipped=(\d+) held_ms=" + _NUM + r"(
 _FRAME_DRAWN = re.compile(r"hop=frame_drawn total_ms=" + _NUM + r" acquire_ms=" + _NUM + r"(?: present_ms=" + _NUM + r")?")
 _KEY_FRAME_NOW = re.compile(r"hop=key_frame_now (?:wait_ms=" + _NUM + r"|drawn=([01]) ms=" + _NUM + r")")
 _KEY_FRAME_NOW_OFF = re.compile(r"hop=key_frame_now_off\b")
+_BUILD_STAGES = ("render", "layout", "after_layout", "paint", "hover", "total")
+_KEY_FRAME_BUILD = re.compile(r"hop=key_frame_build passes=(\d+) layout_passes=(\d+) views=(\d+) mounted=(\d+) "
+                              + " ".join(st + "_ms=" + _NUM for st in _BUILD_STAGES) + r" layout_top=(\S+) paint_top=(\S+)")
+_TOP_VIEWS = 5      # view types named per key_frame_build_*_top_ms metric
 
 
 def _st(xs):
@@ -43,14 +50,34 @@ def window_lines(txt_or_lines, t0=None, t1=None):
     return out
 
 
+def _top_views(fields, frames):
+    """['Terminal:0.31,Workspace:0.10', '-', ...] (one layout_top= / paint_top= field per key frame) -> {view type: mean ms per key frame}, the _TOP_VIEWS
+    largest. Each field only names that frame's three largest, so a type's mean is a lower bound; {} when no frame timed its views"""
+    tot = {}
+    for f in fields:
+        for part in ([] if f == "-" else f.split(",")):
+            name, _, ms = part.rpartition(":")
+            try:
+                tot[name] = tot.get(name, 0.0) + float(ms)
+            except ValueError:
+                continue
+    top = sorted(tot.items(), key=lambda kv: (-kv[1], kv[0]))[:_TOP_VIEWS]
+    return {name: round(ms / frames, 3) for name, ms in top}
+
+
 def render_hop_metrics(txt_or_lines, t0=None, t1=None):
     """-> {metric name: {n, p50, p95, max}} for the step-A hops in the window (absent names = no such line). Names:
     key_submit_to_presented_ms, key_to_presented_ms_hop, key_presented_wait_ms (macOS), key_frame_sched_ms (macOS), frame_present_ms,
     frame_acquire_ms (Linux/Windows). Plus the plain counts key_presented_sync_on / key_presented_sync_off, key_frames_skipped, skip_runs, and for the key frames drawn at once
     (#1843/#1848): key_frames_now (count), key_frames_now_drawn (macOS: those that went to the compositor), key_frames_now_off (Linux: the path switched itself
-    off), key_frame_now_wait_ms (Linux) / key_frame_now_ms (macOS)."""
+    off), key_frame_now_wait_ms (Linux) / key_frame_now_ms (macOS). And for the per-key build split (hop=key_frame_build): key_frame_build_<stage>_ms for
+    render / layout / after_layout / paint / hover / total, key_frame_build_other_ms (total minus the five stages), key_frame_build_views (views re-rendered
+    per key frame), key_frame_build_mounted, the counts key_frame_builds and key_frame_builds_multi_pass (a second layout + paint in the same frame), and
+    key_frame_build_layout_top_ms / key_frame_build_paint_top_ms ({view type: mean self ms per key frame})."""
     sub, k2p, wait, sync_on, sync_off, sched, kskip, runs, pres, acq = [], [], [], 0, 0, [], 0, 0, [], []
     now_n, now_drawn, now_off, now_wait, now_ms = 0, 0, 0, [], []
+    build = {st: [] for st in _BUILD_STAGES + ("other", "views", "mounted")}
+    build_multi, build_ltop, build_ptop = 0, [], []
     for l in window_lines(txt_or_lines, t0, t1):
         m = _KEY_PRESENTED.search(l)
         if m:
@@ -67,6 +94,18 @@ def render_hop_metrics(txt_or_lines, t0=None, t1=None):
         if m:
             runs += 1
             kskip += int(m.group(3) or 0)
+            continue
+        m = _KEY_FRAME_BUILD.search(l)
+        if m:
+            stages = [float(x) for x in m.groups()[4:10]]
+            for st, v in zip(_BUILD_STAGES, stages):
+                build[st].append(v)
+            build["other"].append(max(0.0, stages[5] - sum(stages[:5])))
+            build["views"].append(int(m.group(3)))
+            build["mounted"].append(int(m.group(4)))
+            build_multi += int(m.group(1)) > 1
+            build_ltop.append(m.group(11))
+            build_ptop.append(m.group(12))
             continue
         if _KEY_FRAME_NOW_OFF.search(l):
             now_off += 1
@@ -91,6 +130,16 @@ def render_hop_metrics(txt_or_lines, t0=None, t1=None):
                      ("key_frame_now_wait_ms", now_wait), ("key_frame_now_ms", now_ms)):
         if xs:
             out[name] = _st(xs)
+    if build["total"]:
+        n = len(build["total"])
+        out["key_frame_builds"], out["key_frame_builds_multi_pass"] = n, build_multi
+        for st in _BUILD_STAGES + ("other",):
+            out["key_frame_build_%s_ms" % st] = _st(build[st])
+        out["key_frame_build_views"], out["key_frame_build_mounted"] = _st(build["views"]), _st(build["mounted"])
+        for name, fields in (("layout", build_ltop), ("paint", build_ptop)):
+            top = _top_views(fields, n)
+            if top:
+                out["key_frame_build_%s_top_ms" % name] = top
     if sub:
         out["key_presented_sync_on"], out["key_presented_sync_off"] = sync_on, sync_off
     if runs:

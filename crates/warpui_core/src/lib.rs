@@ -13,6 +13,7 @@ mod debug;
 pub mod elements;
 pub mod event;
 pub mod fonts;
+mod frame_split;
 pub mod image_cache;
 pub mod input_order;
 pub mod integration;

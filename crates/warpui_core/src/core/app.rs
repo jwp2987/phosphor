@@ -3476,6 +3476,13 @@ impl AppContext {
             return scene;
         };
 
+        // Measurement only (docs/design/key-scene-build.md): the stages of this build, logged
+        // below when it is the first one after a key press. Nothing here changes the frame.
+        let build_start = Instant::now();
+        let mut key_build = crate::frame_split::KeyFrameBuild::default();
+        let mut layout_view_times: Vec<(EntityId, std::time::Duration)> = Vec::new();
+        let mut paint_view_times: Vec<(EntityId, std::time::Duration)> = Vec::new();
+
         // This outer loop exists because after redrawing a scene, we will sometimes emit an
         // artificial `MouseMoved` event to ensure that `Hoverable` elements are properly updated
         // if the layout changes. However, to prevent an infinite loop hanging the app, we limit
@@ -3522,8 +3529,12 @@ impl AppContext {
                 && !invalidation.redraw_requested
                 && invalidation.paint_only_redraw_requested;
 
+            key_build.updated += invalidation.updated.len();
+
             {
                 let mut presenter = presenter.borrow_mut();
+                // The views are timed one by one only for the build whose split will be logged.
+                presenter.set_view_timing(crate::input_order::key_frame_build_owed());
                 let render_start = Instant::now();
                 presenter.invalidate(invalidation, self);
                 let render_elapsed = render_start.elapsed();
@@ -3564,6 +3575,12 @@ impl AppContext {
                     skip_layout,
                 );
                 let scene_elapsed = scene_start.elapsed();
+                {
+                    let split = presenter.last_build_split();
+                    key_build.add_pass(render_elapsed, !skip_layout, split);
+                    layout_view_times.extend_from_slice(&split.layout_views);
+                    paint_view_times.extend_from_slice(&split.paint_views);
+                }
                 // One frame pass against the owner's 4 ms UI budget, split into the view
                 // renders (element-tree build) and layout + paint (#1191, #1219, #1301).
                 crate::input_order::log_ui_item_if_over_budget(
@@ -3599,11 +3616,32 @@ impl AppContext {
                 .as_ref()
                 .and_then(Event::to_synthetic_mouse_move_event)
             {
+                let hover_start = Instant::now();
                 self.handle_window_event(event, window_id, presenter.clone());
+                key_build.hover += hover_start.elapsed();
             }
         }
 
         self.report_active_cursor_position_update_if_changed(window_id);
+
+        crate::input_order::log_key_frame_build_if_owed(|| {
+            // View type names only, as in the `frame_cause` line above.
+            let name = |view_id: &EntityId| -> String {
+                self.view_name(window_id, *view_id)
+                    .unwrap_or("?")
+                    .to_string()
+            };
+            key_build.layout_views = layout_view_times
+                .iter()
+                .map(|(view_id, time)| (name(view_id), *time))
+                .collect();
+            key_build.paint_views = paint_view_times
+                .iter()
+                .map(|(view_id, time)| (name(view_id), *time))
+                .collect();
+            key_build.total = build_start.elapsed();
+            key_build.detail()
+        });
 
         scene
     }

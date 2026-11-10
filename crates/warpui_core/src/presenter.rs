@@ -7,6 +7,7 @@ use crate::elements::{DropTargetPosition, Selection};
 pub mod tui;
 
 use crate::fonts;
+use crate::frame_split::{BuildSplit, ViewClock};
 use crate::zoom::Scale;
 use crate::{
     Action, AppContext, ClipBounds, EntityId, EntityIdMap, EntityIdSet, TaskId, View, ViewHandle,
@@ -55,6 +56,11 @@ pub struct Presenter {
     /// Whether the last frame ran a full layout and `mounted_views` reflects it.
     /// Cleared when a zero-size frame consumes invalidations without laying out.
     layout_current: bool,
+    /// Whether the next build also times each view's layout and paint. Measurement only (the
+    /// frame after a key press, docs/design/key-scene-build.md); set by `AppContext::build_scene`.
+    time_views: bool,
+    /// The stage times of the most recent build. Measurement only.
+    last_split: BuildSplit,
 }
 
 pub struct LayoutContext<'a> {
@@ -66,6 +72,8 @@ pub struct LayoutContext<'a> {
     view_stack: Vec<EntityId>,
     pub window_size: Vector2F,
     pub position_cache: &'a PositionCache,
+    /// Self time per view of this pass, when the build is being timed. Measurement only.
+    view_clock: Option<ViewClock>,
 }
 
 pub struct AfterLayoutContext<'a> {
@@ -102,6 +110,8 @@ pub struct PaintContext<'a> {
     pending_rasters: HashSet<crate::image_cache::RasterWait>,
     /// Keep track of all the views that were actually painted in this scene.
     views_painted: EntityIdSet,
+    /// Self time per view of this pass, when the build is being timed. Measurement only.
+    view_clock: Option<ViewClock>,
 }
 
 #[derive(Default)]
@@ -357,7 +367,20 @@ impl Presenter {
             mounted_views: EntityIdSet::default(),
             lazy_children: EntityIdSet::default(),
             layout_current: false,
+            time_views: false,
+            last_split: BuildSplit::default(),
         }
+    }
+
+    /// Whether the builds from now on also time each view (`BuildSplit::layout_views` /
+    /// `paint_views`). Changes nothing a frame shows.
+    pub(crate) fn set_view_timing(&mut self, on: bool) {
+        self.time_views = on;
+    }
+
+    /// The stage times of the most recent build.
+    pub(crate) fn last_build_split(&self) -> &BuildSplit {
+        &self.last_split
     }
 
     pub fn invalidate(&mut self, invalidation: WindowInvalidation, app: &AppContext) {
@@ -544,8 +567,12 @@ impl Presenter {
         let zoomed_window_size = window_size.scale_down(ctx.zoom_factor());
         let zoomed_scale_factor = scale_factor.scale_up(ctx.zoom_factor());
 
+        let mut split = BuildSplit::default();
         if !skip_layout {
-            self.layout(zoomed_window_size, ctx);
+            let layout_start = Instant::now();
+            split.layout_views = self.layout(zoomed_window_size, ctx);
+            split.layout = layout_start.elapsed();
+            split.mounted = self.mounted_views.len();
             // In theory, after_layout would be a good place for Elements to update app state with
             // the results of layout (for example, if a View stored the heights of its children to
             // implement scrolling). However, it's not safe to pass a AppContext to after_layout
@@ -553,9 +580,14 @@ impl Presenter {
             // In the future, we might:
             // * Decouple after_layout from the presenter so it can take a AppContext
             // * Extend the AfterLayoutContext API to allow state updates, but not other effects
+            let after_layout_start = Instant::now();
             self.after_layout(ctx);
+            split.after_layout = after_layout_start.elapsed();
             self.layout_current = true;
         }
+        // `paint` fills in `last_split.paint_views` itself.
+        self.last_split = split;
+        let paint_start = Instant::now();
         let (scene, repaint_at, repaint_needs_layout, pending_assets, pending_rasters) = self
             .paint(
                 zoomed_scale_factor,
@@ -563,6 +595,7 @@ impl Presenter {
                 max_texture_dimension_2d,
                 ctx,
             );
+        self.last_split.paint = paint_start.elapsed();
         // After paint, collect a delayed repaint if it exists and start the timer.
         if let Some(repaint_at) = repaint_at {
             ctx.manage_delayed_repaint_timers(self.window_id, repaint_at, repaint_needs_layout);
@@ -589,8 +622,11 @@ impl Presenter {
         scene
     }
 
-    fn layout(&mut self, window_size: Vector2F, app: &AppContext) {
+    /// Lays the tree out. Returns each visited view's self time when the build is being timed
+    /// (`time_views`), nothing otherwise.
+    fn layout(&mut self, window_size: Vector2F, app: &AppContext) -> Vec<(EntityId, Duration)> {
         crate::profiling::zone!("layout");
+        let mut view_times = Vec::new();
         if let Some(root_view_id) = app.root_view_id(self.window_id) {
             // Rebuilt from scratch by this pass: whatever it does not visit is not
             // in the tree. See issue #805.
@@ -605,13 +641,18 @@ impl Presenter {
                 view_stack: Vec::new(),
                 window_size,
                 position_cache: &self.position_cache,
+                view_clock: self.time_views.then(ViewClock::default),
             };
             layout_ctx.layout(
                 root_view_id,
                 SizeConstraint::new(Vector2F::zero(), window_size),
                 app,
             );
+            if let Some(clock) = layout_ctx.view_clock.take() {
+                view_times = clock.finish();
+            }
         }
+        view_times
     }
 
     fn after_layout(&mut self, app: &AppContext) {
@@ -668,8 +709,13 @@ impl Presenter {
                 pending_assets: HashSet::new(),
                 pending_rasters: HashSet::new(),
                 views_painted: EntityIdSet::default(),
+                view_clock: self.time_views.then(ViewClock::default),
             };
             paint_ctx.paint(root_view_id, Vector2F::zero(), ctx);
+            // Each painted view's self time, when the build is being timed (`time_views`).
+            if let Some(clock) = paint_ctx.view_clock.take() {
+                self.last_split.paint_views = clock.finish();
+            }
 
             repaint_at = paint_ctx.repaint_at;
             repaint_needs_layout = paint_ctx.repaint_needs_layout;
@@ -853,7 +899,13 @@ impl LayoutContext<'_> {
             self.parents.insert(view_id, *parent_id);
         }
         self.view_stack.push(view_id);
+        if let Some(clock) = self.view_clock.as_mut() {
+            clock.enter(Instant::now());
+        }
         let size = rendered_view.layout(constraint, self, app);
+        if let Some(clock) = self.view_clock.as_mut() {
+            clock.exit(view_id, Instant::now());
+        }
         self.rendered_views.insert(view_id, rendered_view);
         self.view_stack.pop();
         size
@@ -885,7 +937,13 @@ impl PaintContext<'_> {
                 }
             }
             self.views_painted.insert(view_id);
+            if let Some(clock) = self.view_clock.as_mut() {
+                clock.enter(Instant::now());
+            }
             tree.paint(origin, self, app);
+            if let Some(clock) = self.view_clock.as_mut() {
+                clock.exit(view_id, Instant::now());
+            }
             self.rendered_views.insert(view_id, tree);
         }
     }

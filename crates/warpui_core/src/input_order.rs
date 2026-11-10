@@ -516,11 +516,32 @@ pub fn log_frame_if_pty_output_pending(layout: bool) {
     }
 }
 
+/// A key-down was logged and the build split of the frame after it has not been logged yet
+/// (`hop=key_frame_build`, docs/design/key-scene-build.md). Separate from [`FRAME_OWED_FOR_KEY`],
+/// which the presenter clears in the middle of the build this one is read at the end of.
+static BUILD_SPLIT_OWED_FOR_KEY: AtomicBool = AtomicBool::new(false);
+
+/// Whether the next frame build is the one after a key press and its split will be logged, so
+/// the build can time its views too. One atomic load; never true with input-order logging off.
+pub(crate) fn key_frame_build_owed() -> bool {
+    BUILD_SPLIT_OWED_FOR_KEY.load(Ordering::Relaxed)
+}
+
+/// Logs the split of the first frame build after a key-down as
+/// `input_order hop=key_frame_build <detail> t=<ms>` (see `frame_split::KeyFrameBuild::detail`).
+/// Costs one atomic swap for every other frame; the detail is only formatted for a line written.
+pub(crate) fn log_key_frame_build_if_owed(detail: impl FnOnce() -> String) {
+    if take_frame_owed(&BUILD_SPLIT_OWED_FOR_KEY) && enabled() {
+        log::debug!(target: TARGET, "{}", hop_line("key_frame_build", &detail()));
+    }
+}
+
 /// Logs a key-down being dispatched.
 pub fn log_key_down(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) {
     if enabled() {
         let seq = next_key_seq_for_keydown();
         FRAME_OWED_FOR_KEY.store(true, Ordering::Relaxed);
+        BUILD_SPLIT_OWED_FOR_KEY.store(true, Ordering::Relaxed);
         log::debug!(target: TARGET, "{}", key_down_line(key, ctrl, alt, shift, cmd, seq));
     }
 }
@@ -636,6 +657,17 @@ mod tests {
         let owed = AtomicBool::new(true);
         assert!(take_frame_owed(&owed));
         assert!(!take_frame_owed(&owed));
+    }
+
+    #[test]
+    fn the_key_frame_build_line_is_the_hop_the_harness_parses() {
+        // script/realapp/appci/render_hops.py _KEY_FRAME_BUILD matches
+        // `input_order hop=key_frame_build passes=<n> ... t=<ms>`.
+        let line = hop_line("key_frame_build", "passes=1 layout_passes=1");
+        assert!(
+            line.starts_with("input_order hop=key_frame_build passes=1 layout_passes=1 t="),
+            "{line}"
+        );
     }
 
     #[test]
