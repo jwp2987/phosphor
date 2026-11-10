@@ -1668,10 +1668,103 @@ impl TerminalView {
             queue.defer(Deferred::TakeGateKeys { gate_id, then });
             return;
         }
+        if then == GateKeysThen::Release {
+            match self.hand_deferred_gate_lines_to_waiting_enter(gate_id, ctx) {
+                Some(true) => return,
+                Some(false) => {}
+                None => {
+                    queue.defer(Deferred::TakeGateKeys { gate_id, then });
+                    return;
+                }
+            }
+        }
         match self.take_deferred_gate_entries_now(gate_id, ctx) {
             Some(taken) => self.finish_taken_gate_keys(taken, then, false, ctx),
             None => queue.defer(Deferred::TakeGateKeys { gate_id, then }),
         }
+    }
+
+    /// #1997 (owner decision 2026-11-09, keep them together, on the event path): the deferred
+    /// Enter ran and wrote no command, and its own LINE now waits behind the input's Enter gate
+    /// (the shell could not take it yet, #1571; or it waits for its verdict). Complete lines
+    /// typed behind that Enter must not reach the pty before it: `cd build`, Enter, `make clean`,
+    /// Enter ran `make clean` first, in the wrong directory, and `cd build` at readiness. They
+    /// are handed to the input's gate IN PLACE (`InputQueue::hand_gate_to`): no entry leaves
+    /// the queue, changes its form or its place, and a key typed since stays behind them. From
+    /// then on they end with that gate: delivered in typed order once the line has run (the
+    /// readiness event), written to the pty behind the line and its Enter at the 60 s net
+    /// (`write_unready_line_and_keys_to_pty`), kept with the line in the editor when a verdict
+    /// wait gives up, voided with it by ^C.
+    ///
+    /// Only when an Enter is among the held keys. An unfinished line keeps its own path in
+    /// [`Self::release_held_keys`] (queued behind the same gate as text, or written to a secret
+    /// read, #1957), and so does everything typed behind a BARE deferred Enter (an empty line
+    /// has no command to overtake, S2 / #826 N1).
+    ///
+    /// `Some(true)`: handed over, the caller takes nothing. `Some(false)`: not this case, the
+    /// caller takes the keys as before. `None`: the queue could not be locked (nothing changed).
+    fn hand_deferred_gate_lines_to_waiting_enter(
+        &mut self,
+        gate_id: u64,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<bool> {
+        let Some((to_kind, to_key)) = self
+            .input
+            .read(ctx, |input, ctx| input.enter_gate_holding_a_line(ctx))
+        else {
+            return Some(false);
+        };
+        let queue = self.paste_queue.queue.clone();
+        let mut guard = queue.try_lock()?;
+        let mut holds_a_line = false;
+        for entry in guard.held_by_gate(GateKind::HandoffReport, gate_id) {
+            if self.held_entry_holds_enter(entry, ctx) {
+                holds_a_line = true;
+                break;
+            }
+        }
+        if !holds_a_line {
+            return Some(false);
+        }
+        let handed = {
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.hand_gate_to(&mut host, GateKind::HandoffReport, gate_id, to_kind, to_key)
+        };
+        drop(guard);
+        let Some(entries) = handed else {
+            // The input's gate left the queue between the two looks: the keys are taken as
+            // before.
+            return Some(false);
+        };
+        log::info!(
+            "typeahead hand-off: the deferred Enter's line waits behind its gate; the {entries} \
+             entr(ies) typed after it wait behind the same gate, in typed order, and follow it \
+             (#1997)"
+        );
+        warpui::input_order::log_hop("held_lines_kept_behind_enter", || {
+            format!("entries={entries} gate={to_key} kind={to_kind:?}")
+        });
+        self.note_editor_took_over();
+        self.redetermine_terminal_focus(ctx);
+        Some(true)
+    }
+
+    /// Whether `entry`, still queued, carries an Enter. A paste whose content this view or the
+    /// input keeps is looked up there; one nobody has content for carries none.
+    fn held_entry_holds_enter(&self, entry: &InputEntry, ctx: &mut ViewContext<Self>) -> bool {
+        if let Some(holds) = entry.kind.holds_enter() {
+            return holds;
+        }
+        let EntryKind::Paste { paste_id, .. } = &entry.kind else {
+            return false;
+        };
+        if let Some(bytes) = self.paste_queue.payloads.get(paste_id) {
+            return bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
+        }
+        self.input
+            .as_ref(ctx)
+            .peek_paste_payload_text(*paste_id)
+            .is_some_and(|text| text.contains(['\r', '\n']))
     }
 
     /// The continuation of [`Self::take_deferred_gate_keys_then`], with the entries taken, in
@@ -2886,6 +2979,14 @@ impl TerminalView {
             }
             Deferred::ApplyYoungHoldEnds => self.drain_young_hold_ends(ctx),
             Deferred::TakeGateKeys { gate_id, then } => {
+                // #1997: lines typed behind an Enter whose own line now waits stay behind it.
+                if then == GateKeysThen::Release {
+                    match self.hand_deferred_gate_lines_to_waiting_enter(gate_id, ctx) {
+                        Some(true) => return Ok(()),
+                        Some(false) => {}
+                        None => return Err(Deferred::TakeGateKeys { gate_id, then }),
+                    }
+                }
                 let Some(taken) = self.take_deferred_gate_entries_now(gate_id, ctx) else {
                     return Err(Deferred::TakeGateKeys { gate_id, then });
                 };

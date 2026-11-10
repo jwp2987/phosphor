@@ -2977,11 +2977,30 @@ plain terminal"). The owner saw it on macOS at an EMPTY remote prompt: a toast f
 - **Not changed (not give-ups, or not drops).** ^C / ^D void typeahead as the tty does (#1571,
   #1584); the multi-line submit dialog's answer discards what was typed over it (#1652, above); the
   subshell / PowerShell setup nets hand their keys back to the editor (#1711, #1679); the ConPTY
-  prompt hold keeps its rules (#1584, #1923); an ssh bootstrap timer that finds the shell already
-  gone still discards the held keys with a log (#1494: nothing can read them). Left as they are by
+  prompt hold keeps its rules (#1584, #1923). Left as they are by
   the owner (2026-11-09): an editor key with no byte form among given-up keys (a cursor motion, a
   selection) acts on the editor in its place; on ConPTY a give-up's write waits for the line editor
   only when no prompt hold is already queued.
+- **A dead shell at the ssh bootstrap timer hands the keys back, it does not discard them (#1494,
+  owner 2026-11-09).** Nothing can read them from the pty, so they are not written, and nothing is
+  run: they become text in the pane's input, in typed order, with the hand-back Enter guard, and
+  are never stashed for a block that will not end (`hand_back_unexecuted_ssh_text`). This was the
+  last drop on the give-up paths.
+- **An Enter that finds the held line's gate gone is not absorbed (owner 2026-11-09).** It gives
+  the unready line up and then acts: the line, its Enter, the text typed into the editor after
+  the line and this Enter go to the pty in one write, in typed order
+  (`give_up_unready_enter_met_by_enter`); over an editor that no longer shows the held line it
+  takes the normal Enter path after the line is sent. Do not go back to consuming that Enter.
+  Kept as built by the same ruling: a voided Enter keeps its keys with the edited line in the
+  editor, and the untracked-gate rule (a line in the editor keeps them; an empty editor sends
+  them).
+- **Keep-together holds on the event path too (#1997, owner 2026-11-09).** A deferred Enter whose
+  submit wrote no command because its own non-empty line now waits behind the input's Enter gate
+  (an unready shell, a verdict wait) no longer has the complete lines typed behind it written to
+  the pty at once (the #826 N1 / #1016 behaviour). They are handed to that gate in place
+  (`InputQueue::hand_gate_to`, `hand_deferred_gate_lines_to_waiting_enter`) and follow the line:
+  after it at readiness, behind it at the net. Lines typed behind a BARE deferred Enter are still
+  written at once (no line to overtake). Do not restore the direct write past a waiting line.
 - **The consequence the first ruling left open is closed.** Under the first ruling (a few hours on
   2026-11-09) the unrun line stayed in the editor and the keys typed after it were written to the
   pty, so a second complete command ran without the first. The owner ruled "keep them together":
@@ -2992,7 +3011,7 @@ plain terminal"). The owner saw it on macOS at an EMPTY remote prompt: a toast f
   unready shell's line in the editor while what followed it is sent, or a hand-back of a young
   Enter's keys to the editor at its cap. (`text_of_entries_typed_after`, #1661's helper, stays
   deleted; the keys kept with a line are turned into text by `keep_given_up_keys_with_line`.)
-<!-- markers: sym:text_of_entries_typed_after sym:typed_after_enter_discarded_toast sym:discard_gate_keys_after_enter sym:split_line_before_first_enter keep:close_gate_for_give_up keep:write_given_up_entries_to_pty keep:keep_given_up_keys_with_line keep:write_unready_line_and_keys_to_pty keep:place_given_up_enter_gate_keys keep:take_given_up_unready_line keep:KeysAfterEnter keep:give_up_gate_keys_to_pty keep:give_up_deferred_enter_keys keep:give_up_young_hold_keys_to_pty keep:on_given_up_user_bytes keep:give_up_deferred_gate keep:report_enter_gate_discard keep:YOUNG_HOLD_GIVE_UP keep:young_hold_cap_is_normal_end keep:close_gate_discarding -->
+<!-- markers: sym:text_of_entries_typed_after sym:typed_after_enter_discarded_toast sym:discard_gate_keys_after_enter sym:split_line_before_first_enter keep:close_gate_for_give_up keep:hand_gate_to keep:hand_deferred_gate_lines_to_waiting_enter keep:write_given_up_entries_to_pty keep:keep_given_up_keys_with_line keep:write_unready_line_and_keys_to_pty keep:place_given_up_enter_gate_keys keep:take_given_up_unready_line keep:give_up_unready_enter_met_by_enter keep:KeysAfterEnter keep:give_up_gate_keys_to_pty keep:give_up_deferred_enter_keys keep:give_up_young_hold_keys_to_pty keep:on_given_up_user_bytes keep:give_up_deferred_gate keep:report_enter_gate_discard keep:YOUNG_HOLD_GIVE_UP keep:young_hold_cap_is_normal_end keep:close_gate_discarding -->
 
 ### History: the decision this reverses (#1661, 2026-11-05; resolved #1766, #1767, #1768, #1769, #1770)
 

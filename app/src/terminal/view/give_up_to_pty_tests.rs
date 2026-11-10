@@ -582,3 +582,180 @@ fn an_unready_shells_give_up_writes_a_bare_enter_before_the_keys_after_it() {
         });
     }
 }
+
+/// `line` + Enter held for the unready test shell (the deferred Enter's submit is refused, #1571),
+/// and then the DEFECT the next tests are about: the held Enter's gate leaves the queue while the
+/// input still holds the Enter, so nothing can release it and nothing holds later keys back.
+fn hold_a_line_for_the_unready_shell_and_lose_its_gate(
+    view: &mut TerminalView,
+    line: &str,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    awaiting_typeahead_report(view);
+    view.input
+        .update(ctx, |input, ctx| input.replace_buffer_content(line, ctx));
+    view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+    view.open_deferred_enter_gate(ctx);
+    view.handle_typeahead_report_with_handoff(true, ctx);
+    {
+        let input = view.input.as_ref(ctx);
+        assert!(
+            input.unready_enter_gate_open() && input.enter_queue_holds_keys(ctx),
+            "the line is held for the unready shell, behind its gate"
+        );
+        assert_eq!(input.buffer_text(ctx), line);
+    }
+    let key = view
+        .paste_queue
+        .queue
+        .borrow()
+        .gates()
+        .iter()
+        .find(|gate| gate.kind == input_queue::GateKind::EnterVerdict)
+        .map(|gate| gate.key)
+        .expect("the held Enter's gate");
+    let dropped = view
+        .paste_queue
+        .queue
+        .borrow_mut()
+        .drop_gate(input_queue::GateKind::EnterVerdict, key);
+    assert!(dropped.is_empty(), "nothing was typed behind it yet");
+    let input = view.input.as_ref(ctx);
+    assert!(
+        input.unready_enter_gate_open() && !input.enter_queue_holds_keys(ctx),
+        "the input still holds the Enter; its gate is gone from the queue"
+    );
+}
+
+/// Owner decision 2026-11-09 (decision 5 of the keep-together report, reversed): an Enter that
+/// finds the held line's gate GONE from the queue gives the line up, and is NOT absorbed by that
+/// give-up. `cd build` is held; with the gate gone `make clean` was typed straight into the
+/// editor behind it; then Enter. The pty gets `cd build`, Enter, `make clean`, Enter, in typed
+/// order, once; the editor is empty; the editor runs nothing itself. Until this decision the
+/// held line went out and the Enter (with `make clean`) stayed behind. Legacy and Table.
+#[test]
+fn an_enter_that_finds_the_held_lines_gate_gone_sends_the_line_then_its_own_line_and_itself() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            let executed = count_executed_commands(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                hold_a_line_for_the_unready_shell_and_lose_its_gate(view, "cd build", ctx);
+            });
+            assert_eq!(
+                written(&pty),
+                "",
+                "{mode:?}: nothing written while it is held"
+            );
+            terminal.update(&mut app, |view, ctx| {
+                // No gate holds the next line back: it lands in the editor, after the held line.
+                view.input.update(ctx, |input, ctx| {
+                    input.replace_buffer_content("cd buildmake clean", ctx)
+                });
+                view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+                let input = view.input.as_ref(ctx);
+                assert!(
+                    !input.unready_enter_gate_open() && !input.has_held_unready_enter(),
+                    "{mode:?}: the held line was given up"
+                );
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "{mode:?}: the line and what followed it left for the shell"
+                );
+            });
+            assert_eq!(
+                written(&pty),
+                "cd build\rmake clean\r",
+                "{mode:?}: the held line and its Enter, then this Enter's line and this Enter"
+            );
+            assert_eq!(
+                *executed.borrow(),
+                0,
+                "{mode:?}: the editor ran nothing itself"
+            );
+            terminal.read(&app, |view, ctx| {
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
+            });
+        });
+    }
+}
+
+/// The same with NOTHING typed after the held line: the Enter that finds the gate gone is a bare
+/// Enter behind the line. It is written after the line's own Enter (`cd build`, Enter, Enter),
+/// not consumed. Legacy and Table.
+#[test]
+fn a_bare_enter_that_finds_the_held_lines_gate_gone_is_written_behind_the_line() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                hold_a_line_for_the_unready_shell_and_lose_its_gate(view, "cd build", ctx);
+                view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            assert_eq!(
+                written(&pty),
+                "cd build\r\r",
+                "{mode:?}: the line, its Enter, then the Enter that found the gate gone"
+            );
+            // A later give-up finds nothing left over from this one.
+            pty.borrow_mut().clear();
+            terminal.update(&mut app, |view, ctx| {
+                view.write_unready_line_and_keys_to_pty(Vec::new(), "unready_enter", ctx);
+            });
+            assert_eq!(written(&pty), "", "{mode:?}: written once");
+        });
+    }
+}
+
+/// The editor no longer shows the held line when the Enter finds the gate gone (the buffer was
+/// replaced). The requested line still goes to the pty with its Enter (#1435), alone: the text
+/// the editor shows is not sent raw behind it, and no stray Enter is written. The Enter is not
+/// absorbed either: it takes the normal Enter path on what the editor shows, so that text is
+/// kept in the editor (held for the still-unready shell, or waiting for its verdict) or run by
+/// the editor, exactly once. Legacy and Table.
+#[test]
+fn an_enter_that_finds_the_gate_gone_over_other_text_sends_only_the_held_line_and_then_acts() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            let executed = count_executed_commands(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                hold_a_line_for_the_unready_shell_and_lose_its_gate(view, "cd build", ctx);
+                view.input
+                    .update(ctx, |input, ctx| input.replace_buffer_content("ls", ctx));
+                view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+            });
+            // The Enter's normal path may wait for a verdict: let it settle.
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(100)).await;
+            assert_eq!(
+                written(&pty),
+                "cd build\r",
+                "{mode:?}: the requested line and its Enter, and nothing else, at the pty"
+            );
+            terminal.read(&app, |view, ctx| {
+                let in_editor = usize::from(view.input.as_ref(ctx).buffer_text(ctx) == "ls");
+                assert_eq!(
+                    in_editor + *executed.borrow(),
+                    1,
+                    "{mode:?}: `ls` is still in the editor or was run by it, once; executed={}",
+                    executed.borrow()
+                );
+            });
+        });
+    }
+}

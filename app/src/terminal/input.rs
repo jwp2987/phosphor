@@ -2173,6 +2173,11 @@ pub struct Input {
     /// writes it to the pty with its Enter and the keys typed after it
     /// ([`Self::take_given_up_unready_line`]; owner decision 2026-11-09).
     given_up_unready_line: Option<String>,
+    /// With [`Self::given_up_unready_line`]: an Enter met the held line's gate gone from the
+    /// queue and gave the line up. That Enter is not absorbed (owner decision 2026-11-09): it
+    /// and the text typed into the editor after the held line (possibly empty) are written
+    /// behind the line and its Enter ([`Self::take_given_up_enter_after_unready_line`]).
+    given_up_unready_after: Option<String>,
     /// The command [`Self::set_pending_command`] was asked to run (#1435): what runs is this, never
     /// whatever the user's keys made of the buffer it was shown in.
     pending_command_text: Option<String>,
@@ -4224,6 +4229,7 @@ impl Input {
             pending_command_shown_read_only: false,
             held_unready_enter: false,
             given_up_unready_line: None,
+            given_up_unready_after: None,
             pending_command_text: None,
             deferred_programmatic_edits: Vec::new(),
             last_word_insertion,
@@ -14541,18 +14547,23 @@ impl Input {
         if !self.running_deferred_enter && self.unready_enter_gate_open() {
             if self.queue_behind_enter(AfterEnterInput::Enter, ctx) {
                 warpui::input_order::log_hop("enter_queued_behind_held", String::new);
-            } else if self.enter_queue_handle_is_draining(ctx) {
+                return;
+            }
+            if self.enter_queue_handle_is_draining(ctx) {
                 log::error!(
                     "input queue: an Enter delivered by a drain met the gate of an Enter held for \
                      an unready shell; not submitted (#1571)"
                 );
-            } else {
-                // The gate is gone from the queue (nothing can release it): the held line is
-                // given up rather than left pending (it goes to the pty with its Enter, owner
-                // decision 2026-11-09), and nothing is submitted here.
-                self.give_up_unready_enter("gate_gone", ctx);
+                return;
             }
-            return;
+            // The gate is gone from the queue (nothing can release it): the held line is given
+            // up rather than left pending (it goes to the pty with its Enter). This Enter is a
+            // key too and is NOT absorbed (owner decision 2026-11-09): it follows the held line,
+            // with what was typed after that line, in typed order. Only when the editor no
+            // longer shows the held line does it fall through, to act on what the editor shows.
+            if self.give_up_unready_enter_met_by_enter(ctx) {
+                return;
+            }
         }
         self.drop_stale_completion_menu(ctx);
         self.flush_pending_suggestion_refilter(ctx);

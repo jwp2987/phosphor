@@ -243,6 +243,18 @@ impl EditorKeyPayload {
         self.0.borrow_mut().take()
     }
 
+    /// Whether this key is an Enter, or text with a line break in it (#1997). The key stays in
+    /// place. False once it was delivered.
+    pub fn holds_enter(&self) -> bool {
+        match self.0.borrow().as_ref() {
+            Some(HeldPasteKey::Text(text)) => text.contains(['\r', '\n']),
+            Some(HeldPasteKey::Action(action)) => {
+                matches!(action, crate::editor::EditorAction::Enter)
+            }
+            None => false,
+        }
+    }
+
     fn len(&self) -> usize {
         match self.0.borrow().as_ref() {
             Some(HeldPasteKey::Text(text)) => text.len(),
@@ -326,6 +338,27 @@ impl EntryKind {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Whether this entry carries an Enter (`\r` or `\n`), i.e. ends a line (#1997: lines typed
+    /// behind a deferred Enter are told from an unfinished line before anything is taken out of
+    /// the queue). `None` for a paste whose content is not in the entry (the host keeps it, or
+    /// its read has not answered).
+    pub fn holds_enter(&self) -> Option<bool> {
+        let in_bytes = |bytes: &[u8]| bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
+        Some(match self {
+            EntryKind::Enter => true,
+            EntryKind::Text(text) | EntryKind::Held { text, .. } => in_bytes(text.as_bytes()),
+            EntryKind::Control(text) | EntryKind::Seq(text) => in_bytes(text.as_bytes()),
+            EntryKind::Raw(bytes) | EntryKind::PtyBytes { bytes, .. } => in_bytes(bytes),
+            EntryKind::EditorKey(key) => key.holds_enter(),
+            EntryKind::Signal(_) => false,
+            EntryKind::Paste {
+                payload: Some(bytes),
+                ..
+            } if !bytes.is_empty() => in_bytes(bytes),
+            EntryKind::Paste { .. } => return None,
+        })
     }
 
     /// Part of a line being typed (pinned to one destination until the next Enter or signal).
@@ -1342,6 +1375,89 @@ impl InputQueue {
             entries: self.close_gate_taking(host, kind, key),
             left_in_place: 0,
         }
+    }
+
+    /// The entries the open gate(s) `(kind, key)` hold of their own, in typed order: from the
+    /// earliest barrier under that name to the next barrier of any other gate (those further on
+    /// are that gate's). Empty when no such gate is open. Read only (#1997: the caller asks
+    /// whether a complete line waits there before it decides where the keys go).
+    pub fn held_by_gate(&self, kind: GateKind, key: u64) -> impl Iterator<Item = &InputEntry> + '_ {
+        let range = self.own_range_of_gate(kind, key);
+        self.entries.iter().filter(move |entry| {
+            range.is_some_and(|(from, upper)| {
+                entry.id >= from && upper.is_none_or(|upper| entry.id < upper)
+            })
+        })
+    }
+
+    /// The id range `[from, upper)` of [`Self::held_by_gate`]; `upper` is `None` when no other
+    /// gate opened after `from`.
+    fn own_range_of_gate(&self, kind: GateKind, key: u64) -> Option<(EntryId, Option<EntryId>)> {
+        let named = |gate: &&Gate| gate.kind == kind && gate.key == key;
+        let from = self
+            .gates
+            .iter()
+            .filter(named)
+            .map(|gate| gate.barrier)
+            .min()?;
+        let upper = self
+            .gates
+            .iter()
+            .filter(|gate| !(gate.kind == kind && gate.key == key))
+            .map(|gate| gate.barrier)
+            .filter(|other| *other > from)
+            .min();
+        Some((from, upper))
+    }
+
+    /// #1997 (owner decision 2026-11-09, keep them together): hands what the open gate(s)
+    /// `(kind, key)` hold to the open gate `(to_kind, to_key)` IN PLACE. The `to` gate's barrier
+    /// moves down to the handed gate's (when that is earlier) and the handed gate closes: every
+    /// entry keeps its id, its form and its place, is held at every moment (a take and a
+    /// re-offer would have a window, and would put the entries behind keys typed since), and
+    /// from now on ends with the `to` gate: released by its event, taken by its give-up, voided
+    /// with it. Nothing is delivered and nothing is handed out.
+    ///
+    /// For the keys typed behind a deferred Enter whose own line now waits behind the `to` gate
+    /// (an Enter held for an unready shell, or still waiting for its verdict): they were typed
+    /// after that line and must not reach the pty before it.
+    ///
+    /// Returns how many entries the handed gate held of its own, or `None` (nothing changed)
+    /// when either gate is not open.
+    pub fn hand_gate_to<H: Host>(
+        &mut self,
+        host: &mut H,
+        kind: GateKind,
+        key: u64,
+        to_kind: GateKind,
+        to_key: u64,
+    ) -> Option<usize> {
+        if kind == to_kind && key == to_key {
+            return None;
+        }
+        let (from, _) = self.own_range_of_gate(kind, key)?;
+        let to_index = self
+            .gates
+            .iter()
+            .position(|gate| gate.kind == to_kind && gate.key == to_key)?;
+        let handed = self.held_by_gate(kind, key).count();
+        if from < self.gates[to_index].barrier {
+            self.gates[to_index].barrier = from;
+        }
+        if host.log_enabled() {
+            host.log(&format!(
+                "gate_handed kind={} key={key} to_kind={} to_key={to_key} barrier={:?} \
+                 entries={handed}",
+                kind.name(),
+                to_kind.name(),
+                self.gates[to_index].barrier
+            ));
+        }
+        self.close_gates(host, kind, key, "handed_to_gate");
+        // Nothing the handed gate held can drain (the `to` gate holds it); an entry in front of
+        // both is not newly free either. The drain is the same call every gate change makes.
+        self.drain(host);
+        Some(handed)
     }
 
     /// #1661 review: [`Self::close_gate_taking`] for a gate whose entries are DISCARDED (the

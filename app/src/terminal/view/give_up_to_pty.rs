@@ -356,6 +356,26 @@ impl TerminalView {
             }
             chunks.push(b"\r".to_vec());
             keys += 1;
+            // An Enter that found the held line's gate gone gave the line up and is not
+            // absorbed (owner decision 2026-11-09): the text typed into the editor after the
+            // line, then that Enter, follow the line and its Enter. Nothing is queued behind a
+            // gate that is gone, so `entries` is empty then; these go first in any case (they
+            // were in the editor with the line).
+            let after = self.input.update(ctx, |input, _| {
+                input.take_given_up_enter_after_unready_line()
+            });
+            if let Some(after) = after {
+                if after.contains('\n') {
+                    let bracketed = self.paste_routing(self.agent_owns_command_pty(), ctx).1;
+                    chunks.push(super::paste_bytes_for_pty(&after, bracketed));
+                    keys += 1;
+                } else if !after.is_empty() {
+                    chunks.push(after.into_bytes());
+                    keys += 1;
+                }
+                chunks.push(b"\r".to_vec());
+                keys += 1;
+            }
         }
         chunks.extend(self.given_up_entry_chunks(entries, ctx));
         if keys == 0 {
