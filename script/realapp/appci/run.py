@@ -561,7 +561,7 @@ def main():
                     exit_fail = True
                 emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
-                if c["name"].startswith(("ssh_", "remote_")):
+                if c["name"].startswith(("ssh_", "remote_")) and cases.post_case_invariants_apply(status):
                     # r18ct: a failed nested-ssh case left the pane inside the remote shell, and the next case (latency_enter) typed a zsh-only
                     # `print` into the remote bash, which agent mode routed to the agent. Every ssh case ends with the pane provably LOCAL.
                     where = ctx.return_to_local()
@@ -578,7 +578,7 @@ def main():
                             depth_check = False
                     except Exception:
                         pass
-                if depth_check and ctx.root_pid is not None:
+                if depth_check and ctx.root_pid is not None and cases.post_case_invariants_apply(status):
                     # r6 (Mac fix tier): a subshell_ready case left the pane in a LOCAL bash subshell (same HOME, so where_now saw "local") and every later case
                     # typed into it. After a checked case the shell in front must be the pane's ROOT shell (its PID); `exit` only while a probe proves otherwise.
                     nest = ctx.leave_nested(ctx.root_pid)

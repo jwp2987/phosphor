@@ -2767,6 +2767,8 @@ in minutes and compile load never overlaps the latency cases. A red unit suite d
 first. Mac and Windows have no unit suites in the fix tier; in candidate/release their unit suites run before that platform's app tests. A `--self-test` check
 fails if the Linux wait is ever limited to the candidate/release tiers again.
 
+**Post-case probes skip SKIPPED cases (round 9 macOS).** After a case the runner proves the pane is back in its root shell (`leave_nested`) and, after `ssh_*` / `remote_*` cases, back in the local shell (`return_to_local`); `cases.post_case_invariants_apply(status)` turns both off when the case was SKIPPED, because a skipped case ran nothing. Before, `md_viewer` left the markdown viewer tab in front and the next PROVING case (`zero_network_startup` / `keyring_unavailable_startup`, both skipped on macOS) triggered a probe that found no shell, failed `pane_not_local_after_*` and relaunched the app for nothing.
+
 **Trend report (owner, 2026-11-10): `script/ci/results_trend.py` -> `test-results/TREND.md` (generated, never edited).** The measure of progress is the set of
 failing cases, not the issue count. Per platform and run it shows PASS / FAIL / NOREF (split into `injector`: the harness says keys were lost between the
 injector and the app, so no pass can be trusted; and `other`) / SKIP, and compares only (case, mode) pairs judged pass/fail in BOTH runs (fixed and

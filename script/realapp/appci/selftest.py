@@ -273,6 +273,18 @@ def mode_proof_markers_match_the_current_agent_view_1568():
 
 
 @check
+def skipped_case_runs_no_post_case_invariants_round9():
+    """round 9 macOS: pane_not_local_after_zero_network_startup / _after_keyring_unavailable_startup failed after SKIPPED cases (the front tab was the
+    markdown viewer left by md_viewer). A skipped case ran nothing, so the root-shell / return-to-local probes must not run after it; every other
+    status still gets them."""
+    assert cases.post_case_invariants_apply("skip") is False
+    for st in ("pass", "fail", "noref"):
+        assert cases.post_case_invariants_apply(st) is True, st
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")).read()
+    assert src.count("cases.post_case_invariants_apply(status)") == 2, "both post-case probes (ssh_/remote_ return_to_local and the root-shell leave_nested) must be gated"
+
+
+@check
 def profile_rec_log():
     d = tempfile.mkdtemp()
     try:

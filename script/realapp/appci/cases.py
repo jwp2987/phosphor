@@ -570,6 +570,14 @@ def where_tokens(path, skip=0):
 DEPTH_PREFIXES = ("ssh_", "remote_", "subshell", "lab_")
 
 
+def post_case_invariants_apply(status):
+    """The post-case invariants (the pane is back in the local shell / is the pane's root shell) are skipped for a SKIPPED case: it ran
+    nothing, so it cannot have moved the pane. Round 9 macOS: md_viewer left the markdown viewer tab in front, then zero_network_startup
+    and keyring_unavailable_startup were SKIPPED on that platform, and the root-shell probe that still ran after each found no shell
+    ('none'), declared the pane lost and relaunched the app (pane_not_local_after_zero_network_startup, also failing in round 8)."""
+    return status != "skip"
+
+
 def wants_depth_check(name, proving):
     """does case `name` get the shell-depth probe after it? Every PROVING case plus the families that start nested shells (ssh_, remote_, subshell*, lab_).
     Cost: one typed probe line (~40 chars at 12 ms/key = ~0.5 s) plus the file poll, ~0.7-1 s per checked case, and one more at the first case after a (re)launch."""
