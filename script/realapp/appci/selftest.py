@@ -3596,7 +3596,20 @@ def r18u13_mac_harness_fixes():
                                    "agent_fullscreen=false match_line=busy")["on_screen"] is None
     assert _R.find_scroll_geometry("result=scroll block=16 moved=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { }") is None
     assert _R.find_scroll_geometry("result=no_match pending=false") is None and _R.find_scroll_geometry(None) is None
-    assert 'ctx.mode == "agent" and hops and not scroll_hops' in src and "raise cases.Skip" in src and src.index("raise cases.Skip") < src.index("r.check(seen and scrolled")
+    # #1985: OCR-blind runs rest on the app's own geometry; OFF screen still fails; nothing to judge from is noref, never a pass
+    _on = _R.find_scroll_geometry("result=scroll block=16 moved=true viewport_lines=37.00 rendered_mode=PinnedToBottom scroll_mode=PinnedToBottom agent_fullscreen=true match_line=32.00")
+    _off = _R.find_scroll_geometry("result=scroll block=3 moved=true viewport_lines=20.00 rendered_mode=PinnedToBottom scroll_mode=PinnedToTop agent_fullscreen=true match_line=-4.50")
+    _busy = _R.find_scroll_geometry("result=scroll block=3 moved=true viewport_lines=20.00 rendered_mode=Waterfall scroll_mode=Waterfall agent_fullscreen=false match_line=busy")
+    _h_on = ["result=scroll block=16 moved=true viewport_lines=37.00 match_line=32.00"]
+    assert _R.find_verdict(True, True, [], None)[0] == "pass" and _R.find_verdict(True, False, _h_on, _on)[0] == "fail"          # OCR-seen: unchanged
+    assert _R.find_verdict(False, False, _h_on, _on)[0] == "pass" and "ON screen" in _R.find_verdict(False, False, _h_on, _on)[1]  # blind OCR, app says ON
+    assert _R.find_verdict(False, True, ["result=scroll block=3 moved=true"], _off)[0] == "fail"                                 # blind OCR, app says OFF
+    assert _R.find_verdict(False, True, ["result=no_match pending=false"], None)[0] == "fail"                                    # the app found nothing
+    assert _R.find_verdict(False, True, [], None)[0] == "noref" and _R.find_verdict(False, True, None, None)[0] == "noref"       # no OCR, no app record
+    assert _R.find_verdict(False, True, ["result=scroll block=3 moved=true"], None)[0] == "noref"                                # hop without geometry
+    assert _R.find_verdict(False, True, ["result=scroll block=3 moved=true"], _busy)[0] == "noref"                               # geometry busy
+    assert _R.find_verdict(False, True, ["result=scroll block=16 moved=false viewport_lines=37.00 match_line=32.00"], _on)[0] == "noref"  # on screen but nothing moved
+    assert 'ctx.mode == "agent" and hops and not scroll_hops' in src and "raise cases.Skip" in src and src.index("raise cases.Skip") < src.index("find_verdict(seen, scrolled")
     import cases as _C
     assert _C.verdict_gave_up("input_order hop=kh_enter_gate_give_up seq=16685 by=verdict_cap behind=0 submitted=false t=1") is True
     assert _C.verdict_gave_up("input_order hop=kh_enter_gate_give_up seq=6 by=route_wait behind=1 submitted=true t=5") is False

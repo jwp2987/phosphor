@@ -439,6 +439,29 @@ def find_scroll_geometry(hop):
                 match_line=ml, on_screen=None if ml is None else (0 <= ml < vl))
 
 
+def find_verdict(seen, scrolled, hops, geo):
+    """#1985: the verdict of flood_scrollback_find as ("pass" | "fail" | "noref", reason). OCR reading the marker AND the view having left the flood's tail
+    is a pass, as before. When OCR read the marker nowhere (not even in the Find field it was typed into, so it is blind, r18u28) the verdict rests on the
+    app's own record of the Find: `hops` = the `hop=find_scroll` payloads since the Find, `geo` = find_scroll_geometry of the last result=scroll one.
+    Match ON screen and moved=true -> pass (app evidence, stated as such); match OFF screen -> fail; any `result=no_match` with no scroll -> fail (the app
+    found nothing); no hop at all, or no geometry, or moved=false -> noref (not a pass, not a fail: nothing to judge from). OCR having read the marker
+    but the view still showing the flood's tail stays a fail."""
+    if seen:
+        return ("pass", "") if scrolled else ("fail", "OCR read the marker but the view is still on the flood's tail")
+    scroll = [h for h in (hops or []) if h.startswith("result=scroll")]
+    if hops and not scroll:
+        return "fail", "OCR read nothing and the app's Find matched nothing (%d find_scroll hop(s), none result=scroll)" % len(hops)
+    if not hops:
+        return "noref", "OCR read the marker nowhere and the app log has no find_scroll hop (a build without that logging, or the Find never ran)"
+    if not geo or geo.get("on_screen") is None:
+        return "noref", "OCR read the marker nowhere and the app's last find_scroll hop carries no usable match geometry"
+    if geo["on_screen"] is False:
+        return "fail", "by the app's own geometry the match is OFF screen after the Find (line %.1f of a %.1f-line viewport)" % (geo["match_line"], geo["viewport_lines"])
+    if "moved=true" not in scroll[-1]:
+        return "noref", "the app places the match on screen but did not move the view (moved=false) although the marker was off screen before: the evidence disagrees with itself"
+    return "pass", "OCR was blind; the app's own record says the Find moved the view and the match is ON screen (line %.1f of a %.1f-line viewport)" % (geo["match_line"], geo["viewport_lines"])
+
+
 def touch(ctx, name):
     open(os.path.join(ctx.W, name), "w").close()
 
@@ -645,7 +668,12 @@ def c_flood_find(ctx, r):
         time.sleep(0.3)
         raise cases.Skip("agent mode: Find matched no block for the marker (%d find_scroll hop(s), all result=no_match): the marker's "
                          "block is no longer in this pane, so there is nothing to scroll to%s" % (len(hops), app_said))
-    r.check(seen and scrolled, "Find for the marker printed before a %d-line flood did not bring it on screen: marker read=%s, view scrolled away from the flood's tail=%s (see shots/%s_find_after.png)%s%s" % (n, seen, scrolled, ctx.mode, late, app_said))
+    verdict, why = find_verdict(seen, scrolled, hops, geo)
+    if verdict == "noref":
+        r.unverifiable("flood_scrollback_find: %s%s" % (why, app_said))
+    elif verdict == "pass" and not seen:
+        r.note("flood_scrollback_find: %s" % why)
+    r.check(verdict != "fail", "Find for the marker printed before a %d-line flood did not bring it on screen: marker read=%s, view scrolled away from the flood's tail=%s, verdict: %s (see shots/%s_find_after.png)%s%s" % (n, seen, scrolled, why, ctx.mode, late, app_said))
     ctx.be.key("Escape")
     time.sleep(0.3)
     got = ctx.cmds_since(mark)

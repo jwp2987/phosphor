@@ -4401,3 +4401,8 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   `windows_rust_log_enables_every_hop_module_1966` scans the Rust sources and fails when such a module is not enabled (a new plain-log hop needs its
   module added to the constant); it also proves the pre-fix string hid `action_model`. Worked, unproven: no Windows run yet; the next Git Bash
   `agent_question` run should show `hop=agent_action ... status=blocked` and verdict `answerable`.
+- **`flood_scrollback_find` rests on the app's record when OCR is blind (#1985).** `cases_robust.find_verdict`: OCR reading the marker is judged as before;
+  when OCR read the marker nowhere the verdict comes from the `hop=find_scroll` lines. Match ON screen and `moved=true` -> pass (noted as app
+  evidence); match OFF screen -> FAIL; only `no_match` hops -> FAIL; no hop, no usable geometry (`busy`, older build) or on screen with `moved=false` -> NOREF
+  (`unverifiable`), never a pass. Selftest `coverage` row in the `flood_scrollback_find` block of `selftest.py` has one assertion per situation. Worked,
+  unproven: the next Mac agent-mode run that OCRs blind should now be a pass with the note "OCR was blind; the app's own record says ...".

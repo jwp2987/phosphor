@@ -30,3 +30,23 @@ module-enabled check is the more general guard).
 
 **Risk.** Log volume on Windows grows by the info lines of 13 modules: low rate (state changes). A module path derived from the file path is wrong
 for a `#[path]` or re-exported module; the scan would then pass a hidden module. None of the 13 uses either.
+
+## 2. #1985 flood_scrollback_find false-FAILs when OCR is blind
+
+**Evidence.** `cases_robust.py` `c_flood_find`: the final `r.check(seen and scrolled, ...)` needed OCR to read the marker. `seen` is False only
+when OCR read the marker nowhere, not even in the Find field it was typed into (the r18u28 case: "OCR read the marker nowhere"), i.e. OCR is blind. The
+case already parses the app's own `hop=find_scroll result=scroll ... moved=... viewport_lines= match_line=` (`find_scroll_geometry`) and notes "the app
+placed the match ON screen", but only as a note: the verdict stayed a FAIL.
+
+**Change.** Pure `find_verdict(seen, scrolled, hops, geo)`. OCR read the marker: unchanged (pass iff the view left the flood's tail). OCR blind:
+geometry ON screen and `moved=true` -> pass, noted as resting on the app log; geometry OFF screen -> fail; only `result=no_match` hops -> fail (the app
+found nothing); no hop, no/`busy` geometry, or ON screen with `moved=false` (self-contradicting: the marker was off screen before) -> `r.unverifiable`
+(NOREF, never a pass). The agent-mode Skip for an all-`no_match` log still comes first. Selftest rows cover each of those; the old structural assertion
+now orders the Skip before `find_verdict(`.
+
+**Rejected.** Treating ON-screen geometry as a pass when OCR DID read the marker but the tail is still visible (that is the r18u19 false pass; stays a
+fail). Failing an OCR-seen run whose geometry says OFF screen (a stricter check than asked; the Find-field hit is weak evidence either way, so left
+for the owner). Removing the "no OCR engine" Skip at the top: with no engine the control (marker not on screen before the Find) cannot be checked.
+
+**Risk.** A wrong `match_line` in the app (the rendered vs scroll mode disagreement the case already notes) would now pass a blind-OCR run; the
+note says so and the mode mismatch note is kept.
