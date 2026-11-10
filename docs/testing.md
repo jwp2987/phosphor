@@ -3948,3 +3948,21 @@ Still `Unavailable`/unsupported by design: `resolve_path`, `create_directory` an
 Lab (`script/realapp/appci/cases_lab_*.py`; the users `u_dash`, `u_ash`, `u_nu`, `u_pwsh` already existed in `sshlab/users.tsv` and the image, what was missing was cases that used them): the GitHub chip, file tree, remote edit (buffers), diff panel, skills, codebase index and git write cases now also run on `u_dash` and `u_ash`; the diff panel, skills, codebase index and git write cases also on `u_pwsh` (git, index and skills over PowerShell source, #1874). `nu` was already in every quick-matrix case. Arm counts are pinned in `selftest.py` (`lab_file_tree_remote_pieces`, `lab_diff_panel_and_gh_chip_pieces`, `lab_skills_remote_pieces`, `lab_git_write_remote_mirrors_the_rust_scripts`). These arms have NOT been run yet (no lab on the laptop): the first lab run on the box decides whether the PowerShell and dash/ash arms pass; the branch picker and PR file list have no lab case (no keyboard path to open them), only the contract and router tests above.
 
 **Real-network unit tests (round 8).** `websearch_tests::real_exa_anonymous_search` calls the real anonymous Exa endpoint; `WARP_SKIP_WEB_INTEGRATION=1` skips it. The anonymous tier is rate limited per source address and the runners share one, so an HTTP 429 is now an explicit SKIP printed to stderr (`SKIPPED real_exa_anonymous_search: Exa rate limit (HTTP 429)`); any other error still fails. Keyboard: `Keystroke::parse` accepts `pause` (Pause/Break, the name the winit layer emits for Pause and Cancel). `remote_server` contract test `the_shell_arm_handles_..._tilde_targets` looks for the `~` write under the scratch `$HOME` the local-sh executor gives the shell arm, not the runner's real home.
+
+## Harness reliability audit fixes (`docs/design/harness-reliability-audit.md`, 2026-11-09)
+
+The read-only audit of `script/realapp/appci` found three ways the harness could QUIT the app it was testing, two false passes and a family of
+false fails. Each fix below names its finding (1-12) / cross-cutting letter (A-F) and its selftest pin.
+
+- **A / E / #1a / #3 / #11 — one probe primitive, unseeded tokens, per-probe snapshot.** `Ctx.probe(cmd, token, name, dirs=None, remote=False, timeout)`
+  guards first, snapshots the size of every file the probe can land in, types, waits for the token appended AFTER the snapshot and then for the
+  prompt count (local or remote, where a hook exists) to advance past the pre-probe count; it returns `(where, tokens)`. `where_now`, `shell_pid`
+  and `pane_responsive` are built on it. Probe tokens come from `Ctx.ptok()` (an UNSEEDED `probe_rng`; `ctx.tok()` stays seeded for the replay
+  cases), so no earlier run or pass can have left this probe's token in a file nobody clears (the PowerShell pane's real-home `~/.appci_pid`, which
+  once supplied a dead process as the "root pid" and had every later `leave_nested` type `exit` at the root shell). `return_to_local` and
+  `leave_nested` sample `before = prompts()` after the probe's own prompt was counted, type `exit`, and wait for the NEXT prompt
+  (`Ctx.wait_prompt_after_exit`: local or outer-remote prompt, then the app's `ssh_pty_owner ssh=false` hop when the local shell is back; the
+  fixed `sleep(0.5)` settles are gone). `leave_remote` uses `wait_ssh_gone` on every platform instead of the hook-less pane's fixed 2 s settle.
+  Pins: `audit1_shell_pid_counts_only_tokens_appended_after_its_snapshot` (a stale `tok:pid` before the snapshot is not an answer; tokens
+  differ between contexts), `audit3_probe_waits_for_its_own_prompt_and_exit_waits_for_the_next` (a prompt logged 100 ms after the effect file:
+  `exit` is typed only after it, the next probe only after a further one).

@@ -620,6 +620,11 @@ class Ctx:
         self.label = mode if (pane in (None, "powershell") and not variant) else "%s@%s" % (mode, variant or pane)
         self.t_case0 = time.time()
         self.rng = random.Random(seed)
+        # harness audit #1/E (2026-11-09): the SEEDED rng is for the cases (cases_replay generates its scenario from it); the harness's own probe
+        # tokens (`~/.appci_where`, `~/.appci_pid`, alive_*.txt) come from an UNSEEDED rng, so no earlier run, pass or relaunch can have left this
+        # probe's token in a file that nobody clears (the PowerShell pane's real home). Seeded tokens made a stale `pT3_xxx:4711` of an earlier run
+        # the "root pid" of this one, and every later leave_nested typed `exit` at the root shell.
+        self.probe_rng = random.Random()
         self.ssh, self.ollama, self.log_path = ssh, ollama, log_path
         self.ssh_why = ssh_why     # why there is no usable ssh test host (sshd missing, or the setup probe `ssh fake true` failed); None when ctx.ssh is set
         self.W = prof.home + "/w"
@@ -665,6 +670,77 @@ class Ctx:
     def tok(self, n=8):
         self.n += 1
         return "T%d_%s" % (self.n, "".join(self.rng.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(n)))
+
+    def ptok(self, n=8):
+        """a token for the harness's OWN probes: unseeded (see probe_rng), never repeated by another run or pass"""
+        self.n += 1
+        return "T%d_%s" % (self.n, "".join(self.probe_rng.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(n)))
+
+    def probe(self, cmd, token, name, dirs=None, remote=False, timeout=8):
+        """The one probe primitive (harness audit A): guard, snapshot the size of every file the probe can land in, type `cmd`, then wait for `token`
+        appended AFTER the snapshot and, when the shell in front has a prompt hook, for its prompt count to advance past the pre-probe count (the
+        hook logs the probe's own prompt a few ms after the effect file: an `exit` typed in that window counted the probe's prompt as its own and
+        the next probe's first keys went to the dying ssh / subshell -- the `tac` incident). -> (where, tokens): where is "remote" (the token is in
+        the REMOTE file `name`; only looked at with remote=True), "local" (one of `dirs`, default where_homes()) or "none"; tokens are the
+        whitespace tokens the probe appended that start with `token` (`tok` or `tok:pid`), [] for "none"."""
+        try:
+            self.be.guard()
+        except AttributeError:
+            pass
+        dirs = list(self.where_homes() if dirs is None else dirs)
+        skip = {d: where_file_size(os.path.join(d, name)) for d in dirs}
+        r0 = len(self.lines(name, remote=True)) if remote else 0
+        local_hook = bool(getattr(self.prof, "local_prompts", True))
+        p0 = self.prof.prompts() if local_hook else None
+        rp0 = self.prof.prompts(remote=True) if remote else None
+
+        def hits(toks):
+            return [t for t in toks if t == token or t.startswith(token + ":")]
+
+        def local_new():
+            out = []
+            for d in dirs:
+                out += where_tokens(os.path.join(d, name), skip[d])
+            return hits(out)
+
+        def remote_new():
+            return hits(" ".join(self.lines(name, remote=True)[r0:]).split()) if remote else []
+
+        def seen():
+            if remote and remote_new():
+                return "remote"
+            return "local" if local_new() else None
+        self.be.type(cmd, 12, enter=True)
+        where = self.until(seen, timeout)
+        if not where:
+            return "none", []
+        toks = remote_new() if where == "remote" else local_new()
+        # the probe's own prompt (bounded: a pane without a hook never counts up, and the wait is skipped where the harness knows there is none)
+        if where == "local" and p0 is not None:
+            self.until(lambda: self.prof.prompts() > p0, 3)
+        elif where == "remote" and rp0 is not None:
+            self.until(lambda: self.prof.prompts(remote=True) > rp0, 3)
+        return where, toks
+
+    def wait_prompt_after_exit(self, before, t_exit, timeout=10, remote_before=None):
+        """after a typed `exit`: the shell behind it drew a prompt newer than `before` (a LOCAL count taken AFTER the probe's own prompt, see probe()).
+        remote_before: the REMOTE prompt count when a remote level was left (the shell behind it may be an outer remote shell, whose prompt is logged
+        remotely); when the LOCAL shell is back, also until the app's own 'ssh gone' hop (wait_ssh_gone). Without a local prompt hook (Windows
+        PowerShell pane) and no remote level: a short settle (no event exists for a local nested shell there). True when a prompt event was seen."""
+        hook = bool(getattr(self.prof, "local_prompts", True))
+
+        def back():
+            if hook and self.prof.prompts() > before:
+                return "local"
+            if remote_before is not None and self.prof.prompts(remote=True) > remote_before:
+                return "remote"
+            return None
+        got = self.until(back, timeout) if (hook or remote_before is not None) else None
+        if remote_before is not None and got != "remote":
+            self.wait_ssh_gone(t_exit, max(timeout, 8.0))
+        if got is None and not hook and remote_before is None:
+            time.sleep(1.0)
+        return got is not None
 
     def until(self, pred, timeout=10, step=0.05):
         t = time.time()
@@ -771,13 +847,9 @@ class Ctx:
     def where_now(self, timeout=8):
         """Which shell is in front, proven by an effect: a fresh token written to ~/.appci_where lands in the REMOTE home ("remote"), the local
         scratch home ("local"), or nowhere ("none")."""
-        probe = "w" + self.tok(8)
-        self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
-        local_where = self.local_where
-        self.until(lambda: probe in self.lines(".appci_where", remote=True) or probe in local_where(), timeout)
-        if probe in self.lines(".appci_where", remote=True):
-            return "remote"
-        return "local" if probe in local_where() else "none"
+        probe = "w" + self.ptok(8)
+        where, _ = self.probe("echo %s >> ~/.appci_where" % probe, probe, ".appci_where", remote=True, timeout=timeout)
+        return where
 
     def where_homes(self):
         """the homes whose `~/.appci_where` a LOCAL probe can land in: the scratch home, and in a Windows PowerShell pane also the user's real home"""
@@ -807,29 +879,23 @@ class Ctx:
                 where = self.where_now()
             if where != "remote":
                 return where
-            before = self.prof.prompts()
+            before, rbefore = self.prof.prompts(), self.prof.prompts(remote=True)    # taken AFTER the probe's own prompt was counted (probe()): the next is the `exit`'s
+            t_exit = time.time()
             self.be.type("exit", 12, enter=True)
-            self.until(lambda: self.prof.prompts() > before, 10)
-            time.sleep(0.5)
+            self.wait_prompt_after_exit(before, t_exit, 10, remote_before=rbefore)
         return "remote"
 
     def shell_pid(self, timeout=8):
         """The PID of the shell in front, proven by an effect (a fresh `tok:PID` appended to `~/.appci_pid`), or None when nothing answered or the
         pane has no PID probe (cmd.exe). `where_now` cannot tell a LOCAL nested shell from the pane's root shell (same HOME); a PID can."""
-        probe = "p" + self.tok(8)
+        probe = "p" + self.ptok(8)
         cmd = depth_probe_cmd(getattr(self, "pane", None), probe)
         if cmd is None:
             return None
-        self.be.type(cmd, 12, enter=True)
-        homes = self.where_homes()
-
-        def seen():
-            toks = []
-            for h in homes:
-                toks += where_tokens(os.path.join(h, ".appci_pid"))
-            return parse_depth_probe(toks, probe)
-        self.until(seen, timeout)
-        return seen()
+        # only what THIS probe appended counts (probe() snapshots the file size first): a `pT3_xxx:4711` an earlier run left in the real home's
+        # ~/.appci_pid once became the "root pid" of a later run, and every leave_nested after it typed `exit` at the root shell (audit #1)
+        _where, toks = self.probe(cmd, probe, ".appci_pid", timeout=timeout)
+        return parse_depth_probe(toks, probe)
 
     def leave_nested(self, root_pid, max_exits=3):
         """After a case: leave every LOCAL nested shell until the shell in front is the pane's ROOT shell (`root_pid`). `exit` is typed only while a
@@ -856,10 +922,10 @@ class Ctx:
                 if again == root_pid:
                     return "root"
                 continue
-            before = self.prof.prompts()
+            before = self.prof.prompts()         # after the second probe's own prompt (probe()): the next prompt is the `exit`'s
+            t_exit = time.time()
             self.be.type("exit", 12, enter=True)
-            self.until(lambda: self.prof.prompts() > before, 10)
-            time.sleep(0.5)
+            self.wait_prompt_after_exit(before, t_exit, 10)
         return "nested"
 
     def leave_remote(self, r, label, rfile, tok, base, timeout=10, level=False):
@@ -882,7 +948,7 @@ class Ctx:
         count = (lambda: self.prof.prompts(remote=True)) if level else self.prompts
         prompts_before_probe = count()
         for attempt in range(3):
-            probe = "w" + self.tok(8)
+            probe = "w" + self.ptok(8)
             self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
             self.until(lambda: probe in self.lines(".appci_where", remote=True) or probe in local_where(), timeout + 8 * attempt)
             if probe in self.lines(".appci_where", remote=True):
@@ -902,13 +968,14 @@ class Ctx:
         if level:
             self.until(lambda: count() > prompts_before_probe, 5)
         before = count()
+        t_exit = time.time()
         self.be.type("exit", 12, enter=True)
-        if not level and not self.prof.local_prompts:
-            t_exit = time.time()
-            time.sleep(min(timeout, 2.0))        # no local prompt hook in this pane (Windows PowerShell): fixed settle ...
-            self.wait_ssh_gone(t_exit, max(timeout, 8.0))       # ... then until the app itself saw the ssh block end (r18w5)
-        else:
+        if level or self.prof.local_prompts:
             self.until(lambda: count() > before, timeout)
+        if not level:
+            # audit #11: the fixed 2 s settle of the hook-less pane is gone; on EVERY platform the app's own `ssh_pty_owner ssh=false` hop says the ssh
+            # client is out of the foreground (r18w5: ssh.exe stayed in front ~2.5 s after the remote shell ended; without an app trace this returns at once)
+            self.wait_ssh_gone(t_exit, max(timeout, 8.0))
         if self.shell_gone(base):
             r.check(False, "%s: the LOCAL shell exited after `exit` (fewer shells under the app than at case start); stopping" % label)
             return False
@@ -936,8 +1003,9 @@ class Ctx:
         A wedged pane (a command that ignores Ctrl-C) fails every later case for a reason that is not theirs, so run.py checks after a failing case and
         relaunches the app. NOT judged by a prompt: the PowerShell pane has no prompt hook (the app starts it with -NoProfile), r18co's 'no prompt came back'
         wording was wrong, and the probe's file went to the real home because the pane was not in the case dir (local_lines also looks there)."""
+        dirs = [self.W] + ([os.path.expanduser("~")] if self.pane == "powershell" else [])      # local_lines(): the case dir, PowerShell also the real home
         for tries, wait in ((0, first), (1, second)):
-            tok = self.tok(8).lower()
+            tok = self.ptok(8).lower()
             fname = "alive_%s.txt" % tok
             mark = self.cmd_mark()
             try:
@@ -952,12 +1020,12 @@ class Ctx:
                     self.be.key("ctrl+c")
                     time.sleep(0.3)
                 self.be.key("ctrl+u")
-                self.be.type(self.append_cmd(self.pane_shell(), tok, fname), 12, enter=True)
+                where, _ = self.probe(self.append_cmd(self.pane_shell(), tok, fname), tok, fname, dirs=dirs, timeout=wait)
             except Exception:
                 return None
-            if self.until(lambda: tok in self.local_lines(fname), wait):
-                # the shell's own rec.log (Git Bash pane) logs the command AFTER it ran: wait for that line, or it lands in the NEXT case's cmds_since(mark)
-                # (r18co: paste_instant_enter 'first mismatch' was this probe's `echo t147... >> alive_...`)
+            if where == "local":
+                # the shell's own rec.log (Git Bash pane) logs the command AFTER it ran: probe() waited for the prompt that carries it; make sure of the line
+                # itself too, or it lands in the NEXT case's cmds_since(mark) (r18co: paste_instant_enter 'first mismatch' was this probe's `echo t147... >> alive_...`)
                 if self.prof.commands():
                     self.until(lambda: any(tok in c for _, c in self.prof.commands()[mark:]), 5)
                 return tries

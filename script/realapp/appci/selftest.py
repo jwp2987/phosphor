@@ -741,12 +741,13 @@ def r18u22_probe_ctrl_c_waits_out_the_exit_window():
         ctx = types.SimpleNamespace(ctrlc_ts=[], mode="agent", be=be, EXIT_WINDOW_S=cases.Ctx.EXIT_WINDOW_S, pane="gitbash")
         cases.Ctx._wrap_ctrlc(ctx, be)
         ctx.wait_out_exit_window = lambda: cases.Ctx.wait_out_exit_window(ctx)
-        ctx.tok = lambda n: "abcdefgh"[:n]
+        ctx.tok = ctx.ptok = lambda n: "abcdefgh"[:n]
         ctx.cmd_mark = lambda: 0
         ctx.pane_shell = lambda: "bash"
         ctx.append_cmd = lambda shell, tok, fname: "echo %s >> %s" % (tok, fname)
         ctx.until = lambda pred, timeout=10, step=0.05: pred()
-        ctx.local_lines = lambda fname: ["abcdefgh"]
+        ctx.W = "/nonexistent"
+        ctx.probe = lambda cmd, tok, fname, **k: (be.type(cmd), ("local", [tok]))[1]       # the probe primitive itself is pinned by audit1_/audit3_
         ctx.prof = types.SimpleNamespace(commands=lambda: [])
         be.key("ctrl+c")                      # the case's own reset() Ctrl-C at t=200.0
         t[0] += 0.8                           # the runner calls the probe 0.8 s later
@@ -865,7 +866,7 @@ def shell_depth_probe_pure_parts():
     # leave_nested: exits only while a probe proves a different shell, never at the root
     typed, pids = [], iter(["900", "900", "100"])
     c = types.SimpleNamespace(prof=types.SimpleNamespace(prompts=lambda: 0), pane=None, be=types.SimpleNamespace(type=lambda t, *a, **k: typed.append(t)),
-                              shell_pid=lambda: next(pids), until=lambda *a, **k: None, reset=lambda: None)
+                              shell_pid=lambda: next(pids), until=lambda *a, **k: None, reset=lambda: None, wait_prompt_after_exit=lambda *a, **k: True)
     typed.clear(); pids = iter(["900", "900", "900", "900", "100"]); c.shell_pid = lambda: next(pids)
     assert cases.Ctx.leave_nested(c, "100") == "root" and typed == ["exit", "exit"], typed
     typed.clear(); c.shell_pid = lambda: "100"
@@ -902,6 +903,85 @@ def r18u19_windows_where_probe_ignores_earlier_runs():
         assert cases.Ctx.local_where(c) == []
         open(f, "ab").write("wT236_bpz32gdl\r\n".encode("utf-16-le"))
         assert cases.Ctx.local_where(c) == ["wT236_bpz32gdl"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def audit1_shell_pid_counts_only_tokens_appended_after_its_snapshot():
+    """harness audit #1a/E (2026-11-09): a `tok:pid` of the same token that sat in ~/.appci_pid BEFORE the probe was typed (an earlier run's, the tokens
+    were seeded) is not an answer; only a token appended after the per-probe size snapshot is. Probe tokens are unseeded: two contexts never agree."""
+    import random
+    d = tempfile.mkdtemp()
+    try:
+        f = os.path.join(d, ".appci_pid")
+        open(f, "w").write("pSTALE:4711\n")               # an earlier run's probe with THIS probe's token (same seed, same sequence) and a dead pid
+        typed, state = [], {"answer": None}
+
+        def type_(text, ms, enter=False):
+            typed.append(text)
+            if state["answer"]:
+                open(f, "a").write("pSTALE:%s\n" % state["answer"])
+        c = types.SimpleNamespace(be=types.SimpleNamespace(type=type_, guard=lambda: None), pane=None, prof=types.SimpleNamespace(local_prompts=False, prompts=lambda remote=False: 0),
+                                  ptok=lambda n: "STALE", where_homes=lambda: [d], lines=lambda name, remote=False: [])
+        c.until = lambda pred, timeout=10, step=0.02: cases.Ctx.until(c, pred, timeout, step)
+        c.probe = lambda *a, **k: cases.Ctx.probe(c, *a, **k)
+        assert cases.Ctx.shell_pid(c, timeout=0.3) is None, "a stale token before the snapshot was taken as the shell's pid"
+        assert typed == [cases.depth_probe_cmd(None, "pSTALE")]
+        state["answer"] = "77"
+        assert cases.Ctx.shell_pid(c, timeout=1) == "77"
+        # the Windows PowerShell pane: `exit` only when BOTH probes name the same non-root pid; a stale-file answer cannot do that any more because
+        # neither probe reads anything appended before itself
+        a, b = types.SimpleNamespace(n=0, probe_rng=random.Random()), types.SimpleNamespace(n=0, probe_rng=random.Random())
+        assert cases.Ctx.ptok(a) != cases.Ctx.ptok(b), "probe tokens are seeded"
+        import inspect
+        src = inspect.getsource(cases.Ctx.__init__)
+        assert "self.probe_rng = random.Random()" in src and "self.rng = random.Random(seed)" in src
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def audit3_probe_waits_for_its_own_prompt_and_exit_waits_for_the_next():
+    """harness audit #3 (the `tac` incident): the rc hook logs the probe's prompt a few ms AFTER the effect file; `before = prompts()` sampled in that
+    window let the probe's prompt pass as the `exit`'s and the next probe was typed into the dying ssh. probe() returns only after the prompt
+    advanced, return_to_local types `exit` with that prompt counted, and types the next probe only after a FURTHER prompt."""
+    import threading
+    d = tempfile.mkdtemp()
+    try:
+        rhome, home = os.path.join(d, "rhome"), os.path.join(d, "home")
+        os.makedirs(rhome); os.makedirs(home)
+        st = {"prompts": 0, "remote": True, "typed": []}
+
+        def bump():
+            st["prompts"] += 1
+
+        def type_(text, ms, enter=False):
+            st["typed"].append((text, st["prompts"]))
+            if text.startswith("echo w"):
+                tok = text.split()[1]
+                open(os.path.join(rhome if st["remote"] else home, ".appci_where"), "a").write(tok + "\n")
+                threading.Timer(0.1, bump).start()              # the hook logs the probe's prompt 100 ms after the effect file
+            elif text == "exit":
+                st["remote"] = False
+                threading.Timer(0.1, bump).start()              # the local shell's prompt after the remote level ended
+        c = types.SimpleNamespace(be=types.SimpleNamespace(type=type_, guard=lambda: None), pane=None, W=home, log_path=None,
+                                  prof=types.SimpleNamespace(local_prompts=True, prompts=lambda remote=False: st["prompts"], rhome=rhome, home=home),
+                                  reset=lambda: None, n=0)
+        import random
+        c.probe_rng = random.Random()
+        c.ptok = lambda n=8: cases.Ctx.ptok(c, n)
+        c.until = lambda pred, timeout=10, step=0.01: cases.Ctx.until(c, pred, timeout, step)
+        c.lines = lambda name, remote=False: cases.Ctx.lines(c, name, remote)
+        c.where_homes = lambda: [home]
+        for name in ("probe", "where_now", "wait_prompt_after_exit", "return_to_local", "wait_ssh_gone"):
+            setattr(c, name, (lambda _n: (lambda *a, **k: getattr(cases.Ctx, _n)(c, *a, **k)))(name))
+        assert cases.Ctx.return_to_local(c) == "local", st["typed"]
+        probes = [x for x in st["typed"] if x[0].startswith("echo w")]
+        exits = [x for x in st["typed"] if x[0] == "exit"]
+        assert len(exits) == 1 and len(probes) == 2, st["typed"]
+        assert exits[0][1] == 1, "exit typed before the probe's own prompt was counted: %r" % st["typed"]
+        assert probes[1][1] == 2, "the next probe was typed before the exit's prompt: %r" % st["typed"]
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -1481,7 +1561,8 @@ def leave_remote_level_waits_for_the_probes_own_prompt_before_exit():
     c = types.SimpleNamespace(
         prof=types.SimpleNamespace(prompts=lambda remote=False: state["prompts"], local_prompts=True),
         be=types.SimpleNamespace(type=type_),
-        tok=lambda n: next(toks), local_where=lambda: [], reset=lambda: None, shell_gone=lambda base: False,
+        tok=lambda n: next(toks), ptok=lambda n: next(toks), local_where=lambda: [], reset=lambda: None, shell_gone=lambda base: False,
+        log_path=None, wait_ssh_gone=lambda *a, **k: False,
         until=lambda pred, timeout=10, step=0.02: cases.Ctx.until(c, pred, timeout, step), prompts=lambda: 0)
     c.lines = lambda name, remote=False: (["tok"] if name == "rn.txt" else list(state["file"]))
     c.deadline = None
