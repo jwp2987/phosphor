@@ -7,7 +7,8 @@
 #   ssh_gitbash_kill_switch                                     connection): the session is managed (stage hops auth, auth_done, managed), keys typed during the
 #                                                               login stay managed and reach the first remote prompt first, in typed order (#1959),
 #                                                               PHOSPHOR_MSYS_MANAGED_SSH=0 is plain ssh
-#   ps_ctrl_break                                               PowerShell pane: Ctrl+Break reaches a program as CTRL_BREAK_EVENT (#1888)
+#   ps_ctrl_break / ps_ctrl_scrolllock_break                    PowerShell pane: the Break key and ScrollLock, each with Ctrl held (both VK_CANCEL), reach
+#                                                               a program as CTRL_BREAK_EVENT; a failed trial names the app hop it stopped at (#1888, #1906)
 #   ps_fast_command_young_enter                                 PowerShell pane: a fast command's Enter and the next line typed at once run once each, in order (#1889)
 import os, sys, time
 
@@ -65,16 +66,31 @@ def c_ssh_nested_typeahead_wrapper(ctx, r):
     _wrapper_variant(ctx, r, cases.c_ssh_nested)
 
 
-@case("ps_ctrl_break", order=19)
-def c_ps_ctrl_break(ctx, r):
-    """#1888: a Python program installs SIGBREAK / SIGINT handlers and waits; Ctrl+Break must reach it as SIGBREAK (the console's CTRL_BREAK_EVENT), not
-    as a Ctrl-C and not be dropped. Samples are independent runs; every one must write BREAK."""
+# #1906: the hops of one Ctrl+Break through the app, in order, as (name, what the app log must contain). The first one missing is where the key stopped.
+BREAK_HOPS = (
+    ("keydown", "input_order keydown key=pause ctrl=true"),   # winit named the key and it reached dispatch
+    ("pane_key", "hop=kh_pane_key"),                             # the pane's key sink saw it
+    ("pty_write", "3;70"),                                       # hop=pty_write_bytes carrying the win32-input sequence CSI 3;70;...
+)
+
+
+def break_hops(log):
+    """pure: ({hop name: seen}, the first hop missing or None, the app's own `key_unconverted` lines) for the log text after one injected Ctrl+Break"""
+    seen = {name: (needle in log) for name, needle in BREAK_HOPS}
+    stopped = next((name for name, _ in BREAK_HOPS if not seen[name]), None)
+    dropped = [ln.split("input_order ", 1)[-1].strip() for ln in log.splitlines() if "hop=key_unconverted" in ln]
+    return seen, stopped, dropped
+
+
+def _ctrl_break(ctx, r, chord, label):
+    """A Python program installs SIGBREAK / SIGINT handlers and waits; `chord` must reach it as SIGBREAK (the console's CTRL_BREAK_EVENT), not as a
+    Ctrl-C and not be dropped. Samples are independent runs; every one must write BREAK, and the app log must show the win32-input write each time."""
     _need_windows_pane(ctx, r, "powershell")
     probe, out = "break_probe.py", "brk.txt"
     with open(os.path.join(ctx.W, probe), "w") as f:
         f.write(BREAK_PROBE)
     py = sys.executable.replace("\\", "/")
-    trials, got, wrote = 3, [], []
+    trials, got, wrote, stops = 3, [], [], []
     for i in range(trials):
         ctx.rm(out)
         ctx.be.type("& '%s' '%s' '%s'" % (py, os.path.join(ctx.W, probe).replace("\\", "/"), os.path.join(ctx.W, out).replace("\\", "/")), 10, enter=True)
@@ -84,23 +100,43 @@ def c_ps_ctrl_break(ctx, r):
             time.sleep(1.0)
             continue
         off = ctx.log_size()
-        ctx.be.key("ctrl+break")
+        ctx.be.key(chord)
         ctx.until(lambda: any(t in ctx.lines(out) for t in ("BREAK", "INT")), 6)
         seen = ctx.lines(out)
         got.append(seen)
-        wrote.append("3;70" in ctx.log_since(off))
+        hops, stopped, dropped = break_hops(ctx.log_since(off))
+        wrote.append(hops["pty_write"])
+        # #1906: say where this trial stopped, so a failed run names the hop from the job log alone (rounds 8 and 9 could only say "no write")
+        stops.append("trial %d: %s%s" % (i + 1, "all app hops seen" if stopped is None else "stopped before `%s`" % stopped,
+                                         "; app dropped the key: %s" % dropped[0][:160] if dropped else ""))
         if "BREAK" not in seen and "INT" not in seen:
             ctx.be.key("ctrl+c")           # leave the pane usable
             time.sleep(1.0)
         time.sleep(0.5)
     r.metric("ctrl_break_runs", got)
+    r.metric("ctrl_break_hops", stops)
     # round 8: 0/3 with NO ConPTY write in the app log = the key never became the win32-input sequence (injection or key mapping), not a ConPTY/console fault
     r.check(all(wrote) and len(wrote) == trials,
-            "the app wrote the Ctrl+Break win32-input sequence (CSI 3;70;...) to the pty in %d/%d runs (the app log's pty_write_bytes)" % (sum(wrote), trials))
+            "the app wrote the %s win32-input sequence (CSI 3;70;...) to the pty in %d/%d runs (the app log's pty_write_bytes); %s"
+            % (label, sum(wrote), trials, " | ".join(stops)))
     r.check(all("BREAK" in g for g in got) and len(got) == trials,
-            "Ctrl+Break reached the program as SIGBREAK in %d/%d runs: %r" % (sum("BREAK" in g for g in got), trials, got))
-    r.check(not any("INT" in g for g in got), "Ctrl+Break was not turned into a Ctrl-C: %r" % got)
+            "%s reached the program as SIGBREAK in %d/%d runs: %r" % (label, sum("BREAK" in g for g in got), trials, got))
+    r.check(not any("INT" in g for g in got), "%s was not turned into a Ctrl-C: %r" % (label, got))
     ctx.reset()
+
+
+@case("ps_ctrl_break", order=19)
+def c_ps_ctrl_break(ctx, r):
+    """#1888 / #1906: the Break key with Ctrl held (VK_CANCEL, scan E0 46) reaches a Python program as SIGBREAK, 3/3, and the app log shows the
+    win32-input write each time."""
+    _ctrl_break(ctx, r, "ctrl+break", "Ctrl+Break")
+
+
+@case("ps_ctrl_scrolllock_break", order=19)
+def c_ps_ctrl_scrolllock_break(ctx, r):
+    """#1906: Ctrl+ScrollLock (VK_CANCEL, scan 46, not extended: what a console also reads as Ctrl+Break, and what the injector sent as `ctrl+break`
+    in rounds 8 and 9) reaches the program as SIGBREAK the same way."""
+    _ctrl_break(ctx, r, "ctrl+scrollbreak", "Ctrl+ScrollLock")
 
 
 @case("ps_fast_command_young_enter", order=19)

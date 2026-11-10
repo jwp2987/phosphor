@@ -51,7 +51,7 @@ use super::window::DEFAULT_TITLEBAR_HEIGHT;
 use super::windows::{WindowsNetworkConnectionPoint, add_network_connection_listener};
 
 use self::key_events::{
-    KeyConversion, convert_keyboard_input_event, mark_composing,
+    KeyConversion, convert_keyboard_input_event, describe_unconverted_key, mark_composing,
     text_fallback_event_for_unconverted_key, typed_characters_follow_keydown,
 };
 
@@ -1834,6 +1834,21 @@ impl EventLoop {
                         .last_preedit
                         .as_ref()
                         .is_some_and(|(text, _)| !text.is_empty());
+                // #1906: a pressed key that becomes no event at all leaves no other line in the
+                // log (Ctrl+Break was lost that way on Windows), so its names are noted first.
+                let unconverted_note = (event_state == ElementState::Pressed
+                    && !is_synthetic
+                    && crate::input_order::enabled())
+                .then(|| {
+                    describe_unconverted_key(&event.logical_key, &event.physical_key, modifiers)
+                });
+                let log_unconverted = |outcome: &str| {
+                    if let Some(note) = &unconverted_note {
+                        crate::input_order::log_hop("key_unconverted", || {
+                            format!("outcome={outcome} {note}")
+                        });
+                    }
+                };
                 match convert_keyboard_input_event(event, window_state, is_synthetic) {
                     KeyConversion::Event(mut warp_ui_event) => {
                         mark_composing(&mut warp_ui_event, composing);
@@ -1846,17 +1861,25 @@ impl EventLoop {
                     // shortcut?" from the modifier state, which is *not* the same question
                     // `KEYS_TO_IGNORE` answers; routing a refusal into it would let the
                     // layer below type the character the layer above just declined.
-                    KeyConversion::Ignored => None,
+                    KeyConversion::Ignored => {
+                        log_unconverted("ignored");
+                        None
+                    }
                     // The key itself could not be named (e.g. non-IME input methods that
                     // inject pre-composed text with `logical_key == Key::Unidentified`).
                     // Recover the typed text if there is any.
-                    KeyConversion::Unconverted => text_fallback_event_for_unconverted_key(
-                        event_text,
-                        event_state,
-                        modifiers,
-                        is_synthetic,
-                    )
-                    .map(ConvertedEvent::Event),
+                    KeyConversion::Unconverted => {
+                        let fallback = text_fallback_event_for_unconverted_key(
+                            event_text,
+                            event_state,
+                            modifiers,
+                            is_synthetic,
+                        );
+                        if fallback.is_none() {
+                            log_unconverted("dropped");
+                        }
+                        fallback.map(ConvertedEvent::Event)
+                    }
                 }
             }
             WindowEvent::Resized(_) => Some(ConvertedEvent::Resize),

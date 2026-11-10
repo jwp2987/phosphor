@@ -56,7 +56,7 @@ PROVING = (
     "agent_question_answer", "agent_question_cut", "agent_question_nodone", "agent_question_trunc", "agent_question_empty", "agent_question_slow",
     "agent_question_ctrl_c", "agent_question_steer", "agent_question_after_command", "agent_question_steer_at_end",
     # Windows input parity (docs/design/windows-input-parity-audit.md): each skips itself off its Windows pane
-    "ssh_connect_typing_wrapper", "ssh_nested_typeahead_wrapper", "ps_ctrl_break", "ps_fast_command_young_enter",
+    "ssh_connect_typing_wrapper", "ssh_nested_typeahead_wrapper", "ps_ctrl_break", "ps_ctrl_scrolllock_break", "ps_fast_command_young_enter",
     # managed ssh from Windows Git Bash on one connection (#1933): each skips itself off the Git Bash pane
     "ssh_gitbash_managed", "ssh_gitbash_typeahead_managed", "ssh_gitbash_kill_switch",
     # Windows handover and secrets (#1882, #1883, #1891): Read-Host marker, Git Bash precmd `read -s`

@@ -1317,3 +1317,22 @@ fn test_ctrl_break_win32_input_sequence() {
         None
     );
 }
+
+/// #1906: the public form (for the pane's focus-gap path) is the same sequence on Windows and
+/// nothing anywhere else, and nothing for Ctrl-C on any platform.
+#[test]
+fn test_ctrl_break_sequence_is_windows_only() {
+    let ctrl_break = Keystroke::parse("ctrl-pause").unwrap();
+    if OperatingSystem::get().is_windows() {
+        assert_eq!(
+            ctrl_break_sequence(&ctrl_break),
+            ctrl_break_win32_input_sequence(&ctrl_break)
+        );
+    } else {
+        assert_eq!(ctrl_break_sequence(&ctrl_break), None);
+    }
+    assert_eq!(
+        ctrl_break_sequence(&Keystroke::parse("ctrl-c").unwrap()),
+        None
+    );
+}
