@@ -1,7 +1,7 @@
 # appci/cases_viewskip_ab.py: #1962 (docs/design/key-scene-build.md, option A): a typed character re-renders only the views it changed (kill switch
 # PHOSPHOR_KEY_VIEW_SKIP=0, default ON). Judged like #1838 / #1848: both arms in the SAME run, interleaved in blocks (cases_ctrlc_ab.ab_schedule =
 # lat.block_schedule), one relaunch per block because the app reads the variable once.
-#   latency_key_views_ab   Linux and macOS, terminal and agent mode; PROVING (fix tier). Windows: winmap.NOT_WINDOWS (its launcher passes no extra environment).
+#   latency_key_views_ab   Linux, macOS and Windows, terminal and agent mode; PROVING (fix tier). Windows: WindowsApp.extra_env is merged into the environment of the process the harness spawns.
 # What is compared is the app's own hop=key_frame_build line (#1961) of every key frame: `views=` (views re-rendered), render_ms, layout_ms, total_ms, for two
 # typing patterns per block:
 #   first  the latency_paint pattern: a character into an EMPTY input, then Delete, a pause between keys. Every key changes empty <-> non-empty, the case in
@@ -118,7 +118,7 @@ def c_latency_key_views_ab(ctx, r):
     burst; on macOS also key -> first changed pixel (kl3). Metrics key_view_skip_on / key_view_skip_off and key_view_skip_deltas, a note per pattern.
     Fails on a harness problem and when the skips re-render MORE views than no skips; never judges a latency."""
     import cases_robust
-    if ctx.win or not hasattr(ctx.app, "extra_env"):
+    if not hasattr(ctx.app, "extra_env"):
         r.skip("this app launcher cannot pass an extra environment to a relaunch, and the switch is read once at start-up")
     if not ctx.log_path:
         r.skip("no app log (set APPCI_APP_LOG): the comparison is the app's own hop=key_frame_build lines")

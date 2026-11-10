@@ -316,6 +316,7 @@ impl Input {
         self.suggestions_mode_model.update(ctx, |model, ctx| {
             model.set_mode(InputSuggestionsMode::Closed, ctx);
         });
+        warpui::input_order::log_notify_cause("Input", "slash_commands::close_slash_commands_menu");
         ctx.notify();
     }
 
@@ -419,6 +420,10 @@ impl Input {
                 self.suggestions_mode_model.update(ctx, |model, ctx| {
                     model.set_mode(InputSuggestionsMode::Closed, ctx);
                 });
+                warpui::input_order::log_notify_cause(
+                    "Input",
+                    "slash_commands::handle_slash_commands_menu_event",
+                );
                 ctx.notify();
             }
             SlashCommandsEvent::SelectedSavedPrompt { id } => {

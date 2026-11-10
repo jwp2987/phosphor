@@ -10,7 +10,7 @@ BOTH = {
     # shell-neutral (append_cmd / pane_shell) or self-skipping with their own explicit reason
     "mode_proof", "cadence", "fast_typing", "rollover", "keydown_count", "paste_instant_enter", "arrows_behind_paste", "tab_enter", "ctrl_c_d",
     "ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "ssh_failing_not_local",
-    "idle_cpu", "enter_loss_control", "latency_enter", "latency_paint", "tabs_two_windows", "tabs_streaming",
+    "idle_cpu", "enter_loss_control", "latency_enter", "latency_paint", "latency_key_views_ab", "tabs_two_windows", "tabs_streaming",
     "paste_multiline_prompt", "intl_wide_type", "intl_wide_paste", "intl_wide_edit", "intl_altgr_bash", "intl_altgr_ps",
     "cb_no_autoupdate", "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
     "editor_edit_save", "editor_paste",         # #1544: phosphor.exe <file URL> reaches the running instance over its named pipe (cases.open_file_in_windows_app)
@@ -98,7 +98,6 @@ NOT_WINDOWS = {
     "subshells": "uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)",
     "ctrl_c_flood_ab": "#1838: the blocked-frame gate it A/Bs exists only in the macOS renderer",
     "latency_paint_ab": "#1848: the key frame at the end of the key press it A/Bs exists only in the macOS renderer (and kl3 is macOS only)",
-    "latency_key_views_ab": "#1962: the A/B relaunches the app per block with PHOSPHOR_KEY_VIEW_SKIP=0, and the Windows launcher passes no extra environment to a relaunch",
     "subshell_sh_probe": "dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)",
     "subshell_ready_vim_typeahead": "bash --rcfile + vim on a real pty (#1679 step 3)",
     "subshell_ready_unsupported_tcsh": "tcsh does not exist in a Windows pane (#1679 step 3)",

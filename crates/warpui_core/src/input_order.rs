@@ -356,6 +356,20 @@ pub fn log_hop(what: &str, detail: impl FnOnce() -> String) {
     }
 }
 
+/// `input_order hop=notify_cause view=<view> cause=<name> t=...` (#1995): which call asked for a
+/// re-render of `view`. `cause` is a source-chosen name (no spaces, no text of the user's).
+fn notify_cause_line(view: &str, cause: &str) -> String {
+    hop_line("notify_cause", &format!("view={view} cause={cause}"))
+}
+
+/// Logs the cause of one `ctx.notify()` of `view`. Both arguments are static names, so nothing
+/// is allocated or formatted when input-order logging is off (`enabled()` is the only cost).
+pub fn log_notify_cause(view: &'static str, cause: &'static str) {
+    if enabled() {
+        log::debug!(target: TARGET, "{}", notify_cause_line(view, cause));
+    }
+}
+
 /// The owner's budget for one item of main-thread UI work (#1191, #1219, #1301): a frame, an
 /// event dispatch or an action dispatch over this is logged as a `hop=ui_item` line so a real-app
 /// run can show which item broke the budget (the `SlowLog` lines only start at 16 ms).
@@ -754,6 +768,18 @@ mod tests {
         let line = hop_line("pty_write_partial", "wrote=1 of=5");
         assert!(
             line.starts_with("input_order hop=pty_write_partial wrote=1 of=5 t="),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn notify_cause_lines_have_the_shape_render_hops_parses() {
+        let line = notify_cause_line("Input", "handle_editor_event_3");
+        let rest = line
+            .strip_prefix("input_order hop=notify_cause view=Input cause=handle_editor_event_3 t=")
+            .unwrap_or_else(|| panic!("{line}"));
+        assert!(
+            rest.contains('.') && rest.chars().all(|c| c.is_ascii_digit() || c == '.'),
             "{line}"
         );
     }

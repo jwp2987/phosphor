@@ -384,6 +384,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::ai::predict::next_command_model::SimilarHistoryContextCache;
 use string_offset::ByteOffset;
 
+/// #1995: `ctx.notify()` for `Input` that, with `warp::input_order` debug logging on, first logs
+/// `input_order hop=notify_cause view=Input cause=<fn>[_N]` (the enclosing function, `_N` = the Nth
+/// notify in it), so a key frame that re-renders `Input` can be traced to the call that asked for it.
+/// Nothing is allocated and nothing is formatted when the logging is off.
+macro_rules! notify_cause {
+    ($ctx:expr, $cause:literal) => {{
+        warpui::input_order::log_notify_cause("Input", $cause);
+        $ctx.notify()
+    }};
+}
+
 /// Drop target data for dropping content on the [`Input`].
 #[derive(Debug, Clone)]
 pub struct InputDropTargetData {
@@ -2996,7 +3007,7 @@ impl Input {
         });
         ctx.subscribe_to_model(&TerminalSettings::handle(ctx), move |_, _, event, ctx| {
             if let TerminalSettingsChangedEvent::Spacing { .. } = event {
-                ctx.notify();
+                notify_cause!(ctx, "new");
             }
         });
         ctx.subscribe_to_model(&agent_view_controller, |me, _, event, ctx| {
@@ -3031,7 +3042,7 @@ impl Input {
                     me.set_zero_state_hint_text(ctx);
                 }
             }
-            ctx.notify();
+            notify_cause!(ctx, "new_2");
         });
 
         ctx.subscribe_to_model(&ambient_agent_view_model, |me, handle, _, ctx| {
@@ -3044,7 +3055,7 @@ impl Input {
                 }
             });
             if handle.as_ref(ctx).should_show_status_footer() {
-                ctx.notify();
+                notify_cause!(ctx, "new_3");
             }
         });
 
@@ -3140,7 +3151,7 @@ impl Input {
                                 model.set_mode(InputSuggestionsMode::Closed, ctx);
                             });
                         }
-                        ctx.notify();
+                        notify_cause!(ctx, "new_4");
                     } else {
                         me.open_model_selector_and_snapshot_prompt(*initial_tab, ctx);
                     }
@@ -3235,7 +3246,7 @@ impl Input {
             // Re-sync enter_settings whenever the rich input opens or closes.
             me.update_cli_agent_enter_settings(ctx);
             me.set_zero_state_hint_text(ctx);
-            ctx.notify();
+            notify_cause!(ctx, "new_5");
         });
 
         let prompt_render_helper = PromptRenderHelper::new(
@@ -3519,7 +3530,7 @@ impl Input {
             AgentShortcutViewModel::new(buffer_model.clone(), agent_view_controller.clone(), ctx)
         });
         ctx.subscribe_to_model(&agent_shortcut_view_model, |_, _, _, ctx| {
-            ctx.notify();
+            notify_cause!(ctx, "new_6");
         });
 
         current_prompt.update(ctx, |prompt_type, ctx| {
@@ -3563,7 +3574,7 @@ impl Input {
         });
 
         ctx.subscribe_to_model(&InputModeSettings::handle(ctx), |_, _, _, ctx| {
-            ctx.notify();
+            notify_cause!(ctx, "new_7");
         });
 
         let (debounce_input_background_tx, debounce_input_background_rx) =
@@ -3607,7 +3618,9 @@ impl Input {
             Self::handle_app_editor_settings_event,
         );
 
-        ctx.subscribe_to_model(&LigatureSettings::handle(ctx), |_, _, _, ctx| ctx.notify());
+        ctx.subscribe_to_model(&LigatureSettings::handle(ctx), |_, _, _, ctx| {
+            notify_cause!(ctx, "new_8")
+        });
 
         let workflows_state = WorkflowsState {
             selected_workflow_state: None,
@@ -3639,7 +3652,7 @@ impl Input {
                     me.editor.update(ctx, |editor, ctx| {
                         editor.system_clear_buffer(true, ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "new_9");
                 }
             }
             BlocklistAIControllerEvent::ExportConversationToFile {
@@ -3674,7 +3687,7 @@ impl Input {
             }
 
             me.set_zero_state_hint_text(ctx);
-            ctx.notify();
+            notify_cause!(ctx, "new_10");
         });
 
         ctx.subscribe_to_model(&ai_input_model, |me, _, event, ctx| {
@@ -3709,7 +3722,7 @@ impl Input {
                 editor.maybe_populate_intelligent_autosuggestion(config.input_type, ctx);
             });
             me.set_zero_state_hint_text(ctx);
-            ctx.notify();
+            notify_cause!(ctx, "new_11");
         });
         // Re-render the placeholder when queue mode is toggled (#1043) so the "Queue mode on"
         // hint appears and disappears immediately.
@@ -3809,7 +3822,7 @@ impl Input {
                     return;
                 }
                 me.set_zero_state_hint_text(ctx);
-                ctx.notify();
+                notify_cause!(ctx, "new_12");
             },
         );
 
@@ -3834,7 +3847,7 @@ impl Input {
                     }
                     // The editor view renders the follow up icon, so we need to re-render the editor view.
                     me.editor().update(ctx, |_, ctx| {
-                        ctx.notify();
+                        notify_cause!(ctx, "new_13");
                     })
                 }
                 BlocklistAIContextEvent::UpdatedPendingContext { .. } => {
@@ -3853,7 +3866,7 @@ impl Input {
                         .collect_vec();
                 }
             }
-            ctx.notify();
+            notify_cause!(ctx, "new_14");
         });
 
         ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |me, _, event, ctx| {
@@ -3879,7 +3892,7 @@ impl Input {
                     });
                 }
                 me.update_image_context_options(ctx);
-                ctx.notify();
+                notify_cause!(ctx, "new_15");
             }
         });
 
@@ -3936,7 +3949,7 @@ impl Input {
                 me.handle_conversation_menu_event(event, ctx);
             });
             ctx.subscribe_to_model(&inline_terminal_menu_positioner, |_, _, _, ctx| {
-                ctx.notify();
+                notify_cause!(ctx, "new_16");
             });
         }
 
@@ -4091,7 +4104,7 @@ impl Input {
                         me.suggestions_mode_model.update(ctx, |m, ctx| {
                             m.set_mode(InputSuggestionsMode::Closed, ctx);
                         });
-                        ctx.notify();
+                        notify_cause!(ctx, "new_17");
                     }
                 }
             }
@@ -4099,10 +4112,10 @@ impl Input {
 
         let ai_req_usage_model = AIRequestUsageModel::handle(ctx);
         ctx.subscribe_to_model(&ai_req_usage_model, |_, _, _, ctx| {
-            ctx.notify();
+            notify_cause!(ctx, "new_18");
         });
         ctx.observe(&ai_req_usage_model, |_, _, ctx| {
-            ctx.notify();
+            notify_cause!(ctx, "new_19");
         });
 
         let queued_prompts_panel = FeatureFlag::QueueSlashCommand.is_enabled().then(|| {
@@ -4330,7 +4343,7 @@ impl Input {
 
         self.editor.update(ctx, move |editor, ctx| {
             editor.update_voice_transcription_options(voice_transcription_options, ctx);
-            ctx.notify();
+            notify_cause!(ctx, "update_voice_transcription_options");
         });
     }
 
@@ -4340,7 +4353,7 @@ impl Input {
         self.check_and_update_ai_context_menu_disabled_state(ctx);
         self.editor.update(ctx, move |editor, ctx| {
             editor.set_is_ai_input(is_ai_input, ctx);
-            ctx.notify();
+            notify_cause!(ctx, "update_ai_context_menu");
         });
     }
 
@@ -4526,7 +4539,7 @@ impl Input {
             m.set_mode(InputSuggestionsMode::Closed, ctx);
         });
         self.focus_input_box(ctx);
-        ctx.notify();
+        notify_cause!(ctx, "close_ai_context_menu");
     }
 
     fn clear_and_reset_ai_context_menu_query(&mut self, ctx: &mut ViewContext<Self>) {
@@ -4628,7 +4641,7 @@ impl Input {
         } else if self.suggestions_mode_model.as_ref(ctx).is_ai_context_menu() {
             self.close_ai_context_menu(ctx);
         }
-        ctx.notify();
+        notify_cause!(ctx, "set_ai_context_menu_open");
     }
 
     fn open_slash_commands_menu(&mut self, ctx: &mut ViewContext<Self>) {
@@ -4649,7 +4662,7 @@ impl Input {
         self.suggestions_mode_model.update(ctx, |model, ctx| {
             model.set_mode(InputSuggestionsMode::SlashCommands, ctx);
         });
-        ctx.notify();
+        notify_cause!(ctx, "open_slash_commands_menu");
     }
 
     fn toggle_legacy_slash_commands_menu(&mut self, ctx: &mut ViewContext<Self>) {
@@ -4705,7 +4718,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.set_mode(InputSuggestionsMode::Closed, ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_conversation_menu_event");
                 }
                 self.clear_buffer_and_reset_undo_stack(ctx);
 
@@ -4751,7 +4764,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.close_and_restore_buffer(ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_conversation_menu_event_2");
                 }
             }
         }
@@ -4768,7 +4781,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.set_mode(InputSuggestionsMode::Closed, ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_repos_menu_event");
                 }
                 self.clear_buffer_and_reset_undo_stack(ctx);
                 let path_str = path.to_string_lossy();
@@ -4793,7 +4806,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.close_and_restore_buffer(ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_repos_menu_event_2");
                 }
             }
         }
@@ -4849,7 +4862,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.close_and_restore_buffer(ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_inline_model_selector_event");
                 } else {
                     // Clear the buffer for:
                     //  1) Selector open AND input was used as filter query — close menu, then clear.
@@ -4862,7 +4875,7 @@ impl Input {
                         self.suggestions_mode_model.update(ctx, |model, ctx| {
                             model.set_mode(InputSuggestionsMode::Closed, ctx);
                         });
-                        ctx.notify();
+                        notify_cause!(ctx, "handle_inline_model_selector_event_2");
                     }
                     self.clear_buffer_and_reset_undo_stack(ctx);
                 }
@@ -4876,7 +4889,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.close_and_restore_buffer(ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_inline_model_selector_event_3");
                 }
             }
         }
@@ -4912,7 +4925,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.close_and_restore_buffer(ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_inline_profile_selector_event");
                 }
                 return;
             }
@@ -4926,7 +4939,7 @@ impl Input {
             self.suggestions_mode_model.update(ctx, |model, ctx| {
                 model.set_mode(InputSuggestionsMode::Closed, ctx);
             });
-            ctx.notify();
+            notify_cause!(ctx, "handle_inline_profile_selector_event_2");
         }
         self.clear_buffer_and_reset_undo_stack(ctx);
         self.focus_input_box(ctx);
@@ -4948,7 +4961,7 @@ impl Input {
             self.suggestions_mode_model.update(ctx, |model, ctx| {
                 model.set_mode(InputSuggestionsMode::Closed, ctx);
             });
-            ctx.notify();
+            notify_cause!(ctx, "handle_inline_prompts_menu_event");
         }
         self.clear_buffer_and_reset_undo_stack(ctx);
         self.focus_input_box(ctx);
@@ -4988,7 +5001,7 @@ impl Input {
                 self.suggestions_mode_model.update(ctx, |model, ctx| {
                     model.set_mode(InputSuggestionsMode::Closed, ctx);
                 });
-                ctx.notify();
+                notify_cause!(ctx, "handle_inline_skill_selector_event");
             }
             self.focus_input_box(ctx);
         } else {
@@ -5011,7 +5024,7 @@ impl Input {
                 self.suggestions_mode_model.update(ctx, |model, ctx| {
                     model.set_mode(InputSuggestionsMode::Closed, ctx);
                 });
-                ctx.notify();
+                notify_cause!(ctx, "handle_inline_skill_selector_event_2");
             }
             self.clear_buffer_and_reset_undo_stack(ctx);
             self.focus_input_box(ctx);
@@ -5023,7 +5036,7 @@ impl Input {
             model.set_mode(InputSuggestionsMode::ModelSelector, ctx);
         });
 
-        ctx.notify();
+        notify_cause!(ctx, "open_model_selector");
     }
 
     /// Opens the inline model selector, parking any pre-existing prompt so the
@@ -5057,7 +5070,7 @@ impl Input {
         self.suggestions_mode_model.update(ctx, |model, ctx| {
             model.set_mode(InputSuggestionsMode::ModelSelector, ctx);
         });
-        ctx.notify();
+        notify_cause!(ctx, "open_model_selector_and_snapshot_prompt");
         if should_clear_prompt_for_search {
             self.editor.update(ctx, |editor, ctx| {
                 editor.system_clear_buffer(false, ctx);
@@ -5075,7 +5088,7 @@ impl Input {
             model.set_mode(InputSuggestionsMode::ProfileSelector, ctx);
         });
 
-        ctx.notify();
+        notify_cause!(ctx, "open_profile_selector");
     }
 
     fn open_prompts_menu(&mut self, ctx: &mut ViewContext<Self>) {
@@ -5083,7 +5096,7 @@ impl Input {
             model.set_mode(InputSuggestionsMode::PromptsMenu, ctx);
         });
 
-        ctx.notify();
+        notify_cause!(ctx, "open_prompts_menu");
     }
 
     fn open_skill_selector(&mut self, ctx: &mut ViewContext<Self>) {
@@ -5099,7 +5112,7 @@ impl Input {
             model.set_mode(InputSuggestionsMode::SkillMenu, ctx);
         });
 
-        ctx.notify();
+        notify_cause!(ctx, "open_skill_selector");
     }
 
     fn open_invoke_skill_selector(&mut self, ctx: &mut ViewContext<Self>) {
@@ -5115,7 +5128,7 @@ impl Input {
             model.set_mode(InputSuggestionsMode::SkillMenu, ctx);
         });
 
-        ctx.notify();
+        notify_cause!(ctx, "open_invoke_skill_selector");
     }
 
     pub fn open_plan_menu(
@@ -5126,7 +5139,7 @@ impl Input {
         self.suggestions_mode_model.update(ctx, |model, ctx| {
             model.set_mode(InputSuggestionsMode::PlanMenu { conversation_id }, ctx);
         });
-        ctx.notify();
+        notify_cause!(ctx, "open_plan_menu");
     }
 
     fn handle_plan_menu_event(&mut self, event: &InlinePlanMenuEvent, ctx: &mut ViewContext<Self>) {
@@ -5143,7 +5156,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.set_mode(InputSuggestionsMode::Closed, ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_plan_menu_event");
                 }
             }
             InlinePlanMenuEvent::Dismissed => {
@@ -5151,7 +5164,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.close_and_restore_buffer(ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_plan_menu_event_2");
                 }
             }
         }
@@ -5178,14 +5191,14 @@ impl Input {
             TelemetryEvent::InlineConversationMenuOpened { is_in_agent_view },
             ctx
         );
-        ctx.notify();
+        notify_cause!(ctx, "open_conversation_menu");
     }
 
     fn open_repos_menu(&mut self, ctx: &mut ViewContext<Self>) {
         self.suggestions_mode_model.update(ctx, |model, ctx| {
             model.set_mode(InputSuggestionsMode::IndexedReposMenu, ctx);
         });
-        ctx.notify();
+        notify_cause!(ctx, "open_repos_menu");
     }
 
     fn handle_user_query_menu_event(
@@ -5249,14 +5262,14 @@ impl Input {
                 self.suggestions_mode_model.update(ctx, |model, ctx| {
                     model.set_mode(InputSuggestionsMode::Closed, ctx);
                 });
-                ctx.notify();
+                notify_cause!(ctx, "handle_user_query_menu_event");
                 self.clear_buffer_and_reset_undo_stack(ctx);
             }
             UserQueryMenuEvent::Dismissed => {
                 self.suggestions_mode_model.update(ctx, |model, ctx| {
                     model.close_and_restore_buffer(ctx);
                 });
-                ctx.notify();
+                notify_cause!(ctx, "handle_user_query_menu_event_2");
             }
         }
     }
@@ -5276,7 +5289,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.set_mode(InputSuggestionsMode::Closed, ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_inline_history_menu_event");
                 }
                 self.clear_buffer_and_reset_undo_stack(ctx);
                 self.agent_view_controller.update(ctx, |controller, ctx| {
@@ -5296,7 +5309,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.set_mode(InputSuggestionsMode::Closed, ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_inline_history_menu_event_2");
                 }
                 self.accept_history_text_and_submit(command, ctx);
             }
@@ -5309,7 +5322,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.set_mode(InputSuggestionsMode::Closed, ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_inline_history_menu_event_3");
                 }
                 self.accept_history_text_and_submit(query_text, ctx);
             }
@@ -5382,7 +5395,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.close_and_restore_buffer(ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_inline_history_menu_event_4");
                 }
             }
             inline_history::InlineHistoryMenuEvent::NoResults => {
@@ -5401,7 +5414,7 @@ impl Input {
                 editor.reset_selections_to_point(original_cursor_point, ctx);
             }
         });
-        ctx.notify();
+        notify_cause!(ctx, "restore_buffer_state");
     }
 
     fn open_user_query_menu(&mut self, action: UserQueryMenuAction, ctx: &mut ViewContext<Self>) {
@@ -5439,7 +5452,7 @@ impl Input {
             );
         });
 
-        ctx.notify();
+        notify_cause!(ctx, "open_user_query_menu");
     }
 
     fn open_rewind_menu(&mut self, ctx: &mut ViewContext<Self>) {
@@ -5477,7 +5490,7 @@ impl Input {
             );
         });
 
-        ctx.notify();
+        notify_cause!(ctx, "open_rewind_menu");
     }
 
     fn handle_rewind_menu_event(&mut self, event: &RewindMenuEvent, ctx: &mut ViewContext<Self>) {
@@ -5491,7 +5504,7 @@ impl Input {
                 self.suggestions_mode_model.update(ctx, |model, ctx| {
                     model.close_and_restore_buffer(ctx);
                 });
-                ctx.notify();
+                notify_cause!(ctx, "handle_rewind_menu_event");
             }
             RewindMenuEvent::AcceptedRewindPoint { exchange_id } => {
                 // If exchange_id is None, user selected "Current" - just close menu
@@ -5499,7 +5512,7 @@ impl Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.set_mode(InputSuggestionsMode::Closed, ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_rewind_menu_event_2");
                     self.clear_buffer_and_reset_undo_stack(ctx);
                     return;
                 };
@@ -5533,7 +5546,7 @@ impl Input {
                 self.suggestions_mode_model.update(ctx, |model, ctx| {
                     model.set_mode(InputSuggestionsMode::Closed, ctx);
                 });
-                ctx.notify();
+                notify_cause!(ctx, "handle_rewind_menu_event_3");
                 self.clear_buffer_and_reset_undo_stack(ctx);
             }
         }
@@ -5572,7 +5585,7 @@ impl Input {
             ),
             ctx
         );
-        ctx.notify();
+        notify_cause!(ctx, "open_inline_history_menu");
     }
 
     /// Executes a skill command.
@@ -5862,7 +5875,7 @@ impl Input {
 
         self.editor.update(ctx, move |editor, ctx| {
             editor.update_image_context_options(image_context_options, ctx);
-            ctx.notify();
+            notify_cause!(ctx, "update_image_context_options");
         });
     }
 
@@ -5885,11 +5898,11 @@ impl Input {
         if let Some(banner_state) = banner_state {
             self.prompt_suggestions_view.update(ctx, |view, ctx| {
                 view.set_banner_state(banner_state);
-                ctx.notify();
+                notify_cause!(ctx, "set_prompt_suggestions_banner_state");
             });
         }
 
-        ctx.notify();
+        notify_cause!(ctx, "set_prompt_suggestions_banner_state_2");
     }
 
     pub fn maybe_set_prompt_suggestions_banner_state_should_hide(&mut self, should_hide: bool) {
@@ -5956,7 +5969,7 @@ impl Input {
             ctx
         );
 
-        ctx.notify()
+        notify_cause!(ctx, "insert_zero_state_prompt_suggestion")
     }
 
     fn cancel_active_conversation(
@@ -5986,7 +5999,7 @@ impl Input {
                 self.editor.update(ctx, |editor, ctx| {
                     editor.set_buffer_text(file_name, ctx);
                 });
-                ctx.notify();
+                notify_cause!(ctx, "handle_prompt_event");
             }
             PromptDisplayEvent::OpenTextFileInCodeEditor(file_name) => {
                 // Open text file in a new code editor pane
@@ -6000,7 +6013,7 @@ impl Input {
                     // Close any open input suggestion menus (history, Ctrl+R, etc.) when chip menus
                     // are opened to prevent overlapping menus in UDI
                     self.close_overlays(false, ctx);
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_prompt_event_2");
                 } else {
                     self.focus_input_box(ctx);
                 }
@@ -6305,7 +6318,7 @@ impl Input {
         match event {
             InputSettingsChangedEvent::ShowHintText { .. } => {
                 self.set_zero_state_hint_text(ctx);
-                ctx.notify();
+                notify_cause!(ctx, "handle_input_settings_event");
             }
             InputSettingsChangedEvent::SyntaxHighlighting { .. } => {
                 if !*input_settings.as_ref(ctx).syntax_highlighting.value() {
@@ -6329,31 +6342,31 @@ impl Input {
                 // Force a re-render when switching between Universal and Classic input modes
                 // to ensure all UI elements update in real-time
                 self.set_zero_state_hint_text(ctx);
-                ctx.notify();
+                notify_cause!(ctx, "handle_input_settings_event_2");
             }
             InputSettingsChangedEvent::AtContextMenuInTerminalMode { .. } => {
                 self.check_and_update_ai_context_menu_disabled_state(ctx);
-                ctx.notify();
+                notify_cause!(ctx, "handle_input_settings_event_3");
             }
             InputSettingsChangedEvent::EnableAiCommandSearchHashTrigger { .. } => {
                 // Refresh the zero-state hint so the "Type '#' ..." advertisement appears
                 // and disappears with the setting.
                 self.set_zero_state_hint_text(ctx);
-                ctx.notify();
+                notify_cause!(ctx, "handle_input_settings_event_4");
             }
             InputSettingsChangedEvent::CompletionsMenuWidth { .. } => {
                 let new_value = *input_settings.as_ref(ctx).completions_menu_width.value();
                 if let Ok(mut guard) = self.completions_menu_resizable_width.lock() {
                     guard.set_size(new_value);
                 }
-                ctx.notify();
+                notify_cause!(ctx, "handle_input_settings_event_5");
             }
             InputSettingsChangedEvent::CompletionsMenuHeight { .. } => {
                 let new_value = *input_settings.as_ref(ctx).completions_menu_height.value();
                 if let Ok(mut guard) = self.completions_menu_resizable_height.lock() {
                     guard.set_size(new_value);
                 }
-                ctx.notify();
+                notify_cause!(ctx, "handle_input_settings_event_6");
             }
             _ => {}
         }
@@ -6768,14 +6781,14 @@ impl Input {
                 // AI Command Search remains reachable via its keybinding.
                 self.editor.update(ctx, |editor, ctx| {
                     editor.clear_placeholder_text(ctx);
-                    ctx.notify();
+                    notify_cause!(ctx, "set_zero_state_hint_text");
                 });
             }
         } else {
             self.editor.update(ctx, |editor, ctx| {
                 // Clear only the default placeholder, keep slash command placeholders
                 editor.clear_placeholder_text(ctx);
-                ctx.notify();
+                notify_cause!(ctx, "set_zero_state_hint_text_2");
             });
         }
     }
@@ -6853,7 +6866,7 @@ impl Input {
                     }
                 }
 
-                ctx.notify();
+                notify_cause!(ctx, "handle_ai_settings_changed_event");
             }
             AISettingsChangedEvent::AIAutoDetectionEnabled { .. }
             | AISettingsChangedEvent::NLDInTerminalEnabled { .. } => {
@@ -7443,7 +7456,7 @@ impl Input {
             self.editor.update(ctx, |editor, ctx| {
                 editor.clear_autosuggestion(ctx);
                 editor.clear_all_placeholder_text();
-                ctx.notify();
+                notify_cause!(ctx, "try_execute_command_from_source");
             });
             self.next_command_model.update(ctx, |model, _| {
                 model.clear_state();
@@ -7550,7 +7563,7 @@ impl Input {
                     tips,
                     ctx,
                 );
-                ctx.notify();
+                notify_cause!(ctx, "try_execute_command_from_source_2");
             });
 
             if !command.is_empty() {
@@ -7667,7 +7680,7 @@ impl Input {
         if let Some(state) = self.workflows_state.selected_workflow_state.take() {
             self.update_workflows_info_box_expanded_setting(ctx, &state);
         }
-        ctx.notify();
+        notify_cause!(ctx, "clear_selected_workflow");
     }
 
     /// Hides the workflows panel, persisting the shift-tab UX.
@@ -7678,7 +7691,7 @@ impl Input {
         if let Some(state) = self.workflows_state.selected_workflow_state.clone() {
             self.update_workflows_info_box_expanded_setting(ctx, &state);
         }
-        ctx.notify();
+        notify_cause!(ctx, "hide_workflows_info_box");
     }
 
     /// Returns the starting byte index position of the last selection.
@@ -7697,7 +7710,7 @@ impl Input {
             SessionSettingsChangedEvent::HonorPS1 { .. } => {
                 let mut model = self.model.lock();
                 model.set_honor_ps1(*SessionSettings::as_ref(ctx).honor_ps1);
-                ctx.notify();
+                notify_cause!(ctx, "handle_session_settings_event");
             }
             SessionSettingsChangedEvent::SavedPrompt { .. } => {
                 self.notify_and_notify_children(ctx);
@@ -7720,7 +7733,7 @@ impl Input {
                 self.editor.update(ctx, |view, ctx| {
                     view.clear_autosuggestion(ctx);
                 });
-                ctx.notify();
+                notify_cause!(ctx, "handle_app_editor_settings_event");
             }
             // Ensure our cached copy of the enabled_autosuggestions setting
             // is up-to-date.
@@ -7729,17 +7742,17 @@ impl Input {
 
         // The cursor and status bar may change appearance when vim mode is enabled or disabled.
         if let AppEditorSettingsChangedEvent::VimModeEnabled { .. } = evt {
-            ctx.notify();
+            notify_cause!(ctx, "handle_app_editor_settings_event_2");
         }
 
         if let AppEditorSettingsChangedEvent::CursorDisplayState { .. } = evt {
-            ctx.notify();
+            notify_cause!(ctx, "handle_app_editor_settings_event_3");
         }
 
         // The vim status bar should be shown and hidden immediately upon toggling.
         if settings.as_ref(ctx).vim_mode_enabled() {
             if let AppEditorSettingsChangedEvent::VimStatusBar { .. } = evt {
-                ctx.notify();
+                notify_cause!(ctx, "handle_app_editor_settings_event_4");
             }
         }
     }
@@ -8317,7 +8330,7 @@ impl Input {
                 m.set_mode(InputSuggestionsMode::Closed, ctx);
             });
         }
-        ctx.notify();
+        notify_cause!(ctx, "highlight_selected_workflow_argument");
     }
 
     fn populate_enum_suggestions_menu(
@@ -8376,7 +8389,7 @@ impl Input {
             input.set_enum_variants(variants, ctx);
         });
 
-        ctx.notify();
+        notify_cause!(ctx, "populate_enum_suggestions_menu");
     }
 
     fn handle_suggestions_event(
@@ -8512,9 +8525,9 @@ impl Input {
                                     PlainTextEditorViewAction::CycleCompletionSuggestion,
                                     ctx,
                                 );
-                                ctx.notify();
+                                notify_cause!(ctx, "handle_suggestions_event");
                             });
-                            ctx.notify();
+                            notify_cause!(ctx, "handle_suggestions_event_2");
                         }
                     }
                     InputSuggestionsMode::StaticWorkflowEnumSuggestions { .. }
@@ -8627,7 +8640,7 @@ impl Input {
             )
         }
 
-        ctx.notify();
+        notify_cause!(ctx, "reset_workflow_state");
     }
 
     fn confirm_suggestion(&mut self, suggestion: &str, ctx: &mut ViewContext<Input>) -> bool {
@@ -8820,7 +8833,7 @@ impl Input {
                 self.focus_input_box(ctx);
                 self.maybe_generate_autosuggestion(ctx);
             } else {
-                ctx.notify();
+                notify_cause!(ctx, "close_input_suggestions");
             }
         }
     }
@@ -9066,7 +9079,7 @@ impl Input {
 
     fn close_voltron(&mut self, ctx: &mut ViewContext<Input>) {
         self.is_voltron_open = false;
-        ctx.notify();
+        notify_cause!(ctx, "close_voltron");
     }
 
     fn editor_up(&mut self, ctx: &mut ViewContext<Self>) {
@@ -9228,7 +9241,7 @@ impl Input {
                 ),
                 ctx
             );
-            ctx.notify();
+            notify_cause!(ctx, "editor_up");
             return;
         }
         // Finally, if we're neither scrolling through an existing suggestion
@@ -9304,7 +9317,7 @@ impl Input {
             self.suggestions_mode_model.update(ctx, |model, ctx| {
                 model.set_mode(InputSuggestionsMode::Closed, ctx);
             });
-            ctx.notify();
+            notify_cause!(ctx, "editor_escape");
         } else if self
             .suggestions_mode_model
             .as_ref(ctx)
@@ -9319,7 +9332,7 @@ impl Input {
                     model.set_mode(InputSuggestionsMode::Closed, ctx);
                 });
             }
-            ctx.notify();
+            notify_cause!(ctx, "editor_escape_2");
         } else if self.suggestions_mode_model.as_ref(ctx).is_visible() {
             self.input_suggestions
                 .update(ctx, |input_suggestions, ctx| {
@@ -9434,7 +9447,7 @@ impl Input {
         }
         self.editor
             .update(ctx, |editor, ctx| editor.clear_text_style_runs(ctx));
-        ctx.notify();
+        notify_cause!(ctx, "clear_current_workflow");
     }
 
     fn editor_down(&mut self, ctx: &mut ViewContext<Self>) {
@@ -10412,7 +10425,7 @@ impl Input {
                         .has_received_precmd()
                     {
                         send_telemetry_from_ctx!(TelemetryEvent::EditedInputBeforePrecmd, ctx);
-                        ctx.notify();
+                        notify_cause!(ctx, "handle_editor_event_inner");
                     }
                 }
 
@@ -10517,7 +10530,7 @@ impl Input {
                         }
                     });
 
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_editor_event_inner_2");
                 }
 
                 // Update filter text for AI context menu when text changes
@@ -10687,7 +10700,7 @@ impl Input {
                     if !last_buffer_text.starts_with(AI_COMMAND_SEARCH_TRIGGER) {
                         self.show_ai_command_search(ctx);
                     }
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_editor_event_inner_3");
                 }
 
                 let is_input_mode_locked = self.ai_input_model.as_ref(ctx).is_input_type_locked();
@@ -10738,7 +10751,7 @@ impl Input {
                         });
                     }
 
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_editor_event_inner_4");
                 }
 
                 let ai_settings = AISettings::as_ref(ctx);
@@ -10774,7 +10787,7 @@ impl Input {
                         self.ai_input_model.update(ctx, |input_model, ctx| {
                             input_model.enable_autodetection(input_model.input_type(), ctx);
                         });
-                        ctx.notify();
+                        notify_cause!(ctx, "handle_editor_event_inner_5");
                     }
                 }
 
@@ -10835,7 +10848,7 @@ impl Input {
                     // input is now rendered again only when a fact it is built from changed
                     // (#1962); `PHOSPHOR_KEY_VIEW_SKIP=0` restores the render on every edit.
                     if self.agent_view_edit_needs_render(ctx) {
-                        ctx.notify();
+                        notify_cause!(ctx, "handle_editor_event_inner_6");
                     }
                 }
 
@@ -11024,7 +11037,7 @@ impl Input {
                             self.suggestions_mode_model.update(ctx, |model, ctx| {
                                 model.set_mode(InputSuggestionsMode::Closed, ctx);
                             });
-                            ctx.notify();
+                            notify_cause!(ctx, "handle_editor_event_inner_7");
                         }
                     }
                     InputSuggestionsMode::IndexedReposMenu => {
@@ -11054,7 +11067,7 @@ impl Input {
                             ctx,
                         );
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_editor_event_inner_8");
                 }
             }
             EditorEvent::SelectionChanged => {
@@ -11383,7 +11396,7 @@ impl Input {
                 filter: Some(QueryFilter::Workflows),
                 init_content: InitContent::Custom("".to_owned()),
             })),
-            EditorEvent::VimStatusUpdate => ctx.notify(),
+            EditorEvent::VimStatusUpdate => notify_cause!(ctx, "handle_editor_event_inner_9"),
             EditorEvent::BackspaceOnEmptyBuffer => {
                 self.maybe_backspace_ai_icon(ctx);
             }
@@ -12105,7 +12118,7 @@ impl Input {
     ) {
         self.is_processing_attached_images = is_processing_attached_images;
         self.update_image_context_options(ctx);
-        ctx.notify();
+        notify_cause!(ctx, "set_is_processing_attached_images");
     }
 
     /// If we're in AI input mode, clears the rightmost AI icon. There may be multiple AI icons
@@ -12122,7 +12135,7 @@ impl Input {
                     || is_cli_agent_input_open)
             {
                 self.exit_shell_mode_to_ai(ctx);
-                ctx.notify();
+                notify_cause!(ctx, "maybe_backspace_ai_icon");
                 return;
             } else {
                 return;
@@ -12250,14 +12263,14 @@ impl Input {
                 )
             });
 
-            ctx.notify();
+            notify_cause!(ctx, "update_tab_completion_menu");
             should_close
         }
     }
 
     fn clear_screen(&mut self, ctx: &mut ViewContext<Self>) {
         self.model.lock().clear_visible_screen();
-        ctx.notify();
+        notify_cause!(ctx, "clear_screen");
     }
 
     /// Attempts to write the EOT (End-of-Transmission) char to the PTY, which is canonically mapped
@@ -12322,7 +12335,7 @@ impl Input {
 
         self.select_and_refresh_voltron(VoltronItem::History, ctx);
 
-        ctx.notify();
+        notify_cause!(ctx, "fuzzy_history_search");
     }
 
     pub fn on_session_share_joined(
@@ -13121,7 +13134,7 @@ impl Input {
                 .abort_handle();
 
             self.completions_abort_handle = Some(abort_handle);
-            ctx.notify();
+            notify_cause!(ctx, "get_enum_suggestions_async");
         }
     }
 
@@ -13364,7 +13377,7 @@ impl Input {
             });
         }
 
-        ctx.notify();
+        notify_cause!(ctx, "handle_enum_completion_results");
     }
 
     fn path_separators(&self, ctx: &AppContext) -> PathSeparators {
@@ -13488,7 +13501,7 @@ impl Input {
                         self.suggestions_mode_model.update(ctx, |model, ctx| {
                             model.set_mode(InputSuggestionsMode::Closed, ctx);
                         });
-                        ctx.notify();
+                        notify_cause!(ctx, "handle_completion_suggestions_results");
                         return;
                     }
                     ExplicitTabCompletion::InsertSingle {
@@ -13502,7 +13515,7 @@ impl Input {
                             Executing::No,
                             ctx,
                         );
-                        ctx.notify();
+                        notify_cause!(ctx, "handle_completion_suggestions_results_2");
                         return;
                     }
                     ExplicitTabCompletion::InsertCommonPrefixAndOpen {
@@ -13593,7 +13606,7 @@ impl Input {
                     });
             }
         }
-        ctx.notify();
+        notify_cause!(ctx, "handle_completion_suggestions_results_3");
     }
 
     /// Replace the replacement with the common completion prefix. Note that completion prefix
@@ -13795,7 +13808,7 @@ impl Input {
                     info_view.selected_workflow_state.increment_argument_index();
                 }
 
-                ctx.notify();
+                notify_cause!(ctx, "input_shift_tab");
             });
 
             self.highlight_selected_workflow_argument(text_style_ranges, ctx);
@@ -13847,9 +13860,9 @@ impl Input {
         if self.command_x_ray_description.take().is_some() {
             self.editor.update(ctx, |editor, ctx| {
                 editor.clear_command_x_ray();
-                ctx.notify();
+                notify_cause!(ctx, "hide_x_ray");
             });
-            ctx.notify();
+            notify_cause!(ctx, "hide_x_ray_2");
         }
     }
 
@@ -13888,13 +13901,13 @@ impl Input {
                     WarpA11yRole::UserAction,
                 ));
             }
-            ctx.notify();
+            notify_cause!(ctx, "show_xray");
             self.editor.update(ctx, move |editor, ctx| {
                 editor.set_command_x_ray(description);
-                ctx.notify();
+                notify_cause!(ctx, "show_xray_2");
             });
         }
-        ctx.notify();
+        notify_cause!(ctx, "show_xray_3");
     }
 
     fn active_block_session_id(&self) -> Option<SessionId> {
@@ -14972,7 +14985,7 @@ impl Input {
             AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
                 // Don't show the quota banner once a user has run a command or AI query.
                 ai_settings.mark_quota_banner_as_dismissed(ctx);
-                ctx.notify();
+                notify_cause!(ctx, "input_enter");
             });
         }
     }
@@ -16589,7 +16602,9 @@ impl Input {
             QueuedPromptsPanelEvent::RowDeleted => self.focus_input_box(ctx),
             QueuedPromptsPanelEvent::EditEnded => self.focus_input_box(ctx),
             // The agent input mounts the panel only while it has something to show.
-            QueuedPromptsPanelEvent::ShownChanged => ctx.notify(),
+            QueuedPromptsPanelEvent::ShownChanged => {
+                notify_cause!(ctx, "handle_queued_prompts_panel_event")
+            }
         }
     }
 
@@ -17460,7 +17475,7 @@ impl Input {
             }
             EditOrigin::SyncedTerminalInput | EditOrigin::RemoteEdit => (),
         });
-        ctx.notify();
+        notify_cause!(ctx, "insert_internal");
         true
     }
 
@@ -17623,7 +17638,7 @@ impl Input {
             });
 
         // Re-render for anything that depends on the block list (e.g. zero state AM chips).
-        ctx.notify();
+        notify_cause!(ctx, "handle_block_completed_event");
     }
 
     /// Performs any post-block completion processing that's relevant to the input.
@@ -17828,11 +17843,11 @@ impl Input {
     }
 
     pub fn notify_and_notify_children(&self, ctx: &mut ViewContext<Self>) {
-        ctx.notify();
+        notify_cause!(ctx, "notify_and_notify_children");
         // The left notch may have been updated due to the prompt updating, in the case of
         // same-line prompt!
         self.editor.update(ctx, |_editor, ctx| {
-            ctx.notify();
+            notify_cause!(ctx, "notify_and_notify_children_2");
         });
     }
 
@@ -18271,7 +18286,7 @@ impl Input {
                     tips_completed,
                     ctx,
                 );
-                ctx.notify();
+                notify_cause!(ctx, "select_and_refresh_voltron");
             });
         }
         // If input suggestions are opened we should close them when opening voltron
@@ -18291,7 +18306,7 @@ impl Input {
             voltron.select_and_refresh_by_name(feature_item, metadata, ctx);
             self.is_voltron_open = true;
         });
-        ctx.notify();
+        notify_cause!(ctx, "select_and_refresh_voltron_2");
     }
 
     /// Returns whether AI command search should be displayed for the given
@@ -18337,7 +18352,7 @@ impl Input {
                 tips_completed,
                 ctx,
             );
-            ctx.notify();
+            notify_cause!(ctx, "show_ai_command_search");
         });
 
         ctx.emit(Event::ShowCommandSearch(Default::default()));
@@ -18348,7 +18363,7 @@ impl Input {
             AICommandSearchEntrypoint::Keybinding
         };
         send_telemetry_from_ctx!(TelemetryEvent::AICommandSearchOpened { entrypoint }, ctx);
-        ctx.notify();
+        notify_cause!(ctx, "show_ai_command_search_2");
     }
 
     /// Returns the SavePosition ID for the input.
@@ -18456,7 +18471,7 @@ impl TypedActionView for Input {
                     self.suggestions_mode_model.update(ctx, |model, ctx| {
                         model.close_and_restore_buffer(ctx);
                     });
-                    ctx.notify();
+                    notify_cause!(ctx, "handle_action");
                 } else {
                     self.open_conversation_menu(ctx);
                 }
@@ -18644,7 +18659,7 @@ impl View for Input {
             } else {
                 self.close_voltron(ctx);
                 ctx.focus(&self.editor);
-                ctx.notify();
+                notify_cause!(ctx, "on_focus");
             }
             ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
             // Showing this tab restarts the git/slow chip polls that were parked while it was

@@ -146,6 +146,10 @@ impl Input {
         if self.renders_agent_input(ctx)
             && self.agent_input_rendered_facts.get() != Some(self.agent_input_display_facts(ctx))
         {
+            warpui::input_order::log_notify_cause(
+                "Input",
+                "agent::rerender_agent_input_if_facts_changed",
+            );
             ctx.notify();
         }
     }
