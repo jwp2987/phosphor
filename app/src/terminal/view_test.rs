@@ -17971,9 +17971,14 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
 
 /// The report arrived and the submit wrote no command, but only an unfinished line was typed
 /// behind the Enter: it waits behind the held Enter (a shell line would have gone to the pty), and
-/// nothing is written while it waits. Owner decision 2026-11-09 (REVERSING #1661, under which
-/// this test expected it discarded and nothing ever written): the hold's give-up WRITES it to the
-/// pty, as typed; it is never handed back as editor text.
+/// nothing is written while it waits. The hold's give-up WRITES the held Enter and then the line
+/// typed behind it to the pty, in typed order; nothing is handed back as editor text.
+///
+/// Expectation history (re-decided by the owner, never weakened): #1661 expected the line
+/// discarded and nothing ever written; the first ruling of 2026-11-09 (#1996) expected `ls -l`
+/// alone at the pty (the bare Enter held in front of it was not sent); the owner's decision 3 of
+/// that day ("the bare Enter on an empty line held for an unready shell IS written at the net,
+/// before the keys after it") makes it `\r` then `ls -l`, which is what this test expects now.
 #[test]
 fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_writes_it() {
     App::test((), |mut app| async move {
@@ -17991,7 +17996,8 @@ fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_w
             // #1571: the test view is not ready for a command, so the Enter that ran nothing is
             // held as a gate (a refused Enter of an unready shell); the unfinished line is the
             // text typed after it and waits behind it, not written to the pty while it waits.
-            // The hold's give-up writes it to the pty (never handed back as editor text).
+            // The hold's give-up writes the bare Enter, then the line, to the pty (never handed
+            // back as editor text).
             assert!(view.input.as_ref(ctx).unready_enter_gate_open());
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             assert!(pty_writes.borrow().is_empty(), "held until the give-up");
@@ -18002,8 +18008,8 @@ fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_w
         });
         assert_eq!(
             String::from_utf8_lossy(&pty_writes.borrow().concat()),
-            "ls -l",
-            "the line typed behind the Enter reaches the pty as typed, once"
+            "\rls -l",
+            "the held bare Enter, then the line typed behind it, reach the pty as typed, once"
         );
         terminal.read(&app, |view, ctx| {
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
@@ -19492,14 +19498,15 @@ fn ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane() {
                 view.on_bootstrap_failed_timer_complete((), ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}");
                 assert!(view.ssh_held_is_empty(), "{mode:?}");
-                // The ssh block is still running, so the text is kept for the input (as for any
-                // ssh hand-back); it is never lost and never written.
+                // Nothing comes back: not into the editor, and not kept for it until the ssh block
+                // ends.
                 let input = view.input.as_ref(ctx);
                 let kept = input.handed_back_text_for_test().map(str::to_owned);
                 let shown = input.buffer_text(ctx);
                 assert!(
-                    kept.as_deref() == Some("echo hi") || shown == "echo hi",
-                    "{mode:?}: the held text is handed back: kept={kept:?} shown={shown:?}"
+                    kept.is_none() && shown.is_empty(),
+                    "{mode:?}: the held text went to the pty, not back: kept={kept:?} \
+                     shown={shown:?}"
                 );
                 assert!(
                     !view

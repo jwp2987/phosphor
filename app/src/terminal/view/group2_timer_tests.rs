@@ -283,6 +283,62 @@ fn orphan_enter_gate_leak_net_writes_the_keys_behind_it_to_the_pty() {
     }
 }
 
+/// "Keep them together" (owner decision 2026-11-09), the untracked-gate shape: the leak net of
+/// an Enter gate the input no longer tracks, with a LINE in the editor. Whether that Enter ran
+/// is not known any more, so what waited behind it must not run ahead of a line that may not
+/// have: it stays with the line, on the line after it, in typed order, under the hand-back
+/// guard, and nothing is written to the pty. (With an empty editor there is no such line and the
+/// keys go to the pty: `orphan_enter_gate_leak_net_writes_the_keys_behind_it_to_the_pty`.) Both
+/// modes.
+#[test]
+fn orphan_enter_gate_leak_net_keeps_the_keys_with_a_line_in_the_editor() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty = collect_pty_writes(&mut app, &terminal);
+            let input = terminal.read(&app, |view, _| view.input.clone());
+            input.update(&mut app, |input, ctx| {
+                input.replace_buffer_content("cd build", ctx);
+                input.open_submitted_enter_gate_for_test(
+                    vec![
+                        AfterEnterInput::Text("make clean".to_owned()),
+                        AfterEnterInput::Enter,
+                    ],
+                    false,
+                    ctx,
+                );
+                input.forget_enter_gate_for_test();
+            });
+            terminal.update(&mut app, |view, ctx| {
+                let token = gate_token_of(view, input_queue::GateKind::EnterVerdict);
+                view.on_paste_queue_give_up(token, ctx);
+            });
+            assert!(
+                pty_writes_are_empty(&pty),
+                "{mode:?}: `make clean` must not run without `cd build`: {:?}",
+                pty.borrow()
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "cd build\nmake clean\n",
+                        "{mode:?}: the keys stay with the line, in typed order"
+                    );
+                    assert!(input.ssh_handover_enter_guard_armed(), "{mode:?}");
+                    assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
+                });
+                assert!(
+                    ssh_queue_is_idle(view),
+                    "{mode:?}: the queue still holds entries"
+                );
+            });
+        });
+    }
+}
+
 /// A3 (#1577): the cap of the PowerShell setup gate treats setup as over and hands the held keys
 /// back; it no longer writes them to the pty.
 #[test]
@@ -666,11 +722,16 @@ fn a_report_several_seconds_late_still_releases_the_deferred_enter() {
 }
 
 /// A6 (#1577): the uncovered-report patience (10 s since #1701) no longer RUNS the deferred
-/// Enter: its text stays in the editor and nothing is executed. Owner decision 2026-11-09
-/// (REVERSING #1661, under which this test expected the key discarded and nothing written): the
-/// keys held behind the Enter are WRITTEN TO THE PTY in typed order, never put into the editor.
+/// Enter: its text stays in the editor and nothing is executed. The keys held behind the Enter
+/// stay WITH the text, on the line after it, in typed order, under the hand-back guard; nothing
+/// is written to the pty.
+///
+/// Expectation history (re-decided by the owner, never weakened): #1661 expected the key
+/// discarded and nothing written; the first ruling of 2026-11-09 (#1996) expected `ls` at the
+/// pty and the text alone in the editor; the second ruling of that day, "keep them together" (a
+/// later line never runs without the line before it), keeps the keys with the unrun line.
 #[test]
-fn uncovered_report_patience_keeps_the_text_and_sends_the_keys_behind_the_enter_to_the_pty() {
+fn uncovered_report_patience_keeps_the_text_and_the_keys_behind_the_enter_together() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -713,8 +774,13 @@ fn uncovered_report_patience_keeps_the_text_and_sends_the_keys_behind_the_enter_
                 view.uncovered_report_patience_fired(id, ctx);
                 let buffer = view.input.as_ref(ctx).buffer_text(ctx);
                 assert_eq!(
-                    buffer, "ho 47",
-                    "the text stays and the key behind the Enter is not put into the editor"
+                    buffer, "ho 47\nls",
+                    "the text stays and the keys behind its Enter stay with it, on the line \
+                     after it, once (the second firing added nothing)"
+                );
+                assert!(
+                    view.input.as_ref(ctx).ssh_handover_enter_guard_armed(),
+                    "the first Enter on the two lines is held"
                 );
                 assert!(view.paste_queue.queue.borrow().is_idle());
             });
@@ -725,8 +791,8 @@ fn uncovered_report_patience_keeps_the_text_and_sends_the_keys_behind_the_enter_
             );
             assert_eq!(
                 String::from_utf8_lossy(&pty.borrow().concat()),
-                "ls",
-                "{mode:?}: the keys typed behind the Enter reach the pty, once, in order"
+                "",
+                "{mode:?}: the Enter did not run, so nothing typed behind it reaches the pty"
             );
         });
     }

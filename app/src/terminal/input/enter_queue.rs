@@ -65,7 +65,7 @@ use crate::workspace::ToastStack;
 /// that normally gives up on a command the pty never takes, and this net only ends a gate a bug
 /// left open. Either give-up writes what was typed behind the Enter to the pty, so no hold lasts
 /// longer.
-// give-up-net: leak net of the Enter gate: the held Enter is given up (line stays, what followed is written to the pty in typed order, owner decision 2026-11-09)
+// give-up-net: leak net of the Enter gate: the held Enter is given up (line stays and what followed stays with it in the editor; behind an Enter that ran it is written to the pty in typed order, owner decision 2026-11-09)
 pub(super) const ENTER_GATE_LEAK_NET: Duration = Duration::from_secs(20);
 
 /// The Enter gate this input has open on the queue. The gate's key is the wait's id (#1206), so a
@@ -94,13 +94,14 @@ pub(super) struct EnterGate {
 }
 
 /// #1571: the give-up net of an Enter held because the shell was not ready. The readiness events
-/// (the session's registration, its first Precmd) end the hold long before this; when it fires
-/// nothing is run by the editor: the held line stays in the editor with its notice, what was
-/// typed after it is written to the pty in typed order (owner decision 2026-11-09, reversing
-/// #1661), and it is logged. Owner decision 2026-11-05: 60 s (was 15 s), so a slow shell startup
-/// (nvm, conda, a slow remote bootstrap) is not given up on early; the readiness event, not this
-/// net, is how the hold normally ends.
-// give-up-net: 60 s net of an Enter held for an unready shell: the line stays in the editor unrun, what followed is written to the pty in typed order (owner decision 2026-11-09)
+/// (the session's registration, its first Precmd) end the hold long before this. When it fires
+/// the held line is certainly a shell line (its destination is the shell, which was only not
+/// ready): the line, its Enter and everything typed after it are written to the pty in typed
+/// order, like a plain terminal (owner decision 2026-11-09, "keep them together"; a bare Enter
+/// on an empty line is written too), and it is logged. Owner decision 2026-11-05: 60 s (was
+/// 15 s), so a slow shell startup (nvm, conda, a slow remote bootstrap) is not given up on
+/// early; the readiness event, not this net, is how the hold normally ends.
+// give-up-net: 60 s net of an Enter held for an unready shell: the line, its Enter and what followed are written to the pty in typed order (owner decision 2026-11-09, keep them together)
 pub(super) const UNREADY_ENTER_GIVE_UP: Duration = Duration::from_secs(60);
 
 /// #1577: the reason of an Enter gate that gave up because the shell never took the command.
@@ -111,34 +112,26 @@ pub(crate) const VERDICT_GIVE_UP_TOAST: &str =
     "The shell/AI check was slow; your line is back in the editor. Press Enter again to send";
 
 /// #1666/#1667: the toast of an Enter held for a Tab completion that did not land in time: the
-/// uncompleted line was not run. Nothing typed behind it is ever put back into the editor (it
-/// goes to the pty), so the Enter on the line as shown runs it (the glue guard holds only text
-/// typed onto it).
+/// uncompleted line was not run. What was typed behind it stays with it in the editor, on the
+/// lines after it (owner decision 2026-11-09, "keep them together"), under the hand-back guard;
+/// with nothing typed behind it the Enter on the line as shown runs it (the glue guard holds
+/// only text typed onto it).
 pub(crate) const COMPLETION_GIVE_UP_TOAST: &str = "Completion took too long, so the line was not \
      run. Press Tab to complete it, or Enter to run it as shown.";
 
-/// #1571: the reason of an Enter held for an unready shell that gave up.
-pub(crate) const UNREADY_ENTER_GIVE_UP_TOAST: &str =
-    "The shell was not ready, so the line was not run; it is still in the input";
-
-/// #1666: the toast of the Enter the guard holds after an unready shell's give-up.
-const UNREADY_GUARD_TOAST: &str = "Enter was held back: the shell was not ready, so this line did \
-     not run. Check it, then press Enter to run it";
-
 /// What a give-up of a held Enter tells the user and which guard the line typed BEFORE the Enter
-/// keeps when it did not run (#1666). The keys typed AFTER the Enter go to the pty (owner
-/// decision 2026-11-09), never into the editor, so nothing is ever glued onto the line and only
-/// the line's own guard is decided here.
+/// keeps when it did not run and NOTHING was typed after the Enter (#1666). When keys were typed
+/// after it they stay with the line in the editor, on the lines after it, and the hand-back
+/// guard is armed over the whole buffer instead (owner decision 2026-11-09, "keep them
+/// together": `TerminalView::keep_given_up_keys_with_line`).
 #[derive(Clone, Copy, Debug)]
 struct GiveUp {
     /// The give-up's reason: the notice shown when the Enter's line did not run. It never counts
     /// keys (none are discarded).
     toast: &'static str,
     /// The guard the unrun line gets when nothing was typed after the Enter: the Tab-completion
-    /// give-up arms the [`EnterGuardKind::Glue`] guard, an unready shell's the
-    /// [`EnterGuardKind::HandedBackText`] one, the verdict give-up none (the owner deferred it).
-    /// When keys WERE typed after the Enter the user was still typing: a line with no guard of
-    /// its own gets the Glue guard, so a key typed after the give-up cannot run glued onto it.
+    /// give-up arms the [`EnterGuardKind::Glue`] guard, the verdict give-up none (the owner
+    /// deferred it). An unready shell's give-up leaves no line (it is written to the pty).
     line_guard: Option<(EnterGuardKind, &'static str)>,
 }
 
@@ -167,11 +160,30 @@ impl GiveUp {
         line_guard: Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST)),
     };
 
-    /// An unready shell's give-up (#1571).
+    /// An unready shell's give-up (#1571): the line goes to the pty with what followed it, so
+    /// there is no notice to show and no line to guard.
     const UNREADY: Self = Self {
-        toast: UNREADY_ENTER_GIVE_UP_TOAST,
-        line_guard: Some((EnterGuardKind::HandedBackText, UNREADY_GUARD_TOAST)),
+        toast: ENTER_GATE_GIVE_UP_TOAST,
+        line_guard: None,
     };
+}
+
+/// Where the keys typed after an Enter go when its gate gives up. Owner decision 2026-11-09,
+/// second ruling, KEEP THEM TOGETHER: a later line never runs without the line typed before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeysAfterEnter {
+    /// The Enter's line RAN (a submitted Enter whose route never settled): the keys are written
+    /// to the pty in typed order, what a plain terminal would have sent all along.
+    ToPty,
+    /// The Enter's line did NOT run and stays in the editor (its verdict or completion never
+    /// came, an edit voided the Enter): the keys stay WITH it, as visible text on the lines after
+    /// it, in typed order. Nothing goes to the pty (`cd build`, Enter, `make clean`, Enter never
+    /// runs `make clean` alone), nothing is dropped, no toast counts them.
+    WithLine,
+    /// The Enter's line did not run but is certainly a shell line (the shell was only not
+    /// ready): the line, its Enter and the keys after it are all written to the pty in typed
+    /// order, like a plain terminal. A bare Enter on an empty line is written too.
+    LineAndKeysToPty,
 }
 
 /// What happens to the keys typed behind a voided Enter gate, decided when the gate is voided and
@@ -187,25 +199,23 @@ pub(crate) enum EnterDiscard {
     /// The multi-line dialog's Enter was voided (#1652): the keys typed while the dialog was open
     /// are discarded with its own toast (`by` names the cause).
     Dialog(&'static str),
-    /// A give-up or a void of a waiting Enter. Owner decision 2026-11-09 (reversing #1661): the
-    /// keys typed after the Enter are NOT discarded; they are written to the pty in typed order,
-    /// what a plain terminal would have sent all along, with no toast about them. `always`: the
-    /// Enter's own line did not run and stays in the editor, so `reason` is shown (it says why
-    /// the line did not run; it never counts keys). `glue_if_keys_followed`: the unrun line has
-    /// no guard of its own, so when keys were typed after the Enter (the user was still typing)
-    /// the glue guard is armed over it, decided when the take completes so a free and a busy
-    /// queue arm the same guard (#1661 review).
+    /// A give-up or a void of a waiting Enter. Owner decisions 2026-11-09 (reversing #1661, then
+    /// "keep them together"): the keys typed after the Enter are NOT discarded and never run
+    /// without the line before them; `keys` says where they go ([`KeysAfterEnter`]). `always`:
+    /// the Enter's own line did not run and stays in the editor, so `reason` is shown (it says
+    /// why the line did not run; it never counts keys).
     GiveUp {
         reason: &'static str,
         always: bool,
-        glue_if_keys_followed: bool,
+        keys: KeysAfterEnter,
     },
 }
 
 /// Closes the voided Enter gate `(kind, key)` on `queue` and returns what waited behind it, as
-/// `report` says: a give-up takes its entries to be WRITTEN TO THE PTY in typed order
-/// ([`InputQueue::close_gate_for_give_up`]: nothing is cancelled, and behind an earlier open gate
-/// they stay queued in place instead); ^C and the dialog's answer take them to be discarded
+/// `report` says: a give-up takes its entries to be kept with the unrun line or written to the
+/// pty, in typed order ([`InputQueue::close_gate_for_give_up`]: nothing is cancelled, and behind
+/// an earlier open gate they stay queued in place instead); ^C and the dialog's answer take them
+/// to be discarded
 /// ([`InputQueue::close_gate_discarding`]).
 pub(crate) fn take_voided_enter_gate<H: Host>(
     queue: &mut InputQueue,
@@ -738,11 +748,12 @@ impl Input {
     }
 
     /// Closes the voided Enter gate `gate` and takes what waited behind it, as `report` says
-    /// ([`take_voided_enter_gate`]). Owner decision 2026-11-09 (reversing #1661): for a give-up
-    /// or an edit of the line ([`EnterDiscard::GiveUp`]) the keys typed after the Enter are
-    /// WRITTEN TO THE PTY in typed order by the terminal view (`Event::GivenUpKeysToPty`), never
-    /// discarded and never turned into editor text. ^C and the multi-line dialog's answer still
-    /// discard them (#1571, #1652). With the queue busy the take is one deferred operation
+    /// ([`take_voided_enter_gate`]). Owner decisions 2026-11-09 (reversing #1661; "keep them
+    /// together"): for a give-up or an edit of the line ([`EnterDiscard::GiveUp`]) the keys typed
+    /// after the Enter are never discarded; the terminal view puts them where the give-up's
+    /// [`KeysAfterEnter`] says ([`Self::emit_given_up_keys`]): with the unrun line in the editor,
+    /// or on the pty in typed order. ^C and the multi-line dialog's answer still discard them
+    /// (#1571, #1652). With the queue busy the take is one deferred operation
     /// (`Deferred::VoidEnterGate`) that does the same once the queue is free (#1768: free and
     /// busy give one result). Returns how many keys were taken, or `None` when the take was
     /// deferred.
@@ -760,9 +771,8 @@ impl Input {
                     take_voided_enter_gate(&mut guard, &mut host, gate.kind, gate.key, report);
                 drop(guard);
                 let keys = self.report_enter_gate_discard(&taken, report, ctx);
-                if matches!(report, EnterDiscard::GiveUp { .. }) && keys > 0 {
-                    // The view reaches the pty; the input does not.
-                    ctx.emit(Event::GivenUpKeysToPty(taken));
+                if let EnterDiscard::GiveUp { keys: then, .. } = report {
+                    self.emit_given_up_keys(taken, then, ctx);
                 }
                 Some(keys)
             }
@@ -777,16 +787,59 @@ impl Input {
         }
     }
 
+    /// Hands the entries `taken` out of a given-up Enter gate to the terminal view, which puts
+    /// them where `then` says (the view reaches the pty and the pty pastes' content; the input
+    /// does not). Nothing is emitted when there is nothing to do: no keys, except for an unready
+    /// shell's give-up, whose line and Enter go to the pty even with nothing typed after them.
+    pub(super) fn emit_given_up_keys(
+        &mut self,
+        taken: Vec<InputEntry>,
+        then: KeysAfterEnter,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let keys = count_discarded_keys(&taken);
+        match then {
+            KeysAfterEnter::ToPty if keys > 0 => ctx.emit(Event::GivenUpKeysToPty(taken)),
+            KeysAfterEnter::WithLine if keys > 0 => ctx.emit(Event::GivenUpKeysWithLine(taken)),
+            KeysAfterEnter::LineAndKeysToPty => ctx.emit(Event::GivenUpLineAndKeysToPty(taken)),
+            KeysAfterEnter::ToPty | KeysAfterEnter::WithLine => {}
+        }
+    }
+
+    /// The line of an Enter held for an unready shell whose net gave up, taken to be written to
+    /// the pty with its Enter and the keys typed after it (owner decision 2026-11-09). `None`
+    /// when no such give-up waits for its write. An editor that still shows exactly that line is
+    /// cleared: the line has left for the shell, as after any submit. An editor that shows
+    /// something else keeps it (the requested line is what is written, #1435).
+    pub(crate) fn take_given_up_unready_line(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<String> {
+        let line = self.given_up_unready_line.take()?;
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        if buffer == line {
+            if !buffer.is_empty() {
+                self.clear_buffer_and_reset_undo_stack(ctx);
+            }
+        } else {
+            log::warn!(
+                "input: the editor changed while an Enter was held for an unready shell; the \
+                 requested line is written to the pty and the editor keeps what it shows"
+            );
+        }
+        Some(line)
+    }
+
     /// The input's part of what happens to the entries `taken` out of a voided Enter gate, as
     /// `report` says. Also what the view runs for its own takes (the deferred `VoidEnterGate`, an
     /// orphan gate, a deferred Enter's give-up). Returns how many keys they were.
     ///
     /// * ^C / the multi-line dialog: they are DISCARDED (a paste's content waiting in this
     ///   input's map goes with them), with a log line and, for the dialog, its toast.
-    /// * a give-up ([`EnterDiscard::GiveUp`], owner decision 2026-11-09, reversing #1661):
-    ///   nothing is discarded here. The caller writes the keys to the pty in typed order; this
-    ///   only arms the unrun line's glue guard, shows the line's own "did not run" notice (never
-    ///   a count, never a discard toast) and logs one hop.
+    /// * a give-up ([`EnterDiscard::GiveUp`], owner decisions 2026-11-09): nothing is discarded
+    ///   here. The caller keeps the keys with the unrun line or writes them to the pty
+    ///   ([`KeysAfterEnter`]); this only shows the line's own "did not run" notice (never a
+    ///   count, never a discard toast) and logs one hop.
     pub(crate) fn report_enter_gate_discard(
         &mut self,
         taken: &[InputEntry],
@@ -796,24 +849,29 @@ impl Input {
         if let EnterDiscard::GiveUp {
             reason,
             always,
-            glue_if_keys_followed,
+            keys: then,
         } = report
         {
             let keys = count_discarded_keys(taken);
-            if glue_if_keys_followed && keys > 0 {
-                // The user was still typing: a key typed after the give-up must not run glued
-                // onto the unrun line.
-                let line = self.editor.as_ref(ctx).buffer_text(ctx);
-                self.arm_enter_guard(line, EnterGuardKind::Glue, GLUE_GUARD_TOAST);
-            }
             if keys > 0 {
                 log::warn!(
-                    "input: an Enter gate gave up; {keys} key(s) typed after the Enter go to the \
-                     pty in typed order, none discarded (#1661 reversed 2026-11-09)"
+                    "input: an Enter gate gave up; {keys} key(s) typed after the Enter: {then:?}, \
+                     in typed order, none discarded (owner decisions 2026-11-09)"
                 );
             }
-            warpui::input_order::log_hop("enter_gate_give_up_keys_to_pty", || {
-                format!("keys={keys} line_ran={}", !always)
+            // One hop per give-up, named by where the keys go.
+            let hop = match then {
+                KeysAfterEnter::WithLine => "enter_gate_give_up_keys_with_line",
+                KeysAfterEnter::ToPty | KeysAfterEnter::LineAndKeysToPty => {
+                    "enter_gate_give_up_keys_to_pty"
+                }
+            };
+            warpui::input_order::log_hop(hop, || {
+                format!(
+                    "keys={keys} line_ran={} line_to_pty={}",
+                    u8::from(then == KeysAfterEnter::ToPty),
+                    u8::from(then == KeysAfterEnter::LineAndKeysToPty)
+                )
             });
             if always && ctx.has_singleton_model::<ToastStack>() {
                 let window_id = ctx.window_id();
@@ -934,27 +992,28 @@ impl Input {
     }
 
     /// #1571: the give-up of an Enter held for an unready shell (its net fired, or its gate is
-    /// gone). The editor runs NOTHING: the held line stays in the editor as text, with a toast;
-    /// what was typed after it is written to the pty in typed order (owner decision 2026-11-09,
-    /// reversing #1661). Logged.
+    /// gone). The line was typed for the shell and only the shell's readiness was missing: the
+    /// line, its Enter and what was typed after it are written to the pty in typed order, like a
+    /// plain terminal (owner decision 2026-11-09, "keep them together"); a bare Enter on an empty
+    /// line is written too. Logged.
     pub(crate) fn give_up_unready_enter(&mut self, why: &'static str, ctx: &mut ViewContext<Self>) {
         let Some(gate) = self.enter_gate.filter(|gate| gate.held_unready) else {
             return;
         };
         log::warn!(
-            "input: an Enter held because the shell was not ready gave up ({why}); the line stays \
-             in the input, not run (#1571)"
+            "input: an Enter held because the shell was not ready gave up ({why}); the line, its \
+             Enter and the keys after it go to the pty in typed order (#1571)"
         );
         warpui::input_order::log_hop("enter_held_give_up", || format!("by={why}"));
         self.discard_enter_gate_on_give_up(gate, GiveUp::UNREADY, ctx);
     }
 
     /// #1577 (A2): a timer gave up on the Enter gate (the route-settle net, the verdict cap, the
-    /// generic leak net). The editor runs nothing, and what was typed behind the Enter is WRITTEN
-    /// TO THE PTY in typed order, with no toast (owner decision 2026-11-09, reversing #1661:
-    /// never discarded, never handed back as editor text). An Enter that did not run leaves its
-    /// line in the editor. Logged with counts only. An Enter held for an unready shell has its
-    /// own give-up.
+    /// generic leak net). The editor runs nothing. Owner decisions 2026-11-09: what was typed
+    /// behind an Enter that RAN is written to the pty in typed order; what was typed behind an
+    /// Enter that did NOT run stays with its line in the editor, in typed order (never run
+    /// without it). Nothing is discarded, no toast counts keys. Logged with counts only. An Enter
+    /// held for an unready shell has its own give-up.
     pub(crate) fn give_up_enter_gate(&mut self, why: &'static str, ctx: &mut ViewContext<Self>) {
         self.give_up_enter_gate_with(why, GiveUp::for_give_up(why), ctx);
     }
@@ -989,8 +1048,9 @@ impl Input {
             self.void_verdict_wait_for_give_up();
         }
         log::warn!(
-            "input: the Enter gate gave up ({why}) with {held_behind} entr(ies) behind it; they \
-             go to the pty in typed order (#1577; #1661 reversed 2026-11-09)"
+            "input: the Enter gate gave up ({why}) with {held_behind} entr(ies) behind it \
+             (submitted={}); none is discarded (#1577; owner decisions 2026-11-09)",
+            gate.submitted
         );
         warpui::input_order::log_key_hop("kh_enter_gate_give_up", || {
             format!("by={why} behind={held_behind} submitted={}", gate.submitted)
@@ -1000,7 +1060,7 @@ impl Input {
 
     /// #1577: an Enter whose verdict / completion never came within the cap is not submitted by
     /// the clock. The line stays in the editor; with its gate open, what was typed behind the
-    /// Enter goes to the pty ([`Self::give_up_enter_gate`]); otherwise the wait is dropped.
+    /// Enter stays with it ([`Self::give_up_enter_gate`]); otherwise the wait is dropped.
     /// The next Enter submits the line, with the verdict by then in.
     pub(super) fn hand_back_unsubmitted_enter(
         &mut self,
@@ -1038,8 +1098,8 @@ impl Input {
         self.hand_back_held_enter(why, GiveUp::COMPLETION, ctx);
     }
 
-    /// The shared body of the held-Enter give-ups: with its gate open, what was typed behind the
-    /// Enter goes to the pty and the line stays ([`Self::give_up_enter_gate_with`]); otherwise the
+    /// The shared body of the held-Enter give-ups: with its gate open, the line stays and what was
+    /// typed behind the Enter stays with it ([`Self::give_up_enter_gate_with`]); otherwise the
     /// wait is dropped, the line stays in the editor (with its guard, if `give_up` has one), and
     /// its toast is shown.
     fn hand_back_held_enter(
@@ -1088,38 +1148,57 @@ impl Input {
         true
     }
 
-    /// The shared body of the Enter-gate give-ups (owner decision 2026-11-09, reversing #1661):
-    /// the gate is closed and everything that waited behind it is WRITTEN TO THE PTY in typed
-    /// order ([`Self::discard_enter_gate`] with [`EnterDiscard::GiveUp`]), in every form (editor
-    /// text, pty keys, pastes, Enters): what a plain terminal would have sent all along. Nothing
-    /// is discarded, nothing is handed back to the editor, and no toast is shown for those keys.
+    /// The shared body of the Enter-gate give-ups (owner decisions 2026-11-09: #1661 reversed,
+    /// then "keep them together"). The gate is closed and everything that waited behind it, in
+    /// every form (editor text, pty keys, pastes, Enters), goes where the line before it went
+    /// ([`KeysAfterEnter`]); nothing is discarded and no toast counts keys:
     ///
-    /// The line typed BEFORE the Enter is a separate case: an Enter that did not run (a verdict,
-    /// completion or unready give-up) leaves it in the editor, unrun, with its own guard
-    /// ([`GiveUp::line_guard`]). An Enter that was already SUBMITTED ran its line: nothing about
-    /// it changes (the buffer holds it until its block completes, as for any command).
+    /// * an Enter that was already SUBMITTED ran its line: the keys are written to the pty in
+    ///   typed order (the buffer holds the line until its block completes, as for any command);
+    /// * an Enter held for an UNREADY shell: its line is certainly a shell line, so the line, its
+    ///   Enter and the keys are all written to the pty in typed order;
+    /// * any other Enter that did not run (its verdict or completion never came): the line stays
+    ///   in the editor and the keys stay with it, on the lines after it; nothing reaches the pty.
+    ///   With nothing typed after it the line keeps its own guard ([`GiveUp::line_guard`]).
     fn discard_enter_gate_on_give_up(
         &mut self,
         gate: EnterGate,
         give_up: GiveUp,
         ctx: &mut ViewContext<Self>,
     ) {
-        let submitted = gate.submitted && !gate.held_unready;
+        let keys = if gate.held_unready {
+            KeysAfterEnter::LineAndKeysToPty
+        } else if gate.submitted {
+            KeysAfterEnter::ToPty
+        } else {
+            KeysAfterEnter::WithLine
+        };
+        if keys == KeysAfterEnter::LineAndKeysToPty {
+            // The line as it was requested (#1435), kept for the write: the take may be deferred
+            // behind a busy queue, and the pending state is cleared now.
+            let line = self
+                .pending_command_text
+                .clone()
+                .unwrap_or_else(|| self.editor.as_ref(ctx).buffer_text(ctx));
+            self.given_up_unready_line = Some(line);
+        }
         self.clear_held_unready_enter();
         self.enter_gate = None;
-        // The unrun line's own guard is armed now. A line with none gets the glue guard only if
-        // keys were typed after the Enter (the user was still typing), decided by the take
-        // itself, so a busy queue's deferred take arms exactly what a free one does.
-        if !submitted && let Some((kind, toast)) = give_up.line_guard {
+        // The unrun line's own guard is armed now, the same on a free and a busy queue. When keys
+        // were typed after the Enter the view arms the hand-back guard over the line and the keys
+        // it keeps with it, once the take completes.
+        if keys == KeysAfterEnter::WithLine
+            && let Some((kind, toast)) = give_up.line_guard
+        {
             let line = self.editor.as_ref(ctx).buffer_text(ctx);
             self.arm_enter_guard(line, kind, toast);
         }
         let report = EnterDiscard::GiveUp {
             reason: give_up.toast,
-            always: !submitted,
-            glue_if_keys_followed: !submitted && give_up.line_guard.is_none(),
+            always: keys == KeysAfterEnter::WithLine,
+            keys,
         };
-        // The queue busy: the deferred take writes the keys and reports once it is free.
+        // The queue busy: the deferred take places the keys and reports once it is free.
         let _ = self.discard_enter_gate(gate, report, ctx);
         // Edits that waited behind the line apply now.
         self.flush_deferred_programmatic_edits(ctx);
@@ -1256,11 +1335,12 @@ impl Input {
             .map_or(0, |queue| queue.held_behind_gate(gate.kind, gate.key))
     }
 
-    /// The waiting Enter is void (an edit of its line): closes the gate, and what was typed
-    /// behind it, in every form, is WRITTEN TO THE PTY in typed order with no toast (owner
-    /// decision 2026-11-09, reversing #1661; #1767: never put back into the editor, where it
-    /// glued onto the line). The line itself is the user's edit and stays as it is. A busy queue
-    /// writes the same keys once it is free.
+    /// The waiting Enter is void (an edit of its line): closes the gate. The line is the edit and
+    /// stays in the editor, unrun, and what was typed behind the Enter, in every form, stays
+    /// WITH it as text on the lines after it, in typed order, under the hand-back guard (owner
+    /// decision 2026-11-09, "keep them together": never run without the line before it, never
+    /// discarded; #1767: never glued onto the line, a newline stands for the void Enter). No
+    /// toast. A busy queue keeps the same keys once it is free.
     pub(super) fn void_enter_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(gate) = self.enter_gate.take() else {
             return;
@@ -1269,7 +1349,7 @@ impl Input {
             // Never shown (`always` is false): the Enter was voided by the user's own edit.
             reason: ENTER_GATE_GIVE_UP_TOAST,
             always: false,
-            glue_if_keys_followed: false,
+            keys: KeysAfterEnter::WithLine,
         };
         if self.discard_enter_gate(gate, report, ctx).is_none() {
             // Deferred: the programmatic edits that waited behind the void Enter follow the take.
@@ -1442,6 +1522,13 @@ impl Input {
             assert!(self.queue_behind_enter(item, ctx));
         }
         self.finish_enter_gate_after_submit(awaits_pty, ctx);
+    }
+
+    /// An unready shell's give-up left `line` waiting for the view's write
+    /// ([`Self::take_given_up_unready_line`]), for tests of that write.
+    #[cfg(test)]
+    pub(crate) fn set_given_up_unready_line_for_test(&mut self, line: &str) {
+        self.given_up_unready_line = Some(line.to_owned());
     }
 
     /// The input forgets its Enter gate while the gate stays open on the queue (an orphan gate,

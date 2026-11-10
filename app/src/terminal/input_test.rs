@@ -7786,11 +7786,17 @@ fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
 /// classifier's compute far past the cap changes nothing (no clock submit); the compute cap's
 /// timer is a give-up net that hands the line back: it stays in the editor, nothing is submitted,
 /// the late verdict is dropped, and the next Enter sends the line. The keys typed behind the
-/// Enter are handed to the view to be WRITTEN TO THE PTY in typed order, and the one toast is the
-/// line's own notice, with no count (owner decision 2026-11-09, REVERSING #1661, under which
-/// this test expected them dropped with a count toast).
+/// Enter STAY WITH THE LINE in the editor, on the line after it, in typed order, under the
+/// hand-back guard; nothing is handed over for the pty and the one toast is the line's own
+/// notice, with no count.
+///
+/// Expectation history (never weakened, the behaviour was re-decided by the owner): #1661
+/// (2026-11-05) dropped the keys with a count toast; the first ruling of 2026-11-09 (#1996) wrote
+/// them to the pty, and this test then expected `GivenUpKeysToPty` and an unchanged buffer; the
+/// second ruling of 2026-11-09, "keep them together" (a later line never runs without the line
+/// before it), keeps them with the unrun line, which is what it expects now.
 #[test]
-fn test_slow_verdict_cap_hands_the_line_back_and_sends_keys_behind_the_enter_to_the_pty() {
+fn test_slow_verdict_cap_hands_the_line_back_and_keeps_keys_behind_the_enter_with_it() {
     use crate::ai::blocklist::input_model::VERDICT_HANDBACK_CPU_CAP;
     use crate::terminal::input::enter_queue::VERDICT_GIVE_UP_TOAST;
 
@@ -7823,26 +7829,43 @@ fn test_slow_verdict_cap_hands_the_line_back_and_sends_keys_behind_the_enter_to_
         });
 
         // The cap's timer hands the line back: nothing is submitted; the keys typed behind the
-        // Enter go to the pty.
+        // Enter stay with the line, on the line after it.
         input.update(&mut app, |input, ctx| {
             let id = input.verdict_wait_id().unwrap();
             input.compute_cap_fired(id, ctx);
         });
         input.read(&app, |input, ctx| {
             assert!(input.verdict_wait.is_none(), "the cap ended the wait");
+            // Asked for the LINE: the buffer now also holds the keys kept with it, which are a
+            // new question for the classifier.
             assert!(
-                !input.detection_pending_for_buffer(ctx),
+                !input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .is_detection_pending_for(line, ctx),
                 "the late verdict is dropped"
             );
             assert!(
-                !input.last_enter_submitted_shell_command && input.buffer_text(ctx) == line,
-                "the clock must not pick shell or agent: the line stays in the editor (#1577)"
+                !input.last_enter_submitted_shell_command,
+                "the clock must not pick shell or agent (#1577)"
+            );
+            assert_eq!(
+                input.buffer_text(ctx),
+                format!("{line}\nec"),
+                "the line stays in the editor and both keys typed behind its Enter stay with \
+                 it, on the line after it, in typed order"
+            );
+            assert_eq!(
+                input.enter_guard_for_test(),
+                Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST)),
+                "the first Enter on the two lines is held with the check-the-line notice"
             );
         });
         assert_eq!(
             *given_up.borrow(),
-            [2],
-            "both keys typed behind the Enter are handed over for the pty, none dropped"
+            [(GIVEN_UP_WITH_LINE, 2)],
+            "both keys typed behind the Enter are kept with the line: none for the pty, none \
+             dropped"
         );
         assert!(
             toasts.borrow().contains(&VERDICT_GIVE_UP_TOAST.to_string()),
@@ -13662,19 +13685,37 @@ fn record_toast_texts(app: &mut App) -> Rc<RefCell<Vec<String>>> {
     texts
 }
 
-/// Owner decision 2026-11-09 (reversing #1661): how many keys each Enter-gate give-up of `input`
-/// handed to the terminal view to be written to the pty (`Event::GivenUpKeysToPty`), one number
-/// per give-up, in order. Signals are not keys. (What reaches the pty, byte for byte, is asserted
-/// in `view/give_up_to_pty_tests.rs`.)
-fn record_given_up_keys(app: &mut App, input: &ViewHandle<Input>) -> Rc<RefCell<Vec<usize>>> {
+/// Where an Enter-gate give-up of the input sent the keys typed after the Enter (owner decisions
+/// 2026-11-09: #1661 reversed, then "keep them together").
+const GIVEN_UP_TO_PTY: &str = "to_pty";
+const GIVEN_UP_WITH_LINE: &str = "with_line";
+const GIVEN_UP_LINE_AND_KEYS_TO_PTY: &str = "line_and_keys_to_pty";
+
+/// Owner decisions 2026-11-09: what each Enter-gate give-up of `input` handed to the terminal
+/// view, one `(where, keys)` per give-up, in order: [`GIVEN_UP_TO_PTY`] (`Event::GivenUpKeysToPty`:
+/// the Enter ran, the keys go to the pty), [`GIVEN_UP_WITH_LINE`] (`Event::GivenUpKeysWithLine`:
+/// the Enter did not run, the keys stay with its line in the editor) or
+/// [`GIVEN_UP_LINE_AND_KEYS_TO_PTY`] (`Event::GivenUpLineAndKeysToPty`: an unready shell's net,
+/// the line, its Enter and the keys go to the pty). Signals are not keys. (What reaches the pty,
+/// byte for byte, is asserted in `view/give_up_to_pty_tests.rs`.)
+fn record_given_up_keys(
+    app: &mut App,
+    input: &ViewHandle<Input>,
+) -> Rc<RefCell<Vec<(&'static str, usize)>>> {
     let counts = Rc::new(RefCell::new(Vec::new()));
     let sink = counts.clone();
     app.update(|ctx| {
         ctx.subscribe_to_view(input, move |_, event: &super::Event, _| {
-            if let super::Event::GivenUpKeysToPty(entries) = event {
-                sink.borrow_mut()
-                    .push(crate::terminal::input::count_discarded_keys(entries));
-            }
+            let (to, entries) = match event {
+                super::Event::GivenUpKeysToPty(entries) => (GIVEN_UP_TO_PTY, entries),
+                super::Event::GivenUpKeysWithLine(entries) => (GIVEN_UP_WITH_LINE, entries),
+                super::Event::GivenUpLineAndKeysToPty(entries) => {
+                    (GIVEN_UP_LINE_AND_KEYS_TO_PTY, entries)
+                }
+                _ => return,
+            };
+            sink.borrow_mut()
+                .push((to, crate::terminal::input::count_discarded_keys(entries)));
         });
     });
     counts
@@ -14256,14 +14297,18 @@ fn test_tab_then_enter_completion_in_time_runs_the_completed_line_in_both_modes(
     }
 }
 
-/// #1666, owner decision 2026-11-09 (REVERSING #1661, under which this test expected a discard
-/// and a count toast): keys typed behind an Enter held for a Tab completion that then gives up
-/// are handed to the view to be WRITTEN TO THE PTY in typed order (text, an Enter, all of them);
-/// the one toast is the completion notice, with no count. The uncompleted line stays in the
-/// editor, unrun, with the glue guard: an Enter on it as shown runs it, text typed onto it holds
-/// that Enter. Nothing is routed by the editor's replay. Both modes.
+/// #1666: keys typed behind an Enter held for a Tab completion that then gives up STAY WITH THE
+/// LINE in the editor, on the lines after it, in typed order (text, an Enter, all of them); the
+/// one toast is the completion notice, with no count. Nothing reaches the pty (`ls`, Enter, `pwd`
+/// must not run without the line before them), nothing is routed by the editor's replay, and the
+/// hand-back guard holds the first Enter on the buffer. Both modes.
+///
+/// Expectation history (never weakened, re-decided by the owner): #1661 expected a discard and a
+/// count toast; the first ruling of 2026-11-09 (#1996) expected the four keys handed over for the
+/// pty and the line alone under its glue guard; the second ruling of that day, "keep them
+/// together", keeps them with the unrun line, which is what this test expects now.
 #[test]
-fn test_tab_then_enter_give_up_sends_the_keys_typed_after_it_to_the_pty() {
+fn test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_with_the_line() {
     use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
@@ -14311,13 +14356,13 @@ fn test_tab_then_enter_give_up_sends_the_keys_typed_after_it_to_the_pty() {
                 assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}: gate closed");
                 assert_eq!(
                     input.buffer_text(ctx),
-                    "git checkout fe",
-                    "{mode:?}: the line typed before the Enter stays; nothing typed after it \
-                     came back"
+                    "git checkout fe\nls\npwd",
+                    "{mode:?}: the line typed before the Enter stays and what was typed after \
+                     it stays with it, on the lines after it, in typed order"
                 );
                 assert_eq!(
                     input.enter_guard_for_test(),
-                    Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST)),
+                    Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST)),
                     "{mode:?}"
                 );
             });
@@ -14328,27 +14373,33 @@ fn test_tab_then_enter_give_up_sends_the_keys_typed_after_it_to_the_pty() {
             );
             assert_eq!(
                 *given_up.borrow(),
-                [4],
-                "{mode:?}: all four keys typed after the Enter are handed over for the pty"
+                [(GIVEN_UP_WITH_LINE, 4)],
+                "{mode:?}: all four keys typed after the Enter are kept with the line, none \
+                 for the pty"
             );
             deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
             assert!(executed.borrow().is_empty(), "{mode:?}");
             input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "git checkout fe\nls\npwd",
+                    "{mode:?}: the late completion changes nothing"
+                );
             });
 
-            // Text typed onto the line after the give-up does not run glued to it.
+            // An Enter on the kept lines (here after one more typed character) does not run
+            // them unseen: the hand-back guard holds it once, with its notice.
             input.update(&mut app, |input, ctx| {
                 input.user_insert("x", ctx);
                 input.input_enter(ctx);
             });
             assert!(
                 executed.borrow().is_empty(),
-                "{mode:?}: the glued line must not run"
+                "{mode:?}: the kept lines must not run on the first Enter"
             );
             assert_eq!(
                 toasts.borrow().last().map(String::as_str),
-                Some(GLUE_GUARD_TOAST),
+                Some(HANDED_BACK_GUARD_TOAST),
                 "{mode:?}"
             );
         });
@@ -16487,10 +16538,14 @@ async fn wait_until(app: &App, mut done: impl FnMut(&App) -> bool) {
 /// #1353 phase 3, agent mode: an Enter that waits for the autodetect verdict holds the keys typed
 /// behind it, at 10 ms per key, as queue entries. They never enter the buffer (so the line the
 /// Enter submits is exactly the line), a 50 ms stall between the Enter and the verdict releases
-/// nothing. If the verdict never comes within the cap (#1577) they are not routed by the editor:
-/// the line stays and they are handed to the view to be WRITTEN TO THE PTY in typed order, with
-/// the line's notice as the one toast and no count (owner decision 2026-11-09, REVERSING #1661,
-/// under which this test expected a discard and a count toast).
+/// nothing. If the verdict never comes within the cap (#1577) they are not routed by the editor's
+/// replay and nothing reaches the pty: the line stays and they stay WITH it, on the lines after
+/// it, in typed order, with the line's notice as the one toast and no count.
+///
+/// Expectation history (never weakened, re-decided by the owner): #1661 expected a discard and a
+/// count toast; the first ruling of 2026-11-09 (#1996) expected the ten keys handed over for the
+/// pty; the second ruling of that day, "keep them together" (`echo hi` must not run without the
+/// line before it), keeps them with the unrun line, which is what this test expects now.
 #[test]
 fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_per_key() {
     use crate::ai::blocklist::InputConfig;
@@ -16574,9 +16629,10 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
         });
 
         // The classifier spent its compute cap (#1577): the clock never picks shell or agent, so
-        // the Enter does NOT go ahead. The line stays; what was typed behind it goes to the pty in
-        // typed order (owner decision 2026-11-09), the toast is the line's notice, the glue guard
-        // holds an Enter on text typed onto the line next, and the editor's replay routed nothing.
+        // the Enter does NOT go ahead. The line stays; what was typed behind it stays with it, in
+        // typed order (owner decision 2026-11-09, "keep them together"), the toast is the line's
+        // notice, the hand-back guard holds the first Enter on the lines, and the editor's replay
+        // routed nothing.
         input.update(&mut app, |input, ctx| {
             let mut id = None;
             if let Some(wait) = input.verdict_wait.as_mut() {
@@ -16596,12 +16652,13 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
             assert!(!input.enter_queue_holds_keys(ctx), "the gate is closed");
             assert_eq!(
                 input.buffer_text(ctx),
-                "is it true",
-                "the line stays; nothing typed after the Enter came back"
+                "is it true\necho hi\nls",
+                "the line stays and what was typed after its Enter stays with it, on the lines \
+                 after it, in typed order"
             );
             assert_eq!(
                 input.enter_guard_for_test(),
-                Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST))
+                Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST))
             );
         });
         assert!(
@@ -16612,8 +16669,9 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
         // `echo hi` (seven keys), the Enter, `ls` (two keys): all ten, in one give-up.
         assert_eq!(
             *given_up.borrow(),
-            [10],
-            "every key typed behind the Enter is handed over for the pty, none dropped"
+            [(GIVEN_UP_WITH_LINE, 10)],
+            "every key typed behind the Enter is kept with the line: none for the pty, none \
+             dropped"
         );
         assert!(
             toasts.borrow().contains(&VERDICT_GIVE_UP_TOAST.to_string()),
@@ -16742,13 +16800,18 @@ fn test_enter_queue_ctrl_c_voids_the_held_enter_and_the_keys_behind_it() {
     });
 }
 
-/// #1353 phase 3 / #1767, owner decision 2026-11-09 (REVERSING #1661, under which this test
-/// expected a discard and a count toast): an edit of the waiting line itself (here one that did
-/// not come through the editor's keys) voids the Enter. The line stays as edited; what was queued
-/// behind the Enter is never glued onto the line: it is handed to the view to be WRITTEN TO THE
-/// PTY in typed order, with no toast. Both modes.
+/// #1353 phase 3 / #1767: an edit of the waiting line itself (here one that did not come through
+/// the editor's keys) voids the Enter. The line stays as edited, unrun; what was queued behind
+/// the Enter is never glued onto the line and never sent to the pty without it: it stays WITH
+/// the line, on the line after it, in typed order, under the hand-back guard, with no toast. Both
+/// modes.
+///
+/// Expectation history (never weakened, re-decided by the owner): #1661 expected a discard and a
+/// count toast; the first ruling of 2026-11-09 (#1996) expected the keys handed over for the pty
+/// and the edited line alone; the second ruling of that day, "keep them together", keeps them
+/// with the unrun line, which is what this test expects now.
 #[test]
-fn test_enter_queue_voided_enter_sends_the_keys_typed_behind_it_to_the_pty() {
+fn test_enter_queue_voided_enter_keeps_the_keys_typed_behind_it_with_the_line() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -16779,17 +16842,23 @@ fn test_enter_queue_voided_enter_sends_the_keys_typed_behind_it_to_the_pty() {
                 assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
                 assert_eq!(
                     input.buffer_text(ctx),
-                    "git checkout f",
-                    "{mode:?}: the edited line stays and nothing typed behind the void Enter \
-                     is glued onto it"
+                    "git checkout f\nls",
+                    "{mode:?}: the edited line stays; what was typed behind the void Enter is \
+                     on the line after it, never glued onto it"
+                );
+                assert_eq!(
+                    input.enter_guard_for_test(),
+                    Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST)),
+                    "{mode:?}: the first Enter on the two lines is held"
                 );
             });
             assert!(executed.borrow().is_empty(), "{mode:?}");
             assert!(released.borrow().is_empty(), "{mode:?}: nothing routed");
             assert_eq!(
                 *given_up.borrow(),
-                [2],
-                "{mode:?}: both keys typed behind the void Enter are handed over for the pty"
+                [(GIVEN_UP_WITH_LINE, 2)],
+                "{mode:?}: both keys typed behind the void Enter are kept with the line, none \
+                 for the pty"
             );
             assert!(
                 toasts.borrow().is_empty(),
@@ -17829,15 +17898,21 @@ fn test_unready_enter_holds_or_swallows_keys_with_no_text() {
     }
 }
 
-/// #1571, both destination modes: the held Enter's give-up never runs anything. The line stays in
-/// the editor with its notice; what was typed after it is handed to the view to be WRITTEN TO THE
-/// PTY in typed order, with no count toast (owner decision 2026-11-09, REVERSING #1661, under
-/// which this test expected a discard and a count toast). The pending command is gone, and the
-/// readiness event that comes later runs nothing.
+/// #1571, both destination modes: the give-up of an Enter held for an unready shell. The line is
+/// certainly a shell line (only the shell's readiness was missing), so the line, its Enter and
+/// what was typed after it are handed to the view to be WRITTEN TO THE PTY in typed order, like a
+/// plain terminal: the editor is left empty, no toast is shown for the give-up, the editor itself
+/// submits nothing, the pending command is gone, and the readiness event that comes later runs
+/// nothing a second time.
+///
+/// Expectation history (never weakened, the behaviour was re-decided by the owner): #1661
+/// dropped the keys with a count toast; the first ruling of 2026-11-09 (#1996) kept the line in
+/// the editor with the "shell was not ready" toast and wrote only the keys after it, which ran
+/// the second command without the first; the second ruling of 2026-11-09, "keep them together",
+/// sends the line with them, which is what this test expects now (`GivenUpLineAndKeysToPty`).
 #[test]
-fn test_unready_enter_give_up_keeps_the_line_sends_the_rest_to_the_pty_and_runs_nothing() {
+fn test_unready_enter_give_up_sends_the_line_and_the_rest_to_the_pty_in_order() {
     use crate::ai::blocklist::InputConfig;
-    use crate::terminal::input::enter_queue::UNREADY_ENTER_GIVE_UP_TOAST;
     use crate::terminal::input_queue::facts::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -17921,25 +17996,27 @@ fn test_unready_enter_give_up_keeps_the_line_sends_the_rest_to_the_pty_and_runs_
         let ((buffer, pending, gated, holds), executed, toasts, given_up) =
             result.borrow_mut().take().expect("the test body ran");
         assert_eq!(
-            buffer, "ssh fake",
-            "{mode:?}: the line stays; nothing typed after it came back"
+            buffer, "",
+            "{mode:?}: the line left for the pty with its Enter; nothing typed after it came \
+             back into the editor"
         );
         assert!(!pending, "{mode:?}: the held line is no longer pending");
         assert!(!gated, "{mode:?}: the gate is closed");
         assert!(!holds, "{mode:?}: nothing is held");
-        assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
-        // The refused Enter's own notice at the Enter (pre-existing), then, at the give-up, the
-        // line's notice (no count: nothing is discarded).
+        assert!(
+            executed.is_empty(),
+            "{mode:?}: the editor submitted nothing (the bytes went to the pty): {executed:?}"
+        );
+        // Only the refused Enter's own notice at the Enter (pre-existing): the give-up shows
+        // nothing, the line was sent.
         assert_eq!(
             toasts,
-            [
-                "Cannot run `ssh fake` yet: the shell is still starting.".to_string(),
-                UNREADY_ENTER_GIVE_UP_TOAST.to_string()
-            ],
+            ["Cannot run `ssh fake` yet: the shell is still starting.".to_string()],
             "{mode:?}"
         );
-        // `echo T` (six keys) and the Enter: all seven are handed over for the pty.
-        assert_eq!(given_up, [7], "{mode:?}");
+        // One give-up: the line and its Enter (taken by the view), with `echo T` (six keys) and
+        // the Enter typed after them, all seven, behind it.
+        assert_eq!(given_up, [(GIVEN_UP_LINE_AND_KEYS_TO_PTY, 7)], "{mode:?}");
     }
 }
 
@@ -18011,8 +18088,8 @@ fn test_route_wait_give_up_sends_the_keys_behind_a_submitted_enter_to_the_pty() 
         assert_eq!(released, 0, "{mode:?}: the editor's replay routed nothing");
         assert_eq!(
             given_up,
-            [1],
-            "{mode:?}: the key typed behind the Enter is handed over for the pty"
+            [(GIVEN_UP_TO_PTY, 1)],
+            "{mode:?}: the Enter ran, so the key typed behind it is handed over for the pty"
         );
         assert!(
             toasts.is_empty(),
@@ -18098,11 +18175,12 @@ fn unready_enter_then(
     outcome.expect("the test body ran")
 }
 
-/// #1571 review, owner decision 2026-11-09 (reversing #1661), both destination modes: a paste
-/// queued behind the held Enter leaves the editor side with the keys around it at the give-up
-/// (handed to the view for the pty, never handed back as editor text); the line typed before the
-/// Enter stays. (That the paste's content reaches the pty, in its place, is asserted in
-/// `view/give_up_to_pty_tests.rs`.)
+/// #1571 review, owner decisions 2026-11-09, both destination modes: a paste queued behind the
+/// held Enter leaves the editor side with the keys around it at the give-up (handed to the view
+/// for the pty, never handed back as editor text), and the line typed before the Enter leaves
+/// with them, in front ("keep them together"; under the first ruling of that day the line stayed
+/// in the editor, which this test then expected). (That the line and the paste's content reach
+/// the pty, each in its place, is asserted in `view/give_up_to_pty_tests.rs`.)
 #[test]
 fn test_unready_enter_give_up_never_puts_a_paste_typed_behind_it_into_the_editor() {
     use crate::terminal::input_queue::facts::DestinationMode;
@@ -18126,20 +18204,30 @@ fn test_unready_enter_give_up_never_puts_a_paste_typed_behind_it_into_the_editor
             |input, ctx| input.execute_pending_command(ctx),
         );
         assert_eq!(
-            buffer, "ssh fake",
-            "{mode:?}: the paste and the keys around it did not come back into the editor"
+            buffer, "",
+            "{mode:?}: the line left for the pty, and the paste and the keys around it did not \
+             come back into the editor"
         );
         assert!(!pending && !gated, "{mode:?}");
-        assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
+        assert!(
+            executed.is_empty(),
+            "{mode:?}: the editor submitted nothing: {executed:?}"
+        );
     }
 }
 
-/// #1571 review, both destination modes: the line an unready shell's give-up leaves in the editor
-/// keeps its guard: the first Enter on it is held (with the "check the line" toast): nothing runs,
-/// the line stays. What was typed after the Enter went to the pty (owner decision 2026-11-09),
-/// never merged into it.
+/// #1571 review, both destination modes: an unready shell's give-up leaves NO line in the editor
+/// and arms no guard: the line, its Enter and what was typed after it went to the pty together
+/// (owner decision 2026-11-09, "keep them together"), so nothing is left that a later Enter could
+/// run a second time or merge into.
+///
+/// Expectation history (the behaviour was re-decided by the owner, the test was not weakened):
+/// while the give-up left the line in the editor (#1571, and the first ruling of 2026-11-09) this
+/// test pressed Enter on it and expected the hand-back guard to hold that Enter. With the line
+/// sent there is nothing to guard; what must hold now is that the editor is empty, unguarded,
+/// and that the readiness event runs nothing.
 #[test]
-fn test_blind_enter_after_an_unready_give_up_is_held_by_the_guard() {
+fn test_an_unready_give_up_leaves_no_line_and_no_guard_behind() {
     use crate::terminal::input_queue::facts::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         let (buffer, pending, gated, executed) = unready_enter_then(
@@ -18150,18 +18238,22 @@ fn test_blind_enter_after_an_unready_give_up_is_held_by_the_guard() {
                 }
                 type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::Enter));
                 input.update(app, |input, ctx| input.give_up_unready_enter("test", ctx));
-                input.read(app, |input, _| {
-                    assert!(input.ssh_handover_enter_guard_armed(), "the guard is armed")
+                input.read(app, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "", "the line left for the pty");
+                    assert!(
+                        !input.ssh_handover_enter_guard_armed(),
+                        "nothing came back into the editor, so nothing is guarded"
+                    );
                 });
             },
-            // The user presses Enter at once, the shell now ready.
-            |input, ctx| input.input_enter(ctx),
+            // The shell becomes ready: nothing is pending any more.
+            |input, ctx| input.execute_pending_command(ctx),
         );
-        assert_eq!(buffer, "ssh fake", "{mode:?}: the line stays");
+        assert_eq!(buffer, "", "{mode:?}: the editor stays empty");
         assert!(!pending && !gated, "{mode:?}");
         assert!(
             executed.is_empty(),
-            "{mode:?}: no merged command ran: {executed:?}"
+            "{mode:?}: the line is not run a second time by the editor: {executed:?}"
         );
     }
 }
@@ -18206,14 +18298,17 @@ async fn wait_for_enter_gate_take(
     }
 }
 
-/// #1768, owner decision 2026-11-09 (REVERSING #1661, under which this test expected a discard
-/// and a count toast): a Tab-completion give-up on a BUSY queue (a peek out, so the take is
-/// deferred to the mailbox) does exactly what the same give-up does on a free queue: the line
-/// stays with its glue guard, the keys typed after the Enter leave the queue for the pty, the one
+/// #1768: a Tab-completion give-up on a BUSY queue (a peek out, so the take is deferred to the
+/// mailbox) does exactly what the same give-up does on a free queue: the line stays, the keys
+/// typed after the Enter stay WITH it on the lines after it, under the hand-back guard, the one
 /// toast is the completion notice with no count, and the editor's replay routes nothing. On a
-/// free queue the input hands the keys to the view (`Event::GivenUpKeysToPty`); on a busy one
-/// the view's deferred take writes them itself (`view/give_up_to_pty_tests.rs` asserts the bytes
-/// on both paths). Both modes.
+/// free queue the input hands the keys to the view (`Event::GivenUpKeysWithLine`); on a busy one
+/// the view's deferred take places them itself. Both modes.
+///
+/// Expectation history (never weakened, re-decided by the owner): #1661 expected a discard and a
+/// count toast; the first ruling of 2026-11-09 (#1996) expected the keys handed over for the pty
+/// and the line alone under its glue guard; the second ruling of that day, "keep them together",
+/// keeps them with the unrun line, which is what this test expects now.
 #[test]
 fn test_completion_give_up_on_a_busy_queue_acts_like_on_a_free_one() {
     use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
@@ -18252,13 +18347,14 @@ fn test_completion_give_up_on_a_busy_queue_acts_like_on_a_free_one() {
                 input.read(&app, |input, ctx| {
                     assert_eq!(
                         input.buffer_text(ctx),
-                        "git checkout fe",
-                        "{mode:?} busy={busy}: the line stays, nothing glued onto it"
+                        "git checkout fe\nl\n",
+                        "{mode:?} busy={busy}: the line stays and `l`, Enter stay with it on \
+                         the line after it; nothing is glued onto the line"
                     );
                     assert_eq!(
                         input.enter_guard_for_test(),
-                        Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST)),
-                        "{mode:?} busy={busy}"
+                        Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST)),
+                        "{mode:?} busy={busy}: the first Enter on the lines is held"
                     );
                     assert!(!input.enter_queue_holds_keys(ctx), "{mode:?} busy={busy}");
                 });
@@ -18275,8 +18371,8 @@ fn test_completion_give_up_on_a_busy_queue_acts_like_on_a_free_one() {
                 if !busy {
                     assert_eq!(
                         *given_up.borrow(),
-                        [2],
-                        "{mode:?}: `l` and the Enter are handed over for the pty"
+                        [(GIVEN_UP_WITH_LINE, 2)],
+                        "{mode:?}: `l` and the Enter are kept with the line, none for the pty"
                     );
                 }
             });
