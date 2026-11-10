@@ -4455,3 +4455,21 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   `test_local_counted_bootstrap`, `test_bootstrap_hook_equivalence`, `test_ssh_raw_bootstrap_hook`). `test_init_shell_escaping` fails the same way on the
   base commit (its `_hostname` snippet search finds nothing in `bash_body.sh`), unrelated to this change. Not covered: the real app's `sh` child in a real
   pane (no run yet; worked, unproven).
+
+## Round 10: `ssh_nested_typeahead` on Linux Wayland (#2013; design `docs/design/r10-wl-ssh-nested.md`)
+
+- **APP bug, a race; the case is unchanged.** Round 9b terminal mode: the nested `ssh fake` was written 1 ms after the first remote Precmd, before the
+  remote shell's line editor had the tty, so the cooked tty echoed `^Pssh fake` and the editor echoed `ssh fake` again. The block's echoed command no longer
+  parsed as ssh, and `AfterBlockStarted` released the window that the submit of this command had armed (`ssh_gate_released how=other_command` right after
+  `Received Preexec hook`); the typed line was split (`ssh_handed_back chars=7 dest=stashed_until_block_end`, the rest `gate_open_live` to the inner shell).
+  Agent mode passed in the same run and Wayland passed in rounds 5, 7 and 8: who wins the race depends on load.
+- **What changed.** `AfterBlockStarted` carries the Preexec hook's own command (`reported_command`); the connect window remembers the submitted ssh command
+  until its block starts; a block whose hook reports that command is the ssh's block whatever the echo shows (`ssh_submit_running_in_started_block`).
+- **Unit tests (`terminal/view_test.rs`).** `ssh_submit_is_recognised_in_its_started_block_by_the_hooks_report_not_the_echo` (the pure decision: the round
+  9b echo, white space, an expanded alias, another command, an empty report, no waiting submit, a clean echo);
+  `an_ssh_window_survives_its_own_block_start_with_a_polluted_echo` (the view: the window stays armed, no `OtherCommand` release, the pending ssh host comes
+  from the submitted command); `an_ssh_window_is_still_released_when_another_commands_block_starts` (#983's rule is unchanged).
+- **No new app case.** `ssh_nested_typeahead` is the case; the losing side of the race cannot be forced from the harness without slowing the remote shell's
+  start on purpose. Worked, unproven: nothing was compiled or run. The next Linux run should show, in both modes, `ssh trial verdicts: exact=1`, hand-overs
+  `precmd` then `finish` (`delivered=tty_owner`), and NO `ssh_gate_released how=other_command` between the nested `ssh_pty_owner ssh=true site=ssh_submit`
+  and its `site=tty_owned`.

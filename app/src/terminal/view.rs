@@ -12900,6 +12900,8 @@ impl TerminalView {
             gate.tty_read_detectable = self.model.lock().tty_read_probe().is_some();
             gate.block_id = Some(block_id);
             gate.user_submitted = user_submitted;
+            // #2013: what this window was armed for, until its block starts.
+            gate.submitted_command = Some(command.to_owned());
             self.ssh_connect_gate = Some(gate);
             // #1609/#1614: from this submit until the ssh block ends the pty belongs to ssh and
             // the remote shell. The hand-off needs no flag for it: the platform sample sees ssh
@@ -19250,9 +19252,9 @@ impl TerminalView {
             }
             ModelEvent::AfterBlockStarted {
                 command,
+                reported_command,
                 is_for_in_band_command,
                 block_id: _,
-                ..
             } => {
                 let did_any_session_contains_remote_blocks =
                     self.any_session_contains_remote_blocks;
@@ -19307,6 +19309,22 @@ impl TerminalView {
                         Some(format!("{alias_value}{rest}"))
                     });
                 let warpify_command = expanded_command.as_deref().unwrap_or(command.as_str());
+                // #2013: the first block to start after the user's ssh submit takes the submitted
+                // command from the window that submit armed. When the shell's own Preexec report
+                // says this block runs it, the block is the ssh's, whatever the echo looks like (a
+                // remote tty still in cooked mode echoes the written line itself, clear-line key
+                // included, and the line editor echoes it again): the window is never judged
+                // stale by a screen read of its own command.
+                let submitted_ssh = self
+                    .ssh_connect_gate
+                    .as_mut()
+                    .and_then(|gate| gate.submitted_command.take());
+                let warpify_command = ssh_submit_running_in_started_block(
+                    warpify_command,
+                    submitted_ssh.as_deref(),
+                    reported_command,
+                )
+                .unwrap_or(warpify_command);
 
                 // Check if the current running command spawns a subshell eligible for Warpification.
                 let shell_family = self.shell_family(ctx);
@@ -41352,6 +41370,33 @@ struct SshConnectGate {
     /// every key passes to ssh, so nothing is held and no ceiling runs. Set and cleared by those
     /// events only.
     auth_pass_through: bool,
+    /// #2013: the ssh command whose submit armed this window, until the next block that is not
+    /// in-band starts (that block start takes it). `None` for a window armed at preexec. With the
+    /// Preexec hook's own report it tells that the started block is this ssh's, so the echoed
+    /// command text (a screen read) never ends the window of its own command.
+    submitted_command: Option<String>,
+}
+
+/// #2013: whether the block that just started runs the ssh command the user submitted, although
+/// its echoed command text does not show an interactive ssh. `echoed` is the block's command as
+/// the shell echoed it (alias expanded), `submitted` the ssh command whose submit armed the
+/// connect window and whose block has not started yet, `reported` the command the Preexec hook
+/// itself reported. Returns the submitted command when the block is its block: the hook reported
+/// exactly that command, or a command that is itself an interactive ssh (the shell expanded an
+/// alias). `None` leaves the decision to the echoed text, as before: the echo already shows an
+/// ssh, no submit is waiting for its block, or the shell reports another command (or none).
+fn ssh_submit_running_in_started_block<'a>(
+    echoed: &str,
+    submitted: Option<&'a str>,
+    reported: &str,
+) -> Option<&'a str> {
+    let submitted = submitted?;
+    if parse_interactive_ssh_command(echoed).is_some() {
+        return None;
+    }
+    let reported = reported.trim();
+    let same_command = !reported.is_empty() && reported == submitted.trim();
+    (same_command || parse_interactive_ssh_command(reported).is_some()).then_some(submitted)
 }
 
 /// #1933: the one-connection managed ssh between its `auth` stage and its verdict.
@@ -41456,6 +41501,7 @@ impl SshConnectGate {
             wrapper_session: None,
             tty_read_detectable: false,
             auth_pass_through: false,
+            submitted_command: None,
         }
     }
 

@@ -3865,6 +3865,7 @@ impl ansi::Handler for Block {
                 .send_terminal_event(Event::AfterBlockStarted {
                     block_id: self.id.clone(),
                     command: self.command_to_string(),
+                    reported_command: data.command,
                     is_for_in_band_command,
                 });
         }
