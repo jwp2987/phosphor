@@ -41,9 +41,11 @@ exact lines ...: got []"; evidence line "8 Enter(s) reached the input editor".
 
 - The 10.05 s is the harness: `ctx.until(lambda: tok in ctx.lines(f), 10)` timed out. No app timer
   is 10 s on this path (the notice toast is, and routes nothing).
-- The line was HELD, not lost and not run: `got []` for every later line and for the pane's own
-  `back_` line too, and 8 editor Enters where a passing run has 4 (round 8: 2, before the case
-  typed its `ENV` lines). Keys typed after Ctrl-I were held behind the SubshellSetup gate, the
+- The line was HELD, not lost and not run (read from the row and the code; the hop lines are in
+  the artifacts, not the trace): `got []` for every later line and for the pane's own `back_` line
+  too, and 8 Enters reached the input editor where the case types about 4 there when its inner
+  lines go to the pty (round 8's passing macOS row: 2, before the case typed its `ENV` lines).
+  Keys typed after Ctrl-I were held behind the SubshellSetup gate, the
   setup stalled, the 30 s quiet net (`SUBSHELL_SETUP_QUIET_NET`, view.rs) handed them to the input
   editor as text, and the rest of the case typed into the editor behind them.
 - Why it stalled (code): `write_init_subshell_bytes_to_pty` put the echo of EVERY setup line into
@@ -137,14 +139,19 @@ password glued to it, submitted by the case's later Return.
 On ConPTY the equivalent event already ends the flag (`on_tty_read_marker`: "keys follow the pty,
 never the editor"). The unix Secret cancel did not.
 
-Fix: `end_written_subshell_setup` ends keys-follow-editor after a Secret hand-back
-(`end_keys_follow_editor("secret_read")`): the line stays in the editor under its Enter guard, the
-keys typed next go to the pty. Rejected here: a general "never follow the editor while the tty
-reads a secret" check in the hand-back (that is #1973's shared fact, open, and wider than this
-task); it is recorded in the report. Risk: low, one call on one path.
+Fix: `end_written_subshell_setup` ends keys-follow-editor after a Secret or a Question cancel
+(both show the toast "the shell is asking for input; answer it first"), and the hand-back does not
+set it for those two reasons (a hand-back retried on a busy queue). The line stays in the editor
+under its Enter guard, the keys typed next go to the pty. Rejected here: a general "never follow
+the editor while the tty reads a secret" check in every hand-back (that is #1973's shared fact,
+open, and wider than this task; the setup net giving up while a secret read is open still sets the
+flag); it is recorded in the report. Risk: low, one call on one path plus one condition.
 
 Next Mac run: `subshell_setup_cancelled why=Secret dest=Editor`, `keys_follow_editor_end
-why=secret_read`, the pw file is `hunter2`, a second `subshell_setup_ready_write`.
+why=subshell_secret` (when the flag had been set), the pw file is `hunter2`, a second
+`subshell_setup_ready_write`. Not proven by this note: the rest of the case after the password
+(the second write completing, the handed-back line run by the user's second Enter) has never
+passed on any platform, so further findings there are possible.
 
 ## 5. subshell_sh_probe_empty_ps1: TEST (precondition), and no macOS app path
 
