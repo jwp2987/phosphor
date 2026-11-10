@@ -5185,6 +5185,77 @@ def lat_evidence_filter_keeps_only_hop_lines():
     assert le.CASE_CAP == 2 * 1024 * 1024 and le.PLATFORM_CAP >= le.CASE_CAP
 
 
+@check
+def wrapped_copy_and_vertical_tabs_pure_parts_1976_1990():
+    """cases_wrap_vtabs.py: the fixture wraps where the case says it does, the clipboard judges name an inserted and a lost line break and pass only the
+    exact text, the settings reader tells an editable layout from one it must not touch, the panel-row judge tells a column from a tab bar, and the four
+    cases are PROVING and classified for Windows."""
+    import random
+    import cases_wrap_vtabs as wv
+    for cols in (40, 80, 137, 213):
+        lines, spans = wv.wrap_fixture(cols, random.Random(cols), "tok1")
+        long_line = lines[0]
+        assert 2 * cols < len(long_line) < 3 * cols, (cols, len(long_line))                 # three visual rows: it wraps twice
+        assert len(lines[2]) == cols and len(lines[3]) == cols + 1 and not any(l != l.strip() for l in lines)
+        assert len({w for w, _, _ in spans}) == len(spans) and all(long_line[a:b] == w and len(w) == 7 for w, a, b in spans)
+        assert all(c in wv.U.OCR_SAFE + " " for c in long_line)
+        (wa, a0, a1), (wb, b0, b1) = wv.pick_drag_words(spans, cols)
+        assert 0 <= a0 and a1 <= cols <= b0 and b1 <= 2 * cols, (cols, a0, a1, b0, b1)        # one word wholly on row 1, one wholly on row 2
+        assert wv.wrap_fixture(cols, random.Random(cols), "tok1")[0] == lines                 # the same seed gives the same fixture
+        want = "\n".join(lines)
+        assert wv.judge_wrapped_copy(want, lines) is None and wv.judge_wrapped_copy(want + "\n", lines) is None
+        assert wv.judge_wrapped_copy(wv.norm_clip((want + "\n").replace("\n", "\r\n").encode()), lines) is None
+        hard = "\n".join([long_line[:cols], long_line[cols:2 * cols], long_line[2 * cols:]] + lines[1:])   # a break at each soft wrap: the suspected #1976 defect
+        assert "INSERTED at a soft wrap" in wv.judge_wrapped_copy(hard, lines)
+        joined = "\n".join(lines[:2] + [lines[2] + lines[3]] + lines[4:])                     # the exactly-full line joined to the next
+        assert "LOST" in wv.judge_wrapped_copy(joined, lines) and "printed line 3" in wv.judge_wrapped_copy(joined, lines)
+        one_off = "\n".join([long_line[:cols + 1] + "\n" + long_line[cols + 1:]] + lines[1:])
+        assert "INSERTED" in wv.judge_wrapped_copy(one_off, lines)
+        assert "differs" in wv.judge_wrapped_copy(want.replace(spans[3][0], "x" * 7), lines)
+        assert "differs" in wv.judge_wrapped_copy(want[:-3], lines) and "differs" in wv.judge_wrapped_copy(wv.SENTINEL, lines)
+        # the drag: the text between the two words, a cell or two either way; a break at the wrap, a lost or changed character and a short copy all fail
+        drag = long_line[a0:b1]
+        assert wv.judge_drag_copy(drag, long_line, a0, b1) is None and wv.judge_drag_copy(drag + "\n", long_line, a0, b1) is None
+        assert wv.judge_drag_copy(long_line[a0 + 1:b1 - 1], long_line, a0, b1) is None and wv.judge_drag_copy(long_line[a0 - 2:b1 + 2], long_line, a0, b1) is None
+        assert "INSERTED at the soft wrap" in wv.judge_drag_copy(long_line[a0:cols] + "\n" + long_line[cols:b1], long_line, a0, b1)
+        assert "not a piece" in wv.judge_drag_copy(long_line[a0:cols] + long_line[cols + 1:b1], long_line, a0, b1)
+        assert "does not hold" in wv.judge_drag_copy(wa, long_line, a0, b1) and "not a piece" in wv.judge_drag_copy(wv.SENTINEL, long_line, a0, b1) and "not a piece" in wv.judge_drag_copy("", long_line, a0, b1)
+        assert "chars" in wv.judge_drag_copy(long_line[:b1 + 20], long_line, a0, b1)
+    assert wv.pick_drag_words([("abcdefh", 2, 9)], 4) is None
+    # the settings reader
+    assert wv.vtabs_state("[appearance.vertical_tabs]\nenabled = true\n") == "on" and wv.vtabs_state("[appearance.vertical_tabs]\nenabled = false\n") == "off"
+    assert wv.vtabs_state("[appearance.text]\nfont_size = 14.0\n") == "unset" and wv.vtabs_editable("[appearance.text]\nfont_size = 14.0\n")
+    inline = "[appearance]\nvertical_tabs = { view_mode = \"expanded\",\n  enabled = true }\n"
+    assert wv.vtabs_state(inline) == "on" and not wv.vtabs_editable(inline)
+    assert wv.vtabs_state(inline.replace("enabled = true", "enabled = false")) == "off"
+    assert wv.vtabs_state("[appearance]\nvertical_tabs.enabled = false\n") == "off" and not wv.vtabs_editable("[appearance]\nvertical_tabs.enabled = false\n")
+    assert wv.vtabs_state("[appearance.vertical_tabs]\nview_mode = \"compact\"\n") == "unknown" and not wv.vtabs_editable("[appearance.vertical_tabs]\nview_mode = \"compact\"\n")
+    assert wv.vtabs_editable("[appearance.vertical_tabs]\nenabled = false\n")
+    # the panel rows: a column in tab order passes; a tab bar, a wrong order and a single row do not
+    assert wv.rows_stacked([(2, 80, 120), (3, 82, 170), (4, 79, 221)])[0] is True
+    assert wv.rows_stacked([(4, 79, 221), (2, 80, 120)])[0] is True
+    assert wv.rows_stacked([(2, 200, 20), (3, 380, 21), (4, 560, 20)])[0] is False and "not top to bottom" in wv.rows_stacked([(2, 200, 20), (3, 380, 21), (4, 560, 20)])[1]
+    assert wv.rows_stacked([(2, 80, 170), (3, 80, 120)])[0] is False
+    assert "across the screen" in wv.rows_stacked([(2, 100, 20), (3, 400, 30), (4, 700, 40)])[1]
+    assert wv.rows_stacked([(2, 80, 120)])[0] is None and wv.rows_stacked([])[0] is None
+    log = "x hop=tab_activate index=2 count=8 active=0 window=WindowId(1)\ny hop=view_mode mode=agent\nz hop=tab_activate index=7 count=3 active=2 window=WindowId(1)\n"
+    assert wv.tab_counts(log) == [(2, 8), (7, 3)] and wv.tab_counts("") == []
+    # the keys: the macOS backend refuses none of them (NEVER_CMD), and the names match app/src/util/bindings.rs
+    lin, mac_ = types.SimpleNamespace(be=types.SimpleNamespace(name="x11")), types.SimpleNamespace(be=types.SimpleNamespace(name="mac"))
+    assert wv.KX(lin, "copy_output") == "ctrl+alt+shift+c" and wv.KX(mac_, "copy_output") == "cmd+alt+shift+c" and wv.KX(lin, "focus_input") == "ctrl+shift+l"
+    import backend
+    for name in ("block_up", "copy_output", "focus_input", "next_tab", "prev_tab"):
+        k = wv.KX(mac_, name).split("+")[-1]
+        assert k not in backend.MacBackend.NEVER_CMD and (k in backend.MacBackend.SPECIAL or k in backend.MacBackend.LETTERS), (name, k)
+    # registry: all four are PROVING (never SMOKE), run without the fake model, and are classified for Windows
+    names = ("ui_copy_wrapped_output", "ui_copy_wrapped_drag", "ui_vertical_tabs_many", "ui_vertical_tabs_panel_click")
+    reg = {c["name"]: c for c in cases.CASES}
+    assert all(n in cases.PROVING and n not in cases.SMOKE and n not in cases.PROVING_FAKE and reg[n]["gui"] and reg[n]["modes"] == ("terminal", "agent") for n in names)
+    assert "ui_copy_wrapped_output" in winmap.GITBASH_ONLY and all(n in winmap.NOT_WINDOWS for n in names[1:])
+    src = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
+    assert all(("`%s`" % n) in src for n in names), "docs/testing.md does not describe every new case"
+
+
 def main():
     failed = 0
     for f in CHECKS:
