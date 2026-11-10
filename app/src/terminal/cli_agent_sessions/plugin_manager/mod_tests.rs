@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 
 use std::cell::Cell;
 use std::fs;
+use std::path::Path;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -247,6 +248,31 @@ impl PluginCommandRunner for FakeRunner {
         }
         Ok(())
     }
+}
+
+/// `command` with the local folder `local` cut out of it. The managers' tests scan each
+/// recorded command for remote words ("github", "gitlab", "http", ...); the folder argument is
+/// a temp folder the test made, and its name must not count (the CI box's temp directory is
+/// under `/home/gitlab-runner/`). Everything else in the command is still scanned.
+pub(crate) fn without_local_path(command: &str, local: &Path) -> String {
+    let local = local.to_string_lossy();
+    assert!(!local.is_empty(), "an empty path would match everywhere");
+    command.replace(local.as_ref(), "<local folder>")
+}
+
+#[test]
+fn without_local_path_removes_only_the_folder() {
+    let folder = Path::new("/home/gitlab-runner/tmp/.tmpAb12/bundled/claude_plugin");
+    let add = format!("claude plugin marketplace add {}", folder.display());
+    assert_eq!(
+        without_local_path(&add, folder),
+        "claude plugin marketplace add <local folder>"
+    );
+    // A remote anywhere else in the command is kept for the scan.
+    let remote = "claude plugin marketplace add https://gitlab.com/winters-phosphor/x.git";
+    assert_eq!(without_local_path(remote, folder), remote);
+    let both = format!("{add} --from https://github.com/x/y");
+    assert!(without_local_path(&both, folder).contains("github"));
 }
 
 /// The pre-flight command line the managers run before a move.

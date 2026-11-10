@@ -11,7 +11,7 @@ use super::{
     marketplace_registered_from_warp, plugin_is_outdated, plugin_needs_source_migration,
     reset_source_move_attempt,
 };
-use crate::terminal::cli_agent_sessions::plugin_manager::tests::FakeRunner;
+use crate::terminal::cli_agent_sessions::plugin_manager::tests::{FakeRunner, without_local_path};
 
 #[test]
 fn installed_when_plugin_present() {
@@ -620,9 +620,12 @@ fn warp_registered_claude_dir(version: &str) -> tempfile::TempDir {
 }
 
 /// No command Phosphor runs may touch the network: no git, no remote URL.
-fn assert_all_local(runner: &FakeRunner) {
+/// The folder argument is `bundle`, a temp folder this test made: it is cut out before the scan,
+/// so the name of the temp directory (`/home/gitlab-runner/...` on the CI box) is not read as a
+/// remote.
+fn assert_all_local(runner: &FakeRunner, bundle: &Path) {
     for call in runner.calls() {
-        let lower = call.to_lowercase();
+        let lower = without_local_path(&call, bundle).to_lowercase();
         assert!(call.starts_with("claude plugin "), "{call}");
         for remote in ["http", "github", "gitlab", "git@", "ls-remote"] {
             assert!(!lower.contains(remote), "{call}");
@@ -645,7 +648,7 @@ fn fresh_install_adds_the_bundled_folder_then_installs() {
         runner.calls(),
         vec![add_command(&bundle), INSTALL.to_owned()]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
 }
 
 #[test]
@@ -679,7 +682,7 @@ fn install_over_a_remote_registration_replaces_it_with_the_bundle() {
         runner.calls(),
         vec![REMOVE.to_owned(), add_command(&bundle), INSTALL.to_owned()]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
 }
 
 #[test]
@@ -729,7 +732,7 @@ fn update_re_registers_the_bundle_with_no_network_step() {
         runner.calls(),
         vec![REMOVE.to_owned(), add_command(&bundle), INSTALL.to_owned()]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
     assert!(!needs_move, "now registered from the bundle");
     assert_eq!(
         installed_version(dir.path()).as_deref(),
@@ -810,7 +813,7 @@ fn a_failed_add_never_re_fetches_a_remote_previous_source() {
         runner.calls(),
         vec![REMOVE.to_owned(), add_command(&bundle)]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
 }
 
 #[test]
@@ -828,7 +831,7 @@ fn move_re_registers_from_the_bundle_and_clears_the_offer() {
         runner.calls(),
         vec![REMOVE.to_owned(), add_command(&bundle), INSTALL.to_owned()]
     );
-    assert_all_local(&runner);
+    assert_all_local(&runner, &bundle);
     assert!(!needs_move);
 }
 

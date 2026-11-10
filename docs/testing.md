@@ -2094,7 +2094,8 @@ Unit tests: `models_dev_bundle_tests.rs` (Refresh fetches from the one URL whate
 runs is local, the shipped plugin has no oz part / Warp metadata / network call and its version equals `MINIMUM_PLUGIN_VERSION`, `truncate_chars` cuts by characters
 under `LC_ALL=C`), `model/ansi/mod_test.rs` (`osc_777_*`: a `;` in the body, a non-UTF-8 byte is replaced and the param kept), `cli_agent_sessions/mod_tests.rs`
 (the WARN for a malformed event carries sizes only). The same style of test covers the other three agents (`plugin_manager/codex_tests.rs`, `gemini_tests.rs`, `opencode_tests.rs`):
-every command is local (`assert_all_local`: no http/github/gitlab/git@/ls-remote/upgrade/` update `), install/update/move without the bundled folder fails with "bundled ... not found"
+every command is local (`assert_all_local`: no http/github/gitlab/git@/ls-remote/upgrade/` update `; the bundle folder argument, a temp folder the test made, is cut out
+first with `without_local_path` from `mod_tests.rs`, because the CI box's temp directory is under `/home/gitlab-runner/` and its name is not a remote), install/update/move without the bundled folder fails with "bundled ... not found"
 and changes nothing, a remote registration (Warp's GitHub, Phosphor's old GitLab copy, an `@warp-dot-dev/opencode-warp` or `git+https` entry) and a bundle folder at an old install
 location are replaced by the bundled folder, a developer's own local checkout/link is never touched, a failed add restores a previous *local* source and never re-fetches a remote one,
 the shipped version equals `MINIMUM_PLUGIN_VERSION` (Codex also the version in `on-session-start.sh`), and the shipped folders contain no orchestration/oz part, Warp URL/metadata,
