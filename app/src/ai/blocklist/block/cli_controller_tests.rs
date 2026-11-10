@@ -306,36 +306,75 @@ fn lrc_handoff_opens_the_inline_agent_view_only_when_no_agent_view_is_active() {
     ));
 }
 
-// #1926: the hand-back after a password-prompt hand-over used to attach the block (command plus
-// output) to the resumed conversation as USER context. The agent's own command already returns
-// its output as the tool result, and the attached copy carried whatever the program echoed --
-// the `read -s` secret in round 8's `agent_interactive_password` -- as user prose, unredacted
-// with the redaction toggle off. An agent-requested command is never attached on hand-back,
-// whatever the hand-over reason was.
+/// The take-over reason as the block-completed resume reads it: from the block, while the user
+/// still holds control.
+fn reason_on_block(block: &crate::terminal::model::block::Block) -> Option<&UserTakeOverReason> {
+    block
+        .long_running_control_state()
+        .and_then(|state| state.user_take_over_reason())
+}
+
+// #1926: the resume after a password-prompt hand-over used to attach the block (command plus
+// output) to the conversation as USER context. The hand-over keeps the agent's tool call alive,
+// so the output already returns as its tool result, and the attached copy carried whatever the
+// program echoed -- the `read -s` secret in round 8's `agent_interactive_password` -- as user
+// prose, unredacted with the redaction toggle off. Nothing is attached for the two hand-overs
+// that keep the tool call (`BlockedOnInput`, `TransferFromAgent`), neither when the command
+// finishes in the user's hands nor when the user hands it back.
 #[test]
-fn hand_back_of_an_agent_requested_command_attaches_no_block_context() {
+fn hand_over_that_keeps_the_tool_call_attaches_no_block_context() {
     let mut model = agent_requested_long_running_block(AIConversationId::new());
     let block = model.block_list_mut().active_block_mut();
     // The password-prompt hand-over is the only take-over admitted before a control state
     // exists; the others need the agent to hold control, so they follow the first hand-back.
+    for reason in [
+        UserTakeOverReason::BlockedOnInput,
+        UserTakeOverReason::TransferFromAgent {
+            reason: "enter password".to_owned(),
+        },
+    ] {
+        block.take_over_control_for_user(reason.clone()).unwrap();
+        assert_eq!(reason_on_block(block), Some(&reason));
+        assert!(
+            !handback_attaches_block_context(block, reason_on_block(block)),
+            "finished in the user's hands: {reason:?}"
+        );
+        block.handoff_control_to_agent().unwrap();
+        assert!(block.is_agent_in_control());
+        assert!(
+            !handback_attaches_block_context(block, Some(&reason)),
+            "handed back: {reason:?}"
+        );
+    }
+}
+
+// A take-over the user made (`Manual`, a Ctrl-C `Stop`) cancels the conversation and with it the
+// pending tool call, so no tool result will carry the command's output: the block is the only
+// way the agent learns what happened and is still attached.
+#[test]
+fn take_over_that_cancelled_the_tool_call_still_attaches_the_block() {
+    let mut model = agent_requested_long_running_block(AIConversationId::new());
+    let block = model.block_list_mut().active_block_mut();
     block
         .take_over_control_for_user(UserTakeOverReason::BlockedOnInput)
         .unwrap();
     block.handoff_control_to_agent().unwrap();
-    assert!(block.is_agent_in_control());
-    assert!(
-        !handback_attaches_block_context(block),
-        "BlockedOnInput: the tool result is the only channel for the agent's own command"
-    );
     for reason in [
-        UserTakeOverReason::TransferFromAgent {
-            reason: "enter password".to_owned(),
-        },
         UserTakeOverReason::Manual,
+        UserTakeOverReason::Stop {
+            should_auto_resume: true,
+        },
     ] {
         block.take_over_control_for_user(reason.clone()).unwrap();
+        assert!(
+            handback_attaches_block_context(block, reason_on_block(block)),
+            "{reason:?}"
+        );
         block.handoff_control_to_agent().unwrap();
-        assert!(!handback_attaches_block_context(block), "{reason:?}");
+        assert!(
+            handback_attaches_block_context(block, Some(&reason)),
+            "{reason:?}"
+        );
     }
 }
 
@@ -347,5 +386,5 @@ fn hand_back_of_a_user_command_still_attaches_the_block() {
     model.simulate_long_running_block("sleep 100", "");
     let block = model.block_list().active_block();
     assert!(!block.is_agent_requested_command());
-    assert!(handback_attaches_block_context(block));
+    assert!(handback_attaches_block_context(block, None));
 }

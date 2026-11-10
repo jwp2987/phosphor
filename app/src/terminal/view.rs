@@ -91,7 +91,7 @@ use crate::ai::blocklist::block::cli::{
     CLISubagentView, CLISubagentViewEvent, CLISubagentViewMode,
 };
 use crate::ai::blocklist::block::cli_controller::{
-    CLISubagentController, CLISubagentEvent, UserTakeOverReason,
+    CLISubagentController, CLISubagentEvent, UserTakeOverReason, handback_attaches_block_context,
 };
 use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBarEvent;
 use crate::ai::blocklist::usage::conversation_usage_view::{
@@ -17826,11 +17826,24 @@ impl TerminalView {
         let conversation_id_to_resume =
             conversation_id_to_resume.filter(|_| !self.suspended_for_close);
         if let Some(conversation_id) = conversation_id_to_resume {
-            // Include the context of the block that just completed in the resume context.
-            // This is so that we correctly exit from LRC subagents attached to completed commands.
+            // The block that just completed is context for the resume only when
+            // `handback_attaches_block_context` says so (#1926): the agent's own command reports
+            // through its tool result, and a copy here would repeat what the program echoed
+            // while the user had control (a password prompt's secret) as user prose.
             let resume_context = {
                 let terminal_model = self.model.lock();
-                block_context_from_terminal_model(&terminal_model, block_id, false)
+                terminal_model
+                    .block_list()
+                    .block_with_id(block_id)
+                    .filter(|block| {
+                        let take_over_reason = block
+                            .long_running_control_state()
+                            .and_then(|state| state.user_take_over_reason());
+                        handback_attaches_block_context(block, take_over_reason)
+                    })
+                    .and_then(|_| {
+                        block_context_from_terminal_model(&terminal_model, block_id, false)
+                    })
                     .map(Box::new)
                     .map(AIAgentContext::Block)
                     .into_iter()
@@ -17838,7 +17851,7 @@ impl TerminalView {
             };
 
             self.ai_controller.update(ctx, |controller, ctx| {
-                // This resume carries the block: the monitored-completion hook that follows must
+                // This resume reports the block: the monitored-completion hook that follows must
                 // not hold it behind this request and report it again at the end (#1178).
                 controller.note_block_reported(block_id);
                 controller.resume_conversation(

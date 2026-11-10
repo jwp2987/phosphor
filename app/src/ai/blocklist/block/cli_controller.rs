@@ -808,9 +808,12 @@ impl CLISubagentController {
         let conversation_id = active_block.ai_conversation_id();
         let block_id = active_block.id().clone();
         // Check if control was transferred from agent before handoff.
-        let was_transfer_from_agent = active_block
+        let take_over_reason = active_block
             .long_running_control_state()
             .and_then(|state| state.user_take_over_reason())
+            .cloned();
+        let was_transfer_from_agent = take_over_reason
+            .as_ref()
             .is_some_and(|reason| reason.is_transfer_from_agent());
         if let Err(e) = active_block.handoff_control_to_agent() {
             log::error!("Failed to handoff control to agent: {e:?}");
@@ -848,7 +851,9 @@ impl CLISubagentController {
                         .block_list()
                         .block_index_for_id(&block_id)
                         .and_then(|index| terminal_model.block_list().block_at(index))
-                        .is_some_and(handback_attaches_block_context);
+                        .is_some_and(|block| {
+                            handback_attaches_block_context(block, take_over_reason.as_ref())
+                        });
                     if attach {
                         block_context_from_terminal_model(&terminal_model, &block_id, false)
                             .map(Box::new)
@@ -1143,22 +1148,31 @@ fn needs_byop_monitor_upgrade(block: &Block) -> bool {
 /// refuses both with `AlreadyInAgentView`, and asking it anyway logged that refusal as an
 /// `ERROR` on every hand-back made from the full-screen agent view (a false error, nothing
 /// failed). The old guard tested `is_inline()` only, so it let the full-screen case through.
+fn lrc_handoff_enters_inline_agent_view(state: &AgentViewState) -> bool {
+    !state.is_active()
+}
+
 /// Whether handing a long-running command back to the agent attaches the block (command, output,
 /// exit code) to the resumed conversation as USER context (#1926).
 ///
-/// Never for the agent's own requested command: its output already returns to the model as the
-/// tool result, and the `<attached_context>` copy rides in a user-role message that bypasses the
-/// tool-result channel. After a `BlockedOnInput` hand-over that copy carried whatever the program
-/// echoed -- a `read -s` secret the command printed, a password mistyped at a visible prompt --
-/// and it goes out unredacted whenever the user's redaction toggle is off (the round-8
-/// `agent_interactive_password` failure). Only a command the user ran and then handed to an agent
-/// has no tool result, so only that block is still attached.
-fn handback_attaches_block_context(block: &Block) -> bool {
-    !block.is_agent_requested_command()
-}
-
-fn lrc_handoff_enters_inline_agent_view(state: &AgentViewState) -> bool {
-    !state.is_active()
+/// `take_over_reason` is why the user held control. This covers both ends of a take-over: the
+/// user handing a still-running command back, and the command finishing in the user's hands.
+///
+/// Not for the agent's own requested command when the hand-over kept the agent's tool call
+/// alive (`BlockedOnInput`, `TransferFromAgent`: the reasons that do not cancel the
+/// conversation). Its output returns to the model as that call's tool result, and the
+/// `<attached_context>` copy would ride in a user-role message besides it, carrying whatever
+/// the program echoed while the user had control -- a `read -s` secret the command printed, a
+/// password mistyped at a visible prompt -- unredacted whenever the redaction toggle is off.
+/// A take-over that cancelled the conversation (`Manual`, `Stop`) threw the pending tool call
+/// away, and a command the user ran never had one, so for those the block is the only way the
+/// agent learns what the command did and it is attached.
+pub(crate) fn handback_attaches_block_context(
+    block: &Block,
+    take_over_reason: Option<&UserTakeOverReason>,
+) -> bool {
+    !(block.is_agent_requested_command()
+        && take_over_reason.is_some_and(|reason| !reason.should_cancel_conversation()))
 }
 
 #[cfg(test)]
