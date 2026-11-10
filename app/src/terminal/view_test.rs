@@ -27864,6 +27864,11 @@ fn conpty_prompt_after_a_command_with_no_signal_yet(view: &mut TerminalView) {
 /// typed in, in typed order, the keys after the release at once (no hold, no young Enter); the
 /// editor never holds a character; the Enter is not a line a prompt must answer; and the line
 /// editor's signal ends the reader. Legacy and Table.
+///
+/// The recorder is read only BETWEEN view updates: a write is an event the view emits, and an
+/// emitted event reaches its subscribers when the outermost update returns
+/// (`AppContext::flush_effects`), never inside it. Round 12 read it inside the update that typed
+/// the keys and saw `[]` for keys that had been routed to the pty (r13-pin2).
 #[test]
 fn a_precmd_functions_question_sends_the_pin_and_its_enter_to_the_read() {
     use crate::terminal::input_queue::DestinationMode;
@@ -27871,12 +27876,15 @@ fn a_precmd_functions_question_sends_the_pin_and_its_enter_to_the_read() {
         for question_first in [true, false] {
             App::test((), move |mut app| async move {
                 let what = format!("{mode:?} question_first={question_first}");
+                let what = what.as_str();
                 let _mode =
                     crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
                 initialize_app_for_terminal_view(&mut app);
                 let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
                 let terminal = add_window_with_terminal(&mut app, None);
                 let pty_writes = collect_pty_writes(&mut app, &terminal);
+                let first_half = vec![b"p".to_vec(), b"i".to_vec(), b"n".to_vec()];
+                // The first half.
                 terminal.update(&mut app, |view, ctx| {
                     register_local_session_for_ssh_test(view, ctx);
                     conpty_prompt_after_a_command_with_no_signal_yet(view);
@@ -27888,51 +27896,80 @@ fn a_precmd_functions_question_sends_the_pin_and_its_enter_to_the_read() {
                     }
                     if question_first {
                         assert!(!prompt_gate_open(view), "{what}: nothing is held");
+                        assert!(view.paste_queue.queue.borrow().is_idle(), "{what}");
                     } else {
                         assert!(prompt_gate_open(view), "{what}: held for the line editor");
-                        assert!(pty_writes.borrow().is_empty(), "{what}");
+                        assert_eq!(
+                            view.paste_queue.queue.borrow().queued_len(),
+                            3,
+                            "{what}: one entry per key"
+                        );
+                        assert!(
+                            !view.handoff.read().prompt_reader_asks(),
+                            "{what}: no question on screen yet, no reader"
+                        );
+                    }
+                });
+                if !question_first {
+                    assert!(
+                        pty_writes.borrow().is_empty(),
+                        "{what}: held, nothing written ahead of the question: {:?}",
+                        pty_writes.borrow()
+                    );
+                    // The question is printed, and the hold's cap fires.
+                    terminal.update(&mut app, |view, ctx| {
                         view.model.lock().process_bytes("pin: ");
                         let token = view.paste_queue.queue.borrow().gates()[0].token;
                         view.on_paste_queue_give_up(token, ctx);
                         assert!(!prompt_gate_open(view), "{what}: released at the cap");
-                    }
-                    assert_eq!(
-                        *pty_writes.borrow(),
-                        vec![b"p".to_vec(), b"i".to_vec(), b"n".to_vec()],
-                        "{what}: the first half is with the read"
-                    );
+                        assert!(view.paste_queue.queue.borrow().is_idle(), "{what}");
+                    });
+                }
+                assert_eq!(
+                    *pty_writes.borrow(),
+                    first_half,
+                    "{what}: the first half is with the read"
+                );
+                // The second half and the Enter, typed later.
+                terminal.update(&mut app, |view, ctx| {
                     assert!(
                         view.handoff.read().prompt_reader_asks(),
                         "{what}: the hand-off knows a reader has the tty"
                     );
-                    // The second half and the Enter, typed later.
                     for key in [&b"4"[..], b"2", b"\r"] {
                         view.write_user_bytes_to_pty(key.to_vec(), ctx);
                     }
                     assert!(!prompt_gate_open(view), "{what}");
                     assert!(view.paste_queue.queue.borrow().is_idle(), "{what}");
-                    assert_eq!(
-                        *pty_writes.borrow(),
-                        [&b"p"[..], b"i", b"n", b"4", b"2", b"\r"]
-                            .map(|key| key.to_vec())
-                            .to_vec(),
-                        "{what}: the PIN and its Enter, one write per key, in typed order"
-                    );
                     assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{what}");
-                    {
-                        let handoff = view.handoff.read();
-                        assert!(handoff.is_pty_owned(), "{what}");
-                        assert!(!handoff.young_hold_queued(), "{what}: no young Enter");
-                        assert!(
-                            !handoff.has_unanswered_lines(),
-                            "{what}: the read's Enter is not a line a prompt must answer"
-                        );
-                        assert!(!handoff.shell_line_may_hold_typed_text(), "{what}");
-                    }
-                    // The read returned and the line editor signals.
+                    let handoff = view.handoff.read();
+                    assert!(handoff.is_pty_owned(), "{what}");
+                    assert!(!handoff.young_hold_queued(), "{what}: no young Enter");
+                    assert!(
+                        !handoff.has_unanswered_lines(),
+                        "{what}: the read's Enter is not a line a prompt must answer"
+                    );
+                    assert!(!handoff.shell_line_may_hold_typed_text(), "{what}");
+                });
+                assert_eq!(
+                    *pty_writes.borrow(),
+                    [&b"p"[..], b"i", b"n", b"4", b"2", b"\r"]
+                        .map(|key| key.to_vec())
+                        .to_vec(),
+                    "{what}: the PIN and its Enter, one write per key, in typed order"
+                );
+                // The read returned and the line editor signals.
+                terminal.update(&mut app, |view, ctx| {
                     line_editor_signal(view, ctx);
                     assert!(!view.handoff.read().prompt_reader_asks(), "{what}");
+                    assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{what}");
                 });
+                assert_eq!(
+                    pty_writes.borrow().len(),
+                    6,
+                    "{what}: the signal writes nothing more: {:?}",
+                    pty_writes.borrow()
+                );
             })
         }
     }

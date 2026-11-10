@@ -4929,6 +4929,13 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   and keys first then the hold's cap; Legacy and Table; one pty write per key in typed order, the editor empty, no gate left, no unanswered
   line), `the_look_for_a_reader_at_a_key_never_waits_for_the_parser` (the look is `try_lock`: with the model held by another thread the key
   is held as before and no blocking key-path lock is counted).
+  **Round 13 (r13-pin2, design `docs/design/r13-pin2.md`; nothing compiled or run when written):** the first of these failed in the round 12
+  unit run (`Legacy question_first=true: the first half is with the read`, left `[]`). Verdict TEST: it read `collect_pty_writes` inside the
+  view update that typed the keys, and an emitted event reaches its subscribers only when the outermost update returns
+  (`AppContext::flush_effects`), so the recorder is always `[]` there. The test now types in separate updates and reads the recorder between
+  them; every old assertion is kept and three are added (three queue entries and no reader before the question is printed; the queue idle
+  after the cap's release; the signal writes nothing more). No app change. **Rule for view tests:** a pty-write recorder is read after the
+  update, never inside it; an `is_empty()` on it inside an update proves nothing.
 - **appci.** No case changed. `gitbash_precmd_secret` and `precmd_secret_honor_ps1` (PROVING) are the proof. New hops to read in their logs:
   `prompt_key_screen_asks reader_noted=true` (or `prompt_hold_screen_asks` when keys were held first), `prompt_reader_asks`,
   `hand_route reason=prompt_reader bytes_len=1` per key (length only), `prompt_reader_end why=line_editor_signal line_dirty=false`, then
