@@ -100,3 +100,42 @@ fn inactive_exchange_updates_do_not_close_summarization_dialog() {
         assert_eq!(*dialog_events.borrow(), vec![true, false]);
     });
 }
+
+/// #1962: the first character typed into an empty shell-mode input used to re-render the status
+/// bar, whose `render` reads nothing of the buffer. It is skipped only when the bar drew nothing
+/// and would draw nothing.
+#[test]
+fn an_empty_state_change_does_not_rerender_a_bar_that_draws_nothing() {
+    use super::empty_state_change_needs_render;
+    assert!(!empty_state_change_needs_render(true, true, true));
+}
+
+#[test]
+fn an_empty_state_change_rerenders_a_bar_that_drew_or_would_draw_something() {
+    use super::empty_state_change_needs_render;
+    // An agent turn started since the last render (the warping indicator is due).
+    assert!(empty_state_change_needs_render(true, false, true));
+    // The last render drew something (or its outcome is not known to be empty).
+    assert!(empty_state_change_needs_render(false, true, true));
+    assert!(empty_state_change_needs_render(false, false, true));
+    // Kill switch: every change renders.
+    assert!(empty_state_change_needs_render(true, true, false));
+}
+
+/// The state the skip rests on, on a real terminal: with no agent view, no tagged-in block and no
+/// exchange in progress, `render` is known to return an empty element.
+#[test]
+fn a_terminal_mode_status_bar_is_known_to_draw_nothing() {
+    App::test((), |mut app| async move {
+        let _tips = FeatureFlag::AgentTips.override_enabled(false);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let status_bar = terminal.read(&app, |terminal, ctx| {
+            terminal.input().as_ref(ctx).agent_status_bar().clone()
+        });
+        status_bar.read(&app, |bar, ctx| {
+            let terminal_model = bar.terminal_model.lock();
+            assert!(bar.renders_nothing(&terminal_model, ctx));
+        });
+    });
+}

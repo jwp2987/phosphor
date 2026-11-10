@@ -14,6 +14,7 @@ use crate::ai::blocklist::controller::response_stream::current_retry_wait;
 use crate::terminal::input::message_bar::common::render_terminal_message;
 use crate::terminal::input::message_bar::misroute::misroute_recovery_message;
 use crate::uri::link_policy::openable_app_content_url;
+use crate::util::key_view_skip;
 use crate::{ai::agent_tips::AITipModel, terminal::input::buffer_model::InputBufferUpdateEvent};
 use crate::{
     ai::blocklist::agent_view::{
@@ -143,6 +144,24 @@ pub struct BlocklistAIStatusBar {
     ephemeral_message_model: ModelHandle<EphemeralMessageModel>,
     agent_message_bar: ViewHandle<AgentMessageBar>,
     child_agent_status_card: ViewHandle<ChildAgentStatusCard>,
+
+    /// The last `render` was known to return an empty element ([`Self::renders_nothing`] held
+    /// when it ran) (#1962).
+    rendered_nothing: std::cell::Cell<bool>,
+}
+
+/// Whether the bar has to render again when the shell-mode input changes between empty and
+/// non-empty (#1962). `render` reads nothing of the input buffer, so this notification only ever
+/// re-rendered the bar from other state. It is skipped in the one case where that cannot show
+/// anything new: the last render drew nothing and a render now would draw nothing (terminal mode
+/// with no agent turn in progress, where the first typed character used to re-render the bar).
+/// With the skips off (`skip_enabled` false) it always renders, as before.
+fn empty_state_change_needs_render(
+    rendered_nothing: bool,
+    renders_nothing_now: bool,
+    skip_enabled: bool,
+) -> bool {
+    !skip_enabled || !(rendered_nothing && renders_nothing_now)
 }
 
 impl BlocklistAIStatusBar {
@@ -298,7 +317,20 @@ impl BlocklistAIStatusBar {
             } = event;
             if !me.input_model.as_ref(ctx).is_ai_input_enabled() && old.is_empty() != new.is_empty()
             {
-                ctx.notify();
+                // `try_lock`: this runs inside an event flush; a busy model means "unknown",
+                // which renders.
+                let app: &AppContext = ctx;
+                let renders_nothing_now = me
+                    .terminal_model
+                    .try_lock()
+                    .is_some_and(|terminal_model| me.renders_nothing(&terminal_model, app));
+                if empty_state_change_needs_render(
+                    me.rendered_nothing.get(),
+                    renders_nothing_now,
+                    key_view_skip::enabled(),
+                ) {
+                    ctx.notify();
+                }
             }
         });
         ctx.subscribe_to_model(&agent_view_controller, |_, _, _, ctx| ctx.notify());
@@ -424,7 +456,49 @@ impl BlocklistAIStatusBar {
             ephemeral_message_model,
             agent_message_bar,
             child_agent_status_card,
+            rendered_nothing: std::cell::Cell::new(false),
         }
+    }
+
+    /// Whether `render` returns an empty element, judged from the same state it reads: no agent
+    /// view, the active block not tagged in for agent input, and no warping indicator for the
+    /// latest exchange. Sufficient, not necessary: `false` only means "it may draw something".
+    fn renders_nothing(&self, terminal_model: &TerminalModel, app: &AppContext) -> bool {
+        !self.agent_view_controller.as_ref(app).is_active()
+            && !terminal_model
+                .block_list()
+                .active_block()
+                .is_agent_tagged_in()
+            && !self.latest_exchange_wants_warping_indicator(terminal_model, app)
+    }
+
+    /// Whether [`Self::render_warping_indicator_for_latest_exchange`] renders an indicator.
+    fn latest_exchange_wants_warping_indicator(
+        &self,
+        terminal_model: &TerminalModel,
+        app: &AppContext,
+    ) -> bool {
+        let Some(model) = self.active_exchange_model.as_ref() else {
+            return false;
+        };
+        let Some(conversation) = model.conversation(app) else {
+            return false;
+        };
+        let active_block = terminal_model.block_list().active_block();
+        let has_expanded_requested_command_with_no_subagent = active_block
+            .is_active_and_long_running()
+            && active_block
+                .agent_interaction_metadata()
+                .is_some_and(|metadata| {
+                    !metadata.should_hide_block() && metadata.long_running_control_state().is_none()
+                });
+        !model.request_type(app).is_passive()
+            && !has_expanded_requested_command_with_no_subagent
+            && (conversation.status().is_in_progress()
+                // A resume waiting out its backoff keeps the TransientError status.
+                || (conversation.status().is_transient_error()
+                    && current_retry_wait(conversation.id()).is_some())
+                || (active_block.is_agent_in_control() && !active_block.is_agent_blocked()))
     }
 
     pub fn should_show_summarization_cancel_dialog(&self, app: &AppContext) -> bool {
@@ -809,27 +883,12 @@ impl BlocklistAIStatusBar {
         app: &AppContext,
     ) -> Option<Box<dyn Element>> {
         let model = self.active_exchange_model.as_ref()?;
-        let conversation = model.conversation(app)?;
         let terminal_model = self.terminal_model.lock();
-        let active_block = terminal_model.block_list().active_block();
-        let has_expanded_requested_command_with_no_subagent = active_block
-            .is_active_and_long_running()
-            && active_block
-                .agent_interaction_metadata()
-                .is_some_and(|metadata| {
-                    !metadata.should_hide_block() && metadata.long_running_control_state().is_none()
-                });
-        let should_render_warping = !model.request_type(app).is_passive()
-            && !has_expanded_requested_command_with_no_subagent
-            && (conversation.status().is_in_progress()
-                // A resume waiting out its backoff keeps the TransientError status.
-                || (conversation.status().is_transient_error()
-                    && current_retry_wait(conversation.id()).is_some())
-                || (active_block.is_agent_in_control() && !active_block.is_agent_blocked()));
-
-        if !should_render_warping {
+        // One predicate for "is an indicator rendered", shared with `renders_nothing` (#1962).
+        if !self.latest_exchange_wants_warping_indicator(&terminal_model, app) {
             return None;
         }
+        let active_block = terminal_model.block_list().active_block();
 
         let is_agent_in_control = active_block.is_agent_in_control();
         let should_hide_responses = active_block.should_hide_responses();
@@ -1136,6 +1195,9 @@ impl View for BlocklistAIStatusBar {
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn warpui::Element> {
+        // #1962: remember whether this render is known to draw nothing.
+        let renders_nothing = self.renders_nothing(&self.terminal_model.lock(), app);
+        self.rendered_nothing.set(renders_nothing);
         let appearance = Appearance::as_ref(app);
         let agent_view_controller = self.agent_view_controller.as_ref(app);
         let status_element = if self

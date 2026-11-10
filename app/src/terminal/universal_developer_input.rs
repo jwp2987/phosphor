@@ -12,7 +12,7 @@ use crate::{
 use pathfinder_color::ColorU;
 use settings::Setting as _;
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use warpui::{
@@ -47,6 +47,7 @@ use crate::ai::blocklist::BlocklistAIHistoryEvent;
 use crate::ai::blocklist::prompt::PromptIconButtonTheme;
 
 use crate::terminal::model::session::SessionType;
+use crate::util::key_view_skip;
 use crate::{
     BlocklistAIHistoryModel,
     ai::{
@@ -282,6 +283,35 @@ pub struct UniversalDeveloperInputButtonBar {
 
     cached_ui_state: Rc<RefCell<CachedUIState>>,
     terminal_model: std::sync::Arc<parking_lot::FairMutex<crate::terminal::TerminalModel>>,
+    /// What the last `render` built the bar from (#1962).
+    rendered_display: Cell<Option<ButtonBarDisplay>>,
+}
+
+/// Everything the bar's own `render` reads besides the theme (a theme change re-renders every
+/// view): which children it mounts and where the row switches to the compact model selector. The
+/// child views (segmented control, buttons, selectors, prompt alert) render themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ButtonBarDisplay {
+    /// A shared-session viewer gets no file button.
+    is_viewer: bool,
+    shows_model_selector: bool,
+    shows_prompt_alert: bool,
+    /// Bits of the width under which the compact model selector is used.
+    compact_threshold_bits: u32,
+}
+
+/// Whether the bar itself has to render again when the input changes between empty and non-empty
+/// (#1962). Emptiness is read only by the segmented control's options (the "Auto" label and its
+/// colors), and that child is notified on its own; the bar's `render` does not read it. So the
+/// bar renders again only if what it was last built from differs from what it would be built from
+/// now, or is unknown (never rendered; `now` is `None` when the terminal model was busy). With
+/// the skips off (`skip_enabled` false) it always renders, as before.
+fn empty_state_change_needs_bar_render(
+    rendered: Option<ButtonBarDisplay>,
+    now: Option<ButtonBarDisplay>,
+    skip_enabled: bool,
+) -> bool {
+    !skip_enabled || rendered.is_none() || now.is_none() || rendered != now
 }
 
 #[derive(Debug, Clone)]
@@ -577,6 +607,7 @@ impl UniversalDeveloperInputButtonBar {
             prompt_alert,
             cached_ui_state,
             terminal_model,
+            rendered_display: Cell::new(None),
         };
 
         // Initialize disabled state based on current role
@@ -601,7 +632,38 @@ impl UniversalDeveloperInputButtonBar {
             return;
         }
         self.cached_ui_state.borrow_mut().is_input_empty = is_empty;
-        self.notify_and_notify_children(ctx);
+        // The segmented control's options read the empty state; the bar's own `render` does not.
+        self.segmented_control.update(ctx, |_, ctx| ctx.notify());
+        // `try_lock`: this runs inside an event flush; a busy model means "unknown", which renders.
+        let is_viewer = self
+            .terminal_model
+            .try_lock()
+            .map(|model| model.shared_session_status().is_viewer());
+        let app: &AppContext = ctx;
+        let now = is_viewer.map(|is_viewer| self.display(is_viewer, app));
+        if empty_state_change_needs_bar_render(
+            self.rendered_display.get(),
+            now,
+            key_view_skip::enabled(),
+        ) {
+            ctx.notify();
+        }
+    }
+
+    /// What `render` builds the bar from; see [`ButtonBarDisplay`].
+    fn display(&self, is_viewer: bool, app: &AppContext) -> ButtonBarDisplay {
+        ButtonBarDisplay {
+            is_viewer,
+            shows_model_selector: FeatureFlag::ProfilesDesignRevamp.is_enabled()
+                || *SessionSettings::as_ref(app).show_model_selectors_in_prompt,
+            shows_prompt_alert: !self.prompt_alert.as_ref(app).is_no_alert(),
+            compact_threshold_bits: calculate_profile_model_selector_threshold(
+                self.terminal_view_id,
+                Appearance::as_ref(app),
+                app,
+            )
+            .to_bits(),
+        }
     }
 
     fn handle_profile_model_selector_event(
@@ -764,6 +826,14 @@ impl View for UniversalDeveloperInputButtonBar {
     fn render(&self, app: &AppContext) -> Box<dyn warpui::Element> {
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
+        // #1962: remember what this render is built from (the same reads as below).
+        let is_viewer = self
+            .terminal_model
+            .lock()
+            .shared_session_status()
+            .is_viewer();
+        self.rendered_display
+            .set(Some(self.display(is_viewer, app)));
         #[cfg(feature = "voice_input")]
         let is_voice_input_enabled = AISettings::as_ref(app).is_voice_input_enabled(app);
 
@@ -1164,3 +1234,7 @@ fn tooltip_config(
         border_color: theme.outline().into_solid(),
     }
 }
+
+#[cfg(test)]
+#[path = "universal_developer_input_tests.rs"]
+mod tests;
