@@ -2015,6 +2015,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
 
       # Unset the PS1, if we are using the Warp prompt.
       if [[ "${WARP_HONOR_PS1:-}" != "1" ]]; then
+        # Phosphor (#1907): a user who EXPORTED PS1 (`export PS1=...`, or `set -a`) would hand every
+        # child shell an exported EMPTY PS1, and dash / sh / ash, which read PS1 from the
+        # environment, would then draw no prompt at all. Blank only bash's own copy: un-export it
+        # first, so a child gets no PS1 (its own default) instead of an empty one. The
+        # warp_change_prompt_modes_to_ps1 switch below exports it again. Builtins only (compgen
+        # with -X keeps just the name PS1; its status says whether PS1 is exported).
+        if compgen -A export -X '!PS1' >/dev/null 2>&1; then
+          __warp_ps1_was_exported=1
+          export -n PS1
+        fi
         PS1=""
       # Otherwise, if we are using the PS1, we use the normal prompt markers.
       else
@@ -2065,6 +2075,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Zsh/fish.
     function __warp_change_prompt_modes_to_ps1_impl() {
       PS1="${SAVED_PS1:-}"
+      # #1907: undo the un-export done when the Warp prompt blanked PS1.
+      if [[ -n ${__warp_ps1_was_exported-} ]]; then
+        export PS1
+        unset __warp_ps1_was_exported
+      fi
       WARP_HONOR_PS1="1"
 
       warp_update_prompt_vars

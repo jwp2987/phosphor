@@ -74,3 +74,28 @@ UI item is judged whenever an app log exists. The byte check, the Windows contro
 
 **Risk.** Return now races the paste's tail on slow platforms: a real ordering bug shows as a byte mismatch (correct), but a platform that merely
 drains slowly could exceed 1500 ms on a first run; the numbers are proposals for that reason.
+
+## 4. #1907 child shells inherit an empty PS1
+
+**Evidence (reproduced).** `bash_body.sh` `__warp_update_prompt_vars_impl` ends with `PS1=""` whenever `WARP_HONOR_PS1 != 1` (the app exports
+`WARP_HONOR_PS1=0`, `local_tty/unix.rs:481-483`). PS1 is not exported by default, so only a user who `export`s it or runs `set -a` leaks the
+blank. `script/test_child_ps1` (new, real bootstrap in a pty, a child's `printenv PS1`) showed `empty` for both before any change, `unset` after.
+
+**Options.**
+- (B) Restore the user's PS1 in preexec for the command's lifetime and re-blank at precmd. Closest to a plain terminal (the child gets the user's own
+  prompt) but REJECTED: the generator-command precmd (`_WARP_GENERATOR_COMMAND`, ~line 650) returns before `update_prompt_vars`, so a preexec-restored PS1
+  would stay visible after an in-band command; preexec is the performance-sensitive path (fork-free budget); and the coupling to every early return in
+  precmd cannot be proven by reading.
+- (A) CHOSEN: when blanking, un-export PS1 if it was exported (`compgen -A export -X '!PS1'` is a builtin whose status says so), remember it in
+  `__warp_ps1_was_exported`, and have `warp_change_prompt_modes_to_ps1` export it again. A child then finds no PS1 (dash/ash/busybox use their own default
+  `$ `), not an empty one. Nothing runs in preexec; the blank path already ran once per prompt.
+
+**Not achieved.** The child does not get the user's own PS1 (a plain terminal would). That needs (B). A script that tests `[ -z "$PS1" ]` sees the same
+answer as before; only `${PS1+x}` distinguishes unset from empty.
+
+**Risk.** bash 3.2 (macOS /bin/bash): `compgen -A export -X` and `export -n` exist there (not run here; only bash 5.3 was available). zsh does not blank PS1 (it wraps
+`PROMPT`), so it is unaffected. Remote bash sessions use the same body, so they get the same fix.
+
+## 5. #1938 comment only
+
+`view.rs` `clear_line_editor_and_write_to_pty` now carries the D7 comment (accepted loss, pointer to `idle_reader_untouched`). No code change.

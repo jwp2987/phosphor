@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""A command started from a Phosphor bash must not inherit an EMPTY exported PS1 (#1907).
+
+The bash bootstrap blanks PS1 after every prompt when the app draws the prompt (WARP_HONOR_PS1=0) so
+bash prints nothing of its own. If the user EXPORTED PS1 (`export PS1=...`, or `set -a` while their rc
+set it), the blank value is exported too and every child shell started from the prompt (dash / sh /
+busybox ash read PS1 from the environment) shows an empty prompt. The fix unexports PS1 when the
+bootstrap blanks it, and re-exports it when the user's PS1 comes back (prompt-mode switch).
+
+Runs the REAL assembled bash bootstrap in a pty (like script/test_line_editor_markers) and asks a
+child `sh` what PS1 it sees:
+
+  1. exported PS1, Phosphor prompt   child sees PS1 UNSET (not an empty string)          [#1907]
+  2. `set -a` PS1, Phosphor prompt   the same
+  3. not exported, Phosphor prompt   child sees PS1 unset (unchanged)
+  4. exported PS1, user's prompt     child sees the (marker-wrapped) PS1, non-empty (unchanged)
+  5. exported PS1, Phosphor prompt, then warp_change_prompt_modes_to_ps1: PS1 is exported again and
+     the child sees it
+  6. the shell's own PS1 is still blank at the prompt (bash prints nothing of its own)
+
+USAGE   script/test_child_ps1 [--bash PATH] [--sh PATH]
+Exit 0 when every check passes, 1 otherwise.
+"""
+import os
+import pty
+import re
+import select
+import shutil
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS = os.path.join(ROOT, "app", "assets")
+BOOT = os.path.join(ASSETS, "bundled", "bootstrap")
+BASH = shutil.which("bash")
+SH = shutil.which("sh")
+args = sys.argv[1:]
+while args:
+    if args[0] == "--bash" and len(args) >= 2:
+        BASH, args = args[1], args[2:]
+    elif args[0] == "--sh" and len(args) >= 2:
+        SH, args = args[1], args[2:]
+    else:
+        sys.exit(__doc__)
+
+DCS_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)(?:\x9c|\xc2\x9c)")
+failures = []
+
+
+def check(cond, what, detail=""):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+        if detail:
+            print("       " + detail.replace("\n", "\n       "))
+
+
+def read(name):
+    with open(os.path.join(BOOT, name)) as f:
+        return f.read()
+
+
+def assemble(text):
+    """Mirror bootstrap.rs: inline #include, trim, drop blank and comment lines."""
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("#include "):
+            with open(os.path.join(ASSETS, line[len("#include "):])) as f:
+                out.extend(assemble(f.read().replace("@@USING_CON_PTY_BOOLEAN@@", "false")).split("\n"))
+            continue
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+class Bash:
+    def __init__(self, home, honor, user_rc):
+        env = {"HOME": home, "USER": os.environ.get("USER", "user"), "PATH": "/usr/local/bin:/usr/bin:/bin",
+               "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1", "WARP_HONOR_PS1": honor,
+               "WARP_PROMPT_NODE_VERSION_ENABLED": "0", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        init = read("bash_init_shell.sh").replace("@@WARP_SESSION_ID@@", "4242").replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+        rc = os.path.join(home, "rc")
+        with open(rc, "w") as f:
+            f.write(user_rc + "\n" + init + "\n" + assemble(read("bash.sh")) + "\n")
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(home)
+            os.execve(BASH, [BASH, "--noprofile", "--rcfile", rc, "-i"], env)
+        self.buf = b""
+        # Bootstrapped hook (hex in a DCS), then the first LineEditorReading marker: bash is about to read a line
+        self.broken = not self.pump(40, lambda: self.bootstrapped())
+        if not self.broken:
+            self.pump(8, lambda: b"LineEditorReading" in self.buf)
+        self.pump(1.0)
+
+    def bootstrapped(self):
+        for m in DCS_RE.finditer(self.buf):
+            try:
+                if b"Bootstrapped" in bytes.fromhex(m.group(1).decode()):
+                    return True
+            except ValueError:
+                pass
+        return False
+
+    def pump(self, timeout, until=None):
+        end = time.time() + timeout
+        while time.time() < end:
+            if until is not None and until():
+                return True
+            r, _, _ = select.select([self.fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                return until() if until else False
+            if not data:
+                return until() if until else False
+            self.buf += data
+        return until() if until else False
+
+    def ask(self, cmd, tag):
+        """run `cmd` (it must print `<tag>=[...]`), return what is between the brackets (None: no answer)"""
+        os.write(self.fd, (cmd + "\r").encode())
+        rx = re.compile(rb"\r\n" + tag.encode() + rb"=\[(user|empty|other|unset|done)?\]\r\n")
+        mark = len(self.buf)
+        self.pump(15, lambda: rx.search(self.buf, mark) is not None)
+        m = rx.search(self.buf, mark)
+        self.pump(0.5)
+        return m.group(1).decode(errors="replace") if m else None
+
+    def close(self):
+        try:
+            os.kill(self.pid, 9)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+
+def child_ps1(sh, tag):
+    # what a child process finds in its environment: `printenv` fails when the variable is not exported at all, which an empty value is not.
+    # (dash gives itself a default PS1 when the environment has none, so asking `sh` itself could not tell unset from default.)
+    return sh.ask("v=$(printenv PS1) && { case $v in *'U> '*) r=user;; '') r=empty;; *) r=other;; esac; } || r=unset; echo; echo %s=[$r]" % tag, tag)
+
+
+def run(label, honor, user_rc, steps):
+    print("%s (%s)" % (label, BASH))
+    home = os.path.realpath(tempfile.mkdtemp(prefix="phosphor-1907-"))
+    sh = None
+    try:
+        sh = Bash(home, honor, user_rc)
+        check(not sh.broken, "%s: bootstraps" % label)
+        if not sh.broken:
+            steps(sh)
+    finally:
+        if sh:
+            sh.close()
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def case1(sh):
+    got = child_ps1(sh, "CH1")
+    check(got == "unset", "exported PS1, Phosphor prompt: the child sees PS1 unset, not blank (got %r)" % got)
+    check(sh.ask("case ${PS1-U} in '') r=empty;; *) r=other;; esac; echo; echo OWN1=[$r]", "OWN1") == "empty", "exported PS1, Phosphor prompt: bash's own PS1 is blank at the prompt")
+
+
+def case2(sh):
+    got = child_ps1(sh, "CH2")
+    check(got == "unset", "`set -a` PS1, Phosphor prompt: the child sees PS1 unset, not blank (got %r)" % got)
+
+
+def case3(sh):
+    got = child_ps1(sh, "CH3")
+    check(got == "unset", "not exported, Phosphor prompt: the child sees PS1 unset (got %r)" % got)
+    check(sh.ask("case ${PS1-U} in '') r=empty;; *) r=other;; esac; echo; echo OWN3=[$r]", "OWN3") == "empty", "not exported, Phosphor prompt: bash's own PS1 is blank at the prompt")
+
+
+def case4(sh):
+    got = child_ps1(sh, "CH4")
+    check(got in ("user", "other"), "exported PS1, user's prompt: the child still sees a non-empty PS1 (got %r)" % got)
+
+
+def case5(sh):
+    check(child_ps1(sh, "CH5A") == "unset", "before the switch: the child sees PS1 unset")
+    sh.ask("warp_change_prompt_modes_to_ps1; echo; echo SW5=[done]", "SW5")
+    sh.pump(1.0)
+    got = child_ps1(sh, "CH5B")
+    check(got in ("user", "other"), "after warp_change_prompt_modes_to_ps1 the PS1 is exported again, non-empty (child sees %r)" % got)
+
+
+run("exported PS1 / Phosphor prompt", "0", "export PS1='U> '", case1)
+run("set -a PS1 / Phosphor prompt", "0", "set -a; PS1='U> '; set +a", case2)
+run("plain PS1 / Phosphor prompt", "0", "PS1='U> '", case3)
+run("exported PS1 / user's prompt", "1", "export PS1='U> '", case4)
+run("exported PS1 / switch to the user's prompt", "0", "export PS1='U> '", case5)
+print("\n%s" % ("FAILED: %d" % len(failures) if failures else "all checks passed"))
+sys.exit(1 if failures else 0)
