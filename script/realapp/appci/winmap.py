@@ -76,6 +76,7 @@ GITBASH_ONLY = {
     "ssh_connect_typing_wrapper": "bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, #1884); skips itself without it",
     "ssh_nested_typeahead_wrapper": "bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, #1884); skips itself without it",
     "gitbash_long_osc_reaches_app": "an msys program printing a long escape sequence to the pane's console (#2007): bash syntax and the msys console layer, the Git Bash pane",
+    "ssh_gitbash_bootstrap_in_command": "the one-connection managed ssh sends the bootstrap in the remote command (#2051): only the Git Bash pane has the wrapper",
     "ssh_gitbash_managed": "the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper",
     "ssh_gitbash_typeahead_managed": "keys typed during a one-connection managed ssh login stay managed (#1959): only the Git Bash pane has the wrapper",
     "ssh_gitbash_kill_switch": "the default and PHOSPHOR_MSYS_MANAGED_SSH=0 in the bash pane are plain ssh (#1933, #2051): only the Git Bash pane has the wrapper",

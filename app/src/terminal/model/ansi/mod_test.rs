@@ -650,6 +650,7 @@ fn parse_dcs_ssh() {
                 external_control_master: false,
                 raw_bootstrap: false,
                 single_connection: false,
+                bootstrap_in_command: false,
             }
         ),
         _ => panic!("incorrect dcs value"),
@@ -684,6 +685,7 @@ fn parse_dcs_ssh_with_external_control_master() {
                 external_control_master: true,
                 raw_bootstrap: false,
                 single_connection: false,
+                bootstrap_in_command: false,
             }
         ),
         _ => panic!("incorrect dcs value"),
@@ -2148,6 +2150,33 @@ fn parse_dcs_ssh_single_connection() {
             assert!(value.raw_bootstrap);
             assert_eq!(value.socket_path, PathBuf::new());
         }
+        other => panic!("unexpected hooks {other:?}"),
+    }
+}
+
+/// #2051: the SSH hook of a one-connection session whose remote command carried the bootstrap
+/// says `bootstrap_in_command`; a hook without the field (every other wrapper path, and older
+/// scripts) reads as `false`.
+#[test]
+fn parse_dcs_ssh_bootstrap_in_command() {
+    let bytes = hex_encoded_dcs_string(
+        r#"{"hook": "SSH", "value": {"socket_path": "", "remote_shell": "bash", "session_id": 1, "remote_session_id": 2, "external_control_master": false, "single_connection": true, "raw_bootstrap": false, "bootstrap_in_command": true}}"#,
+    );
+    let (_, handler) = parse_bytes(&bytes);
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::SSH { value }] => {
+            assert!(value.bootstrap_in_command);
+            assert!(value.single_connection);
+            assert!(!value.raw_bootstrap);
+        }
+        other => panic!("unexpected hooks {other:?}"),
+    }
+    let bytes = hex_encoded_dcs_string(
+        r#"{"hook": "SSH", "value": {"socket_path": "", "remote_shell": "bash", "session_id": 1, "remote_session_id": 2, "single_connection": true}}"#,
+    );
+    let (_, handler) = parse_bytes(&bytes);
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::SSH { value }] => assert!(!value.bootstrap_in_command),
         other => panic!("unexpected hooks {other:?}"),
     }
 }

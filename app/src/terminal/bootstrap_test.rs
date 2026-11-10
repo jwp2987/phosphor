@@ -4649,6 +4649,12 @@ fn test_zsh_env_script_hex_constants_decode_to_the_script() {
 /// every ssh while the switch is not 1: unset (the default), 0, or any other value; then no
 /// config is read at all. (The #1551 `msys2` case of the test above still pins "no terminal:
 /// plain ssh, no config read".)
+///
+/// #2051: this test pins the remote command of the TYPED delivery (the app writes the bootstrap
+/// after `InitShell`, #1933), which the wrapper only builds under
+/// `PHOSPHOR_MSYS_SSH_BOOTSTRAP=typed` now; the default delivery (the bootstrap inside the remote
+/// command) is `msys_ssh_wrapper_sends_the_bootstrap_in_the_remote_command`. Everything decided
+/// before the delivery (the switch, the banner, a user LocalCommand) is the same for both.
 #[test]
 #[cfg(unix)]
 fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
@@ -4846,6 +4852,7 @@ printf '%s\n' "$BANNER" >&2
             .env("G_EXTRA", case.g_extra)
             .env_remove("PHOSPHOR_MSYS_MANAGED_SSH")
             .env_remove("PHOSPHOR_MSYS_SSH_TYPEAHEAD")
+            .env("PHOSPHOR_MSYS_SSH_BOOTSTRAP", "typed")
             .stdin(std::process::Stdio::null());
         if !case.switch.is_empty() {
             command.env("PHOSPHOR_MSYS_MANAGED_SSH", case.switch);
@@ -4988,6 +4995,470 @@ printf '%s\n' "$BANNER" >&2
         assert_eq!(env.next(), Some(""), "{name}: {env_line:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
+}
+
+/// #2051: the one-connection managed ssh of Git Bash sends the remote bash its bootstrap INSIDE
+/// the remote command (one argument of ssh, never typed: typed, 62 KB take 45 to 60 s through msys
+/// `ssh.exe`'s console). The wrapper is run in a real bash with stub `ssh` / `ssh-keyscan`, then
+/// the remote command it built is run in a real bash with a stub in place of the remote `bash`
+/// and of the login shells.
+///
+/// The command: the mode-byte read first (#1933); then a login shell that is not bash prints the
+/// `PlainSSHFallback` hook and becomes a plain login (owner 2026-11-10: bash logins only); for
+/// bash the SSH hook says `bootstrap_in_command`, and the rcfile is the InitShell snippet
+/// followed by the bootstrap text, which is the shell's own bootstrap lines without the
+/// local-only block, byte for byte, as a here-document on fd 9 that the new bash does not
+/// inherit. Guards, each the user's plain ssh with the `PlainSSHFallback` verdict before any
+/// connecting ssh starts: no bootstrap lines, lines that are not provably the bootstrap (two
+/// begin markers, no here-document of `bash.sh`), an `ssh` that cannot be started with the
+/// command as an argument (measured with `ssh -V <command>`, once per shell), a command over
+/// 100,000 bytes.
+#[test]
+#[cfg(unix)]
+fn msys_ssh_wrapper_sends_the_bootstrap_in_the_remote_command() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::process::{Command, Stdio};
+
+    if Command::new("bash").arg("--version").output().is_err() {
+        eprintln!("skipping: bash not installed");
+        return;
+    }
+    let source = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    let from = source.find("        function warp_ssh_helper() {").unwrap();
+    let to = from
+        + source[from..]
+            .find("\n        function __warp_ssh_impl")
+            .unwrap();
+    let function = &source[from..to];
+    let hex_from = source.find("    warp_hex_encode_string () {").unwrap();
+    let hex_to = hex_from
+        + source[hex_from..]
+            .find("\n    # Phosphor (fork-free hooks)")
+            .unwrap();
+    let hex_helpers = &source[hex_from..hex_to];
+
+    // The lines of a bootstrap file as the shell keeps them when it is sourced, and the text a
+    // remote must get: everything but the local-only block. Quotes, `$`, a `)` and a line that
+    // looks like a here-document end travel verbatim.
+    const LINES: &str = r#"__warp_ssh_bs_lines=(' echo outer-1' " builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :" ' body-a $x "q" '\''s'\''' ' : __warp_local_only_begin' ' local-only' ' : __warp_local_only_end' ' body-b)' 'EOM' ' eval done')"#;
+    const TEXT: &str = " echo outer-1\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body-a $x \"q\" 's'\n body-b)\nEOM\n eval done";
+
+    struct Case {
+        name: &'static str,
+        /// Shell text run before the wrapper (defines the kept bootstrap lines, or not).
+        setup: String,
+        /// The exit status of the stub's `ssh -V <command>`.
+        v_status: &'static str,
+        in_command: bool,
+        /// How often `ssh -V` may have been started.
+        v_calls: usize,
+    }
+    let cases = [
+        Case {
+            name: "in-command",
+            setup: LINES.to_owned(),
+            v_status: "0",
+            in_command: true,
+            v_calls: 1,
+        },
+        Case {
+            name: "no-bootstrap-lines",
+            setup: String::new(),
+            v_status: "0",
+            in_command: false,
+            v_calls: 0,
+        },
+        Case {
+            name: "two-begin-markers",
+            setup: format!("{LINES}; __warp_ssh_bs_lines+=(' : __warp_local_only_begin')"),
+            v_status: "0",
+            in_command: false,
+            v_calls: 0,
+        },
+        Case {
+            name: "not-the-bootstrap",
+            setup: "__warp_ssh_bs_lines=(' a' ' : __warp_local_only_begin' ' : __warp_local_only_end' ' b')"
+                .to_owned(),
+            v_status: "0",
+            in_command: false,
+            v_calls: 0,
+        },
+        Case {
+            name: "ssh-cannot-take-the-argument",
+            setup: LINES.to_owned(),
+            v_status: "126",
+            in_command: false,
+            v_calls: 1,
+        },
+        Case {
+            name: "over-100000-bytes",
+            setup: format!(
+                "{LINES}; printf -v __big '%99000s' ''; __warp_ssh_bs_lines+=(\"$__big\")"
+            ),
+            v_status: "0",
+            in_command: false,
+            v_calls: 0,
+        },
+    ];
+    for (index, case) in cases.iter().enumerate() {
+        let name = case.name;
+        let dir = std::env::temp_dir().join(format!("p2051-{index}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("socks")).unwrap();
+        let ssh = dir.join("ssh");
+        std::fs::write(
+            &ssh,
+            r#"#!/bin/sh
+printf 'CALL\n' >> "$OUT"
+for a in "$@"; do printf '%s\n' "$a" >> "$OUT"; done
+case "$1" in
+  -G) printf 'user u\nhostname h\nport 22\n'; exit 0;;
+  -V) exit "$V_STATUS";;
+esac
+exit 0
+"#,
+        )
+        .unwrap();
+        let keyscan = dir.join("ssh-keyscan");
+        std::fs::write(
+            &keyscan,
+            "#!/bin/sh\nprintf 'KEYSCAN\\n' >> \"$LOG\"\nprintf '# h:22 SSH-2.0-OpenSSH_9.6\\n' >&2\n",
+        )
+        .unwrap();
+        for stub in [&ssh, &keyscan] {
+            std::fs::set_permissions(stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let script = format!(
+            "OSC_START=OSC; DCS_JSON_MARKER=d; OSC_PARAM_SEPARATOR=';'; OSC_END=END; \
+             DCS_START=DCS; DCS_END=DEND; WARP_SSH_REUSE_CONTROL_MASTER=0; \
+             warp_send_json_message(){{ printf 'HOOK %s\\n' \"$1\" >> \"$LOG\"; }}; \
+             SSH_SOCKET_DIR='{}'; WARP_SESSION_ID=77; WARP_HONOR_PS1=1; WARP_IN_MSYS2=true; \
+             WARP_USING_WINDOWS_CON_PTY=true\n{hex_helpers}\n{function}\n\
+             warp_ssh_msys_has_terminal(){{ return 0; }}\n{}\n\
+             warp_ssh_helper -p 22 user@host || exit $?\n\
+             warp_ssh_helper -p 22 user@host\nexit $?",
+            dir.join("socks").display(),
+            case.setup
+        );
+        let out_file = dir.join("out");
+        let log_file = dir.join("log");
+        let status = Command::new("bash")
+            .args(["-c", &script])
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    dir.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("HOME", &dir)
+            .env("OUT", &out_file)
+            .env("LOG", &log_file)
+            .env("V_STATUS", case.v_status)
+            .env("PHOSPHOR_MSYS_MANAGED_SSH", "1")
+            .env_remove("PHOSPHOR_MSYS_SSH_TYPEAHEAD")
+            .env_remove("PHOSPHOR_MSYS_SSH_BOOTSTRAP")
+            .stdin(Stdio::null())
+            .status()
+            .unwrap();
+        let recorded = std::fs::read_to_string(&out_file).unwrap_or_default();
+        let log = std::fs::read_to_string(&log_file).unwrap_or_default();
+        assert!(
+            status.success(),
+            "{name}: helper failed: {recorded:?} {log:?}"
+        );
+        // The wrapper ran TWICE in the one shell: two `ssh -G`, two connecting ssh, and the
+        // question "can ssh take this argument" asked at most once (its answer is kept).
+        let all_calls: Vec<&str> = recorded
+            .split("CALL\n")
+            .filter(|call| !call.is_empty())
+            .collect();
+        let count = |prefix: &str| all_calls.iter().filter(|c| c.starts_with(prefix)).count();
+        let connecting: Vec<&str> = all_calls
+            .iter()
+            .copied()
+            .filter(|call| !call.starts_with("-G\n") && !call.starts_with("-V\n"))
+            .collect();
+        assert_eq!(count("-G\n"), 2, "{name}: {recorded:?}");
+        assert_eq!(connecting.len(), 2, "{name}: {recorded:?}");
+        assert_eq!(
+            count("-V\n"),
+            case.v_calls,
+            "{name}: ssh -V starts: {recorded:?}"
+        );
+        assert_eq!(
+            log.matches("KEYSCAN\n").count(),
+            1,
+            "{name}: the banner is asked first and its answer is cached: {log:?}"
+        );
+        let hooks: Vec<&str> = log
+            .lines()
+            .filter_map(|line| line.strip_prefix("HOOK "))
+            .collect();
+        assert_eq!(hooks.len(), 2, "{name}: {hooks:?}");
+        if !case.in_command {
+            for (call, hook) in connecting.iter().zip(&hooks) {
+                assert_eq!(
+                    *call, "-p\n22\nuser@host\n",
+                    "{name}: the user's plain ssh, untouched: {recorded:?}"
+                );
+                assert!(
+                    hook.contains("\"hook\": \"PlainSSHFallback\"")
+                        && hook.contains("\"session_id\": 77"),
+                    "{name}: the plain verdict: {hooks:?}"
+                );
+            }
+            std::fs::remove_dir_all(&dir).ok();
+            continue;
+        }
+        for hook in &hooks {
+            assert!(
+                hook.contains("\"hook\": \"SSHWrapperSync\"")
+                    && hook.ends_with("\"stage\": \"auth\"}}"),
+                "{name}: {hook:?}"
+            );
+        }
+        // The argument `ssh -V` was started with is the command, with room to spare.
+        let probed = all_calls
+            .iter()
+            .find(|call| call.starts_with("-V\n"))
+            .unwrap();
+        let call = connecting[0];
+        assert!(
+            call.contains("LocalCommand=eval \"$PHOSPHOR_SSH_AUTH_DONE\"\n")
+                && call.contains("-t\n-p\n22\nuser@host\n"),
+            "{name}: the one ssh of #1933: {call:?}"
+        );
+        let remote = &call[call.find("user@host\n").unwrap() + "user@host\n".len()..];
+        let remote = remote.strip_suffix('\n').unwrap();
+        assert!(
+            probed["-V\n".len()..].starts_with(remote) && probed.len() >= remote.len() + 256,
+            "{name}: ssh -V was given the command itself"
+        );
+
+        // The hooks in the command are hex-encoded here, nothing in them is the remote's.
+        let decoded: Vec<String> = remote
+            .split('\'')
+            .filter(|part| part.len() >= 60 && part.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(|part| String::from_utf8(hex::decode(part).unwrap()).unwrap())
+            .collect();
+        let plain_hook = "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": 77}}";
+        assert_eq!(decoded.len(), 3, "{name}: {decoded:?}");
+        assert_eq!(decoded[0], plain_hook, "{name}");
+        assert_eq!(decoded[2], plain_hook, "{name}");
+        let ssh_hook = &decoded[1];
+        let remote_id = ssh_hook
+            .split("\"remote_session_id\": ")
+            .nth(1)
+            .and_then(|rest| rest.split(',').next())
+            .unwrap();
+        assert!(
+            !remote_id.is_empty()
+                && remote_id != "0"
+                && remote_id.bytes().all(|b| b.is_ascii_digit()),
+            "{name}: {ssh_hook:?}"
+        );
+        assert_eq!(
+            *ssh_hook,
+            format!(
+                "{{\"hook\": \"SSH\", \"value\": {{\"socket_path\": \"\", \"remote_shell\": \
+                 \"bash\", \"session_id\": 77, \"remote_session_id\": {remote_id}, \
+                 \"external_control_master\": false, \"single_connection\": true, \
+                 \"raw_bootstrap\": false, \"bootstrap_in_command\": true}}}}"
+            ),
+            "{name}"
+        );
+        let parsed: crate::terminal::model::ansi::SSHValue =
+            serde_json::from_str::<serde_json::Value>(ssh_hook)
+                .ok()
+                .and_then(|hook| serde_json::from_value(hook["value"].clone()).ok())
+                .expect("the app parses the hook");
+        assert!(
+            parsed.bootstrap_in_command && parsed.single_connection && !parsed.raw_bootstrap,
+            "{name}: {parsed:?}"
+        );
+
+        // Order: the mode byte, the login-shell check, the environment, then the group whose
+        // fd 9 is the bootstrap, and the plain login behind it.
+        let delimiter = format!("__PHOSPHOR_BOOTSTRAP_{remote_id}__");
+        let at = |needle: &str| {
+            remote
+                .find(needle)
+                .unwrap_or_else(|| panic!("{name}: {needle:?} not in the command: {remote:?}"))
+        };
+        assert!(remote.starts_with("warp_m=\n"), "{name}: {remote:?}");
+        let order = [
+            at("if test \"$warp_m\" != M; then"),
+            at("if test \"${SHELL##*/}\" != bash; then"),
+            at("export TERM_PROGRAM='WarpTerminal'"),
+            at("{\nprintf 'OSCd;%sEND' '"),
+            at("exec -a bash bash --rcfile <(echo '"),
+            at("'; command -p cat <&9) 9<&-\n"),
+            at(&format!("}} 9<<'{delimiter}'\n{TEXT}\n{delimiter}\n")),
+        ];
+        assert!(
+            order.windows(2).all(|pair| pair[0] < pair[1]),
+            "{name}: order {order:?}"
+        );
+        assert!(
+            remote.ends_with("exec \"$SHELL\" -l\n") && !remote.contains("\ncase "),
+            "{name}: ends in the plain login, and has no branch for another shell"
+        );
+        assert_eq!(
+            remote.matches(delimiter.as_str()).count(),
+            2,
+            "{name}: the delimiter opens and closes the here-document, nothing else"
+        );
+        // The second ssh of the shell gets the same text under another delimiter.
+        let second = connecting[1];
+        assert!(
+            second.contains(&format!("'\n{TEXT}\n__PHOSPHOR_BOOTSTRAP_"))
+                && !second.contains(&delimiter),
+            "{name}: the kept text is sent again, the id is minted per ssh"
+        );
+
+        // Run the command as the server would (`$SHELL -c <command>`), with stubs for the
+        // remote `bash` (prints its arguments, whether fd 9 leaked, and its rcfile) and for the
+        // login shells.
+        let far = dir.join("far");
+        std::fs::create_dir_all(&far).unwrap();
+        std::fs::write(
+            far.join("bash"),
+            "#!/bin/sh\nprintf 'ARGS %s %s\\n' \"$1\" \"$#\"\n\
+             if [ -e /dev/fd/9 ]; then echo FD9-OPEN; fi\n\
+             echo RCFILE-BEGIN\ncat \"$2\"\necho RCFILE-END\n",
+        )
+        .unwrap();
+        for login in ["zsh", "loginbash"] {
+            std::fs::write(
+                far.join(login),
+                "#!/bin/sh\nprintf 'LOGIN %s %s\\n' \"${0##*/}\" \"$*\"\n",
+            )
+            .unwrap();
+        }
+        for stub in ["bash", "zsh", "loginbash"] {
+            std::fs::set_permissions(far.join(stub), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let real_bash = String::from_utf8(
+            Command::new("bash")
+                .args(["-c", "command -v bash"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let real_bash = real_bash.trim();
+        let run_far = |shell: &str, mode: &[u8]| -> String {
+            use std::io::Write as _;
+            let mut child = Command::new(real_bash)
+                .args(["-c", remote])
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        far.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .env("HOME", &far)
+                .env("SHELL", shell)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(mode).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: {shell} {mode:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        let hex_of = |text: &str| hex::encode(text);
+        let plain_print = format!("OSCd;{}END", hex_of(plain_hook));
+        let ssh_print = format!("OSCd;{}END", hex_of(ssh_hook));
+
+        // A bash login, mode byte M: the SSH hook, then bash with the rcfile.
+        let managed = run_far("/usr/bin/bash", b"M");
+        let rc_from = managed.find("RCFILE-BEGIN\n").unwrap() + "RCFILE-BEGIN\n".len();
+        let rc_to = managed.find("RCFILE-END\n").unwrap();
+        let rcfile = &managed[rc_from..rc_to];
+        assert!(
+            managed.starts_with(&format!("{ssh_print}ARGS --rcfile 2\n")),
+            "{name}: the SSH hook, then the one bash: {managed:?}"
+        );
+        assert!(
+            !managed.contains("FD9-OPEN")
+                && !managed.contains("PlainSSHFallback")
+                && !managed.contains(&plain_print),
+            "{name}: fd 9 is closed for the shell and nothing says plain: {managed:?}"
+        );
+        assert!(
+            rcfile.trim_start().starts_with("command -p stty raw\n")
+                && rcfile.contains("\\\"hook\\\": \\\"InitShell\\\"")
+                && rcfile.contains(&format!("WARP_SESSION_ID={remote_id}\n")),
+            "{name}: the rcfile opens with the InitShell snippet: {rcfile:?}"
+        );
+        let after_snippet = rcfile.find("\"$_msg\"\n").unwrap() + "\"$_msg\"\n".len();
+        assert_eq!(
+            &rcfile[after_snippet..],
+            format!("{TEXT}\n"),
+            "{name}: the bootstrap is the rest of the rcfile, byte for byte"
+        );
+
+        // A login shell that is not bash: the plain verdict and a login shell, nothing else.
+        assert_eq!(
+            run_far(far.join("zsh").to_str().unwrap(), b"M"),
+            format!("{plain_print}LOGIN zsh -l\n"),
+            "{name}: zsh login"
+        );
+        // Mode byte P, or none at all (#1933): a plain login without a word, whatever the shell.
+        assert_eq!(
+            run_far(far.join("loginbash").to_str().unwrap(), b"P"),
+            "LOGIN loginbash -l\n",
+            "{name}: mode byte P"
+        );
+        assert_eq!(
+            run_far(far.join("zsh").to_str().unwrap(), b""),
+            "LOGIN zsh -l\n",
+            "{name}: no mode byte"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// #2051: the app writes no bootstrap for an ssh session whose remote command carried it
+/// (`bootstrap_in_command` in the SSH hook); every other session is written its bootstrap as
+/// before, the one-connection session with the typed delivery included.
+#[test]
+fn the_app_writes_no_bootstrap_for_a_session_that_got_it_in_the_remote_command() {
+    let in_command = SessionInfo::new_for_test()
+        .with_single_connection_ssh()
+        .with_bootstrap_in_command(true);
+    assert!(in_command.is_legacy_ssh_session.bootstrap_in_command());
+    assert!(!app_writes_bootstrap(&in_command));
+
+    let typed = SessionInfo::new_for_test().with_single_connection_ssh();
+    assert!(!typed.is_legacy_ssh_session.bootstrap_in_command());
+    assert!(app_writes_bootstrap(&typed));
+    assert!(app_writes_bootstrap(
+        &SessionInfo::new_for_test()
+            .with_single_connection_ssh()
+            .with_bootstrap_in_command(false)
+    ));
+    assert!(app_writes_bootstrap(
+        &SessionInfo::new_for_test()
+            .with_ssh_socket_path(std::path::PathBuf::from("/tmp/sock"))
+            .with_raw_bootstrap(true)
+    ));
+    // Not ssh at all: the flag has nowhere to live.
+    let local = SessionInfo::new_for_test().with_bootstrap_in_command(true);
+    assert!(!local.is_legacy_ssh_session.bootstrap_in_command());
+    assert!(app_writes_bootstrap(&local));
 }
 
 /// #1933: the LocalCommand script of the one-connection ssh, run in a real bash with the console

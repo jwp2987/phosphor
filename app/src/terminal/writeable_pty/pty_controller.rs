@@ -1835,6 +1835,17 @@ impl<T: EventLoopSender> PtyController<T> {
             }
         }
 
+        // #2051: the remote command of this ssh session carried the bootstrap and the remote
+        // shell runs it by itself, right after this `InitShell`: nothing is written. Every later
+        // event (Bootstrapped, the first Precmd, the hand-over of the held keys) is the shell's
+        // own and unchanged.
+        if !bootstrap::app_writes_bootstrap(pending_session_info) {
+            warpui::input_order::log_hop("bootstrap_in_command", || {
+                format!("shell={shell_type:?} wrote=0")
+            });
+            return;
+        }
+
         #[cfg(feature = "local_fs")]
         if let Some(path) = permanent_bootstrap_file(shell_type, pending_session_info) {
             // If there is a permanent bootstrap file, source it directly. We

@@ -10,6 +10,8 @@
 #                                                               managed and reach the first remote prompt first, in typed order (#1959)
 #   ssh_gitbash_kill_switch                                     Git Bash pane: the DEFAULT (variable not set) and PHOSPHOR_MSYS_MANAGED_SSH=0 are both the
 #                                                               user's plain ssh: no stage hop, verdict managed=false
+#   ssh_gitbash_bootstrap_in_command                            Git Bash pane, managed ssh switched on: the remote bash gets its bootstrap inside the remote
+#                                                               command (#2051): the app writes nothing bootstrap-sized and never gives up on the bootstrap
 #   gitbash_long_osc_reaches_app                                Git Bash pane: an escape sequence over 256 bytes printed by an msys program in the pane reaches
 #                                                               the app whole (#2007: the form of a managed ssh session's remote hooks, which arrive through
 #                                                               msys ssh.exe; kernel32's pseudo console of Windows 10 passes on only its tail)
@@ -295,6 +297,70 @@ def _ssh_gitbash_managed(ctx, r):
     _remote_line_once(ctx, r, "managed session")
     if not R.leave(ctx):
         r.check(False, "not provably remote (probe ran in: %s), `exit` NOT typed" % ctx.left_unproven)
+    ctx.reset()
+
+
+BOOTSTRAP_WRITE_LIMIT = 4096      # bytes: the bash bootstrap is about 62 KB; a key, a sync token or a mode byte is a handful
+
+
+def bootstrap_delivery(log):
+    """pure: what the app log of one managed connect says about how the remote shell got its bootstrap (#2051): whether the app reported the
+    in-command delivery (`hop=bootstrap_in_command ... wrote=0`), the largest single pty write it made (`hop=pty_write_bytes ... wrote=<n>`; the typed
+    delivery of #1933 was one write of 62000), and whether it gave up on the remote bootstrap (`Bootstrapping failed for shell`)"""
+    writes = [int(ln.split(" wrote=", 1)[1].split()[0]) for ln in log.splitlines()
+              if "hop=pty_write_bytes" in ln and " wrote=" in ln and ln.split(" wrote=", 1)[1].split()[0].isdigit()]
+    return dict(in_command=any("hop=bootstrap_in_command" in ln and "wrote=0" in ln for ln in log.splitlines()),
+                max_write=max(writes) if writes else 0,
+                failed="Bootstrapping failed for shell" in log)
+
+
+@case("ssh_gitbash_bootstrap_in_command", order=62)
+def c_ssh_gitbash_bootstrap_in_command(ctx, r):
+    """#2051: with the one-connection managed ssh switched on, the remote bash gets its bootstrap INSIDE the remote command, not typed: round 12 showed
+    62 KB typed through msys ssh.exe's console take 45 to 60 s (about 1.3 KB/s) while the app gives up after 6.5 s. Evidence for one `ssh fake`:
+    the app log says `hop=bootstrap_in_command ... wrote=0`, no single pty write during the connect is bootstrap-sized (under 4096 bytes; the typed
+    delivery was one write of 62000), the app never logs `Bootstrapping failed`, the stages are auth, auth_done, managed with `verdict
+    managed=true`, the pane is provably remote and a line typed at the remote prompt runs once there. The seconds to the remote prompt and the bytes
+    the test sshd says the client sent it (Windows fake sshd only) are metrics; the sshd's count must be under 8192 when it logged one (round 12:
+    78814 and still coming)."""
+    _need_windows_pane(ctx, r, "gitbash")
+    R.need_ssh(ctx, r)
+    R.in_msys_managed_ssh(ctx, lambda: _ssh_gitbash_bootstrap_in_command(ctx, r))
+
+
+def _ssh_gitbash_bootstrap_in_command(ctx, r):
+    off, sshd_off = ctx.log_size(), R.sshd_log_size(ctx)
+    secs = R.connect(ctx, "fake", 60)
+    log = ctx.log_since(off)
+    how = bootstrap_delivery(log)
+    r.metric("gitbash_in_command_delivery", how)
+    r.check(secs is not None, "no remote shell prompt after `ssh fake`. Test host: %s" % (ctx.ssh_diag() if secs is None else ""))
+    r.check(how["in_command"], "the app log has no `hop=bootstrap_in_command ... wrote=0`: the remote command did not carry the bootstrap "
+            "(the wrapper fell back to plain ssh, or the app typed it)")
+    r.check(how["max_write"] < BOOTSTRAP_WRITE_LIMIT,
+            "the app wrote %d bytes to the pty in one write during the connect (limit %d): a bootstrap was typed" % (how["max_write"], BOOTSTRAP_WRITE_LIMIT))
+    r.check(not how["failed"], "the app gave up on the remote bootstrap (`Bootstrapping failed for shell` in its log)")
+    hops = _wrapper_hops(ctx, off)
+    r.check(_sync_stages(hops) == ["auth", "auth_done", "managed"], "one-connection stages in the app log: %r, want auth, auth_done, managed" % _sync_stages(hops))
+    r.check(any("verdict managed=true" in ln for ln in hops), "the wrapper's verdict was managed=true")
+    if secs is None:
+        ctx.reset()
+        return
+    r.metric("gitbash_in_command_connect_s", round(secs, 2))
+    time.sleep(1.0)
+    got = R.sshd_input_bytes(R.sshd_io_lines(ctx, sshd_off))
+    if got is None:
+        r.note("the test sshd logged no client-input count for this session (only the Windows fake sshd does)")
+    else:
+        r.metric("gitbash_in_command_client_bytes", got)
+        r.check(got < 8192, "the test sshd received %d bytes from the client by the time the remote prompt was up (limit 8192; round 12: 78814): "
+                "something bootstrap-sized went through ssh's console" % got)
+    if ctx.where_now() == "remote":
+        _remote_line_once(ctx, r, "managed session, bootstrap in the command")
+        if not R.leave(ctx):
+            r.check(False, "not provably remote (probe ran in: %s), `exit` NOT typed" % ctx.left_unproven)
+    else:
+        r.check(False, "the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s)" % ctx.where_now())
     ctx.reset()
 
 

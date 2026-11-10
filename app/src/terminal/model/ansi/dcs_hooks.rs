@@ -497,6 +497,9 @@ impl DProtoHook {
                 }
                 "raw_bootstrap" => value.raw_bootstrap = v.parse::<bool>().unwrap_or(false),
                 "single_connection" => value.single_connection = v.parse::<bool>().unwrap_or(false),
+                "bootstrap_in_command" => {
+                    value.bootstrap_in_command = v.parse::<bool>().unwrap_or(false)
+                }
                 _ => {
                     log::warn!("Tried to add unknown field {key} to SSH hook");
                 }
@@ -1109,6 +1112,13 @@ pub struct SSHValue {
     /// for the helper or for side commands. Defaults to `false` (every other wrapper path).
     #[serde(default)]
     pub single_connection: bool,
+    /// `true` when the remote command itself carries the bootstrap and the remote shell runs it
+    /// as the rest of its rcfile, right after it printed `InitShell` (#2051: the one-connection
+    /// session of Git Bash, where anything typed goes through msys `ssh.exe`'s console at about
+    /// 1.3 KB/s). The app then writes NOTHING on `InitShell` for that session. Defaults to
+    /// `false`: every other session is sent its bootstrap through the pty.
+    #[serde(default)]
+    pub bootstrap_in_command: bool,
 }
 
 /// One stage of the one-connection managed ssh (#1933, `docs/design/1933-windows-managed-ssh.md`).

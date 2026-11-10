@@ -388,6 +388,16 @@ pub(crate) fn strip_local_only_block(script: Cow<'static, [u8]>) -> Cow<'static,
     Cow::Owned(kept.join("\n").into_bytes())
 }
 
+/// #2051: whether the app sends this session's shell its bootstrap when the shell announces
+/// itself (`InitShell`). `false` only for an ssh session whose remote command carried the
+/// bootstrap (`SSHValue::bootstrap_in_command`: the one-connection session of Git Bash): that
+/// shell runs it as the rest of its rcfile, and anything written here would reach it as typed
+/// input, through msys `ssh.exe`'s console at about 1.3 KB/s (round 12: 62 KB in 45 to 60 s) and
+/// then run a second time.
+pub(crate) fn app_writes_bootstrap(session_info: &SessionInfo) -> bool {
+    !session_info.is_legacy_ssh_session.bootstrap_in_command()
+}
+
 /// The bootstrap to write into the shell: the counted-read form of the bash script
 /// ([`bash_counted_read_bootstrap`]) for an ssh session whose remote reported `raw_bootstrap`,
 /// otherwise `script` unchanged.

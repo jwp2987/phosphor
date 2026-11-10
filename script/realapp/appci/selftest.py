@@ -7062,6 +7062,50 @@ def msys_managed_ssh_default_off_2051():
     assert "msys_managed_ssh_default_off_2051" in doc and "PHOSPHOR_MSYS_MANAGED_SSH=1" in doc
 
 
+@check
+def gitbash_bootstrap_in_command_2051():
+    """#2051: ssh_gitbash_bootstrap_in_command reads the delivery of the remote bootstrap from the app log: the in-command hop, the largest single
+    pty write, the give-up line. The round 12 log (one write of 62000, then `Bootstrapping failed`) must read as the typed delivery"""
+    import inspect
+    import cases_win_input as wi
+    r12 = "\n".join([
+        "18:22:29.882 [DEBUG] input_order hop=ssh_wrapper verdict managed=true tty_owned_deferred=true t=1",
+        "18:22:29.883 [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes=\"M\" t=1",
+        "18:22:34.177 [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=62000 of_job=62000 t=2",
+        "18:22:40.700 [WARN] Bootstrapping failed for shell \"bash\" on ssh true"])
+    assert wi.bootstrap_delivery(r12) == dict(in_command=False, max_write=62000, failed=True)
+    good = "\n".join([
+        "x [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=18 of_job=18 t=1",
+        "x [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 t=1",
+        "x [DEBUG] input_order hop=bootstrap_in_command shell=Bash wrote=0 t=2",
+        "x [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=notanumber t=3"])
+    assert wi.bootstrap_delivery(good) == dict(in_command=True, max_write=18, failed=False)
+    assert wi.bootstrap_delivery("") == dict(in_command=False, max_write=0, failed=False)
+    assert wi.BOOTSTRAP_WRITE_LIMIT == 4096
+    # the texts the case reads are the app's own (a rename there must fail here)
+    root = os.path.join(HERE, "..", "..", "..")
+    pc = open(os.path.join(root, "app", "src", "terminal", "writeable_pty", "pty_controller.rs"), encoding="utf-8").read()
+    assert 'log_hop("bootstrap_in_command", || {' in pc and 'format!("shell={shell_type:?} wrote=0")' in pc
+    assert 'log::warn!("Bootstrapping failed for shell {shell:?}' in open(os.path.join(root, "app", "src", "terminal", "view.rs"), encoding="utf-8").read()
+    assert 'log_hop("pty_write_bytes", || {' in open(os.path.join(root, "app", "src", "terminal", "local_tty", "event_loop.rs"), encoding="utf-8").read()
+    body = inspect.getsource(wi._ssh_gitbash_bootstrap_in_command)
+    for needle in ('how["in_command"]', 'how["max_write"] < BOOTSTRAP_WRITE_LIMIT', 'not how["failed"]', '["auth", "auth_done", "managed"]',
+                   '"verdict managed=true" in ln', "got < 8192", "_remote_line_once("):
+        assert needle in body, needle
+    assert "in_msys_managed_ssh(ctx, lambda:" in inspect.getsource(wi.c_ssh_gitbash_bootstrap_in_command)
+    reg = {c["name"]: c for c in cases.CASES}
+    n = "ssh_gitbash_bootstrap_in_command"
+    assert n in reg and n in cases.PROVING and n not in cases.SMOKE and n in winmap.GITBASH_ONLY
+    assert winmap.skip_reason(n, "gitbash") is None and winmap.skip_reason(n, "powershell")
+    # the wrapper's side of it: the hook field, the fd-9 here-document, the plain login for a login shell that is not bash, the measured fit
+    sh = open(os.path.join(root, "app", "assets", "bundled", "bootstrap", "bash_body.sh"), encoding="utf-8").read()
+    for needle in ('\\"bootstrap_in_command\\": true', "} 9<<'$warp_bs_delim'", "command -p cat <&9) 9<&-", 'if test "\'"${SHELL##*/}"\'" != bash; then',
+                   'command ssh -V "$1$pad"', '"${PHOSPHOR_MSYS_SSH_BOOTSTRAP:-}" != "typed"'):
+        assert needle in sh, needle
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    assert ("`%s`" % n) in doc and "gitbash_bootstrap_in_command_2051" in doc and "PHOSPHOR_MSYS_SSH_BOOTSTRAP=typed" in doc
+
+
 def main():
     failed = 0
     for f in CHECKS:

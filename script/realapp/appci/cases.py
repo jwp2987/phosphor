@@ -59,6 +59,8 @@ PROVING = (
     "ssh_connect_typing_wrapper", "ssh_nested_typeahead_wrapper", "ps_ctrl_break", "ps_ctrl_scrolllock_break", "ps_fast_command_young_enter",
     # managed ssh from Windows Git Bash on one connection (#1933): each skips itself off the Git Bash pane
     "ssh_gitbash_managed", "ssh_gitbash_typeahead_managed", "ssh_gitbash_kill_switch",
+    # #2051: the managed session of the Git Bash pane gets its bootstrap in the remote command, nothing bootstrap-sized is typed; skips itself elsewhere
+    "ssh_gitbash_bootstrap_in_command",
     # #2007: the local leg of that session (a long escape sequence from an msys program reaches the app whole); skips itself off the Git Bash pane
     "gitbash_long_osc_reaches_app",
     # Windows handover and secrets (#1882, #1883, #1891): Read-Host marker, Git Bash precmd `read -s`

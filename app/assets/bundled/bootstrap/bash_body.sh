@@ -2154,6 +2154,19 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # The SSH logic only applies to local sessions, because we don't yet have support for bootstrapping
     # recursive SSH sessions.
     if [[ ${WARP_IS_LOCAL_SHELL_SESSION:-} == "1" ]]; then
+        # #2051: Git Bash / MSYS2 only. The one-connection managed ssh sends the remote bash its
+        # bootstrap inside the remote command (warp_ssh_helper), so this shell keeps the text of
+        # its own bootstrap: the file the app sourced it from, which is deleted once this shell
+        # reports Bootstrapped. One builtin read, no process; the lines are turned into the remote
+        # text at the first managed ssh (warp_ssh_msys_bootstrap_text). A shell that was not
+        # bootstrapped from a file has no text, and its ssh stays plain.
+        if [ "${WARP_IN_MSYS2:-}" = true ] && [[ -z "${__warp_ssh_bs_text-}" ]]; then
+            __warp_ssh_bs_lines=()
+            if [[ -n "${BASH_SOURCE[0]-}" && -f "${BASH_SOURCE[0]}" && -r "${BASH_SOURCE[0]}" ]]; then
+                builtin mapfile -t __warp_ssh_bs_lines < "${BASH_SOURCE[0]}" 2>/dev/null || __warp_ssh_bs_lines=()
+            fi
+        fi
+
         # This helper function determines whether the user's ssh arguments imply
         # creation of a non-interactive session or otherwise would conflict with
         # our SSH wrapper.  Returns 0 for an interactive session; >0 otherwise.
@@ -2292,6 +2305,22 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                     command ssh "${@:1}"
                     return
                 fi
+            fi
+
+            # #2051: on the one-connection path the remote bash gets its bootstrap INSIDE the remote
+            # command (an argument of ssh, which never touches the console). Typed after InitShell,
+            # as on every other path, it goes through msys ssh.exe's console read at about
+            # 1.3 KB/s: 45 to 60 s for 62 KB (round 12). Without the text (a shell that was not
+            # bootstrapped from a file) the ssh is plain. PHOSPHOR_MSYS_SSH_BOOTSTRAP=typed keeps
+            # the delivery of #1933 (the app types it), for comparing the two.
+            local warp_bs_in_cmd=0
+            if [[ $warp_single -eq 1 && "${PHOSPHOR_MSYS_SSH_BOOTSTRAP:-}" != "typed" ]]; then
+                if ! warp_ssh_msys_bootstrap_text; then
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
+                    command ssh "${@:1}"
+                    return
+                fi
+                warp_bs_in_cmd=1
             fi
 
             # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
@@ -2511,16 +2540,93 @@ if test "$warp_m" != M; then
 fi
 unset warp_m warp_o'
             fi
-            local warp_remote_bootstrap
-            warp_remote_bootstrap="$warp_single_prefix
-export TERM_PROGRAM='WarpTerminal'
+            # The lines every remote command starts with (after the mode-byte read of the
+            # one-connection path).
+            local warp_remote_env
+            warp_remote_env="export TERM_PROGRAM='WarpTerminal'
 # Mark the remote side of a Warp-managed SSH session so the bootstrap
 # body can distinguish it from local shells. Used to gate the ExitShell
 # hook which tears down the remote-server-proxy subprocess.
 export WARP_IS_SSH='1'
 test -n '$WARP_CLIENT_VERSION' && export WARP_CLIENT_VERSION='$WARP_CLIENT_VERSION'
 # Only forward the protocol version if it was set locally (i.e. the HOANotifications feature flag is on).
-test -n '$WARP_CLI_AGENT_PROTOCOL_VERSION' && export WARP_CLI_AGENT_PROTOCOL_VERSION='$WARP_CLI_AGENT_PROTOCOL_VERSION'
+test -n '$WARP_CLI_AGENT_PROTOCOL_VERSION' && export WARP_CLI_AGENT_PROTOCOL_VERSION='$WARP_CLI_AGENT_PROTOCOL_VERSION'"
+            # What the remote bash runs as its rcfile (`--rcfile <(echo '...')`): raw tty, the session
+            # id, then the InitShell hook. Written for the inside of single quotes.
+            local warp_rc_snippet
+            warp_rc_snippet='
+      command -p stty raw
+      HISTCONTROL=ignorespace
+      HISTIGNORE=" *"
+      WARP_SESSION_ID='$remote_session_id'
+      WARP_HONOR_PS1="'$WARP_HONOR_PS1'"
+      _hostname=${HOSTNAME:-$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)}
+      _user=${USER:-$(command -v whoami >/dev/null 2>&1 && command whoami 2>/dev/null || echo $USER)}
+      _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do printf -v _o %03o $_i; printf -v _c "\\$_o"; printf -v _h "\\\\u%04x" $_i; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done
+      _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
+      WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
+      if [[ "'$OS'" == Windows_NT ]]; then WARP_IN_MSYS2=true; else WARP_IN_MSYS2=false; fi
+      printf '\''"'\e]9278;d;%s\x07'"'\'' \""'$_msg'"\""
+            local warp_remote_bootstrap
+            if [[ $warp_bs_in_cmd -eq 1 ]]; then
+                # #2051: the one-connection session of Git Bash, bootstrap in the command. Only a
+                # remote whose LOGIN shell is bash is managed (owner 2026-11-10): any other login
+                # shell says so with the PlainSSHFallback hook (this shell's session id, as the
+                # SSH hook carries it) and becomes the plain login it would have been, so the app
+                # hands the keys it holds to ssh at that event. For bash, the bootstrap text is a
+                # here-document on fd 9 of a group (never inside `<( )`: bash 3.2 counts the
+                # parentheses in there), and the rcfile is the InitShell snippet followed by that
+                # text: bash runs the bootstrap as the rest of its rcfile, right after it printed
+                # InitShell, and the app writes nothing (the SSH hook says bootstrap_in_command).
+                # The SSH hook is printed inside the group, so only once the here-document is
+                # open; if it cannot be opened (no room for its temp file) the group does not
+                # run and the lines after it give the plain login. Both hooks are hex-encoded
+                # here: nothing in them is the remote's to fill in.
+                local warp_bs_delim="__PHOSPHOR_BOOTSTRAP_${remote_session_id}__"
+                __warp_hex_encode_to "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
+                local warp_plain_print="printf '$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR%s$OSC_END' '$__warp_hex'"
+                __warp_hex_encode_to "{\"hook\": \"SSH\", \"value\": {\"socket_path\": \"\", \"remote_shell\": \"bash\", \"session_id\": ${WARP_SESSION_ID:-}, \"remote_session_id\": $remote_session_id, \"external_control_master\": false, \"single_connection\": true, \"raw_bootstrap\": false, \"bootstrap_in_command\": true}}"
+                local warp_hook_print="printf '$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR%s$OSC_END' '$__warp_hex'"
+                local warp_plain_login='if test ! -e "$HOME/.hushlogin"; then
+  if test -r /etc/motd; then
+    command -p cat /etc/motd
+  elif test -r /run/motd; then
+    command -p cat /run/motd
+  elif test -r /run/motd.dynamic; then
+    command -p cat /run/motd.dynamic
+  elif test -r /usr/lib/motd; then
+    command -p cat /usr/lib/motd
+  elif test -r /usr/lib/motd.dynamic; then
+    command -p cat /usr/lib/motd.dynamic
+  fi
+fi
+exec "$SHELL" -l'
+                warp_remote_bootstrap="$warp_single_prefix
+if test "'"${SHELL##*/}"'" != bash; then
+$warp_plain_print
+$warp_plain_login
+fi
+$warp_remote_env
+{
+$warp_hook_print
+exec -a bash bash --rcfile <(echo '$warp_rc_snippet'; command -p cat <&9) 9<&-
+} 9<<'$warp_bs_delim'
+$__warp_ssh_bs_text
+$warp_bs_delim
+$warp_plain_print
+$warp_plain_login
+"
+                # The command is ONE argument of ssh: it has to fit what this bash can hand to
+                # that ssh and what the server can hand to the login shell. Measured, not assumed
+                # (warp_ssh_msys_command_fits); when it does not fit, the ssh is plain.
+                if ! warp_ssh_msys_command_fits "$warp_remote_bootstrap"; then
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
+                    command ssh "${@:1}"
+                    return
+                fi
+            else
+            warp_remote_bootstrap="$warp_single_prefix
+$warp_remote_env
 
 warp_rb=false
 if test "'"${SHELL##*/}" = "bash"'" && printf x | command -p head -c 1 >/dev/null 2>&1; then warp_rb=true; fi
@@ -2555,19 +2661,7 @@ fi
 
 case "'${SHELL##*/}'" in
   bash)
-    exec -a bash bash --rcfile <(echo '"'
-      command -p stty raw
-      HISTCONTROL=ignorespace
-      HISTIGNORE=" *"
-      WARP_SESSION_ID='$remote_session_id'
-      WARP_HONOR_PS1="'$WARP_HONOR_PS1'"
-      _hostname=${HOSTNAME:-$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)}
-      _user=${USER:-$(command -v whoami >/dev/null 2>&1 && command whoami 2>/dev/null || echo $USER)}
-      _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do printf -v _o %03o $_i; printf -v _c "\\$_o"; printf -v _h "\\\\u%04x" $_i; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done
-      _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
-      WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
-      if [[ "'$OS'" == Windows_NT ]]; then WARP_IN_MSYS2=true; else WARP_IN_MSYS2=false; fi
-      printf '\''"'\e]9278;d;%s\x07'"'\'' \""'$_msg'"\"')
+    exec -a bash bash --rcfile <(echo '$warp_rc_snippet')
       unset _hostname _user _msg _ju _jh _i _o _c _h
       ;;
   zsh) WARP_TMP_DIR="'$(command -p mktemp -d warptmp.XXXXXX)'"
@@ -2587,6 +2681,7 @@ TMPPREFIX="'$HOME/.zshtmp-'" WARP_SSH_RCFILES="'${ZDOTDIR:-$HOME}'" ZDOTDIR="'$W
       ;;
 esac
 "
+            fi
             if [[ $warp_single -eq 1 ]]; then
                 # #1933: the login and the session are this one ssh (warp_ssh_msys_run_single).
                 warp_ssh_msys_run_single "$warp_sync_nonce" "$warp_remote_bootstrap" ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -- "${@:1}"
@@ -2612,6 +2707,74 @@ esac
         # can stand in for the terminal.
         function warp_ssh_msys_has_terminal() {
             [[ -t 0 && -t 1 ]]
+        }
+
+        # #2051: the bash bootstrap for a REMOTE shell into __warp_ssh_bs_text: this shell's own
+        # bootstrap file (its lines were kept in __warp_ssh_bs_lines when it was sourced) without
+        # the lines from `: __warp_local_only_begin` to `: __warp_local_only_end`, which is what
+        # the app sends a bash over ssh (bootstrap::strip_local_only_block). Made at the first
+        # managed ssh of this shell and kept. Returns 1, with nothing kept, unless the lines hold
+        # exactly one begin line followed by one end line and the here-document of bash.sh: a
+        # text that is not provably the bootstrap is never sent.
+        function warp_ssh_msys_bootstrap_text() {
+            [[ -n "${__warp_ssh_bs_text-}" ]] && return 0
+            local line i=0 begin=-1 end=-1 seen=0
+            for line in ${__warp_ssh_bs_lines[@]+"${__warp_ssh_bs_lines[@]}"}; do
+                case "$line" in
+                    ' : __warp_local_only_begin' | ': __warp_local_only_begin')
+                        begin=$i
+                        seen=$((seen + 1))
+                        ;;
+                    ' : __warp_local_only_end' | ': __warp_local_only_end')
+                        end=$i
+                        seen=$((seen + 100))
+                        ;;
+                esac
+                i=$((i + 1))
+            done
+            if [[ $seen -ne 101 || $begin -ge $end ]]; then
+                return 1
+            fi
+            local IFS=$'\n'
+            local text="${__warp_ssh_bs_lines[*]:0:begin}"$'\n'"${__warp_ssh_bs_lines[*]:end+1}"
+            if [[ "$text" != *"WARP_BOOTSTRAP_VAR << 'EOM'"* ]]; then
+                return 1
+            fi
+            __warp_ssh_bs_text=$text
+            __warp_ssh_bs_lines=()
+            return 0
+        }
+
+        # #2051: whether the remote command "$1" can travel as ONE argument of ssh.
+        #  - The server hands it to the login shell as one argument (`$SHELL -c <command>`), and
+        #    Linux takes at most 128 KiB there: over 100,000 bytes is refused here.
+        #  - What this bash can hand to `ssh` is measured, not assumed: `ssh -V <command>` is
+        #    started once (ssh prints its version at `-V` and exits, it connects to nothing). An
+        #    msys ssh gets its arguments from msys bash directly; a Win32 ssh.exe gets them through
+        #    a 32,767-character command line, so the start fails there and the ssh stays plain.
+        #    The answer is kept for this shell: a size that worked (tried with 256 bytes to
+        #    spare, for the ids that differ from one ssh to the next) is not tried again, nor
+        #    is anything as large as one that failed (less 512 bytes, for the same ids).
+        function warp_ssh_msys_command_fits() {
+            local LC_ALL=C
+            local size=${#1}
+            if (( size > 100000 )); then
+                return 1
+            fi
+            if (( size <= ${__warp_ssh_arg_ok:-0} )); then
+                return 0
+            fi
+            if [[ -n "${__warp_ssh_arg_bad-}" ]] && (( size >= __warp_ssh_arg_bad )); then
+                return 1
+            fi
+            local pad
+            builtin printf -v pad '%256s' ''
+            if command ssh -V "$1$pad" >/dev/null 2>&1; then
+                __warp_ssh_arg_ok=$((size + 256))
+                return 0
+            fi
+            __warp_ssh_arg_bad=$((size - 512))
+            return 1
         }
 
         # #1933: 64 unguessable bits as a decimal string into the variable named $1 (empty when no
