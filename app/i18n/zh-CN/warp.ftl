@@ -551,7 +551,10 @@ onboarding-callout-enable-nl-detection = 启用自然语言识别
 onboarding-callout-new-agent-title = 认识 Phosphor 全新的智能体体验
 onboarding-callout-new-agent-text = 智能体对话现在会作为终端之外的独立视图存在。你可以随时按 ESC 返回终端。
 onboarding-callout-updated-agent-input-title = 升级后的智能体输入框
-onboarding-callout-updated-agent-input-project-text = 默认情况下，你的智能体输入框会同时识别自然语言和命令。使用 ! 可将输入锁定为 bash 模式以编写命令。\n\n提交下方查询即可让智能体初始化此项目，或按 ⊗ 清空输入后自行开始！
+onboarding-callout-updated-agent-input-project-text =
+    默认情况下，你的智能体输入框会同时识别自然语言和命令。使用 ! 可将输入锁定为 bash 模式以编写命令。
+
+    提交下方查询即可让智能体初始化此项目，或按 ⊗ 清空输入后自行开始！
 onboarding-callout-skip-initialization = 跳过初始化
 onboarding-callout-initialize = 初始化
 onboarding-callout-updated-agent-input-text = 默认情况下，你的智能体输入框会同时识别自然语言和命令。使用 ! 可将输入锁定为 bash 模式以编写命令。
@@ -3180,7 +3183,9 @@ auth-require-login-drive-limit = Phosphor 会将库对象保存在本机。
 auth-require-login-share = 本地 Phosphor 构建不提供分享功能。
 auth-welcome-title = 欢迎使用 Phosphor！
 auth-sign-up-for-warp = 继续使用 Phosphor
-auth-browser-sign-in-title = 在浏览器中登录\n以继续
+auth-browser-sign-in-title =
+    在浏览器中登录
+    以继续
 auth-browser-not-launched-prefix = 如果浏览器没有打开，{" "}
 auth-copy-url = 复制 URL
 auth-open-page-manually-suffix = 然后手动打开页面。
@@ -3224,7 +3229,7 @@ launch-config-save-modal-a11y-title = 保存配置弹窗
 launch-config-save-modal-a11y-description = 输入要保存当前窗口、标签页和面板配置的文件名。按 Enter 保存启动配置，按 Esc 退出保存配置弹窗。
 launch-config-save-description-no-keybinding = 这会将当前窗口、标签页和面板配置保存到文件中，方便之后再次打开。
 launch-config-save-description-with-keybinding = 这会将当前窗口、标签页和面板配置保存到文件中，之后可通过 { $keybinding } 再次打开。
-launch-config-yaml-saved-to-prefix = \nYAML 文件会保存到
+launch-config-yaml-saved-to-prefix = YAML 文件会保存到
 notebook-file-could-not-read = 无法读取 { $name }
 notebook-file-loading = 正在加载 { $name }...
 notebook-file-missing-source = 缺少源文件

@@ -593,8 +593,12 @@ impl LaunchConfigSaveModal {
                         self.render_formatted_text_line(
                             appearance,
                             vec![
-                                FormattedTextFragment::plain_text(crate::t!(
-                                    "launch-config-yaml-saved-to-prefix"
+                                // The line break before the sentence is layout, so it lives
+                                // here: Fluent has no `\n` escape and showed it as two
+                                // characters (#1842).
+                                FormattedTextFragment::plain_text(format!(
+                                    "\n{}",
+                                    crate::t!("launch-config-yaml-saved-to-prefix")
                                 )),
                                 FormattedTextFragment::inline_code(home_relative_path(
                                     &launch_configs_dir(),

@@ -170,6 +170,7 @@ Every guard in this table runs in `precheck`. In CI the `guards` job runs all of
 | `check_declined_collisions` | the tree collides with a `DECLINED.md` decision |
 | `check_dead_links` | shipped Rust code links the dead ancestor repo (#632) |
 | `check_brand_strings` | a user-visible string says Zap / Oz / Warp instead of Phosphor |
+| `check_ftl_escapes` | a tracked `.ftl` line that is not a comment has a `\n`, `\t` or `\r`: Fluent has no backslash escapes, so the user sees the two characters (#1842). A line break is a real one (a multiline value); `{"\\"}` writes a backslash that must be shown. `--self-test` runs its own cases (they also run on every call). Exit 2 when it cannot run (no python3, no `.ftl` file) |
 | `check_settings_registry` | a settings group registered in prod but not in the test harness; duplicate `toml_path` / `storage_key` |
 | `check_channel_command_names` | packaging scripts drift from `Channel::cli_command_name()` / `warpctrl_command_name()` |
 | `check_no_autoupdate` | autoupdate is re-enabled in a shipped build (#630) |

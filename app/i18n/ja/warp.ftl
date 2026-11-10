@@ -508,7 +508,10 @@ onboarding-callout-enable-nl-detection = 自然言語判定を有効にする
 onboarding-callout-new-agent-title = Phosphor の新しいエージェント体験のご紹介
 onboarding-callout-new-agent-text = エージェントとの会話は、ターミナルとは別のスコープを持つ画面になりました。ESC を押せばいつでもターミナルに戻れます。
 onboarding-callout-updated-agent-input-title = 更新されたエージェント入力欄
-onboarding-callout-updated-agent-input-project-text = エージェント入力欄は既定で自然言語とコマンドの両方を判定します。! を使うと bash モードに固定してコマンドを書けます。\n\n下記のクエリを送信してエージェントにこのプロジェクトを初期化させるか、⊗ で入力をクリアして自分で始めましょう!
+onboarding-callout-updated-agent-input-project-text =
+    エージェント入力欄は既定で自然言語とコマンドの両方を判定します。! を使うと bash モードに固定してコマンドを書けます。
+
+    下記のクエリを送信してエージェントにこのプロジェクトを初期化させるか、⊗ で入力をクリアして自分で始めましょう!
 onboarding-callout-skip-initialization = 初期化をスキップ
 onboarding-callout-initialize = 初期化
 onboarding-callout-updated-agent-input-text = エージェント入力欄は既定で自然言語とコマンドの両方を判定します。! を使うと bash モードに固定してコマンドを書けます。
@@ -3176,7 +3179,9 @@ auth-require-login-drive-limit = Phosphor ではライブラリオブジェク�
 auth-require-login-share = ローカル Phosphor ビルドでは共有機能を利用できません。
 auth-welcome-title = Phosphor へようこそ！
 auth-sign-up-for-warp = Phosphor を続行
-auth-browser-sign-in-title = 続行するにはブラウザで\nサインインしてください
+auth-browser-sign-in-title =
+    続行するにはブラウザで
+    サインインしてください
 auth-browser-not-launched-prefix = ブラウザが起動していない場合、{" "}
 auth-copy-url = URL をコピー
 auth-open-page-manually-suffix = し、手動でページを開いてください。
@@ -3220,7 +3225,7 @@ launch-config-save-modal-a11y-title = 構成保存モーダル
 launch-config-save-modal-a11y-description = 現在のウィンドウ・タブ・ペーン構成を保存するファイル名を入力してください。Enter で起動構成を保存、Esc で構成保存モーダルを終了します。
 launch-config-save-description-no-keybinding = 現在のウィンドウ・タブ・ペーン構成をファイルに保存し、再度簡単に開けるようにします。
 launch-config-save-description-with-keybinding = 現在のウィンドウ・タブ・ペーン構成をファイルに保存し、{ $keybinding } で再度簡単に開けるようにします。
-launch-config-yaml-saved-to-prefix = \nYAML ファイルは次に保存されました:{" "}
+launch-config-yaml-saved-to-prefix = YAML ファイルは次に保存されました:{" "}
 notebook-file-could-not-read = { $name } を読み込めませんでした
 notebook-file-loading = { $name } を読み込み中…
 notebook-file-missing-source = ソースファイルがありません

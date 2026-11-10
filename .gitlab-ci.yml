@@ -88,6 +88,7 @@ guards:
     # exits 0 without it, which on a runner would read as a pass.
     - command -v python3 >/dev/null || { echo "ERROR python3 missing; check_brand_strings would self-skip" >&2; exit 1; }
     - ./script/check_brand_strings
+    - ./script/check_ftl_escapes
     - ./script/check_settings_registry
     - ./script/check_channel_command_names
     - ./script/check_no_autoupdate

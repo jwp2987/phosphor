@@ -268,6 +268,11 @@ if [[ -x ./script/check_brand_strings ]]; then
     ./script/check_brand_strings >/dev/null 2>&1 && ok "brand strings" \
         || fail "brand strings -- run ./script/check_brand_strings for detail"
 fi
+if [[ -x ./script/check_ftl_escapes ]]; then
+    # #1842: Fluent has no `\n` escape; a value that carries one shows it as typed.
+    ./script/check_ftl_escapes >/dev/null 2>&1 && ok "ftl escapes" \
+        || fail "ftl escapes -- run ./script/check_ftl_escapes for detail"
+fi
 if [[ -x ./script/check_pwsh_parse ]]; then
     # #1161: a bundled .ps1 that doesn't parse ships a PowerShell that never bootstraps.
     _pwsh_out="$(./script/check_pwsh_parse 2>&1)" && {
