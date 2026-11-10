@@ -1991,7 +1991,7 @@ fn phosphor_tmp_files(dir: &std::path::Path) -> Vec<String> {
 /// One set of assertions for how a whole-file write treats the awkward targets: a directory, a
 /// symlink (written through, a dangling one is "present"), a hard link (the inode is replaced on
 /// BOTH arms, the other link keeps the old bytes), a leading `~`, and the temp files.
-async fn assert_write_edge_cases<F, Fut>(name: &str, write: F)
+async fn assert_write_edge_cases<F, Fut>(name: &str, host_home: &std::path::Path, write: F)
 where
     F: Fn(String, String, Option<crate::shellcmd::write::Expect>) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
@@ -2084,7 +2084,9 @@ where
     );
 
     // #1877: a leading `~` expands on the host, on both arms.
-    let home = dirs::home_dir().expect("a home directory");
+    // `host_home` is the `$HOME` of the host under test: the shell arm runs in a scratch HOME, the
+    // in-process helper in the real one.
+    let home = host_home.to_path_buf();
     let rel = format!(
         "phosphor-contract-tilde-{}-{}",
         std::process::id(),
@@ -2105,8 +2107,22 @@ where
 
 #[tokio::test]
 async fn the_shell_arm_handles_directory_symlink_hardlink_and_tilde_targets() {
-    let shell = Arc::new(shell_with_index().0);
-    assert_write_edge_cases("shell(local sh)", |p, c, e| {
+    // The shell arm expands `~` against the HOME of the shell it runs in, which here is a scratch
+    // directory (not the runner's real HOME, where the file would never be looked for).
+    let home = Box::leak(Box::new(tempfile::tempdir().unwrap()))
+        .path()
+        .to_path_buf();
+    let shell = Arc::new(
+        ShellBackend::new(Some(Arc::new(HomeShExecutor { home: home.clone() }))).with_index(
+            Arc::new(ShellIndex::new(
+                Box::leak(Box::new(tempfile::tempdir().unwrap()))
+                    .path()
+                    .to_path_buf(),
+                "contract-host".into(),
+            )),
+        ),
+    );
+    assert_write_edge_cases("shell(local sh)", &home, |p, c, e| {
         let shell = Arc::clone(&shell);
         async move {
             shell
@@ -2127,7 +2143,8 @@ async fn the_helper_handles_directory_symlink_hardlink_and_tilde_targets() {
     let executor = executor::Background::default();
     let (client, _events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
     let client = Arc::new(client);
-    assert_write_edge_cases("helper(in-process daemon)", |p, c, e| {
+    let home = dirs::home_dir().expect("a home directory");
+    assert_write_edge_cases("helper(in-process daemon)", &home, |p, c, e| {
         let client = Arc::clone(&client);
         async move {
             let wire = e.map(|e| e.to_wire().expect("absent has a wire form"));

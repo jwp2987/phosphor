@@ -871,6 +871,8 @@ lazy_static! {
         "escape",
         "tab",
         "numpadenter",
+        // Pause / Break (VK_PAUSE, or VK_CANCEL for Ctrl+Break); the winit layer emits "pause" (#1888).
+        "pause",
         "f1",
         "f2",
         "f3",
@@ -946,6 +948,7 @@ impl Keystroke {
     /// * `escape`
     /// * `tab`
     /// * `numpadenter`
+    /// * `pause` (Pause/Break)
     pub fn parse(source: impl AsRef<str>) -> anyhow::Result<Self> {
         let source = source.as_ref();
         let mut ctrl = false;

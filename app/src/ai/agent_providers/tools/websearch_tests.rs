@@ -225,8 +225,17 @@ async fn real_exa_anonymous_search() {
         None,
         None,
     )
-    .await
-    .expect("real Exa anonymous");
+    .await;
+    // The anonymous Exa tier is rate limited per source address, and the CI runners share one:
+    // HTTP 429 says the endpoint is busy, not that our request or parser is wrong (r8). It is an
+    // explicit, printed skip; every other failure (other status, transport, parse) still fails.
+    let out = match out {
+        Err(e) if format!("{e:#}").contains("HTTP 429") => {
+            eprintln!("SKIPPED real_exa_anonymous_search: Exa rate limit (HTTP 429): {e}");
+            return;
+        }
+        other => other.expect("real Exa anonymous"),
+    };
     assert!(!out.results.trim().is_empty(), "empty Exa output");
     assert_eq!(out.query, "rust async runtime tutorial");
 }
