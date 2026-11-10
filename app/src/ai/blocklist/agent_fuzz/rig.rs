@@ -31,6 +31,14 @@ use fake_llm::scenario::Scenario;
 
 static NEXT_MODEL: AtomicU64 = AtomicU64::new(0);
 
+/// How long a scripted `websearch` stays out before its local answer comes back (#2022). The rig
+/// never sends a search anywhere: the dispatcher's test hook answers it inside the process
+/// (`web_runtime::search_test_hook`). A real search keeps the reply stream open while it runs,
+/// and a step that arrives in that window (the actor's fast steps come 70-85 ms after the one
+/// before) cancels a reply whose calls were never committed; the hold keeps that window, with a
+/// fixed length instead of the network's.
+pub const LOCAL_SEARCH_HOLD: Duration = Duration::from_millis(120);
+
 pub struct Rig {
     pub terminal: ViewHandle<TerminalView>,
     pub controller: ModelHandle<BlocklistAIController>,
@@ -104,6 +112,11 @@ impl Obs {
 
 /// Wires the app and sends nothing yet.
 pub fn setup(app: &mut App, scenario: &Scenario, safe_allowlist: bool) -> Rig {
+    // Web access stays on (the profile default), so a scripted `websearch` goes through the
+    // real dispatcher and its intercepted-tool path; only the request is answered locally.
+    crate::ai::agent_providers::tools::web_runtime::search_test_hook::answer_locally(
+        LOCAL_SEARCH_HOLD,
+    );
     initialize_app_for_terminal_view(app);
     // The agent turn persists conversation state through this provider.
     crate::test_util::settings::initialize_history_persistence_for_tests(app);

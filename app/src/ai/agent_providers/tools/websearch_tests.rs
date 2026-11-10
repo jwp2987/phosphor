@@ -25,6 +25,23 @@ fn sse_body(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// #2022: no unit test reaches the real endpoint
+// ---------------------------------------------------------------------------
+
+/// Without an endpoint override the URL would be the real search endpoint. In a unit test that
+/// is refused before the request is built (every other test here passes a mockito URL).
+#[tokio::test]
+async fn without_an_endpoint_override_a_unit_test_is_refused_before_any_request() {
+    let err = run_websearch(&build_client(), search_args("q"), None, None)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("#2022"),
+        "expected the unit-test refusal, got: {err:#}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Endpoint routing / API key injection
 // ---------------------------------------------------------------------------
 

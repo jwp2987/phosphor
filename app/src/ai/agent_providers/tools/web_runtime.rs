@@ -676,6 +676,19 @@ pub async fn run_websearch(
     api_key: Option<&str>,
     endpoint_override: Option<&str>,
 ) -> Result<SearchOutput> {
+    // #2022: a unit test never reaches the real search endpoint. A test of this function passes
+    // a loopback `endpoint_override` (mockito); a test that goes through the dispatcher is
+    // answered by `search_test_hook` before it gets here. Anything else is refused before the
+    // request is built, so a new test cannot start sending queries by accident.
+    #[cfg(test)]
+    {
+        if endpoint_override.is_none() {
+            bail!(
+                "unit tests never reach the real search endpoint (#2022): pass a loopback \
+                 endpoint_override, or go through the dispatcher's local answer"
+            );
+        }
+    }
     let query = args.query.clone();
     let exa_args = args.into_exa_args();
     let mut body = exa::build_request_body(exa::SEARCH_TOOL_NAME, &exa_args);
@@ -720,6 +733,85 @@ pub async fn run_websearch(
     let parsed = exa::parse_sse_body(&body_text)?;
     let results = parsed.unwrap_or_else(|| EMPTY_FALLBACK.to_owned());
     Ok(SearchOutput { query, results })
+}
+
+/// Test hook (#2022): the websearch dispatcher answers a search inside the process instead of
+/// sending it to the search endpoint.
+///
+/// `chat_stream::dispatch_byop_web_tool` asks [`hold`] after it has checked the profile switch
+/// and parsed (or coerced) the arguments, so everything up to the request itself is the real
+/// code: the gate, the argument errors, the result's shape and its `_byop_intercepted` mark.
+/// Only [`run_websearch`]'s HTTP call is replaced.
+///
+/// * In a unit-test build (`cfg(test)`) the local answer is ALWAYS on: no test of this crate can
+///   send a query through the dispatcher, whether or not it installed anything.
+/// * In a `test-util` build that is not a unit test it is off until [`answer_locally`] is called.
+/// * A release build has neither this module nor the branch in the dispatcher.
+///
+/// The answer can be held for a while ([`answer_locally`]'s `hold`). A real search keeps the
+/// reply stream open while it is out; the agent fuzzer keeps that window (a message, a Stop or a
+/// Ctrl-C that arrives while the search is still running cancels a reply whose calls were never
+/// committed, `agent_fuzz::oracle::Oracle::reply_cut`) with a fixed local wait instead of the
+/// network's latency.
+#[cfg(any(test, feature = "test-util"))]
+pub mod search_test_hook {
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use super::{SearchOutput, SearchToolArgs};
+
+    /// Every local answer's `results` text starts with this.
+    pub const LOCAL_RESULTS_MARKER: &str = "local test answer";
+
+    const NOT_INSTALLED: u64 = u64::MAX;
+    /// The longest hold [`answer_locally`] accepts.
+    const MAX_HOLD_MS: u128 = 60_000;
+
+    static HOLD_MS: AtomicU64 = AtomicU64::new(NOT_INSTALLED);
+    static ANSWERED: AtomicUsize = AtomicUsize::new(0);
+
+    /// From now on, in this process, every dispatched websearch is answered locally after
+    /// `hold`. Process-wide and never undone: tests share a process under `cargo test`, and a
+    /// test that turned the real endpoint back on would turn it on for its neighbours.
+    pub fn answer_locally(hold: Duration) {
+        HOLD_MS.store(hold.as_millis().min(MAX_HOLD_MS) as u64, Ordering::SeqCst);
+    }
+
+    /// How many searches were answered locally in this process.
+    pub fn answered() -> usize {
+        ANSWERED.load(Ordering::SeqCst)
+    }
+
+    /// `Some(hold)`: answer locally (see the module docs for when). `None`: the real endpoint.
+    pub fn hold() -> Option<Duration> {
+        match HOLD_MS.load(Ordering::SeqCst) {
+            NOT_INSTALLED => cfg!(test).then_some(Duration::ZERO),
+            ms => Some(Duration::from_millis(ms)),
+        }
+    }
+
+    /// The local answer to `args`, after `hold`. The wait is a sleeping thread and a channel, so
+    /// it needs no particular async runtime; dropping the future (the stream was cancelled)
+    /// drops the wait with it.
+    pub async fn answer(args: SearchToolArgs, hold: Duration) -> SearchOutput {
+        if !hold.is_zero() {
+            let (done_tx, done_rx) = futures::channel::oneshot::channel::<()>();
+            std::thread::spawn(move || {
+                std::thread::sleep(hold);
+                let _ = done_tx.send(());
+            });
+            let _ = done_rx.await;
+        }
+        ANSWERED.fetch_add(1, Ordering::SeqCst);
+        let results = format!(
+            "{LOCAL_RESULTS_MARKER} for {:?}: no request left this process (#2022)",
+            args.query
+        );
+        SearchOutput {
+            query: args.query,
+            results,
+        }
+    }
 }
 
 /// Serializes webfetch / websearch structured results into a JSON Value (the string the

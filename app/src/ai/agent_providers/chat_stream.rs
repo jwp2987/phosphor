@@ -9603,6 +9603,17 @@ async fn dispatch_byop_web_tool(
             tools::websearch::WEBSEARCH.parameters,
         ) {
             Ok(args) => {
+                // #2022: a unit test (always) and a `test-util` build that asked for it get a
+                // local answer here; nothing is sent to the search endpoint. Everything above
+                // (the profile switch, the argument parse and its errors) and below (the
+                // result's shape) is the code a real search runs through.
+                #[cfg(any(test, feature = "test-util"))]
+                {
+                    if let Some(hold) = web_runtime::search_test_hook::hold() {
+                        let out = web_runtime::search_test_hook::answer(args, hold).await;
+                        return web_runtime::search_output_to_json(&out);
+                    }
+                }
                 let api_key = std::env::var("EXA_API_KEY").ok();
                 match web_runtime::run_websearch(&client, args, api_key.as_deref(), None).await {
                     Ok(out) => web_runtime::search_output_to_json(&out),
@@ -15042,6 +15053,58 @@ mod dispatch_byop_web_tool_tests {
                 || message.to_lowercase().contains("disabled"),
             "error message should explain the search was rejected because web search is \
              disabled, got: {message}"
+        );
+    }
+
+    /// #2022: with web access ON, a websearch dispatched in a unit test is answered inside the
+    /// process (`web_runtime::search_test_hook`); the query is not sent anywhere. The result
+    /// has the shape of a real one, so the stream loop and the model see an ordinary search.
+    #[tokio::test]
+    async fn websearch_is_answered_locally_in_a_unit_test() {
+        use tools::web_runtime::search_test_hook;
+
+        let before = search_test_hook::answered();
+        let args = serde_json::json!({ "query": "rust" }).to_string();
+
+        let result = dispatch_byop_web_tool(tools::websearch::TOOL_NAME, &args, true).await;
+
+        assert!(
+            search_test_hook::answered() > before,
+            "the search was not answered by the local hook: {result}"
+        );
+        assert_eq!(
+            result.get("query").and_then(|v| v.as_str()),
+            Some("rust"),
+            "{result}"
+        );
+        assert!(
+            result
+                .get("results")
+                .and_then(|v| v.as_str())
+                .is_some_and(|text| text.starts_with(search_test_hook::LOCAL_RESULTS_MARKER)),
+            "expected the local answer, got: {result}"
+        );
+        assert_eq!(
+            result.get("_byop_intercepted"),
+            Some(&Value::Bool(true)),
+            "a local answer carries the intercept mark like a real one: {result}"
+        );
+    }
+
+    /// The local answer replaces the request only: arguments that do not parse are still the
+    /// dispatcher's `invalid arguments` error, and no search is counted for them.
+    #[tokio::test]
+    async fn websearch_with_unusable_arguments_is_still_an_argument_error() {
+        let result = dispatch_byop_web_tool(tools::websearch::TOOL_NAME, "{", true).await;
+
+        assert_eq!(
+            result.get("error").and_then(|v| v.as_str()),
+            Some("invalid_arguments"),
+            "expected an argument error, got: {result}"
+        );
+        assert!(
+            result.get("results").is_none(),
+            "arguments that do not parse must not be answered as a search: {result}"
         );
     }
 
