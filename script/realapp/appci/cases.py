@@ -51,6 +51,8 @@ PROVING = (
     "routing_typo_head",
     # #1848: the macOS key frame drawn at the end of the key press, on vs off in one run (key -> paint, kl3)
     "latency_paint_ab",
+    # #2039: the macOS echo frame of a key typed into a running program drawn at once, on vs off in one run (key -> frame, key -> presented, kl3)
+    "latency_echo_ab",
     # #1962: a typed character re-renders only the views it changed, on vs off in one run (hop=key_frame_build views= / render_ms)
     "latency_key_views_ab",
     # the ask_user_question card never hangs on "Preparing question..." (#1851)
@@ -4638,6 +4640,12 @@ def c_lat_key(ctx, r):
         r.note("#1176 key -> pty write: no keydown -> `input_order pty_write` pair in the measurement window (input-order logging off, or no key reached the pty)")
     r.metric("typing_ui_items", ui_item_audit(txt))
     r.metric("typing_lock_holds", lock_hold_audit(txt))
+    # #1995 / #2039: the render hops of the whole first run, the command typed into the editor included (its key frames are the terminal-mode editor
+    # typing #1995 asks about: input_notify_causes / input_notify_frames name the ctx.notify() calls of Input before each key frame build), then the
+    # keys typed into the `cat` (key_frame_sched_ms, echo_frames_now: the echo frame drawn at once on macOS). Metrics and one note, never a verdict.
+    hop_m = render_hops.record(r, ui_txt)
+    if render_hops.input_notify_note(hop_m):
+        r.note(render_hops.input_notify_note(hop_m))
     # #1958: what the key -> pty write share is made of. Informational like the #1176 numbers above: how many platform samples the hand-off took
     # while these keys were typed (a fixed build takes one for the first key of the line, none for the rest; before, one per key inside the
     # hand_route log line) and what each cost; on Linux also which way the foreground group's members were found.
@@ -6384,7 +6392,7 @@ import cases_caseintl  # noqa: E402,F401  (group 8: international input, #1466)
 import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen programs, sudo/su, ssh drop+reconnect, kill -9 + corrupt-db restore)
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
 import cases_ctrlc_ab  # noqa: E402,F401  (#1838: ctrl_c_flood_ab, the macOS blocked-frame gate on/off A/B)
-import cases_keyframe_ab  # noqa: E402,F401  (#1848: latency_paint_ab, the macOS key frame at the end of the key press on/off A/B)
+import cases_keyframe_ab  # noqa: E402,F401  (#1848: latency_paint_ab, the macOS key frame at the end of the key press on/off A/B; #2039: latency_echo_ab)
 import cases_viewskip_ab  # noqa: E402,F401  (#1962: latency_key_views_ab, the per-view re-render skips on/off A/B)
 import cases_win_input  # noqa: E402,F401  (#1884/#1888/#1889: Windows input-parity cases: ssh wrapper variants, ps_ctrl_break, ps_fast_command_young_enter)
 import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)

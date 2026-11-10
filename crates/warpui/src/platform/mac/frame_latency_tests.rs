@@ -284,3 +284,202 @@ fn key_frame_now_detail_has_the_fields_the_harness_parses() {
     assert_eq!(key_frame_now_detail(true, 4.256), "drawn=1 ms=4.26");
     assert_eq!(key_frame_now_detail(false, 0.0), "drawn=0 ms=0.00");
 }
+
+// ---- #2039: the echo frame of a key typed into a running program (docs/design/r14-echoframe.md)
+
+const KEY_NS: u64 = 5_000_000_000;
+/// The echo of a local program: the pty read's redraw request about 0.4 ms after the key.
+const ECHO_NS: u64 = KEY_NS + 400_000;
+
+#[test]
+fn the_first_request_after_a_handled_key_is_drawn_at_once() {
+    let requests = RedrawRequests::default();
+    requests.note_key_handled(KEY_NS);
+    let echo = requests.note_request();
+    assert!(requests.echo_frame_due(echo));
+    assert!(requests.begin_echo_frame(true, echo, ECHO_NS));
+    assert_eq!(requests.echo_key_age_ns(), 400_000);
+    requests.note_frame_started();
+    requests.note_frame_submitted();
+    assert!(requests.finish_key_frame());
+    assert!(requests.already_drawn(echo));
+}
+
+#[test]
+fn a_key_press_draws_at_most_one_echo_frame_at_once() {
+    // Enter on a command with a lot of output: the first output frame may go at once, every
+    // frame after it is paced by the display pass as before (#1979, #1838).
+    let requests = RedrawRequests::default();
+    requests.note_key_handled(KEY_NS);
+    let first = requests.note_request();
+    assert!(requests.begin_echo_frame(true, first, ECHO_NS));
+    requests.note_frame_started();
+    requests.note_frame_submitted();
+    assert!(requests.finish_key_frame());
+    for step in 1..100u64 {
+        let output = requests.note_request();
+        assert!(!requests.echo_frame_due(output));
+        assert!(!requests.begin_echo_frame(true, output, ECHO_NS + step * 1_000_000));
+        assert!(!requests.already_drawn(output));
+    }
+}
+
+#[test]
+fn output_with_no_key_press_before_it_always_waits_for_the_display_pass() {
+    let requests = RedrawRequests::default();
+    for step in 0..100u64 {
+        let output = requests.note_request();
+        assert!(!requests.echo_frame_due(output));
+        assert!(!requests.begin_echo_frame(true, output, step * 1_000_000));
+        assert!(!requests.already_drawn(output));
+    }
+}
+
+#[test]
+fn requests_the_key_press_made_itself_are_not_its_echo() {
+    // A key into the editor: its own requests are the key frame's (#1848). Their posted blocks
+    // run after the press and must not spend the echo mark or draw a second frame.
+    let requests = RedrawRequests::default();
+    let at_key_start = requests.latest();
+    let own = requests.note_request();
+    // The key frame was not drawn (a frame was in flight), so `own` is not covered.
+    assert!(!requests.begin_key_frame(false, at_key_start));
+    requests.note_key_handled(KEY_NS);
+    assert!(!requests.echo_frame_due(own));
+    assert!(!requests.begin_echo_frame(true, own, ECHO_NS));
+    // The mark is still there for the request that does follow the press.
+    let echo = requests.note_request();
+    assert!(requests.begin_echo_frame(true, echo, ECHO_NS));
+}
+
+#[test]
+fn the_echo_kill_switch_leaves_every_request_to_the_display_pass() {
+    let requests = RedrawRequests::default();
+    requests.note_key_handled(KEY_NS);
+    let echo = requests.note_request();
+    assert!(!requests.begin_echo_frame(false, echo, ECHO_NS));
+    assert!(!requests.finish_key_frame());
+    assert!(!requests.already_drawn(echo));
+    let later = requests.note_request();
+    assert!(!requests.begin_echo_frame(false, later, ECHO_NS));
+    assert!(!requests.already_drawn(later));
+}
+
+#[test]
+fn a_frame_requested_long_after_the_key_is_not_its_echo() {
+    // A key that got no echo (a password prompt): output much later is ordinary output.
+    let requests = RedrawRequests::default();
+    requests.note_key_handled(KEY_NS);
+    let late = requests.note_request();
+    assert!(!requests.begin_echo_frame(true, late, KEY_NS + ECHO_FRAME_KEY_AGE_MAX_NS + 1));
+    assert!(!requests.already_drawn(late));
+    // The stale mark is spent: the next request is not an echo either.
+    let next = requests.note_request();
+    assert!(!requests.echo_frame_due(next));
+    // At the bound itself the key is still young enough.
+    requests.note_key_handled(KEY_NS);
+    let at_bound = requests.note_request();
+    assert!(requests.begin_echo_frame(true, at_bound, KEY_NS + ECHO_FRAME_KEY_AGE_MAX_NS));
+}
+
+#[test]
+fn an_echo_frame_that_was_not_drawn_covers_nothing() {
+    // The #1838 gate skipped it, the app was borrowed, or no drawable was vended: the block must
+    // still ask AppKit for a display pass, or the echo would never be shown.
+    let requests = RedrawRequests::default();
+    requests.note_key_handled(KEY_NS);
+    let echo = requests.note_request();
+    assert!(requests.begin_echo_frame(true, echo, ECHO_NS));
+    assert!(!requests.finish_key_frame());
+    assert!(!requests.already_drawn(echo));
+}
+
+#[test]
+fn a_drawn_echo_frame_covers_the_requests_made_before_it_began_and_no_later_one() {
+    let requests = RedrawRequests::default();
+    requests.note_key_handled(KEY_NS);
+    // One pty read usually asks more than once (several views notify) before any block runs.
+    let first = requests.note_request();
+    let second = requests.note_request();
+    assert!(requests.begin_echo_frame(true, first, ECHO_NS));
+    let during = requests.note_request();
+    requests.note_frame_submitted();
+    assert!(requests.finish_key_frame());
+    assert!(requests.already_drawn(first));
+    assert!(requests.already_drawn(second));
+    assert!(!requests.already_drawn(during));
+}
+
+#[test]
+fn a_display_pass_that_draws_the_echo_first_clears_the_mark() {
+    // A frame was in flight when the echo's block ran, so the view left it to the display pass
+    // (`layerForFrameNow` is nil and `begin_echo_frame` is never asked). That pass draws the echo;
+    // the output frame after it must not be drawn at once in its place.
+    let requests = RedrawRequests::default();
+    requests.note_key_handled(KEY_NS);
+    let echo = requests.note_request();
+    assert!(requests.echo_frame_due(echo));
+    requests.note_frame_started();
+    let output = requests.note_request();
+    assert!(!requests.echo_frame_due(output));
+    assert!(!requests.begin_echo_frame(true, output, ECHO_NS));
+}
+
+#[test]
+fn a_frame_for_requests_older_than_the_key_keeps_the_mark() {
+    // A display pass that was already pending when the key was pressed shows nothing of the key.
+    let requests = RedrawRequests::default();
+    requests.note_request();
+    requests.note_key_handled(KEY_NS);
+    requests.note_frame_started();
+    let echo = requests.note_request();
+    assert!(requests.begin_echo_frame(true, echo, ECHO_NS));
+}
+
+#[test]
+fn an_echo_frame_never_starts_inside_a_key_frame_and_keeps_its_mark() {
+    let requests = RedrawRequests::default();
+    requests.note_key_handled(KEY_NS);
+    let at_key_start = requests.latest();
+    let key = requests.note_request();
+    assert!(requests.begin_key_frame(true, at_key_start));
+    assert!(!requests.begin_echo_frame(true, key, ECHO_NS));
+    requests.note_frame_submitted();
+    assert!(requests.finish_key_frame());
+    // The refused attempt did not spend the mark of the earlier key press.
+    let echo = requests.note_request();
+    assert!(requests.echo_frame_due(echo));
+}
+
+#[test]
+fn a_newer_key_press_replaces_the_mark_of_one_whose_echo_never_came() {
+    let requests = RedrawRequests::default();
+    requests.note_key_handled(KEY_NS);
+    let second_key_ns = KEY_NS + 10 * ECHO_FRAME_KEY_AGE_MAX_NS;
+    requests.note_key_handled(second_key_ns);
+    let echo = requests.note_request();
+    assert!(requests.begin_echo_frame(true, echo, second_key_ns + 400_000));
+    assert_eq!(requests.echo_key_age_ns(), 400_000);
+}
+
+#[test]
+fn an_untracked_request_is_never_an_echo() {
+    let requests = RedrawRequests::default();
+    requests.note_key_handled(KEY_NS);
+    requests.note_request();
+    assert!(!requests.echo_frame_due(0));
+    assert!(!requests.begin_echo_frame(true, 0, ECHO_NS));
+}
+
+#[test]
+fn echo_frame_now_detail_has_the_fields_the_harness_parses() {
+    // script/realapp/appci/render_hops.py _ECHO_FRAME_NOW.
+    assert_eq!(
+        echo_frame_now_detail(true, 1.234, 0.416),
+        "drawn=1 ms=1.23 key_age_ms=0.42"
+    );
+    assert_eq!(
+        echo_frame_now_detail(false, 0.0, 12.0),
+        "drawn=0 ms=0.00 key_age_ms=12.00"
+    );
+}
