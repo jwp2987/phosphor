@@ -257,7 +257,7 @@ impl PluginCommandRunner for FakeRunner {
 pub(crate) fn without_local_path(command: &str, local: &Path) -> String {
     let local = local.to_string_lossy();
     assert!(!local.is_empty(), "an empty path would match everywhere");
-    command.replace(local.as_ref(), "<local folder>")
+    command.replace(&*local, "<local folder>")
 }
 
 #[test]
