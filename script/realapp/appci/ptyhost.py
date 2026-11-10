@@ -34,6 +34,62 @@ def arm_order(available, requested, chosen):
     return list(available), False
 
 
+# #2051: the console host behind the `app` arm (the app's conpty.dll / OpenConsole) opens every pseudo console by asking ITS terminal for
+# the primary device attributes and waits for the answer before it goes on. Round 12: `conpty first output after 0.01 s: 4 bytes` before any
+# program output on that arm only, the app answered `ESC [ ? 62 c` 47 ms later, and the exec still needed 3 s more than on `inbox` (the
+# start-up probe, which answers nothing: 5 s against 1 s). A POSIX sshd's pty asks its client nothing, and this server stands in for one,
+# so it answers the request itself and does not pass it on (the app's late answer would otherwise arrive as typed input).
+DA1_QUERIES = (b"\x1b[c", b"\x1b[0c")
+DA1_REPLY = b"\x1b[?62c"             # what the app answers (round 12 app log, class=Reply)
+
+
+def strip_startup_da1(first):
+    """-> (the first output chunk without a leading device-attributes request, the request or b"")"""
+    for q in DA1_QUERIES:
+        if first.startswith(q):
+            return first[len(q):], q
+    return first, b""
+
+
+class InputStats:
+    """what the client sent on one session, for the `client input ended` line (#2051: round 12's managed sessions received MORE bytes than the
+    app wrote, about one byte per packet at 1.3 KB/s, and the log could not say what the bytes were)"""
+
+    def __init__(self, now=None):
+        self.t0 = self.t1 = None
+        self.n = self.esc = self.cr = self.lf = self.ctl = self.high = 0
+        self.head = b""
+        self.now = now or time.time
+
+    def add(self, d):
+        t = self.now()
+        if self.t0 is None:
+            self.t0 = t
+        self.t1 = t
+        self.n += len(d)
+        if len(self.head) < 48:
+            self.head += d[:48 - len(self.head)]
+        for b in d:
+            if b == 0x1b:
+                self.esc += 1
+            elif b == 0x0d:
+                self.cr += 1
+            elif b == 0x0a:
+                self.lf += 1
+            elif b < 0x20 or b == 0x7f:
+                self.ctl += 1
+            elif b >= 0x80:
+                self.high += 1
+
+    def text(self):
+        if not self.n:
+            return "nothing received"
+        dur = self.t1 - self.t0
+        rate = (" %.0f bytes/s," % (self.n / dur)) if dur >= 0.5 else ""
+        return "%.1f s first to last byte,%s ESC %d, CR %d, LF %d, other control %d, non-ASCII %d; starts %r" % (
+            dur, rate, self.esc, self.cr, self.lf, self.ctl, self.high, self.head)
+
+
 def msys_path(p):
     """`C:\\a\\b` or `C:/a/b` -> `/c/a/b` (Git for Windows mounts drives at /<letter>); anything else only gets forward slashes"""
     p = p.replace("\\", "/")

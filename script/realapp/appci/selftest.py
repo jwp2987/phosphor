@@ -6403,6 +6403,58 @@ def wrapped_copy_and_vertical_tabs_pure_parts_1976_1990():
 
 
 @check
+def fakesshd_app_arm_da1_and_input_stats_2051():
+    """#2051 (round 12, Windows Git Bash pane): the `app` arm's console host opens with a device-attributes request that a POSIX pty never
+    sends (answered by the test sshd, not passed on), and `client input ended` says how long the client took and what the bytes were;
+    subshell_ready_rc_clear's row says where the setup's time went"""
+    import ptyhost as PH
+    import cases_subshell_ready as sr
+    assert PH.strip_startup_da1(b"\x1b[0c") == (b"", b"\x1b[0c") and PH.strip_startup_da1(b"\x1b[c\x1b[?25l") == (b"\x1b[?25l", b"\x1b[c")
+    for other in (b"", b"PRB1", b"\x1b[6n", b"\x1b]9278;d;00\x07", b"x\x1b[c", b"\x1b[?62c"):       # only a LEADING request is the console host's own
+        assert PH.strip_startup_da1(other) == (other, b""), other
+    assert PH.DA1_REPLY == b"\x1b[?62c"
+    clock = iter([10.0, 10.0, 12.0])
+    st = PH.InputStats(now=lambda: next(clock))
+    assert st.text() == "nothing received"
+    st.add(b"M")
+    st.add(b" if x; then\n\x1b[?62c\r")
+    st.add(b"\x03\xc3\xa9" + b"a" * 100)
+    assert (st.n, st.esc, st.cr, st.lf, st.ctl, st.high) == (123, 1, 1, 1, 1, 2), vars(st)
+    assert len(st.head) == 48 and st.head.startswith(b"M if x; then\n\x1b[?62c\r\x03")
+    t = st.text()
+    assert t.startswith("2.0 s first to last byte, 62 bytes/s, ESC 1, CR 1, LF 1, other control 1, non-ASCII 2; starts b'M if x"), t
+    quick = PH.InputStats(now=lambda: 5.0)
+    quick.add(b"ab")
+    assert "bytes/s" not in quick.text() and quick.text().startswith("0.0 s first to last byte, ESC 0"), quick.text()
+    fs = open(os.path.join(HERE, "fakesshd_win.py")).read()
+    compile(fs, "fakesshd_win.py", "exec")
+    for needle in ('if arm == "app":', "d, asked = ptyhost.strip_startup_da1(d)", "cp.write(ptyhost.DA1_REPLY)", "stats = ptyhost.InputStats()",
+                   "stats.add(d)", "written to the pseudo console (%s)\" % (got, chunks, wrote, stats.text())", "(starts %s)"):
+        assert needle in fs, needle
+    assert fs.index('arm = "inbox"') < fs.index("if kind == \"shell\":")        # a shell request keeps kernel32's console and is never answered for
+    import cases_caseremote as rm
+    assert rm.sshd_input_bytes(["client input ended: 78814 bytes in 69915 chunks, 78814 written to the pseudo console (55.0 s first to last byte, "
+                                "1433 bytes/s, ESC 3, CR 2, LF 2100, other control 2, non-ASCII 0; starts b' if')"]) == 78814
+    # the round 12 agent-mode log, cut to the lines that matter
+    log = "\n".join([
+        "x hop=subshell_setup_armed trigger=banner t=1",
+        "x hop=subshell_ready_judged source=armed decision=Write(None) kind=Unknown leader=Unreadable tail=ShellPrompt t=1",
+        "x hop=subshell_ready_judged source=output decision=Wait(LineDirty) kind=Unknown t=2",
+        "x hop=subshell_setup_progress kind=StageTwoChunk gen=3 seq=1 age_ms=282 t=3",
+        "x hop=subshell_setup_progress kind=Marker gen=3 seq=2 age_ms=282 t=3",
+        "x hop=subshell_setup_progress kind=InitSubshell gen=3 seq=3 age_ms=1189 t=4",
+        "x hop=subshell_setup_progress kind=InitShell gen=4 seq=6 age_ms=2778 t=5",
+        "x hop=subshell_setup_progress kind=Bootstrapped gen=4 seq=7 age_ms=3742 t=6"])
+    assert sr.setup_timeline(log) == "armed decision=Write(None); InitSubshell@1189 ms, InitShell@2778 ms, Bootstrapped@3742 ms", sr.setup_timeline(log)
+    assert sr.setup_timeline("nothing") == "armed decision=not logged; no setup progress event logged"
+    src = open(os.path.join(HERE, "cases_subshell_ready.py")).read()
+    assert 'r.note("clear: setup " + setup_timeline(ctx.log_since(off)))' in src
+    assert src.count('r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)" % dt)') == 2     # the budget is not touched
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
+    assert "fakesshd_app_arm_da1_and_input_stats_2051" in doc and "#2051" in doc
+
+
+@check
 def fakesshd_exec_pty_arms_2007():
     """#2007: the Windows fake sshd's exec + pty (a managed ssh session) is served by a measured arm: the pure parts of ptyhost.py, the probe's
     remote command run for real on a pty (POSIX), and the wiring in fakesshd_win.py / sshd.py / ssh_diag"""

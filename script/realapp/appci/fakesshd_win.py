@@ -318,6 +318,7 @@ def handle(ch, srv):
     log("session", kind, cmd, "pty" if spty else "nopty")
     try:
         if spty and kind in ("shell", "exec"):
+            arm = "inbox"
             if kind == "shell":
                 cp = ConPty('"%s" --rcfile "%s" -i' % (BASH, os.path.join(RHOME, ".bashrc")), env, RHOME, spty[1], spty[2])
                 log("conpty %s pid" % kind, cp.pid)
@@ -346,13 +347,23 @@ def handle(ch, srv):
             srv.pty[ch.chanid] = cp
 
             def pump_out():
-                t_open, sent, hooks = time.time(), 0, 0
+                t_open, sent, hooks, first_seen = time.time(), 0, 0, False
                 while True:
                     d = cp.read()
                     if not d:
                         break
-                    if not sent:
-                        log("conpty first output after %.2f s: %d bytes" % (time.time() - t_open, len(d)))   # r18ct: 0 bytes ever = the shell's output is not on the pseudo console
+                    if not sent and not first_seen:
+                        first_seen = True
+                        log("conpty first output after %.2f s: %d bytes (starts %s)" % (time.time() - t_open, len(d), d[:16].hex()))   # r18ct: 0 bytes ever = the shell's output is not on the pseudo console
+                        if arm == "app":
+                            # #2051: the app's console host asks its terminal for the device attributes before anything runs and waits for the
+                            # answer (about 3 s per exec in round 12). A POSIX pty asks nothing: answered here, not passed on (ptyhost.py).
+                            d, asked = ptyhost.strip_startup_da1(d)
+                            if asked:
+                                cp.write(ptyhost.DA1_REPLY)
+                                log("console host start-up request %s answered by the test sshd, not sent to the client" % asked.hex())
+                            if not d:
+                                continue
                     hooks += d.count(b"\x1b]9278;")
                     sent += len(d)
                     t_s = time.time()
@@ -397,6 +408,7 @@ def handle(ch, srv):
             # the client never sent the paste, or the pseudo console stopped reading it. The input side is now accounted: received vs written, logged
             # BEFORE a write every 64 KB (so a write that never returns shows as received > written), and any write that took over 2 s.
             got, wrote, chunks, next_log = 0, 0, 0, 65536
+            stats = ptyhost.InputStats()        # #2051: how long the client took and what the bytes were
             while not ch.closed:
                 try:
                     d = ch.recv(65536)
@@ -406,6 +418,7 @@ def handle(ch, srv):
                     break
                 got += len(d)
                 chunks += 1
+                stats.add(d)
                 if got >= next_log:
                     log("client input so far: %d bytes in %d chunks, %d written to the pseudo console" % (got, chunks, wrote))
                     next_log = got + 65536
@@ -414,7 +427,7 @@ def handle(ch, srv):
                 wrote += len(d)
                 if time.time() - t_w > 2.0:
                     log("conpty input: writing %d bytes took %.1f s (the pseudo console stopped reading input; %d of %d written)" % (len(d), time.time() - t_w, wrote, got))
-            log("client input ended: %d bytes in %d chunks, %d written to the pseudo console" % (got, chunks, wrote))
+            log("client input ended: %d bytes in %d chunks, %d written to the pseudo console (%s)" % (got, chunks, wrote, stats.text()))
             code = cp.exit_code() if cp.exited() else 0
             try:
                 cp.close()

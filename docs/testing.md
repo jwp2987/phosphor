@@ -5062,3 +5062,34 @@ Found by reading and filed, not changed: #2046 (Ctrl-D is held for the whole of 
 `ctrl_c_pty_write bytes=1` after `ctrl_c_route route=pty`, no `CommandFinished` for the ssh block, and exact effect files (these rounds have never run
 on fish or nu, so a new finding is possible); `lab_enter_start.nu` PASS; `lab_enter_no_network_wait.nu` and `lab_fam_agent_context.nu` NOREF with
 their own reasons and no `exit` line; the four agent-mode nu rows FAIL as now. 4 FAIL expected instead of 21 if nothing new appears.
+
+## Round 13: the Git Bash ssh failures of round 12 on Windows (build/r12a; design `docs/design/r13-winssh2.md`; #2051; nothing run on Windows when written)
+
+Round 12 was the first run in which the Windows test sshd served a managed session (#2043 and #2007 worked: the server started, the `app` arm
+measured byte-exact both ways, both remote hooks arrived). Every ssh case of the Git Bash pane that takes the managed one-connection path
+(#1933) then failed, in both modes: `ssh_connect_typing`, `ssh_enter_then_immediate_command`, `ssh_nested_typeahead`, `remote_tab_no_helper`,
+`remote_tab_enter_no_helper`, `ssh_gitbash_managed`, `ssh_gitbash_typeahead_managed` and their `pane_not_local_after_*` rows.
+
+| rows | verdict | evidence |
+|---|---|---|
+| the seven cases above, terminal@gitbash and agent@gitbash | **APP #2051** (design of #1933), worked: nothing; a design is proposed | the app writes the 62 KB bootstrap in one pty write on InitShell; the test sshd takes every byte at once (`written` equals `received` on every line) and receives about one byte per packet at 1.1 to 1.5 KB/s (`65536 bytes in 57530 chunks` after 51 s); the app's nets end the wait after 6.5 s and 15 s. Round r18u28 measured the same rate for a paste into a plain ssh of the same pane, and for the reference console with no app: msys `ssh.exe` reads a Windows console that slowly |
+| `subshell_ready_rc_clear`, agent@gitbash: "ran 3.75 s after its Enter (budget 2 s)" | **not an app wait**: the shell's own setup time on that machine; the budget is unchanged and the row stays a FAIL when it happens | app log: `subshell_ready_judged source=armed decision=Write(None)` at age 0 (the inner prompt was already drawn when Ctrl-I arrived), the typed line held behind the written setup, `InitSubshell` at 1189 ms, `InitShell` at 2778 ms, `Bootstrapped` at 3742 ms; no net and no judge wait in between. terminal@gitbash passed the same case because there the prompt was not drawn yet (`decision=Wait(Unknown)`), so the line was typed into the inner shell before the setup and ran at once: the two rows measured different orders of the same race against `BANNER_S` |
+
+**Harness changes (no expectation changed; `run.py --self-test` check `fakesshd_app_arm_da1_and_input_stats_2051`).**
+
+- `fakesshd_win.py`, `app` arm only: the app's console host opens every pseudo console with a device-attributes request to its terminal and
+  waits for the answer (`conpty first output after 0.01 s: 4 bytes` before any program output; the start-up probe took 5 s on `app` against 1 s
+  on `inbox`; in a session the remote's hooks came 4.3 s after the mode byte). A POSIX sshd's pty asks its client nothing, so the test sshd
+  answers the request itself (`ptyhost.DA1_REPLY`, what the app answers) and does not pass it on. The log line says so, and the first-output
+  line now carries the first 16 bytes in hex, so the next run shows the request as it is.
+- `client input ended: N bytes in M chunks, W written to the pseudo console (...)` now ends with the time from the first to the last byte, the
+  rate and what the bytes were (ESC, CR, LF, other control, non-ASCII, the first 48 bytes): round 12's sessions received more bytes (78814 and
+  still coming) than the app wrote (62007), and the log could not say what they were. `cases_caseremote.sshd_input_bytes` reads the line as before.
+- `subshell_ready_rc_clear` notes where the setup's time went (`cases_subshell_ready.setup_timeline`: the judge's decision when the setup was
+  armed and the age of each progress event). The 2 s budget and every check are as they were.
+
+**What the next Windows run should show.** The seven Git Bash ssh cases FAIL as in round 12 until #2051 is decided and built (the harness changes
+do not touch what they judge). In `sshd.log`: `console host start-up request 1b5b3063 answered by the test sshd` (or `1b5b63`) once per exec on
+the `app` arm, the start-up probe of that arm in about 1 s instead of 5 s, and the composition of the client input on every `client input ended`
+line. `subshell_ready_rc_clear` carries its `clear: setup armed decision=...` note in both panes and modes; it fails whenever Ctrl-I arrives after
+the inner prompt on that machine (the setup then takes over 2 s there), and passes when the line gets in first.

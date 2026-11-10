@@ -62,6 +62,24 @@ def hops(ctx, off):
     return hops_in(ctx.log_since(off))
 
 
+def setup_timeline(text):
+    """pure: where a setup's time went, from an app-log excerpt: the judge's decision when the setup was armed, then every progress event
+    of the setup with its age (ms since the first setup line was written), e.g. `armed decision=Write(None); InitSubshell@1189 ms,
+    InitShell@2778 ms, Bootstrapped@3742 ms`. Chunk and marker echoes are left out. #2051 follow-up (round 12, agent mode, Git Bash pane):
+    subshell_ready_rc_clear's inner line ran 3.75 s after its Enter and the row could not say whether the app had waited (a judge, a net)
+    or the shell had worked that long; the app log showed the setup written at age 0 and Bootstrapped at 3742 ms."""
+    armed, stages = None, []
+    for ln in text.splitlines():
+        if armed is None and "hop=subshell_ready_judged source=armed" in ln and "decision=" in ln:
+            armed = ln.split("decision=", 1)[1].split(" ", 1)[0]
+        if "hop=subshell_setup_progress kind=" in ln and "age_ms=" in ln:
+            kind = ln.split("kind=", 1)[1].split(" ", 1)[0]
+            age = ln.split("age_ms=", 1)[1].split(" ", 1)[0]
+            if kind not in ("StageTwoChunk", "Marker") and age.isdigit():
+                stages.append("%s@%s ms" % (kind, age))
+    return "armed decision=%s; %s" % (armed or "not logged", ", ".join(stages) or "no setup progress event logged")
+
+
 def first_index(hs, name, contains=None):
     for i, (h, ln) in enumerate(hs):
         if h == name and (contains is None or contains in ln):
@@ -674,6 +692,9 @@ def c_ready_rc_clear(ctx, r):
     tok, dt = run_in_inner(ctx, r, "clear", "bash", f)
     if dt is not None:
         r.metric("clear_inner_line_after_enter_s", round(dt, 3))
+        # where the time went, in the row (the budget below is unchanged): a line typed behind a setup that was already written is held to
+        # the setup's own end, so its time is the shell's setup time; a line typed before the write runs at once (setup_timeline)
+        r.note("clear: setup " + setup_timeline(ctx.log_since(off)))
         r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)" % dt)
     r.check(first_index(hops(ctx, off), "subshell_setup_ready_write") is not None, "the setup was written after the clear")
     leave_and_prove_parent(ctx, r, "clear", f, [tok])
