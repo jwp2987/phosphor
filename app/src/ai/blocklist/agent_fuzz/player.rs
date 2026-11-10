@@ -11,6 +11,7 @@ use fake_llm::scenario::{CallId, Chaos, Match, Reply, Scenario, StatusKind, Turn
 use crate::ai::agent_providers::fake_stream_seam::{
     RecordedRequest, RecordedRole, SeamError, SeamEvent, SeamTurn,
 };
+use crate::ai::agent_providers::tools;
 
 /// What one scripted reply emitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,8 +25,57 @@ pub struct EmittedTurn {
     pub call_ids: Vec<String>,
     /// Chaos kinds in force for this reply (the I6 allowlist keys on them).
     pub chaos: Vec<&'static str>,
-    /// The reply left the stream unfinished or failed it, so no calls were committed.
+    /// The reply left the stream unfinished or failed it, so its calls were never committed
+    /// (the commit is the stream loop's single `final_messages` yield after the `End`). What
+    /// such a reply can still leave in the conversation is in `early_call_ids`.
     pub aborted: bool,
+    /// The calls the app may have put into the conversation BEFORE the reply was committed: it
+    /// shows a call's card as soon as the call's chunk parses (`chat_stream.rs`, the
+    /// `ToolCallChunk` arm), as a tool-call message of its own, and that message stays when the
+    /// stream then breaks or is cancelled (the next request answers it with a cancelled
+    /// result). These are the ids the stream delivered, in order, up to the first call of a
+    /// tool that gets no early card: a call is shown early only when every call before it was.
+    /// An id repeated in the reply is listed once (a repeat updates the same card); "" is an id
+    /// the app invents. The app may have shown any leading part of this list (a call whose
+    /// arguments do not parse, or that is refused at dispatch, also ends the run), so I4 accepts
+    /// a prefix of it for a reply that was aborted or cut. Empty when nothing was delivered.
+    pub early_call_ids: Vec<String>,
+}
+
+/// The tools whose calls get no card while the reply streams (`chat_stream.rs`, the
+/// `ToolCallChunk` arm lists them: the web tools and the codebase tools have their own loading
+/// frames, `todowrite` is turned into a todo update, `read_skill` binds only final arguments).
+fn gets_no_early_card(tool: &str) -> bool {
+    [
+        tools::webfetch::TOOL_NAME,
+        tools::websearch::TOOL_NAME,
+        tools::codebase::TOOL_NAME,
+        tools::get_relevant_files::TOOL_NAME,
+        tools::todowrite::TOOL_NAME,
+        tools::skill::READ_SKILL.name,
+    ]
+    .contains(&tool)
+}
+
+/// [`EmittedTurn::early_call_ids`] for the events a stream delivers.
+fn early_call_ids(events: &[SeamEvent]) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for event in events {
+        match event {
+            SeamEvent::ToolCall { id, name, .. } => {
+                if gets_no_early_card(name) {
+                    break;
+                }
+                if id.is_empty() || !ids.contains(id) {
+                    ids.push(id.clone());
+                }
+            }
+            // Nothing is delivered after a failure or a stall.
+            SeamEvent::Fail(_) | SeamEvent::Stall => break,
+            SeamEvent::Text(_) | SeamEvent::Reasoning(_) | SeamEvent::Wait(_) => {}
+        }
+    }
+    ids
 }
 
 #[derive(Default)]
@@ -85,6 +135,7 @@ impl Player {
                     call_ids: Vec::new(),
                     chaos: Vec::new(),
                     aborted: false,
+                    early_call_ids: Vec::new(),
                 },
             ),
         };
@@ -174,12 +225,19 @@ fn render_turn(
             .events
             .iter()
             .any(|e| matches!(e, SeamEvent::Fail(_) | SeamEvent::Stall));
+    // A failed open delivers no event at all.
+    let early_call_ids = if seam.open_error.is_some() {
+        Vec::new()
+    } else {
+        early_call_ids(&seam.events)
+    };
     let record = EmittedTurn {
         request_index,
         turn: Some(turn_index),
         call_ids: if aborted { Vec::new() } else { ids },
         chaos: chaos.kinds(),
         aborted,
+        early_call_ids,
     };
     (seam, record)
 }
@@ -296,5 +354,75 @@ mod tests {
         let emitted = player.emitted();
         assert!(emitted[0].aborted);
         assert!(emitted[0].call_ids.is_empty());
+        // The call was delivered before the connection dropped: the app may have shown it.
+        assert_eq!(emitted[0].early_call_ids.len(), 1);
+        assert!(!emitted[0].early_call_ids[0].is_empty());
+    }
+
+    /// What a reply may leave behind before it is committed: the delivered calls up to the
+    /// first one whose tool gets no early card, a repeated id once, nothing after a failure
+    /// and nothing at all when the open failed.
+    #[test]
+    fn early_calls_are_the_delivered_run_before_the_first_tool_without_an_early_card() {
+        let literal = |id: &str| CallId::Literal { id: id.to_owned() };
+        let calls = vec![
+            Call::new(literal("a"), "grep", Args::Valid),
+            Call::new(literal("a"), "grep", Args::Valid),
+            Call::new(literal("b"), "grep", Args::Valid),
+            Call::new(literal("w"), "websearch", Args::Valid),
+            Call::new(literal("c"), "grep", Args::Valid),
+        ];
+        let whole = Player::new(scenario_with(
+            Reply::ToolCalls {
+                calls: calls.clone(),
+            },
+            None,
+        ));
+        whole.answer(&request(0));
+        let emitted = whole.emitted();
+        assert!(!emitted[0].aborted);
+        assert_eq!(emitted[0].call_ids, ["a", "a", "b", "w", "c"]);
+        assert_eq!(emitted[0].early_call_ids, ["a", "b"]);
+
+        // Cut after the first event: only that call was delivered.
+        let cut = Chaos {
+            disconnect_after: Some(1),
+            ..Chaos::default()
+        };
+        let broken = Player::new(scenario_with(
+            Reply::ToolCalls {
+                calls: calls.clone(),
+            },
+            Some(cut),
+        ));
+        broken.answer(&request(0));
+        let emitted = broken.emitted();
+        assert!(emitted[0].aborted);
+        assert_eq!(emitted[0].early_call_ids, ["a"]);
+
+        // A reply that starts with a search shows nothing early.
+        let search_first = vec![
+            Call::new(literal("w"), "websearch", Args::Valid),
+            Call::new(literal("a"), "grep", Args::Valid),
+        ];
+        let player = Player::new(scenario_with(
+            Reply::ToolCalls {
+                calls: search_first,
+            },
+            None,
+        ));
+        player.answer(&request(0));
+        assert!(player.emitted()[0].early_call_ids.is_empty());
+
+        // A failed open delivers nothing.
+        let refused = Chaos {
+            context_overflow: true,
+            ..Chaos::default()
+        };
+        let player = Player::new(scenario_with(Reply::ToolCalls { calls }, Some(refused)));
+        player.answer(&request(0));
+        let emitted = player.emitted();
+        assert!(emitted[0].aborted);
+        assert!(emitted[0].early_call_ids.is_empty());
     }
 }

@@ -1,0 +1,96 @@
+{
+  "v": 1,
+  "seed": 0,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "run_shell_command",
+            "args": {
+              "kind": "command",
+              "cmd": "c0"
+            }
+          }
+        ]
+      },
+      "chaos": {
+        "delay_ms": 0,
+        "disconnect_after": 1,
+        "context_overflow": false,
+        "never_end": false
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "websearch",
+            "args": {
+              "kind": "wrong_types"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "env": {
+    "commands": {
+      "c0": {
+        "kind": "silent",
+        "s": "y 😀😀hsd😀\nt\\é"
+      }
+    }
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "fast"
+    },
+    {
+      "op": {
+        "kind": "follow_up",
+        "text": "n\nbe\\✓日emwhz \neoéz\ni éq \"jukg\"b😀m日日j\\oo p 😀rz"
+      },
+      "timing": "fast"
+    },
+    {
+      "op": {
+        "kind": "follow_up",
+        "text": "😀g日\\ l "
+      },
+      "timing": "fast"
+    },
+    {
+      "op": {
+        "kind": "reject"
+      },
+      "timing": "fast"
+    },
+    {
+      "op": {
+        "kind": "close_tab"
+      },
+      "timing": "fast"
+    }
+  ],
+  "name": "i4_broken_reply_then_follow_up_cuts_search"
+}

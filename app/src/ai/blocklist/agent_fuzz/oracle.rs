@@ -132,11 +132,12 @@ impl Oracle {
 
     /// I4: the user sent a message, pressed Stop, or pressed Ctrl-C with no command running
     /// while the reply to request `request_index` was still in flight. That cancels the stream.
-    /// A reply's tool calls enter the conversation in one piece when the stream loop has gone
-    /// through all of them (`chat_stream.rs`, the single `final_messages` yield), and a tool the
-    /// app runs inside the stream (websearch, webfetch) awaits its network call before that, so
-    /// a reply the script emitted in full may never have been committed. It is then in no later
-    /// request, and that is the user's cancel, not a lost call.
+    /// A reply's tool calls are committed in one piece when the stream loop has gone through
+    /// all of them (`chat_stream.rs`, the single `final_messages` yield), and a tool the app
+    /// runs inside the stream (websearch, webfetch) awaits its network call before that, so a
+    /// reply the script emitted in full may never have been committed. Later requests then hold
+    /// nothing of it, or only the calls whose cards the app had already shown while the reply
+    /// streamed ([`EmittedTurn::early_call_ids`]); that is the user's cancel, not a lost call.
     pub fn reply_cut(&mut self, request_index: usize) {
         self.cut_replies.insert(request_index);
     }
@@ -535,49 +536,116 @@ pub fn check_tool_messages(
         .filter(|m| m.role == RecordedRole::Assistant && !m.tool_call_ids.is_empty())
         .map(|m| &m.tool_call_ids)
         .collect();
+    // The replies that can have put calls into the conversation: a finished reply with calls,
+    // and a reply whose stream broke after it delivered calls the app shows early.
     let scripted: Vec<&EmittedTurn> = emitted
         .iter()
-        .filter(|t| t.request_index < last.index && !t.aborted && !t.call_ids.is_empty())
+        .filter(|t| t.request_index < last.index)
+        .filter(|t| {
+            if t.aborted {
+                !t.early_call_ids.is_empty()
+            } else {
+                !t.call_ids.is_empty()
+            }
+        })
         .collect();
-    // A reply the user cut is in the request whole or not at all: when the request's calls do
-    // not match it, it is stepped over and the same calls are held against the reply before
-    // it. Any other reply must match in place, exactly as before. A request whose calls match
-    // no reply at all still fails, against the newest reply that was stepped over.
+    // Every reply must be in the request whole and in place, with two named exceptions, both
+    // for a reply that never reached its commit:
+    //
+    // * a reply the user CUT (`cut`) is whole (the cancel came after the commit), or absent,
+    //   or there with only its early calls;
+    // * a reply whose stream BROKE (`aborted`: a disconnect, a stall, no terminal `End`) is
+    //   absent, or there with only its early calls. It is never whole.
+    //
+    // "Its early calls" is a leading part of `EmittedTurn::early_call_ids`: the cards the app
+    // showed while the reply streamed stay in the conversation, and the next request answers
+    // them with a cancelled result. When the request's calls fit neither form, such a reply is
+    // passed over and the same calls are held against the reply before it. A reply that is
+    // neither cut nor aborted is never passed over, and calls that fit no reply at all fail.
     let mut scripted = scripted.into_iter().rev();
     for got in in_request.iter().rev() {
-        let mut stepped_over: Option<&EmittedTurn> = None;
+        let mut passed_over: Vec<&EmittedTurn> = Vec::new();
         loop {
             let Some(turn) = scripted.next() else {
-                match stepped_over {
-                    Some(turn) => return Err(wrong_calls(got, &turn.call_ids)),
+                if passed_over.is_empty() {
                     // More call groups in the request than replies on record: not judged,
                     // as before.
-                    None => return Ok(()),
+                    return Ok(());
                 }
+                return Err(in_no_reply(got, &passed_over, cut));
             };
-            let want = uniquify(&turn.call_ids);
-            let ok = got.len() == want.len()
-                && got.iter().zip(&want).all(|(g, w)| w.is_empty() || g == w);
-            if ok {
+            let was_cut = cut.contains(&turn.request_index);
+            if !turn.aborted && same_calls(got, &uniquify(&turn.call_ids)) {
                 break;
             }
-            if !cut.contains(&turn.request_index) {
-                return Err(wrong_calls(got, &turn.call_ids));
+            if (turn.aborted || was_cut) && is_leading_part(got, &turn.early_call_ids) {
+                break;
             }
-            if stepped_over.is_none() {
-                stepped_over = Some(turn);
+            if !turn.aborted && !was_cut {
+                return Err(wrong_calls(got, turn));
             }
+            passed_over.push(turn);
         }
     }
     Ok(())
 }
 
-fn wrong_calls(got: &[String], sent: &[String]) -> Violation {
+/// `got` is `want`, id for id ("" in `want` = an id the app invented).
+fn same_calls(got: &[String], want: &[String]) -> bool {
+    got.len() == want.len() && got.iter().zip(want).all(|(g, w)| w.is_empty() || g == w)
+}
+
+/// `got` is a non-empty leading part of `early` (or all of it).
+fn is_leading_part(got: &[String], early: &[String]) -> bool {
+    !got.is_empty() && got.len() <= early.len() && same_calls(got, &early[..got.len()])
+}
+
+/// The calls of a reply that finished and that the user did not cut are not in the request in
+/// its place.
+fn wrong_calls(got: &[String], turn: &EmittedTurn) -> Violation {
     violation(
         "I4",
         format!(
-            "the request holds calls {got:?}, but the model emitted {sent:?} (expected {:?})",
-            uniquify(sent)
+            "the request holds calls {got:?}, but the model emitted {:?} (expected {:?}) in its \
+             reply to request {}, which finished and was not cut by the user",
+            turn.call_ids,
+            uniquify(&turn.call_ids),
+            turn.request_index
+        ),
+    )
+}
+
+/// The request holds calls that fit none of the replies they were held against. Every reply in
+/// `passed_over` (newest first) was cut or broke, and is named with the forms it may take, so
+/// the message says by itself whether the cut was on record.
+fn in_no_reply(got: &[String], passed_over: &[&EmittedTurn], cut: &BTreeSet<usize>) -> Violation {
+    let replies: Vec<String> = passed_over
+        .iter()
+        .map(|turn| {
+            if turn.aborted {
+                format!(
+                    "the reply to request {} (its stream broke: absent, or a leading part of \
+                     the calls shown early {:?})",
+                    turn.request_index, turn.early_call_ids
+                )
+            } else {
+                debug_assert!(cut.contains(&turn.request_index));
+                format!(
+                    "the reply to request {} (cut by the user: whole {:?}, or absent, or a \
+                     leading part of the calls shown early {:?})",
+                    turn.request_index,
+                    uniquify(&turn.call_ids),
+                    turn.early_call_ids
+                )
+            }
+        })
+        .collect();
+    violation(
+        "I4",
+        format!(
+            "the request holds calls {got:?}, which are in no reply. Held against, newest \
+             first: {}; no earlier reply is left",
+            replies.join("; ")
         ),
     )
 }
@@ -892,6 +960,7 @@ mod tests {
             call_ids: vec![call.to_owned()],
             chaos: Vec::new(),
             aborted: false,
+            early_call_ids: vec![call.to_owned()],
         };
         let requests = vec![
             RecordedRequest {
@@ -938,6 +1007,7 @@ mod tests {
             call_ids: vec![call.to_owned()],
             chaos: Vec::new(),
             aborted: false,
+            early_call_ids: vec![call.to_owned()],
         };
         let last = |calls: &[&str]| {
             let mut messages = vec![msg(RecordedRole::User, &[], &[])];
@@ -987,6 +1057,144 @@ mod tests {
         let err = check_tool_messages(&last(&["zz"]), &emitted, &all_cut).unwrap_err();
         assert_eq!(err.invariant, "I4");
         assert!(err.detail.contains("\"zz\""), "{}", err.detail);
+    }
+
+    /// One reply, as the player records it: `calls` on the wire, `early` the leading run the
+    /// app may show before the commit, `aborted` = the stream broke (no calls committed).
+    fn reply(request_index: usize, calls: &[&str], early: &[&str], aborted: bool) -> EmittedTurn {
+        let owned = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        EmittedTurn {
+            request_index,
+            turn: Some(request_index),
+            call_ids: if aborted { Vec::new() } else { owned(calls) },
+            chaos: Vec::new(),
+            aborted,
+            early_call_ids: owned(early),
+        }
+    }
+
+    /// A request with one assistant message per group of calls, each answered in order.
+    fn request_holding(index: usize, groups: &[&[&str]]) -> Vec<RecordedRequest> {
+        let mut messages = vec![msg(RecordedRole::User, &[], &[])];
+        for group in groups {
+            messages.push(msg(RecordedRole::Assistant, group, &[]));
+            for call in *group {
+                messages.push(msg(RecordedRole::Tool, &[], &[*call]));
+            }
+        }
+        messages.push(msg(RecordedRole::User, &[], &[]));
+        vec![RecordedRequest {
+            index,
+            model_id: "m".into(),
+            messages,
+            tools_offered: Vec::new(),
+        }]
+    }
+
+    /// The round 11 failure of both paced fuzz tests (build/r11a, the round 10 message again):
+    /// the reply to request 0 delivers one command call and the connection drops. The app had
+    /// shown the call's card, so the call stays in the conversation and is answered as
+    /// cancelled. The user sends a message (request 1), its reply asks for a websearch, and a
+    /// second message cuts that reply while the search is out. Request 2 then holds the call
+    /// of the BROKEN reply and nothing of the cut one. Fails on the check as it was: it kept
+    /// no record of what a broken reply delivered, passed over the cut reply, found no reply
+    /// left and said "the request holds [c0], but the model emitted [c1]".
+    #[test]
+    fn a_broken_reply_leaves_the_calls_it_showed_early_and_nothing_else() {
+        let emitted = [
+            reply(0, &["c0"], &["c0"], true),
+            reply(1, &["c1"], &[], false),
+        ];
+        let cut_1 = BTreeSet::from([1]);
+        let none = BTreeSet::new();
+        assert!(check_tool_messages(&request_holding(2, &[&["c0"]]), &emitted, &cut_1).is_ok());
+        // The search reply made it in after all (the cut came after its commit).
+        assert!(
+            check_tool_messages(&request_holding(2, &[&["c0"], &["c1"]]), &emitted, &cut_1).is_ok()
+        );
+
+        // Still a lost reply when the user did not cut reply 1.
+        let err =
+            check_tool_messages(&request_holding(2, &[&["c0"]]), &emitted, &none).unwrap_err();
+        assert_eq!(err.invariant, "I4");
+        assert!(err.detail.contains("\"c1\""), "{}", err.detail);
+
+        // A broken reply that delivered no call explains nothing: the same request fails, and
+        // the message names the replies it was held against.
+        let delivered_nothing = [reply(0, &["c0"], &[], true), reply(1, &["c1"], &[], false)];
+        let err = check_tool_messages(&request_holding(2, &[&["c0"]]), &delivered_nothing, &cut_1)
+            .unwrap_err();
+        assert_eq!(err.invariant, "I4");
+        assert!(err.detail.contains("in no reply"), "{}", err.detail);
+        assert!(err.detail.contains("cut by the user"), "{}", err.detail);
+
+        // A broken reply between two finished ones: a leading part of what it delivered may sit
+        // between their calls (it used to shift the pairs and fail), or nothing; a call it
+        // delivered LATER without the ones before it may not, and it is never there whole
+        // beyond what it showed early.
+        let emitted = [
+            reply(0, &["a"], &["a"], false),
+            reply(1, &["p", "q", "w"], &["p", "q"], true),
+            reply(2, &["b"], &["b"], false),
+        ];
+        for ok in [
+            &[&["a"][..], &["p", "q"][..], &["b"][..]][..],
+            &[&["a"][..], &["p"][..], &["b"][..]][..],
+            &[&["a"][..], &["b"][..]][..],
+        ] {
+            assert!(
+                check_tool_messages(&request_holding(3, ok), &emitted, &none).is_ok(),
+                "{ok:?}"
+            );
+        }
+        for bad in [
+            &[&["a"][..], &["q"][..], &["b"][..]][..],
+            &[&["a"][..], &["p", "q", "w"][..], &["b"][..]][..],
+            &[&["a"][..], &["zz"][..], &["b"][..]][..],
+        ] {
+            let err = check_tool_messages(&request_holding(3, bad), &emitted, &none).unwrap_err();
+            assert_eq!(err.invariant, "I4", "{bad:?}");
+        }
+        // The finished replies around it are held as strictly as before.
+        let err = check_tool_messages(
+            &request_holding(3, &[&["a"], &["p"], &["other"]]),
+            &emitted,
+            &none,
+        )
+        .unwrap_err();
+        assert!(err.detail.contains("\"b\""), "{}", err.detail);
+    }
+
+    /// A reply the user cut may also be there in part: the cards shown while it streamed stay
+    /// (a command call's card, then the cut lands while the reply's websearch is out). Only a
+    /// leading part of the early calls, and only for a reply that was cut.
+    #[test]
+    fn a_cut_reply_may_be_there_with_only_the_calls_it_showed_early() {
+        let emitted = [
+            reply(0, &["c0"], &["c0"], false),
+            reply(1, &["x", "w"], &["x"], false),
+        ];
+        let cut_1 = BTreeSet::from([1]);
+        let none = BTreeSet::new();
+        for ok in [
+            &[&["c0"][..], &["x"][..]][..],
+            &[&["c0"][..], &["x", "w"][..]][..],
+            &[&["c0"][..]][..],
+        ] {
+            assert!(
+                check_tool_messages(&request_holding(2, ok), &emitted, &cut_1).is_ok(),
+                "{ok:?}"
+            );
+        }
+        // The search call without the command call before it is not a form a cut leaves.
+        let err = check_tool_messages(&request_holding(2, &[&["c0"], &["w"]]), &emitted, &cut_1)
+            .unwrap_err();
+        assert_eq!(err.invariant, "I4");
+        // Not cut: in part is a lost call.
+        let err = check_tool_messages(&request_holding(2, &[&["c0"], &["x"]]), &emitted, &none)
+            .unwrap_err();
+        assert_eq!(err.invariant, "I4");
+        assert!(err.detail.contains("\"w\""), "{}", err.detail);
     }
 
     #[test]
@@ -1221,6 +1429,7 @@ mod tests {
                 call_ids: Vec::new(),
                 chaos: Vec::new(),
                 aborted: failed.contains(&request_index),
+                early_call_ids: Vec::new(),
             })
             .collect()
     }
