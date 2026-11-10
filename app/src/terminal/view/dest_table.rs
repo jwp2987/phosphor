@@ -736,7 +736,7 @@ impl TerminalView {
         )
     }
 
-    /// #1900: [`crate::terminal::input::Input::queue_behind_enter`] for SYNCED input: the text
+    /// #1900: the input's `queue_behind_enter` (`input/enter_queue.rs`) for SYNCED input: the text
     /// (or Enter) goes behind the Enter whose gate is open, in arrival order, as an entry that
     /// still says it is synced. The input's own offer has no origin to give (it is the editor's
     /// route for typed keys), so the view offers to the same pane queue itself. `stamp` is the
