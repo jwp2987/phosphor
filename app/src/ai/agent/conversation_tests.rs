@@ -1598,3 +1598,107 @@ fn a_restored_turn_with_every_tool_call_answered_is_successful() {
     ]);
     assert_eq!(not_client_calls.status(), &ConversationStatus::Success);
 }
+
+/// The passive code diff's own request: a system query, not something the user typed.
+fn auto_code_diff_message(id: &str, request_id: &str) -> api::Message {
+    api::Message {
+        id: id.to_string(),
+        task_id: "root-task".to_string(),
+        server_message_data: String::new(),
+        citations: vec![],
+        fetched_memories: vec![],
+        message: Some(api::message::Message::SystemQuery(
+            api::message::SystemQuery {
+                r#type: Some(api::message::system_query::Type::AutoCodeDiff(
+                    api::message::AutoCodeDiff {
+                        query: "fix the failing build".to_string(),
+                    },
+                )),
+                context: None,
+            },
+        )),
+        request_id: request_id.to_string(),
+        timestamp: None,
+    }
+}
+
+fn apply_file_diffs_tool() -> api::message::tool_call::Tool {
+    api::message::tool_call::Tool::ApplyFileDiffs(api::message::tool_call::ApplyFileDiffs {
+        summary: String::new(),
+        new_files: vec![],
+        diffs: vec![],
+        v4a_updates: vec![],
+        deleted_files: vec![],
+    })
+}
+
+/// The result an accepted file edit leaves in the conversation.
+#[allow(deprecated)]
+fn accepted_file_edit_result(id: &str, call_id: &str) -> api::Message {
+    tool_call_result_message_with_result(
+        id,
+        call_id,
+        api::message::tool_call_result::Result::ApplyFileDiffs(api::ApplyFileDiffsResult {
+            result: Some(api::apply_file_diffs_result::Result::Success(
+                api::apply_file_diffs_result::Success {
+                    updated_files_v2: vec![],
+                    updated_files: vec![],
+                    deleted_files: vec![],
+                },
+            )),
+        }),
+    )
+}
+
+/// #1951, owner decision 2026-11-09: an accepted file edit counts as answered. A passive code
+/// diff the user accepted sends no follow-up (by design), so the conversation ends on the edit's
+/// result with no reply after it; restored, it is a finished conversation, `Success`. The
+/// controller records that result when the diff is accepted
+/// (`record_answered_passive_diff_results`); before that, nothing wrote it and the accepted edit
+/// restored as `Cancelled`, an interrupted turn.
+#[allow(deprecated)]
+#[test]
+fn a_restored_passive_code_diff_that_was_accepted_is_successful() {
+    let accepted = restored_with_root_messages(vec![
+        auto_code_diff_message("system-1", "request-1"),
+        tool_call_message_with_tool("tool-call-1", "diff-1", apply_file_diffs_tool()),
+        accepted_file_edit_result("tool-result-1", "diff-1"),
+    ]);
+    assert!(
+        accepted.is_entirely_passive_code_diff(),
+        "the fixture must be a passive code diff conversation"
+    );
+    assert_eq!(accepted.status(), &ConversationStatus::Success);
+
+    // The same for an edit the user asked for and accepted, with the app closed before the
+    // result's follow-up got a reply: the call is answered.
+    let asked_for = restored_with_root_messages(vec![
+        user_query_message("user-1", "request-1", "fix the build"),
+        tool_call_message_with_tool("tool-call-1", "diff-1", apply_file_diffs_tool()),
+        accepted_file_edit_result("tool-result-1", "diff-1"),
+    ]);
+    assert_eq!(asked_for.status(), &ConversationStatus::Success);
+}
+
+/// The other side of the same decision: only a genuinely unanswered call makes the restored
+/// conversation `Cancelled`. A passive code diff the user never answered (the app was closed
+/// with its card up), or rejected, has no result on disk and stays an interrupted turn; so does
+/// a second edit left hanging after an accepted one.
+#[allow(deprecated)]
+#[test]
+fn a_restored_passive_code_diff_that_was_never_answered_is_cancelled() {
+    let unanswered = restored_with_root_messages(vec![
+        auto_code_diff_message("system-1", "request-1"),
+        tool_call_message_with_tool("tool-call-1", "diff-1", apply_file_diffs_tool()),
+    ]);
+    assert!(unanswered.is_entirely_passive_code_diff());
+    assert_eq!(unanswered.status(), &ConversationStatus::Cancelled);
+
+    let one_of_two = restored_with_root_messages(vec![
+        auto_code_diff_message("system-1", "request-1"),
+        tool_call_message_with_tool("tool-call-1", "diff-1", apply_file_diffs_tool()),
+        tool_call_message_with_tool("tool-call-2", "diff-2", apply_file_diffs_tool()),
+        accepted_file_edit_result("tool-result-1", "diff-1"),
+    ]);
+    assert_eq!(one_of_two.status(), &ConversationStatus::Cancelled);
+}

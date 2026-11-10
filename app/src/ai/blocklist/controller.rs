@@ -670,6 +670,28 @@ pub(crate) fn plan_finished_batch(
     }
 }
 
+/// The results of a passive code diff's step that the user answered (accepted: the edit was
+/// applied, or its application failed), for recording in the conversation when the step ends
+/// with no follow-up (#1951, owner decision 2026-11-09). Empty for any other step, and for a
+/// diff that was cancelled or rejected: that call stays unanswered on disk, which is what makes
+/// a relaunch show it `Cancelled`.
+pub(crate) fn answered_passive_diff_results(
+    is_passive_code_diff: bool,
+    results: &[Arc<AIAgentActionResult>],
+) -> Vec<AIAgentActionResult> {
+    if !is_passive_code_diff {
+        return Vec::new();
+    }
+    results
+        .iter()
+        .filter(|result| {
+            matches!(result.result, AIAgentActionResultType::RequestFileEdits(_))
+                && !result.result.is_cancelled()
+        })
+        .map(|result| AIAgentActionResult::clone(result))
+        .collect()
+}
+
 /// Whether a ^C was written to the pty of `block_id`'s command (false for a block that is gone).
 fn block_interrupted_by_ctrl_c(terminal_model: &TerminalModel, block_id: &BlockId) -> bool {
     terminal_model
@@ -1318,6 +1340,8 @@ impl BlocklistAIController {
                     matches!(result.result, AIAgentActionResultType::RequestFileEdits(_))
                 });
             let has_manual_follow_up = me.pending_passive_follow_ups.contains(conversation_id);
+            let passive_diff_answers =
+                answered_passive_diff_results(is_passive_code_diff, finished_action_results);
 
             let plan = plan_finished_batch(
                 *cancellation_reason,
@@ -1401,6 +1425,17 @@ impl BlocklistAIController {
                             ctx,
                         );
                     });
+
+                    // An accepted passive code diff sends nothing, so no request's preflight
+                    // ever writes its result into the conversation: on disk the edit's tool
+                    // call stayed unanswered, and a relaunch could not tell an accepted edit
+                    // from one the app was closed on (#1951). Record the answer now, the way
+                    // a follow-up would have; a later follow-up finds it already recorded.
+                    me.record_answered_passive_diff_results(
+                        *conversation_id,
+                        &passive_diff_answers,
+                        ctx,
+                    );
 
                     // #1178: no request follows and nobody asked for that: say so instead of
                     // leaving a finished-looking turn with no message.
@@ -4741,6 +4776,42 @@ impl BlocklistAIController {
             })),
             request_id: request_id.to_owned(),
             timestamp: None,
+        }
+    }
+
+    /// Writes the answered results of a passive code diff into the conversation (and, with
+    /// persistence on, to disk) when its step ended with no follow-up; see
+    /// [`answered_passive_diff_results`]. Only for a conversation on a BYOP model, whose
+    /// requests commit tool results the same way (`append_byop_action_result_messages` skips a
+    /// result that is already recorded, so a later follow-up does not add it twice). A failure
+    /// to record is logged and changes nothing else: the edit itself is already applied.
+    fn record_answered_passive_diff_results(
+        &self,
+        conversation_id: AIConversationId,
+        results: &[AIAgentActionResult],
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if results.is_empty() {
+            return;
+        }
+        let on_byop_model = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .and_then(|conversation| conversation.latest_exchange())
+            .is_some_and(|exchange| {
+                crate::ai::agent_providers::lookup_byop(ctx, &exchange.model_id).is_some()
+            });
+        if !on_byop_model {
+            return;
+        }
+        match self.append_byop_action_result_messages(conversation_id, results, ctx) {
+            Ok(recorded) => log::info!(
+                "recorded {recorded} accepted passive code diff result(s) in conversation \
+                 {conversation_id:?}"
+            ),
+            Err(e) => log::warn!(
+                "could not record the accepted passive code diff result for conversation \
+                 {conversation_id:?}: {e:#}"
+            ),
         }
     }
 

@@ -3052,6 +3052,50 @@ mod finished_batch {
         assert_eq!(plan.final_status, ConversationStatus::Success);
         assert_eq!(plan.silent_stop, None);
     }
+
+    /// #1951 (owner decision 2026-11-09): which results of a step are written into the
+    /// conversation when the step ends with no follow-up. Only an answered file edit of a
+    /// passive code diff: accepted (applied) or accepted and failed to apply. A cancelled or
+    /// rejected edit is not answered, and no other step records anything here (its follow-up
+    /// request does).
+    #[test]
+    fn only_an_answered_passive_code_diff_is_recorded_without_a_follow_up() {
+        use super::super::answered_passive_diff_results;
+        use crate::ai::agent::RequestFileEditsResult;
+
+        let accepted = result_of(AIAgentActionResultType::RequestFileEdits(
+            RequestFileEditsResult::Success {
+                diff: String::new(),
+                updated_files: Vec::new(),
+                deleted_files: Vec::new(),
+                lines_added: 3,
+                lines_removed: 1,
+            },
+        ));
+        let failed = result_of(AIAgentActionResultType::RequestFileEdits(
+            RequestFileEditsResult::DiffApplicationFailed {
+                error: "the file changed on disk".to_owned(),
+            },
+        ));
+        let rejected_edit = result_of(AIAgentActionResultType::RequestFileEdits(
+            RequestFileEditsResult::Cancelled,
+        ));
+
+        let recorded = answered_passive_diff_results(true, &[accepted.clone()]);
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].id, accepted.id);
+        assert!(matches!(
+            recorded[0].result,
+            AIAgentActionResultType::RequestFileEdits(RequestFileEditsResult::Success { .. })
+        ));
+        assert_eq!(answered_passive_diff_results(true, &[failed]).len(), 1);
+        // Not answered: the call stays open on disk, and a relaunch shows it Cancelled.
+        assert!(answered_passive_diff_results(true, &[rejected_edit]).is_empty());
+        // Not a passive code diff: the step's own follow-up carries its results.
+        assert!(answered_passive_diff_results(false, &[accepted]).is_empty());
+        // Only the edit itself, never another tool's result.
+        assert!(answered_passive_diff_results(true, &[completed(0, false)]).is_empty());
+    }
 }
 
 /// The automatic resumes a turn gets for synthetic local tool results (bad arguments, unknown

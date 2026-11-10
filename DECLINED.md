@@ -3017,6 +3017,11 @@ work to race and nothing drains the main queue, so such a read runs in place.
   are dropped as before. Calls of a reply whose stream was stopped between its
   end and its hand-off to the action queue get their cancelled results at once (#1946), and a
   conversation restored with unanswered tool calls is `Cancelled`, not `Success` (#1951).
+  An accepted file edit counts as answered there (fourth part of the decision): a passive
+  code diff the user accepted sends no follow-up, so the controller writes its result into
+  the conversation when it is accepted and the relaunch shows `Success`; only a call that
+  really has no answer (the app closed on its card, a rejected or cancelled edit) restores
+  as `Cancelled`.
   **Not changed:** a step nobody stopped (a tool cancelled itself, a command took a ^C, a
   long-running command pushed the other commands out) still follows up when any result
   finished (#1178), and input typed during a reply is still a steer (#851).
