@@ -699,6 +699,50 @@ def keyframe_ab_pure_parts_1848():
 
 
 @check
+def echoframe_ab_pure_parts_2039():
+    """#2039 A/B (latency_echo_ab): the arm environment, the hop=echo_frame_now parser, the per-arm summary (key -> frame pairs + the app's hops + kl3), the
+    three deltas and the WARNs about the A/B itself; and the #1995 note built from input_notify_causes (latency_key_log)"""
+    import cases_keyframe_ab as kab
+    import render_hops as rh
+    assert kab.echo_arm_env("off") == {"PHOSPHOR_MAC_ECHO_FRAME_NOW": "0"} and kab.echo_arm_env("on") == {}
+    # the exact strings of frame_latency.rs echo_frame_now_detail (its unit test pins the same two)
+    ON = ["input_order hop=echo_frame_now drawn=1 ms=1.23 key_age_ms=0.42 t=1000000.0", "input_order hop=echo_frame_now drawn=1 ms=1.31 key_age_ms=0.48 t=1000100.0",
+          "input_order hop=echo_frame_now drawn=0 ms=0.00 key_age_ms=12.00 t=1000200.0",
+          "input_order hop=key_frame_sched ms=0.05 t=1000000.0", "input_order hop=key_frame_sched ms=0.09 t=1000100.0",
+          "input_order hop=key_presented submit_to_presented_ms=11.00 key_to_presented_ms=14.50 sync=0 wait_ms=0.10 t=1000030.0"]
+    OFF = ["input_order hop=key_frame_sched ms=6.75 t=1000000.0", "input_order hop=key_frame_sched ms=5.14 t=1000100.0",
+           "input_order hop=key_presented submit_to_presented_ms=11.59 key_to_presented_ms=20.68 sync=0 wait_ms=0.05 t=1000030.0"]
+    hon, hoff = rh.render_hop_metrics(ON), rh.render_hop_metrics(OFF)
+    assert hon["echo_frames_now"] == 3 and hon["echo_frames_now_drawn"] == 2 and hon["echo_frame_key_age_ms"]["p50"] == 0.48 and hon["echo_frame_now_ms"]["n"] == 3, hon
+    assert "echo_frames_now" not in hoff and "key_frames_now" not in hon, (hoff, hon)      # an echo frame is not counted as a #1848 key frame, nor the reverse
+    assert "echo_frames_now" not in rh.render_hop_metrics(["input_order hop=key_frame_now drawn=1 ms=4.10 t=1.0"])
+    on = kab.echo_summary([1.5, 1.6, 1.7], hon, [22.0, 24.0, 26.0])
+    off = kab.echo_summary([7.1, 7.3, 7.5], hoff, [28.0, 29.0, 30.0])
+    assert on["p50"] == 1.6 and on["echo_frames_now"] == 3 and on["echo_frames_now_drawn"] == 2 and on["key_frame_sched_p50"] == 0.07 and on["paint_p50"] == 24.0, on
+    assert off["echo_frames_now"] == 0 and off["key_frame_sched_p50"] == 5.95 and off["key_to_presented_p50"] == 20.68 and off["paint_n"] == 3, off
+    d, w = kab.echo_verdict(on, off)
+    assert d == dict(frame=-5.7, presented=-6.18, paint=-5.0) and w == [], (d, w)
+    d, w = kab.echo_verdict(off, on)                                 # the arms swapped: the "off" arm drew echo frames, the "on" arm none
+    assert d["frame"] == 5.7 and len(w) == 2 and "did not reach the app" in w[0] and "no hop=echo_frame_now" in w[1], (d, w)
+    mostly_missed = kab.echo_summary([1.5], rh.render_hop_metrics(ON[2:3] * 3 + ON[:1]))
+    d, w = kab.echo_verdict(mostly_missed, off)
+    assert len(w) == 1 and "3 of 4 echo frames" in w[0] and d["paint"] is None, (d, w)      # no kl3 samples on a side: no paint delta, nothing claimed
+    empty = kab.echo_summary([], {})
+    assert kab.echo_verdict(empty, empty) == (dict(frame=None, presented=None, paint=None), [])
+    assert "latency_echo_ab" in cases.PROVING and "latency_echo_ab" in winmap.NOT_WINDOWS and "latency_echo_ab" not in cases.SMOKE
+    # #1995: the note latency_key_log writes from the notify causes of its typing window
+    BUILD = ("input_order hop=key_frame_build passes=1 layout_passes=1 views=%d mounted=18 render_ms=0.06 layout_ms=0.54 after_layout_ms=0.04 paint_ms=1.02 "
+             "hover_ms=0.00 total_ms=2.04 layout_top=Terminal:0.26 paint_top=Terminal:0.59 t=1.0")
+    CAUSE = "input_order hop=notify_cause view=Input cause=%s t=1.0"
+    m = rh.render_hop_metrics([BUILD % 1, CAUSE % "handle_completion_suggestions_results_3", BUILD % 2,
+                               CAUSE % "handle_completion_suggestions_results_3", CAUSE % "new_10", BUILD % 4])
+    note = rh.input_notify_note(m)
+    assert note == "#1995 notifies logged before 2 of 3 key frame build(s): Input:handle_completion_suggestions_results_3 x2, Input:new_10 x1", note
+    assert rh.input_notify_note(rh.render_hop_metrics([BUILD % 1])) is None and rh.input_notify_note({}) is None
+    assert "(+1 more)" in rh.input_notify_note(m, top=1)
+
+
+@check
 def viewskip_ab_pure_parts_1962():
     """#1962 A/B (latency_key_views_ab): the arm environment, the switch values read from a launch's log, the lead key frames dropped per block, the per-arm
     summary from hop=key_frame_build, the deltas, the one FAIL (more views re-rendered with the skips on) and the WARNs about the A/B itself"""

@@ -7,6 +7,8 @@
 #   Linux  hop=key_frame_now wait_ms=        a key's frame drawn ahead of the compositor's frame callback (wait = acquire + present of that frame)
 #   Linux  hop=key_frame_now_off wait_ms=    that path turned itself off for the window (two blocked frames in a row)
 #   macOS  hop=key_frame_now drawn=<0|1> ms= a key's frame drawn at the end of its key press (drawn=0: the frame did not go out, the display pass draws it)
+#   macOS  hop=echo_frame_now drawn=<0|1> ms= key_age_ms=   (#2039, docs/design/r14-echoframe.md) the first frame asked for after a key press (the echo of a
+#          key typed into a running program) drawn when its request runs, not at the display pass (drawn=0: it did not go out, the display pass draws it)
 #   per-key frame build split (docs/design/key-scene-build.md; crates/warpui_core/src/frame_split.rs), every platform, the first frame built after a key-down:
 #   hop=notify_cause view= cause=   (#1995) which ctx.notify() asked for a re-render of Input; counted per key frame build into input_notify_causes
 #   hop=key_frame_build passes= layout_passes= views= mounted= render_ms= layout_ms= after_layout_ms= paint_ms= hover_ms= total_ms= layout_top= paint_top=
@@ -23,6 +25,7 @@ _FRAME_DRAWN = re.compile(r"hop=frame_drawn total_ms=" + _NUM + r" acquire_ms=" 
 _KEY_FRAME_NOW = re.compile(r"hop=key_frame_now (?:wait_ms=" + _NUM + r"|drawn=([01]) ms=" + _NUM + r")")
 _NOTIFY_CAUSE = re.compile(r"hop=notify_cause view=(\w+) cause=(\S+)")     # #1995: which call asked for a re-render of a view (Input: app/src/terminal/input.rs notify_cause!)
 _KEY_FRAME_NOW_OFF = re.compile(r"hop=key_frame_now_off\b")
+_ECHO_FRAME_NOW = re.compile(r"hop=echo_frame_now drawn=([01]) ms=" + _NUM + r" key_age_ms=" + _NUM)       # frame_latency.rs echo_frame_now_detail
 _BUILD_STAGES = ("render", "layout", "after_layout", "paint", "hover", "total")
 _KEY_FRAME_BUILD = re.compile(r"hop=key_frame_build passes=(\d+) layout_passes=(\d+) views=(\d+) mounted=(\d+) "
                               + " ".join(st + "_ms=" + _NUM for st in _BUILD_STAGES) + r" layout_top=(\S+) paint_top=(\S+)")
@@ -75,9 +78,12 @@ def render_hop_metrics(txt_or_lines, t0=None, t1=None):
     off), key_frame_now_wait_ms (Linux) / key_frame_now_ms (macOS). And for the per-key build split (hop=key_frame_build): key_frame_build_<stage>_ms for
     render / layout / after_layout / paint / hover / total, key_frame_build_other_ms (total minus the five stages), key_frame_build_views (views re-rendered
     per key frame), key_frame_build_mounted, the counts key_frame_builds and key_frame_builds_multi_pass (a second layout + paint in the same frame), and
-    key_frame_build_layout_top_ms / key_frame_build_paint_top_ms ({view type: mean self ms per key frame})."""
+    key_frame_build_layout_top_ms / key_frame_build_paint_top_ms ({view type: mean self ms per key frame}). And for the echo frames drawn at once (#2039,
+    macOS): echo_frames_now (attempts), echo_frames_now_drawn (those that went to the compositor), echo_frame_now_ms (the draw), echo_frame_key_age_ms
+    (key press -> the draw began)."""
     sub, k2p, wait, sync_on, sync_off, sched, kskip, runs, pres, acq = [], [], [], 0, 0, [], 0, 0, [], []
     now_n, now_drawn, now_off, now_wait, now_ms = 0, 0, 0, [], []
+    echo_n, echo_drawn, echo_ms, echo_age = 0, 0, [], []
     build = {st: [] for st in _BUILD_STAGES + ("other", "views", "mounted")}
     build_multi, build_ltop, build_ptop = 0, [], []
     pending, causes, cause_frames = [], {}, 0       # #1995: notify_cause lines since the previous key frame build
@@ -131,6 +137,13 @@ def render_hop_metrics(txt_or_lines, t0=None, t1=None):
                 now_drawn += m.group(2) == "1"
                 now_ms.append(float(m.group(3)))
             continue
+        m = _ECHO_FRAME_NOW.search(l)
+        if m:
+            echo_n += 1
+            echo_drawn += m.group(1) == "1"
+            echo_ms.append(float(m.group(2)))
+            echo_age.append(float(m.group(3)))
+            continue
         m = _FRAME_DRAWN.search(l)
         if m:
             acq.append(float(m.group(2)))
@@ -139,7 +152,8 @@ def render_hop_metrics(txt_or_lines, t0=None, t1=None):
     out = {}
     for name, xs in (("key_submit_to_presented_ms", sub), ("key_to_presented_ms_hop", k2p), ("key_presented_wait_ms", wait),
                      ("key_frame_sched_ms", sched), ("frame_present_ms", pres), ("frame_acquire_ms", acq),
-                     ("key_frame_now_wait_ms", now_wait), ("key_frame_now_ms", now_ms)):
+                     ("key_frame_now_wait_ms", now_wait), ("key_frame_now_ms", now_ms),
+                     ("echo_frame_now_ms", echo_ms), ("echo_frame_key_age_ms", echo_age)):
         if xs:
             out[name] = _st(xs)
     if build["total"]:
@@ -164,7 +178,20 @@ def render_hop_metrics(txt_or_lines, t0=None, t1=None):
             out["key_frames_now_drawn"] = now_drawn
         if now_off:
             out["key_frames_now_off"] = now_off
+    if echo_n:
+        out["echo_frames_now"], out["echo_frames_now_drawn"] = echo_n, echo_drawn
     return out
+
+
+def input_notify_note(m, top=4):
+    """#1995: one note line from render_hop_metrics' input_notify_causes ({`View:cause`: count}, already sorted by count) and input_notify_frames, or None
+    when the window logged no notify before a key frame build. Pure."""
+    causes = m.get("input_notify_causes") or {}
+    if not causes:
+        return None
+    return "#1995 notifies logged before %d of %s key frame build(s): %s%s" % (
+        m.get("input_notify_frames", 0), m.get("key_frame_builds", "?"), ", ".join("%s x%d" % kv for kv in list(causes.items())[:top]),
+        " (+%d more)" % (len(causes) - top) if len(causes) > top else "")
 
 
 def record(r, txt_or_lines, t0=None, t1=None, prefix=""):
