@@ -44,42 +44,13 @@ fn final_content_from_op(base_content: &str, op: &DiffType) -> Result<String, St
 }
 
 /// Applies line-range replacement deltas to `content`, producing the new content.
+///
+/// The shared `ai::diff_validation::apply_deltas_to_text`: every line outside a delta keeps its
+/// bytes, inserted lines take the file's line ending, and a file with no final newline still has
+/// none. The splice this replaced wrote the insertion's own `\n` into CRLF files and ended every
+/// insertion with `\n`, the last line of an unterminated file included (#1955, #1925).
 fn apply_deltas_to_content(content: &str, deltas: &[DiffDelta]) -> Result<String, String> {
-    let mut lines = split_lines_preserving_newlines(content);
-    let mut deltas = deltas.to_vec();
-    deltas.sort_by_key(|delta| delta.replacement_line_range.start);
-
-    for delta in deltas.into_iter().rev() {
-        let start = delta.replacement_line_range.start.saturating_sub(1);
-        let end = delta.replacement_line_range.end.saturating_sub(1);
-        if start > lines.len() || end > lines.len() || start > end {
-            return Err(format!(
-                "Diff range {:?} is out of bounds for file with {} lines",
-                delta.replacement_line_range,
-                lines.len()
-            ));
-        }
-        let mut insertion = delta.insertion;
-        // Insertions often lack a trailing newline; without one the splice
-        // would run into the next line (mirrors `EditorModel::apply_diffs`).
-        if !insertion.is_empty() && !insertion.ends_with('\n') && !content.is_empty() {
-            insertion.push('\n');
-        }
-        let replacement = split_lines_preserving_newlines(&insertion);
-        lines.splice(start..end, replacement);
-    }
-
-    Ok(lines.concat())
-}
-
-/// Splits content into lines while keeping trailing newlines, so reassembly via
-/// `concat` reproduces the original byte-for-byte.
-fn split_lines_preserving_newlines(content: &str) -> Vec<String> {
-    if content.is_empty() {
-        Vec::new()
-    } else {
-        content.split_inclusive('\n').map(str::to_string).collect()
-    }
+    ai::diff_validation::apply_deltas_to_text(content, deltas)
 }
 
 /// The actual write operation performed for a file.

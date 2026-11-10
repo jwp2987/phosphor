@@ -3883,6 +3883,16 @@ def agent_file_edit_pieces():
             out = AF.apply_edits(c, AF.three_edits("t1"))
             assert out != c and out.endswith(eol) == fin and AF.ending_profile(out)[:3] == AF.ending_profile(c)[:3] and b"L10 KAPPA-EDITED" in out
     assert AF.ending_profile(AF.make_file("x", b"\r\n", False)) == (9, 0, 0, False)
+    # #1956: the mixed-endings shapes of agent_edit_endings. Lines 2, 5, 8 end in LF, the rest in CRLF; the expected bytes keep every line's own ending, and a
+    # buffer-style rewrite to one ending (what the app wrote) is judged a failure
+    assert {e[0] for e in AF.ENDINGS} == {"crlf", "lf_no_eol", "crlf_no_eol", "mixed", "mixed_no_eol"}
+    for fin in (True, False):
+        c = AF.make_file("t3", AF.MIXED, fin)
+        assert AF.ending_profile(c) == (7 if fin else 6, 3, 0, fin), AF.ending_profile(c)
+        assert c.startswith(b"L01 alpha t3\r\nL02 beta t3\nL03 gamma t3\r\n") and c.endswith(b"L10 kappa t3\r\n" if fin else b"L10 kappa t3")
+        out = AF.apply_edits(c, AF.three_edits("t3"))
+        assert AF.ending_profile(out) == AF.ending_profile(c) and b"L02 BETA-EDITED t3\nL03" in out and b"L05 EPSILON-EDITED t3\nL06" in out
+        assert len(AF.judge_bytes(out.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"), out, "x")) == 1
     try:
         AF.apply_edits(b"aa", [("a", "b")])
         raise AssertionError("a non-unique search must raise")

@@ -475,6 +475,148 @@ fn test_apply_single_deletion() {
     })
 }
 
+/// `lines` joined by `eol`, the last one ended with `eol` only when `final_newline`.
+fn endings_file(lines: &[&str], eol: &str, final_newline: bool) -> String {
+    let mut text = lines.join(eol);
+    if final_newline && !lines.is_empty() {
+        text.push_str(eol);
+    }
+    text
+}
+
+fn endings_delta(range: std::ops::Range<usize>, insertion: &str) -> DiffDelta {
+    DiffDelta {
+        replacement_line_range: range,
+        insertion: insertion.to_owned(),
+    }
+}
+
+/// What an editor loaded with `content` writes, in the file's line ending, after `deltas`.
+async fn written_after_diffs(app: &mut App, content: &str, deltas: Vec<DiffDelta>) -> String {
+    let editor = mock_model(app, content, ContentVersion::new());
+    layout_model(app, &editor).await;
+    editor.update(app, |editor, ctx| editor.apply_diffs(deltas, ctx));
+    app.read(|ctx| {
+        editor
+            .as_ref(ctx)
+            .content
+            .as_ref(ctx)
+            .text_with_line_ending()
+            .into_string()
+    })
+}
+
+/// #1925 (and #1954 for the append): an accepted edit changes the edited lines and nothing else.
+/// LF and CRLF x final newline yes/no x first line, middle, last line, multi-hunk ending on the
+/// last line, append, whole file. Each result is checked against the stated bytes and against
+/// `apply_deltas_to_text`, the byte-exact reference the accept compares the buffer with.
+#[test]
+fn test_apply_diffs_keeps_line_endings_and_final_newline_state() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        const BASE: [&str; 4] = ["one", "two", "three", "four"];
+
+        for eol in ["\n", "\r\n"] {
+            for fin in [true, false] {
+                let original = endings_file(&BASE, eol, fin);
+                let cases: Vec<(&str, Vec<DiffDelta>, String)> = vec![
+                    (
+                        "first line",
+                        vec![endings_delta(1..2, "ONE")],
+                        endings_file(&["ONE", "two", "three", "four"], eol, fin),
+                    ),
+                    (
+                        "middle line",
+                        vec![endings_delta(2..3, "TWO")],
+                        endings_file(&["one", "TWO", "three", "four"], eol, fin),
+                    ),
+                    (
+                        "last line",
+                        vec![endings_delta(4..5, "FOUR")],
+                        endings_file(&["one", "two", "three", "FOUR"], eol, fin),
+                    ),
+                    (
+                        "multi-hunk ending on the last line",
+                        vec![
+                            endings_delta(1..2, "ONE"),
+                            endings_delta(2..3, "TWO"),
+                            endings_delta(4..5, "FOUR"),
+                        ],
+                        endings_file(&["ONE", "TWO", "three", "FOUR"], eol, fin),
+                    ),
+                    (
+                        "last line replaced by two",
+                        vec![endings_delta(4..5, "FOUR\nFIVE")],
+                        endings_file(&["one", "two", "three", "FOUR", "FIVE"], eol, fin),
+                    ),
+                    (
+                        "append",
+                        vec![endings_delta(5..5, "five")],
+                        endings_file(&["one", "two", "three", "four", "five"], eol, fin),
+                    ),
+                    (
+                        "whole file",
+                        vec![endings_delta(1..5, "a\nb")],
+                        endings_file(&["a", "b"], eol, fin),
+                    ),
+                    (
+                        "last line, insertion ending in a line break",
+                        vec![endings_delta(4..5, "FOUR\n")],
+                        endings_file(&["one", "two", "three", "FOUR"], eol, true),
+                    ),
+                ];
+
+                for (name, deltas, expected) in cases {
+                    let reference = ai::diff_validation::apply_deltas_to_text(&original, &deltas)
+                        .expect("the deltas are in range");
+                    let written = written_after_diffs(&mut app, &original, deltas).await;
+                    assert_eq!(
+                        written, expected,
+                        "{name}: eol {eol:?}, final newline {fin}"
+                    );
+                    assert_eq!(
+                        written, reference,
+                        "{name}: the editor and apply_deltas_to_text disagree (eol {eol:?}, final \
+                         newline {fin})"
+                    );
+                }
+            }
+        }
+    })
+}
+
+/// A one-line file with no line break, and an empty file: no line break is invented.
+#[test]
+fn test_apply_diffs_on_an_unterminated_one_line_file_and_an_empty_file() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+
+        let written =
+            written_after_diffs(&mut app, "solo", vec![endings_delta(1..2, "SOLO")]).await;
+        assert_eq!(written, "SOLO");
+
+        // An empty file has no line ending of its own, so the platform's is used: compare as LF.
+        let written = written_after_diffs(&mut app, "", vec![endings_delta(0..0, "a\nb")]).await;
+        assert_eq!(ai::diff_validation::lf_normalized(&written), "a\nb");
+    })
+}
+
+#[test]
+fn test_insertion_for_range() {
+    // Mid-file: the insertion ends its last line, once.
+    assert_eq!(insertion_for_range("X", false, false, false), "X\n");
+    assert_eq!(insertion_for_range("X\n", false, false, false), "X\n");
+    // A deletion inserts nothing; a new file takes the text as it is.
+    assert_eq!(insertion_for_range("", false, false, false), "");
+    assert_eq!(insertion_for_range("X", true, false, false), "X");
+    // #1925: replacing the last line of a file with no final newline adds none.
+    assert_eq!(insertion_for_range("X", false, true, false), "X");
+    assert_eq!(insertion_for_range("X\n", false, true, false), "X\n");
+    // #1954: appending after that line starts a new line and leaves it unterminated.
+    assert_eq!(insertion_for_range("X", false, true, true), "\nX");
+    assert_eq!(insertion_for_range("X\n", false, true, true), "\nX\n");
+}
+
 // #[test]
 // fn test_indent() {
 //     App::test((), |mut app| async move {

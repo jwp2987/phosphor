@@ -254,6 +254,76 @@ fn apply_deltas_normalizes_newline_less_insertions() {
     assert_eq!(final_content, "one\nTWO\nTWO-AND-A-HALF\nthree\n");
 }
 
+/// #1955, #1925: the TUI writes this text straight to the file, so it has to be byte-exact. The
+/// shape is the app case `agent_edit_endings`: lines 2, 5 and the last one of a ten-line file,
+/// CRLF or LF, with or without a final newline.
+#[test]
+fn final_content_keeps_line_endings_and_final_newline_state() {
+    let words = [
+        "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
+    ];
+    for eol in ["\n", "\r\n"] {
+        for final_newline in [true, false] {
+            let file = |edited: bool| {
+                let lines: Vec<String> = words
+                    .iter()
+                    .enumerate()
+                    .map(|(i, word)| match (edited, i) {
+                        (true, 1 | 4 | 9) => format!("L{:02} {}-EDITED", i + 1, word),
+                        _ => format!("L{:02} {}", i + 1, word),
+                    })
+                    .collect();
+                let mut text = lines.join(eol);
+                if final_newline {
+                    text.push_str(eol);
+                }
+                text
+            };
+            let op = DiffType::update(
+                vec![
+                    DiffDelta {
+                        replacement_line_range: 2..3,
+                        insertion: "L02 beta-EDITED".to_owned(),
+                    },
+                    DiffDelta {
+                        replacement_line_range: 5..6,
+                        insertion: "L05 epsilon-EDITED".to_owned(),
+                    },
+                    DiffDelta {
+                        replacement_line_range: 10..11,
+                        insertion: "L10 kappa-EDITED".to_owned(),
+                    },
+                ],
+                None,
+            );
+
+            assert_eq!(
+                final_content_from_op(&file(false), &op).unwrap(),
+                file(true),
+                "eol {eol:?}, final newline {final_newline}"
+            );
+        }
+    }
+}
+
+/// #1954: text appended after a last line with no line ending is a new line, not a continuation.
+#[test]
+fn apply_deltas_appends_a_new_line_after_an_unterminated_last_line() {
+    let deltas = vec![DiffDelta {
+        replacement_line_range: 3..3,
+        insertion: "three".to_owned(),
+    }];
+
+    assert_eq!(
+        apply_deltas_to_content("one\r\ntwo", &deltas).unwrap(),
+        "one\r\ntwo\r\nthree"
+    );
+    assert_eq!(
+        apply_deltas_to_content("one\ntwo\n", &deltas).unwrap(),
+        "one\ntwo\nthree\n"
+    );
+}
+
 // --- `revert_plan` (pure): the write(s) a revert dispatches for each diff shape ---
 
 #[test]

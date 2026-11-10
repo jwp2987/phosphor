@@ -388,6 +388,28 @@ impl InlineDiffView {
         }
     }
 
+    /// The text an accept writes: the editor's, or for an update the user did
+    /// not change, the proposed deltas applied to the file's raw original text.
+    ///
+    /// The editor buffer holds text LF-normalised and serialises it with one
+    /// line ending (the file's majority one), so for a file that mixes line
+    /// endings its text rewrites lines the edit never touched (#1956).
+    /// `ai::diff_validation::accepted_update_text` returns the byte-exact
+    /// result instead whenever it is the same text as the buffer's, and the
+    /// buffer's own text otherwise (the user edited the proposal, a creation,
+    /// no original recorded). What is written is therefore always the text
+    /// shown in this view; only line endings outside the edit can differ from
+    /// the buffer's serialisation, and they are the file's own.
+    fn content_to_write(&self, ctx: &AppContext) -> String {
+        let buffer_text = self.editor.as_ref(ctx).text(ctx).into_string();
+        match (&self.diff_type, &self.original_content) {
+            (Some(DiffType::Update { deltas, .. }), Some(original)) => {
+                ai::diff_validation::accepted_update_text(buffer_text, original, deltas)
+            }
+            _ => buffer_text,
+        }
+    }
+
     /// The ordinary case: overwrite the registered path in place (a creation
     /// or an in-place update).
     fn dispatch_accept_write(
@@ -396,7 +418,7 @@ impl InlineDiffView {
         version: ContentVersion,
         ctx: &mut ViewContext<Self>,
     ) {
-        let content = self.editor.as_ref(ctx).text(ctx).into_string();
+        let content = self.content_to_write(ctx);
         let expected = match self.expected_disk_state(ctx) {
             Ok(expected) => expected,
             Err(message) => {
@@ -470,7 +492,7 @@ impl InlineDiffView {
         version: ContentVersion,
         ctx: &mut ViewContext<Self>,
     ) {
-        let content = self.editor.as_ref(ctx).text(ctx).into_string();
+        let content = self.content_to_write(ctx);
         let expected = match self.expected_disk_state(ctx) {
             Ok(expected) => expected,
             Err(message) => {
