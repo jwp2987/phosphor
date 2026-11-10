@@ -11254,7 +11254,7 @@ fn editing_the_buffer_during_a_secret_read_never_requests_a_query_prediction() {
             });
         };
         let set_secret = |app: &mut App, reading: bool| {
-            terminal.read(app, |terminal, _| {
+            terminal.read(&*app, |terminal, _| {
                 terminal
                     .model
                     .lock()
@@ -11265,7 +11265,7 @@ fn editing_the_buffer_during_a_secret_read_never_requests_a_query_prediction() {
             input.update(app, |input, ctx| {
                 input.user_insert(text, ctx);
             });
-            input.read(app, |input, ctx| {
+            input.read(&*app, |input, ctx| {
                 (
                     input.debounce_ai_query_prediction_tx.len(),
                     input.may_send_buffer_as_partial_query(ctx),

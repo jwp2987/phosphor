@@ -3471,6 +3471,20 @@ fn redact_url_userinfo(url: &str) -> String {
 /// eventual HTTP call errors out instead of this code panicking), so the string reaching this
 /// function is not guaranteed to be a valid URL.
 pub(crate) fn redact_endpoint_for_log(url: &str) -> String {
+    reduce_endpoint(url, HostForm::Hashed)
+}
+
+/// How [`reduce_endpoint`] writes the host.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HostForm {
+    /// For a log line: the network gate's hash of the host (a loopback host stays readable).
+    Hashed,
+    /// For an error message shown to the user, who typed the host and needs to see which
+    /// endpoint failed.
+    Readable,
+}
+
+fn reduce_endpoint(url: &str, host_form: HostForm) -> String {
     const PLACEHOLDER: &str = "<unparseable-endpoint>";
     let Ok(parsed) = url::Url::parse(url) else {
         return PLACEHOLDER.to_owned();
@@ -3478,7 +3492,7 @@ pub(crate) fn redact_endpoint_for_log(url: &str) -> String {
     let Some(host) = parsed.host_str() else {
         return PLACEHOLDER.to_owned();
     };
-    let host = if super::is_loopback_host(host) {
+    let host = if host_form == HostForm::Readable || super::is_loopback_host(host) {
         host.to_owned()
     } else {
         // Brackets off an IPv6 literal first: the gate hashes the bare address.
@@ -3492,7 +3506,9 @@ pub(crate) fn redact_endpoint_for_log(url: &str) -> String {
 }
 
 /// Reduces every `http://`/`https://` URL substring inside free-form error text to
-/// `scheme://<host:HASH>[:port]` (see [`redact_endpoint_for_log`]), leaving everything else alone.
+/// `scheme://host[:port]`, leaving everything else alone. The result is the error message the
+/// USER reads (it becomes `OpenAiCompatibleError::Stream`), so the host stays readable; a log
+/// line passes the text through [`redact_urls_in_log_text`] as well.
 ///
 /// For `[byop] open stream failed`: `map_genai_error`'s `Display` output can wrap a
 /// `reqwest::Error`, whose own `Display` embeds the request URL in prose (e.g. `error sending
@@ -3501,7 +3517,18 @@ pub(crate) fn redact_endpoint_for_log(url: &str) -> String {
 /// instead: a URL substring runs from `http(s)://` to the first character that cannot appear
 /// unescaped in one (whitespace or one of `)]}'"><,`), which is generous enough to catch the
 /// shapes reqwest and genai actually produce without needing a full URL grammar.
-pub(crate) fn redact_urls_in_error_text(text: &str) -> String {
+fn redact_urls_in_error_text(text: &str) -> String {
+    reduce_urls_in_text(text, HostForm::Readable)
+}
+
+/// [`redact_urls_in_error_text`] for a log line: every URL substring becomes
+/// `scheme://<host:HASH>[:port]` (owner rule: no hosts in logs, #1930). Text that already went
+/// through `redact_urls_in_error_text` is fine as input: what it left is still a URL.
+pub(crate) fn redact_urls_in_log_text(text: &str) -> String {
+    reduce_urls_in_text(text, HostForm::Hashed)
+}
+
+fn reduce_urls_in_text(text: &str, host_form: HostForm) -> String {
     fn url_start(s: &str) -> Option<usize> {
         let http = s.find("http://");
         let https = s.find("https://");
@@ -3522,7 +3549,7 @@ pub(crate) fn redact_urls_in_error_text(text: &str) -> String {
             })
             .unwrap_or(candidate.len());
         let (url, tail) = candidate.split_at(end);
-        out.push_str(&redact_endpoint_for_log(url));
+        out.push_str(&reduce_endpoint(url, host_form));
         remaining = tail;
     }
     out.push_str(remaining);
@@ -3657,8 +3684,9 @@ fn diag_message_with_redacted_binaries(message: &ChatMessage) -> std::borrow::Co
 /// * `[byop] open stream failed: {mapped}` — `mapped` can wrap a `reqwest::Error`, whose own
 ///   `Display` embeds the request URL in prose (`... for url (https://host/path)`) rather than
 ///   through a field this file controls. `redact_urls_in_error_text` reduces any `http(s)://`
-///   substring in the rendered text to `scheme://<host:HASH>[:port]` before this logs, so the residual
-///   here is the same shape as the `endpoint_url` line above, not the full URL.
+///   substring in the rendered text to `scheme://<host:HASH>[:port]`
+///   (`redact_urls_in_log_text`) before this logs, so the residual here is the same shape as
+///   the `endpoint_url` line above, not the full URL.
 /// * `[byop][webfetch] error: {e:#}` prints the URL the agent tried to fetch (`web_runtime`
 ///   builds `HTTP GET {url}` into its context chain). It is the model's chosen target rather
 ///   than the user's own text, and a fetch failure with the URL removed is undiagnosable.
@@ -7551,7 +7579,7 @@ pub async fn generate_byop_output(
                 let mapped = map_genai_error(failure.error);
                 log::error!(
                     "[byop] open stream failed: {}",
-                    redact_urls_in_error_text(&format!("{mapped:#}"))
+                    redact_urls_in_log_text(&format!("{mapped:#}"))
                 );
                 evict_vertex_token_on_auth_failure(vertex_credential.as_ref(), &mapped);
                 let mut message =
@@ -16953,12 +16981,23 @@ mod byop_diag_privacy_tests {
         );
         let redacted = redact_urls_in_error_text(&text);
         assert_no_secret_substring(&redacted, "redact_urls_in_error_text");
-        let api_host = hashed_host("api.example.com");
         assert!(
-            redacted.contains(&format!("(https://{api_host}:8443)")),
+            redacted.contains("(https://api.example.com:8443)"),
             "{redacted}"
         );
-        assert!(!redacted.contains("api.example.com"), "{redacted}");
+        // The log form of the same text (#1930), also when it is given the reduced text.
+        let api_host = hashed_host("api.example.com");
+        for logged in [
+            redact_urls_in_log_text(&text),
+            redact_urls_in_log_text(&redacted),
+        ] {
+            assert_no_secret_substring(&logged, "redact_urls_in_log_text");
+            assert!(
+                logged.contains(&format!("(https://{api_host}:8443)")),
+                "{logged}"
+            );
+            assert!(!logged.contains("api.example.com"), "{logged}");
+        }
         assert!(
             redacted.starts_with(
                 "Web call failed for adapter 'OpenAi'.\nCause: Reqwest error: \
@@ -16974,6 +17013,10 @@ mod byop_diag_privacy_tests {
         assert_no_secret_substring(&redacted_two, "redact_urls_in_error_text (two urls)");
         assert_eq!(
             redacted_two,
+            "first http://a.example.com then https://b.example.com:9000"
+        );
+        assert_eq!(
+            redact_urls_in_log_text(&two_urls),
             format!(
                 "first http://{} then https://{}:9000",
                 hashed_host("a.example.com"),
@@ -17166,6 +17209,7 @@ mod byop_diag_privacy_tests {
         "redact_url_userinfo(",
         "redact_endpoint_for_log(",
         "redact_urls_in_error_text(",
+        "redact_urls_in_log_text(",
         "diag_digest(",
     ];
 

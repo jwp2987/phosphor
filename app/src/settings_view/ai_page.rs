@@ -4270,7 +4270,7 @@ impl TypedActionView for AISettingsPageView {
                             // host hash (#1930), the toast below keeps the readable text.
                             log::error!(
                                 "Failed to fetch models for provider {provider_id_for_handler}: {}",
-                                crate::ai::agent_providers::chat_stream::redact_urls_in_error_text(
+                                crate::ai::agent_providers::chat_stream::redact_urls_in_log_text(
                                     &e.to_string()
                                 )
                             );
