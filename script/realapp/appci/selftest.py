@@ -3419,6 +3419,26 @@ def windows_app_runs_under_a_kill_on_close_job():
 
 
 @check
+def notify_cause_hops_counted_per_key_frame_1995():
+    """#1995: `input_order hop=notify_cause view=Input cause=<fn>[_N] t=` (app/src/terminal/input.rs notify_cause!, crates/warpui_core/src/input_order.rs) is
+    counted per `view:cause` over the key frame builds that follow it; lines before no build are not counted; an old log gives no metric"""
+    import render_hops as rh
+
+    def nc(c, t, view="Input"):
+        return "input_order hop=notify_cause view=%s cause=%s t=%d.000" % (view, c, t)
+    build = ("input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=57 render_ms=0.45 layout_ms=0.50 after_layout_ms=0.02 paint_ms=0.40 "
+             "hover_ms=0.10 total_ms=1.90 layout_top=Terminal:0.31 paint_top=- t=%d.0")
+    L = [nc("handle_editor_event", 1000000), nc("slash_commands::close_slash_commands_menu", 1000001), build % 1000002,
+         nc("handle_editor_event", 1000100), build % 1000101, build % 1000200, nc("update_suggestions_2", 1000300, "InputSuggestions")]
+    m = rh.render_hop_metrics(L)
+    assert m["input_notify_causes"] == {"Input:handle_editor_event": 2, "Input:slash_commands::close_slash_commands_menu": 1}, m
+    assert m["input_notify_frames"] == 2 and m["key_frame_builds"] == 3, m
+    assert "input_notify_causes" not in rh.render_hop_metrics([build % 1000002])
+    src = open(os.path.join(HERE, "..", "..", "..", "crates", "warpui_core", "src", "input_order.rs")).read()
+    assert 'hop_line("notify_cause", &format!("view={view} cause={cause}"))' in src and "fn notify_cause_lines_have_the_shape_render_hops_parses" in src
+
+
+@check
 def windows_app_extra_env_reaches_spawn_1962():
     """#1962 follow-up: WindowsApp.extra_env (an A/B arm's variable, set before a relaunch) is in the environment dict _spawn hands to Popen, wins over the
     inherited one, and is empty by default; the A/B case no longer skips on ctx.win"""

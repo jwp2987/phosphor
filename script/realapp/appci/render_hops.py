@@ -8,6 +8,7 @@
 #   Linux  hop=key_frame_now_off wait_ms=    that path turned itself off for the window (two blocked frames in a row)
 #   macOS  hop=key_frame_now drawn=<0|1> ms= a key's frame drawn at the end of its key press (drawn=0: the frame did not go out, the display pass draws it)
 #   per-key frame build split (docs/design/key-scene-build.md; crates/warpui_core/src/frame_split.rs), every platform, the first frame built after a key-down:
+#   hop=notify_cause view= cause=   (#1995) which ctx.notify() asked for a re-render of Input; counted per key frame build into input_notify_causes
 #   hop=key_frame_build passes= layout_passes= views= mounted= render_ms= layout_ms= after_layout_ms= paint_ms= hover_ms= total_ms= layout_top= paint_top=
 #     views = views re-rendered, mounted = views in the tree, hover_ms = the synthetic mouse-move after the build, *_top = `ViewType:ms,...` (largest self time)
 # A build before step A logs none of the new fields: every function returns an empty dict then, and callers say so (the empty result reads like "no samples").
@@ -20,6 +21,7 @@ _KEY_SCHED = re.compile(r"hop=key_frame_sched ms=" + _NUM)
 _SKIP_RUN = re.compile(r"hop=frame_skip_run skipped=(\d+) held_ms=" + _NUM + r"(?: key_frame_skipped=(\d+))?")
 _FRAME_DRAWN = re.compile(r"hop=frame_drawn total_ms=" + _NUM + r" acquire_ms=" + _NUM + r"(?: present_ms=" + _NUM + r")?")
 _KEY_FRAME_NOW = re.compile(r"hop=key_frame_now (?:wait_ms=" + _NUM + r"|drawn=([01]) ms=" + _NUM + r")")
+_NOTIFY_CAUSE = re.compile(r"hop=notify_cause view=(\w+) cause=(\S+)")     # #1995: which call asked for a re-render of a view (Input: app/src/terminal/input.rs notify_cause!)
 _KEY_FRAME_NOW_OFF = re.compile(r"hop=key_frame_now_off\b")
 _BUILD_STAGES = ("render", "layout", "after_layout", "paint", "hover", "total")
 _KEY_FRAME_BUILD = re.compile(r"hop=key_frame_build passes=(\d+) layout_passes=(\d+) views=(\d+) mounted=(\d+) "
@@ -78,7 +80,12 @@ def render_hop_metrics(txt_or_lines, t0=None, t1=None):
     now_n, now_drawn, now_off, now_wait, now_ms = 0, 0, 0, [], []
     build = {st: [] for st in _BUILD_STAGES + ("other", "views", "mounted")}
     build_multi, build_ltop, build_ptop = 0, [], []
+    pending, causes, cause_frames = [], {}, 0       # #1995: notify_cause lines since the previous key frame build
     for l in window_lines(txt_or_lines, t0, t1):
+        m = _NOTIFY_CAUSE.search(l)
+        if m:
+            pending.append("%s:%s" % (m.group(1), m.group(2)))
+            continue
         m = _KEY_PRESENTED.search(l)
         if m:
             sub.append(float(m.group(1)))
@@ -97,6 +104,11 @@ def render_hop_metrics(txt_or_lines, t0=None, t1=None):
             continue
         m = _KEY_FRAME_BUILD.search(l)
         if m:
+            if pending:
+                cause_frames += 1
+                for c in pending:
+                    causes[c] = causes.get(c, 0) + 1
+                pending = []
             stages = [float(x) for x in m.groups()[4:10]]
             for st, v in zip(_BUILD_STAGES, stages):
                 build[st].append(v)
@@ -140,6 +152,8 @@ def render_hop_metrics(txt_or_lines, t0=None, t1=None):
             top = _top_views(fields, n)
             if top:
                 out["key_frame_build_%s_top_ms" % name] = top
+    if causes:      # informational (#1995): notifies logged between key frame builds, per `view:cause`; every notify of a view counts, not only the ones that rendered
+        out["input_notify_causes"], out["input_notify_frames"] = dict(sorted(causes.items(), key=lambda kv: (-kv[1], kv[0]))), cause_frames
     if sub:
         out["key_presented_sync_on"], out["key_presented_sync_off"] = sync_on, sync_off
     if runs:
