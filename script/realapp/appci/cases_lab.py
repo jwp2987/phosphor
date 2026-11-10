@@ -364,13 +364,21 @@ def c_chips(ctx, r, arm):
           scenarios=("p_sete", "p_colon"))
 def c_enter_start(ctx, r, arm):
     """20 lines typed at 10-25 ms/key with an instant Enter, interleaved with the same lines typed into a PLAIN `ssh -tt` session (same lab user, same path):
-    median(app) <= median(plain) + max(15 ms, 10 %) (owner 2026-11-08; the +-1 ms budget is for LAN key->echo only). Time = the shell's own record of the line
-    (rec.log, remote clock mapped by /health's clock) minus the Enter. The effect file proves every line arrived exactly once, in order. The Enter is stamped just before the
-    Return key event (the plain control: just before its CR write), so the injector's own spawn time counts against the app."""
+    median(app) <= median(plain) + max(15 ms, 10 %) (owner 2026-11-08; the +-1 ms budget is for LAN key->echo only). The effect file proves every line arrived
+    exactly once, in order.
+    What is timed (round 10, #2027; the budget is unchanged):
+      start  the moment the app RECEIVED the Enter, from its own log (lab.app_enter_epoch); the plain control: right before its CR write. Before, the app's
+             Enter was stamped before the injector call, whose priming key and 20 ms wait on Wayland (about 35 ms in all) were charged to the app.
+      stop   bash and zsh: the command's OWN start time, which it writes next to its token (lab.start_stamp_line), in both sessions. Before, the stop was the
+             rec.log line, which those shells write at the NEXT prompt (after the command and the session's prompt hooks). nu: its rec.log line is written by
+             pre_execution, which is the start; pwsh: unchanged (rec.log).
+    The old quantities stay as metrics (enter_to_next_prompt_*_ms from rec.log, injector_enter_delay_ms), so a slow prompt hook is still seen, as a number."""
     lab, u, rt = ctx.lab, arm["user"], rtt_s(arm)
     n = ctx.count_lat(20)
     eff = work(arm, "es_%s.txt" % unique(ctx, 4))
+    plain_eff = work(arm, "es_plain.txt")
     shell_kind = arm["shell"] if arm["shell"] in ("nu", "pwsh") else "bash"
+    self_stamp = arm["shell"] in ("bash", "zsh")                 # $EPOCHREALTIME: bash >= 5, zsh with zsh/datetime (the lab's zsh hook loads it)
     plain = L.PlainSsh(os.path.join(ctx.prof.home, ".ssh", "config"), u)
     plain_up = False
     try:
@@ -385,42 +393,67 @@ def c_enter_start(ctx, r, arm):
         return
     time.sleep(1.0 + 2 * rt)
     off = lab.offset or 0.0
-    app_ms, plain_ms, app_lines, app_toks = [], [], [], []
+    log_off = ctx.log_size()
+    call_ts, plain_ts, rec_app, rec_plain, app_lines, app_toks, plain_toks = [], [], [], [], [], [], []
     timed = arm["shell"] not in ("fish", "dash", "ash")          # fish_rec.log has whole-second stamps; dash/ash have no history hook
     try:
         for i in range(n):
             tok = "es" + unique(ctx, 5)
-            line = ctx.append_cmd(shell_kind, tok, eff)
+            line = L.start_stamp_line(tok, eff) if self_stamp else ctx.append_cmd(shell_kind, tok, eff)
             ctx.be.type(line, type_pace(ctx))
-            t_enter = time.time()          # stamped BEFORE the Return event, like the plain control's CR write; the injector's spawn time then counts against the app
+            t_call = time.time()           # before the injector call; the verdict starts at the app's receipt of the Enter (see the docstring)
             ctx.be.key("Return")
             app_lines.append(line)
             app_toks.append(tok)
+            call_ts.append(t_call)
             if timed:
-                ts = ctx.until(lambda: rec_ts(ctx, tok), 10 + 4 * rt, step=0.01)
-                app_ms.append((ts - off - t_enter) * 1000.0 if ts else None)
+                rec_app.append(ctx.until(lambda: rec_ts(ctx, tok), 10 + 4 * rt, step=0.01) or None)
             else:
-                ctx.until(lambda: tok in ctx.remote.lines(eff), 10 + 4 * rt, step=0.01)
+                ctx.until(lambda: any(tok in x for x in ctx.remote.lines(eff)), 10 + 4 * rt, step=0.01)
             if plain_up:
                 ptok = "ps" + unique(ctx, 5)
-                pline = ctx.append_cmd(shell_kind, ptok, work(arm, "es_plain.txt"))
-                pt = plain.run_line(pline, rng=ctx.rng)
+                pline = L.start_stamp_line(ptok, plain_eff) if self_stamp else ctx.append_cmd(shell_kind, ptok, plain_eff)
+                plain_toks.append(ptok)
+                plain_ts.append(plain.run_line(pline, rng=ctx.rng))
                 if timed:
-                    pts = ctx.until(lambda: rec_ts(ctx, ptok), 10 + 4 * rt, step=0.01)
-                    plain_ms.append((pts - off - pt) * 1000.0 if pts else None)
+                    rec_plain.append(ctx.until(lambda: rec_ts(ctx, ptok), 10 + 4 * rt, step=0.01) or None)
                 else:
-                    ctx.until(lambda: ptok in ctx.remote.lines("es_plain.txt"), 10 + 4 * rt, step=0.01)
+                    ctx.until(lambda: any(ptok in x for x in ctx.remote.lines(plain_eff)), 10 + 4 * rt, step=0.01)
             time.sleep(0.05)
     finally:
         plain.close()
     ctx.until(lambda: len(ctx.remote.lines(eff)) >= n, 10 + 4 * rt)
-    CA.exact_lines(r, "effect file: every typed line arrived once, in order", app_toks, [x.strip() for x in ctx.remote.lines(eff)])
+    eff_lines = ctx.remote.lines(eff)
+    CA.exact_lines(r, "effect file: every typed line arrived once, in order", app_toks, [(x.split() or [""])[0] for x in eff_lines])
     if timed:
         recs = [c for _, c in ctx.remote.commands() if any(t in c for t in app_toks)]
         CA.exact_lines(r, "rec.log: the shell received exactly the typed lines", app_lines, recs)
-    pv = L.paired_verdict(app_ms, plain_ms) if timed and plain_up else None
-    r.metric("enter_start_app_ms", app_ms)
-    r.metric("enter_start_plain_ms", plain_ms)
+    pv = None
+    if timed:
+        log_lines = ctx.log_since(log_off).splitlines()
+        seen = [L.app_enter_epoch(log_lines, t) for t in app_toks]
+        app_enters = [s if s is not None else c for s, c in zip(seen, call_ts)]
+        unseen = sum(1 for s in seen if s is None)
+        if unseen:
+            r.note("%d of %d Enters have no hop=enter_begin line with the line's text in the app log: those are timed from before the injector call, "
+                   "which counts the injector's own time against the app" % (unseen, len(seen)))
+        r.metric("injector_enter_delay_ms", [round((s - c) * 1000.0, 1) for s, c in zip(seen, call_ts) if s is not None])
+        next_app = [None if ts is None else (ts - off - t) * 1000.0 for ts, t in zip(rec_app, app_enters)]
+        next_plain = [None if ts is None else (ts - off - t) * 1000.0 for ts, t in zip(rec_plain, plain_ts)]
+        r.metric("enter_to_next_prompt_app_ms" if self_stamp else "enter_to_rec_app_ms", next_app)
+        r.metric("enter_to_next_prompt_plain_ms" if self_stamp else "enter_to_rec_plain_ms", next_plain)
+        app_ms, plain_ms, basis = next_app, next_plain, "the shell's rec.log line"
+        if self_stamp:
+            a = L.enter_start_samples(app_toks, app_enters, L.start_stamps(eff_lines), off)
+            p = L.enter_start_samples(plain_toks, plain_ts, L.start_stamps(ctx.remote.lines(plain_eff)), off) if plain_up else []
+            if any(x is not None for x in a) and (not plain_up or any(x is not None for x in p)):
+                app_ms, plain_ms, basis = a, p, "the command's own start stamp"
+            else:
+                r.note("this %s wrote no $EPOCHREALTIME start stamp: Enter -> command start falls back to the rec.log line (the next prompt) in BOTH sessions" % arm["shell"])
+        r.metric("enter_start_basis", basis)
+        r.metric("enter_start_app_ms", app_ms)
+        r.metric("enter_start_plain_ms", plain_ms)
+        pv = L.paired_verdict(app_ms, plain_ms) if plain_up else None
     r.metric("paired_verdict", pv)
     if pv is None:
         r.unverifiable("no paired timing for %s (%s)" % (arm["shell"], "no timestamped history hook for this shell" if not timed else "no plain control"))
@@ -562,7 +595,11 @@ def c_ctrl_c_no_esc_i(ctx, r, arm):
             r.check(len(new) == 2 and new[0][1].strip() == "sleep 30" and tok in new[-1][1], "[%s] the shell received %r, expected exactly [sleep 30, the echo]" % (label, [c for _, c in new]))
             r.check(not any("\x1bi" in c or "^[i" in c for _, c in new), "[%s] an ESC-i (^[i) reached the shell: %r" % (label, [c for _, c in new]))
             if arm["shell"] == "bash":
-                r.check(rem.prompts() - p0 == 2, "[%s] prompt.log grew by %d, expected one per command (2)" % (label, rem.prompts() - p0))
+                # one prompt per command, plus at most one for each further Ctrl-C the app WROTE while the prompt had not come back (lab.ctrl_c_prompt_bounds)
+                lo, hi = L.ctrl_c_prompt_bounds(ctx.log_since(off), nctl)
+                grew = rem.prompts() - p0
+                r.check(lo <= grew <= hi, "[%s] prompt.log grew by %d, expected one per command (2)%s" % (
+                    label, grew, "" if hi == lo else "; at most %d here: the app wrote %d further Ctrl-C(s) before the prompt was back, and a bash at its prompt answers each with a fresh prompt" % (hi, hi - lo)))
             elif arm["shell"] == "zsh":
                 r.check(rem.prompts() - p0 >= 2, "[%s] prompt.log grew by %d, expected at least one per command (2)" % (label, rem.prompts() - p0))
             r.check(SESSION_ABANDONED not in ctx.log_since(off), "[%s] the app log says %r" % (label, SESSION_ABANDONED))

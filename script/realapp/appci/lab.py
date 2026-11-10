@@ -132,6 +132,81 @@ def paired_verdict(app, plain, floor_ms=15.0, pct=0.10, min_n=10):
     return dict(verdict="pass" if ma <= allowed else "fail", app=round(ma, 1), plain=round(mp, 1), allowed=round(allowed, 1), over_ms=round(ma - allowed, 1))
 
 
+# ---- lab_enter_start: where the Enter starts and where the command starts (round 10, #2027)
+CORE_ENTER_WINDOW_RE = re.compile(r"input_order hop=core_enter stage=handle_window_event\b.* t=(\d+(?:\.\d+)?)\s*$")
+ENTER_BEGIN_T_RE = re.compile(r"input_order hop=enter_begin\b.* t=(\d+(?:\.\d+)?)\s*$")
+ENTER_KEY_TO_BEGIN_MAX_MS = 250.0       # an Enter's window event and its enter_begin are a fraction of a ms apart; further apart, they are not a pair
+
+
+def app_enter_epoch(lines, tok):
+    """pure: the wall time (epoch SECONDS, the app's clock = this machine's) at which the app RECEIVED the Enter that submitted the line holding `tok`, from
+    the app's own log: the `hop=core_enter stage=handle_window_event` line just before the `hop=enter_begin ... buffer="...tok..."` line (the enter_begin time
+    itself when no window event precedes it closely). None when the log has no enter_begin for the token (input-order logging off, or the line's text is not
+    logged). Round 10 lab, Wayland: the case stamped the Enter BEFORE the injector call, and every Wayland injector call starts with a priming Shift key and a
+    20 ms wait (backend.WaylandBackend._wtype, APPCI_WL_PRIME_MS): the app log showed the Shift at ...514.086 and the Enter at ...538.847, so about 35 ms of
+    injector time per Enter were charged to the app against a 15 ms budget, while the plain ssh control stamps right before its CR write. The time the app
+    itself needs from the key to the write (1.3 ms in that run) stays inside the measure."""
+    window_ms = None
+    for l in lines:
+        m = CORE_ENTER_WINDOW_RE.search(l)
+        if m:
+            window_ms = float(m.group(1))
+            continue
+        if "hop=enter_begin" in l and tok in l:
+            m = ENTER_BEGIN_T_RE.search(l)
+            if not m:
+                return None
+            begin_ms = float(m.group(1))
+            if window_ms is not None and 0 <= begin_ms - window_ms <= ENTER_KEY_TO_BEGIN_MAX_MS:
+                return window_ms / 1000.0
+            return begin_ms / 1000.0
+    return None
+
+
+def start_stamp_line(tok, fname):
+    """pure: the line lab_enter_start types into a bash or zsh: the command writes ITS OWN start time (the shell's clock, expanded when the command runs,
+    after every preexec hook) next to its token. rec.log cannot say when a command started: the bash and zsh hooks write the C line at the NEXT prompt, after
+    the command and after the session's prompt hooks, which is a different question (kept as the metric enter_to_next_prompt_*)."""
+    return "echo %s $EPOCHREALTIME >> %s" % (tok, fname)
+
+
+def start_stamps(lines):
+    """pure: {token: epoch seconds on the REMOTE clock} from the lines start_stamp_line() commands wrote (`tok 1794305734.123456`; a locale's decimal comma
+    is read too). A line without a parseable stamp (a shell with no $EPOCHREALTIME) is left out."""
+    out = {}
+    for l in lines:
+        parts = l.split()
+        if len(parts) >= 2:
+            try:
+                out.setdefault(parts[0], float(parts[1].replace(",", ".")))
+            except ValueError:
+                pass
+    return out
+
+
+def enter_start_samples(toks, enters, starts, offset):
+    """pure: per token, ms from its Enter (local epoch seconds, None = unknown) to its start stamp (remote epoch seconds; `offset` = remote clock minus local
+    clock), None where either is missing"""
+    out = []
+    for tok, t in zip(toks, enters):
+        s = starts.get(tok)
+        out.append(None if t is None or s is None else (s - offset - t) * 1000.0)
+    return out
+
+
+# ---- lab_ctrl_c_no_esc_i: how many prompts a Ctrl-C burst may draw (round 10, #2027)
+def ctrl_c_prompt_bounds(log_text, pressed):
+    """pure: (fewest, most) prompt.log lines a round of lab_ctrl_c_no_esc_i may add in bash: one for the interrupted `sleep`, one for the echo, plus at most one
+    for every FURTHER Ctrl-C the app wrote to the pty (`hop=ctrl_c_pty_write`): a Ctrl-C that reaches a bash sitting at its prompt draws a fresh prompt, under
+    plain ssh too. The app writes a Ctrl-C while it has not seen the prompt come back; on a 150 ms link a second key 33 ms after the first is in that window
+    (round 10: two `ctrl_c_route route=pty long_running=true` 33 ms apart, then two CommandFinished / Precmd pairs), with a 200 ms gap it is not (`route=none`,
+    count 2). Without the hop in the log (input-order logging off) every pressed Ctrl-C may have been written."""
+    wrote = log_text.count("hop=ctrl_c_pty_write")
+    if "hop=ctrl_c_" not in log_text:
+        wrote = pressed
+    return 2, 2 + max(0, min(wrote, pressed) - 1)
+
+
 def enter_wait_verdict(delayed_ms, lan_ms, rtt_ms, budget_ms=2.0, min_n=8):
     """#1970: did an Enter wait on the network before its line was written? Inputs are the APP's own Enter -> write times in ms (`hop=enter_begin` -> the
     line's `pty_write`, cases.enter_segment_samples): `delayed_ms` typed with the link at `rtt_ms`, `lan_ms` typed in the same ssh session with the delay

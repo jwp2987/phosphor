@@ -300,6 +300,26 @@ def close_settings(ctx):
     time.sleep(0.3)
 
 
+TOAST_LOOK_S = 3.0          # how long the denial toast is looked for after the denial is in the log; the toast is up for about 4 s
+
+
+def find_toast_word(ctx, tag, sub, secs=TOAST_LOOK_S, find=None):
+    """the denial toast's word (e.g. 'allow'), looked for by OCR until it is on screen or `secs` have passed -> (word or None, screenshot path).
+    Round 10 (Linux Wayland; #2027): the toast is drawn a frame or two after the gate logs the denial and is gone about 4 s later. agent_gate_deny_allow
+    looked ONCE, right at the log line (shots/agdn_find_allow: no toast yet), and network_gate_notice once after a 4 s sleep (ngn_denied shows the toast,
+    ngn_find_allow a moment later does not): both ended UNVERIFIABLE and the pointer Allow was never judged. `find` is cases_ui.find_word (a seam for the
+    self-test)."""
+    if find is None:
+        import cases_ui as UI
+        find = UI.find_word
+    t_end = time.time() + secs
+    w, p = find(ctx, tag, sub)
+    while not w and time.time() < t_end:
+        time.sleep(0.2)
+        w, p = find(ctx, tag, sub)
+    return w, p
+
+
 def click_exact(ctx, m, tag, text, pick="top"):
     """click the word whose whole text is `text` (case-insensitive); 'top' = highest on screen, 'bottom' = lowest. Returns whether one was found."""
     import cases_ui as UI
@@ -504,7 +524,7 @@ def c_agent_gate_deny_allow(ctx, r):
         time.sleep(2.0)
         off, tok, opened = show_image(ctx, r, "g", url)
         r.check(settle(ctx, off, denied_line(), 30), "pointer pass: the origin removed live was not refused")
-        w, _ = UI.find_word(ctx, "agdn_find_allow", "allow")
+        w, _ = find_toast_word(ctx, "agdn_find_allow", "allow")
         if w:
             m.click(w[1], w[2])
             ctx.until(lambda: origin_count(ctx, origin) >= 1, 10, step=0.5)

@@ -69,6 +69,17 @@ def verdict(text):
     return "hung"
 
 
+def settled_verdict(samples):
+    """pure: the verdict a run of polled verdict() samples (oldest first) has SETTLED on, or None while it has not: the last two samples agree and say
+    'answerable' or 'ended'. Round 10 (Linux Wayland, agent_question_empty; #2027): for a tool call the app rejects, the log reads `hop=turn state=success`,
+    3 ms later `state=in_progress` (the automatic follow-up request with the error result), then `success` again. One poll read the first `success` as
+    'ended', the case read the log AGAIN for the verdict it judges and got 'hung', and the row said "neither answerable nor ended after 150 s" 5 s into
+    the case. A single sample is never the end; two polls apart is."""
+    if len(samples) >= 2 and samples[-1] == samples[-2] and samples[-1] in ("answerable", "ended"):
+        return samples[-1]
+    return None
+
+
 # ---------------------------------------------------------------- helpers
 def ready(ctx, r):
     AR.need_fake(ctx, r)
@@ -119,17 +130,17 @@ def run_variant(ctx, r, tag, fault, **kw):
         got = []
 
         def settled():
-            v = verdict(ctx.log_since(off))
-            got.append(v)
-            return v in ("answerable", "ended")
-        ctx.until(settled, BOUND_S, step=0.5)
-        v = verdict(ctx.log_since(off))
-        r.metric("question_%s_seconds_to_end" % tag, round(time.time() - t0, 1))
+            got.append(verdict(ctx.log_since(off)))
+            return settled_verdict(got)
+        # the verdict judged below is the one the polls settled on (two polls 0.5 s apart that agree), never a fresh read of a log that is still moving
+        v = ctx.until(settled, BOUND_S, step=0.5) or "hung"
+        waited = time.time() - t0
+        r.metric("question_%s_seconds_to_end" % tag, round(waited, 1))
         ctx.shot("question_%s_state" % tag)
         log = ctx.log_since(off)
         r.check(v in ("answerable", "ended"),
-                "%s: the turn is neither answerable nor ended after %d s (verdict %s, last turn state %r, ask actions %r): the card hangs on 'Preparing question...'"
-                % (tag, BOUND_S, v, AR.last_turn_state(log), ask_actions(log)))
+                "%s: the turn is neither answerable nor ended %.0f s after the prompt (bound %d s; last samples %r, last turn state %r, ask actions %r): the card hangs on 'Preparing question...'"
+                % (tag, waited, BOUND_S, got[-3:], AR.last_turn_state(log), ask_actions(log)))
         if v == "answerable":
             r.check(answer_card(ctx, r, off, tag), "%s: Enter did not answer the card (no ask_user_question action reached done)" % tag)
             state = AR.wait_turn(ctx, off, ("success", "error", "cancelled"), 60)

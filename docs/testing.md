@@ -4534,6 +4534,36 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   `key_facts_tests.rs`: `the_other_zsh_newuser_install_key_prompts_are_input_prompts` (the three prompts; shell prompts that mention a key or end in
   dashes are not). Not compiled or run yet. No app case walks the sub-menus (the case answers `q` at the first screen).
 
+## Round 11: the round 10 failures on Linux Wayland and in the lab (build/r10a; design `docs/design/r11-wl.md`; #2026 #2027 #2016)
+
+Round 10 (integ/r10 `5dd50d49c`, pipeline 3048440714) left 9 FAIL rows on Linux Wayland (6 cases) and 75 in the lab job. Verdicts from the jobs' per-case
+app logs and screenshots: two app defects (#2026 new, #2016 known), six test faults (#2027); 69 of the lab's 75 rows are causes already worked on
+integ/r11 (#2019 #2020 #2021; that build predates them). Everything below is worked, unproven: nothing was compiled or run against a build.
+
+| case (rows) | verdict | what changed |
+|---|---|---|
+| `agent_gate_deny_allow` (agent@fake) | **APP #2026**: a hand edit of `settings.toml` that puts back the bytes Phosphor wrote last was taken for the watcher's echo once another hand edit had been reloaded in between (the gate kept refusing an origin the file listed) | `BackgroundWriter::forget_recent_after_foreign_content`, called by `TomlBackedUserPreferences::load_and_apply_unless_own_write` whenever the file is not our write. Unit tests: `background_writer_tests.rs` `our_last_write_put_back_by_hand_after_a_foreign_edit_is_not_an_echo`, `a_write_in_flight_survives_the_forgetting_and_older_ones_do_not` (a gated write, so "in flight" is a fact); `toml_backed_tests.rs` `test_our_last_write_put_back_by_hand_is_reloaded`, `test_our_last_write_put_back_after_a_syntax_error_is_reloaded`. The case is unchanged and is the app-level proof (step "adding the origin to settings.toml with the app running") |
+| same case and `network_gate_notice`: "the toast's 'Allow' was not found by OCR" (UNVERIFIABLE) | **TEST #2027**: the toast was looked for once, before it was drawn (`agent_gate_deny_allow`) or after it had gone (`network_gate_notice`, a 4 s sleep; the toast is up for about 4 s) | `cases_agent_netgate.find_toast_word`: OCR until the word shows, at most 3 s after the denial line; `network_gate_notice` no longer sleeps before its first look. The pointer steps behind it have never run: they may still end UNVERIFIABLE for a new reason |
+| `agent_question_empty` (agent@fake, regressed) | **TEST #2027**: for a rejected tool call the app logs `success`, 3 ms later `in_progress` (its automatic follow-up), then `success`; the case stopped polling on the first and judged a second read of the log | `cases_agent_question.settled_verdict`: the verdict judged is the one two polls 0.5 s apart agree on; the failure text gives the real wait. (The 3 ms `success` itself is filed as #2029, no app change) |
+| `subshell_sh_probe_empty_ps1` (both modes, regressed) | **TEST #2027**: the Linux leg got its empty PS1 by `export PS1` in the pane's bash; since #1907 (round 10) the bootstrap un-exports PS1 at every prompt, on purpose, so the dash drew `$ ` | the dash gets `PS1=` from an `$ENV` file on every platform (as macOS did since round 9); the second leg's rc is `PS1=` then `sleep 4`, and that leg now checks its own premise too (`this dash has an EMPTY PS1`). No check removed |
+| `subshell_ready_secret_after_probe` (both modes) | **TEST** (#2023): `hops()` did not list `subshell_stage_two_pending` | not changed here: `fix/r11-mac` `e9bda59f9` adds the name (the same row failed on macOS) |
+| `subshell_ready_zsh_newuser_install` (both modes) | **APP #2016**, as predicted when its change was held out of round 10: the menu's `q` left the setup armed (`Wait(LineDirty)`) until the next Enter | the #2016 change is back (see the round 10 section above); a commit of its own |
+| `ui_vertical_tabs_many` (agent) | **TEST #2027**: `tab_answer` returned when its `pwd` effect file existed; the shell logs the command with its next prompt, and the burst after it took its command mark in between | `tab_answer` waits until the shell has logged its probe (`probe_logged`, through `await_commands`) |
+| lab `lab_enter_start.{bash,zsh}.150.nohelper` (4 rows) | **TEST #2027**: the app's Enter was stamped before the injector call (a priming key and a 20 ms wait on Wayland, about 35 ms in all, against a 15 ms budget); and the stop was the rec.log line, which bash and zsh write at the NEXT prompt | start = the app's receipt of the Enter from its own log (`lab.app_enter_epoch`); stop (bash, zsh) = the command's own `$EPOCHREALTIME` (`lab.start_stamp_line`, both sessions). Budget unchanged. Metrics kept: `enter_to_next_prompt_{app,plain}_ms`, `injector_enter_delay_ms`, `enter_start_basis`. The remote bash hook time this case hid is #2030 |
+| lab `lab_ctrl_c_no_esc_i.bash.150.nohelper` (2 rows) | **TEST #2027**: "prompt.log grew by 3": on a 150 ms link the second Ctrl-C (33 ms later) is written before the prompt is back, and a bash at its prompt answers it with a fresh prompt, as under plain ssh | **expectation changed:** bash prompt count is `2 <= n <= 2 + (Ctrl-Cs the app wrote - 1)` (`lab.ctrl_c_prompt_bounds`, from `hop=ctrl_c_pty_write`); still exactly 2 whenever the app wrote one Ctrl-C (x1, and gaps longer than the round trip). Effect file, received commands, no ESC-i, no "Session abandoned" are unchanged |
+| lab, the other 69 rows | already worked on integ/r11: 40 `harness_state_reset_after_*.helper` (#2021), 24 fish / nu "no remote prompt" (#2019 #2021), `lab_agent_remote_flow.bash`, `lab_agent_remote_drop.bash` + `pane_not_local_after_*` (#2021), `lab_fam_agent_delete_conflict.bash` (#2021), `lab_fam_agent_edit_endings.bash` (#2020) | nothing here |
+
+Self-test `r11_wl_round10_test_faults` pins the pure parts (the three logged turn states and `settled_verdict`; the rc texts and that no case types
+`export PS1`; `probe_logged`; `find_toast_word` with a fake OCR; `app_enter_epoch` on the run's own log lines, `start_stamps`, `enter_start_samples`;
+`ctrl_c_prompt_bounds`).
+
+**What the next Linux run must show.** `agent_gate_deny_allow`: image `f` reaches the listener after the origin is written back into the file, and the
+later steps run on a page that lists the origin. `agent_question_empty` and `subshell_sh_probe_empty_ps1`: PASS (`[]` as the dash's PS1 in both legs).
+`subshell_ready_zsh_newuser_install`: `subshell_ready_key_read`, then `subshell_setup_ready_write`, within a second of the `q`. `ui_vertical_tabs_many`:
+no `pwd` line in a burst's received commands. Lab: `lab_enter_start` bash / zsh judged on `enter_start_basis = the command's own start stamp` with
+`injector_enter_delay_ms` around 25-40 on Wayland; if bash is still over the budget it is the remote preexec hook (#2030), an app finding;
+`lab_ctrl_c_no_esc_i.bash.150`: PASS with counts of 2, 3 or 4.
+
 ## Round 10: the lab's first run (job 17885063245; design `docs/design/r10-lab.md`; #2019 #2020 #2021)
 
 The fix-tier lab job ran the PROVING lab cases for the first time (build `413cd4241`): 36 judged rows, 2 PASS, 21 FAIL, 13 NOREF. Two causes are app

@@ -355,10 +355,23 @@ def tab_answer(ctx, name):
     """type the pwd probe into whichever tab has the keyboard -> that tab's cwd (norm_path), or '<none>' when no shell answered"""
     f = "vt_pwd_%s.txt" % name
     ctx.rm(f)
+    mark = ctx.cmd_mark()
     ctx.be.type("%s >> %s/%s" % (R.PWD(ctx), R.fwd(ctx.W), f), ctx.rng.randint(10, 25), enter=True)
     ctx.until(lambda: ctx.lines(f), 8)
     got = (ctx.lines(f) or ["<none>"])[0]
+    if got != "<none>":
+        # Round 10 (Linux Wayland, agent pass; #2027): the probe's effect file exists BEFORE the shell logs the command (the rc hook writes the C line
+        # with the next prompt). The exact burst right after the last probe took its command mark in that gap, and the probe was counted as the first
+        # of its typed lines ("shell received 5 commands, not the typed ones (first mismatch: 'pwd >> .../vt_pwd_end.txt')") although the four lines
+        # arrived exactly. The probe is over only when the shell has logged it, so whatever marks next starts after it. A give-up net, as everywhere
+        # in await_commands: a probe that is never logged shows up in the next comparison, as before.
+        ctx.await_commands(mark, probe_logged(f))
     return R.norm_path(got) if got != "<none>" else got
+
+
+def probe_logged(fname):
+    """pure: a predicate over the commands logged since a mark: the pwd probe that writes `fname` is among them"""
+    return lambda cmds: any(fname in c for c in cmds)
 
 
 def open_tabs(ctx, r, n, tag):

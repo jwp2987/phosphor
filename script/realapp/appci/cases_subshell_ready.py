@@ -293,38 +293,37 @@ def c_ready_secret_after_probe(ctx, r):
 @case("subshell_sh_probe_empty_ps1", order=22)
 @guarded
 def c_sh_probe_empty_ps1(ctx, r):
-    """#1935 (review r8 D2 and addendum 4): a dash with an EMPTY PS1 draws no prompt at all (round 8 Linux: the pane's bash exports PS1 and
-    Phosphor blanks it, so a child dash inherits ""). Phosphorize must still write the probe at once (the idle reader with nothing
+    """#1935 (review r8 D2 and addendum 4): a dash with an EMPTY PS1 draws no prompt at all (round 8 Linux: the pane's bash exported PS1 and
+    Phosphor blanked it, so a child dash inherited ""). Phosphorize must still write the probe at once (the idle reader with nothing
     unread needs no prompt), the probe's second line must follow the prelude's marker without waiting for a prompt, and the
     unsupported-shell EVENT ends the setup: the line typed right behind Ctrl-I runs in dash < 2 s after its Enter, no give-up, no
-    cancel. `export PS1` (exporting the value the pane already has) is left set, as the appci bashrc sets it on Linux. Off Linux (the
-    macOS pane is zsh: its exported PS1 is zsh's prompt string, round 9) the dash gets its empty PS1 from an $ENV file instead; the
-    case's own "PS1 is empty" check is the same everywhere.
+    cancel. The dash gets its empty PS1 from an $ENV file (`PS1=`, read by an interactive dash before its first prompt) on EVERY
+    platform: on macOS the pane is zsh and `export PS1` handed the dash zsh's prompt string (round 9); on Linux the bash bootstrap
+    un-exports PS1 at every prompt since #1907 (round 10, on purpose: a child shell gets its own default prompt instead of none), so
+    the `export PS1` this case typed there no longer reached the dash, which drew `$ ` and failed the case's own "PS1 is empty" check
+    while the app did the right thing (#2027). A shell with an empty PS1 still exists for real users (an rc file, `env PS1= sh`), which
+    is what the case keeps proving. The case's own "PS1 is empty" check is unchanged.
     A second leg (empty_ps1_typed_before_setup, Linux) types a line before the setup is written."""
     need_posix(ctx, r)
     if not shutil.which("dash"):
         r.skip("dash is not installed")
     f = "lab_ps1.txt"
     ctx.rm(f)
-    own_env = not sys.platform.startswith("linux")
-    if own_env:
-        # Round 9 macOS: the pane's shell is zsh there, and `export PS1` hands the dash zsh's own prompt string (with Phosphor's OSC 133
-        # marks), not an empty one: the "EMPTY PS1" check below failed and the case proved nothing about #1935. Where the pane does not
-        # hand a child a blanked PS1, the dash gets one through $ENV (read by an interactive dash before its first prompt).
-        write_rc(ctx, "lab_ps1_empty.rc", "PS1=\n")
-        ctx.be.type("export ENV=$HOME/w/lab_ps1_empty.rc", 12, enter=True)     # $HOME, not ~: no shell-specific tilde rule after `=`
-    else:
-        ctx.be.type("unset ENV; export PS1", 12, enter=True)   # no rc for dash; the pane's (blanked) PS1 is inherited
+    write_rc(ctx, "lab_ps1_empty.rc", EMPTY_PS1_RC)
+    ctx.be.type("export ENV=$HOME/w/lab_ps1_empty.rc", 12, enter=True)     # $HOME, not ~: no shell-specific tilde rule after `=`
     time.sleep(0.5)
     try:
         empty_ps1_first_leg(ctx, r, f)
     finally:
-        if own_env:
-            if not ctx.left_inner:
-                leave_inner(ctx, r, "empty_ps1")
-            ctx.be.type("unset ENV", 12, enter=True)           # the pane's shell: later dash starts get their own prompt again
-            time.sleep(0.3)
+        if not ctx.left_inner:
+            leave_inner(ctx, r, "empty_ps1")
+        ctx.be.type("unset ENV", 12, enter=True)               # the pane's shell: later dash starts get their own prompt again
+        time.sleep(0.3)
     empty_ps1_typed_before_setup(ctx, r)
+
+
+EMPTY_PS1_RC = "PS1=\n"                      # the $ENV file of the first leg: the dash's prompt string is empty before its first prompt
+EMPTY_PS1_SLEEP_RC = "PS1=\nsleep 4\n"      # the second leg's: the same empty prompt, then 4 s in which the dash reads nothing
 
 
 def empty_ps1_first_leg(ctx, r, f):
@@ -369,10 +368,10 @@ def empty_ps1_typed_before_setup(ctx, r):
         return
     label, f = "empty_ps1_typed", "lab_ps1_typed.txt"
     ctx.rm(f)
-    rc = write_rc(ctx, "lab_ps1_sleep.rc", "sleep 4\n")
+    rc = write_rc(ctx, "lab_ps1_sleep.rc", EMPTY_PS1_SLEEP_RC)   # PS1= first: since #1907 the pane's bash no longer hands a child an empty PS1
     ctx.left_inner = False
     try:
-        ctx.be.type("export ENV=" + rc, 12, enter=True)      # an interactive dash reads $ENV: busy for 4 s, PS1 still empty
+        ctx.be.type("export ENV=" + rc, 12, enter=True)      # an interactive dash reads $ENV: PS1 emptied, then busy for 4 s
         time.sleep(0.5)
         off = ctx.log_size()
         ctx.be.type("dash", 12, enter=True)
@@ -396,6 +395,11 @@ def empty_ps1_typed_before_setup(ctx, r):
         r.check(not any("subshell_setup_given_up" in ln for ln in ctx.log_since(off).splitlines()), "%s: no give-up net fired" % label)
         tok2, _ = run_in_inner(ctx, r, label, "sh", f)
         r.check(ctx.lines(f) == [tok, tok2], "%s: the typed-ahead line ran exactly once, then the next: %r" % (label, ctx.lines(f)))
+        ps1f = "lab_ps1_typed_ps1.txt"                      # the leg's premise, checked like the first leg's: this dash draws no prompt
+        ctx.rm(ps1f)
+        ctx.be.type("printf '[%s]\\n' \"$PS1\" >> " + ps1f, 12, enter=True)
+        ctx.until(lambda: len(ctx.lines(ps1f)) >= 1, 6)
+        r.check(ctx.lines(ps1f)[:1] == ["[]"], "%s: this dash has an EMPTY PS1 (else the leg proved nothing about a shell that draws no prompt): %r" % (label, ctx.lines(ps1f)[:1]))
         leave_and_prove_parent(ctx, r, label, f, [tok, tok2])
     finally:
         if not ctx.left_inner:

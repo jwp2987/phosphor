@@ -597,13 +597,13 @@ def c_network_gate_notice(ctx, r):
         return off, tok, opened
 
     try:
-        off, tok, opened = show("a")
-        ctx.until(lambda: denied_line in ctx.log_since(off), 30, step=0.5)
+        off, tok, opened = NG.show_image(ctx, r, "a", url)      # no fixed sleep here: the toast is up for about 4 s from the denial and is looked for at once
+        ctx.until(lambda: denied_line in ctx.log_since(off), 30, step=0.2)
+        w, _ = NG.find_toast_word(ctx, "ngn_find_allow", "allow")
         log = ctx.log_since(off)
         r.check(denied_line in log, "the remote image from an unlisted host was not refused by the gate (no '%s' line)" % denied_line)
         r.check(host not in log and tok not in log, "the app log names the host or the image URL of a refused request")
         ctx.shot("ngn_denied")
-        w, _ = UI.find_word(ctx, "ngn_find_allow", "allow")
         if not w:
             NG.close_viewer(ctx, opened)
             r.unverifiable("the 'Allow this origin' link was not found on screen by OCR (shots/ngn_find_allow.png): the click, the settings.toml write and the retry were not judged")

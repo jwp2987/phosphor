@@ -4517,6 +4517,93 @@ def lab_first_run_fixes_round10():
 
 
 @check
+def r11_wl_round10_test_faults():
+    """Round 10 on Linux Wayland and the lab (build/r10a; docs/design/r11-wl.md, #2027): the pure parts of the six test faults. (1) a question verdict is
+    judged only once two polls agree; (2) the empty-PS1 dash gets its PS1 from an $ENV file on every platform; (3) a tab's pwd probe is over when the shell
+    logged it; (4) the denial toast is looked for until it shows; (5) lab_enter_start times from the app's receipt of the Enter to the command's own start
+    stamp; (6) a Ctrl-C the app wrote before the prompt was back may draw one prompt."""
+    import cases_agent_question as aq
+    import cases_agent_netgate as ng
+    import cases_subshell_ready as sr
+    import cases_wrap_vtabs as vt
+    import lab as labmod
+    # (1) the three turn states the app logged for the rejected call, 3 ms apart (agent_question_empty, round 10)
+    t1 = "x input_order hop=turn conv=c state=success t=1794304453843.189\n"
+    t2 = t1 + "x input_order hop=turn conv=c state=in_progress t=1794304453846.704\n"
+    t3 = t2 + "x input_order hop=turn conv=c state=success t=1794304453858.534\n"
+    assert [aq.verdict(t) for t in (t1, t2, t3)] == ["ended", "hung", "ended"]
+    assert aq.settled_verdict([]) is None and aq.settled_verdict(["ended"]) is None            # one sample is never the end
+    assert aq.settled_verdict(["ended", "hung"]) is None and aq.settled_verdict(["hung", "ended"]) is None
+    assert aq.settled_verdict(["ended", "hung", "ended", "ended"]) == "ended"
+    assert aq.settled_verdict(["hung", "answerable", "answerable"]) == "answerable"
+    assert aq.settled_verdict(["hung", "hung"]) is None                                        # agreeing on 'hung' settles nothing
+    assert aq.settled_verdict(["answerable", "ended"]) is None
+    src = open(os.path.join(HERE, "cases_agent_question.py")).read()
+    assert "return settled_verdict(got)" in src and 'v = ctx.until(settled, BOUND_S, step=0.5) or "hung"' in src
+    # (2) the empty PS1 comes from the rc file, never from `export PS1` (the bash bootstrap un-exports it since #1907)
+    assert sr.EMPTY_PS1_RC == "PS1=\n" and sr.EMPTY_PS1_SLEEP_RC == "PS1=\nsleep 4\n"
+    src = open(os.path.join(HERE, "cases_subshell_ready.py")).read()
+    assert 'ctx.be.type("unset ENV; export PS1"' not in src and 'write_rc(ctx, "lab_ps1_empty.rc", EMPTY_PS1_RC)' in src
+    assert 'write_rc(ctx, "lab_ps1_sleep.rc", EMPTY_PS1_SLEEP_RC)' in src
+    assert src.count("this dash has an EMPTY PS1") == 2                                        # both legs check their premise
+    boot = open(os.path.join(HERE, "..", "..", "..", "app", "assets", "bundled", "bootstrap", "bash_body.sh")).read()
+    assert "export -n PS1" in boot                                                             # the app behaviour the old Linux leg ran into
+    # (3) the probe is over when the shell logged it
+    logged = vt.probe_logged("vt_pwd_end.txt")
+    assert not logged([]) and not logged(["echo a >> r_vt_many_closed.txt"]) and logged(["pwd >> /w/vt_pwd_end.txt"])
+    src = open(os.path.join(HERE, "cases_wrap_vtabs.py")).read()
+    assert "ctx.await_commands(mark, probe_logged(f))" in src
+    # (4) the toast is looked for until it shows, and not for ever
+    seen = []
+
+    def find_third(ctx, tag, sub):
+        seen.append(tag)
+        return (("Allow", 10, 20, 0) if len(seen) >= 3 else None), "shot.png"
+    w, p = ng.find_toast_word(None, "t", "allow", secs=5.0, find=find_third)
+    assert w and w[0] == "Allow" and len(seen) == 3 and p == "shot.png"
+    seen[:] = []
+    t0 = time.time()
+    w, _ = ng.find_toast_word(None, "t", "allow", secs=0.3, find=lambda c, t, s: (seen.append(t), (None, "s.png"))[1])
+    assert w is None and 2 <= len(seen) <= 4 and time.time() - t0 < 2.0
+    assert 'find_toast_word(ctx, "agdn_find_allow", "allow")' in open(os.path.join(HERE, "cases_agent_netgate.py")).read()
+    net = open(os.path.join(HERE, "cases_netless.py")).read()
+    assert 'NG.find_toast_word(ctx, "ngn_find_allow", "allow")' in net and 'off, tok, opened = show("a")' not in net
+    # (5) lab_enter_start: the Enter starts when the app received it (the app log of the round 10 run: the injector's priming Shift, 25 ms, the Enter)
+    log = [
+        "2026-11-10T10:15:34Z [DEBUG] input_order hop=key_unconverted outcome=dropped logical=Shift physical=Code(Escape) ctrl=false alt=false shift=false cmd=false t=1794305734514.086",
+        "2026-11-10T10:15:34Z [DEBUG] input_order hop=core_enter stage=handle_window_event key_bindings_enabled=true focused_view=EntityId(1593) t=1794305734538.847",
+        "2026-11-10T10:15:34Z [DEBUG] input_order hop=core_enter stage=dispatch_result handled=true pending=false t=1794305734539.230",
+        '2026-11-10T10:15:34Z [DEBUG] input_order hop=enter_begin deferred=false buffer="echo est3524yn $EPOCHREALTIME >> /work/u/es.txt" input_type=Shell t=1794305734539.288',
+        "2026-11-10T10:15:34Z [DEBUG] input_order pty_write bytes=58 t=1794305734540.539",
+    ]
+    assert abs(labmod.app_enter_epoch(log, "est3524yn") - 1794305734.538847) < 1e-6
+    assert labmod.app_enter_epoch(log, "esOTHER") is None and labmod.app_enter_epoch([], "est3524yn") is None
+    assert abs(labmod.app_enter_epoch(log[3:], "est3524yn") - 1794305734.539288) < 1e-6      # no window event: the enter_begin time
+    stale = [log[1].replace("1794305734538.847", "1794305730000.000")] + log[3:]              # a window event of an older Enter is not this one's
+    assert abs(labmod.app_enter_epoch(stale, "est3524yn") - 1794305734.539288) < 1e-6
+    assert labmod.start_stamp_line("tok", "/work/u/f.txt") == "echo tok $EPOCHREALTIME >> /work/u/f.txt"
+    stamps = labmod.start_stamps(["esa 1794305734.650000", "esb 1794305735,250000", "esc", "esd notanumber", ""])
+    assert stamps == {"esa": 1794305734.65, "esb": 1794305735.25}
+    ms = labmod.enter_start_samples(["esa", "esb", "esc"], [1794305734.55 - 2.0, None, 1.0], stamps, 2.0)   # the remote clock is 2 s ahead
+    assert abs(ms[0] - 100.0) < 0.01 and ms[1] is None and ms[2] is None
+    pv = labmod.paired_verdict([94.0] * 12, [83.0] * 12)
+    assert pv["verdict"] == "pass" and labmod.paired_verdict([140.7] * 12, [88.2] * 12)["verdict"] == "fail"   # the budget itself is unchanged
+    src = open(os.path.join(HERE, "cases_lab.py")).read()
+    assert "L.app_enter_epoch(log_lines, t)" in src and "L.start_stamp_line(tok, eff)" in src and '"injector_enter_delay_ms"' in src
+    # (6) Ctrl-C bursts: one prompt per command, plus at most one per further Ctrl-C the app wrote
+    one = "hop=ctrl_c_route route=pty long_running=true\nhop=ctrl_c_pty_write bytes=1\n"
+    assert labmod.ctrl_c_prompt_bounds(one, 1) == (2, 2)
+    assert labmod.ctrl_c_prompt_bounds(one + "hop=ctrl_c_route route=none\n", 2) == (2, 2)     # 200 ms gap: the second key was not written
+    assert labmod.ctrl_c_prompt_bounds(one + one, 2) == (2, 3) and labmod.ctrl_c_prompt_bounds(one * 3, 3) == (2, 4)
+    assert labmod.ctrl_c_prompt_bounds(one * 5, 2) == (2, 3)                                   # never more than were pressed
+    assert labmod.ctrl_c_prompt_bounds("", 3) == (2, 4)                                        # no hop in the log: every pressed key may have been written
+    assert "L.ctrl_c_prompt_bounds(ctx.log_since(off), nctl)" in src
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
+    assert "r11_wl_round10_test_faults" in doc and "#2027" in doc and "#2026" in doc
+
+
+
+@check
 def report_problem_zip_verdict():
     """Wave 1.5 #1: the bundle verdict flags a leaked home path / host name and a missing log, and passes a clean bundle"""
     import cases_coverage_b as cb, zipfile
