@@ -1282,9 +1282,19 @@ impl CodeEditorModel {
     }
 
     /// Apply a vector of diffs on the current buffer without changing the active selection.
+    ///
+    /// The buffer-side twin of `ai::diff_validation::apply_deltas_to_text`, which states the rules
+    /// and is what an accepted agent edit is compared against before it is written
+    /// (`InlineDiffView::dispatch_accept_write`). The two must produce the same text.
     pub fn apply_diffs(&mut self, diffs: Vec<DiffDelta>, ctx: &mut ModelContext<Self>) {
         let insertion = {
             let buffer = self.content().as_ref(ctx);
+            let buffer_is_empty = buffer.is_empty();
+            let buffer_end = buffer.max_charoffset();
+            // Whether the buffer's last line has no line break after it (a file with no final
+            // newline). The text is the offsets `1..max_charoffset`, so this looks at its last char.
+            let last_line_unterminated = !buffer_is_empty
+                && buffer.char_at(buffer_end.saturating_sub(&CharOffset::from(1))) != Some('\n');
             diffs
                 .into_iter()
                 .map(|diff| {
@@ -1309,16 +1319,16 @@ impl CodeEditorModel {
                         (start, end)
                     };
 
-                    let mut formatted = diff.insertion.clone();
-
-                    if !formatted.is_empty()
-                        && !formatted.ends_with("\n")
-                        // Don't add a newline if this is content in a brand new file.
-                        && !self.content().as_ref(ctx).is_empty()
-                    {
-                        // Make sure the formatted text ends with a linebreak.
-                        formatted.push('\n');
-                    }
+                    // A range that runs to the end of a buffer whose last line has no line break
+                    // replaces (or follows) a line that has none to give. Ending the insertion
+                    // with one there added a final newline to a file that had none (#1925).
+                    let at_unterminated_end = last_line_unterminated && end >= buffer_end;
+                    let formatted = insertion_for_range(
+                        &diff.insertion,
+                        buffer_is_empty,
+                        at_unterminated_end,
+                        at_unterminated_end && start >= buffer_end,
+                    );
 
                     (formatted, start..end)
                 })
@@ -4738,6 +4748,38 @@ impl PlainTextEditorModel for CodeEditorModel {
 
 impl Entity for CodeEditorModel {
     type Event = CodeEditorModelEvent;
+}
+
+/// The text [`CodeEditorModel::apply_diffs`] puts in a delta's range, given the delta's insertion.
+///
+/// A delta replaces whole lines, so its text has to end the last line it inserts: an insertion
+/// with no line break at its end gets one, or it would run into the line that follows. Three
+/// places take it as it is:
+/// - a brand new (empty) buffer, whose content is exactly the insertion;
+/// - `at_unterminated_end`: the range runs to the end of a buffer whose last line has no line
+///   break. Nothing follows, and the line being replaced had none, so adding one changed the
+///   file's final-newline state (#1925). An insertion that ends in a line break keeps it;
+/// - `appends_at_unterminated_end`: the range is the empty one at that same end. The insertion is
+///   a new line after a last line with no line break, so the break goes in front of it rather
+///   than behind; without it the new text was joined onto the old last line (#1954).
+fn insertion_for_range(
+    insertion: &str,
+    buffer_is_empty: bool,
+    at_unterminated_end: bool,
+    appends_at_unterminated_end: bool,
+) -> String {
+    if insertion.is_empty() || buffer_is_empty {
+        return insertion.to_owned();
+    }
+    let mut formatted = String::with_capacity(insertion.len() + 1);
+    if appends_at_unterminated_end {
+        formatted.push('\n');
+    }
+    formatted.push_str(insertion);
+    if !insertion.ends_with('\n') && !at_unterminated_end {
+        formatted.push('\n');
+    }
+    formatted
 }
 
 #[cfg(test)]

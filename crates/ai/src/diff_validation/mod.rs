@@ -19,6 +19,9 @@ use cfg_if::cfg_if;
 use derivative::Derivative;
 use serde_json::json;
 
+mod apply;
+pub use apply::{accepted_update_text, apply_deltas_to_text, lf_normalized};
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub enum ParsedDiff {
     /// An edit to a file using
