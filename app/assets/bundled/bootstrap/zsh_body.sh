@@ -1637,30 +1637,84 @@ esac
       # #1035: 0 when the remote answers like a non-POSIX shell (cmd.exe or PowerShell), asked over
       # the already-authenticated master at "$1" (no new connection). POSIX shells print the
       # literal %COMSPEC% and an empty $PSVersionTable; cmd.exe expands %COMSPEC% and leaves
-      # $PSVersionTable; PowerShell leaves %COMSPEC% and expands $PSVersionTable. Anything else
-      # (timeout after 5 s, failure, csh/fish errors) is inconclusive and returns 1, i.e. the
+      # $PSVersionTable; PowerShell leaves %COMSPEC% and expands $PSVersionTable.
+      # Round 10 (lab): a unix LOGIN shell that cannot parse POSIX sh (fish, nu, csh, ...) answers
+      # neither way (fish prints an empty line, nu and csh an error). sshd hands the remote
+      # command to the login shell, so the POSIX bootstrap was refused by it as a whole and the
+      # session ended at once with the shell's syntax error. When the first answer is not
+      # definitive and the probe ended by itself, the login shell is asked for its name
+      # (warp_ssh_remote_login_shell) and a known non-POSIX one is answered like cmd.exe: 0, the
+      # plain interactive session over the same master. Anything else (timeout after 5 s,
+      # failure, a shell that is not on that list) is inconclusive and returns 1, i.e. the
       # managed session as before.
       function warp_ssh_remote_is_non_posix() {
           local control_path="$1"
           shift
-          local out
-          out=$( {
-              command ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$control_path" "$@" -T 'echo warp-probe-%COMSPEC%-$PSVersionTable' </dev/null 2>/dev/null &
-              local probe_pid=$!
-              # give-up-net: kills a stuck ssh probe after 5 s; never touches the tty or typed keys
-              ( command -p sleep 5; kill $probe_pid ) >/dev/null 2>&1 &
-              local killer_pid=$!
-              wait $probe_pid
-              kill $killer_pid
-          } 2>/dev/null )
+          local out probe_rc=0
+          out=$(warp_ssh_probe_over_master "$control_path" 'echo warp-probe-%COMSPEC%-$PSVersionTable' "$@") || probe_rc=$?
           # #1136: record a DEFINITIVE answer for warp_ssh_remote_is_non_posix_cached; anything
           # else leaves the verdict empty (inconclusive, never cached).
           warp_ssh_probe_verdict=""
           case "$out" in
               *[Hh]ash[Tt]able* | *[Cc][Mm][Dd].[Ee][Xx][Ee]-'$PSVersionTable'*) warp_ssh_probe_verdict="nonposix"; return 0 ;;
-              'warp-probe-%COMSPEC%-') warp_ssh_probe_verdict="posix" ;;
+              'warp-probe-%COMSPEC%-') warp_ssh_probe_verdict="posix"; return 1 ;;
+          esac
+          # No definitive answer. A probe that ssh itself failed (255) or that the 5 s net killed
+          # (a signal status) says nothing about the login shell and is not asked again.
+          if [[ $probe_rc -eq 255 || $probe_rc -gt 128 ]]; then
+              return 1
+          fi
+          local warp_ssh_login_shell=""
+          warp_ssh_remote_login_shell "$control_path" "$@"
+          case "$warp_ssh_login_shell" in
+              fish | nu | csh | tcsh | xonsh | elvish) warp_ssh_probe_verdict="nonposix"; return 0 ;;
+              bash | zsh) warp_ssh_probe_verdict="posix" ;;
           esac
           return 1
+      }
+
+      # Runs the remote command "$2" over the already-authenticated master at "$1" (the user's
+      # ssh arguments follow), prints what it printed and returns ssh's status (a signal status
+      # when the 5 s net killed it). No tty, stdin from /dev/null.
+      function warp_ssh_probe_over_master() {
+          local control_path="$1" remote_command="$2"
+          shift 2
+          {
+              command ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$control_path" "$@" -T "$remote_command" </dev/null 2>/dev/null &
+              local probe_pid=$!
+              # give-up-net: kills a stuck ssh probe after 5 s; never touches the tty or typed keys
+              ( command -p sleep 5; kill $probe_pid ) >/dev/null 2>&1 &
+              local killer_pid=$!
+              local probe_status=0
+              wait $probe_pid || probe_status=$?
+              kill $killer_pid
+              return $probe_status
+          } 2>/dev/null
+      }
+
+      # Round 10 (lab): the name of the remote LOGIN shell (the last path component of its
+      # $SHELL) into warp_ssh_login_shell, empty when it did not answer. The question is one
+      # single-quoted word list with no backslash, quote or newline inside, so sh, bash, zsh,
+      # fish, nu, csh, tcsh, xonsh and elvish all parse it the same way and hand it to `sh`;
+      # sshd exports SHELL (the passwd entry) to the session, so `sh` reads the login shell from
+      # it. Lines an rc file printed in front are skipped: only a whole `warp-login-<path>-`
+      # line counts.
+      function warp_ssh_remote_login_shell() {
+          local control_path="$1"
+          shift
+          warp_ssh_login_shell=""
+          local out line
+          out=$(warp_ssh_probe_over_master "$control_path" "sh -c 'echo warp-login-\$SHELL-'" "$@") || :
+          while IFS= builtin read -r line; do
+              line=${line%$'\r'}
+              case "$line" in
+                  warp-login-*-)
+                      line=${line#warp-login-}
+                      line=${line%-}
+                      warp_ssh_login_shell=${line##*/}
+                      ;;
+              esac
+          done <<< "$out"
       }
 
       # #1136: the probe above costs a channel on the master plus a remote shell start on every

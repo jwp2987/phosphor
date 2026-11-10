@@ -153,6 +153,11 @@ PA_CTL="%(ctl)s"; export PA_CTL
 PS1='$ '
 cd "$APPCI_W" 2>/dev/null || true
 """
+FISH_LAB_TAIL = r"""# lab only: every lab connect waits for a REMOTE prompt in prompt.log (cases_caseremote.connect), and the scratch config above logs none: fish there
+# runs inside the bash pane and shares its ctl dir, where a P line per fish prompt would change the bash prompt counts. In the lab fish is the LOGIN shell
+# with a ctl dir of its own, so its prompts are logged like every other shell's (job 17885063245: no fish arm could ever have connected).
+function __pa_prompt --on-event fish_prompt; printf 'P\t%%s\n' (date +%%s.%%N) >> $PA_CTL/prompt.log; end
+"""
 RBASH_TAIL = r"""
 # rbash: the history file is the record (restricted shells cannot redirect writes to the ctl dir from commands)
 HISTFILE="%(ctl)s/bash_history"
@@ -161,8 +166,9 @@ PROMPT_COMMAND="history -a${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 
 
 def lab_hooks():
-    """{shell key: template with %(ctl)s} for labd's lease: the same BASHRC / ZSHRC / FISH the local scratch home uses, plus nu, pwsh, sh (dash/ash) and rbash"""
-    return {"bash": BASHRC, "rbash": BASHRC + RBASH_TAIL, "zsh": ZSHRC, "fish": FISH, "nu": NU_HOOK, "pwsh": PWSH_HOOK, "sh": SH_HOOK}
+    """{shell key: template with %(ctl)s} for labd's lease: the same BASHRC / ZSHRC / FISH the local scratch home uses (fish plus its prompt log, FISH_LAB_TAIL),
+    plus nu, pwsh, sh (dash/ash) and rbash"""
+    return {"bash": BASHRC, "rbash": BASHRC + RBASH_TAIL, "zsh": ZSHRC, "fish": FISH + FISH_LAB_TAIL, "nu": NU_HOOK, "pwsh": PWSH_HOOK, "sh": SH_HOOK}
 
 
 def history_lines(n=2200, seed=1):

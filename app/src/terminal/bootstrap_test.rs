@@ -1493,6 +1493,47 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
     }
 }
 
+/// Round 10 (lab): the question the ssh wrappers ask a remote whose first probe answer is not
+/// definitive. One word list in single quotes with no backslash, quote or newline inside, so
+/// every login shell (POSIX or not) hands the same text to `sh`.
+#[cfg(unix)]
+const LOGIN_SHELL_QUESTION: &str = "sh -c 'echo warp-login-$SHELL-'";
+
+/// Round 10 (lab): sshd runs a remote command as `<login shell> -c <command>`. The login-shell
+/// question must come back as `warp-login-<$SHELL>-` from every shell family that is installed
+/// here, fish included (the one that refuses the POSIX bootstrap as a whole).
+#[test]
+#[cfg(unix)]
+fn ssh_login_shell_question_is_answered_by_every_login_shell() {
+    use std::process::Command;
+
+    for (shell, args) in [
+        ("sh", &["-c"][..]),
+        ("bash", &["-c"][..]),
+        ("zsh", &["-f", "-c"][..]),
+        ("dash", &["-c"][..]),
+        ("fish", &["--no-config", "-c"][..]),
+    ] {
+        if Command::new(shell).arg("-c").arg("true").output().is_err() {
+            eprintln!("skipping {shell}: not installed");
+            continue;
+        }
+        let output = Command::new(shell)
+            .args(args)
+            .arg(LOGIN_SHELL_QUESTION)
+            .env("SHELL", format!("/somewhere/bin/{shell}"))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("warp-login-/somewhere/bin/{shell}-\n"),
+            "{shell}: stderr {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 /// #1035 / #1039: the wrapper decides AFTER connecting, with ONE authentication. It starts the
 /// Phosphor-owned ControlMaster in the background (`-N -f`), asks the remote what shell family it
 /// runs over that master, then runs either the managed POSIX session or a plain interactive
@@ -1509,6 +1550,11 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
 /// master starts, so exactly one live master is created; a LIVE master already there (another ssh
 /// of this shell) is never touched and the ssh runs unwrapped. A failing `-O exit` is the last
 /// ssh call: nothing retries or falls back.
+///
+/// Round 10 (lab): a first answer that is not definitive (a unix login shell that is not POSIX
+/// sh, or an rc file that prints) is followed by ONE more question over the same master, the
+/// login shell's name. fish, nu, csh, tcsh, xonsh and elvish get the plain session (they refuse
+/// the POSIX bootstrap as a whole); everything else stays managed.
 #[test]
 #[cfg(unix)]
 fn ssh_wrapper_decides_after_connecting_over_one_master() {
@@ -1521,6 +1567,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
 
     // (case, master behaviour, probe output, expected session: "plain" | "managed" | "none",
     //  expected helper exit status, extra ssh args)
+    #[derive(Default)]
     struct Case {
         name: &'static str,
         master: &'static str,
@@ -1533,6 +1580,11 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
         pre: &'static str,
         /// `ssh -O exit` fails (the master is already gone / shutting down).
         exit_fails: bool,
+        /// Round 10 (lab): what the remote prints when it is asked for its login shell (the
+        /// second question, only asked when `probe` is not a definitive answer).
+        login: &'static str,
+        /// The exit status of the first probe's ssh (0 unless stated).
+        probe_status: i32,
     }
     let cases = [
         Case {
@@ -1544,6 +1596,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "",
             exit_fails: false,
+            ..Case::default()
         },
         Case {
             name: "windows-powershell",
@@ -1554,6 +1607,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "",
             exit_fails: false,
+            ..Case::default()
         },
         Case {
             name: "posix",
@@ -1564,6 +1618,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "",
             exit_fails: false,
+            ..Case::default()
         },
         Case {
             name: "inconclusive",
@@ -1574,6 +1629,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "",
             exit_fails: false,
+            ..Case::default()
         },
         Case {
             name: "windows-behind-jump",
@@ -1584,6 +1640,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &["-J", "jump"],
             pre: "",
             exit_fails: false,
+            ..Case::default()
         },
         Case {
             name: "posix-behind-jump",
@@ -1594,6 +1651,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &["-J", "jump"],
             pre: "",
             exit_fails: false,
+            ..Case::default()
         },
         // #1626: authentication failed (ssh already printed why). Plain ssh asks for credentials
         // once per invocation, so ssh's status comes back and NOTHING else runs: no second ssh
@@ -1608,6 +1666,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "",
             exit_fails: false,
+            ..Case::default()
         },
         // #1551: ssh authenticated (its ControlPath socket exists) but cannot multiplex ("Failed to
         // connect to new control master", 255). The user's own plain ssh runs instead -- once,
@@ -1622,6 +1681,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "",
             exit_fails: false,
+            ..Case::default()
         },
         // #1551: Git Bash / MSYS2 (WARP_IN_MSYS2=true): no master at all, just the plain ssh.
         // Bash only (the zsh/fish wrappers do not run in Git Bash).
@@ -1634,6 +1694,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "",
             exit_fails: false,
+            ..Case::default()
         },
         // Ctrl-C while the master authenticates: ssh dies with 130, nothing else may run (no
         // probe, no session) and no master is left to clean up.
@@ -1646,6 +1707,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "",
             exit_fails: false,
+            ..Case::default()
         },
         // #1084: a SIGKILLed master's dead socket is removed first, then ONE fresh master.
         Case {
@@ -1657,6 +1719,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "dead",
             exit_fails: false,
+            ..Case::default()
         },
         Case {
             name: "dead-socket-at-start-windows",
@@ -1667,6 +1730,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &["-J", "jump"],
             pre: "dead",
             exit_fails: false,
+            ..Case::default()
         },
         // #1084: a live master at the path is another ssh's: untouched, this ssh runs unwrapped.
         Case {
@@ -1678,6 +1742,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "live",
             exit_fails: false,
+            ..Case::default()
         },
         // #1083: `-O exit` fails (master already shutting down): no second attempt, no login.
         Case {
@@ -1689,6 +1754,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "",
             exit_fails: true,
+            ..Case::default()
         },
         Case {
             name: "exit-fails-windows",
@@ -1699,6 +1765,72 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             extra: &[],
             pre: "",
             exit_fails: true,
+            ..Case::default()
+        },
+        // Round 10 (lab job 17885063245): a unix host whose LOGIN shell is fish. fish answers the
+        // first probe with an empty line (an unset variable makes the whole word vanish) and
+        // refuses the POSIX bootstrap as a whole (`warp_rb=false` is a syntax error in fish), so
+        // the managed session ended at once with exit 127. Asked for its login shell it names
+        // fish: the plain interactive session over the same master, as for cmd.exe.
+        Case {
+            name: "fish-login",
+            master: "ok",
+            probe: "",
+            session: "plain",
+            login: "warp-login-/usr/bin/fish-",
+            ..Case::default()
+        },
+        // nushell: the first probe is a parse error (`$PSVersionTable` is not a variable), so
+        // nothing is printed and the status is 1; the second question is an external `sh`.
+        Case {
+            name: "nu-login",
+            master: "ok",
+            probe: "",
+            session: "plain",
+            login: "warp-login-/usr/local/bin/nu-",
+            probe_status: 1,
+            ..Case::default()
+        },
+        Case {
+            name: "tcsh-login-behind-jump",
+            master: "ok",
+            probe: "",
+            session: "plain",
+            login: "warp-login-/bin/tcsh-",
+            probe_status: 1,
+            extra: &["-J", "jump"],
+            ..Case::default()
+        },
+        // A bash host whose rc file prints on every start: the first answer is not the exact
+        // POSIX line, the login shell is bash, the session stays managed.
+        Case {
+            name: "noisy-rc-bash",
+            master: "ok",
+            probe: "hello from an rc file\nwarp-probe-%COMSPEC%-",
+            session: "managed",
+            login: "hello from an rc file\nwarp-login-/bin/bash-",
+            ..Case::default()
+        },
+        // A login shell that is not on the non-POSIX list keeps the managed session, as before.
+        Case {
+            name: "unlisted-login-shell",
+            master: "ok",
+            probe: "",
+            session: "managed",
+            login: "warp-login-/opt/odd/sh9-",
+            ..Case::default()
+        },
+        // The first probe's ssh failed (255): nothing was learned about the login shell and it
+        // is not asked again (bash and zsh read ssh's status; fish only knows whether the probe
+        // ended by itself, so there the question is asked and this case is skipped).
+        Case {
+            name: "probe-ssh-failed",
+            master: "ok",
+            probe: "",
+            session: "managed",
+            login: "warp-login-/usr/bin/fish-",
+            probe_status: 255,
+            ..Case::default()
         },
     ];
 
@@ -1747,6 +1879,9 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             if case.name == "msys2" && kind != 0 {
                 continue;
             }
+            if case.name == "probe-ssh-failed" && kind == 2 {
+                continue;
+            }
             let dir = std::env::temp_dir().join(format!(
                 "p1035-{name}-{}-{}{}",
                 cases.iter().position(|c| c.name == case.name).unwrap(),
@@ -1789,7 +1924,8 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             //               that serves until told to exit. Like ssh, when the path is taken it
             //               says "already exists, disabling multiplexing" (recorded as MUXFAIL)
             //               and still succeeds -- the #1084 leak;
-            //   probe    -> prints $PROBE;
+            //   probe    -> prints $PROBE and exits $PROBE_STATUS; the login-shell question
+            //               (its remote command names `warp-login-`) prints $LOGIN;
             //   other    -> the session.
             let mux = dir.join("mux.py");
             std::fs::write(
@@ -1851,7 +1987,9 @@ case " $* " in
     esac
     python3 "$MUX" serve "$p"
     exit 0;;
-  *" -T "*) printf '%s\n' "$PROBE"; exit 0;;
+  *" -T "*)
+    case "$*" in *warp-login-*) printf '%s\n' "$LOGIN"; exit 0;; esac
+    printf '%s\n' "$PROBE"; exit "$PROBE_STATUS";;
 esac
 exit 0
 "#,
@@ -1904,6 +2042,8 @@ exit 0
                 .env("OUT", &out_file)
                 .env("MASTER", case.master)
                 .env("PROBE", case.probe)
+                .env("PROBE_STATUS", case.probe_status.to_string())
+                .env("LOGIN", case.login)
                 .env("MUX", &mux)
                 .env("EXIT_FAILS", if case.exit_fails { "1" } else { "" })
                 .stdin(std::process::Stdio::null())
@@ -2075,7 +2215,30 @@ exit 0
                     continue;
                 }
                 kind_of_session => {
-                    assert_eq!(probes, 1, "{name}/{}: one probe: {recorded:?}", case.name);
+                    // One probe when its answer is definitive (or its ssh failed); otherwise
+                    // the login shell is asked for its name, once, with the question every
+                    // login shell parses the same way.
+                    let definitive = case.probe == "warp-probe-%COMSPEC%-"
+                        || case.probe.contains("cmd.exe")
+                        || case.probe.contains("HashTable");
+                    let want_probes = if definitive || case.probe_status == 255 {
+                        1
+                    } else {
+                        2
+                    };
+                    assert_eq!(
+                        probes, want_probes,
+                        "{name}/{}: probes: {recorded:?}",
+                        case.name
+                    );
+                    if want_probes == 2 {
+                        let question = calls.iter().filter(|c| c.contains("-T\n")).nth(1).unwrap();
+                        assert!(
+                            question.ends_with(&format!("-T\n{LOGIN_SHELL_QUESTION}\n")),
+                            "{name}/{}: the login-shell question: {question:?}",
+                            case.name
+                        );
+                    }
                     assert_eq!(
                         exits, 1,
                         "{name}/{}: the master is taken down at the end, exactly once: {recorded:?}",

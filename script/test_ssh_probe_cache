@@ -5,6 +5,11 @@
 # The functions are cut out of the shipped scripts, so this tests the real text. A definitive probe
 # answer (exact POSIX reply, or cmd.exe/PowerShell reply) is remembered per `ssh -G` destination
 # for 10 minutes; a timeout, empty or unrecognized reply is never remembered.
+#
+# Round 10 (lab, #2019): a reply that is not definitive is followed by ONE more question, the login
+# shell's name (`sh -c 'echo warp-login-$SHELL-'`). A login shell that cannot parse POSIX sh (fish,
+# nu, csh, ...) is a definitive non-POSIX answer (remembered); bash / zsh behind a printing rc file
+# is a definitive POSIX answer (remembered); no answer or an unlisted shell stays inconclusive.
 set -u
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,7 +19,8 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/bin"
 
 # Fake ssh: `-G` prints a resolved config for $FAKE_HOST, anything else is a probe that is counted
-# and answers with $FAKE_REPLY.
+# and answers with $FAKE_REPLY; the login-shell question (it names `warp-login-`) is counted too
+# and answers with $FAKE_LOGIN.
 cat >"$tmp/bin/ssh" <<'EOF'
 #!/bin/sh
 for a in "$@"; do
@@ -23,26 +29,38 @@ for a in "$@"; do
   fi
 done
 echo probe >> "$FAKE_COUNT"
+case "$*" in *warp-login-*) printf '%s\n' "${FAKE_LOGIN-}"; exit 0;; esac
 printf '%s\n' "$FAKE_REPLY"
 EOF
 chmod +x "$tmp/bin/ssh"
 
-# The cases: name, host, reply, expected rc, expected cumulative probe count.
+# The cases: name, host, reply, expected rc, expected cumulative count of ssh calls (probe +
+# login-shell question), and the answer to the login-shell question (empty: none).
+# Round 10: the counts of the inconclusive / garbage cases went up by one per call (the second
+# question is now asked there); their return codes are unchanged.
 cases=(
   "posix first probes|h1|warp-probe-%COMSPEC%-|1|1"
   "posix second cached|h1|warp-probe-%COMSPEC%-|1|1"
   "cache hit ignores a changed reply|h1|warp-probe-C:\\Windows\\system32\\cmd.exe-\$PSVersionTable|1|1"
   "windows host probed|h2|warp-probe-C:\\Windows\\system32\\cmd.exe-\$PSVersionTable|0|2"
   "windows second cached|h2|warp-probe-%COMSPEC%-|0|2"
-  "inconclusive probed|h3||1|3"
-  "inconclusive not cached|h3||1|4"
-  "garbage not cached|h4|Welcome banner|1|5"
-  "garbage again probed|h4|Welcome banner|1|6"
-  "posix after garbage|h4|warp-probe-%COMSPEC%-|1|7"
-  "now cached|h4|x|1|7"
-  "powershell|h5|warp-probe-%COMSPEC%-System.Collections.Hashtable|0|8"
+  "inconclusive probed|h3||1|4|"
+  "inconclusive not cached|h3||1|6|"
+  "garbage not cached|h4|Welcome banner|1|8|"
+  "garbage again probed|h4|Welcome banner|1|10|"
+  "posix after garbage|h4|warp-probe-%COMSPEC%-|1|11|"
+  "now cached|h4|x|1|11|"
+  "powershell|h5|warp-probe-%COMSPEC%-System.Collections.Hashtable|0|12|"
+  "fish login shell is non-posix|h6||0|14|warp-login-/usr/bin/fish-"
+  "fish login shell cached|h6||0|14|warp-login-/usr/bin/fish-"
+  "nu login shell is non-posix|h7||0|16|warp-login-/usr/local/bin/nu-"
+  "tcsh login shell is non-posix|h8|Welcome banner|0|18|warp-login-/bin/tcsh-"
+  "bash behind a printing rc is posix|h9|Welcome banner|1|20|warp-login-/bin/bash-"
+  "bash behind a printing rc cached|h9|Welcome banner|1|20|warp-login-/usr/bin/fish-"
+  "unlisted login shell stays inconclusive|h10||1|22|warp-login-/opt/odd/sh9-"
+  "unlisted login shell not cached|h10||1|24|warp-login-/opt/odd/sh9-"
 )
-expired_case="expired entry re-probed|h1|warp-probe-%COMSPEC%-|1|9"
+expired_case="expired entry re-probed|h1|warp-probe-%COMSPEC%-|1|25|"
 
 fail=0
 
@@ -54,15 +72,15 @@ run_posixy() { # shell, script, indent-regex
     echo ": > \"\$FAKE_COUNT\""
     echo "source \"$tmp/fns.$shell\""
     echo 'bad=0'
-    echo 'check() { export FAKE_HOST="$2" FAKE_REPLY="$3"; warp_ssh_remote_is_non_posix_cached /nonexistent h; rc=$?; n=$(wc -l < "$FAKE_COUNT" | tr -d " "); if [ "$rc" != "$4" ] || [ "$n" != "$5" ]; then echo "FAIL [$1]: rc=$rc (want $4) probes=$n (want $5)"; bad=1; fi; }'
+    echo 'check() { export FAKE_HOST="$2" FAKE_REPLY="$3" FAKE_LOGIN="${6-}"; warp_ssh_remote_is_non_posix_cached /nonexistent h; rc=$?; n=$(wc -l < "$FAKE_COUNT" | tr -d " "); if [ "$rc" != "$4" ] || [ "$n" != "$5" ]; then echo "FAIL [$1]: rc=$rc (want $4) probes=$n (want $5)"; bad=1; fi; }'
     local c
     for c in "${cases[@]}"; do
-      IFS='|' read -r name host reply rc n <<<"$c"
-      printf 'check %q %q %q %q %q\n' "$name" "$host" "$reply" "$rc" "$n"
+      IFS='|' read -r name host reply rc n login <<<"$c"
+      printf 'check %q %q %q %q %q %q\n' "$name" "$host" "$reply" "$rc" "$n" "$login"
     done
     echo 'WARP_SSH_PROBE_CACHE=$(printf "%s" "$WARP_SSH_PROBE_CACHE" | sed "s/|[0-9]*\$/|1000/")'
-    IFS='|' read -r name host reply rc n <<<"$expired_case"
-    printf 'check %q %q %q %q %q\n' "$name" "$host" "$reply" "$rc" "$n"
+    IFS='|' read -r name host reply rc n login <<<"$expired_case"
+    printf 'check %q %q %q %q %q %q\n' "$name" "$host" "$reply" "$rc" "$n" "$login"
     echo 'exit $bad'
   } >"$tmp/test.$shell"
   "$shell" "$tmp/test.$shell" || fail=1
@@ -80,6 +98,7 @@ run_fish() {
     echo 'function check
     set -x FAKE_HOST $argv[2]
     set -x FAKE_REPLY $argv[3]
+    set -x FAKE_LOGIN $argv[6]
     warp_ssh_remote_is_non_posix_cached /nonexistent h
     set -l rc $status
     set -l n (wc -l <$FAKE_COUNT | string trim)
@@ -90,13 +109,13 @@ run_fish() {
 end'
     local c
     for c in "${cases[@]}"; do
-      IFS='|' read -r name host reply rc n <<<"$c"
+      IFS='|' read -r name host reply rc n login <<<"$c"
       # Single-quote every argument for fish ('' and \\ are the only escapes inside).
-      printf "check '%s' '%s' '%s' '%s' '%s'\n" "$name" "$host" "${reply//\'/\\\'}" "$rc" "$n"
+      printf "check '%s' '%s' '%s' '%s' '%s' '%s'\n" "$name" "$host" "${reply//\'/\\\'}" "$rc" "$n" "$login"
     done
     echo "set -g warp_ssh_probe_cache (printf '%s\\n' \$warp_ssh_probe_cache | string replace -r '\\|[0-9]+\$' '|1000')"
-    IFS='|' read -r name host reply rc n <<<"$expired_case"
-    printf "check '%s' '%s' '%s' '%s' '%s'\n" "$name" "$host" "$reply" "$rc" "$n"
+    IFS='|' read -r name host reply rc n login <<<"$expired_case"
+    printf "check '%s' '%s' '%s' '%s' '%s' '%s'\n" "$name" "$host" "$reply" "$rc" "$n" "$login"
     echo 'exit $bad'
   } >"$tmp/test.fish"
   fish "$tmp/test.fish" || fail=1

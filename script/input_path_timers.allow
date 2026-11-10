@@ -6,11 +6,11 @@
 # routes, commits or re-asks. Adding a line means the code carries `give-up-net: ...` next to it.
 app/assets/bundled/bootstrap/bash_body.sh	__p_drain	one-connection ssh (#1933): prints a notice once after 10 s without the app's sync token; the console read goes on, no key is decided and nothing is written to the pty
 app/assets/bundled/bootstrap/bash_body.sh	warp_ssh_mux_command	kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
-app/assets/bundled/bootstrap/bash_body.sh	warp_ssh_remote_is_non_posix	kills a stuck ssh probe after 5 s; never touches the tty or typed keys
+app/assets/bundled/bootstrap/bash_body.sh	warp_ssh_probe_over_master	kills a stuck ssh probe after 5 s; never touches the tty or typed keys
 app/assets/bundled/bootstrap/fish.sh	warp_ssh_mux_command	kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
-app/assets/bundled/bootstrap/fish.sh	warp_ssh_remote_is_non_posix	polls then kills an ssh probe (<=5 s); never touches the tty or typed keys
+app/assets/bundled/bootstrap/fish.sh	warp_ssh_probe_over_master	polls then kills an ssh probe (<=5 s); never touches the tty or typed keys
 app/assets/bundled/bootstrap/zsh_body.sh	warp_ssh_mux_command	kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
-app/assets/bundled/bootstrap/zsh_body.sh	warp_ssh_remote_is_non_posix	kills a stuck ssh probe after 5 s; never touches the tty or typed keys
+app/assets/bundled/bootstrap/zsh_body.sh	warp_ssh_probe_over_master	kills a stuck ssh probe after 5 s; never touches the tty or typed keys
 app/src/terminal/input.rs	COMPUTE_CAP_RECHECK_FLOOR	floor on re-arming the verdict hold's compute-cap check (the give-up that hands the line back); decides nothing itself
 app/src/terminal/input.rs	DEFERRED_ENTER_ACTIVITY_CAP	releases the macOS activity assertion held for a deferred Enter; no effect on keys
 app/src/terminal/input.rs	HOLD_BACKSTOP_LIMIT	upper bound of an Enter hold's wall-clock backstop; the backstop hands the line back to the editor

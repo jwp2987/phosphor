@@ -18,6 +18,8 @@
 #   lab_fam_agent_edit_endings    CRLF and no-final-newline preserved over the same two arms
 #   agent_edit_touch_only      mtime moved, bytes identical, then accept: succeeds, no false conflict (local: content compare in warp_files; remote leg in the lab pair)
 # Remote writes must log hop=backend_route family=file_write (nohelper -> shell, upload -> helper); no line fails the lab cases (crates/remote_server router.rs).
+# lab_fam_agent_delete_conflict has no remote write (its one accept is refused after the app's own re-read of the host file): it requires that re-read's
+# route instead (family=fs_basic on the arm's backend, refused_route_verdict).
 # Partial accept: the diff card has NO per-hunk accept (Up/Down only navigate hunks, code_diff_view.rs NavigateToDiffHunk): accept is all hunks or none. Every case
 # says so in a note rather than inventing a pass.
 # Platforms: Linux and Mac (the prompt carries the file path, the file is read back by the harness). Not Windows (winmap NOT_WINDOWS): the path form typed to the model
@@ -180,6 +182,7 @@ def propose(ctx, r, host, name, content, edits):
     """write the file, ask the agent for the edit (edits=None: for the file's DELETION), wait for the diff card; returns (off, streams_at_card) or None (UNVERIFIABLE already recorded)"""
     host.write(name, content)
     off = ctx.log_size()
+    ctx.accept_off = None                  # set by answer(); an earlier scenario's offset must not be read as this one's
     cards0 = AG.count_in_log(ctx, off, "queue_actions")
     AG.type_fast(ctx, prompt_for(host.path(name), edits) if edits is not None else delete_prompt_for(host.path(name)))
     if not ctx.until(lambda: AG.count_in_log(ctx, off, "queue_actions") > cards0, 60, step=0.25):
@@ -192,6 +195,7 @@ def propose(ctx, r, host, name, content, edits):
 
 def answer(ctx, r, host, name, off, n_streams, action, content):
     """accept (Enter focuses, Enter accepts) or reject (Enter focuses, Ctrl-C rejects). Returns False when the precondition failed (UNVERIFIABLE recorded)"""
+    ctx.accept_off = ctx.log_size()        # where the answer's own app log starts (check_refused_route)
     ctx.be.key("Return")
     time.sleep(1.0)
     if action == "reject":
@@ -324,6 +328,25 @@ def check_write_route(ctx, r, arm, off, label):
     r.check(all(b == want for b in routes), "%s: file_write routed to %r, expected %s" % (label, sorted(set(routes)), want))
 
 
+def refused_route_verdict(log_text, want):
+    """pure: the routes of an accept that must be REFUSED -> [failure messages]. The accept re-reads the host file through the router (FileModel::*_if_unchanged:
+    `read_file_bytes`, hop=backend_route family=fs_basic), finds bytes that are not the proposal's and stops: no write is sent, so there is NO family=file_write
+    line (job 17885063245, lab_fam_agent_delete_conflict: fs_basic, then "Failed to save file for accepted AgentMode diffs", file intact, and the case failed for
+    the missing write line). What is proven instead: that re-read went through the arm's backend; a file_write line (the host-side guard refused, the other way
+    a conflict is caught) must be on the arm too."""
+    routes = re.findall(r"hop=backend_route family=(fs_basic|file_write) backend=(helper|shell|unavailable)", log_text)
+    if not routes:
+        return ["no hop=backend_route family=fs_basic (the accept's re-read of the host file) or family=file_write line after the accept: the conflict check did not go through the backend router"]
+    wrong = sorted({"%s->%s" % (f, b) for f, b in routes if b != want})
+    return ["the accept's host calls were routed %r, expected backend=%s" % (wrong, want)] if wrong else []
+
+
+def check_refused_route(ctx, r, arm, off, label):
+    want = "shell" if arm["helper"] == "nohelper" else "helper"
+    for msg in refused_route_verdict(ctx.log_since(getattr(ctx, "accept_off", None) or off), want):
+        r.check(False, "%s: %s" % (label, msg))
+
+
 # ---------------------------------------------------------------- local cases (agent mode only)
 def local_ready(ctx, r):
     CRP.need_model(ctx, r)
@@ -450,7 +473,7 @@ def c_lab_agent_delete_conflict(ctx, r, arm):
     off = ctx.log_size()
     try:
         run_delete_conflict(ctx, r, host, "remote")
-        check_write_route(ctx, r, arm, off, "lab_fam_agent_delete_conflict")
+        check_refused_route(ctx, r, arm, off, "lab_fam_agent_delete_conflict")
     finally:
         host.cleanup()
         CL.finish_remote(ctx, r)

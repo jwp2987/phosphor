@@ -4432,6 +4432,91 @@ def lab_remote_adapters_and_hooks():
 
 
 @check
+def lab_first_run_fixes_round10():
+    """Round 10, the lab's first run (job 17885063245; docs/design/r10-lab.md): (1) a lab arm that leaves lab_prepare early (no helper binary, RTT gate, a skip)
+    puts ctx.remote / prof.remote back, so the runner's post-case check finds nothing to reset; (2) the LAB fish hook logs prompts (connect waits on prompt.log)
+    and the local scratch fish config still does not; (3) a refused accept is judged on its re-read's route, not on a write that never happens; (4) the agent
+    cases' commands carry no quote / `&&` / redirection where nu and pwsh must run them, and the drop command leaves a start marker; (5) LabRemote.exists
+    tells an empty file from a missing one."""
+    import re
+    import lab as L, profile as P, cases_lab as CL, cases_agent_remote as AR, cases_agent_file_edits as FE
+    # (1) the cleanup covers lab_prepare
+    class FakeLab:
+        info = {"flavor": "full"}
+        cleared = 0
+
+        def helper(self, user, files=None):
+            pass
+
+        def clear_fault(self):
+            FakeLab.cleared += 1
+
+        def file(self, p):
+            if p == "/work/u_bash/empty":
+                return b""
+            raise L.LabError("404")
+
+    class Unverifiable(Exception):
+        pass
+
+    class R:
+        def unverifiable(self, msg):
+            self.msg = msg
+
+        def skip(self, msg):
+            raise cases.Skip(msg)
+    d = tempfile.mkdtemp()
+    old_bin = os.environ.pop("APPCI_LAB_HELPER_BIN", None)
+    try:
+        prof = P.Profile(d)
+        local = L.LocalRemote(prof)
+        ctx = types.SimpleNamespace(lab=FakeLab(), lab_why=None, prof=prof, remote=local, arm=None, lab_helper_mode="nohelper")
+        arm = dict(name="lab_x.bash.lan.helper", user="u_bash", shell="bash", helper="helper", lat_ms=0, flavor="full")
+        ran = []
+        r = R()
+        CL._runner(lambda c, rr, a: ran.append(1), arm)(ctx, r)
+        assert not ran and "APPCI_LAB_HELPER_BIN" in r.msg, "the helper arm must stop at the missing binary"
+        assert ctx.remote is local and prof.remote is None and ctx.arm is None and ctx._lab_prev is None, "lab_prepare's swap was not undone on its early return"
+        # a skip raised inside lab_prepare (no lab for this pass) is cleaned up too, and still propagates
+        ctx2 = types.SimpleNamespace(lab=None, lab_why="no lab here", prof=prof, remote=local, arm=None, lab_helper_mode="nohelper")
+        try:
+            CL._runner(lambda c, rr, a: ran.append(1), arm)(ctx2, R())
+            raise AssertionError("the skip did not propagate")
+        except cases.Skip:
+            pass
+        assert ctx2.remote is local and prof.remote is None and ctx2.arm is None
+        # (5)
+        rem = L.LabRemote(FakeLab(), "u_bash", "bash")
+        assert rem.exists("empty") and rem.lines("empty") == [] and not rem.exists("missing") and rem.exists("/work/u_bash/empty")
+    finally:
+        if old_bin is not None:
+            os.environ["APPCI_LAB_HELPER_BIN"] = old_bin
+        shutil.rmtree(d, ignore_errors=True)
+    # (2)
+    lab_fish = P.lab_hooks()["fish"] % {"ctl": "/c"}
+    assert "--on-event fish_prompt" in lab_fish and "$PA_CTL/prompt.log" in lab_fish and "printf 'P\\t%s\\n'" in lab_fish, lab_fish
+    assert "prompt.log" not in P.FISH, "the local scratch fish config shares the bash pane's ctl dir: it must not log prompts"
+    assert lab_fish.startswith(P.FISH % {"ctl": "/c"})
+    # (3)
+    refused = "x hop=backend_route family=file_context backend=shell reason=caps\ny hop=backend_route family=fs_basic backend=shell reason=caps\n[ERROR] Failed to save file for accepted AgentMode diffs\n"
+    assert FE.refused_route_verdict(refused, "shell") == []
+    assert len(FE.refused_route_verdict(refused, "helper")) == 1 and "fs_basic->shell" in FE.refused_route_verdict(refused, "helper")[0]
+    assert len(FE.refused_route_verdict("hop=backend_route family=file_context backend=shell\n", "shell")) == 1, "a file_context line (the proposal's read) proves nothing about the accept"
+    assert FE.refused_route_verdict(refused + "hop=backend_route family=file_write backend=shell\n", "shell") == []
+    assert len(FE.refused_route_verdict(refused + "hop=backend_route family=file_write backend=unavailable\n", "shell")) == 1
+    # (4)
+    for sh in ("bash", "dash", "nu"):
+        c = AR.drop_command(sh, "/work/u/started_t1", "t1")
+        assert c.startswith("run /usr/bin/touch /work/u/started_t1") and c.endswith("echo fin_t1") and not re.search(r"['\"<>|]", c), c
+        assert ("&&" in c) == (sh != "nu"), c
+    import fake_model as FM
+    assert FM.parse_plan(AR.plan_text([AR.drop_command("nu", "/w/s", "t")])) == [("run", "/usr/bin/touch /w/s; /usr/bin/sleep 300; echo fin_t")]
+    src = open(os.path.join(HERE, "cases_agent_remote.py")).read()
+    assert '"run cat %s | /usr/bin/tee -a %s"' in src and "ctx.remote.exists(started_file)" in src
+    assert "ctx.remote.commands()), 30 + 6" not in src, "the drop case must not wait on rec.log for a RUNNING command (bash logs at the next prompt)"
+
+
+@check
 def report_problem_zip_verdict():
     """Wave 1.5 #1: the bundle verdict flags a leaked home path / host name and a missing log, and passes a clean bundle"""
     import cases_coverage_b as cb, zipfile
