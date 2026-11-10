@@ -72,6 +72,8 @@ PROVING = (
     "gitbash_long_osc_reaches_app",
     # Windows handover and secrets (#1882, #1883, #1891): Read-Host marker, Git Bash precmd `read -s`
     "ps_read_host_secure", "gitbash_precmd_secret",
+    # #1393: the issue's own protocol (24 reps of 10 back-to-back lines, half with a 250 ms precmd function); skips itself off the Git Bash pane
+    "gitbash_typeahead_reps",
     # #1923 with the shell's own prompt (honor PS1 on), and the app-prompt control arm: a bash precmd function's `read -s` on every platform with a bash pane
     "precmd_secret_honor_ps1",
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
@@ -101,6 +103,8 @@ PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_i
 # lab_enter_start (only its 150 ms arms here: the netem test the annoyance review found never run) and lab_ctrl_c_no_esc_i are the existing cases.
 # #1982 (round 14): lab_agent_nld_predict_ssh, no query prediction request from an ssh pane by default (local control in the same case).
 PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wait.*", "lab_enter_start.*.150.*", "lab_ctrl_c_no_esc_i.*", "lab_agent_nld_predict_ssh.*")
+# #985 (round 14): lab_raw_key_arrival is new: a key to a raw-input program on the server against plain ssh, with and without the helper's session.
+PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wait.*", "lab_enter_start.*.150.*", "lab_ctrl_c_no_esc_i.*", "lab_raw_key_arrival.*")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):

@@ -1023,11 +1023,13 @@ mod tests {
     }
 
     /// #985: the interactive ssh owns the connection the remote-server-proxy channel is
-    /// multiplexed onto. A second, non-tty channel makes OpenSSH mark the whole connection
-    /// "bulk" (IPQoS default `af21 cs1`), which Wi-Fi queues penalise by 40-200 ms per
-    /// keystroke. Every bootstrap wrapper pins both classes before ControlMaster, but only
-    /// when `ssh -G` reports exactly that default, so a user-configured IPQoS (or an older
-    /// OpenSSH with a different default) is never overridden.
+    /// multiplexed onto. A second, non-tty channel makes OpenSSH <= 10.0 mark the whole
+    /// connection "bulk" (IPQoS default `af21 cs1`), which Wi-Fi queues penalise by 40-200 ms
+    /// per keystroke. Every bootstrap wrapper pins both classes before ControlMaster, but only
+    /// when `ssh -G` reports exactly that default, so a user-configured IPQoS is never
+    /// overridden. OpenSSH >= 10.1 reports `ef cs0` (its bulk class is best effort, which no
+    /// queue penalises) and is deliberately not pinned: `script/test_ssh_keepalive` holds
+    /// both, `docs/design/r14-remoteprox.md` has the reasons.
     #[test]
     fn interactive_ssh_wrappers_pin_ipqos_only_for_the_default() {
         for (name, script) in [

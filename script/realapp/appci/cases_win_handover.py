@@ -7,6 +7,8 @@
 #                                marker of the prompt the Enter answered must not re-baseline the hand-off into the editor)
 #   gitbash_precmd_secret        Git Bash: a precmd hook that runs `read -s` after the prompt's Precmd: the PIN typed more than the 1.5 s prompt-hold give-up later
 #                                reaches the read, it is not handed to the editor as text (#1883)
+#   gitbash_typeahead_reps       Git Bash: the protocol of #1393 as a case: reps of 10 lines typed back to back with an instant Enter, half of them with a
+#                                250 ms precmd function (the cost the issue names for `__git_ps1`), every rep's effect file and rec.log exact
 # Platforms: Windows only (PowerShell pane / Git Bash pane); they skip elsewhere with their reason. Registered by the import at the end of cases.py.
 import os, sys, time
 
@@ -113,3 +115,46 @@ def c_gitbash_precmd_secret(ctx, r):
     r.check("true" not in tty_read_markers(ctx.log_since(off)), "a bash pane reported a PowerShell tty-read marker")
     ctx.be.type("unset -f __pc_pin", 12, enter=True)
     ctx.rm(pin_file, go, "gbps_after.txt")
+
+
+TYPEAHEAD_REPS = 24                 # the issue's own count per configuration (#1393: hold ON 2 of 24 reps lost a line, OFF 3 of 24)
+TYPEAHEAD_LINES = 10
+SLOW_PRECMD_S = 0.25                # what #1393's analysis measured for the prompt's `__git_ps1`: the time the shell is not at its line editor after a command
+
+
+def typeahead_rep_plan(reps):
+    """pure: [(tag, slow_precmd)] for `reps` repetitions: the first half at the pane's own prompt, the second half with the slow precmd function"""
+    half = (reps + 1) // 2
+    return [("tr%02d" % i, i >= half) for i in range(reps)]
+
+
+@case("gitbash_typeahead_reps", order=76, gui=True)
+def c_gitbash_typeahead_reps(ctx, r):
+    """#1393 ("Git Bash 25 ms/key typeahead still loses lines"; 6 of 84 reps lost a line on build/r18bj, every loss permanent): the issue's protocol in the
+    harness. Each rep types 10 `echo <token> >> file` lines back to back at 10-25 ms/key with an instant Enter (cases.effect_run, gap 0: the next line is
+    typed while the previous command and its prompt are still running) and then demands the effect file AND the shell's rec.log to be exactly the typed
+    lines, in order; effect_run waits up to 25 s for the file, so a late line is not a lost one. The second half of the reps runs with a precmd function
+    that sleeps 250 ms: every line after the first is then typed while the shell is between a command and its line editor, the window the issue's
+    analysis names. No reference terminal forgives a loss here: the runner's injector accounting on the case row says whether the keys reached the app.
+    fast_typing types 30 such lines once per run; this case is the 24-rep count the issue was measured with."""
+    if not (ctx.win and ctx.pane == "gitbash"):
+        r.skip("Git Bash pane only (#1393: the ConPTY prompt hold of a bash pane on Windows)")
+    plan = typeahead_rep_plan(ctx.count(TYPEAHEAD_REPS))
+    bad, slow_on = [], False
+    try:
+        for tag, slow in plan:
+            if slow and not slow_on:
+                ctx.be.type("__tr_slow() { sleep %s; }; precmd_functions+=(__tr_slow)" % SLOW_PRECMD_S, 12, enter=True)
+                time.sleep(2.0)
+                slow_on = True
+            before = len(r.fails)
+            cases.effect_run(ctx, r, tag, TYPEAHEAD_LINES, 0.0)
+            if len(r.fails) > before:
+                bad.append(tag + ("(slow precmd)" if slow else ""))
+    finally:
+        if slow_on:
+            time.sleep(1.0)
+            ctx.be.type("__tr_slow() { :; }", 12, enter=True)        # the function stays registered and does nothing: no array surgery typed into the pane
+            time.sleep(1.0)
+    r.metric("typeahead_reps", dict(reps=len(plan), lines_per_rep=TYPEAHEAD_LINES, slow_precmd_reps=sum(1 for _, s_ in plan if s_), reps_with_a_bad_line=bad))
+    ctx.rm(*["r_%s.txt" % tag for tag, _ in plan])

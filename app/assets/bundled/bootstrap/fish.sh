@@ -997,10 +997,10 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             end
         end
 
-        # #985: pin both IPQoS classes to the interactive one (the remote-server-proxy channel
-        # would otherwise mark the connection "bulk"), but ONLY when `ssh -G` reports exactly
-        # OpenSSH's current default (`af21 cs1`): a user-configured IPQoS is never overridden,
-        # and an older OpenSSH is left alone.
+        # #985: pin both IPQoS classes to the interactive one (a session without a tty, the
+        # remote-server-proxy or a side command, makes OpenSSH <= 10.0 mark the connection `cs1`,
+        # which Wi-Fi sends late), but ONLY when `ssh -G` reports exactly that default (`af21 cs1`):
+        # a user's IPQoS is never overridden. OpenSSH >= 10.1 (`ef cs0`) is left alone.
         set -l warp_ipqos_args
         set -l warp_ipqos_default (printf '%s\n' $warp_ssh_g | command sed -n 's/^ipqos //p')
         if test "$warp_ipqos_default" = "af21 cs1"
