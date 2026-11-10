@@ -4598,3 +4598,16 @@ Windows run.
   (the next prompt still waits for its signal, no unproven decision at the Precmd) and `a_cycle_with_no_signal_at_all_is_still_a_miss` (#1825 unchanged).
   The case is unchanged. Next Windows run: 20/20 in both modes, no `handoff_request_skipped reason=line_editor_not_proven` in the case's log slice, every
   second prompt of a round ends in `decision=SendRequest` (or `Committed` with nothing typed).
+- **APP, #1923 (the fix did not work): `gitbash_precmd_secret` (Git Bash pane, the PIN never reached `read -s`).** At the prompt hold's cap the screen fact
+  (`screen_tail_asks_for_input`) read the active block's OUTPUT grid; a precmd function's `pin: ` is written after the Precmd, into the fresh block's
+  prompt-and-command grid, so the fact was false and the keys stayed held (`prompt_hold_kept_overdue hold=44 entries=6`, screenshot: `pin: ` on screen
+  under the "waiting for the shell" toast). The fact is now `key_facts::active_block_tail_asks_for_input`, on the grid the block writes to. Unit tests
+  `key_facts_tests.rs`: `a_question_printed_after_the_precmd_is_seen_on_the_grid_the_block_writes_to`,
+  `the_tail_fact_reads_a_running_commands_output_and_ignores_a_shell_prompt`. No view-level test of the cap with a fresh block was added (the existing
+  hold fixtures start the block themselves; a wrong fixture written without a compiler would prove nothing): the case is the proof. The case is unchanged.
+  Next Windows run: at the cap after the first half `hop=prompt_hold_expired precmd_wait=true` and the warning `typeahead prompt hold N gave up with no
+  line-editor signal: releasing 6 chunk(s) ... to the pty` (no `prompt_hold_kept_overdue`, no `prompt_hold_handed_back`); the second half and its Enter
+  as `hand_route reason=unheld state=pty_owned` writes (read from the code: the wait ended at the cap, so nothing holds them; if the log shows a second
+  hold instead, it must end the same way); `gbpin.txt` holds the PIN; the line typed after the read runs. The first half is written 1.5 s after its
+  first key (the cap), by design of #1923. To watch: the Enter that ended the `read` is counted as a line by the hand-off and no Precmd answers it;
+  the cases that follow in the same pane show whether the editor takes input again at the next prompt.
