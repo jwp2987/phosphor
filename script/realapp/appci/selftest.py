@@ -5240,6 +5240,83 @@ def lat_evidence_filter_keeps_only_hop_lines():
     assert le.CASE_CAP == 2 * 1024 * 1024 and le.PLATFORM_CAP >= le.CASE_CAP
 
 
+@check
+def output_frames_pure_pieces_1979():
+    """#1979: output_frames counts built frames, wakeups per decision and in-place re-renders from the frame_cause log, and its judges fail on what the
+    issue claims (a frame storm, a hidden view re-rendered per wakeup) and cannot pass a window in which the streams were not running"""
+    import cases_output_frames as OF
+    import winmap as wm
+    reg = {c["name"]: c for c in cases.CASES}
+    assert "output_frames" in reg and reg["output_frames"]["modes"] == ("terminal", "agent") and reg["output_frames"]["gui"]
+    assert "output_frames" in cases.PROVING and "output_frames" not in cases.SMOKE and "output_frames" not in cases.PROVING_FAKE
+    assert wm.skip_reason("output_frames", "powershell") is None and wm.skip_reason("output_frames", "gitbash") is None
+
+    def fr(i, updated="", redraw="false", paint="false"):
+        return "x DEBUG warpui::frame_cause frame %d: updated=[%s] removed=0 redraw=%s paint_only=%s" % (i, updated, redraw, paint)
+
+    def wk(decision, shown, view=7):
+        return "x DEBUG warpui::frame_cause wakeup: redraw=%s reachable=%s view=%s" % (decision, "true" if shown else "false", view)
+
+    def um(*names):
+        return "x DEBUG warpui::frame_cause unmounted_render: n=%d views=[%s]" % (len(names), ", ".join('"%s"' % n for n in names))
+
+    # the build loop's `frame 2:` line with nothing pending is not a frame; one with a reason is; a re-rendered TerminalView is counted
+    st = OF.window_stats("\n".join([fr(1, '"TerminalView", "Input"'), fr(2), fr(1, redraw="true"), fr(2, paint="true"), fr(3, '"A"'), "noise",
+                                    wk("Relayout", True), wk("Full", True), wk("Full", False, 9), wk("PaintOnly", False, 9), um("TerminalView", "UseAgentToolbar")]))
+    assert st["frames"] == 4 and st["frames_rerender"] == 1, st
+    assert st["wakeups"] == {("Relayout", True): 1, ("Full", True): 1, ("Full", False): 1, ("PaintOnly", False): 1}, st
+    assert st["views"] == {"7": [2, 0], "9": [0, 2]} and OF.wakeup_count(st, False) == 2 and OF.wakeup_count(st, True, "Full") == 1 and OF.wakeup_count(st) == 4
+    assert st["unmounted_events"] == 1 and st["unmounted_views"] == 2 and st["unmounted_names"] == {"TerminalView": 1, "UseAgentToolbar": 1}
+    m = OF.metrics_of(st, 2.0)
+    assert m["frames_per_s"] == 2.0 and m["wakeups"]["Full_hidden"] == 1 and m["views_shown"] == 1 and m["views_hidden"] == 1, m
+    # the app's own lines (the Rust unit tests pin these formats) are what the regexes read
+    assert OF.WAKEUP_RE.search("wakeup: redraw=Relayout reachable=true view=41").groups() == ("Relayout", "true", "41")
+    assert OF.UNMOUNTED_RE.search('unmounted_render: n=2 views=["TerminalView", "UseAgentToolbar"]').group(1) == "2"
+    assert not OF.FRAME_RE.search('unmounted_render: n=2 views=["TerminalView"]') and not mt_frame_re().search(um("TerminalView"))
+
+    secs = 6.0
+    # visible: 40 wakeups/s, one Relayout frame each, on top of a 4 frames/s idle window: passes
+    good = OF.window_stats("\n".join([wk("Relayout", True), fr(1, redraw="true")] * 240 + [wk("Full", True), fr(1, '"TerminalView"')] * 3))
+    unp, vs = OF.judge_visible(good, secs, 4.0)
+    assert unp is None and all(ok for ok, _ in vs), vs
+    # two frames per wakeup: the one-frame-per-wakeup verdict fails, the cap one does too at 80 frames/s
+    storm = OF.window_stats("\n".join([wk("Relayout", True), fr(1, redraw="true"), fr(1, redraw="true")] * 240))
+    unp, vs = OF.judge_visible(storm, secs, 4.0)
+    assert unp is None and [ok for ok, _ in vs] == [False, False, True], vs
+    # every wakeup re-renders the view (the pre-#1256 behaviour): the reuse verdict fails
+    rer = OF.window_stats("\n".join([wk("Full", True), fr(1, '"TerminalView"')] * 240))
+    unp, vs = OF.judge_visible(rer, secs, 4.0)
+    assert unp is None and [ok for ok, _ in vs] == [True, True, False], vs
+    # no wakeup lines (old build) and a stream that never ran: unproven, never a pass
+    assert OF.judge_visible(OF.window_stats(fr(1)), secs, 4.0)[0] and OF.judge_visible(OF.window_stats(wk("Relayout", True)), secs, 4.0)[0]
+
+    tabs = 4
+    idle_frames = [fr(1, paint="true")] * 24
+    hid_ok = OF.window_stats("\n".join(idle_frames + [wk("Relayout", False, 20 + i % tabs) for i in range(tabs * 240)] + [wk("Full", False, 20), um("TerminalView")]))
+    unp, vs = OF.judge_hidden(hid_ok, secs, 4.0, tabs)
+    assert unp is None and all(ok for ok, _ in vs), vs
+    # the issue's claim: every hidden wakeup re-renders the view in place (60/s per pane): the Full-share and the per-tab verdicts fail, frames stay flat
+    hid_rer = OF.window_stats("\n".join(idle_frames + [x for i in range(tabs * 360) for x in (wk("Full", False, 20 + i % tabs), um("TerminalView"))]))
+    unp, vs = OF.judge_hidden(hid_rer, secs, 4.0, tabs)
+    assert unp is None and [ok for ok, _ in vs] == [True, False, False] and "TerminalView x1440" in vs[2][1], vs
+    # the pre-#805 behaviour: a frame per hidden wakeup
+    hid_frames = OF.window_stats("\n".join([x for i in range(tabs * 120) for x in (wk("Relayout", False, 20 + i % tabs), fr(1, redraw="true"))]))
+    unp, vs = OF.judge_hidden(hid_frames, secs, 4.0, tabs)
+    assert unp is None and [ok for ok, _ in vs] == [False, True, True], vs
+    # streams not running, or the shown tab streaming: unproven
+    assert "not running" in OF.judge_hidden(OF.window_stats("\n".join([wk("Relayout", False)] * 10)), secs, 4.0, tabs)[0]
+    assert "itself streaming" in OF.judge_hidden(OF.window_stats("\n".join([wk("Relayout", False)] * 200 + [wk("Relayout", True)] * 100)), secs, 4.0, tabs)[0]
+    assert OF.judge_hidden(OF.window_stats(fr(1)), secs, 4.0, tabs)[0]
+    # bounded stream lines for both pane families
+    assert OF.stream_line(None, "v", 450) == "for i in $(seq 450); do echo ofr_v_$i; sleep 0.02; done"
+    assert OF.stream_line("powershell", "h2", 9).startswith("1..9 | % {") and "Start-Sleep -Milliseconds 20" in OF.stream_line("powershell", "h2", 9)
+
+
+def mt_frame_re():
+    import cases_agent_multitab as MT
+    return MT.FRAME_CAUSE_RE
+
+
 def main():
     failed = 0
     for f in CHECKS:

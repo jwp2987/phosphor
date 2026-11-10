@@ -1,4 +1,6 @@
-use super::{RenderFingerprint, WakeupRedraw, decide_with, paint_only_unless_disabled};
+use super::{
+    RenderFingerprint, WakeupRedraw, decide_with, paint_only_unless_disabled, wakeup_log_line,
+};
 use crate::terminal::model::terminal_model::BlockIndex;
 use warpui::color::ColorU;
 
@@ -157,4 +159,21 @@ fn the_kill_switch_forces_full_frames() {
     assert!(paint_only_unless_disabled(None));
     assert!(paint_only_unless_disabled(Some("0")));
     assert!(!paint_only_unless_disabled(Some("1")));
+}
+
+/// #1979: the appci `output_frames` case parses this line (`redraw=`, `reachable=`, `view=`).
+#[test]
+fn the_wakeup_log_line_names_the_decision_and_whether_the_view_is_on_screen() {
+    assert_eq!(
+        wakeup_log_line(WakeupRedraw::Relayout, true, 41),
+        "wakeup: redraw=Relayout reachable=true view=41"
+    );
+    assert_eq!(
+        wakeup_log_line(WakeupRedraw::Full, false, 7),
+        "wakeup: redraw=Full reachable=false view=7"
+    );
+    assert_eq!(
+        wakeup_log_line(WakeupRedraw::PaintOnly, true, 7),
+        "wakeup: redraw=PaintOnly reachable=true view=7"
+    );
 }

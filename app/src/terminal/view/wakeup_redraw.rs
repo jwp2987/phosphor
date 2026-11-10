@@ -119,6 +119,19 @@ pub(super) fn decide_with(
     }
 }
 
+/// The `warpui::frame_cause` line for one delivered wakeup: what it asked the window for and
+/// whether the view is in the window's element tree (`reachable=false`: a hidden tab). Numbers
+/// only (#1979): the appci `output_frames` case counts wakeups per decision from these, so a
+/// claim like "a hidden tab is re-rendered on every wakeup" is `redraw=Full reachable=false`
+/// lines per second, not a guess.
+pub(super) fn wakeup_log_line(
+    redraw: WakeupRedraw,
+    reachable: bool,
+    view_id: impl std::fmt::Display,
+) -> String {
+    format!("wakeup: redraw={redraw:?} reachable={reachable} view={view_id}")
+}
+
 /// Paint-only alt-screen wakeups are the default. `PHOSPHOR_ALT_SCREEN_FULL_RENDER=1` restores
 /// a full re-render on every wakeup, to rule the optimisation in or out when something on an
 /// alt-screen frame looks stale.

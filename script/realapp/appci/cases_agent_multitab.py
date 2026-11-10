@@ -178,8 +178,13 @@ def c_agent_multitab_streaming(ctx, r):
         r.check(len(running) >= max(1, ntabs // 2), "only %d of %d streams are still running when the typing starts (%s): lengthen APPCI_MT_STREAM_S" % (len(running), ntabs, running))
         off_hid = ctx.log_size()
         time.sleep(6)
-        fps_hidden = frames_per_s(ctx.log_since(off_hid), 6)
+        hid_txt = ctx.log_since(off_hid)
+        fps_hidden = frames_per_s(hid_txt, 6)
         r.metric("frames_per_s", dict(idle_no_streams=round(fps_idle, 1), idle_hidden_streams=round(fps_hidden, 1), streams=len(running)))
+        # #1979: the same window as wakeups per decision and in-place re-renders of hidden views (output_frames judges these for pty output; here
+        # the hidden output is agent replies, so the numbers are reported only)
+        import cases_output_frames as OF
+        r.metric("hidden_streams_renders", OF.metrics_of(OF.window_stats(hid_txt), 6))
         r.note("#805 hop: the app built %.1f frames/s with %d hidden streaming tabs and an idle typing tab (%.1f frames/s with nothing streaming); informational, no fixed budget" % (fps_hidden, len(running), fps_idle))
         # ---- the same phases under load
         a_load, a_load_max = agent_phase(ctx, r, fake, "load", typed_tokens)

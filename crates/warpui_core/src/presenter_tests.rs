@@ -1342,3 +1342,15 @@ fn test_view_timing_records_each_visited_view_and_nothing_when_off() {
         assert_eq!(frames.layout_calls.get(), layouts_before + 1);
     })
 }
+
+/// #1979: the appci `output_frames` case reads this line; it must carry the count and the view
+/// type names, and must not be taken for a `frame <n>: updated=[..]` line (a built frame).
+#[test]
+fn test_unmounted_render_line_carries_the_count_and_names_and_is_not_a_frame_line() {
+    let line = crate::presenter::unmounted_render_line(&["TerminalView", "UseAgentToolbar"]);
+    assert_eq!(
+        line,
+        r#"unmounted_render: n=2 views=["TerminalView", "UseAgentToolbar"]"#
+    );
+    assert!(!line.contains("updated=["));
+}
