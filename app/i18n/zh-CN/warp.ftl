@@ -919,6 +919,7 @@ settings-ai-next-command-label = 下一条命令
 settings-ai-prompt-suggestions-label = 提示建议
 settings-ai-suggested-code-banners-label = 代码建议横幅
 settings-ai-natural-language-autosuggestions-label = 自然语言自动建议
+settings-ai-natural-language-autosuggestions-in-ssh-label = SSH 会话中的自然语言自动建议
 settings-ai-git-operations-autogen-label = 提交与 Pull Request 生成
 
 # 权限下拉项
@@ -1607,6 +1608,7 @@ settings-ai-next-command-description = 根据你的历史命令、输出与常�
 settings-ai-prompt-suggestions-description = 让 AI 根据最近命令与输出，在输入框中以行内横幅形式建议自然语言提示。
 settings-ai-suggested-code-banners-description = 让 AI 根据最近命令与输出，在命令块列表中以行内横幅形式建议代码差异与查询。
 settings-ai-natural-language-autosuggestions = 让 AI 根据最近命令与输出，提供自然语言自动建议。
+settings-ai-natural-language-autosuggestions-in-ssh-description = 窗格处于 SSH 会话时也请求建议。每次输入停顿都会把输入框中的文本发送给模型提供方。默认关闭。
 settings-ai-git-operations-autogen-description = 让 AI 自动生成提交信息以及 Pull Request 的标题与描述。
 
 # =============================================================================

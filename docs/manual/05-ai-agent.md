@@ -941,6 +941,7 @@ Per-model fields: `name`, `id`, `context_window` (0 = unknown),
 | `agents.warp_agent.active_ai.agent_mode_query_suggestions_enabled` | bool | `true` |
 | `agents.warp_agent.active_ai.code_suggestions_enabled` | bool | `true` |
 | `agents.warp_agent.active_ai.natural_language_autosuggestions_enabled` | bool | `true` |
+| `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` | bool | `false` |
 | `agents.warp_agent.active_ai.git_operations_autogen_enabled` | bool | `true` |
 | `agents.warp_agent.active_ai.rule_suggestions_enabled` | bool | `true` |
 

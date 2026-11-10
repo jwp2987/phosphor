@@ -2479,6 +2479,16 @@ upstream's behavior is actually a defect rather than a preference.
   the literal back as a write key.
   <!-- markers: keep:KEYRING_INSTALL_SECRET_KEY keep:migrate_legacy_fallback keep:key_source_for_writing -->
 
+- **No query prediction request from an ssh session unless the user turns it on** (`#1982`,
+  2026-11-10, owner decision, `app/src/ai/agent_providers/active_ai/mod.rs`
+  `nld_predict::allowed_for_session`, `app/src/settings/ai.rs`). **Upstream:** the ghosted
+  completion of an agent prompt is requested at every typing pause in any session. **We do:**
+  in an ssh session (and when the pane's session is not known) the request is not built unless
+  `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` is true
+  (default false; a switch on the AI settings page). Each request carries the input buffer to
+  the model provider, which on a remote session is traffic and context the user did not ask for.
+  <!-- markers: keep:allowed_for_session keep:NaturalLanguageAutosuggestionsInSshEnabled -->
+
 ## Not done: evicting closed panes' AI conversations from memory (#843)
 
 Closing a pane drops the AI history model's per-view maps (live and cleared ids, active

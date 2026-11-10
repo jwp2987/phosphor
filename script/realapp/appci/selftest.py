@@ -4413,7 +4413,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_enter_no_network_wait", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_enter_no_network_wait", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop", "lab_agent_nld_predict_ssh"}
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_", "lab_git_write_remote")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -5434,6 +5434,13 @@ def fake_model_plan_and_agent_remote_pure_parts():
     assert AR.result_paths({"files": [{"path": "/a"}, "/b"]}) == ["/a", "/b"] and AR.result_paths({}) == []
     names = sorted(c["name"] for c in cases.CASES if c["name"].startswith("lab_agent_remote_"))
     assert len(names) == 5 * 2 + 5 * 2 + 3 * 2, names
+    # #1982: the query-prediction case judges the ssh pane only against a local control that DID send a request
+    assert AR.nld_verdict(1, 0) == ("pass", "") and AR.nld_verdict(3, 0)[0] == "pass"
+    assert AR.nld_verdict(0, 0)[0] == "unverifiable" and AR.nld_verdict(0, 2)[0] == "unverifiable", "no control request: never a pass, and no verdict on the ssh pane"
+    assert AR.nld_verdict(1, 1)[0] == "fail" and "1 nld_predict" in AR.nld_verdict(1, 1)[1]
+    nld = [c for c in cases.CASES if c["name"].startswith("lab_agent_nld_predict_ssh")]
+    assert [c["name"] for c in nld] == ["lab_agent_nld_predict_ssh.bash.lan.nohelper"] and nld[0]["modes"] == ("agent",) and nld[0]["lab"], nld
+    assert AR.nld_requests(type("F", (), {"by_purpose": {"nld_predict": 4, "chat": 9}})()) == 4 and AR.nld_requests(type("F", (), {"by_purpose": {}})()) == 0
     assert all(c["modes"] == ("agent",) and c["lab"] for c in cases.CASES if c["name"].startswith("lab_agent_remote_"))
 
 
