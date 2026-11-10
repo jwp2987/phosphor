@@ -3605,6 +3605,7 @@ Info-level, written only when a state CHANGES, ids / kinds / states only, never 
 | `hop=action_card id= kind= shown=true` | `AIBlock` (`log_card_shown`) | a card came up: `run_shell_command`, `call_mcp_tool`, `action_buttons`, `ask_user_question` |
 | `hop=handover action= reason=` | `CLISubagentController::switch_control_to_user` | `manual`, `stop`, `transfer_from_agent`, `blocked_on_input` (`action=-` when the block has no requested command) |
 | `hop=queued_row id= state=` | `QueuedQueryModel` | `queued_locked`, `queued`, `unlocked`, `popped` (restored to the input), `fired`, `deleted` |
+| `input_order hop=queued_row_restored id= buffer=` | `QueuedQuery::log_restored_to_input` (called by `TerminalView` after a popped row was put into the input) | what the input editor holds after the restore, read back from the editor: the text with `WARP_INPUT_ORDER_LOG_TEXT=1`, else `<N chars>`. `agent_fault_queued_rows` counts a row as held in the input from this line when no `hop=enter_begin` follows it (round 11: the Windows VM has no OCR engine) |
 | `hop=turn conv= state=` | `AIConversation::update_status_with_error_message` | `in_progress`, `success`, `error`, `transient_error`, `cancelled`, `blocked`, `waiting_for_events` |
 
 Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.
@@ -4611,3 +4612,12 @@ Windows run.
   hold instead, it must end the same way); `gbpin.txt` holds the PIN; the line typed after the read runs. The first half is written 1.5 s after its
   first key (the cap), by design of #1923. To watch: the Enter that ended the `read` is counted as a line by the hand-off and no Precmd answers it;
   the cases that follow in the same pane show whether the editor takes input again at the next prompt.
+- **TEST, no issue (the app kept the row): `agent_fault_queued_rows` (agent@fake and agent@gitbash+fake, "'QA...' was lost").** The app popped the
+  first row back into the input when the failing reply ended (`hop=queued_row id=... state=popped`, then `keystroke: Agent by request-shape
+  (AgentConversation, head "please", 40 bytes)`: 40 bytes is exactly `please answer with the word <token>`), and kept the second in the queue
+  (`queued_rows_stored`). The case's only eye for the input is OCR, and the Windows VM has no OCR engine, so the row counted as lost. The same case
+  passes on macOS (OCR). The app now logs what the input holds after such a restore (`hop=queued_row_restored`, table above) and the case counts a
+  token found there as held (`cases_agent_resilience.restored_inputs` / `tokens_in_input`; metric `queued_rows_in_input`). Not weakened: a row that
+  is neither sent, stored, on screen nor in that record is still "lost" (self-test), an Enter after the restore voids the record, and a count-only
+  line proves nothing. Self-test: the block after `row_hops` in the agent-resilience checks. Next Windows run: PASS with
+  `queued_rows_in_input` naming the first row and `queued_rows_stored` the second.

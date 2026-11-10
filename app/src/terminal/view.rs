@@ -7025,6 +7025,12 @@ impl TerminalView {
                             input.set_input_mode_terminal(/* steal_focus */ false, ctx);
                         }
                     });
+                    // What the input holds now, read back from the editor (the text only when the
+                    // tester opted in, else its length): the one machine-readable proof that a
+                    // popped row is in the input and not lost. `hop=queued_row state=popped` says
+                    // only that it left the queue (round 10 Windows, no OCR on that host:
+                    // `agent_fault_queued_rows` could not see the row and called it lost).
+                    query.log_restored_to_input(|| self.input.as_ref(ctx).buffer_text(ctx));
                     // Commands never carry attachments; only restore them for prompts.
                     if !is_command {
                         self.ai_context_model.update(ctx, |context_model, ctx| {
