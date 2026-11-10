@@ -1,6 +1,13 @@
 # #1933 — managed ssh from Windows Git Bash (msys `ssh.exe`), one connection
 
 Owner decision 2026-11-09: ssh from a Windows Git Bash pane is managed by default.
+**Superseded in part, 2026-11-10 (owner, #2051):** the path is OFF unless the pane's shell has
+`PHOSPHOR_MSYS_MANAGED_SSH=1` (unset, `0` or anything else: the user's plain ssh, as before #1933).
+Round 12 showed the session cannot start in practice: 3.4 below types the 62 KB bootstrap through
+msys `ssh.exe`'s console, which forwards about 1.3 KB/s (`docs/design/r13-winssh2.md`). The
+replacement for 3.4 (the bootstrap travels in the remote command) is `docs/design/r13-gbssh.md`.
+Where this text says "by default" or calls `PHOSPHOR_MSYS_MANAGED_SSH=0` the kill switch, read it
+with that in mind: `0` still means off, but so does not setting it.
 Status: design + implementation on `fix/1933-windows-managed-ssh`. Nothing here was compiled or
 run (no builds on the laptop; the Windows VM could not be reached from the agent session).
 Owner decisions of 2026-11-09 folded in: only POSIX OpenSSH servers are managed (3.6); keys typed

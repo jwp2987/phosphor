@@ -3158,3 +3158,18 @@ recorded once per install in the private `terminal.osc52_write_notice_shown` set
 user who wrote `deny`, `write_only` or `read_write` in settings.toml keeps it. A re-pin diff that restores `deny` as
 the default is drift to reject. Tests: `osc52_default_is_write_only_read_denied`, `osc52_explicit_deny_is_kept`,
 `osc52_write_notice_fires_once` (`terminal/settings_tests.rs`).
+
+## Managed ssh from Windows Git Bash is OFF by default — DECIDED 2026-11-10 (#2051), reversing the 2026-11-09 default of #1933
+
+The one-connection managed ssh of the Git Bash pane (#1933, #1959, #1960; `docs/design/1933-windows-managed-ssh.md`)
+was on by default for one day and never released. Round 12 was the first run in which it got as far as the remote
+shell, and it could not start in practice: the 62 KB bootstrap was typed through msys `ssh.exe`'s console, which
+forwards about 1.3 KB/s, so the remote shell needed 45 to 60 s while the app's own nets gave up after 6.5 s and 15 s
+(`docs/design/r13-winssh2.md`). Owner decision 2026-11-10: the path is taken only when the pane's shell has
+`PHOSPHOR_MSYS_MANAGED_SSH=1` (for tests and tools); unset, `0` or any other value is the user's plain ssh, exactly
+what v0.1.17 does. So on that pane, by default: no in-band Tab over ssh, no blocks in the remote shell, keys typed
+during the connect go to `ssh.exe` as in a plain console. That is the decision, not a gap to file again. The default
+goes back to on only by another owner decision, after the replacement delivery (the bootstrap in the remote command,
+`docs/design/r13-gbssh.md`) has passed a Windows run. Tests: `msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh`
+(cases `default-is-off`, `kill-switch`, `not-one-is-off`; `terminal/bootstrap_test.rs`), appci `ssh_gitbash_kill_switch`
+(the default and `=0` are both plain) and selftest `msys_managed_ssh_default_off_2051`.

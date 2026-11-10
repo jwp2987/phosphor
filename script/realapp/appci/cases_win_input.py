@@ -1,12 +1,15 @@
 # appci/cases_win_input.py: the Windows input-parity cases (docs/design/windows-input-parity-audit.md, findings 3, 7, 8; issues #1884, #1888, #1889).
 # Registered with the same @case decorator as cases.py (one import line at its end). Windows panes only; each SKIPs elsewhere with its reason.
-#   ssh_connect_typing_wrapper / ssh_nested_typeahead_wrapper   Git Bash pane, the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1 in the profile):
-#                                                               the existing ssh cases, plus proof from the app log that the wrapper announcement was ACCEPTED
-#                                                               on the born-owned ConPTY window (hop ssh_wrapper "announced reclaimed=true", #1884)
-#   ssh_gitbash_managed / ssh_gitbash_typeahead_managed /       Git Bash pane, the DEFAULT settings (#1933, owner 2026-11-09: managed ssh from Git Bash on ONE
-#   ssh_gitbash_kill_switch                                     connection): the session is managed (stage hops auth, auth_done, managed), keys typed during the
-#                                                               login stay managed and reach the first remote prompt first, in typed order (#1959),
-#                                                               PHOSPHOR_MSYS_MANAGED_SSH=0 is plain ssh
+#   ssh_connect_typing_wrapper / ssh_nested_typeahead_wrapper   Git Bash pane, the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1 in the profile) and the
+#                                                               one-connection managed ssh switched on in the pane's shell (#2051): the existing ssh cases, plus
+#                                                               proof from the app log that the wrapper announcement was ACCEPTED on the born-owned ConPTY
+#                                                               window (hop ssh_wrapper "announced reclaimed=true", #1884) and that the verdict was managed
+#   ssh_gitbash_managed / ssh_gitbash_typeahead_managed         Git Bash pane, PHOSPHOR_MSYS_MANAGED_SSH=1 typed into the pane's shell (#2051, owner 2026-11-10:
+#                                                               managed ssh from Git Bash on ONE connection, #1933, is OFF unless the shell has that): the
+#                                                               session is managed (stage hops auth, auth_done, managed), keys typed during the login stay
+#                                                               managed and reach the first remote prompt first, in typed order (#1959)
+#   ssh_gitbash_kill_switch                                     Git Bash pane: the DEFAULT (variable not set) and PHOSPHOR_MSYS_MANAGED_SSH=0 are both the
+#                                                               user's plain ssh: no stage hop, verdict managed=false
 #   gitbash_long_osc_reaches_app                                Git Bash pane: an escape sequence over 256 bytes printed by an msys program in the pane reaches
 #                                                               the app whole (#2007: the form of a managed ssh session's remote hooks, which arrive through
 #                                                               msys ssh.exe; kernel32's pseudo console of Windows 10 passes on only its tail)
@@ -48,9 +51,13 @@ def _wrapper_variant(ctx, r, base):
     if os.environ.get("APPCI_SSH_WRAPPER", "") != "1":
         r.skip("set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)")
     off = ctx.log_size()
-    base(ctx, r)
+    # #2051: the managed path these two cases are about is off by default; they switch it on for the pane's shell
+    R.in_msys_managed_ssh(ctx, lambda: base(ctx, r))
     log = ctx.log_since(off)
     wrapper = [ln for ln in log.splitlines() if "hop=ssh_wrapper" in ln]
+    r.check(any("verdict managed=true" in ln for ln in wrapper),
+            "with the one-connection managed ssh switched on, the wrapper's verdict was managed=true; verdicts seen: %r"
+            % [ln.split("hop=ssh_wrapper", 1)[-1].strip()[:60] for ln in wrapper if "verdict" in ln][:4])
     r.check(any("announced" in ln for ln in wrapper),
             "the wrapper announcement was handled on the Windows window (hop ssh_wrapper announced); hops seen: %d" % len(wrapper))
     r.check(not any("verdict_ignored" in ln for ln in wrapper),
@@ -255,12 +262,17 @@ def c_gitbash_long_osc_reaches_app(ctx, r):
 
 @case("ssh_gitbash_managed", order=62)
 def c_ssh_gitbash_managed(ctx, r):
-    """#1933 (owner 2026-11-09): `ssh fake` from the Git Bash pane with the DEFAULT settings is a MANAGED session on one connection (msys ssh.exe cannot
-    multiplex). Nothing is typed while it connects. Evidence, all from the app log and the shells' own rec.log: the wrapper hops show the stages auth,
+    """#1933 (owner 2026-11-09), #2051 (owner 2026-11-10: off unless the shell has PHOSPHOR_MSYS_MANAGED_SSH=1, which this case types into the pane's
+    shell first): `ssh fake` from the Git Bash pane is then a MANAGED session on one connection (msys ssh.exe cannot multiplex). Nothing is typed
+    while it connects. Evidence, all from the app log and the shells' own rec.log: the wrapper hops show the stages auth,
     auth_done, managed in that order, none ignored, and `verdict managed=true` (round 8 showed `managed=false` on every Git Bash ssh); the pane is
     provably remote; a line typed at the remote prompt runs once there and never locally. The in-band Tab itself is `remote_tab_no_helper`."""
     _need_windows_pane(ctx, r, "gitbash")
     R.need_ssh(ctx, r)
+    R.in_msys_managed_ssh(ctx, lambda: _ssh_gitbash_managed(ctx, r))
+
+
+def _ssh_gitbash_managed(ctx, r):
     off = ctx.log_size()
     secs = R.connect(ctx, "fake", 60)
     r.check(secs is not None, "no remote shell prompt after `ssh fake`. Test host: %s" % (ctx.ssh_diag() if secs is None else ""))
@@ -294,9 +306,14 @@ def c_ssh_gitbash_typeahead_managed(ctx, r):
     Required in EVERY trial: the typed line ran exactly once REMOTELY and never locally; the stages are auth, auth_done, managed; the verdict is
     managed=true; no stage or verdict was ignored; the app never reports `typeahead_front adopted=false` (that is the plain fallback for keys with no
     provable place in the hold: a defect here, where one pane types one line). How many trials had keys in the console (`typeahead_front
-    adopted=true`) is a note: it depends on how fast the login was, and a trial where every key was typed after auth_done is held the ordinary way."""
+    adopted=true`) is a note: it depends on how fast the login was, and a trial where every key was typed after auth_done is held the ordinary way.
+    #2051: the managed path is off by default, so the case types PHOSPHOR_MSYS_MANAGED_SSH=1 into the pane's shell first and unsets it at the end."""
     _need_windows_pane(ctx, r, "gitbash")
     R.need_ssh(ctx, r)
+    R.in_msys_managed_ssh(ctx, lambda: _ssh_gitbash_typeahead_managed(ctx, r))
+
+
+def _ssh_gitbash_typeahead_managed(ctx, r):
     trials, adopted = 3, 0
     for i in range(trials):
         tok = ctx.tok(6)
@@ -339,26 +356,33 @@ def c_ssh_gitbash_typeahead_managed(ctx, r):
 
 @case("ssh_gitbash_kill_switch", order=62)
 def c_ssh_gitbash_kill_switch(ctx, r):
-    """#1933: PHOSPHOR_MSYS_MANAGED_SSH=0 in the shell turns the one-connection path off for that shell: the ssh is the user's plain ssh (verdict
-    managed=false, no stage hops), and a line typed at the remote prompt still runs once there. The variable is set in the pane's shell and unset again."""
+    """#1933, #2051 (owner 2026-11-10: the one-connection managed ssh of the Git Bash pane is OFF unless the shell has PHOSPHOR_MSYS_MANAGED_SSH=1).
+    Two connects, each must be the user's plain ssh (no stage hop, verdict managed=false) with a line typed at the remote prompt running once there:
+    first with the variable NOT set (the default every user gets; before 2026-11-10 this connect was managed and only `=0` was plain), then with
+    PHOSPHOR_MSYS_MANAGED_SSH=0 typed into the pane's shell (the explicit off still means off). `=1` being managed is ssh_gitbash_managed. The
+    variable is unset before the first connect and again at the end."""
     _need_windows_pane(ctx, r, "gitbash")
     R.need_ssh(ctx, r)
-    ctx.be.type("export PHOSPHOR_MSYS_MANAGED_SSH=0", 12, enter=True)
-    time.sleep(0.5)
-    off = ctx.log_size()
-    secs = R.connect(ctx, "fake", 60)
-    r.check(secs is not None, "no remote shell prompt after `ssh fake` with the kill switch. Test host: %s" % (ctx.ssh_diag() if secs is None else ""))
-    if secs is not None:
-        time.sleep(1.0)
-        hops = _wrapper_hops(ctx, off)
-        r.check(_sync_stages(hops) == [], "no one-connection stage with the kill switch: %r" % _sync_stages(hops))
-        r.check(any("verdict managed=false" in ln for ln in hops), "the wrapper's verdict was the plain fallback (managed=false)")
-        if ctx.where_now() == "remote":
-            _remote_line_once(ctx, r, "plain session")
-            if not R.leave(ctx):
-                r.check(False, "not provably remote (probe ran in: %s), `exit` NOT typed" % ctx.left_unproven)
-        else:
-            r.check(False, "the pane is not provably remote after `ssh fake` (probe ran in: %s)" % ctx.where_now())
-    ctx.reset()
-    ctx.be.type("unset PHOSPHOR_MSYS_MANAGED_SSH", 12, enter=True)
-    time.sleep(0.5)
+    try:
+        for what, line in (("the default (variable not set)", R.msys_managed_ssh_lines(False)), ("PHOSPHOR_MSYS_MANAGED_SSH=0", "export %s=0" % R.MSYS_MANAGED_SSH)):
+            ctx.be.type(line, 12, enter=True)
+            time.sleep(0.5)
+            off = ctx.log_size()
+            secs = R.connect(ctx, "fake", 60)
+            r.check(secs is not None, "%s: no remote shell prompt after `ssh fake`. Test host: %s" % (what, ctx.ssh_diag() if secs is None else ""))
+            if secs is not None:
+                time.sleep(1.0)
+                hops = _wrapper_hops(ctx, off)
+                r.check(_sync_stages(hops) == [], "%s: no one-connection stage: %r" % (what, _sync_stages(hops)))
+                r.check(any("verdict managed=false" in ln for ln in hops), "%s: the wrapper's verdict was the plain fallback (managed=false)" % what)
+                r.check(not any("verdict managed=true" in ln for ln in hops), "%s: the session must not be managed" % what)
+                if ctx.where_now() == "remote":
+                    _remote_line_once(ctx, r, "plain session, %s" % what)
+                    if not R.leave(ctx):
+                        r.check(False, "%s: not provably remote (probe ran in: %s), `exit` NOT typed" % (what, ctx.left_unproven))
+                else:
+                    r.check(False, "%s: the pane is not provably remote after `ssh fake` (probe ran in: %s)" % (what, ctx.where_now()))
+            ctx.reset()
+    finally:
+        ctx.be.type(R.msys_managed_ssh_lines(False), 12, enter=True)
+        time.sleep(0.5)

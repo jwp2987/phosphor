@@ -2240,12 +2240,14 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # step fails with "Failed to connect to new control master"), so there is never a master
             # here. #1933 (owner 2026-11-09): the session is managed on ONE connection instead
             # (docs/design/1933-windows-managed-ssh.md): ssh's own LocalCommand is the event between
-            # the login and the session. Decided before any config is read: the kill switch
-            # (PHOSPHOR_MSYS_MANAGED_SSH=0) and an ssh whose stdin or stdout is not the terminal run
-            # the user's plain ssh, untouched, as #1551 did.
+            # the login and the session. Owner 2026-11-10 (#2051): that path is OFF unless the shell
+            # has PHOSPHOR_MSYS_MANAGED_SSH=1 (it is unreleased; round 12 showed it cannot start in
+            # practice). Decided before any config is read: the switch not being 1 (unset, 0,
+            # anything else) and an ssh whose stdin or stdout is not the terminal run the user's
+            # plain ssh, untouched, as #1551 did.
             local warp_single=0
             if [ "${WARP_IN_MSYS2:-}" = true ]; then
-                if [[ "${PHOSPHOR_MSYS_MANAGED_SSH:-1}" == "0" ]] || ! warp_ssh_msys_has_terminal; then
+                if [[ "${PHOSPHOR_MSYS_MANAGED_SSH:-0}" != "1" ]] || ! warp_ssh_msys_has_terminal; then
                     # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
                     warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
                     command ssh "${@:1}"

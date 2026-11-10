@@ -4636,16 +4636,19 @@ fn test_zsh_env_script_hex_constants_decode_to_the_script() {
     assert!(!tail.contains("@@"), "{tail}");
 }
 
-/// #1933 (owner 2026-11-09: managed ssh from Windows Git Bash): under `WARP_IN_MSYS2` the wrapper
-/// never starts a ControlMaster (#1551). With a terminal on both ends it runs ONE managed ssh: no
-/// master and no control path, ssh's LocalCommand as the event between login and session, a
-/// nonce in the `auth` stage hook and in the sync token, and a remote command that reads its mode
-/// byte before anything else and announces `single_connection`. That only for a server whose SSH
-/// identification string (read by ssh-keyscan) names POSIX OpenSSH (owner 2026-11-09). Any other
-/// server (Windows OpenSSH, network gear, Dropbear, a look-alike name), no answer, a server
-/// behind a ProxyJump (keyscan is not asked at all), a user's own LocalCommand and the kill
-/// switch run the user's plain ssh, untouched, with the `PlainSSHFallback` verdict. (The #1551
-/// `msys2` case of the test above still pins "no terminal: plain ssh, no config read".)
+/// #1933 (owner 2026-11-09: managed ssh from Windows Git Bash), #2051 (owner 2026-11-10: OFF
+/// unless the shell has `PHOSPHOR_MSYS_MANAGED_SSH=1`): under `WARP_IN_MSYS2` the wrapper never
+/// starts a ControlMaster (#1551). With the switch at 1 and a terminal on both ends it runs ONE
+/// managed ssh: no master and no control path, ssh's LocalCommand as the event between login and
+/// session, a nonce in the `auth` stage hook and in the sync token, and a remote command that
+/// reads its mode byte before anything else and announces `single_connection`. That only for a
+/// server whose SSH identification string (read by ssh-keyscan) names POSIX OpenSSH (owner
+/// 2026-11-09). Any other server (Windows OpenSSH, network gear, Dropbear, a look-alike name),
+/// no answer, a server behind a ProxyJump (keyscan is not asked at all) and a user's own
+/// LocalCommand run the user's plain ssh, untouched, with the `PlainSSHFallback` verdict. So does
+/// every ssh while the switch is not 1: unset (the default), 0, or any other value; then no
+/// config is read at all. (The #1551 `msys2` case of the test above still pins "no terminal:
+/// plain ssh, no config read".)
 #[test]
 #[cfg(unix)]
 fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
@@ -4673,7 +4676,8 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
         name: &'static str,
         banner: &'static str,
         g_extra: &'static str,
-        kill_switch: bool,
+        /// `PHOSPHOR_MSYS_MANAGED_SSH` in the shell; empty: not set (the default).
+        switch: &'static str,
         single: bool,
         keyscan_runs: bool,
     }
@@ -4682,7 +4686,7 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             name: "posix",
             banner: "# h:22 SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13",
             g_extra: "",
-            kill_switch: false,
+            switch: "1",
             single: true,
             keyscan_runs: true,
         },
@@ -4692,7 +4696,7 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             name: "old-posix-openssh",
             banner: "# h:22 SSH-1.99-OpenSSH_3.9p1",
             g_extra: "",
-            kill_switch: false,
+            switch: "1",
             single: true,
             keyscan_runs: true,
         },
@@ -4700,7 +4704,7 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             name: "no-banner",
             banner: "",
             g_extra: "",
-            kill_switch: false,
+            switch: "1",
             single: false,
             keyscan_runs: true,
         },
@@ -4708,7 +4712,7 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             name: "network-gear",
             banner: "# h:22 SSH-2.0-Cisco-1.25",
             g_extra: "",
-            kill_switch: false,
+            switch: "1",
             single: false,
             keyscan_runs: true,
         },
@@ -4716,7 +4720,7 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             name: "dropbear",
             banner: "# h:22 SSH-2.0-dropbear_2022.83",
             g_extra: "",
-            kill_switch: false,
+            switch: "1",
             single: false,
             keyscan_runs: true,
         },
@@ -4724,7 +4728,7 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             name: "openssh-lookalike",
             banner: "# h:22 SSH-2.0-OpenSSH_like",
             g_extra: "",
-            kill_switch: false,
+            switch: "1",
             single: false,
             keyscan_runs: true,
         },
@@ -4732,7 +4736,7 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             name: "windows-server",
             banner: "# h:22 SSH-2.0-OpenSSH_for_Windows_9.5",
             g_extra: "",
-            kill_switch: false,
+            switch: "1",
             single: false,
             keyscan_runs: true,
         },
@@ -4740,7 +4744,7 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             name: "behind-a-jump",
             banner: "# h:22 SSH-2.0-OpenSSH_9.6",
             g_extra: "proxyjump jump\n",
-            kill_switch: false,
+            switch: "1",
             single: false,
             keyscan_runs: false,
         },
@@ -4748,7 +4752,17 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             name: "user-localcommand",
             banner: "# h:22 SSH-2.0-OpenSSH_9.6",
             g_extra: "permitlocalcommand yes\nlocalcommand echo connected\n",
-            kill_switch: false,
+            switch: "1",
+            single: false,
+            keyscan_runs: false,
+        },
+        // #2051 (owner 2026-11-10): the one-connection path is off unless the switch is 1. The
+        // same POSIX OpenSSH server that is managed in the first case gets the plain ssh.
+        Case {
+            name: "default-is-off",
+            banner: "# h:22 SSH-2.0-OpenSSH_9.6",
+            g_extra: "",
+            switch: "",
             single: false,
             keyscan_runs: false,
         },
@@ -4756,7 +4770,15 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             name: "kill-switch",
             banner: "# h:22 SSH-2.0-OpenSSH_9.6",
             g_extra: "",
-            kill_switch: true,
+            switch: "0",
+            single: false,
+            keyscan_runs: false,
+        },
+        Case {
+            name: "not-one-is-off",
+            banner: "# h:22 SSH-2.0-OpenSSH_9.6",
+            g_extra: "",
+            switch: "true",
             single: false,
             keyscan_runs: false,
         },
@@ -4825,8 +4847,8 @@ printf '%s\n' "$BANNER" >&2
             .env_remove("PHOSPHOR_MSYS_MANAGED_SSH")
             .env_remove("PHOSPHOR_MSYS_SSH_TYPEAHEAD")
             .stdin(std::process::Stdio::null());
-        if case.kill_switch {
-            command.env("PHOSPHOR_MSYS_MANAGED_SSH", "0");
+        if !case.switch.is_empty() {
+            command.env("PHOSPHOR_MSYS_MANAGED_SSH", case.switch);
         }
         let status = command.status().unwrap();
         let name = case.name;
@@ -4847,8 +4869,8 @@ printf '%s\n' "$BANNER" >&2
             .collect();
         assert_eq!(
             all_calls.len() - calls.len(),
-            usize::from(!case.kill_switch),
-            "{name}: one ssh -G, none under the kill switch: {recorded:?}"
+            usize::from(case.switch == "1"),
+            "{name}: one ssh -G, none while the switch is not 1: {recorded:?}"
         );
         assert_eq!(
             calls.len(),
