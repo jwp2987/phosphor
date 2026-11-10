@@ -4473,3 +4473,8 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   holds; an empty `ZDOTDIR` = the menu although HOME has a `.zshrc` (Linux).
 - Worked, unproven: no app run yet. The next Linux run must show `tail=InputPrompt decision=Wait(InputPrompt)` at Ctrl-I, no
   `subshell_setup_ready_write` before the `q`, then the write, the typed line in `lab_zshnew.txt`, one `exit` and the root shell in front.
+- **zsh-newuser-install's other key prompts are input prompts (#2017, APP, found by reading).** `--- Type a key ---`, `--- Edit abandoned, type a key ---`
+  and `--- Type a key in forlorn hope ---` read as a shell prompt (no `:`/`?` ending), and a raw tty under a shell leader with a shell-shaped tail is where
+  the setup is written. `output_tail_is_input_prompt` now takes a tail that ends in `---` and says "type a key" for a prompt. Unit test
+  `key_facts_tests.rs`: `the_other_zsh_newuser_install_key_prompts_are_input_prompts` (the three prompts; shell prompts that mention a key or end in
+  dashes are not). Not compiled or run yet. No app case walks the sub-menus (the case answers `q` at the first screen).

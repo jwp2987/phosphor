@@ -387,6 +387,16 @@ pub fn output_tail_is_input_prompt(output: &str) -> bool {
             .any(|word| lower.contains(word))
         || line_ends_in_choice_group(line)
         || lower.contains(ZSH_NEWUSER_INSTALL_FOOTER)
+        || is_zsh_newuser_install_key_prompt(&lower)
+}
+
+/// #2017: the other prompts of `zsh-newuser-install`, each read as ONE key by the same raw zsh:
+/// `--- Type a key ---`, `--- Edit abandoned, type a key ---`, `--- Type a key in forlorn hope
+/// ---`. None ends in `:` or `?`, so each read as a shell prompt, and a line editor's raw tty with
+/// a shell-shaped tail is what the subshell setup is written on. `lower` is the lowercased line
+/// with its trailing blanks removed.
+fn is_zsh_newuser_install_key_prompt(lower: &str) -> bool {
+    lower.ends_with("---") && lower.contains("type a key")
 }
 
 /// The last line of `zsh-newuser-install`'s menu (a raw zsh with no `.zshrc`): the shell reads

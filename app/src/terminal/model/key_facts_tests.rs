@@ -652,3 +652,28 @@ fn choice_groups_and_the_zsh_newuser_footer_are_input_prompts() {
         assert!(!output_tail_is_input_prompt(not_prompt), "{not_prompt:?}");
     }
 }
+
+/// #2017: zsh-newuser-install's other prompts are read one key at a time by the same raw zsh as
+/// its footer. They are prompts for input, never a shell's prompt; a shell prompt that merely
+/// mentions a key, or ends in dashes, is not one.
+#[test]
+fn the_other_zsh_newuser_install_key_prompts_are_input_prompts() {
+    for prompt in [
+        "--- Type a key --- ",
+        "--- Type a key ---",
+        "--- Edit abandoned, type a key --- ",
+        "--- Type a key in forlorn hope --- ",
+        "some text above\n--- Type a key --- ",
+    ] {
+        assert!(output_tail_is_input_prompt(prompt), "{prompt:?}");
+    }
+    for not_prompt in [
+        "type a key % ",
+        "~/notes/type a key $ ",
+        "me@host --- ",
+        "--- main --- ",
+        "--- Type a key ---\nhost% ",
+    ] {
+        assert!(!output_tail_is_input_prompt(not_prompt), "{not_prompt:?}");
+    }
+}
