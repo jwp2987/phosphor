@@ -13,6 +13,28 @@ use crate::ai::agent_providers::fake_stream_seam::{
 };
 use crate::ai::agent_providers::tools;
 
+/// How a scripted reply's stream ends. It decides what the app commits of the reply
+/// (`chat_stream.rs`, `generate_byop_output`): the commit is the single `final_messages` yield
+/// after the stream loop, and only two of the three ways out of that loop reach it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyEnd {
+    /// The terminal `End` was delivered. The loop ends, the commit runs (it awaits a websearch
+    /// or webfetch of the reply first), then `Finished`. Calls are taken from the `End`'s
+    /// captured content, so a repeated id is renamed `id#2`.
+    Finished,
+    /// The open failed, or the stream failed or stalled part-way (`status`, `context_overflow`,
+    /// `disconnect`, `stall`). The loop leaves by `yield Err; return`: NO commit. Only the
+    /// cards shown while the reply streamed are in the conversation.
+    Broke,
+    /// The body closed with no `End` and no error (`never_end` alone). The loop ends as if the
+    /// reply were complete, so the commit RUNS IN FULL, in-stream tools included, and only then
+    /// is the missing `End` reported as an error ("the partial content is not lost ...
+    /// `final_messages` above has been flushed", the `end_count == 0` guard). There is no
+    /// captured content, so calls are the stream's chunks accumulated by id: a repeated id is
+    /// ONE call (the later chunk replaces the earlier), not renamed.
+    ClosedEarly,
+}
+
 /// What one scripted reply emitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmittedTurn {
@@ -20,15 +42,20 @@ pub struct EmittedTurn {
     pub request_index: usize,
     /// The turn that answered (`None` = the implicit `END`).
     pub turn: Option<usize>,
-    /// The call ids as put on the wire, in order. A `Missing` id is recorded as genai assigns it
-    /// (`call_<index>`); an empty literal id is recorded as "" (the app invents a uuid).
+    /// The calls the app commits when nobody cuts the stream, in order; empty for
+    /// [`ReplyEnd::Broke`] (nothing is committed).
+    ///
+    /// * [`ReplyEnd::Finished`]: the ids as put on the wire. A `Missing` id is recorded as
+    ///   genai assigns it (`call_<index>`); an empty literal id is recorded as "" (the app
+    ///   invents a uuid); a repeated id is listed again (I4 renames it as the app does).
+    /// * [`ReplyEnd::ClosedEarly`]: the same, with a repeated id listed once, at its first
+    ///   place (the app accumulates chunks by id and there is no `End` to tell two calls with
+    ///   one id apart). "" is never merged: each empty id gets its own invented id.
     pub call_ids: Vec<String>,
     /// Chaos kinds in force for this reply (the I6 allowlist keys on them).
     pub chaos: Vec<&'static str>,
-    /// The reply left the stream unfinished or failed it, so its calls were never committed
-    /// (the commit is the stream loop's single `final_messages` yield after the `End`). What
-    /// such a reply can still leave in the conversation is in `early_call_ids`.
-    pub aborted: bool,
+    /// How the stream ended: whether the reply's calls were committed, and in which form.
+    pub end: ReplyEnd,
     /// The calls the app may have put into the conversation BEFORE the reply was committed: it
     /// shows a call's card as soon as the call's chunk parses (`chat_stream.rs`, the
     /// `ToolCallChunk` arm), as a tool-call message of its own, and that message stays when the
@@ -38,8 +65,17 @@ pub struct EmittedTurn {
     /// An id repeated in the reply is listed once (a repeat updates the same card); "" is an id
     /// the app invents. The app may have shown any leading part of this list (a call whose
     /// arguments do not parse, or that is refused at dispatch, also ends the run), so I4 accepts
-    /// a prefix of it for a reply that was aborted or cut. Empty when nothing was delivered.
+    /// a prefix of it for a reply that broke or was cut. Empty when nothing was delivered.
     pub early_call_ids: Vec<String>,
+}
+
+impl EmittedTurn {
+    /// The reply did not end with an `End`: the app reports an error for it and may ask again
+    /// (a retry of the same request, or a resume). Says nothing about the commit: see
+    /// [`ReplyEnd`].
+    pub fn aborted(&self) -> bool {
+        self.end != ReplyEnd::Finished
+    }
 }
 
 /// The tools whose calls get no card while the reply streams (`chat_stream.rs`, the
@@ -55,6 +91,18 @@ fn gets_no_early_card(tool: &str) -> bool {
         tools::skill::READ_SKILL.name,
     ]
     .contains(&tool)
+}
+
+/// [`EmittedTurn::call_ids`] of a reply whose body closed with no `End`: the app keeps one call
+/// per id, at the place the id first came (`tool_order` / `tool_bufs` in the stream loop).
+fn merged_by_id(ids: Vec<String>) -> Vec<String> {
+    let mut merged: Vec<String> = Vec::new();
+    for id in ids {
+        if id.is_empty() || !merged.contains(&id) {
+            merged.push(id);
+        }
+    }
+    merged
 }
 
 /// [`EmittedTurn::early_call_ids`] for the events a stream delivers.
@@ -134,7 +182,7 @@ impl Player {
                     turn: None,
                     call_ids: Vec::new(),
                     chaos: Vec::new(),
-                    aborted: false,
+                    end: ReplyEnd::Finished,
                     early_call_ids: Vec::new(),
                 },
             ),
@@ -218,13 +266,21 @@ fn render_turn(
         end: true,
     };
     apply_chaos(&mut seam, &chaos);
-    // Calls count as emitted only if the stream delivered them intact to the End.
-    let aborted = seam.open_error.is_some()
-        || !seam.end
+    // Which way the app's stream loop is left (see `ReplyEnd`): an error or a stall anywhere
+    // means no commit; a body that just stops is committed as received; an `End` is the
+    // ordinary commit.
+    let broke = seam.open_error.is_some()
         || seam
             .events
             .iter()
             .any(|e| matches!(e, SeamEvent::Fail(_) | SeamEvent::Stall));
+    let end = if broke {
+        ReplyEnd::Broke
+    } else if seam.end {
+        ReplyEnd::Finished
+    } else {
+        ReplyEnd::ClosedEarly
+    };
     // A failed open delivers no event at all.
     let early_call_ids = if seam.open_error.is_some() {
         Vec::new()
@@ -234,9 +290,13 @@ fn render_turn(
     let record = EmittedTurn {
         request_index,
         turn: Some(turn_index),
-        call_ids: if aborted { Vec::new() } else { ids },
+        call_ids: match end {
+            ReplyEnd::Finished => ids,
+            ReplyEnd::ClosedEarly => merged_by_id(ids),
+            ReplyEnd::Broke => Vec::new(),
+        },
         chaos: chaos.kinds(),
-        aborted,
+        end,
         early_call_ids,
     };
     (seam, record)
@@ -352,7 +412,8 @@ mod tests {
         let player = Player::new(scenario_with(Reply::ToolCalls { calls }, Some(chaos)));
         player.answer(&request(0));
         let emitted = player.emitted();
-        assert!(emitted[0].aborted);
+        assert_eq!(emitted[0].end, ReplyEnd::Broke);
+        assert!(emitted[0].aborted());
         assert!(emitted[0].call_ids.is_empty());
         // The call was delivered before the connection dropped: the app may have shown it.
         assert_eq!(emitted[0].early_call_ids.len(), 1);
@@ -380,7 +441,7 @@ mod tests {
         ));
         whole.answer(&request(0));
         let emitted = whole.emitted();
-        assert!(!emitted[0].aborted);
+        assert_eq!(emitted[0].end, ReplyEnd::Finished);
         assert_eq!(emitted[0].call_ids, ["a", "a", "b", "w", "c"]);
         assert_eq!(emitted[0].early_call_ids, ["a", "b"]);
 
@@ -397,7 +458,7 @@ mod tests {
         ));
         broken.answer(&request(0));
         let emitted = broken.emitted();
-        assert!(emitted[0].aborted);
+        assert_eq!(emitted[0].end, ReplyEnd::Broke);
         assert_eq!(emitted[0].early_call_ids, ["a"]);
 
         // A reply that starts with a search shows nothing early.
@@ -422,7 +483,67 @@ mod tests {
         let player = Player::new(scenario_with(Reply::ToolCalls { calls }, Some(refused)));
         player.answer(&request(0));
         let emitted = player.emitted();
-        assert!(emitted[0].aborted);
+        assert_eq!(emitted[0].end, ReplyEnd::Broke);
         assert!(emitted[0].early_call_ids.is_empty());
+    }
+
+    /// The three ways a reply's stream ends, as the app's stream loop tells them apart
+    /// (`ReplyEnd`). The round 12 failure of both random fuzz tests (build/r12a) was a reply
+    /// that only lacked its `End`: the app commits such a reply as received, and the record
+    /// said "nothing was committed". Its calls here are the ones of that scenario.
+    #[test]
+    fn a_body_that_closes_with_no_end_is_committed_and_a_broken_stream_is_not() {
+        let literal = |id: &str| CallId::Literal { id: id.to_owned() };
+        let calls = vec![
+            Call::new(literal("call_fixed"), "not_a_real_tool", Args::EmptyObject),
+            Call::new(literal("w"), "websearch", Args::Valid),
+            Call::new(
+                literal("call_fixed"),
+                "read_shell_command_output",
+                Args::Valid,
+            ),
+        ];
+        let record = |chaos: Option<Chaos>| {
+            let player = Player::new(scenario_with(
+                Reply::ToolCalls {
+                    calls: calls.clone(),
+                },
+                chaos,
+            ));
+            player.answer(&request(0));
+            player.emitted().remove(0)
+        };
+
+        // With its `End`: every call, the repeat still listed (I4 renames it `call_fixed#2`).
+        let finished = record(None);
+        assert_eq!(finished.end, ReplyEnd::Finished);
+        assert!(!finished.aborted());
+        assert_eq!(finished.call_ids, ["call_fixed", "w", "call_fixed"]);
+
+        // No `End`, no error: committed, one call per id, in the order the ids first came.
+        let closed_early = record(Some(Chaos {
+            never_end: true,
+            ..Chaos::default()
+        }));
+        assert_eq!(closed_early.end, ReplyEnd::ClosedEarly);
+        assert!(closed_early.aborted());
+        assert_eq!(closed_early.call_ids, ["call_fixed", "w"]);
+        assert_eq!(closed_early.early_call_ids, ["call_fixed"]);
+
+        // An error before the body closes: no commit, whatever `never_end` says.
+        let broke = record(Some(Chaos {
+            never_end: true,
+            disconnect_after: Some(2),
+            ..Chaos::default()
+        }));
+        assert_eq!(broke.end, ReplyEnd::Broke);
+        assert!(broke.call_ids.is_empty());
+        assert_eq!(broke.early_call_ids, ["call_fixed"]);
+
+        // Ids the app invents are never merged.
+        assert_eq!(
+            merged_by_id(vec![String::new(), "a".into(), String::new(), "a".into()]),
+            ["", "a", ""]
+        );
     }
 }
