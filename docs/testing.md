@@ -185,6 +185,7 @@ Every guard in this table runs in `precheck`. In CI the `guards` job runs all of
 | route parity A (#1852, #1854, #1855, #1856, #1857) | `terminal/view/route_parity_a_tests.rs`, Legacy and Table each: `suspend_and_quit_do_not_void_a_waiting_enter_interrupt_does` (^Z / ^\ leave a waiting Enter and the keys behind it alone, ^C voids it; round 10: the Legacy chain now voids it for a `^C` that arrives as a control sequence too, as its key path and the table did), `a_delivered_key_cancels_a_written_setup_when_a_secret_is_read` (R8 check at delivery), `synced_input_does_not_take_over_an_agent_driven_command` (synced input is passive in both modes), `ctrl_c_before_the_connect_gate_is_armed_is_sigint` (P1e). #1857 is log-only: table mode now logs `kh_terminal_typed_entry`, `kh_hold_entry`, `kh_hold_exit` (with `table=1`) and `kh_terminal_typed_routed` like legacy; check in an appci log, not in a unit test. |
 | `check_network_gate` | production code builds an HTTP client outside the network gate (`reqwest::Client::{new,builder,default}`, `reqwest::ClientBuilder`, `reqwest::blocking::Client`, `reqwest::get`), calls the unclassified `http_client::Client::new()`, builds a genai `Client` without `redirect_guard`, or the gate / its `http_client` wiring is gone. Tests and test support are exempt. The gate's switch and event log are covered too. Tests: `crates/network_gate/src/lib_tests.rs`, `app/src/network_gate_log_tests.rs`, `app/src/network_gate_notice_tests.rs`, `app/src/settings_view/network_page_tests.rs` |
 | `check_outbound_redaction` | a model-provider wire call (`exec_chat`, `exec_chat_stream`, embeddings/Exa `.post(`) appears outside the files that route through `agent_providers/outbound_redaction.rs`, or one of them stops calling it (#1469). Tests: `agent_providers/outbound_redaction_tests.rs` (every content kind, on and off), `chat_stream` request-builder tests, `oneshot` and embeddings tests |
+| `check_recorder_reads` | a view test (`terminal/view_test.rs`, `terminal/view/*_tests.rs`) reads its pty-write recorder (`pty_writes`, or a variable bound from `collect_pty_writes` / `record_pty_writes` / `record_all_pty_writes` / `subshell_pty_writes`) textually inside an `.update(` closure with no `In-update recorder read` comment in the 8 lines above (round 14; the r13-pin2 rule: the recorder is filled when the outermost update returns). `--self-test`: 7 fixtures. Limits: a closure handed to a helper that runs it in an update, a helper taking the recorder as a parameter and recorders under other names are not seen; it cannot tell a vacuous read from a carried one, the comment is the author's statement |
 | `check_dangling_modules` | `mod foo;` with no file (untracked file lost in a patch); also in the CI `guards` job (#1521). Skips `lib/` (vendored crates; some declare modules their own build.rs generates) |
 | `check_pwsh_parse` | a bundled `.ps1` does not parse in real PowerShell (#1161); skipped without pwsh, which `precheck` shows as a warning; also in the CI `guards` job (#1521), where a runner without pwsh logs `SKIPPED` and passes |
 | `check_license_config_sync` | `deny.toml` and `about.toml` license lists differ (job `licenses`) |
@@ -196,6 +197,18 @@ Every guard in this table runs in `precheck`. In CI the `guards` job runs all of
 They run the REAL bundled bootstrap text (cut out of `app/assets/bundled/bootstrap/*`) in real shells and
 pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip raised AFTER a failed check keeps the FAIL (noted "ALSO SKIPPED"); `python3 script/realapp/appci/run.py --self-test` covers that rule.
 
+**What runs them (checked 2026-11-10, round 14; the heading used to say "run by `precheck`" for all of them).** `script/precheck`
+(also `--fast`) runs the fixed list in its "shell tests" step: `macos/test_create_warpctrl_wrapper`, `test_warpctrl_early_dispatch`,
+`test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options`, `test_bootstrap_hook_equivalence`, `test_pwsh_hook_equivalence`,
+`test_nu_bootstrap_hook_equivalence`, `test_nu_agent_pager_env`, `test_bash_bootstrap_builtins`, `test_ssh_keepalive`,
+`test_ssh_probe_cache`, `test_ssh_wrapper_forks`, `test_ssh_auth_once`, `test_ssh_raw_bootstrap_hook`, `test_local_counted_bootstrap`,
+`test_native_completions`, `test_cwd_listing`, and since round 14 `test_child_ps1` (#1907) and `test_init_shell_escaping`. The CI
+`guards` job runs `macos/test_create_warpctrl_wrapper`, `test_warpctrl_early_dispatch` and, since round 14, `test_child_ps1`
+(python3 + bash + sh, about 12 s). Run by NOTHING, by hand only (#2055): `test_fish_bootstrap`, `test_hook_forks`,
+`test_line_editor_markers`, `test_hijack_bootstrap`, `test_bash_preexec_large_command`, `test_zsh_hex_encoder`; all six passed
+when run directly on 2026-11-10. A harness nothing runs rots without a failure: `test_init_shell_escaping` had stopped matching the
+bootstrap text for exactly that reason. A new `script/test_*` goes into the `precheck` list in the same commit.
+
 | script | checks |
 |---|---|
 | `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options` | hooks survive `set -u` / `err_return` / failing user precmd (#825, #836, #844); a detached HEAD under strict options reports git's hash every prompt (#1616). Option guard (every hook entry saves the user's options, turns them off for its own body and gives them back exactly): bash also covers `set -E` + an ERR trap (never fires inside a hook, once for the user's own `false`), `set -a` (no hook scratch variable is exported), `set -x` (no hook body is traced), and `$?` / `PIPESTATUS` / `$BP_PIPESTATUS` as the user's PROMPT_COMMAND sees them, plain and under `set -u -o pipefail`; zsh covers `pipe_fail` + `all_export` + `xtrace` the same way. fish has no errexit; its `$status` capture is the first line of `warp_precmd` |
@@ -205,10 +218,10 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 | `test_nu_agent_pager_env` (#1813) | REAL nushell (0.116.1 checked; skipped cleanly when `nu` is absent, `--nu PATH` to force) in a pty with the real `nu.nu` bootstrap, a throw-away HOME/XDG under `$TMPDIR` and a `config.nu` holding the user's own `pre_prompt`/`pre_execution` hooks. An agent command is typed as Nu's wrapper form (` <command> # __phosphor_ap_pagers`, `NU_PAGER_MARKER`): `cd` and `$env.X =` persist; `PAGER`/`LESS`/... are set during it (nushell and an external child); the user's own `PAGER` is back, and variables the user never had are gone, after a success, after an external command exiting 3 and after a nushell error; an unmarked line is untouched; the user's hooks ran and ours are appended; no agent line is in the history (a control line without the leading space is). In `precheck`. Unit twins in `agent_shell_wrap_tests.rs`: `nushell_commands_are_not_wrapped_in_a_block` (owner-decision expectation change: the Nu line now ends in the marker comment), `nu_bootstrap_matches_the_overrides_and_the_marker` | the script's own checks |
 | `test_bash_bootstrap_builtins` | fork-free `sort -V`/os-release/`shopt` replacements match the commands (#1164) |
 | `test_bash_preexec_large_command` | Preexec escaping of a 3 MB command is linear (#1255) |
-| `test_init_shell_escaping` | InitShell JSON round-trips hostile user/host values (#879); where the script deliberately REMOVES control characters (the zsh first-stage line and the zsh one-liner of the ssh wrappers, macOS MAX_CANON) the value must arrive without them and the payload must still be valid JSON; every `*_init_subshell.sh` reports `wsl_name` (empty when `WSL_DISTRO_NAME` is unset, the distribution name when set; bash keeps only `A-Za-z0-9._-`, so hostile values cannot break the JSON). 330 cases; it had not run since the rcfile snippet changed to `_hostname=${HOSTNAME:-$(...)}` (its search found nothing): repaired 2026-11-10 |
+| `test_init_shell_escaping` | InitShell JSON round-trips hostile user/host values (#879); where the script deliberately REMOVES control characters (the zsh first-stage line and the zsh one-liner of the ssh wrappers, macOS MAX_CANON) the value must arrive without them and the payload must still be valid JSON; every `*_init_subshell.sh` reports `wsl_name` (empty when `WSL_DISTRO_NAME` is unset, the distribution name when set; bash keeps only `A-Za-z0-9._-`, so hostile values cannot break the JSON). 330 cases; it had not run since the rcfile snippet changed to `_hostname=${HOSTNAME:-$(...)}` (its search found nothing): repaired 2026-11-10; in `precheck` since round 14 (330/330 on 2026-11-10, about 3 s), not in the CI `guards` job (it wants zsh, fish and pwsh; what the box has was not checked) |
 | `test_hijack_bootstrap` | user `echo/printf/cd/read/pwd` functions never run inside the bootstrap (#929) |
 | `test_line_editor_markers` | `LineEditorReading` / `ContinuationPrompt` OSC markers and `seq` per Precmd (#1390-#1392) |
-| `test_child_ps1` | a command started from a Phosphor bash does not inherit an EMPTY exported PS1 (#1907): exported / `set -a` / plain PS1, Phosphor prompt and user's prompt, and the `warp_change_prompt_modes_to_ps1` switch; fails on the pre-fix bootstrap (child sees `empty`) |
+| `test_child_ps1` | a command started from a Phosphor bash does not inherit an EMPTY exported PS1 (#1907): exported / `set -a` / plain PS1, Phosphor prompt and user's prompt, and the `warp_change_prompt_modes_to_ps1` switch; fails on the pre-fix bootstrap (child sees `empty`). In `precheck` and the CI `guards` job since round 14 (it was listed here and run by nothing); run directly on 2026-11-10: all 13 checks passed, about 12 s |
 | `test_local_counted_bootstrap` | counted-read bootstrap behaves identically to the here-doc form (#1226) |
 | `test_ssh_keepalive`, `test_ssh_probe_cache`, `test_ssh_wrapper_forks`, `test_ssh_raw_bootstrap_hook` | ssh wrapper options, probe cache, fork budget, `raw_bootstrap` hook (#1171, #1136, #1172, #1243) |
 | `test_ssh_auth_once` | a failed ssh login (master step 255, no control socket) or a Ctrl-C at its prompt runs ssh ONCE and returns its status, so no second password prompt eats the next command (#1626); a ssh that authenticated but cannot multiplex (socket created, then 255) still falls back to the user's plain ssh once (#1551); r18u13: the same, plus a successful login, with a `$HOME` that is not the passwd home and the absolute passwd-home SSH_SOCKET_DIR the app now exports there (the fake ssh expands `~` from `$PWHOME`, as ssh does from the passwd entry; the old literal `~/.ssh` export made the wrapper miss its own master and log in twice): the wrapper logs in ONCE and multiplexes the session over its master; #1641: the hooks the wrapper prints are logged in order with the ssh calls: `ManagedSSHSessionStarting` exactly once after the master and right before the managed session, `PlainSSHFallback` right before each plain ssh (mux failure, a RemoteCommand, a non-POSIX remote, MSYS2 in bash), nothing on an auth failure or Ctrl-C; #1641 host-key retry: under the default `stricthostkeychecking ask` the master carries `StrictHostKeyChecking=yes`, an unknown host (real `ssh-keygen` known_hosts lookup) gets ONE plain ssh retry with the fallback hook before it, a known host's auth failure makes exactly one call, a user's `accept-new` gets no override (these cases need ssh-keygen and are SKIPPED without it); bash/zsh/fish |
@@ -3663,9 +3676,58 @@ Environment knobs: `AGENT_FUZZ_TIME_SCALE` (default 1.0), `AGENT_FUZZ_HUMAN_SCAL
 * **Cargo.lock:** `crates/fake_llm` adds llmposter (and its axum 0.8 tree). The first box build updates `Cargo.lock`; the coordinator commits it (do not build with `--locked` before that).
 * **cargo-about:** `crates/fake_llm` is a workspace member, so `cargo about` lists llmposter in the third-party notices even though it is dev-only and never in a release binary. Over-attribution; acceptable.
 
-#### Acceptance on the pre-fix base (to run on the box, not done)
+#### Acceptance: the corpus catches the Wave 0 bugs (#1836; runbook for the box, NOT RUN yet)
 
-On `ffdaa4536` (before #1796 / #1797 / #1799) the seeded `wave0_1799_reject_then_transfer`, `wave0_1797_ask_empty_args` and `wave0_1797_ask_valid` must FAIL with I1 / I2a, and unseeded `AGENT_FUZZ_MINUTES=10` must find each class. Method: branch from `ffdaa4536`, cherry-pick this branch's commits (the seam and probes touch `chat_stream.rs`, `action_model.rs`, `block.rs`, `terminal/view.rs`, `shell_command.rs`, `mock_provider`; expect trivial conflicts only in `action_model.rs`), drop `mod prompt_tests;` from `agent_fuzz/mod.rs` (it needs the #1796 `observe` probe argument and does not compile on the base, which is itself the signal for #1796), run `script/agent_fuzz`. On this branch all of them pass.
+A scenario that has only ever passed proves nothing. `script/ci/agent_fuzz_catches_wave0.py` puts each of #1796 / #1797 / #1799 back
+into the tree under test, one at a time, and replays the corpus: the bug's own scenario (or prompt test) must FAIL. Written in round 14
+(`docs/design/r14-hygiene.md` 4) without cargo; the table at the end of this section is empty until the box has run it.
+
+| arm | the bug put back (each edit only disables the branch its fix added) | must fail |
+|---|---|---|
+| `control` | none | nothing: both tests pass, or the run proves nothing |
+| `m1799` | `action_model.rs`: `rejection_cancels_rest_of_turn` is not consulted; `shell_command.rs`: `transfer_resolves_without_approval` is false | corpus `wave0_1799_reject_then_transfer` |
+| `m1797_empty` | `ask_user_question.rs`: `should_autoexecute` ignores `has_no_answerable_questions`, `execute` no longer returns the error for an empty list | corpus `wave0_1797_ask_empty_args` |
+| `m1797_valid` | `ask_user_question.rs`: `execute` drops the answer the card staged and waits on the old channel | corpus `wave0_1797_ask_valid` |
+| `m1796` | `interaction_mode.rs`, `PromptDetector::observe`: silence past the notice window counts as a tty read | `agent_fuzz::prompt_tests::a_prompt_lookalike_is_never_handed_over_while_the_foreground_is_not_reading` |
+
+`wave0_1796_silent_then_handoff` has no arm: L1 has no pty, so it cannot fail there; the detector half of #1796 is the prompt test.
+
+**Procedure (build box only; it runs cargo through `script/agent-cargo`).**
+
+1. Anywhere, no cargo: `python3 script/ci/agent_fuzz_catches_wave0.py --self-test` (the log parser and the verdicts, on fixtures) and
+   `python3 script/ci/agent_fuzz_catches_wave0.py --check` (every edit still matches the source exactly once and every expected
+   scenario / test exists). A failing `--check` means the code moved: update `MUTATIONS` in the script before anything is built.
+2. On the box, in a checkout that has the commit under test:
+   `python3 script/ci/agent_fuzz_catches_wave0.py --run --workdir <dir on real storage> [--commit <rev>] [--label <agent-cargo name>]`.
+   It creates the worktree `<dir>/wt` at the commit (default `HEAD`), and for each arm resets the worktree, applies the edit, and runs
+   `script/agent-cargo <label> nextest run -p fake_llm -p warp --lib --features warp/gui -E 'test(corpus_replays_as_listed_and_reaches_the_wave0_cells) | test(agent_fuzz::prompt_tests)' --no-fail-fast`
+   with the two `PHOSPHOR_BYOP_STREAM_*_TIMEOUT_SECS` at 1 (what `script/agent_fuzz` sets). Five arms, one incremental build of the
+   `warp` lib tests each; the default label `agent-fuzz-proof` has its own, cold, target directory, so pass the label of a target that
+   is warm for this commit if there is one. Never under `/tmp` (the script refuses). `--arms control,m1799` runs a subset; `--keep`
+   leaves the worktree; `--cleanup --workdir <dir>` removes it later.
+3. Read `<dir>/verdict.txt` (also printed) and `<dir>/logs/<arm>.log` (each starts with the edit as a diff). Exit 0 = `PROVEN`.
+
+**Reading the verdicts.**
+
+- `control OK`, every other arm `CAUGHT`: proven. The line names the invariant (`.. fails I2a (..)`) and any other scenario that
+  failed with the same bug; copy the table below and close #1836.
+- `NOT CAUGHT`: the scenario passed with its bug put back. Either a later defence masks the bug (#1851 and #1858-#1861 added
+  several around questions; the edit then has to switch that off too, which is a change to the script, with the reason), or the
+  oracle has a gap. File it; do not edit the scenario until it fails.
+- `INCONCLUSIVE`: the corpus replay timed out or did not run (a hang the rig did not turn into a verdict is still a finding: the
+  oracle should have said I1). `BUILD FAILED`: no test ran; the edit did not compile at this commit (read the log; the edits are
+  `false && ..`, one `.filter(|_| false)` and one `let`).
+- `control FAILED`: the unedited tree is red in these tests; fix that first, the arms mean nothing.
+
+**The pre-fix base (`ffdaa4536`), assessed and not used.** #1836 asked for the replay there. Tried by git alone on 2026-11-10: the
+seven harness commits (`a9d68642c b9c32b7c4 04613e221 855f52bf0 82b0d3c0c d15f9488c 2dcc91d2a`, in that order; without `d15f9488c`
+the last one conflicts in `action_model.rs`) cherry-pick onto `ffdaa4536` with conflicts only in `docs/testing.md`. But that harness
+was never compiled as it stood: six later commits made it build and run (`6f2940b79 4e34183dc 41e70bf6e 2c2b0aaad 32a65d635
+9cadef5f9`), each mixed with unrelated files, and their harness hunks do not apply to the picked tree (`rig.rs` conflicts,
+`mock_wiring.rs` does not exist there); `mod prompt_tests;` must be dropped (it needs the #1796 probe argument). It would take a
+compile loop of unknown length and would test the oracle of 2026-11-08, not today's. Kept here so nobody repeats the attempt blind.
+
+**Result.** Not run. Fill in from `verdict.txt`: commit, date, pipeline or box session, one line per arm.
 
 Question scenarios tolerate either `ask_user_question` flow: the card appearing without an approval step (an owner decision in flight in another change), or after one. The actor answers whatever question is at the front by staging the answers and executing by id; `OnCard` triggers on any actionable card.
 
@@ -4403,7 +4465,7 @@ Lab (`script/realapp/appci/cases_lab_*.py`; the users `u_dash`, `u_ash`, `u_nu`,
 | test | reaches | locked by | run it by hand (on a machine that may reach the network; never the unit job, never the laptop) |
 |---|---|---|---|
 | `ai::agent_providers::tools::web_runtime::websearch_tests::real_exa_anonymous_search` | the anonymous Exa search endpoint, one query | `#[ignore]` + `WARP_RUN_WEB_INTEGRATION` | `WARP_RUN_WEB_INTEGRATION=1 script/agent-cargo <name> nextest run -p warp -p warp_tui --lib --features warp/gui --run-ignored only real_exa_anonymous_search` (plain cargo: `WARP_RUN_WEB_INTEGRATION=1 cargo test -p warp --lib --features gui -- --ignored real_exa_anonymous_search`). PASS = a non-empty result with the query echoed; `SKIPPED ... HTTP 429` on stderr = rate limited, run it again later |
-| `...::web_runtime::webfetch_tests::real_example_com_markdown`, `real_httpbin_html_to_markdown`, `real_httpbin_json_pretty`, `real_httpbin_image_attachment`, `real_httpbin_404_errors` | example.com, httpbin.org | `WARP_RUN_WEB_INTEGRATION` only (not `#[ignore]`d: without the variable they return at once and report a pass) | `WARP_RUN_WEB_INTEGRATION=1 script/agent-cargo <name> nextest run -p warp -p warp_tui --lib --features warp/gui webfetch_tests::real_` |
+| `...::web_runtime::webfetch_tests::real_example_com_markdown`, `real_httpbin_html_to_markdown`, `real_httpbin_json_pretty`, `real_httpbin_image_attachment`, `real_httpbin_404_errors` | example.com, httpbin.org | `#[ignore]` + `WARP_RUN_WEB_INTEGRATION` (#2049, round 14: until then they were ordinary tests that returned at once without the variable and counted as five unit passes that checked nothing; now a unit run shows them as skipped, and asked for without the variable each FAILS with the instruction before a client is built) | `WARP_RUN_WEB_INTEGRATION=1 script/agent-cargo <name> nextest run -p warp -p warp_tui --lib --features warp/gui --run-ignored only webfetch_tests::real_` (plain cargo: `WARP_RUN_WEB_INTEGRATION=1 cargo test -p warp --lib --features gui -- --ignored webfetch_tests::real_`). PASS = the assertions on the real replies; a failure can also mean the public endpoint is down (httpbin.org), read the error. The unit-suite pass count drops by five and the skipped count rises by five: expected, not lost tests |
 
 ## Harness reliability audit fixes (`docs/design/harness-reliability-audit.md`, 2026-11-09)
 
@@ -5362,3 +5424,58 @@ tests cover both values there.
   process). No appci case: the race needs another holder of the model at one key. Hop that names the rescue in a log:
   `young_hold_reader_asks site=<cap|key|output> hold_id=<n> look=<Screen|Tty>`; `gitbash_precmd_secret` and `precmd_secret_honor_ps1`
   should pass without it.
+## Round 14: test hygiene: view tests that read the pty recorder inside the update that wrote (design `docs/design/r14-hygiene.md`; nothing compiled or run when written)
+**The rule (r13-pin2).** A pty write of the terminal view is an event (`Event::WriteBytesToPty`, `Event::WriteHandoffUserBytesToPty`).
+`ViewContext::emit` queues it; the test's recorder (`collect_pty_writes`, `record_pty_writes`, `record_all_pty_writes`,
+`subshell_pty_writes`, or a hand-rolled subscription) runs when the OUTERMOST update returns. Inside `terminal.update(&mut app, |view,
+ctx| { .. })` the recorder holds only what earlier updates wrote: `assert!(pty_writes.borrow().is_empty())` after typing in the same
+update passes whatever the app did, and an exact-content assertion there cannot pass. Read the recorder after the update.
+**The audit of `terminal/view_test.rs` (round 14).** 389 reads of `pty_writes`, 72 of them (51 assertions) inside an `.update(`
+closure, 9 more inside `with_ssh_hold_path` bodies (the helper ran the whole body in one update), and the same pattern under the names
+`written`, `retries`, `etx_writes`, `executed`, `delivered`. Every in-update read was an `is_empty()` or a length; none could fail.
+Each was read and sorted: a *real read* (nothing emitted before it in its update), *carried* (a later read after the update is still
+empty; or the same update counts the held entries and the read after it has every byte exactly once, as one exact chunk, or in an
+order an early write would break), or *vacuous* (nothing reads the recorder after the update at all, or a release follows in the same
+update and only a flag stands between "held" and "written early and not again"). No assertion was removed or weakened; a vacuous one
+now reads the recorder after the update, at the same point of the same sequence.
+- **Moved after their update (nothing read the recorder after it; the claim "nothing reached the pty" was unproven):**
+  `ssh_run_by_the_agent_does_not_take_the_agent_view_editor_keys`, `pane_key_with_editor_focus_is_inserted_once_and_not_written_to_the_pty`,
+  `pane_key_typed_into_a_text_field_inside_the_pane_is_not_the_sinks`, `ssh_middle_click_paste_with_a_pending_read_keeps_typed_order_around_it`,
+  `ssh_paste_between_held_keys_keeps_typed_order_in_both_modes` (both reads), `shadow_mode_changes_no_destination_and_logs_nothing_when_they_agree`,
+  `replayed_text_is_delivered_by` (the legacy and table tests), `table_mode_text_replayed_after_an_ssh_recognised_at_preexec_only_is_held_not_run_locally`,
+  `table_mode_text_replayed_into_a_new_ssh_connect_is_held_then_delivered_once`, `a_held_signal_is_discarded_when_the_connect_ends_without_a_remote_shell`,
+  `only_table_mode_decides_live_keys_with_the_table`, `table_mode_text_typed_behind_a_gate_waits_as_a_neutral_entry_and_is_routed_when_it_opens`.
+- **The update ended at the read, the next update continues (a release followed in the same update):**
+  `keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order`, `text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order`
+  (its first half), `key_typed_between_bootstrapped_and_the_first_prompt_in` (legacy and table),
+  `typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_nothing`,
+  `managed_ssh_block_end_without_a_verdict_releases_the_keys_to_the_local_shell`, `managed_ssh_verdict_before_ownership_is_honoured_for_each_verdict`
+  (the managed arm), `managed_ssh_a_second_verdict_is_ignored`, `ssh_keys_typed_in_the_agent_view_editor_during_connect_are_held_and_handed_over_once`,
+  `ssh_window_armed_at_preexec_for_a_users_submit_holds_the_agent_view_editor_keys`, `ssh_output_does_not_end_the_hold_ownership_does`,
+  `a_young_hold_give_up_asks_for_the_request_decision` (the `retries` count), `a_precmd_does_not_commit_input_to_the_editor_so_a_precmd_read_gets_the_pin`,
+  `a_hold_whose_wait_a_preexec_cleared_is_released_by_the_latch`, `a_command_running_past_the_prompt_hold_cap_keeps_its_keys_held_and_the_hold_on`
+  (the read after the second cap), `a_subshell_that_exits_during_the_setup_ends_the_net` and
+  `a_give_up_unregisters_the_probe_id_and_a_late_probe_answer_is_ignored` (both compared two lengths taken inside one update: 0 and 0).
+- **If one of these fails in the next unit run:** the old assertion could not fail, so the failure is new information. Read the
+  recorder's contents in the message: bytes there mean the app wrote where the test says it does not (APP, a key written early or a
+  write the test's author never saw), or the test's claim was never true of the sequence it builds (TEST). A split delivers the first
+  half's events before the second half runs, as the app does between two keys; only the test's recorder subscribes to the view's
+  events in these tests, and nothing between the halves awaits, so timers and model events do not run there.
+- **`with_ssh_hold_path` no longer hands its body the recorder.** The helper runs the whole body in one update, so all nine bodies
+  that asserted `pty_writes.borrow().is_empty()` asserted nothing. Those nine now use `ssh_hold_path_writes_nothing` (or
+  `ssh_hold_path_writes_nothing_in(label, ..)` in a loop over modes), which reads the recorder after the update and fails with what was
+  written: `ssh_key_via_editor_route_before_handover_joins_the_hold`, `ssh_keys_by_every_route_before_handover_are_delivered_once_in_order`,
+  `ssh_keys_in_a_focus_gap_join_the_hold`, `ssh_keys_during_connect_are_delivered_once_in_order`,
+  `ssh_failed_connect_returns_the_text_to_the_input`, `ssh_paste_with_a_pending_read_keeps_typed_order_around_it`,
+  `ssh_paste_with_a_pending_read_is_cancelled_with_the_hold`, `text_replayed_into_a_new_ssh_connect_is_held_not_dropped`,
+  `ssh_key_offered_while_the_queue_is_busy_is_held_in_order`. In each the keys stay held or end in the input editor, so "nothing
+  written by the end of the update" is the claim the body made. The four bodies that never looked at the recorder keep
+  `with_ssh_hold_path`. A new scenario that expects a pty write reads its own recorder after its own update (not through these helpers).
+- **Carried reads are kept and marked.** 27 in-update reads in `view_test.rs` (and one each in `view/group_1411_tests.rs` and
+  `view/shared_queue_tests.rs`) are proven by other assertions; each now has a comment that starts `In-update recorder read` and says
+  what carries it. `hold_a_young_enter` (a helper its callers run inside an update) says the same above its read.
+- **Guard: `script/check_recorder_reads`** (in `precheck` and the CI `guards` job; row in the guard table of 2.3). A new in-update
+  read fails the gate until it is moved after the update or given the marker comment with its reason. Writing a view test: type in one
+  update, read the recorder after it; when a test needs "nothing yet" and then "now", that is two updates.
+- **Not audited here:** recorders in other test files that are not `view_test.rs` / `view/*_tests.rs`, and the hand-rolled recorders
+  `executed` / `delivered` / `etx_writes` beyond the 10 in-update reads listed in the design note (all carried or diagnostic).

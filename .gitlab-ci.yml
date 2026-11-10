@@ -101,6 +101,10 @@ guards:
     # Owner rule (2026-11-08): timers on the input path are give-up nets only. PENDING-CONVERSION entries warn here; the release tier runs it --strict (job input-timers-strict).
     - ./script/check_input_path_timers
     - ./script/check_input_path_timers --self-test
+    # r13-pin2 / round 14: a view test may not read its pty-write recorder inside the update that wrote (it is filled when
+    # the update returns, so the read is always empty). Text scan with an allow marker; limits in the script's header.
+    - ./script/check_recorder_reads --self-test
+    - ./script/check_recorder_reads
     # The tree is rustfmt-clean since the Rust 1.99 upgrade; this keeps it that way (whole tree, ~25 s).
     # rustfmt comes from the pinned toolchain through the maintainer's rustup proxy (read-only,
     # as in check-linux); runner shells have no toolchain on PATH.
@@ -131,6 +135,9 @@ guards:
         ./script/check_large_deletions --require-base
     - ./script/macos/test_create_warpctrl_wrapper
     - ./script/test_warpctrl_early_dispatch
+    # #1907: the REAL assembled bash bootstrap in a pty; a child `sh` must see PS1 unset, never an
+    # empty exported one (python3 + bash + sh, ~12 s, no build). It was in docs/testing.md but run by nothing.
+    - ./script/test_child_ps1
 
 # cargo check on the build box. Every cargo call goes through script/agent-cargo,
 # the slot/memory governor: unbounded concurrent compiles OOM-reaped this host

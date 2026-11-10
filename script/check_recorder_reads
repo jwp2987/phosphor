@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""Guard: a view test may not read its pty-write recorder inside the view update that wrote.
+
+WHY. A pty write of the terminal view is an event (`ctx.emit(Event::WriteBytesToPty { .. })`,
+`Event::WriteHandoffUserBytesToPty`). `ViewContext::emit` only queues it; the subscribers (the
+test's recorder: `collect_pty_writes`, `record_pty_writes`, `record_all_pty_writes`,
+`subshell_pty_writes`) run in `AppContext::flush_effects`, when the OUTERMOST update returns. So
+inside `terminal.update(&mut app, |view, ctx| { .. })` the recorder still holds only what EARLIER
+updates wrote: `assert!(pty_writes.borrow().is_empty())` after typing keys in the same update
+passes whatever the app did, and an exact-content assertion there can never pass (round 12,
+`a_precmd_functions_question_sends_the_pin_and_its_enter_to_the_read`; docs/design/r13-pin2.md,
+docs/design/r14-hygiene.md).
+
+WHAT IT FLAGS. In `app/src/terminal/view_test.rs` and `app/src/terminal/view/*_tests.rs` (or the
+files given), a `NAME.borrow()` where
+NAME is `pty_writes` or a variable bound from one of the recorder helpers, textually inside the
+argument list of an `.update(` / `.update_view(` call.
+
+HOW TO ANSWER IT.
+  * Read the recorder after the update: end the update, assert, start the next one.
+  * Or, when other assertions carry the claim (the held entries are counted in the same update
+    and an exact read follows it; or nothing is emitted before the read in this update), keep the
+    read and say so in a comment that starts with `In-update recorder read` in the 8 lines above
+    it. The comment is the allow marker; it must give the reason.
+
+LIMITS (it is a text scan, kept narrow so that it does not cry wolf).
+  * Only textual `.update(` closures. A closure handed to a helper that runs it inside an update
+    is not seen (that was `with_ssh_hold_path`; its bodies no longer get the recorder).
+  * A helper that takes the recorder as a parameter (`hold_a_young_enter`) is not seen.
+  * Only the recorder names above; a hand-rolled recorder with another name (`executed`,
+    `delivered`, `retries`, ..) is not seen.
+  * It cannot tell a vacuous read from a carried one: the marker is the author's statement.
+
+USAGE   script/check_recorder_reads [--self-test] [FILE ...]
+Exit 0: clean. Exit 1: prints each unmarked read. Exit 2: a file is missing.
+"""
+import glob
+import os
+import re
+import sys
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DEFAULT_GLOBS = ["app/src/terminal/view_test.rs", "app/src/terminal/view/*_tests.rs"]
+HELPERS = (
+    "collect_pty_writes",
+    "record_pty_writes",
+    "record_all_pty_writes",
+    "subshell_pty_writes",
+)
+MARKER = "In-update recorder read"
+MARKER_WINDOW = 8
+
+
+def blank_non_code(src):
+    """`src` with comments, string and char literals blanked (same length, same newlines)."""
+    out = list(src)
+    n = len(src)
+
+    def blank(a, b):
+        for k in range(a, min(b, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    i = 0
+    while i < n:
+        c = src[i]
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            blank(i, j)
+            i = j
+        elif src.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if src.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif src.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            blank(i, j)
+            i = j
+        elif c == "r" and re.match(r'r#*"', src[i : i + 8]) and not (i and (src[i - 1].isalnum() or src[i - 1] == "_")):
+            m = re.match(r'r(#*)"', src[i:])
+            end = '"' + m.group(1)
+            j = src.find(end, i + len(m.group(0)))
+            j = n if j < 0 else j
+            blank(i + 1, j)
+            i = j + len(end)
+        elif c == '"':
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            blank(i + 1, j)
+            i = j + 1
+        elif c == "'":
+            m = re.match(r"'(\\[^']+|\\'|[^'\\\n])'", src[i:])
+            if m:
+                blank(i + 1, i + len(m.group(0)) - 1)
+                i += len(m.group(0))
+            else:
+                i += 1  # a lifetime
+        else:
+            i += 1
+    return "".join(out)
+
+
+def matching_close(code, open_pos):
+    depth = 0
+    for k in range(open_pos, len(code)):
+        ch = code[k]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                return k
+    return len(code)
+
+
+def scan(src):
+    """Unmarked in-update recorder reads of `src`: a list of (line, name, update_line)."""
+    code = blank_non_code(src)
+    names = {"pty_writes"}
+    helper_alt = "|".join(HELPERS)
+    for m in re.finditer(r"\blet\s+(?:mut\s+)?(\w+)\s*=\s*(?:%s)\s*\(" % helper_alt, code):
+        if not m.group(1).startswith("_"):
+            names.add(m.group(1))
+    spans = []
+    for m in re.finditer(r"\.\s*(?:update|update_view)\s*\(", code):
+        open_pos = m.end() - 1
+        spans.append((open_pos, matching_close(code, open_pos), m.start()))
+    line_starts = [0]
+    for m in re.finditer("\n", src):
+        line_starts.append(m.end())
+
+    def line_of(pos):
+        lo, hi = 0, len(line_starts) - 1
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if line_starts[mid] <= pos:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo + 1
+
+    src_lines = src.split("\n")
+    found = []
+    read = re.compile(r"\b(%s)\s*\.\s*borrow\s*\(\s*\)" % "|".join(sorted(map(re.escape, names))))
+    for m in read.finditer(code):
+        enclosing = [s for s in spans if s[0] < m.start() < s[1]]
+        if not enclosing:
+            continue
+        line = line_of(m.start())
+        window = src_lines[max(0, line - 1 - MARKER_WINDOW) : line]
+        if any(MARKER in text and "//" in text for text in window):
+            continue
+        outer = min(enclosing, key=lambda s: s[0])
+        found.append((line, m.group(1), line_of(outer[2])))
+    return found
+
+
+SELF_TESTS = [
+    (
+        "a read inside the update that typed is flagged",
+        """
+fn t() {
+    let pty_writes = collect_pty_writes(&mut app, &terminal);
+    terminal.update(&mut app, |view, ctx| {
+        view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+        assert!(pty_writes.borrow().is_empty());
+    });
+}
+""",
+        [6],
+    ),
+    (
+        "a read after the update is fine",
+        """
+fn t() {
+    let pty_writes = collect_pty_writes(&mut app, &terminal);
+    terminal.update(&mut app, |view, ctx| {
+        view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+    });
+    assert!(pty_writes.borrow().is_empty());
+}
+""",
+        [],
+    ),
+    (
+        "the marker comment allows a carried read, also above a multi-line assert",
+        """
+fn t() {
+    terminal.update(&mut app, |view, ctx| {
+        // In-update recorder read, always empty here: two entries are queued (below) and the
+        // final read has each key once.
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "{:?}",
+            pty_writes.borrow()
+        );
+    });
+}
+""",
+        [],
+    ),
+    (
+        "a recorder bound under another name is known; a Vec named the same outside is not a read",
+        """
+fn t() {
+    let written = subshell_pty_writes(&mut app, &terminal);
+    terminal.update(&mut app, |view, ctx| {
+        assert!(written.borrow().is_empty());
+    });
+    let other: Vec<u8> = written.borrow().clone();
+}
+""",
+        [5],
+    ),
+    (
+        "the recorder's own subscription (borrow_mut in app.update) and text in strings or comments are not reads",
+        """
+fn t() {
+    app.update(|ctx| {
+        ctx.subscribe_to_view(&terminal, move |_, event, _| {
+            writes.borrow_mut().push(bytes.to_vec());
+        });
+    });
+    terminal.update(&mut app, |view, ctx| {
+        // pty_writes.borrow() is empty here
+        let s = "pty_writes.borrow()";
+        let c = '(';
+    });
+}
+""",
+        [],
+    ),
+    (
+        "a nested update is still inside the outer one",
+        """
+fn t() {
+    app.update(|ctx| {
+        terminal.update(ctx, |view, ctx| {
+            view.ctrl_c(ctx);
+        });
+        assert_eq!(pty_writes.borrow().len(), 0);
+    });
+}
+""",
+        [7],
+    ),
+    (
+        "a marker further up than the window does not count",
+        """
+fn t() {
+    terminal.update(&mut app, |view, ctx| {
+        // In-update recorder read: stale marker.
+        let a = 1;
+        let b = 2;
+        let c = 3;
+        let d = 4;
+        let e = 5;
+        let f = 6;
+        let g = 7;
+        let h = 8;
+        assert!(pty_writes.borrow().is_empty());
+    });
+}
+""",
+        [13],
+    ),
+]
+
+
+def self_test():
+    failed = 0
+    for name, src, expected in SELF_TESTS:
+        got = [line for line, _, _ in scan(src)]
+        if got != expected:
+            failed += 1
+            print(f"FAIL self-test: {name}: expected lines {expected}, got {got}")
+    if failed:
+        return 1
+    print(f"check_recorder_reads: self-test ok ({len(SELF_TESTS)} cases)")
+    return 0
+
+
+def main(argv):
+    if "--self-test" in argv:
+        return self_test()
+    files = [a for a in argv if not a.startswith("--")]
+    if not files:
+        for pattern in DEFAULT_GLOBS:
+            matches = sorted(glob.glob(os.path.join(ROOT, pattern)))
+            if not matches:
+                print(f"check_recorder_reads: {pattern}: no such file", file=sys.stderr)
+                return 2
+            files.extend(os.path.relpath(m, ROOT) for m in matches)
+    bad = 0
+    for rel in files:
+        path = rel if os.path.isabs(rel) else os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            print(f"check_recorder_reads: {rel}: no such file", file=sys.stderr)
+            return 2
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        for line, name, update_line in scan(src):
+            bad += 1
+            print(
+                f"{rel}:{line}: `{name}.borrow()` inside the view update that starts at line "
+                f"{update_line}: the recorder is filled when that update returns"
+            )
+    if bad:
+        print(
+            f"\ncheck_recorder_reads: {bad} unmarked in-update recorder read(s).\n"
+            "Read the recorder after the update, or (when other assertions carry the claim) keep\n"
+            f"it under a comment that starts with `{MARKER}` and gives the reason.\n"
+            "See the header of script/check_recorder_reads.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"check_recorder_reads: ok ({len(files)} files)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

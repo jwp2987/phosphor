@@ -401,20 +401,38 @@ async fn ssrf_safe_client_builds_with_redirect_policy() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Real-endpoint smoke tests are skipped by default, to avoid CI or offline dev environments
-// depending on outbound network. Set WARP_RUN_WEB_INTEGRATION=1 to verify against real
-// endpoints manually.
+// Live checks against real endpoints (example.com, httpbin.org). NOT unit tests: each is
+// `#[ignore]`d, so no unit run (nextest or `cargo test`, CI or local) executes it, and each also
+// wants `WARP_RUN_WEB_INTEGRATION` set (the opt-in `websearch_tests::real_exa_anonymous_search`
+// uses), so a `--run-ignored all` sweep sends nothing either. Before #2049 they were ordinary
+// tests that returned at once without the variable and were counted as passes that checked
+// nothing.
+//
+// By hand, on a machine that may reach the network (never the unit job):
+//
+//     WARP_RUN_WEB_INTEGRATION=1 script/agent-cargo <name> nextest run -p warp -p warp_tui \
+//         --lib --features warp/gui --run-ignored only webfetch_tests::real_
+//
+// (`cargo test`: `... -- --ignored webfetch_tests::real_`.) docs/testing.md, "Live checks".
 // ---------------------------------------------------------------------------
 
-fn skip_real() -> bool {
-    std::env::var("WARP_RUN_WEB_INTEGRATION").is_err()
+/// The opt-in of the live web checks (`websearch_tests.rs` reads the same variable).
+const LIVE_WEB_ENV: &str = "WARP_RUN_WEB_INTEGRATION";
+
+/// Asked for by name without the opt-in: say so instead of reporting a pass that checked
+/// nothing. Called before a client is built, so nothing is sent.
+fn require_live_opt_in(test: &str) {
+    assert!(
+        std::env::var(LIVE_WEB_ENV).is_ok(),
+        "{test} is a live check of a real web endpoint: set {LIVE_WEB_ENV}=1 to run it (nothing \
+         was sent)"
+    );
 }
 
 #[tokio::test]
+#[ignore = "live network (a real web endpoint): never in a unit run (#2049). By hand: WARP_RUN_WEB_INTEGRATION=1 and --run-ignored only webfetch_tests::real_, see docs/testing.md \"Live checks\""]
 async fn real_example_com_markdown() {
-    if skip_real() {
-        return;
-    }
+    require_live_opt_in("real_example_com_markdown");
     let client = build_ssrf_safe_client().expect("build client");
     let out = run_webfetch(&client, args("https://example.com"))
         .await
@@ -427,10 +445,9 @@ async fn real_example_com_markdown() {
 }
 
 #[tokio::test]
+#[ignore = "live network (a real web endpoint): never in a unit run (#2049). By hand: WARP_RUN_WEB_INTEGRATION=1 and --run-ignored only webfetch_tests::real_, see docs/testing.md \"Live checks\""]
 async fn real_httpbin_html_to_markdown() {
-    if skip_real() {
-        return;
-    }
+    require_live_opt_in("real_httpbin_html_to_markdown");
     let client = build_ssrf_safe_client().expect("build client");
     let out = run_webfetch(&client, args("https://httpbin.org/html"))
         .await
@@ -440,10 +457,9 @@ async fn real_httpbin_html_to_markdown() {
 }
 
 #[tokio::test]
+#[ignore = "live network (a real web endpoint): never in a unit run (#2049). By hand: WARP_RUN_WEB_INTEGRATION=1 and --run-ignored only webfetch_tests::real_, see docs/testing.md \"Live checks\""]
 async fn real_httpbin_json_pretty() {
-    if skip_real() {
-        return;
-    }
+    require_live_opt_in("real_httpbin_json_pretty");
     let client = build_ssrf_safe_client().expect("build client");
     let out = run_webfetch(&client, args("https://httpbin.org/json"))
         .await
@@ -452,10 +468,9 @@ async fn real_httpbin_json_pretty() {
 }
 
 #[tokio::test]
+#[ignore = "live network (a real web endpoint): never in a unit run (#2049). By hand: WARP_RUN_WEB_INTEGRATION=1 and --run-ignored only webfetch_tests::real_, see docs/testing.md \"Live checks\""]
 async fn real_httpbin_image_attachment() {
-    if skip_real() {
-        return;
-    }
+    require_live_opt_in("real_httpbin_image_attachment");
     let client = build_ssrf_safe_client().expect("build client");
     let out = run_webfetch(&client, args("https://httpbin.org/image/png"))
         .await
@@ -465,10 +480,9 @@ async fn real_httpbin_image_attachment() {
 }
 
 #[tokio::test]
+#[ignore = "live network (a real web endpoint): never in a unit run (#2049). By hand: WARP_RUN_WEB_INTEGRATION=1 and --run-ignored only webfetch_tests::real_, see docs/testing.md \"Live checks\""]
 async fn real_httpbin_404_errors() {
-    if skip_real() {
-        return;
-    }
+    require_live_opt_in("real_httpbin_404_errors");
     let client = build_ssrf_safe_client().expect("build client");
     let err = run_webfetch(&client, args("https://httpbin.org/status/404"))
         .await

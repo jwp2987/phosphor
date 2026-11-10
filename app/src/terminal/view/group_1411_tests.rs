@@ -488,6 +488,8 @@ fn a_second_ctrl_c_after_the_take_over_interrupts_while_the_parser_holds_the_mod
                     .is_agent_in_control(),
                 "the first ^C handed the command to the user"
             );
+            // In-update recorder read, always empty here: the read after the update is exactly one
+            // ETX, which a write by the first ^C would make two.
             assert!(
                 pty_writes.borrow().is_empty(),
                 "the first ^C hands over, it does not interrupt"

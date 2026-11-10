@@ -16637,10 +16637,13 @@ fn keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order() {
             for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
                 assert!(view.write_user_bytes_to_pty(key, ctx));
             }
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "nothing may interleave with the bootstrap lines"
-            );
+        });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "nothing may interleave with the bootstrap lines"
+        );
+        terminal.update(&mut app, |view, ctx| {
             view.finish_subshell_bootstrap(ctx);
         });
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
@@ -16677,10 +16680,13 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
             for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
                 assert!(view.write_user_bytes_to_pty(key, ctx));
             }
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "nothing typed during the stall may reach the tty ahead of the late bootstrap"
-            );
+        });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "nothing typed during the stall may reach the tty ahead of the late bootstrap"
+        );
+        terminal.update(&mut app, |view, ctx| {
             view.release_subshell_setup_held_bytes(ctx);
         });
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
@@ -16696,6 +16702,8 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
             let block_id = view.model.lock().block_list().active_block().id().clone();
             view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
             assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+            // In-update recorder read, always empty here: the order of the final read (`\x03ls`)
+            // carries it.
             assert!(pty_writes.borrow().is_empty());
             view.write_user_bytes_to_pty(vec![0x03], ctx);
         });
@@ -16780,6 +16788,8 @@ fn keys_held_through_a_stall_are_released_once_when_the_subshell_precmd_complete
             for key in [b"ls".to_vec(), b"\r".to_vec()] {
                 assert!(view.write_user_bytes_to_pty(key, ctx));
             }
+            // In-update recorder read, always empty here: the read after this update (still empty)
+            // carries it.
             assert!(
                 pty_writes.borrow().is_empty(),
                 "echoed bootstrap text is not a prompt: the keys are held"
@@ -17121,6 +17131,8 @@ fn keys_typed_after_a_subshell_setup_ends_follow_the_held_ones_exactly_once() {
             view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
             assert!(view.write_user_bytes_to_pty(b"l".to_vec(), ctx));
             assert!(view.write_user_bytes_to_pty(b"s".to_vec(), ctx));
+            // In-update recorder read, always empty here: the queue holds the keys (next assertion)
+            // and the final read has them once.
             assert!(written.borrow().is_empty());
             assert!(
                 !view.paste_queue.queue.borrow().is_idle(),
@@ -17156,7 +17168,10 @@ fn key_typed_between_bootstrapped_and_the_first_prompt_in(mode: DestMode) {
             let block_id = view.model.lock().block_list().active_block().id().clone();
             view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
             assert!(view.write_user_bytes_to_pty(b"e".to_vec(), ctx));
-            assert!(written.borrow().is_empty());
+        });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(written.borrow().is_empty());
+        terminal.update(&mut app, |view, ctx| {
             // `Bootstrapped`: the announcement stops governing input.
             view.subshell_bootstrap_announced = None;
             assert!(view.write_user_bytes_to_pty(b"c".to_vec(), ctx));
@@ -18105,7 +18120,10 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
             hold_after_deferred_enter(view);
             // The shell lines are typed behind the deferred Enter: entries behind its gate.
             view.write_user_bytes_to_pty(b"echo 1\recho 2\r".to_vec(), ctx);
-            assert!(pty_writes.borrow().is_empty());
+        });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(pty_writes.borrow().is_empty());
+        terminal.update(&mut app, |view, ctx| {
             view.handle_typeahead_report_with_handoff(true, ctx);
 
             assert!(!view.input.as_ref(ctx).buffer_text(ctx).contains("echo"));
@@ -18140,6 +18158,8 @@ fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_w
         terminal.update(&mut app, |view, ctx| {
             hold_after_deferred_enter(view);
             view.write_user_bytes_to_pty(b"ls -l".to_vec(), ctx);
+            // In-update recorder read, always empty here: the order of the final read (the Enter
+            // before `ls -l`) carries it.
             assert!(pty_writes.borrow().is_empty());
             view.handle_typeahead_report_with_handoff(true, ctx);
 
@@ -18150,6 +18170,8 @@ fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_w
             // back as editor text).
             assert!(view.input.as_ref(ctx).unready_enter_gate_open());
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            // In-update recorder read, always empty here: the Enter's gate is open (above) and the
+            // final read has every byte once.
             assert!(pty_writes.borrow().is_empty(), "held until the give-up");
             view.input
                 .update(ctx, |input, ctx| input.give_up_unready_enter("test", ctx));
@@ -18190,6 +18212,8 @@ fn typeahead_handoff_a_command_written_behind_a_deferred_enter_takes_its_gated_k
             });
             view.write_user_bytes_to_pty(b"s\r".to_vec(), ctx);
             view.write_user_bytes_to_pty(b"p".to_vec(), ctx);
+            // In-update recorder read, always empty here: three entries are queued (next assertion)
+            // and the final read is one exact write.
             assert!(pty_writes.borrow().is_empty());
             assert_eq!(view.paste_queue.queue.borrow().queued_len(), 3);
             {
@@ -18409,6 +18433,8 @@ fn a_line_typed_behind_a_deferred_enter_never_reaches_the_pty_before_that_enters
                 view.open_deferred_enter_gate(ctx);
                 // The next line and its Enter, typed on the terminal behind the deferred Enter.
                 view.write_user_bytes_to_pty(b"make clean\r".to_vec(), ctx);
+                // In-update recorder read, always empty here: the read after this update (still
+                // empty) carries it.
                 assert!(pty_writes.borrow().is_empty(), "{mode:?}");
                 view.handle_typeahead_report_with_handoff(true, ctx);
 
@@ -19970,6 +19996,8 @@ fn ssh_bootstrap_timer_racing_the_bootstrap_precmd_does_not_fail_the_session() {
                     "{mode:?}: the timer must not fail a progressing session"
                 );
                 assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                // In-update recorder read, always empty here: the keys are still held (above) and
+                // the final read has the line once, no `stty sane`.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: no stty sane, no keys: {:?}",
@@ -20039,6 +20067,8 @@ fn stale_bootstrap_timer_from_an_earlier_connect_does_not_fail_a_later_one() {
                     "{mode:?}: a stale timer must not act on a later connect"
                 );
                 assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                // In-update recorder read, always empty here: the keys are still held (above) and
+                // the final read has the line once, no `stty sane`.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: no stty sane, no keys: {:?}",
@@ -20524,6 +20554,8 @@ fn ssh_quoted_operator_command_holds_typing_then_hands_back_unexecuted() {
             view.typed_characters_on_terminal("echo X >> f", ctx);
             assert!(view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            // In-update recorder read, always empty here: the read after the last update (still
+            // empty) carries it.
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             let id = view.model.lock().active_block_id().clone();
             view.apply_block_completed_to_ssh_gate(&id, 255);
@@ -20532,6 +20564,8 @@ fn ssh_quoted_operator_command_holds_typing_then_hands_back_unexecuted() {
             assert!(view.deliver_ssh_typeahead_if_ready("test", ctx));
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo X >> f");
             assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            // In-update recorder read, always empty here: the read after the last update (still
+            // empty) carries it.
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             // The Enter of the same burst is consumed, not run.
             editor_key(view, EditorAction::Enter, ctx);
@@ -21812,10 +21846,13 @@ fn managed_ssh_block_end_without_a_verdict_releases_the_keys_to_the_local_shell(
                     view.ssh_connect_gate.is_none(),
                     "{mode:?}: failure ends the window"
                 );
-                assert!(
-                    pty_writes.borrow().is_empty(),
-                    "{mode:?}: not before the hand-over"
-                );
+            });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: not before the hand-over"
+            );
+            terminal.update(&mut app, |view, ctx| {
                 view.deliver_ssh_typeahead_if_ready("block_completed", ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}");
                 assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
@@ -22073,13 +22110,6 @@ fn managed_ssh_verdict_before_ownership_is_honoured_for_each_verdict() {
                             view.ssh_typeahead_holding,
                             "{mode:?}: a managed session's ownership releases nothing"
                         );
-                        assert!(pty_writes.borrow().is_empty(), "{mode:?}");
-                        let armed = view
-                            .ssh_connect_gate
-                            .as_ref()
-                            .and_then(|g| g.block_id.clone())
-                            .unwrap();
-                        managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
                     } else {
                         assert!(
                             !view.ssh_typeahead_holding,
@@ -22087,6 +22117,19 @@ fn managed_ssh_verdict_before_ownership_is_honoured_for_each_verdict() {
                         );
                     }
                 });
+                if managed {
+                    // Read after the update: the write events it emitted are delivered when it
+                    // returns.
+                    assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+                    terminal.update(&mut app, |view, ctx| {
+                        let armed = view
+                            .ssh_connect_gate
+                            .as_ref()
+                            .and_then(|g| g.block_id.clone())
+                            .unwrap();
+                        managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
+                    });
+                }
                 let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
                 assert_eq!(
                     written, b"echo V\r",
@@ -22250,7 +22293,7 @@ fn managed_ssh_a_second_verdict_is_ignored() {
             app.add_singleton_model(|_| crate::workspace::ToastStack);
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = record_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
+            let armed = terminal.update(&mut app, |view, ctx| {
                 let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
                 ssh_wrapper_verdict_for_test(view, true, ctx);
                 ssh_wrapper_verdict_for_test(view, false, ctx);
@@ -22260,7 +22303,11 @@ fn managed_ssh_a_second_verdict_is_ignored() {
                     "{mode:?}: the second verdict changed nothing"
                 );
                 assert!(view.ssh_typeahead_holding, "{mode:?}");
-                assert!(pty_writes.borrow().is_empty(), "{mode:?}: nothing released");
+                armed
+            });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(pty_writes.borrow().is_empty(), "{mode:?}: nothing released");
+            terminal.update(&mut app, |view, ctx| {
                 managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
@@ -22475,10 +22522,13 @@ fn ssh_keys_typed_in_the_agent_view_editor_during_connect_are_held_and_handed_ov
                     "",
                     "{mode:?}: nothing reached the agent view's editor"
                 );
-                assert!(
-                    pty_writes.borrow().is_empty(),
-                    "{mode:?}: nothing written yet"
-                );
+            });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing written yet"
+            );
+            terminal.update(&mut app, |view, ctx| {
                 // ssh owns the tty: the held line goes to it (the unmanaged remote shell reads
                 // it like plain ssh).
                 ssh_tty_owned_for_test(view, ctx);
@@ -22557,11 +22607,12 @@ fn ssh_run_by_the_agent_does_not_take_the_agent_view_editor_keys() {
                     "next prompt",
                     "{mode:?}: the keys stay in the editor"
                 );
-                assert!(
-                    pty_writes.borrow().is_empty(),
-                    "{mode:?}: nothing to the pty"
-                );
             });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing to the pty"
+            );
         })
     }
 }
@@ -22626,10 +22677,13 @@ fn ssh_window_armed_at_preexec_for_a_users_submit_holds_the_agent_view_editor_ke
                     "",
                     "{mode:?}: nothing reached the agent view's editor"
                 );
-                assert!(
-                    pty_writes.borrow().is_empty(),
-                    "{mode:?}: nothing written yet"
-                );
+            });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing written yet"
+            );
+            terminal.update(&mut app, |view, ctx| {
                 // ssh owns the tty: the held line goes to it.
                 ssh_tty_owned_for_test(view, ctx);
                 assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
@@ -22956,6 +23010,8 @@ fn nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shel
                     view.ssh_typeahead_holding,
                     "{mode:?}: held for the inner host"
                 );
+                // In-update recorder read: nothing is emitted before it in this update, so it is a
+                // real read of what the earlier updates wrote.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: nothing typed reached the tty before the inner prompt: {:?}",
@@ -23177,7 +23233,10 @@ fn ssh_output_does_not_end_the_hold_ownership_does() {
             view.typed_characters_on_terminal("ERTY", ctx);
             view.keydown_on_terminal("\r", ctx);
             assert!(view.ssh_typeahead_holding, "output ends nothing");
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        terminal.update(&mut app, |view, ctx| {
             ssh_tty_owned_for_test(view, ctx);
             assert!(!view.ssh_typeahead_holding);
             assert!(view.ssh_held_is_empty());
@@ -23652,6 +23711,8 @@ fn a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive() {
                     young_gate_open(view),
                     "{mode:?}: output in flight, the latch leaves the hold to the barrier (#1889)"
                 );
+                // In-update recorder read, always empty here: the young gate is open (above) and
+                // the final read is one exact write.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: nothing written while the hold stays: {:?}",
@@ -23739,11 +23800,14 @@ fn a_young_hold_give_up_asks_for_the_request_decision() {
         terminal.update(&mut app, |view, ctx| {
             young_enter_setup(view);
             hold_a_young_enter(view, &pty_writes, ctx);
-            assert_eq!(
-                *retries.borrow(),
-                0,
-                "a window hold asks for nothing when it opens"
-            );
+        });
+        // Read after the update: the event that asks for the decision is delivered at its end.
+        assert_eq!(
+            *retries.borrow(),
+            0,
+            "a window hold asks for nothing when it opens"
+        );
+        terminal.update(&mut app, |view, ctx| {
             let token = view.paste_queue.queue.borrow().gates()[0].token;
             view.on_paste_queue_give_up(token, ctx);
             assert!(!view.model.lock().typeahead_handoff().has_young_hold());
@@ -26315,7 +26379,11 @@ fn a_subshell_that_exits_during_the_setup_ends_the_net() {
             view.model.lock().simulate_long_running_block("dash", "");
             view.write_init_subshell_bytes_to_pty(None, ctx);
             assert!(view.subshell_bootstrap_in_flight.is_some());
-            let before = written.borrow().len();
+        });
+        // Read after each update: the write events an update emitted are delivered when it
+        // returns (inside it both counts were 0, whatever the app wrote).
+        let before = written.borrow().len();
+        let id = terminal.update(&mut app, |view, ctx| {
             // The shell is gone: its block completed (a new block is active), nothing pending.
             view.model.lock().finish_block();
             assert!(view.subshell_bootstrap_announced_age().is_none());
@@ -26323,11 +26391,14 @@ fn a_subshell_that_exits_during_the_setup_ends_the_net() {
             view.end_subshell_setup_if_block_gone(ctx);
             assert!(view.subshell_bootstrap_in_flight.is_none(), "lines dropped");
             assert!(view.subshell_setup_net.is_none(), "the net is over");
-            assert_eq!(
-                written.borrow().len(),
-                before,
-                "nothing of the setup went out"
-            );
+            id
+        });
+        assert_eq!(
+            written.borrow().len(),
+            before,
+            "nothing of the setup went out"
+        );
+        terminal.update(&mut app, |view, ctx| {
             view.subshell_setup_quiet_net_fired(id.0, id.1, ctx);
             assert!(view.subshell_setup_waiting_toast_id.is_none());
         });
@@ -26534,7 +26605,11 @@ fn a_give_up_unregisters_the_probe_id_and_a_late_probe_answer_is_ignored() {
                 !ansi::Handler::is_registered_session(&*view.model.lock(), probe),
                 "the given-up attempt's probe ID is gone"
             );
-            let before = written.borrow().len();
+        });
+        // Read after each update: the write events an update emitted are delivered when it
+        // returns (inside it both counts were 0, whatever the app wrote).
+        let before = written.borrow().len();
+        terminal.update(&mut app, |view, ctx| {
             view.handle_terminal_event(
                 &ModelEvent::InitSubshell(crate::terminal::event::InitSubshellEvent {
                     shell_type: ShellType::Bash,
@@ -26551,12 +26626,12 @@ fn a_give_up_unregisters_the_probe_id_and_a_late_probe_answer_is_ignored() {
                 },
                 ctx,
             );
-            assert_eq!(
-                written.borrow().len(),
-                before,
-                "a late answer writes nothing"
-            );
         });
+        assert_eq!(
+            written.borrow().len(),
+            before,
+            "a late answer writes nothing"
+        );
     })
 }
 
@@ -27097,9 +27172,37 @@ fn ssh_queue_is_idle(view: &TerminalView) -> bool {
 }
 
 /// Runs `body` on a fresh view with the ssh hold on the given path.
+///
+/// `body` runs inside ONE view update, and a pty write is an event: its subscribers run when the
+/// outermost update returns. So `body` gets no pty-write recorder (read in there it is always
+/// empty, whatever the app did). A scenario that must leave the pty untouched uses
+/// [`ssh_hold_path_writes_nothing`], which reads the recorder after the update.
 fn with_ssh_hold_path(
-    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>, &Rc<RefCell<Vec<Vec<u8>>>>)
-    + 'static,
+    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>) + 'static,
+) {
+    run_on_ssh_hold_path(None, body)
+}
+
+/// [`with_ssh_hold_path`] for a scenario in which nothing may be written to the pty (the keys
+/// stay held, or end in the input editor): after the update `body` ran in, when the write events
+/// it emitted have been delivered, the recorder must be empty.
+fn ssh_hold_path_writes_nothing(
+    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>) + 'static,
+) {
+    run_on_ssh_hold_path(Some(String::new()), body)
+}
+
+/// [`ssh_hold_path_writes_nothing`] with a label for the failure message (the arm of a loop).
+fn ssh_hold_path_writes_nothing_in(
+    label: &str,
+    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>) + 'static,
+) {
+    run_on_ssh_hold_path(Some(label.to_owned()), body)
+}
+
+fn run_on_ssh_hold_path(
+    writes_nothing: Option<String>,
+    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>) + 'static,
 ) {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
@@ -27108,8 +27211,15 @@ fn with_ssh_hold_path(
         let pty_writes = record_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
-            body(view, ctx, &pty_writes);
+            body(view, ctx);
         });
+        if let Some(label) = writes_nothing {
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{label}: nothing may be written to the pty: {:?}",
+                pty_writes.borrow()
+            );
+        }
     })
 }
 
@@ -27117,7 +27227,7 @@ fn with_ssh_hold_path(
 /// (focus already in the editor) before the precmd hand-over: all 29 are delivered once, in
 /// typed order, and the editor's buffer is not wiped by the hand-over.
 fn ssh_key_via_editor_route_before_handover_joins_the_hold() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         let line = "echo zqTR31 >> /tmp/zq-mac.log";
         let (head, rest) = line.split_at(28);
@@ -27142,7 +27252,6 @@ fn ssh_key_via_editor_route_before_handover_joins_the_hold() {
         // A key typed after the hand-over follows, once.
         editor_text(view, &rest[1..], ctx);
         assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), line);
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27187,7 +27296,7 @@ fn pane_typed(
 /// the ssh hold takes it. Hand-over: all 29, once, in typed order, nothing left in the editor's
 /// side queue.
 fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         let line = "echo RTtm0 >> ~/rl_tm0.1.txt";
         let chars: Vec<String> = line.chars().map(|c| c.to_string()).collect();
@@ -27212,7 +27321,6 @@ fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order() {
         assert!(view.ssh_held_is_empty());
         assert!(ssh_queue_is_idle(view));
         assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), line);
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27233,8 +27341,9 @@ fn pane_key_with_editor_focus_is_inserted_once_and_not_written_to_the_pty() {
             assert_eq!(pane_typed(view, "a", true, ctx), PaneKeyOutcome::Consumed);
             assert_eq!(pane_typed(view, "b", true, ctx), PaneKeyOutcome::Consumed);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab");
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
         });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27293,8 +27402,9 @@ fn pane_key_typed_into_a_text_field_inside_the_pane_is_not_the_sinks() {
                 PaneKeyOutcome::NotMine
             );
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            assert!(pty_writes.borrow().is_empty());
         });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(pty_writes.borrow().is_empty());
     });
 }
 
@@ -27302,7 +27412,7 @@ fn pane_key_typed_into_a_text_field_inside_the_pane_is_not_the_sinks() {
 /// neither the terminal nor the editor (the focus gap before the remote shell's first prompt) are
 /// all held, in order, none lost.
 fn ssh_keys_in_a_focus_gap_join_the_hold() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         for c in ["e", "c", "h", "o"] {
             let key = PaneKey {
@@ -27323,7 +27433,6 @@ fn ssh_keys_in_a_focus_gap_join_the_hold() {
         }
         assert!(view.ssh_typeahead_holding);
         assert_eq!(view.ssh_held_bytes(), 4, "no key lost, none doubled");
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27425,7 +27534,7 @@ fn key_path_reads_do_not_wait_for_the_pty_reader() {
 }
 
 fn ssh_keys_during_connect_are_delivered_once_in_order() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         assert!(!ssh_gate_open(view), "nothing held yet: no gate");
         view.typed_characters_on_terminal("echo ", ctx);
@@ -27450,7 +27559,6 @@ fn ssh_keys_during_connect_are_delivered_once_in_order() {
         assert!(view.ssh_held_is_empty());
         assert!(!ssh_gate_open(view));
         assert!(ssh_queue_is_idle(view), "nothing left queued");
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27460,7 +27568,7 @@ fn ssh_queue_keys_during_connect_are_delivered_once_in_order() {
 }
 
 fn ssh_key_queued_in_the_prompt_turn_lands_after_the_held_keys() {
-    with_ssh_hold_path(move |view, ctx, _| {
+    with_ssh_hold_path(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("echo ab", ctx);
         view.ssh_remote_prompt_seen = true;
@@ -27524,7 +27632,7 @@ fn ssh_queue_secret_read_at_ownership_discards_held_keys_and_next_key_reaches_th
 }
 
 fn ssh_failed_connect_returns_the_text_to_the_input() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("echo hi", ctx);
         view.keydown_on_terminal("\r", ctx);
@@ -27540,7 +27648,6 @@ fn ssh_failed_connect_returns_the_text_to_the_input() {
         );
         assert!(!ssh_gate_open(view));
         assert!(ssh_queue_is_idle(view));
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27550,7 +27657,7 @@ fn ssh_queue_failed_connect_returns_the_text_to_the_input() {
 }
 
 fn ssh_repeated_connects_each_get_their_own_hold() {
-    with_ssh_hold_path(move |view, ctx, _| {
+    with_ssh_hold_path(move |view, ctx| {
         for round in ["one", "two", "three"] {
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal(round, ctx);
@@ -27575,7 +27682,7 @@ fn ssh_queue_repeated_connects_each_get_their_own_hold() {
 }
 
 fn ssh_interrupt_discards_the_held_keys() {
-    with_ssh_hold_path(move |view, ctx, _| {
+    with_ssh_hold_path(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("abc", ctx);
         release_ssh_gate_for_test(view);
@@ -27595,7 +27702,7 @@ fn ssh_queue_interrupt_discards_the_held_keys() {
 }
 
 fn ssh_overflow_drops_the_whole_run() {
-    with_ssh_hold_path(move |view, ctx, _| {
+    with_ssh_hold_path(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         let big = "x".repeat(40 * 1024);
         view.ssh_typeahead_holding = true;
@@ -27634,7 +27741,7 @@ fn ssh_queue_overflow_drops_the_whole_run() {
 /// drains, everything lands once, in typed order.
 #[test]
 fn ssh_paste_with_a_pending_read_keeps_typed_order_around_it() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("a", ctx);
         assert!(ssh_gate_open(view));
@@ -27679,7 +27786,6 @@ fn ssh_paste_with_a_pending_read_keeps_typed_order_around_it() {
         view.deliver_ssh_typeahead_if_ready("precmd", ctx);
         assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "aPb");
         assert!(ssh_queue_is_idle(view));
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27687,7 +27793,7 @@ fn ssh_paste_with_a_pending_read_keeps_typed_order_around_it() {
 /// answer is pasted nowhere.
 #[test]
 fn ssh_paste_with_a_pending_read_is_cancelled_with_the_hold() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("a", ctx);
         let id = view
@@ -27721,7 +27827,6 @@ fn ssh_paste_with_a_pending_read_is_cancelled_with_the_hold() {
             ctx,
         );
         assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27784,8 +27889,9 @@ fn ssh_middle_click_paste_with_a_pending_read_keeps_typed_order_around_it() {
             view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "aPb");
             assert!(ssh_queue_is_idle(view));
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
         });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -27835,12 +27941,13 @@ fn ssh_paste_between_held_keys_keeps_typed_order_in_both_modes() {
                     "",
                     "{mode:?}: all held"
                 );
-                assert!(
-                    pty_writes.borrow().is_empty(),
-                    "{mode:?}: nothing reaches the pty ahead of the held keys: {:?}",
-                    pty_writes.borrow()
-                );
             });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing reaches the pty ahead of the held keys: {:?}",
+                pty_writes.borrow()
+            );
             deferral.release();
             assert!(
                 wait_for_paste_read_to_land(&terminal, &app).await,
@@ -27858,12 +27965,13 @@ fn ssh_paste_between_held_keys_keeps_typed_order_in_both_modes() {
                     "{mode:?}: once, in typed order"
                 );
                 assert!(ssh_queue_is_idle(view), "{mode:?}");
-                assert!(
-                    pty_writes.borrow().is_empty(),
-                    "{mode:?}: {:?}",
-                    pty_writes.borrow()
-                );
             });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: {:?}",
+                pty_writes.borrow()
+            );
         });
     }
 }
@@ -27899,6 +28007,8 @@ fn paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes() {
                 "{mode:?}"
             );
             terminal.update(&mut app, |view, ctx| {
+                // In-update recorder read: nothing is emitted before it in this update, so it is a
+                // real read of what the earlier updates wrote.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: held behind the setup: {:?}",
@@ -28038,6 +28148,8 @@ fn conpty_prompt_hold_releases_on_the_signal_through_the_queue() {
             for key in [&b"l"[..], b"s", b"\r", b"x"] {
                 view.write_user_bytes_to_pty(key.to_vec(), ctx);
             }
+            // In-update recorder read, always empty here: four entries are queued (below) and the
+            // final read has each key once.
             assert!(
                 pty_writes.borrow().is_empty(),
                 "nothing is written ahead of the line editor"
@@ -28086,10 +28198,13 @@ fn a_precmd_does_not_commit_input_to_the_editor_so_a_precmd_read_gets_the_pin() 
                 for key in [&b"p"[..], b"i", b"n", b"\r"] {
                     view.write_user_bytes_to_pty(key.to_vec(), ctx);
                 }
-                assert!(
-                    pty_writes.borrow().is_empty(),
-                    "the PIN is held, not written ahead of the signal"
-                );
+            });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "the PIN is held, not written ahead of the signal"
+            );
+            terminal.update(&mut app, |view, ctx| {
                 assert!(prompt_gate_open(view));
                 // The hold ends (the signal, or the give-up net's release to the pty): in order.
                 let hold_id = view
@@ -28890,6 +29005,8 @@ fn a_signal_takes_the_keys_held_for_the_prompt_in_front_of_it() {
                 if signal == 0x03 {
                     view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
                 }
+                // In-update recorder read, always empty here: the final read is one exact write,
+                // which an earlier write would break.
                 assert!(pty_writes.borrow().is_empty());
                 view.write_user_bytes_to_pty(vec![signal], ctx);
                 assert!(!prompt_gate_open(view));
@@ -28935,6 +29052,8 @@ fn the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off() {
                     view.on_paste_queue_give_up(token, ctx);
                     assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
                     assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab", "{mode:?}");
+                    // In-update recorder read, always empty here: the final read is exactly `c`:
+                    // `a` and `b` were never written.
                     assert!(
                         pty_writes.borrow().is_empty(),
                         "{mode:?}: the timer wrote nothing"
@@ -29033,6 +29152,8 @@ fn a_held_segment_with_an_enter_past_the_cap_stays_held_until_the_signal() {
                 view.on_paste_queue_give_up(token, ctx);
                 assert!(prompt_gate_open(view), "{mode:?}: still held");
                 assert_eq!(view.paste_queue.queue.borrow().queued_len(), 4, "{mode:?}");
+                // In-update recorder read, always empty here: four entries are queued (above) and
+                // the final read has them once.
                 assert!(pty_writes.borrow().is_empty(), "{mode:?}: nothing written");
                 assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
                 // The signal releases the segment, once, in typed order.
@@ -29246,7 +29367,10 @@ fn a_hold_whose_wait_a_preexec_cleared_is_released_by_the_latch() {
                 let token = view.paste_queue.queue.borrow().gates()[0].token;
                 view.on_paste_queue_give_up(token, ctx);
                 assert!(prompt_gate_open(view), "{mode:?}: the command runs");
-                assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+            });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+            terminal.update(&mut app, |view, ctx| {
                 // What the view does on `CommandBecameInteractive`.
                 let held = view
                     .model
@@ -29528,6 +29652,8 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
             );
             view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
             view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
+            // In-update recorder read, always empty here: two entries are queued (below) and the
+            // final read has each key once.
             assert!(pty_writes.borrow().is_empty());
             let queue = view.paste_queue.queue.clone();
             let mut host = paste_queue::PtyQueueHost::new(view, ctx);
@@ -29536,6 +29662,8 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
                 crate::terminal::input_queue::GateKind::PasteReading,
                 77,
             );
+            // In-update recorder read, always empty here: two entries are queued (below) and the
+            // final read has each key once.
             assert!(pty_writes.borrow().is_empty(), "held for the prompt now");
             assert!(prompt_gate_open(view));
             assert_eq!(view.paste_queue.queue.borrow().queued_len(), 2);
@@ -29593,6 +29721,8 @@ fn keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty
                 for key in b"ec" {
                     view.write_user_bytes_to_pty(vec![*key], ctx);
                 }
+                // In-update recorder read, always empty here: nine entries are queued (below) and
+                // the final read is byte-exact, once.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: nothing is written ahead of the line editor"
@@ -29613,6 +29743,8 @@ fn keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty
                 }
                 // A key typed after the precmd, before the signal: behind the held keys.
                 view.typed_characters_on_terminal("x", ctx);
+                // In-update recorder read, always empty here: ten entries are queued (below) and
+                // the final read is byte-exact, once.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: still nothing written"
@@ -29687,6 +29819,8 @@ fn a_command_running_past_the_prompt_hold_cap_keeps_its_keys_held_and_the_hold_o
                 for key in b"ec" {
                     view.write_user_bytes_to_pty(vec![*key], ctx);
                 }
+                // In-update recorder read, always empty here: the keys are queued (five entries,
+                // below) and the final read has them once.
                 assert!(pty_writes.borrow().is_empty(), "{mode:?}");
                 assert!(prompt_gate_open(view), "{mode:?}");
                 let token = view.paste_queue.queue.borrow().gates()[0].token;
@@ -29694,6 +29828,8 @@ fn a_command_running_past_the_prompt_hold_cap_keeps_its_keys_held_and_the_hold_o
                 // The cap fires 1.5 s in; the command is still running.
                 view.on_paste_queue_give_up(token, ctx);
                 assert!(prompt_gate_open(view), "{mode:?}: still held");
+                // In-update recorder read, always empty here: the keys are queued (five entries,
+                // below) and the final read has them once.
                 assert!(
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: nothing is written mid-command"
@@ -29717,8 +29853,10 @@ fn a_command_running_past_the_prompt_hold_cap_keeps_its_keys_held_and_the_hold_o
                 view.commit_typeahead_handoff_at_prompt(ctx);
                 view.on_paste_queue_give_up(token, ctx);
                 assert!(prompt_gate_open(view), "{mode:?}");
-                assert!(pty_writes.borrow().is_empty(), "{mode:?}");
-
+            });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+            terminal.update(&mut app, |view, ctx| {
                 // The line editor's signal releases everything, once, in order.
                 line_editor_signal(view, ctx);
                 assert!(!prompt_gate_open(view), "{mode:?}");
@@ -30350,6 +30488,9 @@ fn hold_a_young_enter(
 ) {
     view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
     view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+    // Every caller runs this inside a view update, where the recorder is always empty (a pty
+    // write is an event, delivered when the outermost update returns). The two queued entries
+    // (below) and each caller's exact read after its update carry "nothing written yet".
     assert!(
         pty_writes.borrow().is_empty(),
         "nothing is written ahead of the prompt"
@@ -30600,7 +30741,7 @@ fn queued_texts(view: &TerminalView) -> Vec<String> {
 /// the queue cannot take a new entry: it used to log "a key was not held" and drop the text.
 #[test]
 fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
-    with_ssh_hold_path(move |view, ctx, pty_writes| {
+    ssh_hold_path_writes_nothing(move |view, ctx| {
         // `ls` waits behind the Enter's gate; the Enter's command is `ssh host`.
         hold_text_behind_test_gate(view, "ls", ctx);
         submit_command(view, "ssh host", ctx);
@@ -30614,7 +30755,6 @@ fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
         assert_eq!(queued_texts(view), vec!["ls".to_owned()]);
         assert_eq!(view.ssh_held_count(), 1);
         assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
         // The remote shell's first prompt delivers it, once.
         view.ssh_remote_prompt_seen = true;
         first_precmd_processed_for_test(view, ctx);
@@ -30634,7 +30774,7 @@ fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
 fn ssh_key_offered_while_the_queue_is_busy_is_held_in_order() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        with_ssh_hold_path(move |view, ctx, pty_writes| {
+        ssh_hold_path_writes_nothing_in(&format!("{mode:?}"), move |view, ctx| {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("ab", ctx);
@@ -30662,11 +30802,6 @@ fn ssh_key_offered_while_the_queue_is_busy_is_held_in_order() {
                 view.ssh_hold_take(),
                 vec![HeldInput::Typed("abcd".to_owned())],
                 "{mode:?}: in typed order, once"
-            );
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: {:?}",
-                pty_writes.borrow()
             );
         });
     }
@@ -31503,9 +31638,10 @@ fn shadow_mode_changes_no_destination_and_logs_nothing_when_they_agree() {
             let _ = shadow::take_recorded();
             view.typed_characters_on_terminal("ls", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             assert_eq!(shadow::take_recorded(), Vec::<String>::new());
         });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -31597,13 +31733,14 @@ fn replayed_text_is_delivered_by(
                 "ls",
                 "{mode:?}: at an idle prompt the replayed text is the editor's"
             );
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             assert_eq!(
                 dest_table::legacy_chain_deliveries() > before,
                 chain_is_used,
                 "{mode:?}: the legacy chain is called exactly when the mode is not table"
             );
         });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -31666,17 +31803,18 @@ fn table_mode_text_replayed_after_an_ssh_recognised_at_preexec_only_is_held_not_
             assert_eq!(queued_texts(view), vec!["ls".to_owned()]);
             assert_eq!(view.ssh_held_count(), 1);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "never written locally: {:?}",
-                pty_writes.borrow()
-            );
             assert_eq!(
                 dest_table::legacy_chain_deliveries(),
                 before,
                 "decided by the table, not by re-running the legacy chain"
             );
         });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "never written locally: {:?}",
+            pty_writes.borrow()
+        );
     });
 }
 
@@ -31709,7 +31847,6 @@ fn table_mode_text_replayed_into_a_new_ssh_connect_is_held_then_delivered_once()
             assert_eq!(queued_texts(view), vec!["ls".to_owned()]);
             assert_eq!(view.ssh_held_count(), 1);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             // The remote shell's first prompt delivers it, once.
             view.ssh_remote_prompt_seen = true;
             first_precmd_processed_for_test(view, ctx);
@@ -31728,6 +31865,8 @@ fn table_mode_text_replayed_into_a_new_ssh_connect_is_held_then_delivered_once()
                 "table-mode delivery took the key path's blocking model lock"
             );
         });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
 
@@ -31763,6 +31902,8 @@ fn table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover() {
                 );
             }
             assert_eq!(view.ssh_held_count(), 2);
+            // In-update recorder read, always empty here: two entries are held (above) and the
+            // final read has the ^C once.
             assert!(
                 pty_writes.borrow().is_empty(),
                 "held, not written: {:?}",
@@ -31820,15 +31961,16 @@ fn a_held_signal_is_discarded_when_the_connect_ends_without_a_remote_shell() {
             view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             assert!(ssh_queue_is_idle(view));
             assert!(
-                pty_writes.borrow().is_empty(),
-                "nothing reached the local shell: {:?}",
-                pty_writes.borrow()
-            );
-            assert!(
                 !view.input.as_ref(ctx).buffer_text(ctx).contains('\u{3}'),
                 "the signal is not handed back as text"
             );
         });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "nothing reached the local shell: {:?}",
+            pty_writes.borrow()
+        );
     });
 }
 
@@ -32084,8 +32226,9 @@ fn only_table_mode_decides_live_keys_with_the_table() {
                     "{mode:?}"
                 );
                 assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls", "{mode:?}");
-                assert!(pty_writes.borrow().is_empty(), "{mode:?}");
             });
+            // Read after the update: the write events it emitted are delivered when it returns.
+            assert!(pty_writes.borrow().is_empty(), "{mode:?}");
         });
     }
 }
@@ -32329,6 +32472,8 @@ fn table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_sh
                 2,
                 "the text and the ^C, in typed order"
             );
+            // In-update recorder read, always empty here: two entries are held (above) and the
+            // final read has the ^C once.
             assert!(
                 pty_writes.borrow().is_empty(),
                 "held, not written: {:?}",
@@ -32396,8 +32541,9 @@ fn table_mode_text_typed_behind_a_gate_waits_as_a_neutral_entry_and_is_routed_wh
             view.end_cli_submit_gate(ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "x");
             assert!(ssh_queue_is_idle(view));
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
         });
+        // Read after the update: the write events it emitted are delivered when it returns.
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
 }
 
@@ -32424,6 +32570,8 @@ fn table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event() {
                 .simulate_long_running_block("sleep 100", "");
             view.begin_cli_submit_gate(ctx);
             view.keydown_on_terminal("\u{7f}", ctx);
+            // In-update recorder read, always empty here: one entry is queued (next assertion) and
+            // the final read is one exact write.
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             assert_eq!(view.paste_queue.queue.peek().queued_len(), 1);
             view.end_cli_submit_gate(ctx);
