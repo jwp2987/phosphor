@@ -5,6 +5,8 @@
 
 pub mod docker_sandbox;
 pub mod event_loop;
+#[cfg(target_os = "linux")]
+mod fg_group;
 mod mio_channel;
 #[cfg(unix)]
 mod process_tree;
