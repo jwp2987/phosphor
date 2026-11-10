@@ -7,9 +7,8 @@ and `script/check_input_path_timers` only). Wording: merged-untested work is "wo
 
 **Evidence.** `cases_agent_question.verdict` (`script/realapp/appci/cases_agent_question.py:34-70`) calls `AR.action_hops`, i.e. it reads
 `hop=agent_action` lines. They come from `app/src/ai/blocklist/action_model.rs:761` (`log::info!`, module
-`warp::ai::blocklist::action_model`). Linux and macOS launch with no base level (`app.py` INNER script, `warp::input_order=debug,...`), and
-env_logger's default with no bare level shows only what a directive names, but the app's own default applies there; on Windows
-`WindowsApp.env` sets `RUST_LOG="warn,winit=info,...`, a `warn` base that hides every `info` line from a module with no directive of its own.
+`warp::ai::blocklist::action_model`). The Linux launcher's RUST_LOG (`app.py` INNER script) has no bare level, and macOS passes its own; the
+Windows `WindowsApp.env` sets `RUST_LOG="warn,winit=info,..."`, a `warn` base that hides every `info` line from a module with no directive of its own.
 Only `agent_providers` and `blocklist::controller` had one, so a card that WAS shown reads as `hung` ("no hop=agent_action").
 
 Other hidden modules, found by scanning the Rust sources for plain `log::info!/debug!` calls whose string carries a `hop=` name some appci case
