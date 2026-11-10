@@ -197,7 +197,13 @@ impl ForegroundProbe {
     }
 
     fn foreground_is_plain_program(&self) -> bool {
-        self.plain_program.as_ref().is_some_and(|probe| probe())
+        let Some(probe) = &self.plain_program else {
+            return false;
+        };
+        let started = sample_clock();
+        let plain = probe();
+        log_sample(started, "plain_program", || plain.to_string());
+        plain
     }
 
     /// Whether the pty stream is provably applied up to now: `Some(true)` when nothing the shell
@@ -221,13 +227,43 @@ impl ForegroundProbe {
     /// The sampled [`ShellPromptFact`]; without the richer probe, the plain-program answer alone.
     fn prompt_fact(&self) -> ShellPromptFact {
         if let Some(probe) = &self.prompt_fact {
-            probe()
+            let started = sample_clock();
+            let fact = probe();
+            log_sample(started, "prompt_fact", || format!("{fact:?}"));
+            fact
         } else if self.foreground_is_plain_program() {
             ShellPromptFact::NotAtPrompt
         } else {
             ShellPromptFact::Unknown
         }
     }
+}
+
+/// #1958: the start of one platform sample, read only when input-order logging is on (the sample
+/// itself is never timed otherwise).
+fn sample_clock() -> Option<Instant> {
+    warpui::input_order::enabled().then(Instant::now)
+}
+
+/// #1958: one `input_order hop=prompt_fact_sample` line per sample an installed probe took: which
+/// probe, what it answered and how long it took in microseconds, so a latency run shows every
+/// sample on the input path and its cost (on Linux a sample was a read of every process's `stat`).
+fn log_sample(started: Option<Instant>, what: &str, answer: impl FnOnce() -> String) {
+    let Some(started) = started else {
+        return;
+    };
+    let micros = Instant::now()
+        .saturating_duration_since(started)
+        .as_micros();
+    warpui::input_order::log_hop("prompt_fact_sample", || {
+        format!("what={what} answer={} us={micros}", answer())
+    });
+}
+
+/// The `prompt_fact=` word of the `hand_route` line: the fact the decision sampled, or
+/// `unsampled`.
+fn describe_sampled_fact(sampled_fact: Option<ShellPromptFact>) -> String {
+    sampled_fact.map_or_else(|| "unsampled".to_string(), |fact| format!("{fact:?}"))
 }
 
 impl std::fmt::Debug for ForegroundProbe {
@@ -3159,7 +3195,7 @@ impl TypeaheadHandoff {
         // cancels the deferred Enter before a ^C reaches here (`TerminalView::ctrl_c`).
         if bytes.iter().any(is_signal_byte) {
             self.drop_young_hold();
-            self.log_route_decision("signal_unheld", bytes);
+            self.log_route_decision("signal_unheld", bytes, None);
             return self.route_user_bytes_unheld(bytes, reaches_shell_line);
         }
         self.drop_stale_hold();
@@ -3175,7 +3211,7 @@ impl TypeaheadHandoff {
                 "typeahead hand-off: a key reached the hand-off while a queued young hold was live; holding it"
             );
             self.young_hold_started = true;
-            self.log_route_decision("held_young_hold_live", bytes);
+            self.log_route_decision("held_young_hold_live", bytes, None);
             return UserBytesRoute::Held;
         }
         if self.prompt_hold_queued {
@@ -3185,7 +3221,7 @@ impl TypeaheadHandoff {
                 "typeahead hand-off: a key reached the hand-off while a queued prompt hold was live; holding it"
             );
             self.prompt_hold_started = true;
-            self.log_route_decision("held_prompt_hold_live", bytes);
+            self.log_route_decision("held_prompt_hold_live", bytes, None);
             return UserBytesRoute::Held;
         }
         if self.should_hold_for_prompt(reaches_shell_line, Instant::now()) {
@@ -3198,7 +3234,7 @@ impl TypeaheadHandoff {
             let now = Instant::now();
             self.prompt_hold_started_at = Some(now);
             self.prompt_hold_release_decided_at = None;
-            self.log_route_decision("held_prompt_hold_started", bytes);
+            self.log_route_decision("held_prompt_hold_started", bytes, None);
             return UserBytesRoute::Held;
         }
         let (young_evidence, sampled_fact) =
@@ -3218,13 +3254,13 @@ impl TypeaheadHandoff {
             if evidence == YoungHoldEvidence::RequestDue {
                 self.correct_stale_counts("young_enter_at_line_editor");
             }
-            self.log_route_decision("held_young_enter_started", bytes);
+            self.log_route_decision("held_young_enter_started", bytes, sampled_fact);
             return UserBytesRoute::Held;
         }
         if self.enter_delivered_past_an_unsampled_group(bytes, reaches_shell_line, sampled_fact) {
             self.note_unsampled_enter_delivered();
         }
-        self.log_route_decision("unheld", bytes);
+        self.log_route_decision("unheld", bytes, sampled_fact);
         self.route_user_bytes_unheld(bytes, reaches_shell_line)
     }
 
@@ -3362,7 +3398,18 @@ impl TypeaheadHandoff {
     /// Logs why a user write was held or let through (#1490): the reason, the hand-off state and
     /// whether the shell's line-editor signal is still awaited for the current prompt. The bytes
     /// are shown only for synthetic test text (`WARP_INPUT_ORDER_LOG_TEXT=1`).
-    fn log_route_decision(&self, reason: &str, bytes: &[u8]) {
+    ///
+    /// #1958: `prompt_fact=` is the fact the decision itself sampled for this write
+    /// (`sampled_fact`), or `unsampled` when it decided without one (a plain key into a running
+    /// program, a key behind a live hold). This line never runs the probe: it used to, for every
+    /// key written to the pty, and on Linux that sample read the `stat` of every process on the
+    /// machine (4-16 ms on the main thread, before the write).
+    fn log_route_decision(
+        &self,
+        reason: &str,
+        bytes: &[u8],
+        sampled_fact: Option<ShellPromptFact>,
+    ) {
         warpui::input_order::log_hop("hand_route", || {
             let state = match &self.state {
                 HandoffState::PtyOwned { .. } => "pty_owned",
@@ -3381,7 +3428,7 @@ impl TypeaheadHandoff {
             format!(
                 "reason={reason} state={state} awaiting_ready={} in_flight={} evidence={:?} \
                  command_interactive={} enters_written={enters} precmds_seen={precmds} \
-                 young_line={} wrote_user_bytes={wrote} prompt_seq_mode={} prompt_fact={:?} \
+                 young_line={} wrote_user_bytes={wrote} prompt_seq_mode={} prompt_fact={} \
                  hold_id={} bytes={}",
                 self.awaiting_line_editor_since.is_some(),
                 self.writes_in_flight,
@@ -3389,7 +3436,7 @@ impl TypeaheadHandoff {
                 self.command_interactive,
                 self.young_line,
                 self.prompt_seq_mode(),
-                self.sample_prompt_fact(),
+                describe_sampled_fact(sampled_fact),
                 self.young_hold_id,
                 warpui::input_order::describe_bytes_escaped(bytes)
             )
