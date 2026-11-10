@@ -1120,10 +1120,64 @@ fn r8_held_keys_go_to_the_editor_except_a_proven_unsupported_prompt() {
 /// R9: the flush happens only with the setup bytes provably unread.
 #[test]
 fn r9_a_cancel_flushes_only_provably_unread_setup_bytes() {
-    assert!(cancel_flushes_unread_setup(Some(false), false));
-    assert!(!cancel_flushes_unread_setup(Some(false), true));
-    assert!(!cancel_flushes_unread_setup(Some(true), false));
-    assert!(!cancel_flushes_unread_setup(None, false));
+    // The rows this test had, for every cancel that may flush (the signature gained the cancel's
+    // kind and the user's bytes, #1940; the expectations are the same).
+    for why in [
+        WrittenCancel::Question,
+        WrittenCancel::Net,
+        WrittenCancel::Gone,
+        WrittenCancel::Unsupported,
+    ] {
+        assert!(
+            cancel_flushes_unread_setup(why, Some(false), false, 0),
+            "{why:?}"
+        );
+        assert!(
+            !cancel_flushes_unread_setup(why, Some(false), true, 0),
+            "{why:?}"
+        );
+        assert!(
+            !cancel_flushes_unread_setup(why, Some(true), false, 0),
+            "{why:?}"
+        );
+        assert!(!cancel_flushes_unread_setup(why, None, false, 0), "{why:?}");
+    }
+}
+
+/// #1940 (review r8 D9): the flush never rests on the echo filter alone. Whatever the filter saw
+/// (`echo_started` false is also what a MISSED echo looks like) and whatever the queue holds, a
+/// Secret cancel never flushes (the unread bytes may be what the user types for the secret), and
+/// no cancel flushes once a user byte went to the pty since the setup's first line.
+#[test]
+fn d9_a_secret_cancel_or_user_bytes_since_the_write_never_flush() {
+    for queue in [Some(false), Some(true), None] {
+        for echo_started in [false, true] {
+            for user_bytes in [0, 1, 40] {
+                assert!(
+                    !cancel_flushes_unread_setup(
+                        WrittenCancel::Secret,
+                        queue,
+                        echo_started,
+                        user_bytes
+                    ),
+                    "Secret: queue {queue:?} echo {echo_started} bytes {user_bytes}"
+                );
+            }
+            for why in [
+                WrittenCancel::Question,
+                WrittenCancel::Net,
+                WrittenCancel::Gone,
+                WrittenCancel::Unsupported,
+            ] {
+                for user_bytes in [1, 40] {
+                    assert!(
+                        !cancel_flushes_unread_setup(why, queue, echo_started, user_bytes),
+                        "{why:?}: queue {queue:?} echo {echo_started} bytes {user_bytes}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// #1886: with no tty probe (ConPTY) the screen facts decide: a shell prompt drawn since the

@@ -33051,6 +33051,113 @@ fn e_question_cancels_and_later_keys_reach_the_pty_in_order_in_both_modes() {
     );
 }
 
+/// #1940 (review r8 D9): the R9 flush of the tty's unread input does not rest on the echo filter.
+/// In every case below the first line is out, NOTHING of its echo was matched (which is also what
+/// a missed echo looks like: `-echoctl`, a line editor's own redraw) and the queue holds bytes.
+/// - `Question`: nothing of the user's went to the pty since the write, so the unread bytes are the
+///   setup's: flushed, once (R9 as it was).
+/// - `Secret`: a secret read opened. Never flushed: what waits in the tty there may be what the
+///   user types for the secret. (No probe of ours reports a queue with a Secret sample today; the
+///   rule holds whatever a sample says.)
+/// - `UserBytes`: a user byte went to the pty while the setup was written (counted by
+///   `note_user_bytes_for_subshell_readiness`): the unread bytes may be the user's, never flushed.
+/// Legacy and Table.
+#[test]
+fn the_r9_flush_spares_a_secret_read_and_bytes_the_user_sent_whatever_the_echo_filter_saw() {
+    use crate::terminal::input_queue::DestinationMode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Case {
+        Question,
+        Secret,
+        UserBytes,
+    }
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for case in [Case::Question, Case::Secret, Case::UserBytes] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let flushes = Arc::new(AtomicUsize::new(0));
+                let count = flushes.clone();
+                let tty = terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().simulate_long_running_block("bash", "");
+                    let tty = install_subshell_tty_for_test(view, bash_reading());
+                    // The same fake sample, plus a flush that counts its calls.
+                    let cell = tty.clone();
+                    view.model.lock().set_subshell_tty_probe(
+                        Arc::new(move |_, _| cell.lock().clone()),
+                        Some(Arc::new(move || {
+                            count.fetch_add(1, Ordering::SeqCst);
+                            true
+                        })),
+                    );
+                    view.model.lock().process_bytes("bash-5.1$ ");
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::Banner {
+                            shell_type: Some(ShellType::Bash),
+                        },
+                        ctx,
+                    );
+                    assert_eq!(readiness_state(view), "written", "{mode:?} {case:?}");
+                    assert!(view.write_user_bytes_to_pty(b"held".to_vec(), ctx));
+                    assert_ne!(held_for_subshell_setup(view), (0, 0), "{mode:?} {case:?}");
+                    match &view.subshell_setup_state {
+                        SubshellSetupState::Written(written) => assert_eq!(
+                            written.user_bytes_since_write, 0,
+                            "{mode:?} {case:?}: held keys are not bytes sent to the pty"
+                        ),
+                        _ => panic!("not written"),
+                    }
+                    assert!(
+                        !view.model.lock().setup_echo_started(),
+                        "{mode:?} {case:?}: no echo was matched"
+                    );
+                    tty
+                });
+                terminal.update(&mut app, |view, ctx| {
+                    if case == Case::UserBytes {
+                        view.note_user_bytes_for_subshell_readiness(b"pw");
+                        match &view.subshell_setup_state {
+                            SubshellSetupState::Written(written) => {
+                                assert_eq!(written.user_bytes_since_write, 2, "{mode:?}")
+                            }
+                            _ => panic!("not written"),
+                        }
+                    }
+                    let mut unread = if case == Case::Secret {
+                        secret_read()
+                    } else {
+                        bash_reading()
+                    };
+                    unread.queue_empty = Some(false);
+                    *tty.lock() = unread;
+                    if case != Case::Secret {
+                        // The shell answered our line with a question, no marker.
+                        view.model.lock().process_bytes("\r\nContinue? [y/N] ");
+                    }
+                    output_wakeup(view, ctx);
+                    let want = if case == Case::Secret {
+                        "armed"
+                    } else {
+                        "idle"
+                    };
+                    assert_eq!(readiness_state(view), want, "{mode:?} {case:?}: cancelled");
+                    assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?} {case:?}");
+                });
+                assert_eq!(
+                    flushes.load(Ordering::SeqCst),
+                    usize::from(case == Case::Question),
+                    "{mode:?} {case:?}: the tty input is flushed only when the unread bytes are \
+                     provably the setup's"
+                );
+            })
+        }
+    }
+}
+
 /// #1679 step 3, E-UNSUPPORTED (R7, stream-ordered): our line's echo ended, then a fresh prompt
 /// shape with no token-matched marker between, and the queue is proven empty: the shell read the
 /// line as a plain command. The held keys go to the pty in order (R8: a fresh prompt proven and

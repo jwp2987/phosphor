@@ -753,10 +753,33 @@ pub fn held_keys_destination(
     }
 }
 
-/// R9: whether a cancel flushes the slave input queue: only when the setup bytes PROVABLY sit
-/// unread (the queue holds bytes and the tty echoed nothing of our line).
-pub fn cancel_flushes_unread_setup(queue_empty: Option<bool>, echo_started: bool) -> bool {
-    queue_empty == Some(false) && !echo_started
+/// R9: whether a cancel flushes the slave input queue: only when what sits unread is PROVABLY the
+/// setup's own bytes and nothing of them was taken (the queue holds bytes and the tty echoed
+/// nothing of our line).
+///
+/// #1940 (review r8 D9): "echoed nothing" is the echo filter's word, and the filter can miss (a
+/// tty with `-echoctl` / `-echoke` or another kill character echoes the ` ^K ^U` prefix in another
+/// form than the captured one; a line editor redraws it its own way), so `echo_started == false`
+/// alone proves nothing about WHOSE bytes wait. Two facts that do not depend on it decide first:
+/// - a Secret cancel never flushes. A secret read is canonical with echo off: nothing is echoed
+///   whoever typed it, and what waits in the tty there may be what the user types for the secret.
+///   No setup byte is worth a password byte.
+/// - a cancel never flushes once a user byte went to the pty since the setup's first line
+///   (`user_bytes_since_write`: the held keys are not counted, they never left the queue): the
+///   unread bytes may be the user's.
+///
+/// The echo stays a veto when it DID match (the shell is taking our line: cutting the rest would
+/// leave it half a line).
+pub fn cancel_flushes_unread_setup(
+    why: WrittenCancel,
+    queue_empty: Option<bool>,
+    echo_started: bool,
+    user_bytes_since_write: usize,
+) -> bool {
+    why != WrittenCancel::Secret
+        && user_bytes_since_write == 0
+        && queue_empty == Some(false)
+        && !echo_started
 }
 
 #[cfg(test)]

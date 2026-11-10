@@ -75,6 +75,7 @@ fn a_delivered_key_cancels_a_written_setup_when_a_secret_is_read() {
                     secret_probe: Some(probe),
                     generation: 1,
                     stage_two_pending: None,
+                    user_bytes_since_write: 0,
                 });
                 match mode {
                     DestinationMode::Table => {
