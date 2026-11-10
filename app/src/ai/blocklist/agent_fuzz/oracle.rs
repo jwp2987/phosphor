@@ -5,9 +5,10 @@
 //! |---|---|
 //! | I1 | every blocked action has an actionable card within delta; nothing pending sits neither blocked-with-card, runnable nor running for longer than delta; every tool call of the last finished reply has an action-model status or a result within delta (#1946) |
 //! | I2a | once the script is used up and the user has answered every card, the conversation is terminal within 5 s |
-//! | I2b | Ctrl-C / Stop leaves it terminal within 2 s, nothing pending / running, no stream in flight |
+//! | I2b | Stop, and Ctrl-C, leave it terminal within 2 s, nothing pending / running, no stream in flight. Not for a Ctrl-C typed into a running command while later actions of the same reply still wait: that is the command's interrupt and the turn goes on (#850) |
+//! | I2c | that Ctrl-C: the command it was typed into stops running within 2 s (the cards that follow are the closing user's, and I2a still ends the turn) |
 //! | I3 | when the conversation is terminal, locked queued rows unlock within 2 s; unlocked rows of a conversation that succeeded are sent within 3 s (a cancel restores rows to the input instead: #690 / #1026, kept by #1799) |
-//! | I4 | each request carries exactly one tool message per emitted call id, in order, none extra and none orphaned (duplicates renamed `id#2`) |
+//! | I4 | each request carries exactly one tool message per emitted call id, in order, none extra and none orphaned (duplicates renamed `id#2`); the last request holds the calls of the replies to the requests before it |
 //! | I5 | `prompt_tests.rs`: a command is handed to the user only if it reads the tty |
 //! | I6 | no panic (any thread) and no ERROR log beyond the allowance per chaos kind and count (`error_allowance`) |
 //! | I7 | no card takes accept keys for an action that is done or cancelled (read from the card's own key routing, `AIBlock::pending_command_card_view_id`, not from the action status) |
@@ -139,7 +140,7 @@ impl Oracle {
         let Some(extra) = requests.get(limit) else {
             return Ok(());
         };
-        let newest = extra.messages.last();
+        let newest = extra.newest_message();
         Err(violation(
             "I8",
             format!(
@@ -270,7 +271,7 @@ impl Oracle {
         Ok(())
     }
 
-    /// I2b: after a Ctrl-C / Stop.
+    /// I2b: after a Stop, and after a Ctrl-C that is not I2c's.
     pub fn stopped(obs: &Obs) -> Result<(), Violation> {
         let mut problems = Vec::new();
         if !obs.is_terminal() {
@@ -290,6 +291,37 @@ impl Oracle {
             Ok(())
         } else {
             Err(violation("I2b", problems.join("; ")))
+        }
+    }
+
+    /// I2c: after a Ctrl-C typed into a running command while later actions of the same reply
+    /// were still waiting. That Ctrl-C is the command's interrupt, not a stop of the conversation
+    /// (#850: "the conversation continues"), so the turn goes on to the next action's card and
+    /// I2b does not apply; what must hold is that the interrupt took: of the actions that were
+    /// running at the key, at least one no longer runs (the Ctrl-C goes to the one the status
+    /// bar shows; a command runs alone, so for a command that is the command). `was_running`
+    /// is from just before the key.
+    pub fn interrupted(
+        obs: &Obs,
+        was_running: &[crate::ai::agent::AIAgentActionId],
+    ) -> Result<(), Violation> {
+        let still_running: Vec<_> = obs
+            .snapshot
+            .iter()
+            .filter(|s| s.stage == PendingStage::Running && was_running.contains(&s.action_id))
+            .map(|s| s.action_id.clone())
+            .collect();
+        if still_running.len() < was_running.len() {
+            Ok(())
+        } else {
+            Err(violation(
+                "I2c",
+                format!(
+                    "Ctrl-C into a running command interrupted nothing: {still_running:?} still \
+                     running (conversation is {:?})",
+                    obs.status
+                ),
+            ))
         }
     }
 
@@ -412,6 +444,11 @@ pub fn check_tool_messages(
 
     // Cross-check the last request against what the script emitted, newest first. Ids the
     // provider omitted or left empty (the app invents them) are wildcards; repeats become `id#n`.
+    //
+    // Only the replies to EARLIER requests can be in the last request. The reply to the last
+    // request itself is in no request at all: either it had no calls, or the turn ended before
+    // its results went back (a Stop sends nothing, #1942; a card nobody answered). Zipping it
+    // in shifted every pair by one and reported the last request as holding the wrong calls.
     let Some(last) = requests.last() else {
         return Ok(());
     };
@@ -423,7 +460,7 @@ pub fn check_tool_messages(
         .collect();
     let scripted: Vec<&Vec<String>> = emitted
         .iter()
-        .filter(|t| !t.aborted && !t.call_ids.is_empty())
+        .filter(|t| t.request_index < last.index && !t.aborted && !t.call_ids.is_empty())
         .map(|t| &t.call_ids)
         .collect();
     for (got, sent) in in_request.iter().rev().zip(scripted.iter().rev()) {
@@ -502,8 +539,11 @@ pub fn check_requests(
             .count()
             > 1
     };
+    // Requests are compared without the environment tail (the `<environment_context>` block the
+    // app appends as the last message of every request): it is not part of the conversation,
+    // and with it in place a request that went back to a prefix was never seen as one.
     for (j, later) in requests.iter().enumerate() {
-        let ends_with_a_repeated_message = later.messages.last().is_some_and(|newest| {
+        let ends_with_a_repeated_message = later.newest_message().is_some_and(|newest| {
             newest.role == RecordedRole::User
                 && submitted
                     .iter()
@@ -512,9 +552,11 @@ pub fn check_requests(
         if ends_with_a_repeated_message {
             continue;
         }
+        let later_messages = later.messages_without_environment_tail();
         for (i, earlier) in requests.iter().enumerate().take(j) {
-            let repeats = later.messages.len() <= earlier.messages.len()
-                && earlier.messages[..later.messages.len()] == later.messages[..];
+            let earlier_messages = earlier.messages_without_environment_tail();
+            let repeats = later_messages.len() <= earlier_messages.len()
+                && earlier_messages[..later_messages.len()] == later_messages[..];
             if repeats && !(i..j).any(&reply_failed) {
                 return Err(violation(
                     "I8",
@@ -522,15 +564,17 @@ pub fn check_requests(
                         "request {j} ({} message(s)) repeats request {i} ({} message(s)) or a \
                          prefix of it, and no reply in between failed: the model was asked the \
                          same thing twice",
-                        later.messages.len(),
-                        earlier.messages.len()
+                        later_messages.len(),
+                        earlier_messages.len()
                     ),
                 ));
             }
         }
     }
 
-    // I8b: one submit, one request that ends with it.
+    // I8b: one submit, one request that ends with it ("ends with": its newest message, the
+    // one before the environment tail. Read off the request's very last message, which is
+    // always the tail, this half never judged a request of the rig).
     let texts: Vec<&str> = submitted
         .iter()
         .filter_map(|s| trackable(&s.text))
@@ -553,8 +597,7 @@ pub fn check_requests(
             .iter()
             .filter(|request| {
                 request
-                    .messages
-                    .last()
+                    .newest_message()
                     .is_some_and(|m| m.role == RecordedRole::User && m.text.contains(text))
             })
             .map(|request| request.index)
@@ -730,6 +773,150 @@ mod tests {
             msg(RecordedRole::Tool, &[], &["a"]),
         ]);
         assert!(check_tool_messages(&[reordered], &[]).is_err());
+    }
+
+    /// The cross-check lines the last request up with the replies to the requests BEFORE it.
+    /// The reply to the last request is in no request (here: the user stopped the turn before
+    /// its results went back, #1942). Fails on the old check, which zipped that reply in and
+    /// said "the request holds [c0], but the model emitted [c1]".
+    #[test]
+    fn the_reply_to_the_last_request_is_not_expected_in_it() {
+        let emitted_for = |request_index: usize, call: &str| EmittedTurn {
+            request_index,
+            turn: Some(request_index),
+            call_ids: vec![call.to_owned()],
+            chaos: Vec::new(),
+            aborted: false,
+        };
+        let requests = vec![
+            RecordedRequest {
+                index: 0,
+                model_id: "m".into(),
+                messages: vec![msg(RecordedRole::User, &[], &[])],
+                tools_offered: Vec::new(),
+            },
+            RecordedRequest {
+                index: 1,
+                model_id: "m".into(),
+                messages: vec![
+                    msg(RecordedRole::User, &[], &[]),
+                    msg(RecordedRole::Assistant, &["c0"], &[]),
+                    msg(RecordedRole::Tool, &[], &["c0"]),
+                ],
+                tools_offered: Vec::new(),
+            },
+        ];
+        let emitted = [emitted_for(0, "c0"), emitted_for(1, "c1")];
+        assert!(check_tool_messages(&requests, &emitted).is_ok());
+
+        // Still caught: the last request holds a call the earlier reply never made.
+        let wrong = [emitted_for(0, "other"), emitted_for(1, "c1")];
+        assert_eq!(
+            check_tool_messages(&requests, &wrong)
+                .unwrap_err()
+                .invariant,
+            "I4"
+        );
+    }
+
+    #[test]
+    fn i2c_holds_once_the_interrupted_action_no_longer_runs() {
+        use crate::ai::agent::AIAgentActionId;
+        use crate::ai::agent::conversation::AIConversationId;
+        use crate::ai::blocklist::action_model::PendingActionSnapshot;
+
+        let conversation_id = AIConversationId::new();
+        let held = |id: &str, stage: PendingStage| PendingActionSnapshot {
+            conversation_id,
+            action_id: AIAgentActionId::from(id.to_owned()),
+            kind: Some("run_shell_command"),
+            stage,
+        };
+        let obs = |snapshot: Vec<PendingActionSnapshot>| Obs {
+            status: None,
+            stream_in_flight: false,
+            snapshot,
+            cards: Vec::new(),
+            routed: Vec::new(),
+            rows: Vec::new(),
+            unsettled_calls: Vec::new(),
+        };
+        let was_running = [AIAgentActionId::from("c0".to_owned())];
+        // Still running: the interrupt did nothing.
+        let stuck = obs(vec![
+            held("c0", PendingStage::Running),
+            held("c1", PendingStage::Queued),
+        ]);
+        assert_eq!(
+            Oracle::interrupted(&stuck, &was_running)
+                .unwrap_err()
+                .invariant,
+            "I2c"
+        );
+        // Interrupted; the next action of the reply shows its card. Not I2b's business.
+        let moved_on = obs(vec![held("c1", PendingStage::Blocked)]);
+        assert!(Oracle::interrupted(&moved_on, &was_running).is_ok());
+        assert!(Oracle::stopped(&moved_on).is_err());
+    }
+
+    /// I8b and I8c look past the environment tail the app appends to every request. With the
+    /// tail in place the old checks read it as the newest message: a message that opened two
+    /// requests, and a request that went back to a prefix, both passed.
+    #[test]
+    fn i8_is_judged_on_the_messages_before_the_environment_tail() {
+        let scenario = Scenario::new(1);
+        let tail =
+            || user("<environment_context>\n  Today's date: 2026-11-09\n</environment_context>");
+        let assistant = msg(RecordedRole::Assistant, &[], &[]);
+        let submitted = [sent(START, false), sent(MORE, false)];
+
+        let ok = numbered(vec![
+            vec![user(START), tail()],
+            vec![user(START), assistant.clone(), user(MORE), tail()],
+        ]);
+        assert!(check_requests(&ok, &replies(2, &[]), &scenario, &submitted, false).is_ok());
+
+        // One message, two requests (I8b).
+        let twice = numbered(vec![
+            vec![user(START), tail()],
+            vec![user(START), assistant.clone(), user(MORE), tail()],
+            vec![
+                user(START),
+                assistant.clone(),
+                msg(RecordedRole::Assistant, &[], &[]),
+                user(MORE),
+                tail(),
+            ],
+        ]);
+        let broken =
+            check_requests(&twice, &replies(3, &[]), &scenario, &submitted, false).unwrap_err();
+        assert_eq!(broken.invariant, "I8");
+        assert!(
+            broken.detail.contains("more than one request"),
+            "{}",
+            broken.detail
+        );
+
+        // Back to a prefix of an earlier request (I8c).
+        let only_start = [sent(START, false)];
+        let backwards = numbered(vec![
+            vec![user(START), tail()],
+            vec![
+                user(START),
+                msg(RecordedRole::Assistant, &["a"], &[]),
+                msg(RecordedRole::Tool, &[], &["a"]),
+                tail(),
+            ],
+            vec![
+                user(START),
+                msg(RecordedRole::Assistant, &["a"], &[]),
+                tail(),
+            ],
+        ]);
+        let broken = check_requests(&backwards, &replies(3, &[]), &scenario, &only_start, false)
+            .unwrap_err();
+        assert_eq!(broken.invariant, "I8");
+        assert!(broken.detail.contains("repeats"), "{}", broken.detail);
     }
 
     #[test]

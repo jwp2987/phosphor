@@ -153,7 +153,10 @@ fn a_stop_after_a_finished_result_opens_no_request_and_the_results_ride_on_the_n
             "one message, one request"
         );
         let next = &requests[requests_before_stop];
-        let newest = next.messages.last().expect("the request has messages");
+        // The newest message of the conversation: the request itself ends with the
+        // `<environment_context>` block, a user message of its own that the app appends to
+        // every request (`RecordedRequest::newest_message` looks past it).
+        let newest = next.newest_message().expect("the request has messages");
         assert_eq!(newest.role, RecordedRole::User);
         assert!(newest.text.contains("carry on please"), "{:?}", newest.text);
         let emitted = rig.player.emitted();
