@@ -390,6 +390,16 @@ def self_test():
         (re.search(r"^%s:" % LAB_IMAGE_JOB, yml, re.M) is not None, "the sshlab-image job exists in .gitlab-ci.yml (ci_seq plays it before every lab job)"),
         (lab_image_skipped({"cases": [{"status": "skip", "detail": ["labctl start failed (1): image localhost/phosphor-sshlab:full-ab12 is not built: run the sshlab-image job"]}]}), "all-skip rows for a missing image are recognised"),
         (not lab_image_skipped({"cases": [{"status": "skip", "detail": ["no card"]}, {"status": "pass"}]}), "an ordinary skip is not a missing-image skip"),
+        # #1921: pending behind this pipeline's own jobs is queued, not offline
+        (pending_state({"id": 1, "tag_list": ["little-thing"]}, {"a": {"id": 1, "status": "pending", "tag_list": ["little-thing"]}, "b": {"id": 2, "status": "running", "tag_list": ["little-thing"]}}, []) == "queued",
+         "pending while another job of the same pipeline runs on the same tag is queued, not offline"),
+        (pending_state({"id": 1, "tag_list": ["little-thing"]}, {"a": {"id": 1, "status": "pending", "tag_list": ["little-thing"]}}, [{"online": True, "tag_list": ["little-thing"]}]) == "queued",
+         "pending with an online matching runner is queued"),
+        (pending_state({"id": 1, "tag_list": ["mac"]}, {"a": {"id": 1, "status": "pending", "tag_list": ["mac"]}, "b": {"id": 2, "status": "running", "tag_list": ["little-thing"]}}, [{"online": False, "tag_list": ["mac"]}, {"online": True, "tag_list": ["little-thing"]}]) == "offline",
+         "no online runner with the job's tags is offline"),
+        (pending_state({"id": 1, "tag_list": ["mac"]}, {"a": {"id": 1, "status": "pending", "tag_list": ["mac"]}}, None) == "offline",
+         "no runner information and no busy sibling keeps the old offline rule"),
+        (lab_image_recovered(False, "success") and not lab_image_recovered(False, "pending"), "an image that succeeds after ci_seq gave up still lets the lab job be played"),
     ):
         bad += 0 if ok else 1
         print("%s %s" % ("ok  " if ok else "FAIL", what))
@@ -698,10 +708,18 @@ def main():
             # it and let the other jobs go on. (waiting_for_resource, a resource_group queue behind another job, is not pending.)
             if s == "pending":
                 pending_since = pending_since or time.time()
-                if time.time() - pending_since > PENDING_LIMIT[0]:
-                    print("%s: RUNNER-OFFLINE (pending with no runner for %.0f min); continuing without it" % (name, (time.time() - pending_since) / 60), flush=True)
-                    timeline[name] = (RUNNER_OFFLINE, None)
-                    return RUNNER_OFFLINE
+                waited = time.time() - pending_since
+                if waited > PENDING_LIMIT[0]:
+                    allj = jobs()
+                    state = pending_state(allj.get(name, {}), allj, project_runners())
+                    if state == "offline" or waited > PENDING_LIMIT[0] * PENDING_GIVEUP_FACTOR:
+                        print("%s: RUNNER-OFFLINE (pending %.0f min, %s); continuing without it" % (
+                            name, waited / 60, "no online runner can take it" if state == "offline" else "queued, overall give-up"), flush=True)
+                        timeline[name] = (RUNNER_OFFLINE, None)
+                        return RUNNER_OFFLINE
+                    if int(waited) % 300 < 60:
+                        print("%s: %s pending %.0f min but QUEUED (a runner can take it / is busy with this pipeline's jobs); still waiting" % (
+                            time.strftime("%H:%M"), name, waited / 60), flush=True)
             else:
                 pending_since = None
             # #1517: a job that stays 'running' far past its own `timeout:` (a wedged runner, a lost connection GitLab never noticed)
@@ -738,6 +756,10 @@ def main():
         """Play sshlab-image and wait for it (a no-op build when the tag exists). True = the image is there; False = the lab job must not be played."""
         with lab_image_lock:
             if lab_image_state:
+                if not lab_image_state[0] and lab_image_recovered(False, jobs().get(LAB_IMAGE_JOB, {}).get("status")):
+                    lab_image_state[0] = True               # #1921: the image succeeded after ci_seq gave up on it: the lab job is still played
+                    timeline[LAB_IMAGE_JOB] = ("success", jobs()[LAB_IMAGE_JOB].get("duration"))
+                    timeline.pop(LAB_FIX_JOB, None)
                 return lab_image_state[0]
             if LAB_IMAGE_JOB not in jobs():
                 lab_image_state.append(False)
@@ -759,6 +781,10 @@ def main():
     for p in (MAC, WIN):
         if p in plats and p not in reuse and BUILD[p] not in SKIP and play(BUILD[p]):
             print("%s: started %s without waiting for check-linux (own machine)" % (time.strftime("%H:%M"), BUILD[p]), flush=True)
+    # #1921: the lab image job is a seconds-long no-op on the box runner; queued behind the long box jobs it starved for 23 min. Play it NOW,
+    # at the front of the box queue (every lab job needs it).
+    if tier == "fix" and LINUX in plats and LAB_FIX_JOB not in SKIP and proving_lab_globs() and LAB_IMAGE_JOB in jobs():
+        threading.Thread(target=ensure_lab_image, daemon=True).start()
     if reuse and all(p in reuse for p in plats):
         # every platform tests an app-identical earlier build: that commit's compile check already passed, so do not queue
         # the app tests behind a check-linux that waits for the box
@@ -887,6 +913,17 @@ def main():
     for n in builds:
         print(n, timeline.get(n, ("?",))[0], flush=True)
     for n in started + reuse_started: print(n, wait(n), flush=True)
+    if tier == "fix" and LINUX in plats and lab_image_state and not lab_image_state[0] and LAB_FIX_JOB not in SKIP and proving_lab_globs():
+        # #1921: the image may have finished after ci_seq stopped waiting for it; if so the lab job is played now rather than never
+        if ensure_lab_image():
+            late, lv2 = LAB_FIX_JOB, dict(appvars, **lab_fix_vars())
+            if LINUX in reuse:
+                r = reuse[LINUX]
+                late = LAB_FIX_JOB + "-reuse"
+                lv2.update(APPCI_BUILD_JOB_ID=str(r["job"]), APPCI_BUILD_PIPELINE_ID=str(r["pipeline"]), APPCI_BUILD_SHA=r["sha"], APPCI_BUILD_JOB_NAME=BUILD[LINUX], APPCI_BUILD_REF=r.get("ref", ""))
+            if late in jobs() and play(late, lv2):
+                print("%s: sshlab-image succeeded late; started %s" % (time.strftime("%H:%M"), late), flush=True)
+                print(late, wait(late), flush=True)
     if tier == "release":
         for n in ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
@@ -930,6 +967,7 @@ RUNNING_DEADLINE = "RUNNING-DEADLINE"
 RUNNING_FACTOR = [2.0]             # set from --running-factor
 NETWORK_FAIL = "NETWORK-FAIL"
 PENDING_LIMIT = [20 * 60]          # seconds; set from --pending-timeout
+PENDING_GIVEUP_FACTOR = 3          # a job that is pending but QUEUED (a runner could take it) is given up on after this many pending limits
 NETWORK_JOBS = ("licenses", "advisories")   # need the network (advisory DB / licence sources / cargo-binstall); automatic, not allow_failure
 # What a cargo-deny/binstall FETCH outage looks like. A real finding prints `error[vulnerability]` / `error[unmaintained]` / `error[unsound]`
 # / `error[rejected]` / `error[banned]` etc.: if any of those is in the trace the job is a genuine FAIL whatever else the trace says.
@@ -937,6 +975,43 @@ NETWORK_RX = re.compile(r"failed to (fetch|clone)|could not resolve host|couldn.
                         r"timed out|temporary failure in name resolution|unable to (access|update)|network is unreachable|SSL|502|503|504|"
                         r"failed to download|binstall.*(fail|error)|RPC failed|early EOF", re.I)
 FINDING_RX = re.compile(r"error\[[a-z-]+\]|^error: .*(vulnerabilit|advisor|licen[cs]e|banned|unmaintained|unsound)", re.I | re.M)
+
+
+def pending_state(job, jobs_by_name, runners):
+    """#1921: why a job is still 'pending'. -> "queued" (a runner that could take it exists or is busy with this pipeline's own jobs: keep
+    waiting) or "offline" (no online runner can take it). The old rule called ANY job pending for 20 min offline; sshlab-image (box tag) queued
+    23 min behind this pipeline's own box jobs and the lab job was never played.
+    job: the GitLab job dict (tag_list). jobs_by_name: the pipeline's jobs. runners: [{"online": bool, "tag_list": [...]}] for the project,
+    or None when the runner API gave no usable answer (then only the same-pipeline rule can prove 'queued')."""
+    need = set(job.get("tag_list") or [])
+    for o in jobs_by_name.values():
+        if o.get("id") != job.get("id") and o.get("status") == "running" and need <= set(o.get("tag_list") or []):
+            return "queued"                    # a job of this very pipeline is running on a runner with the same tags
+    if runners is None:
+        return "offline"                       # no runner information: keep the pre-#1921 behaviour
+    if any(r.get("online") and need <= set(r.get("tag_list") or []) for r in runners):
+        return "queued"
+    return "offline"
+
+
+def lab_image_recovered(state_ok, image_status):
+    """#1921: the lab image counts as there when ci_seq saw it succeed OR it succeeded after ci_seq gave up waiting (RUNNER-OFFLINE)."""
+    return bool(state_ok) or image_status == "success"
+
+
+def project_runners():
+    """-> [{"online", "tag_list"}] for the project's runners, or None when the API gave no usable answer."""
+    lst = api("projects/%s/runners?per_page=100" % PROJECT)
+    if not isinstance(lst, list):
+        return None
+    out = []
+    for r in lst:
+        d = api("runners/%s" % r.get("id")) if r.get("id") else None
+        tags = (d or {}).get("tag_list")
+        if tags is None:
+            return None
+        out.append({"online": bool(r.get("online")) and r.get("status", "online") == "online" and not r.get("paused"), "tag_list": tags})
+    return out
 
 
 def classify_network_job(job_id):
