@@ -300,8 +300,9 @@ pub(super) struct CancelledPendingActions {
 }
 
 /// Whether rejecting one pending action cancels every later pending action of the same turn
-/// with it (#1799). True for the user's own reject / stop (`ManuallyCancelled`), the reason
-/// every Reject button, the status bar's Ctrl-C / Stop and the TUI reject pass.
+/// with it (#1799). True for the user's own reject (`Rejected`: every Reject button, the TUI
+/// reject) and the user's stop on one action (`ManuallyCancelled`: the status bar's Ctrl-C /
+/// Stop).
 ///
 /// Why every later action, not only the ones that visibly depend on the rejected one:
 /// * A turn's tool calls are planned together, on the assumption that the earlier ones run. The
@@ -313,13 +314,17 @@ pub(super) struct CancelledPendingActions {
 ///   a plan the user just turned down, and an action the GUI has no card for (a hand-over of a
 ///   command that never ran) sat pending, unseen, with follow-ups queued behind it forever.
 /// * Nothing is lost: every cancelled call gets its cancelled result, and the batch goes to the
-///   model with the user's next message, so the model sees which calls did not run and can issue
-///   them again.
+///   model -- at once after a Reject when an earlier call of the step had finished (#1942,
+///   owner decision 2026-11-09), otherwise with the user's next message -- so the model sees
+///   which calls did not run and can issue them again.
 ///
 /// The queue only ever holds one turn: a stream's actions are queued together when it ends,
 /// and a new request cancels whatever is still pending first.
 fn rejection_cancels_rest_of_turn(reason: CancellationReason) -> bool {
-    matches!(reason, CancellationReason::ManuallyCancelled)
+    matches!(
+        reason,
+        CancellationReason::ManuallyCancelled | CancellationReason::Rejected
+    )
 }
 
 /// Returns whether another action may join the currently running phase.
@@ -424,6 +429,13 @@ pub struct BlocklistAIActionModel {
     /// Past actions and their corresponding statuses from previous AI exchanges.
     past_action_results: HashMap<AIAgentActionId, Arc<AIAgentActionResult>>,
 
+    /// The actions whose own card the user rejected (`CancellationReason::Rejected`), as
+    /// opposed to the later actions of the turn cancelled with them (#1799) or anything a Stop
+    /// cancelled. `AIAgentActionResult` carries no reason, so this is how the controller tells
+    /// the model "the user rejected this call" rather than a bare "cancelled" (#1942). One id
+    /// per reject the user clicked; never cleared, the ids are unique for the process.
+    rejected_by_user: HashSet<AIAgentActionId>,
+
     /// The ID of the terminal view this controller is associated with.
     terminal_view_id: EntityId,
 
@@ -512,6 +524,7 @@ impl BlocklistAIActionModel {
             finished_action_results: Default::default(),
             executor,
             past_action_results: HashMap::new(),
+            rejected_by_user: HashSet::new(),
             running_actions: Default::default(),
             action_order: Default::default(),
             terminal_view_id,
@@ -1618,6 +1631,13 @@ impl BlocklistAIActionModel {
         self.handle_action_result(conversation_id, Arc::new(action_result), None, ctx);
     }
 
+    /// Whether the user rejected this action's own card; see `rejected_by_user`.
+    pub fn was_rejected_by_user(&self, action_id: &AIAgentActionId) -> bool {
+        self.rejected_by_user.contains(action_id)
+    }
+
+    /// Cancels one action by id: a card's Reject (`CancellationReason::Rejected`) or the status
+    /// bar's Stop / Ctrl-C on the shown action (`ManuallyCancelled`).
     pub fn cancel_action_with_id(
         &mut self,
         conversation_id: AIConversationId,
@@ -1630,6 +1650,15 @@ impl BlocklistAIActionModel {
             .get(&conversation_id)
             .is_some_and(|running| running.contains(action_id))
         {
+            // A reject is an answer to a card that still waits for one. Once the action runs
+            // there is nothing left to reject: cancelling it is the user stopping it, with
+            // everything a manual stop does (the running command is interrupted, #850; no
+            // request is sent afterwards, #1942).
+            let reason = if reason.is_rejected() {
+                CancellationReason::ManuallyCancelled
+            } else {
+                reason
+            };
             self.executor.update(ctx, |executor, ctx| {
                 executor.cancel_running_async_action(action_id, Some(reason), ctx)
             });
@@ -1660,6 +1689,9 @@ impl BlocklistAIActionModel {
                              action(s) of the same turn with it (#1799)",
                             rest_of_turn.len()
                         );
+                    }
+                    if reason.is_rejected() {
+                        self.rejected_by_user.insert(action.id.clone());
                     }
                     self.cancel_pending_action(conversation_id, action, Some(reason), ctx);
                     for later in rest_of_turn {

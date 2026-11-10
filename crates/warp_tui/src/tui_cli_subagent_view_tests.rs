@@ -339,7 +339,7 @@ fn reject_cancels_only_the_exact_displayed_action() {
         });
 
         assert!(finished_actions.borrow().iter().any(|(action_id, reason)| {
-            action_id == &displayed.id && *reason == Some(CancellationReason::ManuallyCancelled)
+            action_id == &displayed.id && *reason == Some(CancellationReason::Rejected)
         }));
     });
 }

@@ -814,7 +814,7 @@ impl TuiFileEditsView {
             action_model.cancel_action_with_id(
                 self.conversation_id,
                 &action_id,
-                CancellationReason::ManuallyCancelled,
+                CancellationReason::Rejected,
                 ctx,
             );
         });

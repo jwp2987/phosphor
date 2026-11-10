@@ -391,7 +391,7 @@ pub(super) fn cancel_blocked_action(
     action_model.cancel_action_with_id(
         conversation_id,
         &blocked_action.id,
-        CancellationReason::ManuallyCancelled,
+        CancellationReason::Rejected,
         ctx,
     );
 }

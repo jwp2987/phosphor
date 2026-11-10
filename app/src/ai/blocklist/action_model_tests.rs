@@ -312,6 +312,9 @@ fn only_a_user_reject_cancels_the_rest_of_the_turn() {
     assert!(rejection_cancels_rest_of_turn(
         CancellationReason::ManuallyCancelled
     ));
+    // A card's own Reject has its own reason since the #1942 follow-up decision; it cancels the
+    // rest of the turn exactly as before.
+    assert!(rejection_cancels_rest_of_turn(CancellationReason::Rejected));
     for reason in [
         CancellationReason::FollowUpSubmitted {
             is_for_same_conversation: true,

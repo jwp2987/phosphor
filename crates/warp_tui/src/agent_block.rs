@@ -774,7 +774,7 @@ impl TuiAIBlock {
             action_model.cancel_action_with_id(
                 conversation_id,
                 action_id,
-                CancellationReason::ManuallyCancelled,
+                CancellationReason::Rejected,
                 ctx,
             );
         });

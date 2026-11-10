@@ -660,7 +660,7 @@ fn reject_of_a_blocked_command_with_no_follow_up_unlocks_the_queued_row() {
             action_model.cancel_action_with_id(
                 conversation_id,
                 &action_id,
-                CancellationReason::ManuallyCancelled,
+                CancellationReason::Rejected,
                 ctx,
             );
         });
@@ -1689,7 +1689,7 @@ fn rejecting_the_only_tool_call_drops_the_deferred_compaction() {
             action_model.cancel_action_with_id(
                 conversation_id,
                 &action_id,
-                CancellationReason::ManuallyCancelled,
+                CancellationReason::Rejected,
                 ctx,
             );
         });
@@ -2916,6 +2916,46 @@ mod finished_batch {
         assert_eq!(plan.follow_up, None);
         assert_eq!(plan.final_status, ConversationStatus::Cancelled);
         assert_eq!(plan.silent_stop, None);
+        // The card's own Reject (its own reason since the 2026-11-09 decision) with nothing
+        // else finished: nothing to report, same quiet end.
+        let plan = plan_finished_batch(
+            Some(CancellationReason::Rejected),
+            &[rejected(), cancelled_read()],
+            false,
+            false,
+        );
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Cancelled);
+        assert_eq!(plan.silent_stop, None);
+    }
+
+    /// #1942, second part of the owner decision (2026-11-09): a Reject is not a stop. Rejecting a
+    /// card after an earlier call of the same step finished sends the step's results back to the
+    /// model at once (an automatic follow-up) and the agent continues; the later calls the reject
+    /// cancelled with it (#1799) go in the same batch. Fails on the code before this change,
+    /// where a Reject arrived as `ManuallyCancelled` and planned no follow-up.
+    #[test]
+    fn a_reject_after_a_finished_result_tells_the_model_at_once() {
+        for results in [
+            vec![completed(0, false), rejected()],
+            vec![completed(2, false), rejected(), cancelled_read()],
+        ] {
+            let plan =
+                plan_finished_batch(Some(CancellationReason::Rejected), &results, false, false);
+            assert_eq!(plan.follow_up, Some(FollowUpTrigger::Auto), "{results:?}");
+            // The user chose it: no "Agent stopped" notice either way.
+            assert_eq!(plan.silent_stop, None, "{results:?}");
+        }
+        // The reasons a reject must not be confused with.
+        assert!(!CancellationReason::Rejected.is_user_stop());
+        assert!(CancellationReason::ManuallyCancelled.is_user_stop());
+        assert!(CancellationReason::Deleted.is_user_stop());
+        assert!(
+            !CancellationReason::FollowUpSubmitted {
+                is_for_same_conversation: true
+            }
+            .is_user_stop()
+        );
     }
 
     /// #1942: Stop means stop. A batch stopped by the user after one of its results had already
@@ -3292,6 +3332,51 @@ fn byop_message_for_a_cancelled_transfer_says_why() {
             .contains("rejected an earlier tool call"),
         "{}",
         message.server_message_data
+    );
+}
+
+/// #1942 (owner decision 2026-11-09): the tool-result message for the call the user rejected on
+/// its card says it was rejected, not just "cancelled". Like the synthetic cancellation message,
+/// it has no structured result and its text travels in `server_message_data`, which is what the
+/// request builder sends for such a message.
+#[test]
+fn byop_message_for_a_rejected_call_says_the_user_rejected_it() {
+    use crate::ai::agent::{
+        AIAgentActionResult, AIAgentActionResultType, RequestCommandOutputResult,
+    };
+    use agent_proto::message;
+
+    let result = AIAgentActionResult {
+        id: AIAgentActionId::from("call_2".to_owned()),
+        task_id: TaskId::new("task".to_owned()),
+        result: AIAgentActionResultType::RequestCommandOutput(
+            RequestCommandOutputResult::CancelledBeforeExecution,
+        ),
+    };
+    let message = super::BlocklistAIController::byop_rejected_by_user_message("request", &result);
+
+    assert_eq!(message.task_id, "task");
+    assert!(
+        matches!(
+            &message.message,
+            Some(message::Message::ToolCallResult(tool_result))
+                if tool_result.tool_call_id == "call_2" && tool_result.result.is_none()
+        ),
+        "the rejected call is answered, with no structured result: {:?}",
+        message.message
+    );
+    let text: serde_json::Value =
+        serde_json::from_str(&message.server_message_data).expect("the text is JSON");
+    assert_eq!(text["status"], "rejected");
+    assert_eq!(text["reason"], "rejected_by_user");
+    assert_eq!(text["detail"], super::REJECTED_BY_USER_DETAIL);
+    // The ordinary form of the same result, for contrast: a bare cancel that never names the
+    // user's decision.
+    let ordinary = super::BlocklistAIController::byop_action_result_message("request", &result);
+    assert!(
+        !ordinary.server_message_data.contains("rejected"),
+        "{}",
+        ordinary.server_message_data
     );
 }
 

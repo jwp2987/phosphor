@@ -3,7 +3,7 @@
 //! | op | entry point |
 //! |---|---|
 //! | Approve | `BlocklistAIActionModel::execute_next_action_for_user` (the AI block's Enter / the Run button) |
-//! | Reject | `cancel_action_with_id(.., ManuallyCancelled)` (the Reject button, `controller_tests.rs`) |
+//! | Reject | `cancel_action_with_id(.., Rejected)` (the Reject button, `controller_tests.rs`): not a stop, the step's results go back to the model at once when an earlier one finished (#1942) |
 //! | Edit | `set_pending_command_text` then Approve |
 //! | AnswerQuestion / SkipQuestion | stage the answers on `AskUserQuestionExecutor`, then `execute_action` by id (the question card) |
 //! | CtrlC | the view's real Ctrl-C key handling (`TerminalView::press_ctrl_c_for_test` -> `handle_ctrl_c_input_event`) |
@@ -149,7 +149,7 @@ pub fn perform(app: &mut App, rig: &mut Rig, op: &Op) -> Option<&'static str> {
                     model.cancel_action_with_id(
                         conversation_id,
                         &id,
-                        CancellationReason::ManuallyCancelled,
+                        CancellationReason::Rejected,
                         ctx,
                     );
                 });
