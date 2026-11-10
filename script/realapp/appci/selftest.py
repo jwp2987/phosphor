@@ -623,7 +623,7 @@ def viewskip_ab_pure_parts_1962():
     d, w, f = vab.ab_verdict(old, old)
     assert f == [] and len(w) == 1 and "neither arm logged" in w[0] and d["first"] == dict(views=None, render_ms=None, total_ms=None), (d, w)
     reg = {c["name"]: c for c in cases.CASES}
-    assert "latency_key_views_ab" in cases.PROVING and "latency_key_views_ab" in winmap.NOT_WINDOWS and "latency_key_views_ab" not in cases.SMOKE
+    assert "latency_key_views_ab" in cases.PROVING and "latency_key_views_ab" in winmap.BOTH and "latency_key_views_ab" not in winmap.NOT_WINDOWS and "latency_key_views_ab" not in cases.SMOKE
     assert reg["latency_key_views_ab"]["modes"] == ("terminal", "agent") and "latency_key_views_ab" not in cases.PROVING_FAKE      # both modes, no scripted model
 
 
@@ -3416,6 +3416,43 @@ def windows_app_runs_under_a_kill_on_close_job():
         _app.subprocess.Popen, _app.subprocess.run, _w.job_create, _w.job_assign, _w.resume_process, _w.job_close, _w.job_pids = real[:7]
     ps1 = open(os.path.join(HERE, "..", "windows", "ci", "after_job.ps1")).read()
     assert "jobmember" in ps1 and "ToFileTimeUtc" in ps1 and "taskkill.exe /PID" in ps1 and "-Name" not in ps1.replace("-NoNewline", "")
+
+
+@check
+def windows_app_extra_env_reaches_spawn_1962():
+    """#1962 follow-up: WindowsApp.extra_env (an A/B arm's variable, set before a relaunch) is in the environment dict _spawn hands to Popen, wins over the
+    inherited one, and is empty by default; the A/B case no longer skips on ctx.win"""
+    import app as _app
+    stub = types.ModuleType("winapi")
+    stub.git_dirs = lambda: []
+    old = sys.modules.get("winapi")
+    sys.modules["winapi"] = stub
+    try:
+        w = _app.WindowsApp.__new__(_app.WindowsApp)
+        w.bin, w.home, w.run, w.pane, w.ctl, w.job, w.proc = "x.exe", "h", tempfile.gettempdir(), "powershell", "c", None, None
+        w.extra_env, w.hook_timing_path = {}, "t.txt"
+        base = w.env()
+        assert "PHOSPHOR_KEY_VIEW_SKIP" not in base or base["PHOSPHOR_KEY_VIEW_SKIP"] == os.environ.get("PHOSPHOR_KEY_VIEW_SKIP")
+        w.extra_env = {"PHOSPHOR_KEY_VIEW_SKIP": "0", "RUST_LOG": "x"}
+        e = w.env()
+        assert e["PHOSPHOR_KEY_VIEW_SKIP"] == "0" and e["RUST_LOG"] == "x", e
+        seen = []
+        real = (_app.subprocess.Popen, _app.os.name)
+        _app.subprocess.Popen = lambda *a, **k: (seen.append(k.get("env")), types.SimpleNamespace(_handle=1, pid=1))[1]
+        _app.os.name = "posix"
+        try:
+            w._spawn(None)
+        finally:
+            _app.subprocess.Popen, _app.os.name = real
+        assert seen and seen[0]["PHOSPHOR_KEY_VIEW_SKIP"] == "0", seen
+    finally:
+        if old is None:
+            sys.modules.pop("winapi", None)
+        else:
+            sys.modules["winapi"] = old
+    src = open(os.path.join(HERE, "cases_viewskip_ab.py")).read()
+    assert "ctx.win or" not in src.split("def c_latency_key_views_ab")[1].split("kl3 =")[0]
+    assert "extra_env = {}" in open(os.path.join(HERE, "app.py")).read().split("class WindowsApp")[1]
 
 
 @check

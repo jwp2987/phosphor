@@ -346,6 +346,7 @@ class WindowsApp:
     def __init__(self, run, home, binary, pane="powershell", ctl=None):
         self.run, self.home, self.bin, self.pane = run, home, binary, pane
         self.ctl = ctl or os.path.join(run, "ctl")
+        self.extra_env = {}        # {K: V} added to the NEXT launch's environment (#1962 follow-up: a case sets it before a relaunch, like App/MacApp)
         self.proc = None
         self.job = None            # #1642: Win32 job handle (KILL_ON_JOB_CLOSE) around the app
         self.exit_code = None
@@ -388,6 +389,7 @@ class WindowsApp:
             e["HOME"] = self.home
             e["SHELL"] = "/usr/bin/bash"
             e["CHERE_INVOKING"] = "1"
+        e.update(self.extra_env)        # last: an A/B arm's variable wins; _spawn hands this dict to CreateProcess, so the app (not a wrapper) reads it
         return e
 
     def start(self):
