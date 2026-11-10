@@ -7,6 +7,9 @@
 #   ssh_gitbash_kill_switch                                     connection): the session is managed (stage hops auth, auth_done, managed), keys typed during the
 #                                                               login stay managed and reach the first remote prompt first, in typed order (#1959),
 #                                                               PHOSPHOR_MSYS_MANAGED_SSH=0 is plain ssh
+#   gitbash_long_osc_reaches_app                                Git Bash pane: an escape sequence over 256 bytes printed by an msys program in the pane reaches
+#                                                               the app whole (#2007: the form of a managed ssh session's remote hooks, which arrive through
+#                                                               msys ssh.exe; kernel32's pseudo console of Windows 10 passes on only its tail)
 #   ps_ctrl_break / ps_ctrl_scrolllock_break                    PowerShell pane: the Break key and ScrollLock, each with Ctrl held (both VK_CANCEL), reach
 #                                                               a program as CTRL_BREAK_EVENT; a failed trial names the app hop it stopped at (#1888, #1906)
 #   ps_fast_command_young_enter                                 PowerShell pane: a fast command's Enter and the next line typed at once run once each, in order (#1889)
@@ -187,6 +190,67 @@ def _remote_line_once(ctx, r, what):
     got = R.remote_cmds_after(ctx, rmark)
     r.check(got == ["echo %s" % tok], "%s: the remote shell received %r, want exactly one %r" % (what, got, "echo %s" % tok))
     r.check(ctx.cmds_since(lmark) == [], "%s: the LOCAL shell received commands while the remote shell was in front: %r" % (what, ctx.cmds_since(lmark)))
+
+
+def long_osc_hook(session_id, pad_to):
+    """the bytes of one hex hook, `ESC ] 9278 ; d ; <hex JSON> BEL`: a Clear hook for a session id the app does not know, so the app refuses it and
+    logs the id (`Rejected DCS hook 'Clear' with unrecognized session_id <id>`), nothing else happens. JSON whitespace pads the sequence to at
+    least `pad_to` bytes (0: no padding)."""
+    js = '{"hook": "Clear", "value": {%s"session_id": %d}}'
+    body = js % ("", session_id)
+    if pad_to:
+        body = js % (" " * max(0, (pad_to - 10 + 1) // 2 - len(body)), session_id)
+    return b"\x1b]9278;d;" + body.encode().hex().encode() + b"\x07"
+
+
+def long_osc_script(short, long_, done_file, tok):
+    """the bash script of gitbash_long_osc_reaches_app: prints both sequences from an msys program to the pane's terminal, then leaves its token"""
+    esc = lambda b: "".join("\\%03o" % c for c in b)
+    return "printf '%s'\nprintf '%s'\necho %s >> %s\n" % (esc(short), esc(long_), tok, done_file)
+
+
+def long_osc_verdict(log, short_id, long_id):
+    """(ok, text) from the app log of the case: which of the two refused hooks the app logged"""
+    seen = lambda n: ("unrecognized session_id %d" % n) in log
+    if seen(short_id) and seen(long_id):
+        return True, "the app parsed both hooks: an escape sequence over 256 bytes printed by an msys program in the pane arrives whole"
+    if seen(short_id):
+        return False, ("APP side: the short hook reached the app, the long one (over 256 bytes, the size of a managed ssh session's SSH and InitShell hooks) "
+                       "did not: an msys program cannot hand the app a long escape sequence through this pane's console, and msys ssh.exe delivers the "
+                       "remote's hooks the same way, so a managed ssh session from Git Bash cannot start whatever the server is (#1933, #2007)")
+    return False, ("TEST: the short control hook was not logged either (looked for `unrecognized session_id %d` in the app log): the oracle did not work "
+                   "here, nothing is known about the long one" % short_id)
+
+
+@case("gitbash_long_osc_reaches_app", order=29)
+def c_gitbash_long_osc_reaches_app(ctx, r):
+    """#2007: the LOCAL leg of a managed ssh session from Git Bash, measured without a server. The remote's SSH and InitShell hooks are single escape
+    sequences of about 470 and 280 bytes, and they reach the app through msys ssh.exe writing to the pane's console. The msys console layer hands a
+    sequence over in 256-byte pieces; kernel32's pseudo console of Windows 10 then passes on only the last piece (round 9: the test sshd, which used
+    that console, never got the hooks out). The app's panes use the app's own console host, which should pass them whole: this case proves or refutes
+    that. A bash script (an msys program, like ssh.exe) prints two Clear hooks for session ids the app does not know: a short one (the control: under
+    256 bytes) and a long one (480 bytes). The app refuses both and logs each id; nothing else happens. Required: both ids in the app log."""
+    _need_windows_pane(ctx, r, "gitbash")
+    short_id, long_id = ctx.probe_rng.randrange(10 ** 14, 10 ** 15), ctx.probe_rng.randrange(10 ** 14, 10 ** 15)
+    short, long_ = long_osc_hook(short_id, 0), long_osc_hook(long_id, 480)
+    tok = ctx.tok(6)
+    name = "long_osc_%s.sh" % tok
+    ctx.rm("long_osc.txt")
+    with open(os.path.join(ctx.W, name), "w", newline="\n") as f:
+        f.write(long_osc_script(short, long_, "long_osc.txt", tok))
+    off = ctx.log_size()
+    ctx.be.type("bash ./%s" % name, 12, enter=True)
+    ran = ctx.until(lambda: tok in ctx.lines("long_osc.txt"), 15)
+    r.check(bool(ran), "the script that prints the two hooks did not run in the pane within 15 s (long_osc.txt has no %s)" % tok)
+    if ran:
+        ctx.until(lambda: ("unrecognized session_id %d" % long_id) in ctx.log_since(off), 3, step=0.2)
+        ok, text = long_osc_verdict(ctx.log_since(off), short_id, long_id)
+        r.metric("long_osc_bytes", dict(short=len(short), long=len(long_)))
+        r.check(ok, text)
+        if ok:
+            r.note(text)
+    ctx.rm(name, "long_osc.txt")
+    ctx.reset()
 
 
 @case("ssh_gitbash_managed", order=62)

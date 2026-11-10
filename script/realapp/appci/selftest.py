@@ -5644,6 +5644,32 @@ def fakesshd_exec_pty_arms_2007():
     assert "candidate APP finding" not in ps and "does NOT explain a failing case" in ps
     doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
     assert "#2007" in doc and "`ptyhost.py`" in doc and "exec_pty_arm" in doc
+    # the local leg as an app case: a short control hook and a long one (the size of the remote's SSH hook), refused by the app with their ids logged
+    import cases_win_input as wi
+    short, long_ = wi.long_osc_hook(123456789012345, 0), wi.long_osc_hook(999999999999999, 480)
+    assert len(short) < 256 < 2 * 256 - 64 < len(long_) == 480 and short.startswith(b"\x1b]9278;d;") and long_.endswith(b"\x07")
+    for seq, n in ((short, 123456789012345), (long_, 999999999999999)):
+        assert json.loads(bytes.fromhex(seq[9:-1].decode())) == {"hook": "Clear", "value": {"session_id": n}}
+    script = wi.long_osc_script(short, long_, "long_osc.txt", "TOK")
+    assert script.count("\n") == 3 and "\x1b" not in script and script.endswith("echo TOK >> long_osc.txt\n")
+    if os.name != "nt" and shutil.which("bash"):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "s.sh"), "w").write(script)
+            assert subprocess.run(["bash", "s.sh"], capture_output=True, cwd=d).stdout == short + long_
+            assert open(os.path.join(d, "long_osc.txt")).read() == "TOK\n"
+    both = "WARN Rejected DCS hook 'Clear' with unrecognized session_id 123456789012345\nWARN Rejected DCS hook 'Clear' with unrecognized session_id 999999999999999\n"
+    assert wi.long_osc_verdict(both, 123456789012345, 999999999999999)[0] is True
+    ok, text = wi.long_osc_verdict(both.split("\n")[0], 123456789012345, 999999999999999)
+    assert not ok and text.startswith("APP side: the short hook reached the app, the long one")
+    ok, text = wi.long_osc_verdict("", 123456789012345, 999999999999999)
+    assert not ok and text.startswith("TEST: the short control hook was not logged either")
+    # the text the oracle reads is the app's own (a rename there must fail here, not turn the case into a silent TEST verdict)
+    rs = open(os.path.join(HERE, "..", "..", "..", "app", "src", "terminal", "model", "ansi", "mod.rs")).read()
+    assert "\"Rejected DCS hook '{}' with unrecognized session_id {}\"" in rs
+    reg = {c["name"]: c for c in cases.CASES}
+    n = "gitbash_long_osc_reaches_app"
+    assert n in cases.PROVING and n not in cases.SMOKE and reg[n]["order"] < reg["ssh_connect_typing"]["order"] and n in winmap.GITBASH_ONLY
+    assert winmap.skip_reason(n, "gitbash") is None and winmap.skip_reason(n, "powershell") and ("`%s`" % n) in doc
 
 
 def main():
