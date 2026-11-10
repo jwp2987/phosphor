@@ -479,7 +479,7 @@ pub enum SshEscapeLineStart {
 /// (`VERDICT_HANDBACK_CPU_CAP`), but the young line's parse only starts when the report lands (no
 /// debounce head start), so its net is tighter: 250 ms of classifier CPU, far under the young
 /// line's 2 s wall-clock backstop in the view (#1664).
-// give-up-net: CPU cap of a young line's verdict wait: hands the line back to the editor, never submits it (#1577)
+// give-up-net: CPU cap of a young line's verdict wait: the Enter does not run and its line stays in the editor with the keys held behind it (a bare Enter and its keys go to the pty); never submits the line (#1577, #1996)
 pub const YOUNG_DETECTION_CAP: Duration = Duration::from_millis(250);
 
 /// [`YOUNG_DETECTION_CAP`] for a buffer of `text_len` bytes (#1604): a buffer over the sync

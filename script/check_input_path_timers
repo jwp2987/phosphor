@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Guard: timers on the input path are give-up nets, nothing else (owner rule, 2026-11-08).
 
-THE RULE. A timer on the key path may only be a GIVE-UP NET: it hands text back to the editor, or
-keeps it held (or shows a notice). A timer NEVER writes to the pty, releases held keys, routes,
-commits, or re-asks. Decisions come from EVENTS (the shell announced itself, the program owns the
-tty, the block ended); a timer is the last resort that stops a missing event from losing keys.
+THE RULE. A timer on the key path may only be a GIVE-UP NET: the last resort for an event that never
+came. A net hands text back to the editor, keeps it held, shows a notice, or (owner ruling
+2026-11-09, #1996, kept 2026-11-10) WRITES THE HELD KEYS TO THE PTY IN TYPED ORDER: a hold for the
+shell that gives up sends what a plain terminal would have sent all along, and a later line never
+runs without the line typed before it. A net NEVER discards, reorders, merges or splits a key, never
+chooses between the shell and the agent, never submits an editor line that was not already certain to
+be a shell line, and never re-asks. Decisions come from EVENTS (the shell announced itself, the
+program owns the tty, the block ended); a timer only stops a missing event from losing keys. The
+2026-11-08 wording ("a timer never writes to the pty") was superseded by #1996; DECLINED.md has the
+decision.
 
 WHAT THIS CHECKS. It scans the input-path files in INPUT_PATH_FILES below and finds timers:
   Rust   `Timer::after` / `Timer::interval` / `spawn_after` / `tokio::time::sleep|timeout` /
@@ -17,7 +23,7 @@ WHAT THIS CHECKS. It scans the input-path files in INPUT_PATH_FILES below and fi
          pwsh `Start-Sleep` / `Wait-Event -Timeout`.
 Test files (*_test.rs, *_tests.rs, tests/ dirs) are exempt.
 
-EACH timer must (1) sit within 5 lines of a comment `give-up-net: <what it hands back / keeps held>`
+EACH timer must (1) sit within 5 lines of a comment `give-up-net: <what it hands back / keeps held / writes>`
 (Rust `//`, shell `#`), and (2) have its identifier in script/input_path_timers.allow
 (`path<TAB>identifier<TAB>what it does`). The identifier is the constant's name; for a call site
 with no constant (`Timer::after(delay)`, `sleep 5`) it is the enclosing function's name. A use of a
@@ -407,9 +413,11 @@ def run(root, files, allow_text, strict, listed=()):
 
 
 RULE = (
-    "Rule: a timer on the input path may only be a give-up net that hands text back to the editor or keeps\n"
-    "it held. It never writes to the pty, releases held keys, routes, commits or re-asks. Annotate it with\n"
-    "`give-up-net: <what it hands back / keeps held>` and add it to script/input_path_timers.allow."
+    "Rule: a timer on the input path may only be a give-up net: it hands text back to the editor, keeps it\n"
+    "held, or writes the held keys to the pty in typed order (owner ruling 2026-11-09, #1996). It never\n"
+    "discards or reorders a key, never chooses shell or agent, never submits an undecided line, never\n"
+    "re-asks. Annotate it with `give-up-net: <what it hands back / keeps held / writes>` and add it to\n"
+    "script/input_path_timers.allow."
 )
 
 

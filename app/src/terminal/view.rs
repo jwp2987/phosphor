@@ -880,7 +880,7 @@ struct EnterCommandBlock {
 /// A lost-job net only (#1664, busy-machine audit 2026-11-05): the cap is the classifier's CPU
 /// time (#1651), so this wall-clock net must not be what hands text back on a loaded machine.
 /// Was 500 ms; 2 s stays far above the 250 ms young cap.
-// give-up-net: lost-signal net of a young line's verdict wait: hands the line back to the editor, never submits it (#1577)
+// give-up-net: lost-signal net of a young line's verdict wait: the Enter does not run and its line stays in the editor with the keys held behind it (a bare Enter and its keys go to the pty); never submits the line (#1577, #1996)
 const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_secs(2);
 
 /// [`YOUNG_DETECTION_BACKSTOP`] for a buffer of `text_len` chars: grows with the text like the
@@ -15824,8 +15824,9 @@ impl TerminalView {
         self.arm_young_timer(id, delay, false, ctx);
     }
 
-    // give-up-net: the young Enter's compute-cap / wall-ceiling / backstop timers only hand the text
-    // back to the editor (keep_deferred_enter_text_hand_back); they never submit or write
+    // give-up-net: the young Enter's compute-cap / wall-ceiling / backstop timers never submit the
+    // line: it stays in the editor with the keys held behind it; only a bare Enter (empty line) and
+    // its keys go to the pty (keep_deferred_enter_text_hand_back, owner decision 2026-11-09, #1996)
     fn arm_young_timer(
         &mut self,
         id: u64,
@@ -15834,7 +15835,7 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let deadline = Instant::now() + delay;
-        // give-up-net: hands the young line back to the editor; never submits (see above)
+        // give-up-net: the young line and the keys behind it stay in the editor; never submits (see above)
         ctx.spawn(Timer::after(delay), move |me, _, ctx| {
             log_late_timer_wake("young detection wait", deadline);
             // #1206: only the wait this timer was armed for, and only while it still waits.
@@ -16159,7 +16160,7 @@ impl TerminalView {
     ) {
         /// #1353 phase 6: the one give-up of the event-driven hand-back, for a prompt cycle (or a
         /// report) that was expected after the interrupt and never came.
-        // give-up-net: logged give-up for an interrupt's expected prompt cycle that never came; hands input back via the hand-off, writes nothing
+        // give-up-net: logged give-up for an interrupt's expected prompt cycle or report that never came; clears the wait and logs only, the pty keeps input, nothing is written or handed back
         const INTERRUPT_GIVE_UP: Duration = Duration::from_secs(2);
         let (outcome, barrier, awaiting_cycle) = {
             let mut handoff = self.handoff.write();
@@ -41392,8 +41393,9 @@ const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// [`YOUNG_HOLD_GIVE_UP`]: crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP
 /// The give-up net of a deferred Enter waiting for the Tab that ran after the shell's report
 /// (#1659). Never the way the Enter is released (the completion's answer is): when it fires the
-/// line is handed back and nothing is written.
-// give-up-net: a Tab whose report never comes hands the line back; never runs the Enter (#1577)
+/// Enter is not run and its line stays in the editor with the keys held behind it (a bare Enter
+/// and its keys go to the pty, owner decision 2026-11-09, #1996).
+// give-up-net: a Tab whose report never comes: the Enter does not run and its line stays in the editor with the keys held behind it (a bare Enter and its keys go to the pty) (#1577, #1996)
 const REPORT_TAB_GIVE_UP: Duration = Duration::from_secs(3);
 
 const UNCOVERED_REPORT_PATIENCE: Duration =
