@@ -3865,3 +3865,123 @@ fn test_ris_resets_modes_and_keyboard_stack_to_a_new_grids_defaults_1599() {
     );
     assert!(grid.ansi_handler_state.keyboard_mode_stack.is_empty());
 }
+
+// ─── #1976: copying soft-wrapped lines ───────────────────────────────
+
+/// A 10-column grid holding `lines`, each ended by CR LF as a shell would end it. A line longer
+/// than the grid soft-wraps (WRAPLINE on the last cell of every row but its last).
+fn wrapped_copy_grid(lines: &[&str]) -> GridHandler {
+    let mut grid = GridHandler::new(
+        SizeInfo::new_without_font_metrics(12, 10),
+        MAX_SCROLL_LIMIT,
+        ChannelEventListener::new_for_test(),
+        false,
+        ObfuscateSecrets::No,
+        PerformResetGridChecks::default(),
+    );
+    for line in lines {
+        for c in line.chars() {
+            grid.input(c);
+        }
+        grid.carriage_return();
+        grid.linefeed();
+    }
+    grid
+}
+
+/// The text a copy of `start..=end` puts on the clipboard, read through both paths: the inline
+/// one and the off-thread snapshot (which a large selection uses). They must agree.
+fn copied_text(grid: &GridHandler, start: Point, end: Point) -> String {
+    let inline = grid.bounds_to_string(
+        start,
+        end,
+        false,
+        RespectObfuscatedSecrets::No,
+        false,
+        RespectDisplayedOutput::No,
+    );
+    let snapshot = grid
+        .bounds_to_text_snapshot(
+            start,
+            end,
+            RespectObfuscatedSecrets::No,
+            false,
+            RespectDisplayedOutput::No,
+        )
+        .render();
+    assert_eq!(snapshot, inline, "snapshot and inline copy differ");
+    inline
+}
+
+/// Everything in the grid, from the first cell to the last.
+fn copied_grid_text(grid: &GridHandler) -> String {
+    copied_text(
+        grid,
+        Point::new(0, 0),
+        Point::new(grid.total_rows() - 1, grid.columns() - 1),
+    )
+}
+
+/// #1976: a line the terminal soft-wrapped is one line on the clipboard; only the newline the
+/// program wrote separates it from the next line.
+#[test]
+fn copy_of_a_soft_wrapped_line_has_no_inserted_newlines_1976() {
+    // 26 letters in 10 columns: rows 0 and 1 wrap, row 2 holds the last 6; "tail" is row 3.
+    let grid = wrapped_copy_grid(&["abcdefghijklmnopqrstuvwxyz", "tail"]);
+    assert!(grid.row_wraps(0) && grid.row_wraps(1) && !grid.row_wraps(2));
+
+    assert_eq!(
+        copied_text(&grid, Point::new(0, 0), Point::new(3, 9)),
+        "abcdefghijklmnopqrstuvwxyz\ntail"
+    );
+    // The wrapped line alone, selected to the end of its last row.
+    assert_eq!(
+        copied_text(&grid, Point::new(0, 0), Point::new(2, 9)),
+        "abcdefghijklmnopqrstuvwxyz"
+    );
+    // A drag from the middle of one wrapped row to the middle of the next.
+    assert_eq!(
+        copied_text(&grid, Point::new(0, 3), Point::new(1, 4)),
+        "defghijklmno"
+    );
+    // A drag across both wrap points.
+    assert_eq!(
+        copied_text(&grid, Point::new(0, 8), Point::new(2, 1)),
+        "ijklmnopqrstuv"
+    );
+}
+
+/// #1976: a line exactly as wide as the grid did not wrap; its newline is kept (it must not be
+/// joined to the next line), and a line one cell wider wraps by one cell and stays one line.
+#[test]
+fn copy_keeps_the_newline_after_a_line_that_exactly_fills_the_width_1976() {
+    let grid = wrapped_copy_grid(&["0123456789", "next", "0123456789X", "last"]);
+    assert!(!grid.row_wraps(0), "an exactly full row is not a wrap");
+    assert!(grid.row_wraps(2), "one cell more wraps");
+
+    assert_eq!(
+        copied_text(&grid, Point::new(0, 0), Point::new(4, 9)),
+        "0123456789\nnext\n0123456789X\nlast"
+    );
+}
+
+/// #1976: after the pane is resized the rows are reflowed; the copied text is still the lines
+/// the program wrote, at a narrower and at a wider width.
+#[test]
+fn copy_of_wrapped_lines_is_unchanged_by_a_resize_1976() {
+    let lines = ["abcdefghijklmnopqrstuvwxyz", "tail"];
+    let want = "abcdefghijklmnopqrstuvwxyz\ntail";
+    assert!(copied_grid_text(&wrapped_copy_grid(&lines)).starts_with(want));
+
+    for columns in [7, 13, 40] {
+        let mut grid = wrapped_copy_grid(&lines);
+        grid.resize(SizeInfo::new_without_font_metrics(12, columns));
+        let text = copied_grid_text(&grid);
+        assert!(text.starts_with(want), "{columns} columns: copied {text:?}");
+        // Nothing but the blank rows below the text follows it.
+        assert!(
+            text[want.len()..].chars().all(|c| c == '\n' || c == '\r'),
+            "{columns} columns: copied {text:?}"
+        );
+    }
+}
