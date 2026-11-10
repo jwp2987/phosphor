@@ -26,6 +26,12 @@
 # sent - os_key_event), and the dispatch lines above give a second figure: key-downs that reached NSApplication and were never dispatched as a key
 # event. A Cmd chord the main menu takes (Cmd-V) is one of those by design, so the injector's own count of Cmd chords is allowed; anything past it is
 # a key the app received and did not dispatch, and is UNVERIFIABLE with its own sentence (loss_verdict).
+# Round 12 (#2041, docs/design/r12-macssh.md): a Control chord can be a menu key equivalent too. Ctrl-C with the input editor in front is the "Clear editor"
+# item's (CustomAction::ClearEditor), so the harness's own reset Ctrl-C, before and after every case, was 2 key-downs "never dispatched" and every macOS row
+# outside the loss cases was NOREF (97 of 99 in round 11). The app now names such a key-down itself:
+#   `input_order hop=keydown_menu ctrl=<bool> cmd=<bool>`      the main menu took it as an item's key equivalent (the item's action ran)
+# That line is a fourth, disjoint kind of "dispatched". The Cmd-chord allowance is what the app did NOT account for: it shrinks by the Cmd menu lines, so
+# no key is excused twice. A log without the line (a build before #2041) is judged exactly as before.
 # A paste chord is a key like any other now (it leaves a keydown_keybound line, or on macOS an os_key_event): it is no longer taken out of `sent`.
 import glob
 import re
@@ -37,6 +43,7 @@ _HOP_ENTER = re.compile(r"input_order hop=enter_begin deferred=(\w+)\b.* t=(\d+(
 _KEYBOUND = re.compile(r"input_order hop=keydown_keybound dispatch_seq=(\d+) key=(.*?) ctrl=\w+\b.* t=(\d+(?:\.\d+)?)")
 _CORE_ENTER = re.compile(r"input_order hop=core_enter stage=dispatch_result handled=(\w+)\b.* t=(\d+(?:\.\d+)?)")
 _OS_KEY = re.compile(r"input_order hop=os_key_event age_ms=\S+ enter=(\w+)\b.* t=(\d+(?:\.\d+)?)")
+_MENU = re.compile(r"input_order hop=keydown_menu ctrl=(\w+) cmd=(\w+)\b.* t=(\d+(?:\.\d+)?)")
 _ENTER_NAMES = ("enter", "return", "kp_enter", "numpadenter")
 # Cases whose whole point is key loss: a non-zero lost-before-app count there is flagged WARN so it is read next to their verdict.
 LOSS_CASES = ("key_loss_control", "enter_loss_control", "fast_typing", "ssh_connect_typing", "cadence")
@@ -106,12 +113,13 @@ def app_trace(log_path, t_from, t_to):
     """the key evidence beside app_keys() in [t_from, t_to] (see the header): dict(
          bound=[(wall_s, key)]   keys a binding took (`keydown_keybound`; modifier names excluded),
          bound_enters=n | None   Enters a binding took (`core_enter dispatch_result handled=true`); None when the trace has no core_enter lines at all,
-         os=(n, n_enter) | None  key-downs -[NSApplication sendEvent:] dequeued (`os_key_event`); None when the trace has none at all (not macOS)).
+         os=(n, n_enter) | None  key-downs -[NSApplication sendEvent:] dequeued (`os_key_event`); None when the trace has none at all (not macOS),
+         menu=(n, n_cmd)         key-downs the main menu took as a key equivalent (`keydown_menu`, #2041), and how many of them carried Cmd).
     None without a log."""
     groups = _groups(log_path)
     if not groups:
         return None
-    bound, n_be, have_core, n_os, n_os_enter, have_os = {}, 0, False, 0, 0, False
+    bound, n_be, have_core, n_os, n_os_enter, have_os, n_menu, n_menu_cmd = {}, 0, False, 0, 0, False, 0, 0
     for gi, gp in enumerate(groups):
         for f in _files(gp):
             try:
@@ -131,7 +139,11 @@ def app_trace(log_path, t_from, t_to):
                 if t_from <= float(m.group(2)) / 1000.0 <= t_to:
                     n_os += 1
                     n_os_enter += m.group(1) == "true"
-    return dict(bound=sorted(bound.values()), bound_enters=n_be if have_core else None, os=(n_os, n_os_enter) if have_os else None)
+            for m in _MENU.finditer(txt):
+                if t_from <= float(m.group(3)) / 1000.0 <= t_to:
+                    n_menu += 1
+                    n_menu_cmd += m.group(2) == "true"
+    return dict(bound=sorted(bound.values()), bound_enters=n_be if have_core else None, os=(n_os, n_os_enter) if have_os else None, menu=(n_menu, n_menu_cmd))
 
 
 def _enters_keyed(c):
@@ -160,13 +172,18 @@ def join(calls, keys, enter_hops=0, slack_before=0.5, slack_after=3.0, trace=Non
     bound = tr.get("bound") or []
     enter_bound = tr["bound_enters"] if tr.get("bound_enters") is not None else (enter_hops or 0)
     enters_kd = sum(1 for _t, _s, k in keys if k and k.lower() in _ENTER_NAMES)
-    dispatched = len(keys) + len(bound) + enter_bound
+    menu, menu_cmd = tr.get("menu") or (0, 0)
+    dispatched = len(keys) + len(bound) + enter_bound + menu
     out = dict(sent=sent, enters_sent=sent_enter, errs=errs, pastes=pastes, dispatched=dispatched, unbound=len(keys), bound=len(bound), enters_bound=enter_bound)
     if tr.get("os") is not None:
-        # macOS: the key-downs NSApplication dequeued are "reached the app"; the dispatch lines say what became of them
+        # macOS: the key-downs NSApplication dequeued are "reached the app"; the dispatch lines say what became of them. A key-down the menu took
+        # and the app named (keydown_menu) is dispatched; a Cmd chord the injector posted that left NO line of its own may still be a menu's
+        # (a build before #2041, or an item with a standard action), so only those are allowed, never the ones already counted.
         seen, enters_seen = tr["os"]
         undispatched = max(seen - dispatched, 0)
-        out.update(os_keys=seen, undispatched=undispatched, cmd_chords=cmd_chords, app_undelivered=max(undispatched - cmd_chords, 0))
+        allowed = max(cmd_chords - menu_cmd, 0)
+        out.update(os_keys=seen, undispatched=undispatched, cmd_chords=cmd_chords, menu=menu, menu_cmd=menu_cmd, cmd_allowed=allowed,
+                   app_undelivered=max(undispatched - allowed, 0))
     else:
         seen, enters_seen = dispatched, enters_kd + enter_bound
     out.update(seen=seen, lost=max(sent - seen, 0), extra=max(seen - sent, 0), enters_seen=enters_seen)
@@ -204,9 +221,11 @@ def loss_verdict(j, case_name=""):
                 "focus, or the injector)" % (max(lost, el), j["sent"], j["enters_sent"], j["enters_seen"]))
     if j.get("app_undelivered"):
         return ("injector accounting: %d key-down(s) reached the app (NSApplication sendEvent, hop=os_key_event) and were never dispatched as a key event "
-                "(%d reached it, %d dispatched; only the %d Cmd chord(s) the injector posted may be taken by a menu before the view) in a case that is not "
+                "(%d reached it, %d dispatched, of them %d as a menu key equivalent the app named with hop=keydown_menu; past those only %d of the %d Cmd "
+                "chord(s) the injector posted may be taken by a menu before the view) in a case that is not "
                 "a key-loss case; its checks passed on effects alone, so the pass cannot be trusted (stopped INSIDE the app: input method, a key-down "
-                "with no characters, a native panel, no key window)" % (j["app_undelivered"], j["os_keys"], j["dispatched"], j.get("cmd_chords") or 0))
+                "with no characters, a native panel, no key window; or a menu key equivalent on a build without the keydown_menu line, #2041)" % (
+                    j["app_undelivered"], j["os_keys"], j["dispatched"], j.get("menu") or 0, j.get("cmd_allowed", j.get("cmd_chords") or 0), j.get("cmd_chords") or 0))
     return None
 
 
@@ -225,8 +244,8 @@ def account(calls, log_path, case_name="", t_end=None, t_floor=None):
         j["sent"], j["seen"], j["lost"], j["enters_sent"], j["enters_seen"], ("; %d injector call(s) errored" % j["errs"]) if j["errs"] else "")
     txt += "; of the app's: %d unbound keydown/typed, %d taken by a key binding, %d Enter by a binding" % (j["unbound"], j["bound"], j["enters_bound"])
     if "os_keys" in j:
-        txt += "; macOS: %d key-down(s) reached NSApplication, %d dispatched as key events, %d not (%d Cmd chord(s) injected)" % (
-            j["os_keys"], j["dispatched"], j["undispatched"], j["cmd_chords"])
+        txt += "; macOS: %d key-down(s) reached NSApplication, %d dispatched as key events%s, %d not (%d Cmd chord(s) injected)" % (
+            j["os_keys"], j["dispatched"], (" (%d of them a menu key equivalent)" % j["menu"]) if j.get("menu") else "", j["undispatched"], j["cmd_chords"])
     if j["pastes"]:
         txt += "; %d of the keys are paste chord(s)" % j["pastes"]
     if j["extra"]:

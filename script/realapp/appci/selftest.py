@@ -2806,6 +2806,84 @@ def r10_accounting_counts_bound_keys_and_still_fails_a_really_lost_key():
 
 
 @check
+def r12_macos_menu_key_equivalent_is_a_dispatched_key():
+    """Round 12 (#2041, docs/design/r12-macssh.md): on macOS Ctrl-C with the input editor in front is the "Clear editor" menu item's key equivalent. The
+    menu takes it, the item's action runs, and no `keydown` / `keydown_keybound` line is written: the reset's two Ctrl-C per case read as "reached the
+    app and never dispatched", so 97 of the 99 NOREF rows of round 11's Mac run were this. The app now writes `hop=keydown_menu` for a key-down that
+    triggered a menu item; the accounting counts it as dispatched. Not blind: without the line (an older build, or a Ctrl-C that really went nowhere) the
+    row is UNVERIFIABLE as before, a plain key with no dispatch line is never excused by it, and a Cmd chord the app named is not allowed a second time."""
+    import injacct
+    import run as runmod
+    d = tempfile.mkdtemp()
+    try:
+        def kd(t, seq):
+            return "input_order keydown key=<1 chars> ctrl=false alt=false shift=false cmd=false t=%.3f seq=%d\n" % (t * 1000, seq)
+        def ce(t):
+            return "input_order hop=core_enter stage=dispatch_result handled=true pending=false t=%.3f\n" % (t * 1000)
+        def osk(t, enter="false", ctrl="false"):
+            return "input_order hop=os_key_event age_ms=0.400 enter=%s ctrl=%s t=%.3f\n" % (enter, ctrl, t * 1000)
+        def menu(t, ctrl="true", cmd="false"):
+            return "input_order hop=keydown_menu ctrl=%s cmd=%s t=%.3f\n" % (ctrl, cmd, t * 1000)
+        def cc(t):      # what round 11's log has for the reset's Ctrl-C: the app acted on it, with no dispatch line
+            return "input_order hop=ctrl_c_keydown powershell_setup_hold=Off t=%.3f\ninput_order hop=ctrl_c_route route=none t=%.3f\n" % (t * 1000, t * 1000 + 0.03)
+        def call(t0, chars, special, cmd=0, enters=0):
+            return dict(n=0, wall0=t0, wall1=t0 + 0.1, chars=chars, special=["%s@%.3f" % (s, t0) for s in special], enters_posted=enters, enters_want=enters,
+                        enter_wall=[t0] * enters, err=None, out=True, ref=False, cmd_chords=cmd)
+        # the reset's Ctrl-C, "ab", Return, the reset's Ctrl-C
+        calls = [call(300.0, 0, ["KEY8"]), call(301.0, 2, ["ENTER"], enters=1), call(302.0, 0, ["KEY8"])]
+        body = [osk(300.05, ctrl="true"), cc(300.056), osk(301.05), kd(301.051, 1), osk(301.07), kd(301.071, 2), osk(301.09, "true"), ce(301.091),
+                osk(302.05, ctrl="true"), cc(302.056)]
+        def write(name, lines):
+            p = os.path.join(d, name)
+            open(p, "w").write("".join(lines))
+            return p
+        # round 11's log (a build without the line): judged as before, 2 key-downs never dispatched, NOREF
+        old = write("old.log", body)
+        txt, j = injacct.account(calls, old, "ssh_nested_typeahead", t_end=303.0)
+        assert (j["sent"], j["seen"], j["lost"], j["os_keys"], j["dispatched"], j["undispatched"], j["menu"], j["app_undelivered"]) == (5, 5, 0, 5, 3, 2, 0, 2), (j, txt)
+        v = injacct.loss_verdict(j, "ssh_nested_typeahead")
+        assert v and "2 key-down(s) reached the app" in v and "keydown_menu" in v, v
+        assert injacct.loss_verdict(j, "ssh_connect_typing") is None       # a loss case keeps its own verdict, which is why that one row was PASS in round 11
+        # the same keys on a build that names the menu's key-downs: all 5 dispatched, the row is judged on its own checks
+        new = write("new.log", body[:2] + [menu(300.0561)] + body[2:] + [menu(302.0561)])
+        txt, j = injacct.account(calls, new, "ssh_nested_typeahead", t_end=303.0)
+        assert (j["os_keys"], j["dispatched"], j["undispatched"], j["menu"], j["menu_cmd"], j["app_undelivered"]) == (5, 5, 0, 2, 0, 0), (j, txt)
+        assert injacct.loss_verdict(j, "ssh_nested_typeahead") is None and "5 dispatched as key events (2 of them a menu key equivalent), 0 not" in txt, txt
+        r = cases.Result("ssh_nested_typeahead", "terminal")
+        runmod.account_case(r, calls, new, "ssh_nested_typeahead", 303.0)
+        assert not r.noref and not r.fails, r.notes
+        # NOT blind: one Ctrl-C the menu did not take (no line) is still a key that stopped inside the app
+        one = write("one.log", body[:2] + [menu(300.0561)] + body[2:])
+        _, j = injacct.account(calls, one, "x", t_end=303.0)
+        assert (j["undispatched"], j["menu"], j["app_undelivered"]) == (1, 1, 1) and "1 key-down(s) reached the app" in injacct.loss_verdict(j, "x"), j
+        r = cases.Result("x", "terminal")
+        runmod.account_case(r, calls, one, "x", 303.0)
+        assert r.noref and not r.fails, r.notes
+        # a menu line never excuses a PLAIN key with no dispatch line (the typed "a" here): the count is per key, not per kind
+        plain = write("plain.log", body[:2] + [menu(300.0561)] + body[2:3] + body[4:] + [menu(302.0561)])
+        _, j = injacct.account(calls, plain, "x", t_end=303.0)
+        assert (j["lost"], j["undispatched"], j["app_undelivered"]) == (0, 1, 1) and injacct.loss_verdict(j, "x"), j
+        # a menu line of another case (outside the window) is not counted
+        late = write("late.log", body + [menu(400.0), menu(401.0)])
+        _, j = injacct.account(calls, late, "x", t_end=303.0)
+        assert (j["menu"], j["app_undelivered"]) == (0, 2), j
+        # Cmd-V: named by the app (the Paste item is a custom item too) -> dispatched, and the Cmd allowance is used up by it, so a second key with no
+        # line is NOT excused; on a build without the line the allowance covers the Cmd-V only, as in round 10
+        calls2 = [call(310.0, 1, ["KEY9"], cmd=1)]
+        both = [kd(250.0, 9), osk(310.05), osk(310.07)]         # (an earlier key, so the log has a key trace;) Cmd-V and a typed key, neither with a dispatch line
+        _, j = injacct.account(calls2, write("v_new.log", both[:2] + [menu(310.051, ctrl="false", cmd="true"), both[2]]), "x", t_end=311.0)
+        assert (j["dispatched"], j["undispatched"], j["menu_cmd"], j["cmd_allowed"], j["app_undelivered"]) == (1, 1, 1, 0, 1), j
+        _, j = injacct.account(calls2, write("v_old.log", both), "x", t_end=311.0)
+        assert (j["dispatched"], j["undispatched"], j["cmd_allowed"], j["app_undelivered"]) == (0, 2, 1, 1), j
+        _, j = injacct.account(calls2, write("v_ok.log", both[:2] + [menu(310.051, ctrl="false", cmd="true"), both[2], kd(310.071, 1)]), "x", t_end=311.0)
+        assert (j["dispatched"], j["app_undelivered"]) == (2, 0) and injacct.loss_verdict(j, "x") is None, j
+        # other platforms: no os_key_event, nothing changes (the menu count is 0 and unused)
+        assert injacct.app_trace(old, 0, 1e9)["menu"] == (0, 0) and injacct.app_trace(new, 0, 1e9)["menu"] == (2, 0)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
 def r18e9_injector_accounting_spans_relaunches():
     """r18e9: ui_startup_time relaunches 5 times and the app log is overwritten each time; accounting over [earlier copies..., live log] counts every launch, and the
     per-launch seq counters do not collide"""
