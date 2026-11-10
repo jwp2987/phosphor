@@ -22,6 +22,10 @@ id warp_get_accessibility_contents(WarpHostView *);
 void warp_marked_text_updated(WarpHostView *, NSString *, NSRange);
 void warp_marked_text_cleared(WarpHostView *);
 void warp_frame_presented(uint64_t, uint64_t, BOOL, uint64_t, BOOL);
+uint64_t warp_key_frame_mark(WarpHostView *);
+BOOL warp_key_frame_begin(WarpHostView *, uint64_t);
+void warp_key_frame_finish(WarpHostView *, double);
+BOOL warp_redraw_request_already_drawn(WarpHostView *, uint64_t);
 
 // Draw-latency instrumentation (#1148). Intervals/events show up in Instruments under
 // "Points of Interest": keyDown -> displayLayer -> nextDrawable -> presented.
@@ -403,6 +407,10 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
 
 - (BOOL)keyDownImpl:(NSEvent *)event {
     uint64_t keyNowNs = warpNowNs();
+    // #1848: the window's latest redraw request before this key is handled; a later one means the
+    // key invalidated the window, and its frame is drawn when the handling ends (below).
+    BOOL keyFrameTracked = !testMode && self.readyForWarp;
+    uint64_t redrawRequestAtKeyStart = keyFrameTracked ? warp_key_frame_mark(self) : 0;
     // Tag the frame this key invalidates (see `warpNextFrameFromKey`). Return starts command
     // output that scrolls: only its own frame is tagged, the output frames after it are not.
     atomic_store(&warpNextFrameFromKey, YES);
@@ -470,11 +478,56 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
         }
     }
 
+    if (keyFrameTracked) [self drawKeyFrameNowSince:redrawRequestAtKeyStart];
+
     WARP_LOG_ENTER(event, "key_down_impl_exit",
                    @"keycode=%u ts=%.9f handled=%d text_to_insert_len=%lu has_marked_text=%d",
                    (unsigned)[event keyCode], (double)[event timestamp], (int)handled,
                    (unsigned long)[textToInsert length], (int)[self hasMarkedText]);
     return handled;
+}
+
+// #1848: draws the frame a key press invalidated as soon as the press has been handled, instead of
+// waiting for AppKit's next display pass. The redraw the press requested goes through
+// `dispatch_async` + `setNeedsDisplay:`, which AppKit serves with its display cycle: measured
+// 0-1 ms for half of the key frames and 6-9 ms (one 120 Hz interval) for the other half
+// (`hop=key_frame_sched`). Here the same `displayLayer:` runs at once; the posted requests the
+// press made are dropped when their blocks run (`setNeedsDisplayAsyncForRequest:`), but only if
+// this frame really went to the compositor. If it did not (the #1838 gate skipped it, the app is
+// borrowed, no drawable) nothing changes: those requests draw it as before.
+// Not used during a live resize or any other time the layer presents with the CA transaction
+// (that present belongs inside AppKit's display pass), or when the view is not in a window.
+// Kill switch: PHOSPHOR_MAC_KEY_FRAME_NOW=0 (read on the Rust side, `key_frame_now_enabled`).
+- (void)drawKeyFrameNowSince:(uint64_t)redrawRequestAtKeyStart {
+    // The key may have closed the window: the state is gone then.
+    if (testMode || !self.readyForWarp || self.window == nil) return;
+    CALayer *layer = self.layer;
+    if (![layer isKindOfClass:[CAMetalLayer class]]) return;
+    if (self.inLiveResize || ((CAMetalLayer *)layer).presentsWithTransaction) return;
+    // A frame is still on its way to the screen: this one could not be presented before it (the
+    // #1838 gate would skip it after the scene was built). Left to the display pass, which also
+    // keeps a burst of keys at one frame per presented frame instead of one scene build per key.
+    if (warp_frame_gate_unpresented((CAMetalLayer *)layer) >= 1) return;
+    if (!warp_key_frame_begin(self, redrawRequestAtKeyStart)) return;
+    uint64_t startNs = warpNowNs();
+    @try {
+        [self displayLayer:layer];
+    } @finally {
+        // Always ended, so a later key press is never refused as "inside another key frame".
+        if (self.readyForWarp) {
+            warp_key_frame_finish(self, (double)(warpNowNs() - startNs) / 1e6);
+        }
+    }
+}
+
+- (void)setNeedsDisplayAsyncForRequest:(uint64_t)request {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      // #1848: a key frame drawn since this request was made already shows it.
+      if (request != 0 && self.readyForWarp && warp_redraw_request_already_drawn(self, request)) {
+          return;
+      }
+      [self setNeedsDisplay:YES];
+    });
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {

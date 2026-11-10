@@ -915,6 +915,16 @@ impl Window {
         Some(resources.last_present_time())
     }
 
+    /// Whether presenting a frame never waits for the display (see
+    /// `Resources::present_never_waits`). `false` while the window has no renderer.
+    pub(super) fn present_never_waits(&self) -> bool {
+        let inner = self.inner.borrow();
+        inner
+            .as_ref()
+            .and_then(|inner| inner.rendering_resources.as_ref())
+            .is_some_and(|rendering| rendering.resources.present_never_waits())
+    }
+
     pub fn render(
         &self,
         new_scene: Option<Rc<Scene>>,

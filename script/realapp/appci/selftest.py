@@ -555,6 +555,35 @@ def ctrl_c_flood_ab_pure_parts_1838():
 
 
 @check
+def keyframe_ab_pure_parts_1848():
+    """#1848 A/B (latency_paint_ab): the arm environment, the per-arm summary from kl3 samples + the app's hops, the delta, and the WARNs about the A/B itself
+    (kill switch not applied, path never ran, most key frames not sent out)"""
+    import cases_keyframe_ab as kab
+    import render_hops as rh
+    assert kab.arm_env("off") == {"PHOSPHOR_MAC_KEY_FRAME_NOW": "0"} and kab.arm_env("on") == {}
+    ON = ["input_order hop=key_frame_now drawn=1 ms=4.10 t=1000000.0", "input_order hop=key_frame_now drawn=1 ms=4.30 t=1000100.0",
+          "input_order hop=key_frame_now drawn=0 ms=3.90 t=1000200.0",
+          "input_order hop=key_frame_sched ms=0.02 t=1000000.0", "input_order hop=key_frame_sched ms=0.04 t=1000100.0",
+          "input_order hop=key_presented submit_to_presented_ms=24.00 key_to_presented_ms=28.50 sync=0 wait_ms=0.10 t=1000030.0"]
+    OFF = ["input_order hop=key_frame_sched ms=7.80 t=1000000.0", "input_order hop=key_frame_sched ms=0.60 t=1000100.0",
+           "input_order hop=key_presented submit_to_presented_ms=24.00 key_to_presented_ms=32.20 sync=0 wait_ms=0.10 t=1000030.0"]
+    on = kab.ab_summary([30.0, 31.0, 32.0], rh.render_hop_metrics(ON))
+    off = kab.ab_summary([34.0, 35.0, 36.0], rh.render_hop_metrics(OFF))
+    assert on["key_frames_now"] == 3 and on["key_frames_now_drawn"] == 2 and on["key_frame_sched_p50"] == 0.03 and on["key_to_presented_p50"] == 28.5, on
+    assert off["key_frames_now"] == 0 and off["key_frame_sched_p50"] == 4.2 and off["p50"] == 35.0, off
+    d, w = kab.ab_verdict(on, off)
+    assert d == -4.0 and w == [], (d, w)
+    d, w = kab.ab_verdict(off, on)                                   # the arms swapped: the "off" arm drew key frames, the "on" arm none
+    assert d == 4.0 and len(w) == 2 and "did not reach the app" in w[0] and "no hop=key_frame_now" in w[1], w
+    mostly_missed = kab.ab_summary([30.0], rh.render_hop_metrics(ON[2:3] * 3 + ON[:1]))
+    d, w = kab.ab_verdict(mostly_missed, off)
+    assert len(w) == 1 and "3 of 4 key frames" in w[0], w
+    empty = kab.ab_summary([], {})
+    assert kab.ab_verdict(empty, empty) == (None, [])                # no samples: no delta, nothing claimed
+    assert "latency_paint_ab" in cases.PROVING and "latency_paint_ab" in winmap.NOT_WINDOWS and "latency_paint_ab" not in cases.SMOKE
+
+
+@check
 def render_latency_step_a_hops_parse():
     """render-latency step A: the new hop fields parse (key_presented, key_frame_sched, frame_skip_run key_frame_skipped, frame_drawn present_ms), the
     old frame_drawn line without present_ms still parses, a window filters by t=, an old build gives {}, and the present-mode arm helpers are right"""
@@ -581,13 +610,31 @@ def render_latency_step_a_hops_parse():
         "input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 t=10.0")
     # arms: A/B/C order, kept samples per arm, env, deltas
     sch = rh.arm_schedule(rh.ARMS, 30, 2, 3)
-    assert [a for a, _c, _d in sch] == ["default", "mailbox", "lat1"] * 2 and all(c == 18 and d == 3 for _a, c, d in sch), sch
+    assert [a for a, _c, _d in sch] == ["default", "keynow_off", "mailbox", "lat1"] * 2 and all(c == 18 and d == 3 for _a, c, d in sch), sch
+    assert rh.arm_env("keynow_off") == {"PHOSPHOR_KEY_FRAME_NOW": "0"}      # #1843: the kill-switch arm
     assert rh.arm_env("mailbox") == {"PHOSPHOR_PRESENT_MODE": "mailbox"} and rh.arm_env("lat1") == {"PHOSPHOR_FRAME_LATENCY": "1"} and rh.arm_env("default") == {}
     base = rh.arm_summary([10.0, 12.0, 14.0], [8.0, 9.0, 10.0], "input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 present_ms=9.0 t=1.0")
     mb = rh.arm_summary([6.0, 7.0, 8.0], [5.0, 6.0, 7.0], "")
     d = rh.arm_deltas(dict(default=base, mailbox=mb, lat1=rh.arm_summary([], [], "")))
     assert d["mailbox"] == dict(raw_p50_delta=-5.0, adjusted_p50_delta=-3.0) and d["lat1"] == dict(raw_p50_delta=None, adjusted_p50_delta=None), d
     assert base["present_ms"]["p50"] == 9.0 and mb["present_ms"] is None
+    # #1843 / #1848: key frames drawn at once. Linux `wait_ms=`, macOS `drawn= ms=`, the Linux switch-off line; an old build gives none of the names
+    K = ["input_order hop=key_frame_now wait_ms=0.3 t=1000000.0", "input_order hop=key_frame_now wait_ms=0.5 t=1000001.0",
+         "input_order hop=key_frame_now_off wait_ms=16.2 t=1000002.0",
+         "input_order hop=key_frame_now drawn=1 ms=4.26 t=1000003.0", "input_order hop=key_frame_now drawn=0 ms=3.90 t=1000004.0",
+         "input_order hop=key_frame_now wait_ms=9.9 t=5.0"]                                          # before t0
+    k = rh.render_hop_metrics(K, 1000.0)
+    assert k["key_frames_now"] == 4 and k["key_frames_now_drawn"] == 1 and k["key_frames_now_off"] == 1, k
+    assert k["key_frame_now_wait_ms"] == dict(n=2, p50=0.4, p95=0.5, max=0.5) and k["key_frame_now_ms"]["n"] == 2, k
+    assert "key_frames_now" not in m and "key_frames_now_drawn" not in rh.render_hop_metrics(K[:2])
+    on = rh.arm_summary([3.0, 3.2, 3.4], [2.0, 2.1, 2.2], "\n".join(K[:2]))
+    assert on["key_frames_now"] == 2 and on["key_frames_now_off"] == 0 and base["key_frames_now"] == 0, on
+    assert rh.key_frame_now_warns(dict(default=on, keynow_off=base)) == []
+    w = rh.key_frame_now_warns(dict(default=base, keynow_off=on))
+    assert len(w) == 2 and "did not reach the app" in w[0] and "no hop=key_frame_now" in w[1], w
+    w = rh.key_frame_now_warns(dict(default=rh.arm_summary([3.0], [2.0], "\n".join(K[:3])), keynow_off=base))
+    assert len(w) == 1 and "switched itself off" in w[0], w
+    assert rh.key_frame_now_warns(dict(default=rh.arm_summary([], [], ""), keynow_off=rh.arm_summary([], [], ""))) == []     # no samples: nothing to say
 
 
 @check

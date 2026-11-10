@@ -44,6 +44,10 @@ static inline BOOL warpIsEnterKeyDown(NSEvent *event) {
                        testMode:(BOOL)testMode;
 - (void)setAsyncCallback:(BOOL)shouldAsync;
 - (void)setPresentsWithTransaction:(BOOL)presentsWithTransaction;
+// Posts `setNeedsDisplay:YES` to the main queue for the redraw request numbered `request` (0 =
+// not numbered). When the posted block runs and a key frame has already drawn that request
+// (#1848), nothing is done.
+- (void)setNeedsDisplayAsyncForRequest:(uint64_t)request;
 - (BOOL)keyDownImpl:(NSEvent *)event;
 // Marks `event` (already run through keyDownImpl without being handled) so the keyDown: that
 // AppKit then sends for it is skipped instead of delivering the key a second time.

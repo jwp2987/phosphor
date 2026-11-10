@@ -167,3 +167,120 @@ fn key_frame_sched_detail_is_milliseconds() {
     assert_eq!(key_frame_sched_detail(1_234_000), "ms=1.23");
     assert_eq!(key_frame_sched_detail(0), "ms=0.00");
 }
+
+#[test]
+fn a_key_frame_is_due_only_when_the_key_press_requested_a_redraw() {
+    let requests = RedrawRequests::default();
+    let at_key_start = requests.latest();
+    // The key changed nothing in this window: no frame.
+    assert!(!requests.begin_key_frame(true, at_key_start));
+    let request = requests.note_request();
+    assert_eq!(request, 1, "numbers start at 1; 0 means untracked");
+    assert!(requests.begin_key_frame(true, at_key_start));
+}
+
+#[test]
+fn the_kill_switch_leaves_every_request_to_the_display_pass() {
+    let requests = RedrawRequests::default();
+    let at_key_start = requests.latest();
+    let request = requests.note_request();
+    assert!(!requests.begin_key_frame(false, at_key_start));
+    assert!(!requests.finish_key_frame());
+    assert!(!requests.already_drawn(request));
+}
+
+#[test]
+fn a_drawn_key_frame_covers_the_requests_made_before_it_began() {
+    let requests = RedrawRequests::default();
+    // An output frame was requested before the key and its posted block has not run yet.
+    let output = requests.note_request();
+    let at_key_start = requests.latest();
+    let key_down = requests.note_request();
+    let typed = requests.note_request();
+    assert!(requests.begin_key_frame(true, at_key_start));
+    requests.note_frame_submitted();
+    assert!(requests.finish_key_frame());
+    // The frame was built from the state after all three: none needs another display pass.
+    assert!(requests.already_drawn(output));
+    assert!(requests.already_drawn(key_down));
+    assert!(requests.already_drawn(typed));
+    // A request after the key frame is a new invalidation and is never dropped.
+    let later = requests.note_request();
+    assert!(!requests.already_drawn(later));
+}
+
+#[test]
+fn a_key_frame_that_was_not_drawn_covers_nothing() {
+    // The #1838 gate skipped it, the app was borrowed, or no drawable was vended: the posted
+    // requests must still reach AppKit, or the key would never be shown.
+    let requests = RedrawRequests::default();
+    let at_key_start = requests.latest();
+    let request = requests.note_request();
+    assert!(requests.begin_key_frame(true, at_key_start));
+    assert!(!requests.finish_key_frame());
+    assert!(!requests.already_drawn(request));
+}
+
+#[test]
+fn a_request_made_while_the_key_frame_draws_is_not_covered() {
+    // A scene build that invalidates the window again asks for a frame the key frame is not.
+    let requests = RedrawRequests::default();
+    let at_key_start = requests.latest();
+    let request = requests.note_request();
+    assert!(requests.begin_key_frame(true, at_key_start));
+    let during = requests.note_request();
+    requests.note_frame_submitted();
+    assert!(requests.finish_key_frame());
+    assert!(requests.already_drawn(request));
+    assert!(!requests.already_drawn(during));
+}
+
+#[test]
+fn a_key_frame_never_starts_inside_another() {
+    let requests = RedrawRequests::default();
+    let at_key_start = requests.latest();
+    requests.note_request();
+    assert!(requests.begin_key_frame(true, at_key_start));
+    // A nested key press handled while the first frame draws.
+    requests.note_request();
+    assert!(!requests.begin_key_frame(true, at_key_start));
+    requests.note_frame_submitted();
+    assert!(requests.finish_key_frame());
+    // The outer finish ended it; a second finish reports nothing drawn.
+    assert!(!requests.finish_key_frame());
+}
+
+#[test]
+fn an_untracked_request_is_never_dropped() {
+    let requests = RedrawRequests::default();
+    let at_key_start = requests.latest();
+    requests.note_request();
+    assert!(requests.begin_key_frame(true, at_key_start));
+    requests.note_frame_submitted();
+    assert!(requests.finish_key_frame());
+    assert!(!requests.already_drawn(0));
+}
+
+#[test]
+fn frames_drawn_outside_a_key_frame_cover_nothing() {
+    let requests = RedrawRequests::default();
+    let request = requests.note_request();
+    requests.note_frame_submitted();
+    assert!(!requests.already_drawn(request));
+    assert!(!requests.finish_key_frame());
+}
+
+#[test]
+fn only_zero_turns_the_key_frame_off() {
+    assert!(key_frame_now_enabled_from_env(None));
+    assert!(key_frame_now_enabled_from_env(Some("1")));
+    assert!(!key_frame_now_enabled_from_env(Some("0")));
+    assert!(!key_frame_now_enabled_from_env(Some("0\n")));
+}
+
+#[test]
+fn key_frame_now_detail_has_the_fields_the_harness_parses() {
+    // script/realapp/appci/render_hops.py _KEY_FRAME_NOW.
+    assert_eq!(key_frame_now_detail(true, 4.256), "drawn=1 ms=4.26");
+    assert_eq!(key_frame_now_detail(false, 0.0), "drawn=0 ms=0.00");
+}

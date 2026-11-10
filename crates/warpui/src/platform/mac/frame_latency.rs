@@ -280,6 +280,106 @@ pub(super) fn key_presented_detail(
     )
 }
 
+/// Kill switch for drawing a key's frame at the end of its key press (#1848):
+/// `PHOSPHOR_MAC_KEY_FRAME_NOW=0` restores the old behaviour (every frame waits for AppKit's
+/// display pass). On by default.
+pub(super) fn key_frame_now_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        key_frame_now_enabled_from_env(std::env::var("PHOSPHOR_MAC_KEY_FRAME_NOW").ok().as_deref())
+    })
+}
+
+pub(super) fn key_frame_now_enabled_from_env(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
+/// A window's redraw requests, numbered, so that the frame a key press draws at once can stand in
+/// for the display passes its own requests asked for (#1848).
+///
+/// Every request (`request_redraw`, `render_scene`, `schedule_redraw`, a frame capture) used to be
+/// one `dispatch_async` + `setNeedsDisplay:`, which AppKit serves on its next display pass:
+/// measured 0-1 ms for half of the key frames and 6-9 ms (one 120 Hz interval) for the other half
+/// (`hop=key_frame_sched`, docs/design/1843-1848-latency.md). A key press now draws its frame
+/// when its handling ends, without that wait. The requests it made are still posted, each with its
+/// number; when the posted block runs it asks [`Self::already_drawn`], and a request the key frame
+/// covered is dropped instead of drawing the same scene a second time.
+///
+/// Nothing here can lose a frame: a request is only ever dropped when a frame that started after
+/// it was handed to the compositor ([`Self::note_frame_submitted`] between
+/// [`Self::begin_key_frame`] and [`Self::finish_key_frame`]). A key frame that did not draw (the
+/// #1838 gate skipped it, the app was borrowed, no drawable) covers nothing, and the posted
+/// requests run as before. Main thread only.
+#[derive(Debug, Default)]
+pub(super) struct RedrawRequests {
+    /// Number of the latest request (0 = none yet).
+    latest: Cell<u64>,
+    /// Requests numbered up to this are shown by a key frame that was drawn.
+    drawn_through: Cell<u64>,
+    /// Frames handed to the compositor (a drawable acquired, about to be presented).
+    frames_submitted: Cell<u64>,
+    /// The key frame being drawn now: (latest request when it began, frames submitted before it).
+    key_frame: Cell<Option<(u64, u64)>>,
+}
+
+impl RedrawRequests {
+    /// A redraw is being requested; returns its number (never 0).
+    pub(super) fn note_request(&self) -> u64 {
+        let number = self.latest.get() + 1;
+        self.latest.set(number);
+        number
+    }
+
+    /// The latest request's number: taken when a key press begins, for [`Self::begin_key_frame`].
+    pub(super) fn latest(&self) -> u64 {
+        self.latest.get()
+    }
+
+    /// The renderer acquired a drawable and is about to present it.
+    pub(super) fn note_frame_submitted(&self) {
+        self.frames_submitted
+            .set(self.frames_submitted.get().wrapping_add(1));
+    }
+
+    /// The key press that began at `at_key_start` has been handled. Returns whether its frame is
+    /// drawn now: only when the press requested a redraw of this window, and never from inside
+    /// another key frame. On `true` the caller draws and then calls [`Self::finish_key_frame`].
+    pub(super) fn begin_key_frame(&self, enabled: bool, at_key_start: u64) -> bool {
+        if !enabled || self.key_frame.get().is_some() || self.latest.get() <= at_key_start {
+            return false;
+        }
+        self.key_frame
+            .set(Some((self.latest.get(), self.frames_submitted.get())));
+        true
+    }
+
+    /// The draw started by [`Self::begin_key_frame`] returned. Returns whether a frame was handed
+    /// to the compositor; if so the requests made before the draw began are covered by it.
+    /// Requests made while it drew (a scene build that invalidates again) are not.
+    pub(super) fn finish_key_frame(&self) -> bool {
+        let Some((through, submitted_before)) = self.key_frame.take() else {
+            return false;
+        };
+        let drawn = self.frames_submitted.get() != submitted_before;
+        if drawn {
+            self.drawn_through
+                .set(self.drawn_through.get().max(through));
+        }
+        drawn
+    }
+
+    /// Whether the posted request `number` is already on screen through a key frame.
+    pub(super) fn already_drawn(&self, number: u64) -> bool {
+        number != 0 && number <= self.drawn_through.get()
+    }
+}
+
+/// Detail of `hop=key_frame_now` (macOS): whether the frame was handed to the compositor and how
+/// long the synchronous draw took (scene build + encode).
+pub(super) fn key_frame_now_detail(drawn: bool, elapsed_ms: f64) -> String {
+    format!("drawn={} ms={elapsed_ms:.2}", u8::from(drawn))
+}
+
 static LIMITER: Mutex<SlowFrameLimiter> = Mutex::new(SlowFrameLimiter::new());
 
 fn now_ms() -> u64 {
