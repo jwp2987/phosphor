@@ -1071,6 +1071,15 @@ fn on_shell_determined<S: TerminalSurface>(
             .with_prompt_fact(Arc::new(move || {
                 super::terminal_attributes::shell_prompt_fact(fd, pid as i32)
             }));
+        // #2050: one `tcgetattr`: something reads a secret (canonical, echo off). Asked at a key
+        // or at output while a prompt's line editor has not started, so a precmd function's
+        // `read -s` gets its keys instead of the input editor. `PHOSPHOR_SECRET_READER=0` leaves
+        // it out, and nothing is asked.
+        if crate::terminal::model::typeahead_handoff::secret_reader_env_enabled() {
+            probe = probe.with_secret_read(Arc::new(move || {
+                super::terminal_attributes::tty_is_reading_secret(fd)
+            }));
+        }
         // #1392: whether everything the shell wrote before now is read and applied, so the
         // hook account can be set against the sample just taken (the pty reader counts into
         // the barrier; the master is asked whether it holds anything unread). Only for shells

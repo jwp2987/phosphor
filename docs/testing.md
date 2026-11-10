@@ -5062,3 +5062,33 @@ Found by reading and filed, not changed: #2046 (Ctrl-D is held for the whole of 
 `ctrl_c_pty_write bytes=1` after `ctrl_c_route route=pty`, no `CommandFinished` for the ssh block, and exact effect files (these rounds have never run
 on fish or nu, so a new finding is possible); `lab_enter_start.nu` PASS; `lab_enter_no_network_wait.nu` and `lab_fam_agent_context.nu` NOREF with
 their own reasons and no `exit` line; the four agent-mode nu rows FAIL as now. 4 FAIL expected instead of 21 if nothing new appears.
+
+## Round 13: a secret read by a precmd function on Linux and macOS (design `docs/design/r13-wlps1.md`; #2050; nothing compiled or run when written)
+
+- **Why.** Round 12 Linux Wayland (build/r12a), `precmd_secret_honor_ps1`, the only two failing rows, both arms (`hp0`, `hp1`) in both modes.
+  Verdict APP: where the prompt hold is not armed (everywhere but ConPTY) the Precmd hands input to the editor before the precmd functions
+  run, so the PIN was typed into the editor in clear text and its Enter ran it as a command (the `read` got the app's kill-line byte 0x10
+  and the PIN) or sent it to the agent. The case was right and is unchanged.
+- **Unit, `model/typeahead_handoff_tests.rs`** (fixtures `sampled_prompt_after_a_command` / `sampled_prompt_the_editor_owns`: the hand-off of
+  the round 12 Linux log at the question, with a probe that answers what one `tcgetattr` would):
+  `a_secret_read_at_a_prompt_takes_input_back_from_the_editor_and_gets_every_key` (nothing reads: no change; the tty reads a secret: the pty
+  owns input, six keys `WriteCounted` in order, no young Enter, no unanswered line, no commit while the reader has the tty; marker and signal:
+  `Committed`), `a_secret_read_seen_before_the_precmd_commits_keeps_input_with_the_pty`,
+  `the_tty_is_asked_for_a_secret_read_only_between_a_precmd_and_its_line_editor` (no probe as on ConPTY, marker parsed, a command running, a
+  reader already noted), `a_secret_reader_ends_on_events_and_its_unread_keys_are_the_shells_line` (`SendRequest` for keys typed after the
+  read's Enter; Preexec; next Precmd), `a_secret_read_ends_keys_following_the_editors_text` (#1658).
+- **View, `terminal/view_test.rs`** (fixture `sampled_prompt_the_editor_owns`):
+  `a_secret_read_at_a_prompt_takes_the_keys_from_the_focused_editor` (keys through the pane's sink with focus reported in the input's editor;
+  Legacy and Table; one pty write per key in typed order, the editor empty; the control arm with nothing reading a secret puts the keys in
+  the editor and writes nothing), `a_secret_question_at_a_prompt_takes_input_back_at_its_output` (the wakeup's look, before any key). The
+  pty-write recorder is read after the update, never inside it (the r13-pin2 rule).
+- **appci.** No case changed. `precmd_secret_honor_ps1` (PROVING) is the proof on Linux and macOS, `gitbash_precmd_secret` stays the proof
+  of #1923 / #2038 on Windows (no probe is installed there; nothing of this runs). Hops to read in the Linux log after `touch pp_<arm>_go.txt`:
+  `prompt_reader_asks by=tty_secret took_from_editor=true`, `secret_reader_takes_input site=output` (`site=key`: the tty was not yet set at
+  the question's wakeup; still a pass), `hand_route reason=prompt_reader bytes_len=1` per key, `prompt_reader_end why=line_editor_signal
+  line_dirty=false`, `handoff_decision decision=Committed`; on macOS (bash 3.2, no bracketed paste) `prompt_reader_end_retry` before the
+  decision. An `enter_begin` whose buffer holds the PIN, or a `kh_editor_action` for one of its keys, is a FAIL of this change.
+- **Kill switch.** `PHOSPHOR_SECRET_READER=0`: the probe is not installed and the app behaves as in round 12.
+- **Not covered, filed:** an echoing question from a precmd function on Unix (#2052); an agent conversation does not show the question
+  (#2053, the case's `question_on_screen_*` metric: false in the agent pass); an Enter as the very first key while the editor still has
+  focus (design note section 5).

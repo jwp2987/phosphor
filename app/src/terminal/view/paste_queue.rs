@@ -43,6 +43,7 @@ use warpui::{SingletonEntity as _, ViewContext};
 use super::dest_table::Replayed;
 use super::{AfterEnterInput, Event, KeyPathScope, TerminalView, held_bytes_through_last_enter};
 use crate::editor::{EditorAction, HeldPasteKey};
+use crate::features::FeatureFlag;
 use crate::terminal::input::{EnterDiscard, take_voided_enter_gate};
 use crate::terminal::input_queue::shadow::{DestClass, note_leaf as note_shadow_leaf};
 use crate::terminal::input_queue::table::{Class, Outcome};
@@ -2225,6 +2226,54 @@ impl TerminalView {
                 format!("reader_noted={noted}")
             });
         }
+    }
+
+    /// #2050: something reads a secret from the tty between a prompt's Precmd and its line editor
+    /// (a precmd function's `read -s`; canonical, echo off: an OS fact, sampled with one
+    /// `tcgetattr`, only where the platform samples the tty). On those platforms the Precmd has
+    /// already given input to the editor, so without this the PIN is typed into the editor and
+    /// its Enter runs it as a command, or sends it to the agent. The hand-off takes input back for
+    /// the pty and notes the reader of #2038; focus follows to the terminal, so the keys (the
+    /// Enter too, which the editor's key binding would otherwise take before the pane's sink sees
+    /// it) go to the reader. Asked at pty output (`site` "output": the question being printed is
+    /// the usual first event) and at a key the pane's sink is about to route (`site` "key": a
+    /// read that prints nothing, or a key typed before the output's wakeup ran).
+    ///
+    /// Returns whether a secret reader has the pane's keys now (noted here or before). No clock.
+    /// The model is never waited for: when it is busy at a key, focus follows at the next wakeup
+    /// and the sink routes by this answer meanwhile.
+    pub(super) fn hand_keys_to_a_secret_reader(
+        &mut self,
+        site: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return false;
+        }
+        {
+            let handoff = self.handoff.read();
+            if handoff.secret_reader_has_the_keys() {
+                return true;
+            }
+            if !handoff.secret_reader_look_due() {
+                return false;
+            }
+        }
+        let Some(took_from_editor) = self.handoff.write().take_input_for_secret_reader() else {
+            return false;
+        };
+        warpui::input_order::log_hop("secret_reader_takes_input", || {
+            format!("site={site} took_from_editor={took_from_editor}")
+        });
+        // The owner of input changed: a line pinned to the editor is over.
+        self.request_queue_pin_clear();
+        let model_free = self.model.try_lock().is_some();
+        if model_free {
+            self.redetermine_terminal_focus(ctx);
+        } else {
+            self.terminal_focus_redetermine_deferred = true;
+        }
+        true
     }
 
     /// #1584: the give-up of prompt hold `hold_id` with keys that may go back to the editor: the
