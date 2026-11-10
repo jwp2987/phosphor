@@ -5121,6 +5121,90 @@ fn unique_call_ids(calls: impl IntoIterator<Item = ToolCall>) -> Vec<ToolCall> {
     unique
 }
 
+/// Whether the chunk `next` carries on the call `prev` buffered under the same id, or is a
+/// different call that reuses the id (#2048).
+///
+/// Every genai adapter sends a call's chunks with the arguments accumulated so far, as a string
+/// (`openai/streamer.rs` `capture_tool_call`, `anthropic/streamer.rs` `ToolUse`, `openai_resp`,
+/// `bedrock`), so a later chunk of the SAME call has the same tool name and arguments that start
+/// with the earlier ones. A new name, or arguments that start over, is another call. Arguments
+/// that are not strings (Ollama sends each call whole, once) carry on only when they are equal.
+///
+/// A second call that repeats the first exactly (same id, name and arguments) cannot be told
+/// from a chunk sent twice and counts as the same call: nothing of it is lost, the one call
+/// that stays has those arguments. A buffered call with no name yet is not a call of its own
+/// either (the OpenAI adapter fills the name in from the first chunk that has one).
+fn continues_stream_call(prev: &ToolCall, next: &ToolCall) -> bool {
+    if prev.call_id != next.call_id {
+        return false;
+    }
+    if prev.fn_name != next.fn_name && !prev.fn_name.is_empty() {
+        return false;
+    }
+    match (prev.fn_arguments.as_str(), next.fn_arguments.as_str()) {
+        (Some(before), Some(now)) => now.starts_with(before),
+        _ => prev.fn_arguments == next.fn_arguments,
+    }
+}
+
+/// The tools the stream itself runs while it commits a reply, instead of queueing an action for
+/// the controller: the todo list is written, a search or a fetch goes out and is awaited, the
+/// codebase tools are answered from the request's snapshot (`get_relevant_files` by a model
+/// call of its own). They have no approval step, so nothing stands between the call and its
+/// effect but the commit.
+fn runs_inside_the_stream(tool_name: &str) -> bool {
+    tool_name == tools::todowrite::TOOL_NAME
+        || tool_name == tools::webfetch::TOOL_NAME
+        || tool_name == tools::websearch::TOOL_NAME
+        || tool_name == tools::codebase::TOOL_NAME
+        || tool_name == tools::get_relevant_files::TOOL_NAME
+}
+
+/// The result of an in-stream tool call ([`runs_inside_the_stream`]) of a reply whose body
+/// closed with no `End` (#2048, owner decision 2026-11-10): the call is kept and answered, the
+/// tool is NOT run. The app is about to report the reply as incomplete and ask again; a search
+/// sent, a page fetched or a todo list rewritten for it would be an effect of a reply the model
+/// never finished. `executed: false` and the hint are there for the same reason as on a
+/// rejected call: a model reads a structured result as "the tool ran and found this".
+fn incomplete_reply_result_payload(tool_name: &str) -> Value {
+    serde_json::json!({
+        "status": "not_executed",
+        "error": "reply_incomplete",
+        "tool": tool_name,
+        "executed": false,
+        "hint": "The reply that made this call was cut off before it finished (the provider \
+                 closed the response early), so NOTHING RAN and you have no result. Do not \
+                 treat this as an empty or negative result. Make the call again if you still \
+                 need it.",
+    })
+}
+
+/// The result of a call whose id an incomplete reply (no `End`) used for more than one call
+/// (#2048). Without the `End` there is no list of the reply's calls, only its chunks keyed by
+/// id, so the last call with the id is the one kept and `replaced_tools` (the tool names of the
+/// calls before it, in order) are gone. None of them ran; the model is told which calls it
+/// lost instead of finding one of them silently missing.
+fn reused_call_id_result_payload(
+    call_id: &str,
+    tool_name: &str,
+    replaced_tools: &[String],
+) -> Value {
+    serde_json::json!({
+        "status": "not_executed",
+        "error": "duplicate_tool_call_id",
+        "reason": "reply_incomplete",
+        "tool": tool_name,
+        "tool_call_id": call_id,
+        "replaced_calls": replaced_tools,
+        "executed": false,
+        "hint": "Your reply was cut off before it finished (the provider closed the response \
+                 early) and it used this tool_call_id for more than one call: this call and, \
+                 before it, the calls listed in `replaced_calls` (tool names, in order). NONE \
+                 of them ran and you have no result for any of them. Do not treat this as an \
+                 empty or negative result. Make each call again, one id per call.",
+    })
+}
+
 /// Test-only: runs [`tool_calls_to_dispatch`] on run_shell_command calls with `call_ids`, as
 /// `generate_byop_output` does at the end of a stream, and returns how many were dispatched.
 #[cfg(test)]
@@ -7676,6 +7760,10 @@ pub async fn generate_byop_output(
         // arrival order; the End event's captured calls carry the same empty ids and are
         // re-keyed to these (see `assign_empty_call_ids`).
         let mut invented_call_ids: Vec<String> = Vec::new();
+        // call_id -> the tool names of the calls a later call with the same id replaced in
+        // `tool_bufs`, in order (#2048). Read only when the body closes with no `End`: with one,
+        // the calls come from the captured content, where a repeated id is renamed.
+        let mut replaced_calls: HashMap<String, Vec<String>> = HashMap::new();
         // call_id → the id of the first-frame placeholder ToolCall message.
         // As soon as the first ToolCallChunk arrives and can be parsed, immediately emit a
         // placeholder card (so the UI can show "calling tool X" feedback before the stream's
@@ -8119,8 +8207,18 @@ pub async fn generate_byop_output(
                     }
                     // Same call_id, multiple chunks: the later one overwrites (genai has
                     // already merged the args).
-                    if !tool_bufs.contains_key(&call.call_id) {
-                        tool_order.push(call.call_id.clone());
+                    match tool_bufs.get(&call.call_id) {
+                        None => tool_order.push(call.call_id.clone()),
+                        // Not a later chunk of the buffered call but another call with its id:
+                        // the insert below replaces the first. Noted, so that a reply that
+                        // never gets its `End` can tell the model (#2048).
+                        Some(prev) if !continues_stream_call(prev, &call) => {
+                            replaced_calls
+                                .entry(call.call_id.clone())
+                                .or_default()
+                                .push(prev.fn_name.clone());
+                        }
+                        Some(_) => {}
                     }
                     tool_bufs.insert(call.call_id.clone(), call);
                 }
@@ -8351,6 +8449,13 @@ pub async fn generate_byop_output(
         unordered_tool_calls.sort_by(|a, b| a.call_id.cmp(&b.call_id));
         ordered_tool_calls.extend(unordered_tool_calls);
         let ordered_tool_calls = tool_calls_to_dispatch(&params, ordered_tool_calls);
+        // The body closed with no `End` and no error (the guard at the end of this block reports
+        // it). What was received is kept, text and calls, and the calls are answered, but
+        // nothing in this reply is RUN by the stream (#2048, owner decision 2026-11-10): see
+        // `incomplete_reply_result_payload`. Its other calls (commands, reads, edits) are not
+        // run either: only a finished exchange queues actions, and the resume answers them as
+        // cancelled.
+        let reply_incomplete = end_count == 0;
         for call in ordered_tool_calls {
             // Diagnostics: dumps the raw tool_call payload the model actually sent
             // (call_id / fn_name / the fn_arguments JSON verbatim + a type annotation),
@@ -8401,6 +8506,56 @@ pub async fn generate_byop_output(
                 );
             }
 
+            // An incomplete reply that used one id for several calls (#2048): the calls before
+            // this one were replaced in the buffer and are gone. This call is answered by the
+            // stream, for every tool, with a result that names them; it does not run. A card
+            // shown early under this id becomes the carrier, as for a call that fails its final
+            // parse below.
+            if reply_incomplete {
+                if let Some(replaced_tools) = replaced_calls.get(&call.call_id) {
+                    let args_str = if call.fn_arguments.is_string() {
+                        call.fn_arguments.as_str().unwrap_or("").to_owned()
+                    } else {
+                        call.fn_arguments.to_string()
+                    };
+                    log::warn!(
+                        "[byop] incomplete reply used one tool call id for {} calls; the model \
+                         is told, nothing ran: tool={} call_id={}",
+                        replaced_tools.len() + 1,
+                        tool_name_for_log(&call.fn_name),
+                        call.call_id
+                    );
+                    let payload =
+                        reused_call_id_result_payload(&call.call_id, &call.fn_name, replaced_tools);
+                    let content = serde_json::to_string(&payload)
+                        .unwrap_or_else(|_| r#"{"status":"not_executed"}"#.to_owned());
+                    let mut carrier = make_tool_call_carrier_message(
+                        &current_task_id,
+                        &request_id,
+                        &call.call_id,
+                        &call.fn_name,
+                        &args_str,
+                    );
+                    if let Some(placeholder_id) = tool_msg_ids.get(&call.call_id).cloned() {
+                        carrier.id = placeholder_id;
+                        yield Ok(make_update_message_event(
+                            &current_task_id,
+                            carrier,
+                            vec!["tool_call".to_owned(), "server_message_data".to_owned()],
+                        ));
+                    } else {
+                        final_messages.push(carrier);
+                    }
+                    final_messages.push(make_tool_call_result_message(
+                        &current_task_id,
+                        &request_id,
+                        call.call_id.clone(),
+                        content,
+                    ));
+                    continue;
+                }
+            }
+
             // The dispatch gate (#979, #1067), before every interceptor and before
             // `parse_incoming_tool_call`: a call to a tool this request did not offer is
             // answered with one carrier ToolCall + one error result and never runs.
@@ -8443,6 +8598,38 @@ pub async fn generate_byop_output(
                     &request_id,
                     call.call_id.clone(),
                     error_content,
+                ));
+                continue;
+            }
+
+            // An in-stream tool of an incomplete reply is answered, not run (#2048). After the
+            // dispatch gate, so a tool this request did not offer keeps its own refusal.
+            if reply_incomplete && runs_inside_the_stream(&call.fn_name) {
+                let args_str = if call.fn_arguments.is_string() {
+                    call.fn_arguments.as_str().unwrap_or("").to_owned()
+                } else {
+                    call.fn_arguments.to_string()
+                };
+                log::warn!(
+                    "[byop] in-stream tool not run, the reply has no End: tool={} call_id={}",
+                    tool_name_for_log(&call.fn_name),
+                    call.call_id
+                );
+                let content =
+                    serde_json::to_string(&incomplete_reply_result_payload(&call.fn_name))
+                        .unwrap_or_else(|_| r#"{"status":"not_executed"}"#.to_owned());
+                final_messages.push(make_tool_call_carrier_message(
+                    &current_task_id,
+                    &request_id,
+                    &call.call_id,
+                    &call.fn_name,
+                    &args_str,
+                ));
+                final_messages.push(make_tool_call_result_message(
+                    &current_task_id,
+                    &request_id,
+                    call.call_id.clone(),
+                    content,
                 ));
                 continue;
             }
@@ -9081,6 +9268,10 @@ pub async fn generate_byop_output(
         // been flushed — so the user keeps the text and is told it is incomplete instead of
         // being shown a truncated answer as a finished one. Yielding `Err` without a
         // `Finished` event is the same shape the mid-stream error path uses.
+        //
+        // Kept is not run (#2048): the commit above answered this reply's in-stream tools
+        // without running them (`reply_incomplete`), and told the model about an id the reply
+        // used for more than one call.
         if end_count == 0 {
             log::error!(
                 "[byop] stream ended without a terminal End event — truncated response. \
@@ -18702,6 +18893,118 @@ mod duplicate_call_id_tests {
         assert_eq!(ids, ["u1", "keep", "u2"]);
         let out = assign_empty_call_ids([call("", "a")], &[]);
         assert!(!out[0].call_id.is_empty());
+    }
+
+    fn chunk(id: &str, name: &str, args: &str) -> ToolCall {
+        ToolCall {
+            call_id: id.to_owned(),
+            fn_name: name.to_owned(),
+            fn_arguments: Value::String(args.to_owned()),
+            thought_signatures: None,
+        }
+    }
+
+    /// #2048: the stream buffers chunks by call id. A later chunk of one call (genai sends the
+    /// arguments accumulated so far) must stay that call; another call that reuses the id must
+    /// be seen as one, or it replaces the first without a trace when no `End` comes.
+    #[test]
+    fn a_later_chunk_carries_on_its_call_and_a_reused_id_is_another_call() {
+        let first = chunk("x", "grep", "");
+        // The same call, growing.
+        assert!(continues_stream_call(
+            &first,
+            &chunk("x", "grep", r#"{"qu"#)
+        ));
+        assert!(continues_stream_call(
+            &chunk("x", "grep", r#"{"qu"#),
+            &chunk("x", "grep", r#"{"queries":["a"]}"#)
+        ));
+        // A chunk sent twice (an empty delta) is still the same call.
+        assert!(continues_stream_call(
+            &chunk("x", "grep", r#"{"a":1}"#),
+            &chunk("x", "grep", r#"{"a":1}"#)
+        ));
+        // Another tool under the id: another call.
+        assert!(!continues_stream_call(
+            &chunk("x", "not_a_real_tool", "{}"),
+            &chunk("x", "read_shell_command_output", r#"{"command_id":"none"}"#)
+        ));
+        // The same tool with arguments that start over: another call.
+        assert!(!continues_stream_call(
+            &chunk("x", "grep", r#"{"queries":["a"]}"#),
+            &chunk("x", "grep", r#"{"queries":["b"]}"#)
+        ));
+        assert!(!continues_stream_call(
+            &chunk("x", "grep", r#"{"queries":["a"]}"#),
+            &chunk("x", "grep", "")
+        ));
+        // Whole-object arguments (Ollama): equal carries on, different is another call.
+        assert!(continues_stream_call(&call("x", "ls"), &call("x", "ls")));
+        assert!(!continues_stream_call(&call("x", "ls"), &call("x", "pwd")));
+        // A name that arrives after the first chunk names the same call.
+        assert!(continues_stream_call(
+            &chunk("x", "", ""),
+            &chunk("x", "grep", r#"{"qu"#)
+        ));
+        // Never across ids.
+        assert!(!continues_stream_call(
+            &chunk("x", "grep", ""),
+            &chunk("y", "grep", "")
+        ));
+    }
+
+    /// #2048, owner decision 2026-11-10: exactly the tools the stream runs by itself are held
+    /// back on a reply with no `End`. A tool the controller runs (after approval, from a
+    /// queued action) is not in the list: it is never queued for such a reply anyway.
+    #[test]
+    fn the_tools_the_stream_runs_itself_are_the_ones_an_incomplete_reply_does_not_run() {
+        for name in [
+            tools::websearch::TOOL_NAME,
+            tools::webfetch::TOOL_NAME,
+            tools::todowrite::TOOL_NAME,
+            tools::codebase::TOOL_NAME,
+            tools::get_relevant_files::TOOL_NAME,
+        ] {
+            assert!(runs_inside_the_stream(name), "{name}");
+        }
+        for name in [
+            "run_shell_command",
+            "read_files",
+            "grep",
+            "ask_user_question",
+            "",
+        ] {
+            assert!(!runs_inside_the_stream(name), "{name}");
+        }
+    }
+
+    /// The model must not read either answer as a result: both say outright that nothing ran,
+    /// and the reused-id one names the calls that were replaced.
+    #[test]
+    fn an_incomplete_reply_answers_say_that_nothing_ran() {
+        let held = incomplete_reply_result_payload("websearch");
+        assert_eq!(held["executed"], Value::Bool(false));
+        assert_eq!(held["error"], "reply_incomplete");
+        assert_eq!(held["tool"], "websearch");
+        assert!(
+            held["hint"]
+                .as_str()
+                .is_some_and(|h| h.contains("NOTHING RAN"))
+        );
+        // Not the marker the controller auto-resumes on, and no search-result shape.
+        assert_ne!(held["error"], "invalid_arguments");
+        assert!(held.get("results").is_none());
+
+        let replaced = vec!["not_a_real_tool".to_owned(), "grep".to_owned()];
+        let reused = reused_call_id_result_payload("call_fixed", "read_files", &replaced);
+        assert_eq!(reused["executed"], Value::Bool(false));
+        assert_eq!(reused["error"], "duplicate_tool_call_id");
+        assert_eq!(reused["tool_call_id"], "call_fixed");
+        assert_eq!(
+            reused["replaced_calls"],
+            serde_json::json!(["not_a_real_tool", "grep"])
+        );
+        assert!(reused["hint"].as_str().is_some_and(|h| h.contains("NONE")));
     }
 
     #[test]

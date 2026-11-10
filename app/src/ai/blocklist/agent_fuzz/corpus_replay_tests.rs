@@ -185,3 +185,61 @@ fn corpus_replays_with_the_allowlist_on() {
     }
     assert!(problems.is_empty(), "{}", problems.join("\n\n"));
 }
+
+/// #2048 (owner decision 2026-11-10): a reply whose body closes with no `End` runs none of the
+/// tools the stream runs by itself. `noend_in_stream_tools_do_not_run` is such a reply with a
+/// websearch, a webfetch and a todowrite (and one id used for two calls); the rig answers every
+/// dispatched search inside the process and counts it (`search_test_hook`), so "no search ran"
+/// is the count standing still across the case. The invariants (I4: every call of the reply is
+/// in the resume request with one result) are judged by the replay above.
+///
+/// The first half is the control: the same search in a reply WITH its `End` is dispatched and
+/// counted, so the second half cannot pass because searches never reach the hook in this rig.
+/// The count is per process, like the coverage table: run under nextest (one process per test).
+#[test]
+fn a_reply_that_closes_with_no_end_runs_no_search() {
+    use crate::ai::agent_providers::tools::web_runtime::search_test_hook;
+    use fake_llm::scenario::{Args, Call, CallId, Match, Reply, Turn};
+
+    let mut finished = Scenario::new(2048);
+    finished.turns.push(Turn {
+        when: Match::Nth { n: 0 },
+        reply: Reply::ToolCalls {
+            calls: vec![Call::new(CallId::Fresh, "websearch", Args::Valid)],
+        },
+        chaos: None,
+    });
+    finished.turns.push(Turn {
+        when: Match::Nth { n: 1 },
+        reply: Reply::Text {
+            text: "done".to_owned(),
+        },
+        chaos: None,
+    });
+    let before = search_test_hook::answered();
+    let report = run_case(&finished).unwrap_or_else(|failure| panic!("{failure}"));
+    assert!(
+        search_test_hook::answered() > before,
+        "control: a finished reply's search is dispatched"
+    );
+    assert!(report.requests >= 2, "control: the search result goes back");
+
+    let (_, cut_short) = corpus()
+        .into_iter()
+        .find(|(name, _)| name == "noend_in_stream_tools_do_not_run")
+        .expect("corpus/noend_in_stream_tools_do_not_run.json");
+    assert!(
+        cut_short.turns[0]
+            .chaos
+            .as_ref()
+            .is_some_and(|chaos| chaos.never_end),
+        "the scenario's first reply must close with no End"
+    );
+    let before = search_test_hook::answered();
+    run_case(&cut_short).unwrap_or_else(|failure| panic!("{failure}"));
+    assert_eq!(
+        search_test_hook::answered(),
+        before,
+        "a reply with no End dispatched its websearch"
+    );
+}

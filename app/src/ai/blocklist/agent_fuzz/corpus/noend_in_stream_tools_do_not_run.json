@@ -1,0 +1,84 @@
+{
+  "v": 1,
+  "name": "noend_in_stream_tools_do_not_run",
+  "seed": 2048,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "literal",
+              "id": "call_shared"
+            },
+            "name": "grep",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "websearch",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "duplicate_of",
+              "k": 0
+            },
+            "name": "file_glob",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "webfetch",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "todowrite",
+            "args": {
+              "kind": "empty_object"
+            }
+          }
+        ]
+      },
+      "chaos": {
+        "delay_ms": 0,
+        "context_overflow": false,
+        "never_end": true
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {}
+  },
+  "actor": []
+}

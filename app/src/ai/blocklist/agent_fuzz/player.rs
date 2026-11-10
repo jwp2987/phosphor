@@ -27,11 +27,17 @@ pub enum ReplyEnd {
     /// cards shown while the reply streamed are in the conversation.
     Broke,
     /// The body closed with no `End` and no error (`never_end` alone). The loop ends as if the
-    /// reply were complete, so the commit RUNS IN FULL, in-stream tools included, and only then
-    /// is the missing `End` reported as an error ("the partial content is not lost ...
+    /// reply were complete, so the commit yields every call of the reply, and only then is the
+    /// missing `End` reported as an error ("the partial content is not lost ...
     /// `final_messages` above has been flushed", the `end_count == 0` guard). There is no
     /// captured content, so calls are the stream's chunks accumulated by id: a repeated id is
     /// ONE call (the later chunk replaces the earlier), not renamed.
+    ///
+    /// Committed is not run (#2048, owner decision 2026-11-10): the tools the stream runs by
+    /// itself (websearch, webfetch, todowrite, the codebase tools) are answered "not executed"
+    /// and nothing is awaited, and the call that kept a repeated id is answered with the names
+    /// of the calls it replaced. Every call still has its place and one result, so what I4
+    /// sees of such a reply is what it saw before.
     ClosedEarly,
 }
 

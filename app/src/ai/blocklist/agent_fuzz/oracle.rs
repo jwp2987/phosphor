@@ -136,7 +136,8 @@ impl Oracle {
     /// all of them (`chat_stream.rs`, the single `final_messages` yield), and a tool the app
     /// runs inside the stream (websearch, webfetch) awaits its network call before that, so a
     /// reply the script emitted in full (with its `End`, or closed without one: both are
-    /// committed) may never have been committed. Later requests then hold
+    /// committed; the second runs no in-stream tool, #2048, so only the scripted delays keep
+    /// its stream open) may never have been committed. Later requests then hold
     /// nothing of it, or only the calls whose cards the app had already shown while the reply
     /// streamed ([`EmittedTurn::early_call_ids`]); that is the user's cancel, not a lost call.
     pub fn reply_cut(&mut self, request_index: usize) {
@@ -472,7 +473,7 @@ pub fn waits_for_the_user(
 /// | state of the reply | how the loop is left | in the last request |
 /// |---|---|---|
 /// | finished ([`ReplyEnd::Finished`]), not cut | `End`, commit, `Finished` | whole, in place; never passed over |
-/// | closed with no `End` ([`ReplyEnd::ClosedEarly`]), not cut | the body ends, the SAME commit, then the error | whole, in place (one call per id); never passed over |
+/// | closed with no `End` ([`ReplyEnd::ClosedEarly`]), not cut | the body ends, the commit of every call (none run by the stream, #2048), then the error | whole, in place (one call per id); never passed over |
 /// | either of the two, cut by the user (`cut`) | the cancel drops the stream, before or after the commit | whole, or absent, or a leading part of its early calls |
 /// | broke ([`ReplyEnd::Broke`]: failed open, disconnect, stall) | `yield Err; return`, no commit | absent, or a leading part of its early calls; never whole beyond them |
 ///
@@ -1231,8 +1232,10 @@ mod tests {
     /// The round 12 failure of both random fuzz tests (build/r12a): a reply of three call
     /// chunks (`call_fixed` an unknown tool, a websearch, `call_fixed` again) and then the body
     /// closes with no `End` (`never_end`). The app's stream loop ends as it does for a finished
-    /// reply, so the commit runs: one call per id, the search run inside the stream, everything
-    /// yielded, and only then the "ended without a terminal End" error and the resume. Every
+    /// reply, so the commit runs: one call per id, everything yielded (since #2048 the search
+    /// is answered "not executed" instead of run, and `call_fixed` is answered with the name of
+    /// the call it replaced; the ids are the same), and only then the "ended without a terminal
+    /// End" error and the resume. Every
     /// later request holds `[call_fixed, w]`. Fails on the check as it was: it took every reply
     /// without an `End` for one that was never committed, allowed only the early calls
     /// `[call_fixed]`, and said "the request holds [call_fixed, w], which are in no reply".
