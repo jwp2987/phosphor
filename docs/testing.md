@@ -3990,3 +3990,14 @@ false fails. Each fix below names its finding (1-12) / cross-cutting letter (A-F
   while the log holds a DIFFERENT line is `r.unverifiable` (status `noref`), never a pass with a contradicting note. `ssh_connect_typing`,
   `ssh_enter_then_immediate_command` and `ssh_nested_typeahead` pass their effect; the nested case's fixed 1 s sleep before the verdict is gone.
   Pin: the audit #4 block of `ssh_trial_facts_name_the_issue`.
+
+- **#5 / C (#1912) — injector accounting reads to the case's end, on Windows too, and a loss outside the loss cases is `noref`.**
+  `injacct.window(calls, t_end)` ends at the moment of accounting (the case's end) when that is later than the old "last injector call + 3 s"
+  (a held ssh-typeahead Enter or a slow-classifier Enter is processed later than 3 s and read as "Enter: sent 2, app saw 0"). `run.account_case`
+  runs on every backend that records its calls (the Windows backend always did; the run loop excluded it) against `ctx.log_path`. The row is no
+  longer only informational (this supersedes the "informational note" wording of the #1509 paragraph above): `injacct.loss_verdict` — lost-before-app
+  > 0, or fewer Enters seen than posted, on a case that is NOT in `injacct.LOSS_CASES`, with an app key trace present and no failure of its own —
+  makes the row `UNVERIFIABLE` (status `noref`): the case passed on its effect check while keys never reached the app. A failing case keeps its
+  failure, loss cases keep their `WARN loss case` note, paste-only rows and trace-less runs are not judged. Pin:
+  `audit5_accounting_window_runs_to_case_end_and_a_loss_outside_loss_cases_is_noref`. **Not yet run on a real build**: the first Windows pass
+  decides whether its call records and the app's key trace line up (a systematic mismatch there would show as many `noref` rows with the same count).
