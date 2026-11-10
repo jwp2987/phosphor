@@ -5205,3 +5205,12 @@ tests cover both values there.
   `write_to_pty_for_syncing_long_running_commands` while an Enter gate is open (needs a long-running command and an Enter gate in one
   pane; no fixture builds that today), and the delivery staying passive for such an entry (that half is #1893's
   `synced_ness_at_delivery_is_the_entrys_not_the_enclosing_arrivals`). No appci case: synced panes are not driven by the harness.
+- **#1998, every entry behind a dropped ssh hold is handed on or counted.** Unit, `terminal/view/ssh_queue_tests.rs` (pure, on
+  `dropped_entry_inputs`): `an_enter_and_pty_bytes_behind_a_dropped_hold_are_handed_on_by_every_path` (the issue's case: held text, an
+  Enter entry, a pty-bytes entry and typed text in one segment; the handed-back text is `ls\npwd\necho hi`, the local-shell write and
+  the give-up write are `ls\rpwd\recho hi`), `each_entry_kind_behind_a_dropped_hold_has_a_form_or_is_counted` (every `EntryKind` but a
+  paste against every `SshDropThen`: the hold's own forms unchanged, a held signal only at the give-up, control keys / sequences /
+  editor keys as the keys they are, pty bytes as bytes for a write and as split keys for text, non-UTF-8 bytes and passive `Raw` bytes
+  counted, a discard handing on only what it did), `the_kill_switch_restores_the_old_skips`. Not covered: `ssh_drop_detached` itself
+  with such entries in a real queue (whether legacy can put them behind the hold is still not established, so no fixture does), and the
+  paste arm, which is unchanged. Hop to read if it ever happens in a run: `kh_ssh_drop_no_form then=<..> entries=<n> kinds=<..>`.

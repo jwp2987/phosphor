@@ -256,6 +256,17 @@ impl EditorKeyPayload {
         }
     }
 
+    /// #1998: the key as the text it stands for, left in place: typed text as it is, an Enter as
+    /// `\r`. `None` for any other editor action (a cursor move, a deletion by display position:
+    /// no text form outside the editor) and once the key was delivered.
+    pub fn text_form(&self) -> Option<String> {
+        match self.0.borrow().as_ref() {
+            Some(HeldPasteKey::Text(text)) => Some(text.clone()),
+            Some(HeldPasteKey::Action(crate::editor::EditorAction::Enter)) => Some("\r".to_owned()),
+            Some(HeldPasteKey::Action(_)) | None => None,
+        }
+    }
+
     fn len(&self) -> usize {
         match self.0.borrow().as_ref() {
             Some(HeldPasteKey::Text(text)) => text.len(),
