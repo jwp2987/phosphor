@@ -2002,8 +2002,15 @@ def injector_accounting_parse_and_join():
     be3 = backend.WaylandBackend()
     be3.record_injection(["wtype", "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"], 300.0, 300.1)
     assert backend.count_pastes(["xdotool", "key", "ctrl+shift+v", "Return"]) == 1 and backend.count_pastes(["wtype", "-k", "v"]) == 0
+    # Round 10: a paste chord is ONE key the app logs as taken by a binding (hop=keydown_keybound). It is counted on both sides: the r18d8 "n/a" row
+    # took it out of `sent` because the bound key had no line the accounting read, which also hid a paste chord that never arrived.
     txt3, j3 = injacct.account(be3.calls, log2, "x")
-    assert j3["na"] and "n/a" in txt3, (j3, txt3)
+    assert (j3["sent"], j3["seen"], j3["lost"], j3["pastes"]) == (1, 0, 1, 1) and injacct.loss_verdict(j3, "x"), (j3, txt3)      # no line for it: lost
+    log3 = os.path.join(d, "p3.log")
+    open(log3, "w").write(kd("a", 200.01, 1) + "input_order hop=keydown_keybound dispatch_seq=7 key=<1 chars> ctrl=true alt=false shift=true cmd=false step=3 "
+                          "action_type=Paste t=%.3f\n" % 300050)
+    txt3, j3 = injacct.account(be3.calls, log3, "x")
+    assert (j3["sent"], j3["seen"], j3["lost"], j3["bound"]) == (1, 1, 0, 1) and injacct.loss_verdict(j3, "x") is None and "1 of the keys are paste" in txt3, (j3, txt3)
     assert injacct.account(be.calls, None, "x")[1]["seen"] is None                 # no trace: reported, not compared
     assert injacct.account([], log, "x") == (None, None)
 
@@ -2387,6 +2394,112 @@ def i1782_macos_paste_read_budget_is_raised_only_for_the_pasteboard_read():
     r = R()      # #1782 review F6: a macOS run with no read logged says so instead of passing silently
     assert cases.judge_paste_read(r, "input_order hop=ui_item kind=event ms=9 t=1\n", "macos", "big_paste") is None and not r.fails
     assert r.notes and "NOT judged" in r.notes[0], r.notes
+
+
+@check
+def r10_accounting_counts_bound_keys_and_still_fails_a_really_lost_key():
+    """Round 10 (docs/design/r10-injector.md): rounds 7-9 read every key a key binding took (the reset's Ctrl-C / Ctrl-U, Tab, Escape, paste chords) as
+    "lost before the app", with the same counts on macOS and Wayland. The app's evidence of one key is exactly one of: a `keydown` line (unbound), a
+    `keydown_keybound` hop (a binding took it), a `core_enter dispatch_result handled=true` hop (an Enter a binding took). With those counted a clean
+    case reads lost 0, and taking ANY one line away (a typed key, a bound chord, an Enter) reads lost 1 and is UNVERIFIABLE: the count is not blind.
+    macOS: `os_key_event` (NSApplication sendEvent) is "reached the app"; a key-down that reached it and was never dispatched is allowed only for the
+    Cmd chords the injector posted (a menu key equivalent), anything else is UNVERIFIABLE with its own sentence."""
+    import backend
+    import injacct
+    import run as runmod
+    d = tempfile.mkdtemp()
+    try:
+        def kd(k, t, seq):
+            return "input_order keydown key=%s ctrl=false alt=false shift=false cmd=false t=%.3f seq=%d\n" % (k, t * 1000, seq)
+        def kb(k, t, dseq, ctrl="true"):
+            return ("input_order hop=keydown_keybound dispatch_seq=%d key=%s ctrl=%s alt=false shift=false cmd=false step=2 action_type=X t=%.3f\n" % (dseq, k, ctrl, t * 1000))
+        def ce(t, handled="true"):
+            return ("input_order hop=core_enter stage=dispatch_keystroke chain_len=4 composing=false ctrl=false alt=false shift=false cmd=false t=%.3f\n" % (t * 1000 - 0.2)
+                    + "input_order hop=core_enter stage=dispatch_result handled=%s pending=false t=%.3f\n" % (handled, t * 1000))
+        def eb(t, deferred="false"):
+            return "input_order hop=enter_begin deferred=%s buffer=x input_type=Shell t=%.3f\n" % (deferred, t * 1000)
+        def osk(t, enter="false"):
+            return "input_order hop=os_key_event age_ms=0.400 enter=%s ctrl=false t=%.3f\n" % (enter, t * 1000)
+        # --- Linux shape: the reset (Ctrl-C, Ctrl-U), "ab", Tab, Return (the editor's), then Return while a program runs (goes to the pty: a keydown)
+        be = backend.X11Backend()
+        be.record_injection(["xdotool", "key", "ctrl+c"], 100.0, 100.1)
+        be.record_injection(["xdotool", "key", "ctrl+u"], 100.3, 100.4)
+        be.record_injection(["xdotool", "type", "--", "ab", "key", "Tab", "Return"], 101.0, 101.3)
+        be.record_injection(["xdotool", "key", "Return"], 102.0, 102.1)
+        lines = [kb("<1 chars>", 100.05, 1), kb("<1 chars>", 100.35, 2), kd("<1 chars>", 101.05, 1), "input_order typed_characters text=<1 chars> t=101051.000 seq=1\n",
+                 kd("<1 chars>", 101.10, 2), kb("tab", 101.15, 5, "false"), ce(101.20) + eb(101.2001), eb(101.25, "true"),
+                 ce(102.05, "false") + kd("enter", 102.0501, 3)]
+        log = os.path.join(d, "a.log")
+        open(log, "w").write("".join(lines))
+        txt, j = injacct.account(be.calls, log, "x", t_end=103.0)
+        assert (j["sent"], j["seen"], j["lost"], j["extra"], j["enters_sent"], j["enters_seen"]) == (7, 7, 0, 0, 2, 2), (j, txt)
+        assert (j["unbound"], j["bound"], j["enters_bound"]) == (3, 3, 1), j
+        assert injacct.loss_verdict(j, "x") is None and "3 taken by a key binding" in txt, txt
+        # the pre-round-10 count of the same log (keydown lines + enter_begin only): the three bound keys read as lost. That was the artifact.
+        w = injacct.window(be.calls, 103.0)
+        old = injacct.join(be.calls, injacct.app_keys(log, *w), injacct.app_enter_hops(log, *w))
+        assert (old["seen"], old["lost"]) == (4, 3), old
+        # NOT blind: drop any single key (the app never got it) and the row is lost 1 / UNVERIFIABLE. Index 3 is the typed_characters of key 2 (same
+        # seq: it goes with its keydown; alone it would still be one key, as for an input method), index 7 a deferred re-run of a held Enter (no key).
+        for i in (0, 1, 2, 4, 5, 6, 8):
+            p = os.path.join(d, "drop%d.log" % i)
+            body = lines[:i] + lines[i + (2 if i == 2 else 1):]
+            if i == 6:
+                body.append("input_order hop=core_enter stage=handle_window_event key_bindings_enabled=true focused_view=1 t=90000.000\n")      # the trace HAS core_enter lines
+            open(p, "w").write("".join(body))
+            _, jd = injacct.account(be.calls, p, "x", t_end=103.0)
+            assert jd["lost"] == 1 and "1 of 7" in injacct.loss_verdict(jd, "x"), (i, jd)
+            assert injacct.loss_verdict(jd, "key_loss_control") is None        # the loss cases keep their own verdict (and the WARN prefix)
+            assert injacct.account(be.calls, p, "key_loss_control", t_end=103.0)[0].startswith("WARN loss case: "), i
+            r = cases.Result("x", "terminal")
+            runmod.account_case(r, be.calls, p, "x", 103.0)
+            assert r.noref and not r.fails and any("UNVERIFIABLE" in n for n in r.notes), (i, r.notes)
+        r = cases.Result("x", "terminal")
+        runmod.account_case(r, be.calls, log, "x", 103.0)
+        assert not r.noref and not r.fails and r.metrics["injector"]["lost"] == 0, r.notes
+        # a lost Enter hidden by an extra key still shows in the Enter pair
+        p = os.path.join(d, "enter.log")
+        open(p, "w").write("".join(lines[:6] + [kd("<1 chars>", 101.22, 9)] + lines[7:]))
+        _, je = injacct.account(be.calls, p, "x", t_end=103.0)
+        assert (je["lost"], je["enters_sent"], je["enters_seen"]) == (0, 2, 1) and injacct.loss_verdict(je, "x"), je
+        # one bound chord logged once per launch with the same dispatch_seq is two keys (two app instances); the same line twice in one log is one
+        assert len(injacct.app_trace([log, log], 0, 200)["bound"]) == 6 and injacct.app_trace(None, 0, 1) is None
+        mod = os.path.join(d, "mod.log")
+        open(mod, "w").write(kb("shift", 100.05, 1) + kb("tab", 100.06, 2) + kb("tab", 100.06, 2))
+        assert [k for _t, k in injacct.app_trace(mod, 0, 200)["bound"]] == ["tab"]
+        # --- macOS shape: Ctrl-C (bound), "ab", Cmd-V (the menu takes it: os_key_event only), Return through the k: op (KEY36), Return through e:
+        mb = backend.MacBackend()
+        assert mb.cmd_chords(["k:9:8:0", "k:8:2:0", "k:36:0:0", "t:a:b:5:5", "e:0", "k:9:9:0"]) == 2
+        def call(t0, chars, special, cmd=0, enters=0):
+            return dict(n=0, wall0=t0, wall1=t0 + 0.1, chars=chars, special=["%s@%.3f" % (s, t0) for s in special], enters_posted=enters, enters_want=enters,
+                        enter_wall=[t0] * enters, err=None, out=True, ref=False, cmd_chords=cmd)
+        calls = [call(200.0, 0, ["KEY8"]), call(201.0, 2, []), call(202.0, 0, ["KEY9", "KEY36"], cmd=1), call(203.0, 0, ["ENTER"], enters=1)]
+        mlines = [osk(200.05), kb("<1 chars>", 200.051, 1), osk(201.05), kd("<1 chars>", 201.051, 1), osk(201.07), kd("<1 chars>", 201.071, 2),
+                  osk(202.05), osk(202.07, "true"), ce(202.071), osk(203.05, "true"), ce(203.051)]
+        mlog = os.path.join(d, "m.log")
+        open(mlog, "w").write("".join(mlines))
+        txt, j = injacct.account(calls, mlog, "x", t_end=204.0)
+        assert (j["sent"], j["seen"], j["lost"], j["enters_sent"], j["enters_seen"]) == (6, 6, 0, 2, 2), (j, txt)        # KEY36 is an Enter the injector posted
+        assert (j["os_keys"], j["dispatched"], j["undispatched"], j["cmd_chords"], j["app_undelivered"]) == (6, 5, 1, 1, 0), j
+        assert injacct.loss_verdict(j, "x") is None and "6 key-down(s) reached NSApplication, 5 dispatched" in txt, txt
+        # a key macOS never handed to the app (no os_key_event): lost before the app, whatever it was
+        for i in (0, 2, 6, 7, 9):
+            p = os.path.join(d, "mdrop%d.log" % i)
+            open(p, "w").write("".join(mlines[:i] + mlines[i + 1:]))
+            _, jd = injacct.account(calls, p, "x", t_end=204.0)
+            assert jd["lost"] == 1 and "never reached the app's key trace" in injacct.loss_verdict(jd, "x"), (i, jd)
+        # a plain key that reached NSApplication and was never dispatched: not lost before the app, stopped inside it. Only Cmd chords are allowed that.
+        p = os.path.join(d, "minside.log")
+        open(p, "w").write("".join(mlines[:3] + mlines[4:]))
+        _, ji = injacct.account(calls, p, "x", t_end=204.0)
+        assert (ji["lost"], ji["undispatched"], ji["app_undelivered"]) == (0, 2, 1), ji
+        v = injacct.loss_verdict(ji, "x")
+        assert v and "never dispatched as a key event" in v and "INSIDE the app" in v, v
+        r = cases.Result("x", "terminal")
+        runmod.account_case(r, calls, p, "x", 204.0)
+        assert r.noref and not r.fails, r.notes
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 @check

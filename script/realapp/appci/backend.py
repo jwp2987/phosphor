@@ -928,6 +928,7 @@ class MacBackend(Backend):
         rec = dict(n=len(self.calls), wall0=t0, wall1=t1, enters_want=sum(1 for o in ops if o.split(":")[0] == "e"),
                    enter_wall=[], post_wall=[], post_mach_ms=[], clock=None, chars=0, special=[], err=err, out=False,
                    ref=bool(self.guard_override))      # r18u8: keys aimed at the reference terminal (interleaved latency) are not Phosphor's; injacct.join skips ref calls
+        rec["cmd_chords"] = self.cmd_chords(ops)
         try:
             lines = open(self.outf, errors="replace").read().splitlines()
         except OSError:
@@ -971,6 +972,18 @@ class MacBackend(Backend):
                         (" ERR=" + err) if err else "", " ".join(rec["special"])))
             except OSError:
                 pass
+
+    @staticmethod
+    def cmd_chords(ops):
+        """How many of htype2's k:CODE:MODS:GAP ops carry Command (MODS bit 8). Round 10 (injacct): a Cmd chord can be a main-menu key equivalent
+        (Cmd-V), which AppKit takes after -[NSApplication sendEvent:] and before the view, so the app logs its os_key_event and no key dispatch
+        line. The accounting allows at most this many such key-downs per case; every other key-down must be dispatched."""
+        n = 0
+        for o in ops:
+            p = o.split(":")
+            if p[0] == "k" and len(p) >= 3 and p[2].isdigit() and int(p[2]) & 8:
+                n += 1
+        return n
 
     def inject_enter(self, idx):
         if idx is None or idx < 0 or idx >= len(self.calls):
