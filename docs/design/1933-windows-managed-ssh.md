@@ -133,7 +133,7 @@ Unchanged machinery, now reached from Windows:
 
 Decided locally, BEFORE ssh starts (wrapper prints `PlainSSHFallback`, the existing verdict):
 `PHOSPHOR_MSYS_MANAGED_SSH=0` (kill switch), stdin or stdout not a terminal, a user
-`RemoteCommand` or `LocalCommand`, no nonce, a Windows OpenSSH server (3.6).
+`RemoteCommand` or `LocalCommand`, no nonce, a server that is not known to be POSIX OpenSSH (3.6).
 Decided at stage 4: typed-ahead keys (4b); the console ending (no terminal) while the token is
 awaited (4b with what was read).
 Decided remotely: no mode byte within 20 s (the one clock in the design, a give-up net on the
@@ -143,17 +143,38 @@ ssh fails before authenticating (bad password, unreachable, Ctrl-C): no LocalCom
 block ends, the window ends as a failed connect does today (held keys, if any, become editor text
 / run locally per the existing rules; in pass-through nothing is held).
 
-### 3.6 Windows servers
+### 3.6 Which servers get the managed session (owner decision 2026-11-09: POSIX OpenSSH only)
 
 The multiplexed path asks the remote "are you cmd/PowerShell" over the master (#1035) before it
-sends a POSIX bootstrap. One connection cannot ask first. Without a guard, Git Bash to a Windows
-OpenSSH server would print "'export' is not recognized" and close. Guard: the server's SSH
-identification string. `ssh-keyscan -T 5 -t ed25519 -p <port> <hostname>` (host and port as
-`ssh -G` resolves them) prints it as a comment before any key exchange result and never
-authenticates, prompts or writes `known_hosts`. `OpenSSH_for_Windows` means plain ssh. The answer
-goes into the existing 10-minute probe cache (same key, same file). Skipped (inconclusive, managed
-as on Unix) with a `ProxyJump` / `ProxyCommand`, which keyscan cannot follow, or without
-`ssh-keyscan`.
+sends a POSIX bootstrap. One connection cannot ask first, and a server that cannot run the
+bootstrap command prints an error and closes the session (Windows OpenSSH: "'export' is not
+recognized"; network gear: its own CLI's error). Before #1933 every ssh from Git Bash was plain,
+so all of those worked. The rule is therefore an allow-list, not a deny-list: the session is
+managed ONLY when the server's SSH identification string names POSIX OpenSSH. Everything else is
+plain ssh exactly as before #1933.
+
+`ssh-keyscan -T 5 -t ed25519 -p <port> <hostname>` (host and port as `ssh -G` resolves them)
+prints the identification string as a comment before any key exchange result and never
+authenticates, prompts or writes `known_hosts`.
+
+| answer | session |
+|---|---|
+| `SSH-2.0-OpenSSH_<digit>...` or `SSH-1.99-OpenSSH_<digit>...`, without `for_Windows` | managed (one connection) |
+| `SSH-2.0-OpenSSH_for_Windows_...` | plain |
+| any other identification string (network gear, Dropbear, other implementations, a name that only starts like OpenSSH) | plain |
+| no answer within 5 s, no `ssh-keyscan`, a `ProxyJump` / `ProxyCommand` (keyscan cannot follow it) | plain |
+
+A definite answer goes into the existing 10-minute probe cache (same key, same file); "no
+answer" is never cached, so the next ssh asks again.
+
+Dropbear is deliberately not on the allow-list: its usual hosts are BusyBox systems whose login
+shell is `ash`, where the bootstrap would end in an unmanaged shell anyway, and whose `stty` /
+`dd` (the mode-byte read, 3.3) are not guaranteed. Nothing to gain, something to break.
+
+What the allow-list cannot see: a host that runs real OpenSSH but gives the user a restricted or
+non-POSIX login shell (some appliances). It gets the bootstrap command, as it does from Linux and
+macOS today when their probe is inconclusive. Workaround: `PHOSPHOR_MSYS_MANAGED_SSH=0` or
+`command ssh`. And the cost of the rule: a POSIX server behind a jump host is plain from Git Bash.
 
 ### 3.7 What is lost compared with the multiplexed session
 
@@ -221,11 +242,11 @@ takes the keyscan branch only for an empty control path, which only the msys pat
    put T at the FRONT of the app's held keys and stay managed (then T goes through the first-prompt
    hand-over like on Unix). It needs a front insert into the one input queue behind the connect
    gate; it was not attempted blind. Filed as #1959.
-2. The keyscan guard is one extra TCP connect + banner per destination per 10 minutes.
+2. The keyscan probe is one extra TCP connect + banner per destination per 10 minutes.
 3. No banner tells the user the session has no helper; the log says so.
-4. msys zsh / fish panes keep plain ssh; a non-POSIX server that is not Win32-OpenSSH, or one
-   behind a jump host, is not recognised before the bootstrap is sent (as on Unix when the probe is
-   inconclusive). Points 2-4 are #1960.
+4. msys zsh / fish panes keep plain ssh. Decided 2026-11-09: only POSIX OpenSSH servers are
+   managed (3.6); what is left of that point (jump hosts are plain, an OpenSSH host with a
+   non-POSIX login shell is not recognised) is in #1960 with points 2-3.
 
 ## 6. Tests
 

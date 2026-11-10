@@ -4345,11 +4345,12 @@ fn test_zsh_env_script_hex_constants_decode_to_the_script() {
 /// never starts a ControlMaster (#1551). With a terminal on both ends it runs ONE managed ssh: no
 /// master and no control path, ssh's LocalCommand as the event between login and session, a
 /// nonce in the `auth` stage hook and in the sync token, and a remote command that reads its mode
-/// byte before anything else and announces `single_connection`. A Windows OpenSSH server (its
-/// SSH identification string, read by ssh-keyscan), a user's own LocalCommand and the kill switch
-/// run the user's plain ssh, untouched, with the `PlainSSHFallback` verdict. Behind a ProxyJump
-/// keyscan is not asked at all. (The #1551 `msys2` case of the test above still pins "no terminal:
-/// plain ssh, no config read".)
+/// byte before anything else and announces `single_connection`. That only for a server whose SSH
+/// identification string (read by ssh-keyscan) names POSIX OpenSSH (owner 2026-11-09). Any other
+/// server (Windows OpenSSH, network gear, Dropbear, a look-alike name), no answer, a server
+/// behind a ProxyJump (keyscan is not asked at all), a user's own LocalCommand and the kill
+/// switch run the user's plain ssh, untouched, with the `PlainSSHFallback` verdict. (The #1551
+/// `msys2` case of the test above still pins "no terminal: plain ssh, no config read".)
 #[test]
 #[cfg(unix)]
 fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
@@ -4390,12 +4391,46 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
             single: true,
             keyscan_runs: true,
         },
+        // Owner 2026-11-09: managed ONLY for a POSIX OpenSSH banner. No answer, a server that is
+        // not OpenSSH and a server behind a jump host (keyscan cannot follow) run the plain ssh.
+        Case {
+            name: "old-posix-openssh",
+            banner: "# h:22 SSH-1.99-OpenSSH_3.9p1",
+            g_extra: "",
+            kill_switch: false,
+            single: true,
+            keyscan_runs: true,
+        },
         Case {
             name: "no-banner",
             banner: "",
             g_extra: "",
             kill_switch: false,
-            single: true,
+            single: false,
+            keyscan_runs: true,
+        },
+        Case {
+            name: "network-gear",
+            banner: "# h:22 SSH-2.0-Cisco-1.25",
+            g_extra: "",
+            kill_switch: false,
+            single: false,
+            keyscan_runs: true,
+        },
+        Case {
+            name: "dropbear",
+            banner: "# h:22 SSH-2.0-dropbear_2022.83",
+            g_extra: "",
+            kill_switch: false,
+            single: false,
+            keyscan_runs: true,
+        },
+        Case {
+            name: "openssh-lookalike",
+            banner: "# h:22 SSH-2.0-OpenSSH_like",
+            g_extra: "",
+            kill_switch: false,
+            single: false,
             keyscan_runs: true,
         },
         Case {
@@ -4408,10 +4443,10 @@ fn msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh() {
         },
         Case {
             name: "behind-a-jump",
-            banner: "# h:22 SSH-2.0-OpenSSH_for_Windows_9.5",
+            banner: "# h:22 SSH-2.0-OpenSSH_9.6",
             g_extra: "proxyjump jump\n",
             kill_switch: false,
-            single: true,
+            single: false,
             keyscan_runs: false,
         },
         Case {

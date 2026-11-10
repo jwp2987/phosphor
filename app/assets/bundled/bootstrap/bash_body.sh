@@ -2152,8 +2152,9 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # #1933: the one-connection session needs ssh's LocalCommand for itself (a user's own is
             # never overridden), a nonce the server never sees (it authenticates the local hooks of
             # this invocation), and a POSIX remote: one connection cannot ask the remote first
-            # (#1035), so a Windows OpenSSH server is recognised by its SSH identification string
-            # (warp_ssh_msys_banner_probe, cached like the #1136 probe). Any "no" runs plain ssh.
+            # (#1035), so the session is managed ONLY for a server whose SSH identification string
+            # names POSIX OpenSSH (owner 2026-11-09; warp_ssh_msys_banner_probe, cached like the
+            # #1136 probe). Every other answer, and no answer, runs plain ssh as before #1933.
             local warp_sync_nonce=""
             if [[ $warp_single -eq 1 ]]; then
                 local warp_user_local_command
@@ -2624,14 +2625,18 @@ fi
                 -t "$@" "$remote_command"
         }
 
-        # #1933: the non-POSIX question without a master: the server's SSH identification string,
-        # read by ssh-keyscan from the host and port `ssh -G` resolved ($warp_ssh_g, the wrapper's
+        # #1933: the POSIX question without a master: the server's SSH identification string, read
+        # by ssh-keyscan from the host and port `ssh -G` resolved ($warp_ssh_g, the wrapper's
         # capture, through dynamic scope). keyscan prints it as a comment before any key, never
-        # authenticates, never prompts and writes no known_hosts. Sets warp_ssh_probe_verdict:
-        # "nonposix" for Win32-OpenSSH (its default shells cannot run the bootstrap), "posix" for
-        # any other server that answered, empty (inconclusive, never cached, managed as on Unix)
-        # without ssh-keyscan, without an answer, or behind a ProxyJump / ProxyCommand, which
-        # keyscan cannot follow.
+        # authenticates, never prompts and writes no known_hosts. Owner rule 2026-11-09: the
+        # one-connection session is managed ONLY for a banner that names POSIX OpenSSH
+        # (`SSH-2.0-OpenSSH_<digit>`; `SSH-1.99-` is an old server that offers both protocols).
+        # Sets warp_ssh_probe_verdict: "posix" for that banner; "nonposix" for any other server
+        # that answered (Win32-OpenSSH, whose default shells cannot run the bootstrap; network
+        # gear; Dropbear, whose usual BusyBox hosts would gain nothing from the bootstrap; any
+        # implementation not known); empty (never cached) without ssh-keyscan, without an answer,
+        # or behind a ProxyJump / ProxyCommand, which keyscan cannot follow. The caller runs plain
+        # ssh for everything but "posix".
         # give-up-net: `-T 5` ends a connect that does not answer; never touches the tty or typed keys
         function warp_ssh_msys_banner_probe() {
             warp_ssh_probe_verdict=""
@@ -2648,7 +2653,8 @@ fi
             out=$(command ssh-keyscan -T 5 -t ed25519 -p "${port:-22}" "$host" 2>&1 </dev/null)
             case "$out" in
                 *SSH-2.0-OpenSSH_for_Windows* | *SSH-1.99-OpenSSH_for_Windows*) warp_ssh_probe_verdict="nonposix" ;;
-                *SSH-2.0-* | *SSH-1.99-*) warp_ssh_probe_verdict="posix" ;;
+                *SSH-2.0-OpenSSH_[0-9]* | *SSH-1.99-OpenSSH_[0-9]*) warp_ssh_probe_verdict="posix" ;;
+                *SSH-2.0-* | *SSH-1.99-*) warp_ssh_probe_verdict="nonposix" ;;
             esac
             return 0
         }
@@ -2662,10 +2668,11 @@ fi
         function warp_ssh_remote_is_non_posix() {
             local control_path="$1"
             shift
-            # #1933: no master (the one-connection path of Git Bash): the server's banner answers.
+            # #1933: no master (the one-connection path of Git Bash): the server's banner answers,
+            # and only a POSIX OpenSSH banner is POSIX (no answer is not: plain ssh).
             if [[ -z "$control_path" ]]; then
                 warp_ssh_msys_banner_probe
-                [[ "$warp_ssh_probe_verdict" == "nonposix" ]]
+                [[ "$warp_ssh_probe_verdict" != "posix" ]]
                 return
             fi
             local out
