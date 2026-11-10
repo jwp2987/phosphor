@@ -58,6 +58,7 @@ GITBASH_ONLY = {
     "ui_palette": "asserts the exact line from rec.log: runs in the Git Bash pane",
     "ui_completions_as_you_type_local": "asserts the menu on screen after typing in the Git Bash pane (the as-you-type default under test)",
     "routing_table": "asserts what the shell received from rec.log: runs in the Git Bash pane",
+    "routing_typo_head": "asserts what the shell received from rec.log (#1980, agent mode only): runs in the Git Bash pane",
     "agent_stream_cancel": "uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)",
     "agent_input_exact": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
     "agent_mode_switch": "asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane",
