@@ -3140,6 +3140,14 @@ struct ArmedSubshellSetup {
     tail_before_line: subshell_ready::Tail,
     /// Bytes of the current line have been typed (cleared at its line end).
     line_started: bool,
+    /// #2016: what the last look showed before the first byte of the line now being typed (its
+    /// row, whether the line was clean, whether a raw shell tty asked a question): what
+    /// `subshell_ready::key_read_took_the_typed_keys` judges a one-key answer against.
+    before_line: subshell_ready::LineStart,
+    /// #2016: a look proved the keys typed since the last line end were taken by a key read
+    /// (zsh-newuser-install's menu, `read -k`): for THIS attempt the shell's line holds nothing
+    /// of the user's, whatever the hand-off still counts. Cleared by the next user byte.
+    key_read_took_line: bool,
     /// The pane has no tty probe (ConPTY): line ends are judged from screen facts only (#1924).
     no_tty_probe: bool,
     /// #1941: the text of a line typed ahead of the line editor, while it is outstanding
@@ -23523,6 +23531,8 @@ impl TerminalView {
             last_tail: subshell_ready::Tail::None,
             tail_before_line: subshell_ready::Tail::None,
             line_started: false,
+            before_line: subshell_ready::LineStart::unknown(),
+            key_read_took_line: false,
             no_tty_probe: false,
             typed_ahead_line: None,
             typed_ahead_row: 0,
@@ -23571,6 +23581,38 @@ impl TerminalView {
             }
             _ => {}
         }
+        // #2016: a key typed at a question that is read one key at a time (zsh-newuser-install's
+        // menu, `read -k`) has no line end, so the hand-off keeps counting it as text in the
+        // shell's line and every look said LineDirty until the user's next Enter. When this look
+        // proves the read took it (a different prompt on a lower row, a line editor reading,
+        // nothing unread, the key not on that row), the typed line is over for this attempt.
+        if armed.line_started
+            && look.block_id == armed.block_id
+            && subshell_ready::key_read_took_the_typed_keys(
+                &armed.before_line,
+                armed.tracker.typed_so_far(),
+                &look.tty,
+                look.tail,
+                look.position.1,
+                &look.cursor_line,
+                look.cursor_row_continues,
+            )
+        {
+            warpui::input_order::log_hop("subshell_ready_key_read", || {
+                format!(
+                    "rows_below={} bytes={} line_dirty={line_dirty}",
+                    look.position.1.saturating_sub(armed.before_line.row),
+                    armed.ledger.bytes_since_arm
+                )
+            });
+            armed.key_read_took_line = true;
+            armed.tracker = subshell_ready::LineTracker::default();
+            armed.line_started = false;
+            // As at a ReArm: the baselines are where the output was before this prompt.
+            armed.baseline = armed.last_position;
+            armed.line_end_baseline = armed.last_position;
+        }
+        let line_dirty = line_dirty && !armed.key_read_took_line;
         let moved = |base: (usize, usize, usize)| look.position != base && look.position.2 > 0;
         // #2006: without a tty probe the echo of the user's own line (arriving after its Enter)
         // and the line editor's redisplay of a typed-ahead line are told from a prompt by the row.
@@ -23604,6 +23646,13 @@ impl TerminalView {
         armed.no_tty_probe = no_tty_probe;
         if !armed.line_started {
             armed.tail_before_line = look.tail;
+            armed.before_line = subshell_ready::LineStart {
+                line_clean: !line_dirty,
+                raw_shell_tty: look.tty.kind == SubshellTtyKind::LineReader,
+                tail: look.tail,
+                row: look.position.1,
+                row_text: look.cursor_line.clone(),
+            };
         }
         if armed.ledger.typed_ahead != subshell_ready::TypedAhead::None {
             // #1941: a line typed ahead of the line editor is outstanding: what this look says
@@ -24009,6 +24058,8 @@ impl TerminalView {
             return;
         };
         armed.ledger.bytes_since_arm = armed.ledger.bytes_since_arm.saturating_add(bytes.len());
+        // #2016: whatever a key read took before, these bytes are in someone's line again.
+        armed.key_read_took_line = false;
         let ends = armed.tracker.note(bytes);
         if ends.is_empty() {
             armed.line_started = true;

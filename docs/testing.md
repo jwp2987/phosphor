@@ -4478,3 +4478,17 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   the setup is written. `output_tail_is_input_prompt` now takes a tail that ends in `---` and says "type a key" for a prompt. Unit test
   `key_facts_tests.rs`: `the_other_zsh_newuser_install_key_prompts_are_input_prompts` (the three prompts; shell prompts that mention a key or end in
   dashes are not). Not compiled or run yet. No app case walks the sub-menus (the case answers `q` at the first screen).
+- **A one-key answer no longer leaves the setup armed (#2016, APP, found by reading).** The menu's `q` has no line end, so the hand-off counted it as
+  text in the shell's line and every look was `Wait(LineDirty)` until the user's next Enter (or the 60 s ceiling). New pure rule
+  `subshell_ready::key_read_took_the_typed_keys`: the keys are gone when the line was clean before the first of them, that look showed a question on a
+  raw tty under a shell leader, and this look shows a line editor (queue empty) at a shell-shaped tail on a LOWER row that neither shows the typed
+  text nor repeats the question. The view then judges with a clean line for this attempt (hop `subshell_ready_key_read rows_below= bytes=
+  line_dirty=`); the next user byte ends that. Never without a tty probe (ConPTY).
+
+| layer | test | what it proves |
+|---|---|---|
+| judge (pure) | `subshell_ready_tests.rs`: `a_menu_key_answered_and_a_new_prompt_below_means_the_key_is_gone`, `a_key_is_not_gone_without_every_fact`, `a_key_is_not_gone_on_a_look_that_is_not_a_line_editor_at_a_prompt` | the case's path (`q`, prompt on the next row; rows printed between; two menu keys; PROMPT_SP's `%`) is "taken"; each fact alone turns it off: a line dirty before the key (zsh's "see all N possibilities?" after text typed before Phosphorize), no question, no raw shell tty, same or higher row, the key shown at the prompt, unpredictable text, the question drawn again, a cooked / relay / secret / unknown look, an unread or unprobed queue, an input-prompt or finished tail, a soft-wrap continuation |
+| judge (pure) | `subshell_ready_tests.rs`: `the_tracker_knows_the_text_typed_so_far_only_while_it_is_plain` | `LineTracker::typed_so_far`: plain bytes are kept, an escape sequence or a paste makes the line unpredictable, a line end or ^U empties it |
+| view_test (unix) | `a_menu_key_answer_does_not_leave_the_setup_armed` | Legacy and Table: after the REAL `clear` bytes (`ESC[H ESC[2J ESC[3J`) the footer is `InputPrompt` and nothing is written at Phosphorize; `q` passes through alone and the hand-off calls the line dirty (premise); a prompt on the next row writes the setup; the same row showing `% q` writes nothing |
+
+  Not compiled or run yet. The appci case is the app-level proof: `subshell_ready_key_read` then `subshell_setup_ready_write` after the `q`.
