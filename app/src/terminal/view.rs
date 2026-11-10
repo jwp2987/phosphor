@@ -15430,7 +15430,12 @@ impl TerminalView {
         let has_enter = held
             .iter()
             .any(|chunk| chunk.iter().any(|byte| matches!(byte, b'\r' | b'\n')));
-        if has_enter {
+        // #1957: while the tty reads a secret (canonical, echo off) the held keys may be the
+        // start of a password. They are typeahead for whatever reads the tty and go there in
+        // typed order; as editor text they would be shown, and the rest of the secret and its
+        // Enter would follow them into the editor and be submitted.
+        let to_pty = has_enter || self.model.lock().tty_reading_secret();
+        if to_pty {
             let writes = self.handoff.read().held_key_release_writes(held);
             // #1189: how keys held behind an unsubmitted deferred Enter went out. Counts only.
             warpui::input_order::log_hop("held_keys_release", || {

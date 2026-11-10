@@ -28429,6 +28429,54 @@ fn a_deferred_enter_gate_release_on_conpty_writes_one_key_per_write() {
     }
 }
 
+/// #1957 (secrets review, table mode): keys held behind a deferred Enter's gate and released
+/// because the Enter wrote no command. While the tty reads a secret (the termios guard:
+/// canonical, echo off) they may be the start of a password: they go to the pty in typed order,
+/// with or without an Enter among them, and nothing becomes editor text. Without a secret read,
+/// keys with no Enter go into the editor and none is written (the control).
+#[test]
+fn table_mode_a_secret_read_at_the_deferred_enter_release_sends_the_held_keys_to_the_pty() {
+    use crate::terminal::input_queue::{GateKeysThen, GateKind};
+    // (the tty reads a secret, the held keys, they go to the pty)
+    const CASES: &[(bool, &[&[u8]], bool)] = &[
+        (true, &[b"hun", b"ter2"], true),
+        (true, &[b"hunter2", b"\r"], true),
+        (false, &[b"ec", b"ho"], false),
+    ];
+    for &(reading_secret, held, to_pty) in CASES {
+        App::test((), move |mut app| async move {
+            let _mode = force_dest_mode(DestMode::Table);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            let typed: Vec<u8> = held.concat();
+            terminal.update(&mut app, |view, ctx| {
+                let queue = view.paste_queue.queue.clone();
+                for key in held {
+                    view.hold_deferred_key_in_queue(7, key.to_vec(), true, ctx);
+                }
+                assert!(queue.borrow().has_gate(GateKind::HandoffReport, 7));
+                set_tty_reading_secret_for_test(view, reading_secret);
+                view.take_deferred_gate_keys_then(7, GateKeysThen::Release, ctx);
+                assert!(!queue.borrow().has_gate(GateKind::HandoffReport, 7));
+                let editor = view.input.as_ref(ctx).buffer_text(ctx);
+                if to_pty {
+                    assert_eq!(editor, "", "secret={reading_secret}: nothing is shown");
+                } else {
+                    assert_eq!(editor.as_bytes(), typed.as_slice(), "the control");
+                }
+            });
+            let written: Vec<u8> = pty_writes.borrow().concat();
+            if to_pty {
+                assert_eq!(written, typed, "secret={reading_secret}: in typed order");
+            } else {
+                assert!(written.is_empty(), "the control writes nothing");
+            }
+        });
+    }
+}
+
 /// #1446: dropping the ssh gate under a busy queue detaches the view's state at once and drops
 /// the queue's gate (and what it held) when the queue is free; the gate is not left set.
 #[test]

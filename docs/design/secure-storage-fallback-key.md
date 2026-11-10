@@ -80,7 +80,7 @@ the files; that is a second decision, not part of the first change.
 
 ## Tests the change needs
 
-All in `secure_storage/linux_tests.rs` with a temp fallback dir and the keyring seam returning
+All in `secure_storage/linux_test.rs` with a temp fallback dir and the keyring seam returning
 "unavailable":
 
 1. Round trip with a fresh key file; the blob starts with the magic; the key file is 0600.
