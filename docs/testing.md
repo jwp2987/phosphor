@@ -5187,3 +5187,27 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
   positive of the check: read the scenario before changing an allowance. No appci case was added: the fake model cannot make the app
   lose a call, a batch or a card, which is what the heal is for.
 - **Kill switch.** `PHOSPHOR_AGENT_TURN_SELF_HEAL=0`: faults are logged (`healed=0`), nothing is healed.
+
+## Round 14: the Linux fallback key and query predictions in ssh sessions (design `docs/design/r14-secure.md`; #1932 #1982; nothing compiled or run when written)
+
+### #1932: the secure-storage fallback is sealed with a per-install key
+
+Unit tests, `crates/warpui_extras/src/secure_storage/linux_test.rs` (Linux only; run with the crate's suite). They use a temp fallback directory and keyring stand-ins (`FakeKeyring`: down; `PickyKeyring`: answers, refuses one key), never the real Secret Service: the direct `write_fallback_value` paths seal with the key file and do not consult the keyring.
+
+| test | what it pins |
+|---|---|
+| `the_fallback_key_depends_on_the_secret_the_source_and_the_service` | key derivation (HKDF): same inputs open the blob; another secret, source (`K`/`F`), service name or associated data does not |
+| `the_install_secret_round_trips_through_its_keyring_encoding` | the 64-hex keyring encoding of the 32-byte secret; short or non-hex text is rejected |
+| `without_a_keyring_a_value_is_sealed_with_the_key_file_never_the_built_in_key` | the no-keyring path: `PSF1F` blob, a 32-byte 0600 key file, the built-in key does not open the blob, the value is not in the clear, a second handle reads it, only those two files exist |
+| `a_legacy_blob_is_resealed_with_the_key_file_on_read` | migration: a blob sealed with the built-in key reads, is replaced by a `PSF1F` blob (0600, no temporary file left), reads again, and reads from a handle that never saw the old blob |
+| `a_legacy_blob_survives_a_failed_reseal` | migration never costs the value: with the key file's name blocked the legacy blob is byte for byte unchanged and still reads |
+| `a_legacy_blob_moves_into_a_working_keyring_without_a_key_file` | with a working keyring a legacy blob goes to the keyring (#1805 behaviour) and nothing is left in the directory |
+| `a_lost_or_damaged_key_file_is_reported_and_never_replaced_on_read` | a missing or wrong-length key file is an error that is not `NotFound`; the blob and the damaged key file are untouched; a write is refused; restoring the key file restores the read |
+| `a_tampered_blob_is_an_error` | a flipped byte in the header or the body fails |
+| `concurrent_key_file_creation_settles_on_one_secret` | eight threads creating the key file all return the secret that is on disk; 0600; no temporary file left |
+| `with_a_keyring_the_fallback_key_comes_from_the_secret_in_the_keyring` | a keyring that refuses one value: `PSF1K` blob, the secret stored once in the keyring, no key file, a later handle reads it; with no keyring the blob is an error at the fallback layer (`NotFound` to the caller, as for any unreadable blob) and stays in place |
+| `a_malformed_keyring_secret_is_not_replaced` | a keyring secret that does not decode is left alone and the write uses the key file |
+
+Changed tests, same assertions: `test_encrypt_decrypt_returns_same_value`, `test_encrypt_decrypt_works_across_storage_instances`, `test_decrypt_fails_on_malformed_data` and the seed of `reading_a_world_readable_fallback_migrates_it_to_owner_only` now call `legacy_encrypt` / `legacy_decrypt` (the built-in key only opens old blobs now; these tests keep that format readable). `read_fallback_value` returns the value with a `legacy` flag, so four reads take `.value`.
+
+App: `keyring_unavailable_startup` (#1805) is unchanged. The change adds no keyring call at startup and no log line it judges; in its `absent` / `hang` launches a credential write now also creates `<state dir>/dev.phosphor.Phosphor-secure-storage.key`. There is no app case for the migration (it needs a state directory seeded by an older build).

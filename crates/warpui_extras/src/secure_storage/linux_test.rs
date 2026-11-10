@@ -1,13 +1,15 @@
 use super::Error;
 use super::SecureStorage;
 
+/// The legacy format (the key compiled into the binary) must stay readable: blobs written before
+/// #1932 are still on disk.
 #[test]
 fn test_encrypt_decrypt_returns_same_value() {
     let storage = SecureStorage::new("darmok");
 
     let input = String::from("darmok and jalad at tanagra");
-    let encrypted = storage.fallback_encrypt(&input).unwrap();
-    let output = storage.fallback_decrypt(&encrypted).unwrap();
+    let encrypted = storage.legacy_encrypt(&input).unwrap();
+    let output = storage.legacy_decrypt(&encrypted).unwrap();
 
     assert_eq!(input, output)
 }
@@ -18,8 +20,8 @@ fn test_encrypt_decrypt_works_across_storage_instances() {
     let storage_2 = SecureStorage::new("jalad");
 
     let input = String::from("shaka when the walls fell");
-    let encrypted = storage_1.fallback_encrypt(&input).unwrap();
-    let output = storage_2.fallback_decrypt(&encrypted).unwrap();
+    let encrypted = storage_1.legacy_encrypt(&input).unwrap();
+    let output = storage_2.legacy_decrypt(&encrypted).unwrap();
 
     assert_eq!(input, output)
 }
@@ -31,7 +33,7 @@ fn test_decrypt_fails_on_malformed_data() {
     let bad_datas: [&[u8]; 4] = [&[], &[0; 1], &[0; 11], &[0; 12]];
 
     for bad_data in bad_datas {
-        let result = storage.fallback_decrypt(bad_data);
+        let result = storage.legacy_decrypt(bad_data);
 
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -155,13 +157,14 @@ fn rewriting_an_existing_world_readable_fallback_tightens_it() {
         & 0o777;
     assert_eq!(mode, 0o600);
     assert_eq!(
-        storage.read_fallback_value("key").expect("read back"),
+        storage.read_fallback_value("key").expect("read back").value,
         "value"
     );
 }
 
 /// Migration for blobs that are never rewritten: reading a `0o644` fallback
-/// file tightens it in place, without moving it or re-encrypting it.
+/// file tightens it in place. (Re-sealing a legacy blob with the per-install key is a
+/// separate step of `read_value`: see `a_legacy_blob_is_resealed_...` below.)
 ///
 /// A long-lived API key may never be rewritten, so hardening only the write
 /// path would leave the existing exposure standing indefinitely.
@@ -177,7 +180,7 @@ fn reading_a_world_readable_fallback_migrates_it_to_owner_only() {
 
     // A blob written by a pre-hardening build: same path, same ciphertext, 0644.
     let encrypted = storage
-        .fallback_encrypt("shaka when the walls fell")
+        .legacy_encrypt("shaka when the walls fell")
         .expect("encrypt");
     std::fs::write(&path, &encrypted).expect("seed legacy blob");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
@@ -185,7 +188,7 @@ fn reading_a_world_readable_fallback_migrates_it_to_owner_only() {
 
     // The credential must still be readable -- the migration must not orphan it.
     assert_eq!(
-        storage.read_fallback_value("key").expect("read"),
+        storage.read_fallback_value("key").expect("read").value,
         "shaka when the walls fell"
     );
 
@@ -221,7 +224,10 @@ fn reading_an_absent_or_already_tight_fallback_is_unchanged() {
         .write_fallback_value("key", "value")
         .expect("fallback write");
     let path = storage.fallback_file("key").expect("fallback file");
-    assert_eq!(storage.read_fallback_value("key").expect("read"), "value");
+    assert_eq!(
+        storage.read_fallback_value("key").expect("read").value,
+        "value"
+    );
     let mode = std::fs::metadata(&path)
         .expect("file metadata")
         .permissions()
@@ -547,5 +553,452 @@ fn a_removal_made_during_an_outage_stays_removed_on_recovery() {
     storage.write_value("key", "K2").expect("write");
     assert_eq!(storage.read_value("key").expect("read"), "K2");
     assert_eq!(data.borrow()["key"], "K2");
+    super::availability::reset_for_test();
+}
+
+// ---- #1932: the fallback key comes from a per-install secret, never from the binary ----
+
+/// A keyring that answers every call, but will not store `refused`.
+struct PickyKeyring {
+    data: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, String>>>,
+    refused: &'static str,
+}
+
+impl super::Keyring for PickyKeyring {
+    fn read(&self, key: &str) -> Result<String, Error> {
+        super::availability::mark_available();
+        self.data.borrow().get(key).cloned().ok_or(Error::NotFound)
+    }
+    fn write(&self, key: &str, value: &str) -> Result<(), Error> {
+        super::availability::mark_available();
+        if key == self.refused {
+            return Err(Error::Unknown(anyhow::anyhow!(
+                "the keyring refused the item"
+            )));
+        }
+        self.data
+            .borrow_mut()
+            .insert(key.to_owned(), value.to_owned());
+        Ok(())
+    }
+    fn delete(&self, key: &str) -> Result<(), Error> {
+        super::availability::mark_available();
+        self.data
+            .borrow_mut()
+            .remove(key)
+            .map(drop)
+            .ok_or(Error::NotFound)
+    }
+}
+
+/// A storage whose keyring is down, over an existing fallback directory.
+fn storage_without_keyring(fallback_dir: &std::path::Path) -> SecureStorage {
+    SecureStorage::with_keyring(
+        "darmok",
+        Some(fallback_dir.to_owned()),
+        Box::new(FakeKeyring {
+            data: Default::default(),
+            up: std::rc::Rc::new(std::cell::Cell::new(false)),
+        }),
+    )
+}
+
+fn mode_of(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777
+}
+
+/// The names in `dir`, sorted: proves no temporary file is left behind.
+fn names_in(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("read dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Key derivation: the same secret, source and service give the same key; changing any one of
+/// them gives a key that does not open the other's blob.
+#[test]
+fn the_fallback_key_depends_on_the_secret_the_source_and_the_service() {
+    use super::{KeySource, derive_key, open_sealed, seal_value};
+
+    let secret = [7u8; super::INSTALL_SECRET_LEN];
+    let other_secret = [8u8; super::INSTALL_SECRET_LEN];
+    let key = derive_key("darmok", KeySource::KeyFile, &secret).expect("key");
+    let sealed = seal_value(&key, b"aad", "temba, his arms wide").expect("seal");
+
+    let same = derive_key("darmok", KeySource::KeyFile, &secret).expect("key");
+    assert_eq!(
+        open_sealed(&same, b"aad", &sealed).expect("same inputs, same key"),
+        "temba, his arms wide"
+    );
+    for (what, different) in [
+        (
+            "secret",
+            derive_key("darmok", KeySource::KeyFile, &other_secret),
+        ),
+        ("source", derive_key("darmok", KeySource::Keyring, &secret)),
+        ("service", derive_key("jalad", KeySource::KeyFile, &secret)),
+    ] {
+        let different = different.expect("key");
+        assert!(
+            open_sealed(&different, b"aad", &sealed).is_err(),
+            "a different {what} must give a different key"
+        );
+    }
+    assert!(
+        open_sealed(&same, b"other aad", &sealed).is_err(),
+        "the associated data is authenticated"
+    );
+}
+
+#[test]
+fn the_install_secret_round_trips_through_its_keyring_encoding() {
+    use super::{decode_install_secret, encode_hex};
+
+    let mut secret = [0u8; super::INSTALL_SECRET_LEN];
+    for (index, byte) in secret.iter_mut().enumerate() {
+        *byte = (index * 9) as u8;
+    }
+    secret[31] = 0xff;
+    let encoded = encode_hex(&secret);
+    assert_eq!(encoded.len(), 64);
+    assert_eq!(decode_install_secret(&encoded), Some(secret));
+    assert_eq!(decode_install_secret(&encoded[..62]), None);
+    assert_eq!(decode_install_secret(&encoded.replace('f', "g")), None);
+    assert_eq!(decode_install_secret(""), None);
+}
+
+/// No keyring: a write creates the owner-only key file and seals with its key. The blob says so
+/// in its header, the key compiled into the binary does not open it, and another handle on the
+/// same directory (the worker's, a second app's) reads it.
+#[test]
+fn without_a_keyring_a_value_is_sealed_with_the_key_file_never_the_built_in_key() {
+    use super::super::SecureStorage as _;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let storage = storage_without_keyring(temp_dir.path());
+
+    storage
+        .write_value("key", "sokath, his eyes uncovered")
+        .expect("write");
+
+    let key_file = storage.key_file().expect("key file path");
+    assert_eq!(
+        std::fs::read(&key_file).expect("key file").len(),
+        super::INSTALL_SECRET_LEN
+    );
+    assert_eq!(mode_of(&key_file), 0o600);
+    let blob = std::fs::read(storage.fallback_file("key").expect("path")).expect("blob");
+    assert!(blob.starts_with(b"PSF1F"), "header: magic and key-file tag");
+    assert!(
+        storage.legacy_decrypt(&blob).is_err(),
+        "the key compiled into the binary must not open a new blob"
+    );
+    assert!(
+        !blob
+            .windows(b"sokath".len())
+            .any(|window| window == b"sokath"),
+        "the value is not stored in the clear"
+    );
+    assert_eq!(
+        names_in(temp_dir.path()),
+        ["darmok-key", "darmok-secure-storage.key"]
+    );
+
+    let other = storage_without_keyring(temp_dir.path());
+    assert_eq!(
+        other.read_value("key").expect("read"),
+        "sokath, his eyes uncovered"
+    );
+    super::availability::reset_for_test();
+}
+
+/// Migration: a legacy blob read with no keyring is re-sealed with the key file's key in place.
+/// The value is identical, before and after, and for a handle that never saw the legacy blob.
+#[test]
+fn a_legacy_blob_is_resealed_with_the_key_file_on_read() {
+    use super::super::SecureStorage as _;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let storage = storage_without_keyring(temp_dir.path());
+    let path = storage.fallback_file("key").expect("path");
+    let legacy = storage
+        .legacy_encrypt("mirab, his sails unfurled")
+        .expect("legacy blob");
+    std::fs::write(&path, &legacy).expect("seed legacy blob");
+
+    assert_eq!(
+        storage.read_value("key").expect("first read"),
+        "mirab, his sails unfurled"
+    );
+
+    let blob = std::fs::read(&path).expect("blob");
+    assert!(blob.starts_with(b"PSF1F"), "the blob was re-sealed");
+    assert!(storage.legacy_decrypt(&blob).is_err());
+    assert_eq!(mode_of(&path), 0o600);
+    assert_eq!(
+        names_in(temp_dir.path()),
+        ["darmok-key", "darmok-secure-storage.key"],
+        "no temporary file is left"
+    );
+    let reread = storage.read_fallback_value("key").expect("second read");
+    assert_eq!(reread.value, "mirab, his sails unfurled");
+    assert!(!reread.legacy);
+    assert_eq!(
+        storage_without_keyring(temp_dir.path())
+            .read_value("key")
+            .expect("another handle"),
+        "mirab, his sails unfurled"
+    );
+    super::availability::reset_for_test();
+}
+
+/// Migration must never cost the value: when the key file cannot be made (here its name is taken
+/// by a directory), the legacy blob stays byte for byte and still reads.
+#[test]
+fn a_legacy_blob_survives_a_failed_reseal() {
+    use super::super::SecureStorage as _;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let storage = storage_without_keyring(temp_dir.path());
+    let path = storage.fallback_file("key").expect("path");
+    let legacy = storage.legacy_encrypt("K-legacy").expect("legacy blob");
+    std::fs::write(&path, &legacy).expect("seed legacy blob");
+    std::fs::create_dir(storage.key_file().expect("key file path")).expect("block the key file");
+
+    assert_eq!(storage.read_value("key").expect("read"), "K-legacy");
+    assert_eq!(std::fs::read(&path).expect("blob"), legacy);
+    assert_eq!(storage.read_value("key").expect("read again"), "K-legacy");
+    super::availability::reset_for_test();
+}
+
+/// A legacy blob the keyring takes is moved there (as any fallback value is) and not re-sealed:
+/// no key file appears.
+#[test]
+fn a_legacy_blob_moves_into_a_working_keyring_without_a_key_file() {
+    use super::super::SecureStorage as _;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let (storage, data, _up, dir) = storage_with_fake_keyring();
+    let path = storage.fallback_file("key").expect("path");
+    std::fs::write(&path, storage.legacy_encrypt("K-legacy").expect("blob")).expect("seed");
+
+    assert_eq!(storage.read_value("key").expect("read"), "K-legacy");
+    assert_eq!(data.borrow()["key"], "K-legacy");
+    assert!(names_in(&dir.path().join("state")).is_empty());
+    super::availability::reset_for_test();
+}
+
+/// A blob whose key file is gone is an error that is not "not found", the blob is untouched, and
+/// no new key file takes the old one's place (it could not open the blob, and would hide the
+/// loss). The same for a key file of the wrong length, which is never overwritten.
+#[test]
+fn a_lost_or_damaged_key_file_is_reported_and_never_replaced_on_read() {
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let writer = storage_without_keyring(temp_dir.path());
+    writer.write_fallback_value("key", "value").expect("write");
+    let key_file = writer.key_file().expect("key file path");
+    let blob_path = writer.fallback_file("key").expect("path");
+    let blob = std::fs::read(&blob_path).expect("blob");
+    let secret = std::fs::read(&key_file).expect("key file");
+
+    std::fs::remove_file(&key_file).expect("lose the key file");
+    let reader = storage_without_keyring(temp_dir.path());
+    let error = reader.read_fallback_value("key").err().expect("unreadable");
+    assert!(
+        matches!(error, Error::Unknown(_)),
+        "a lost key is an error, not NotFound: {error:?}"
+    );
+    assert!(!key_file.exists(), "a read must not create a new key file");
+    assert_eq!(std::fs::read(&blob_path).expect("blob"), blob);
+
+    std::fs::write(&key_file, &secret[..16]).expect("truncated key file");
+    let reader = storage_without_keyring(temp_dir.path());
+    assert!(matches!(
+        reader.read_fallback_value("key"),
+        Err(Error::Unknown(_))
+    ));
+    assert!(
+        reader.write_fallback_value("other", "value").is_err(),
+        "a write is refused rather than sealed with a replaced or built-in key"
+    );
+    assert_eq!(std::fs::read(&key_file).expect("key file"), &secret[..16]);
+    assert!(!reader.fallback_file("other").expect("path").exists());
+
+    // With the key file back, the blob reads again.
+    std::fs::write(&key_file, &secret).expect("restore the key file");
+    assert_eq!(
+        storage_without_keyring(temp_dir.path())
+            .read_fallback_value("key")
+            .expect("read")
+            .value,
+        "value"
+    );
+    super::availability::reset_for_test();
+}
+
+/// A blob with a flipped byte fails authentication: an error, in the header as in the body.
+#[test]
+fn a_tampered_blob_is_an_error() {
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let storage = storage_without_keyring(temp_dir.path());
+    storage.write_fallback_value("key", "value").expect("write");
+    let path = storage.fallback_file("key").expect("path");
+    let blob = std::fs::read(&path).expect("blob");
+
+    for index in [4, blob.len() - 1] {
+        let mut tampered = blob.clone();
+        tampered[index] ^= 0x01;
+        std::fs::write(&path, &tampered).expect("tamper");
+        assert!(
+            matches!(storage.read_fallback_value("key"), Err(Error::Unknown(_))),
+            "byte {index}"
+        );
+    }
+    super::availability::reset_for_test();
+}
+
+/// Handles that create the key file at the same moment all end up with one file and one secret.
+#[test]
+fn concurrent_key_file_creation_settles_on_one_secret() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let path = temp_dir.path().join("darmok-secure-storage.key");
+    let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let path = path.clone();
+            let start = start.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                super::create_key_file(&path).expect("create or read the winner's")
+            })
+        })
+        .collect();
+    let secrets: Vec<_> = threads
+        .into_iter()
+        .map(|thread| thread.join().expect("thread"))
+        .collect();
+
+    let on_disk = std::fs::read(&path).expect("key file");
+    for secret in &secrets {
+        assert_eq!(secret.as_slice(), on_disk.as_slice());
+    }
+    assert_eq!(mode_of(&path), 0o600);
+    assert_eq!(names_in(temp_dir.path()), ["darmok-secure-storage.key"]);
+}
+
+/// A keyring that answers but will not take one value: that value goes to the fallback sealed
+/// with the per-install secret kept IN the keyring. No key file is made, and the blob cannot be
+/// read without the keyring.
+#[test]
+fn with_a_keyring_the_fallback_key_comes_from_the_secret_in_the_keyring() {
+    use super::super::SecureStorage as _;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let data: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, String>>> =
+        Default::default();
+    let picky = || {
+        SecureStorage::with_keyring(
+            "darmok",
+            Some(temp_dir.path().to_owned()),
+            Box::new(PickyKeyring {
+                data: data.clone(),
+                refused: "key",
+            }),
+        )
+    };
+    let storage = picky();
+
+    storage
+        .write_value("key", "uzani, his army")
+        .expect("write");
+
+    let secret = data.borrow()[super::KEYRING_INSTALL_SECRET_KEY].clone();
+    assert!(super::decode_install_secret(&secret).is_some());
+    let blob = std::fs::read(storage.fallback_file("key").expect("path")).expect("blob");
+    assert!(blob.starts_with(b"PSF1K"), "header: magic and keyring tag");
+    assert_eq!(names_in(temp_dir.path()), ["darmok-key"], "no key file");
+    assert_eq!(storage.read_value("key").expect("read"), "uzani, his army");
+    assert_eq!(
+        picky().read_value("key").expect("a later run"),
+        "uzani, his army"
+    );
+    assert_eq!(
+        data.borrow()[super::KEYRING_INSTALL_SECRET_KEY],
+        secret,
+        "the secret is created once"
+    );
+
+    // Without the keyring the blob is unreadable, reported as an error and left in place.
+    super::availability::reset_for_test();
+    let offline = storage_without_keyring(temp_dir.path());
+    assert!(matches!(offline.read_value("key"), Err(Error::NotFound)));
+    assert!(matches!(
+        offline.read_fallback_value("key"),
+        Err(Error::Unknown(_))
+    ));
+    assert_eq!(
+        std::fs::read(offline.fallback_file("key").expect("path")).expect("blob"),
+        blob
+    );
+    super::availability::reset_for_test();
+}
+
+/// A keyring secret that is not a secret (edited, truncated) is never overwritten: blobs sealed
+/// with the real one may still exist. The write uses the key file instead.
+#[test]
+fn a_malformed_keyring_secret_is_not_replaced() {
+    use super::super::SecureStorage as _;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let data = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::from([
+        (
+            super::KEYRING_INSTALL_SECRET_KEY.to_owned(),
+            "not hex".to_owned(),
+        ),
+    ])));
+    let storage = SecureStorage::with_keyring(
+        "darmok",
+        Some(temp_dir.path().to_owned()),
+        Box::new(PickyKeyring {
+            data: data.clone(),
+            refused: "key",
+        }),
+    );
+
+    storage.write_value("key", "value").expect("write");
+
+    assert_eq!(data.borrow()[super::KEYRING_INSTALL_SECRET_KEY], "not hex");
+    let blob = std::fs::read(storage.fallback_file("key").expect("path")).expect("blob");
+    assert!(blob.starts_with(b"PSF1F"));
+    assert_eq!(storage.read_value("key").expect("read"), "value");
     super::availability::reset_for_test();
 }

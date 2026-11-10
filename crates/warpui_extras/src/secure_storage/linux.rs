@@ -17,7 +17,10 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use rand::RngCore;
-use ring::aead;
+use ring::{
+    aead, hkdf,
+    rand::{SecureRandom as _, SystemRandom},
+};
 use secret_service::{
     EncryptionType,
     blocking::{Item, SecretService},
@@ -32,6 +35,67 @@ use super::{Error, availability};
 /// not answered in this long is treated as unavailable for the run. If it does answer later the
 /// keyring is marked available again and the next lookup uses it.
 const CONNECT_GIVE_UP: Duration = Duration::from_secs(10);
+
+/// Starts every fallback blob written since #1932, followed by the [`KeySource`] tag. A blob
+/// without it is a legacy blob, sealed with the key compiled into the binary.
+const BLOB_MAGIC: &[u8; 4] = b"PSF1";
+
+/// [`BLOB_MAGIC`] plus the [`KeySource`] tag; authenticated as the blob's associated data.
+const BLOB_HEADER_LEN: usize = BLOB_MAGIC.len() + 1;
+
+/// Length of the per-install secret the fallback key is derived from.
+const INSTALL_SECRET_LEN: usize = 32;
+
+/// The keyring item (under the app's service name) holding the per-install secret, hex-encoded.
+const KEYRING_INSTALL_SECRET_KEY: &str = "SecureStorageFallbackSecret";
+
+/// The key file is `<fallback dir>/<service name>-<this>`, beside the blobs.
+const KEY_FILE_SUFFIX: &str = "secure-storage.key";
+
+const KDF_SALT: &[u8] = b"phosphor secure-storage fallback v1";
+
+/// Where the per-install secret behind a fallback blob's key lives (#1932). The tag is stored in
+/// the blob, so a reader never has to guess which key a blob needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeySource {
+    /// The OS keyring: used when the keyring answers but would not take the value itself.
+    Keyring,
+    /// An owner-only (`0o600`) random key file beside the blobs: used when no keyring answers.
+    /// It protects a blob copied without the key file, not one read by a process of this user.
+    KeyFile,
+}
+
+impl KeySource {
+    fn tag(self) -> u8 {
+        match self {
+            KeySource::Keyring => b'K',
+            KeySource::KeyFile => b'F',
+        }
+    }
+
+    fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            b'K' => Some(KeySource::Keyring),
+            b'F' => Some(KeySource::KeyFile),
+            _ => None,
+        }
+    }
+
+    /// Domain separation for the key derivation, so the two sources never share a key.
+    fn kdf_label(self) -> &'static [u8] {
+        match self {
+            KeySource::Keyring => b"keyring",
+            KeySource::KeyFile => b"key-file",
+        }
+    }
+}
+
+/// A value read from the fallback directory.
+struct FallbackValue {
+    value: String,
+    /// The blob was sealed with the key compiled into the binary.
+    legacy: bool,
+}
 
 /// The Secret Service operations [`SecureStorage`] needs, behind a seam so tests can stand in for
 /// the keyring (#1805). `read` and `delete` return [`Error::NotFound`] when the keyring answered
@@ -56,14 +120,21 @@ pub struct SecureStorage {
     /// not available.
     fallback_dir: Option<PathBuf>,
 
-    /// The encryption fallback key.
-    encryption_key: OnceCell<Option<aead::LessSafeKey>>,
+    /// The key compiled into the binary. It only opens blobs written before #1932; nothing is
+    /// sealed with it.
+    legacy_key: OnceCell<Option<aead::LessSafeKey>>,
+
+    /// The key derived from the keyring's per-install secret, once that secret has been read.
+    keyring_key: OnceCell<aead::LessSafeKey>,
+
+    /// The key derived from the key file, once that file has been read.
+    file_key: OnceCell<aead::LessSafeKey>,
 }
 
 /// What the fallback directory holds for one key.
 enum FallbackEntry {
     /// A value written while the keyring could not be used: newer than any keyring copy.
-    Value(String),
+    Value(FallbackValue),
     /// A removal made while the keyring could not be used: any keyring copy is stale.
     Removed,
     /// Nothing: the keyring is authoritative.
@@ -110,7 +181,9 @@ impl SecureStorage {
             service_name: service_name.to_owned(),
             keyring,
             fallback_dir,
-            encryption_key: OnceCell::new(),
+            legacy_key: OnceCell::new(),
+            keyring_key: OnceCell::new(),
+            file_key: OnceCell::new(),
         }
     }
 
@@ -128,22 +201,15 @@ impl SecureStorage {
         )
     }
 
-    /// Returns an encryption key that can be used to encrypt
-    /// values if the default secret collection is not available
-    /// or otherwise not working. The key is lazy initialized since
-    /// it does not need to be created unless the main method of
-    /// storing secrets has failed
-    fn encryption_key(&self) -> Result<&aead::LessSafeKey, Error> {
-        self.encryption_key
+    /// The key compiled into the binary, for blobs written before #1932. Anyone with the (public)
+    /// binary has it, which is why nothing is sealed with it any more.
+    fn legacy_key(&self) -> Result<&aead::LessSafeKey, Error> {
+        self.legacy_key
             .get_or_init(|| {
-                // We can use whatever super duper foolproof secure key we want here.
-                // Here we are specifically choosing a value that will look inconspicuous
-                // in case someone chooses to scan our binary for strings.
-                //
                 // DO NOT RENAME THIS LITERAL. It looks exactly like a leftover
                 // "zap" string that the Phosphor rebrand should have swept up,
                 // but it is not user-visible: it *is* the AES-256-GCM key
-                // material for every fallback blob already written to disk on
+                // material for every legacy fallback blob still on disk on
                 // hosts with no Secret Service provider. Changing a single byte
                 // makes those blobs permanently undecryptable, silently — the
                 // read just starts reporting the secret as missing.
@@ -152,7 +218,7 @@ impl SecureStorage {
                 match aead::UnboundKey::new(&aead::AES_256_GCM, key_bytes.as_slice()) {
                     Ok(key) => Some(aead::LessSafeKey::new(key)),
                     Err(_) => {
-                        log::error!("Failed to initialize fallback encryption key");
+                        log::error!("Failed to initialize the legacy fallback encryption key");
                         None
                     }
                 }
@@ -161,62 +227,120 @@ impl SecureStorage {
             .ok_or_else(|| Error::Unknown(anyhow!("Invalid encryption key")))
     }
 
-    fn fallback_encrypt(&self, value: &str) -> Result<Vec<u8>, Error> {
-        let encryption_key = self.encryption_key()?;
+    fn key_file(&self) -> Result<PathBuf, Error> {
+        self.fallback_file(KEY_FILE_SUFFIX)
+    }
 
-        // Generates nonce by randomly generating numbers
-        // This is not the official best way to do this, but it should
-        // be fine for our purposes.
-        let mut rng = rand::thread_rng();
-        let mut nonce_bytes = [0u8; aead::NONCE_LEN];
-        rng.fill_bytes(&mut nonce_bytes);
-        let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+    /// The key derived from the key file. `create` makes the file when it does not exist; a file
+    /// that exists but cannot be used is an error and is never replaced, because a new secret
+    /// would orphan every blob sealed with the old one.
+    fn file_key(&self, create: bool) -> Result<&aead::LessSafeKey, Error> {
+        if let Some(key) = self.file_key.get() {
+            return Ok(key);
+        }
+        let path = self.key_file()?;
+        let secret = match read_key_file(&path)? {
+            Some(secret) => secret,
+            None if create => create_key_file(&path)?,
+            None => {
+                return Err(Error::Unknown(anyhow!(
+                    "the secure-storage key file {} is missing; values sealed with it cannot \
+                     be read",
+                    path.display()
+                )));
+            }
+        };
+        let key = derive_key(&self.service_name, KeySource::KeyFile, &secret)?;
+        Ok(self.file_key.get_or_init(|| key))
+    }
 
-        let mut data = value.as_bytes().to_vec();
-        encryption_key
-            .seal_in_place_append_tag(nonce, aead::Aad::empty(), &mut data)
-            .map_err(Into::<Error>::into)
-            .context("Fallback encryption failed")?;
+    /// The key derived from the keyring's per-install secret. `create` stores a new secret when
+    /// the keyring answers and holds none. Never contacts a keyring known to be unavailable.
+    fn keyring_key(&self, create: bool) -> Result<&aead::LessSafeKey, Error> {
+        if let Some(key) = self.keyring_key.get() {
+            return Ok(key);
+        }
+        if !availability::should_contact_keyring() {
+            return Err(keyring_unavailable());
+        }
+        let encoded = match self.keyring.read(KEYRING_INSTALL_SECRET_KEY) {
+            Ok(encoded) => encoded,
+            Err(Error::NotFound) if create => {
+                let secret = new_install_secret()?;
+                self.keyring
+                    .write(KEYRING_INSTALL_SECRET_KEY, &encode_hex(&secret))?;
+                // Read back, so two processes that create it at once settle on the copy the
+                // keyring kept.
+                self.keyring.read(KEYRING_INSTALL_SECRET_KEY)?
+            }
+            Err(err) => return Err(err),
+        };
+        let secret = decode_install_secret(&encoded).ok_or_else(|| {
+            Error::Unknown(anyhow!(
+                "the keyring's secure-storage fallback secret is malformed; it is not replaced"
+            ))
+        })?;
+        let key = derive_key(&self.service_name, KeySource::Keyring, &secret)?;
+        Ok(self.keyring_key.get_or_init(|| key))
+    }
 
-        // We serialize this to disk as the 12 byte nonce followed by the message.
-        let mut output = Vec::<u8>::with_capacity(aead::NONCE_LEN + data.len());
-        output.extend_from_slice(&nonce_bytes);
-        output.append(&mut data);
+    /// Which key a new fallback blob is sealed with: the keyring's, when a keyring call has
+    /// succeeded this run and the per-install secret can be had; otherwise the key file's.
+    fn key_source_for_writing(&self) -> KeySource {
+        if availability::current() == availability::Availability::Available
+            && self.keyring_key(true).is_ok()
+        {
+            KeySource::Keyring
+        } else {
+            KeySource::KeyFile
+        }
+    }
 
+    /// Seals `value` as `magic || source tag || nonce || ciphertext`, creating the per-install
+    /// secret of `source` if there is none yet.
+    fn fallback_encrypt(&self, value: &str, source: KeySource) -> Result<Vec<u8>, Error> {
+        let key = match source {
+            KeySource::Keyring => self.keyring_key(true)?,
+            KeySource::KeyFile => self.file_key(true)?,
+        };
+        let mut output = Vec::with_capacity(
+            BLOB_HEADER_LEN + aead::NONCE_LEN + value.len() + aead::AES_256_GCM.tag_len(),
+        );
+        output.extend_from_slice(BLOB_MAGIC);
+        output.push(source.tag());
+        let sealed = seal_value(key, &output, value)?;
+        output.extend_from_slice(&sealed);
         Ok(output)
     }
 
-    fn fallback_decrypt(&self, value: &[u8]) -> Result<String, Error> {
-        if value.len() < aead::NONCE_LEN + 1 {
-            return Err(Error::Unknown(anyhow!(
-                "Attempting to decrypt too small value for fallback decryption"
-            )));
+    /// Opens a blob in the current format. `None` when `data` does not carry the header, i.e. it
+    /// is a legacy blob.
+    fn fallback_decrypt(&self, data: &[u8]) -> Option<Result<String, Error>> {
+        let (header, sealed) = data.split_at_checked(BLOB_HEADER_LEN)?;
+        if !header.starts_with(BLOB_MAGIC) {
+            return None;
         }
+        let source = KeySource::from_tag(header[BLOB_MAGIC.len()])?;
+        let key = match source {
+            KeySource::Keyring => self.keyring_key(false).map_err(|err| {
+                Error::Unknown(anyhow!(
+                    "the value is sealed with the per-install secret in the OS keyring, which \
+                     cannot be read now: {err:#}"
+                ))
+            }),
+            KeySource::KeyFile => self.file_key(false),
+        };
+        Some(key.and_then(|key| open_sealed(key, header, sealed)))
+    }
 
-        let encryption_key = self.encryption_key()?;
+    /// Seals with the key compiled into the binary, as builds before #1932 did.
+    #[cfg(test)]
+    fn legacy_encrypt(&self, value: &str) -> Result<Vec<u8>, Error> {
+        seal_value(self.legacy_key()?, &[], value)
+    }
 
-        // The first 12 bytes of the message are the nonce.
-        let nonce_bytes = &value[0..aead::NONCE_LEN];
-        let nonce = aead::Nonce::try_assume_unique_for_key(nonce_bytes)
-            .map_err(Into::<Error>::into)
-            .context("Failed to parse nonce for fallback decryption")?;
-
-        // The remaining bytes in the message are the data.
-        // We convert this to owned b/c the decryption happens in place.
-        let mut data_bytes = value[aead::NONCE_LEN..].to_owned();
-        let decrypted_length = encryption_key
-            .open_in_place(nonce, aead::Aad::empty(), &mut data_bytes)
-            .map_err(Into::<Error>::into)
-            .context("Fallback decryption failed")?
-            .len();
-
-        // The decryption happens in place, but does not resize the vec.
-        // Meanwhile, a slice referring to the decrypted data is returned.
-        // We use the length of that slice to resize the currently owned Vec,
-        // so it can be consumed by String::from_utf8 later on.
-        data_bytes.resize(decrypted_length, 0);
-
-        String::from_utf8(data_bytes).map_err(|err| Error::DecodeError(err.utf8_error()))
+    fn legacy_decrypt(&self, value: &[u8]) -> Result<String, Error> {
+        open_sealed(self.legacy_key()?, &[], value)
     }
 
     fn fallback_file(&self, key: &str) -> Result<PathBuf, Error> {
@@ -235,10 +359,14 @@ impl SecureStorage {
     /// `create_dir` additionally creates the fallback directory when it is
     /// missing and forces it to `0o700`; see
     /// [`Self::write_owner_only_fallback_value`].
-    fn write_fallback_file(&self, key: &str, value: &str, create_dir: bool) -> Result<(), Error> {
+    fn write_fallback_file(
+        &self,
+        key: &str,
+        value: &str,
+        create_dir: bool,
+        source: KeySource,
+    ) -> Result<(), Error> {
         let fallback_file = self.fallback_file(key)?;
-
-        let encrypted = self.fallback_encrypt(value)?;
 
         if create_dir {
             let Some(fallback_dir) = fallback_file.parent() else {
@@ -259,6 +387,9 @@ impl SecureStorage {
             std::fs::set_permissions(fallback_dir, dir_permissions)
                 .map_err(|err| Error::Unknown(err.into()))?;
         }
+
+        // After the directory exists: sealing may have to create the key file in it.
+        let encrypted = self.fallback_encrypt(value, source)?;
 
         let mut file = OpenOptions::new()
             .create(true)
@@ -306,13 +437,13 @@ impl SecureStorage {
     /// of writing one secret is a wider change than this path needs. The file
     /// mode alone protects the ciphertext; only the *key names* remain listable.
     fn write_fallback_value(&self, key: &str, value: &str) -> Result<(), Error> {
-        self.write_fallback_file(key, value, false)
+        self.write_fallback_file(key, value, false, KeySource::KeyFile)
     }
 
     /// Like [`Self::write_fallback_value`], but additionally creates the fallback directory
     /// with owner-only permissions (`0o700`) when it does not already exist.
     fn write_owner_only_fallback_value(&self, key: &str, value: &str) -> Result<(), Error> {
-        self.write_fallback_file(key, value, true)
+        self.write_fallback_file(key, value, true, KeySource::KeyFile)
     }
 
     /// Best-effort tightening of an already-written fallback blob to `0o600`.
@@ -351,14 +482,57 @@ impl SecureStorage {
         }
     }
 
-    fn read_fallback_value(&self, key: &str) -> Result<String, Error> {
+    /// Reads the fallback blob for `key`. A blob that exists but cannot be opened (its key file is
+    /// gone, its keyring secret is out of reach, it is damaged) is an error, never
+    /// [`Error::NotFound`], so the loss is reported instead of read as "never saved".
+    fn read_fallback_value(&self, key: &str) -> Result<FallbackValue, Error> {
         let fallback_file = self.fallback_file(key)?;
 
         let mut file = std::fs::File::open(&fallback_file).map_err(|_| Error::NotFound)?;
         let mut data = Vec::new();
         file.read_to_end(&mut data).map_err(|_| Error::NotFound)?;
         Self::tighten_fallback_permissions(&file, &fallback_file);
-        self.fallback_decrypt(&data)
+        let value = match self.fallback_decrypt(&data) {
+            Some(Ok(value)) => {
+                return Ok(FallbackValue {
+                    value,
+                    legacy: false,
+                });
+            }
+            // A legacy blob starts with a random nonce, which can spell the header by chance.
+            Some(Err(err)) => self.legacy_decrypt(&data).map_err(|_| err)?,
+            None => self.legacy_decrypt(&data)?,
+        };
+        Ok(FallbackValue {
+            value,
+            legacy: true,
+        })
+    }
+
+    /// Re-seals a legacy blob (key compiled into the binary) with the per-install key (#1932).
+    /// The new blob replaces the old one in a single rename, and only after it has been opened
+    /// again and compared with `value`; on any failure the legacy blob stays as it was and stays
+    /// readable.
+    fn migrate_legacy_fallback(&self, key: &str, value: &str) {
+        let migrated = self.fallback_file(key).and_then(|path| {
+            let sealed = self.fallback_encrypt(value, self.key_source_for_writing())?;
+            match self.fallback_decrypt(&sealed) {
+                Some(Ok(reopened)) if reopened == value => replace_owner_only(&path, &sealed),
+                Some(Ok(_)) | Some(Err(_)) | None => Err(Error::Unknown(anyhow!(
+                    "the re-sealed value did not read back"
+                ))),
+            }
+        });
+        match migrated {
+            Ok(()) => log::info!(
+                "Re-sealed the secure-storage fallback for {}/{key} with the per-install key",
+                self.service_name
+            ),
+            Err(err) => log::warn!(
+                "The secure-storage fallback for {}/{key} keeps its legacy key: {err:#}",
+                self.service_name
+            ),
+        }
     }
 
     fn delete_fallback_value(&self, key: &str) -> Result<(), Error> {
@@ -374,15 +548,24 @@ impl SecureStorage {
     ///
     /// Without this the two backends are indistinguishable from the outside:
     /// a write into the Secret Service and a write of a locally-encrypted blob
-    /// both simply succeed. They are not equivalent -- the fallback's key is a
-    /// build-time constant in an open-source binary (see [`Self::encryption_key`])
-    /// -- so an operator has to be able to tell which one is in use.
-    fn warn_fallback_backend(&self, key: &str, err: &Error) {
+    /// both simply succeed. They are not equivalent -- with no keyring the fallback's
+    /// key sits in a file beside the blob (see [`KeySource::KeyFile`]) -- so an
+    /// operator has to be able to tell which one is in use.
+    fn warn_fallback_backend(&self, key: &str, err: &Error, source: KeySource) {
+        let limits = match source {
+            KeySource::Keyring => {
+                "Its encryption key is derived from a per-install secret in the OS keyring, so \
+                 the file cannot be read without the keyring."
+            }
+            KeySource::KeyFile => {
+                "Its encryption key is derived from a random per-user key file beside it (also \
+                 0600), so it defends against other local users and against a copy of the \
+                 file alone -- not against anyone able to read files as this user."
+            }
+        };
         log::warn!(
             "Secret Service unavailable ({err}); storing {}/{key} in the local encrypted \
-             fallback instead. The fallback file is owner-only (0600), but its encryption \
-             key is a build-time constant, so it defends against other local users only -- \
-             not against anyone able to read files as this user.",
+             fallback instead. The fallback file is owner-only (0600). {limits}",
             self.service_name,
         );
     }
@@ -420,7 +603,7 @@ impl SecureStorage {
     }
 
     /// What the fallback holds for `key`. An unreadable blob is reported and treated as absent,
-    /// so the keyring copy (if any) is used, as before.
+    /// so the keyring copy (if any) is used, as before. The blob itself is left in place.
     fn fallback_entry(&self, key: &str) -> FallbackEntry {
         if self.tombstone_file(key).is_ok_and(|path| path.exists()) {
             return FallbackEntry::Removed;
@@ -448,8 +631,9 @@ impl SecureStorage {
                 Ok(())
             }
             Err(err) => {
-                self.warn_fallback_backend(key, &err);
-                self.write_fallback_file(key, value, create_dir)
+                let source = self.key_source_for_writing();
+                self.warn_fallback_backend(key, &err, source);
+                self.write_fallback_file(key, value, create_dir, source)
             }
         };
         if result.is_ok() {
@@ -475,11 +659,13 @@ impl super::SecureStorage for SecureStorage {
     /// keyring's older copy.
     fn read_value(&self, key: &str) -> Result<String, Error> {
         match self.fallback_entry(key) {
-            FallbackEntry::Value(value) => {
+            FallbackEntry::Value(FallbackValue { value, legacy }) => {
+                let mut moved_to_keyring = false;
                 if availability::should_contact_keyring() {
                     match self.keyring.write(key, &value) {
                         Ok(()) => {
                             let _ = self.delete_fallback_value(key);
+                            moved_to_keyring = true;
                             log::info!(
                                 "Moved {}/{key} from the local fallback into the OS keyring",
                                 self.service_name
@@ -487,6 +673,9 @@ impl super::SecureStorage for SecureStorage {
                         }
                         Err(err) => log::debug!("{key} stays in the local fallback: {err:#}"),
                     }
+                }
+                if legacy && !moved_to_keyring {
+                    self.migrate_legacy_fallback(key, &value);
                 }
                 Ok(value)
             }
@@ -673,6 +862,199 @@ impl From<secret_service::Error> for Error {
 impl From<ring::error::Unspecified> for Error {
     fn from(value: ring::error::Unspecified) -> Self {
         Error::Unknown(anyhow!(value))
+    }
+}
+
+/// AES-256-GCM key for `service_name`'s fallback blobs, from the per-install `secret` of `source`.
+fn derive_key(
+    service_name: &str,
+    source: KeySource,
+    secret: &[u8; INSTALL_SECRET_LEN],
+) -> Result<aead::LessSafeKey, Error> {
+    let info: [&[u8]; 3] = [source.kdf_label(), b"\0", service_name.as_bytes()];
+    let pseudorandom_key = hkdf::Salt::new(hkdf::HKDF_SHA256, KDF_SALT).extract(secret);
+    let key = pseudorandom_key.expand(&info, &aead::AES_256_GCM)?;
+    Ok(aead::LessSafeKey::new(aead::UnboundKey::from(key)))
+}
+
+/// Seals `value` under a fresh random nonce; returns `nonce || ciphertext and tag`.
+fn seal_value(
+    key: &aead::LessSafeKey,
+    associated_data: &[u8],
+    value: &str,
+) -> Result<Vec<u8>, Error> {
+    let mut nonce_bytes = [0u8; aead::NONCE_LEN];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+
+    let mut data = value.as_bytes().to_vec();
+    key.seal_in_place_append_tag(nonce, aead::Aad::from(associated_data), &mut data)
+        .map_err(Into::<Error>::into)
+        .context("Fallback encryption failed")?;
+
+    let mut output = Vec::with_capacity(aead::NONCE_LEN + data.len());
+    output.extend_from_slice(&nonce_bytes);
+    output.append(&mut data);
+    Ok(output)
+}
+
+/// Opens what [`seal_value`] returned.
+fn open_sealed(
+    key: &aead::LessSafeKey,
+    associated_data: &[u8],
+    sealed: &[u8],
+) -> Result<String, Error> {
+    if sealed.len() < aead::NONCE_LEN + 1 {
+        return Err(Error::Unknown(anyhow!(
+            "Attempting to decrypt too small value for fallback decryption"
+        )));
+    }
+    let (nonce_bytes, ciphertext) = sealed.split_at(aead::NONCE_LEN);
+    let nonce = aead::Nonce::try_assume_unique_for_key(nonce_bytes)
+        .map_err(Into::<Error>::into)
+        .context("Failed to parse nonce for fallback decryption")?;
+
+    // Owned because the decryption happens in place.
+    let mut data = ciphertext.to_owned();
+    let decrypted_length = key
+        .open_in_place(nonce, aead::Aad::from(associated_data), &mut data)
+        .map_err(Into::<Error>::into)
+        .context("Fallback decryption failed")?
+        .len();
+    data.truncate(decrypted_length);
+
+    String::from_utf8(data).map_err(|err| Error::DecodeError(err.utf8_error()))
+}
+
+fn new_install_secret() -> Result<[u8; INSTALL_SECRET_LEN], Error> {
+    let mut secret = [0u8; INSTALL_SECRET_LEN];
+    SystemRandom::new().fill(&mut secret)?;
+    Ok(secret)
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The per-install secret from its keyring encoding; `None` unless it is exactly
+/// [`INSTALL_SECRET_LEN`] bytes of hex.
+fn decode_install_secret(encoded: &str) -> Option<[u8; INSTALL_SECRET_LEN]> {
+    let encoded = encoded.trim().as_bytes();
+    if encoded.len() != 2 * INSTALL_SECRET_LEN {
+        return None;
+    }
+    let mut secret = [0u8; INSTALL_SECRET_LEN];
+    for (byte, pair) in secret.iter_mut().zip(encoded.chunks_exact(2)) {
+        let high = char::from(pair[0]).to_digit(16)?;
+        let low = char::from(pair[1]).to_digit(16)?;
+        *byte = u8::try_from(high * 16 + low).ok()?;
+    }
+    Some(secret)
+}
+
+/// A name beside `path` for a file that is written in full before it takes `path`'s place.
+fn sibling_temp_path(path: &std::path::Path) -> PathBuf {
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(format!(
+        ".tmp-{}-{:016x}",
+        std::process::id(),
+        rand::thread_rng().next_u64()
+    ));
+    path.with_file_name(name)
+}
+
+/// Creates `path` (it must not exist) owner-only and writes `bytes` through to the disk.
+fn write_new_owner_only(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// Replaces `path` with an owner-only file holding `bytes` in one rename, so a reader (or a
+/// crash) sees the old content or the new, never a part of either.
+fn replace_owner_only(path: &std::path::Path, bytes: &[u8]) -> Result<(), Error> {
+    let temp = sibling_temp_path(path);
+    let replaced = write_new_owner_only(&temp, bytes).and_then(|()| std::fs::rename(&temp, path));
+    if replaced.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    replaced.map_err(|err| {
+        Error::Unknown(anyhow!(
+            "cannot replace secure-storage file {}: {err}",
+            path.display()
+        ))
+    })
+}
+
+/// The per-install secret in the key file at `path`; `Ok(None)` when there is no such file. A
+/// file that cannot be read or has the wrong length is an error.
+fn read_key_file(path: &std::path::Path) -> Result<Option<[u8; INSTALL_SECRET_LEN]>, Error> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(Error::Unknown(anyhow!(
+                "cannot read the secure-storage key file {}: {err}",
+                path.display()
+            )));
+        }
+    };
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|err| {
+        Error::Unknown(anyhow!(
+            "cannot read the secure-storage key file {}: {err}",
+            path.display()
+        ))
+    })?;
+    SecureStorage::tighten_fallback_permissions(&file, path);
+    <[u8; INSTALL_SECRET_LEN]>::try_from(bytes.as_slice())
+        .map(Some)
+        .map_err(|_| {
+            Error::Unknown(anyhow!(
+                "the secure-storage key file {} has the wrong length; it is not replaced",
+                path.display()
+            ))
+        })
+}
+
+/// Creates the key file at `path` with a new random secret and returns the secret in the file.
+/// The file appears under its name complete or not at all (written under a temporary name, then
+/// hard-linked, which fails if the name is taken), so when two processes create it at once both
+/// end up with the one that got the name.
+fn create_key_file(path: &std::path::Path) -> Result<[u8; INSTALL_SECRET_LEN], Error> {
+    let secret = new_install_secret()?;
+    let cannot_create = |err: std::io::Error| {
+        Error::Unknown(anyhow!(
+            "cannot create the secure-storage key file {}: {err}",
+            path.display()
+        ))
+    };
+    let temp = sibling_temp_path(path);
+    write_new_owner_only(&temp, &secret).map_err(cannot_create)?;
+    let linked = std::fs::hard_link(&temp, path);
+    let _ = std::fs::remove_file(&temp);
+    match linked {
+        Ok(()) => Ok(secret),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => read_key_file(path)?
+            .ok_or_else(|| {
+                Error::Unknown(anyhow!(
+                    "the secure-storage key file {} disappeared while it was being created",
+                    path.display()
+                ))
+            }),
+        // A filesystem without hard links: create the name itself, exclusively.
+        Err(_) => match write_new_owner_only(path, &secret) {
+            Ok(()) => Ok(secret),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                read_key_file(path)?.ok_or_else(|| cannot_create(err))
+            }
+            Err(err) => Err(cannot_create(err)),
+        },
     }
 }
 

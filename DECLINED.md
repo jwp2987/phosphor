@@ -2462,6 +2462,23 @@ upstream's behavior is actually a defect rather than a preference.
   sees the wrapper; the pwsh form is unverified in a real shell.
   <!-- markers: keep:exec_into_shell keep:escalate_agent_command_that_ignored_interrupt keep:replace_command_text keep:HISTORY_MARKER -->
 
+- **The Linux secure-storage fallback is sealed with a per-install key, not a literal in the
+  binary** (`#1932`, 2026-11-10, owner decision,
+  `crates/warpui_extras/src/secure_storage/linux.rs`, design `docs/design/r14-secure.md`).
+  **Upstream:** the fallback blob's AES-256-GCM key is a string literal
+  (`42effe840:crates/warpui_extras/src/secure_storage/linux.rs:109`), so a blob and the public
+  binary are enough to read every stored credential. **We do:** blobs are
+  `PSF1 || K or F || nonce || ciphertext`; the key comes (HKDF-SHA256) from a random per-install
+  secret that lives in the keyring when the keyring answers (`K`), else in an owner-only key
+  file beside the blobs (`F`). Legacy blobs are still read with the built-in literal and re-sealed
+  on read (verified, then renamed over the old blob); nothing is written with the literal, and a
+  key file is never regenerated. **Known limits, deliberate:** with no keyring the key file is
+  readable by any process of the user (only a keyring defends against that); builds before this
+  change cannot read the new blobs (a downgrade shows keyring-less users no stored credentials
+  until they upgrade again); a `K` blob needs the keyring to be read. A re-pin must not bring
+  the literal back as a write key.
+  <!-- markers: keep:KEYRING_INSTALL_SECRET_KEY keep:migrate_legacy_fallback keep:key_source_for_writing -->
+
 ## Not done: evicting closed panes' AI conversations from memory (#843)
 
 Closing a pane drops the AI history model's per-view maps (live and cleared ids, active

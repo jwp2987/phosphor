@@ -66,6 +66,14 @@ project ID and location instead of a base URL.
 On macOS that is the login Keychain; on Linux it is the Secret Service, with an
 encrypted-file fallback under the state directory if no Secret Service is
 running; on Windows it is DPAPI-protected storage under the state directory.
+
+The Linux fallback files are owner-only (`0600`). With no Secret Service their
+encryption key is derived from a random key file beside them,
+`dev.phosphor.Phosphor-secure-storage.key` (also `0600`): that stops a copied
+fallback file from being read on its own, but not a program running as you,
+which can read both files. Only a Secret Service keyring protects against that.
+Do not delete the key file: the values sealed with it cannot be read without
+it, and back it up together with the fallback files.
 Keys are never written to `settings.toml`, and they are not synced anywhere.
 
 `settings.toml` itself lives at:
