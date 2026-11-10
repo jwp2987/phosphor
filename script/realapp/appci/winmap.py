@@ -18,6 +18,7 @@ BOTH = {
     "startup_shell_pane",                    # #1534: itself skips outside a startup_shell_override pass
     "ctrl_c_no_esc_i_local",                 # #1798: itself skips on Windows with its reason
     "giveup_keys_reach_shell",               # owner decision 2026-11-09 (#1661 reversed): shell-neutral (append_cmd / pane_shell), effect file + app log
+    "output_frames",                         # #1979: a bounded stream line for PowerShell and bash, verdicts from the app log only (skips itself in a cmd.exe pane)
     "agent_lrc_no_false_takeover",           # #1882: PowerShell / Git Bash commands in both panes; ConPTY has no tty-read probe, so a printed prompt gets the notice only (the Read-Host marker is the hand-over, agent_interactive_password)
     # #1831/#1832: the fake model runs on the host (127.0.0.1); effect files and the sqlite store, no rc hook needed. The quit variants skip themselves on Windows (no quit key).
     "agent_fault_429", "agent_fault_500", "agent_fault_disconnect", "agent_fault_down", "agent_fault_slow_cancel", "agent_fault_queued_rows",

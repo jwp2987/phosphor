@@ -64,6 +64,8 @@ PROVING = (
     "subshell_ready_secret_after_probe", "subshell_sh_probe_empty_ps1",
     # owner decision 2026-11-09 (reversing #1661): a hold that gives up writes its keys to the pty; nothing typed after an Enter is dropped or bounced
     "giveup_keys_reach_shell",
+    # #1979: frames and view re-renders caused by pty output (shown tab streaming, hidden tabs streaming), counted from the app's frame_cause log
+    "output_frames",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -5921,6 +5923,7 @@ import cases_agent_file_edits  # noqa: E402,F401  (#1835: agent_edit_accept/reje
 import cases_agent_question  # noqa: E402,F401  (#1851: agent_question_*, the ask_user_question card never hangs on 'Preparing question...'; fake_model ask_* faults)
 import cases_agent_resilience  # noqa: E402,F401  (#1831/#1832: agent_fault_* model failures, agent_restart_* quit / kill -9 mid-conversation; fake_model fault injection)
 import cases_agent_multitab  # noqa: E402,F401  (#1833: agent_multitab_streaming, N hidden streaming agent tabs while typing elsewhere)
+import cases_output_frames  # noqa: E402,F401  (#1979: output_frames, frames / wakeups / in-place re-renders caused by pty output in shown and hidden tabs)
 import cases_agent_mcp  # noqa: E402,F401  (#1834: agent_mcp_faults, misbehaving fake MCP servers)
 import cases_agent_latency  # noqa: E402,F401  (#1828: agent_latency_key, agent_latency_enter, agent_steer_fast; needs APPCI_FAKE_MODEL=1)
 import cases_win_handover  # noqa: E402,F401  (#1882/#1883/#1891: ps_read_host_secure, gitbash_precmd_secret; Windows secrets and interactive reads on ConPTY)

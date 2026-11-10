@@ -353,6 +353,17 @@ pub enum DispatchedActionKind {
     Typed(Box<dyn Action>),
 }
 
+/// The `warpui::frame_cause` line for one flush that re-rendered hidden views in place
+/// ([`Presenter::render_unmounted_updates`]): `unmounted_render: n=<count> views=[<type names>]`.
+/// The appci `output_frames` case counts these (#1979); it deliberately does not look like the
+/// `frame <n>: updated=[..]` line, which says a frame was built.
+pub(crate) fn unmounted_render_line(view_names: &[&str]) -> String {
+    format!(
+        "unmounted_render: n={} views={view_names:?}",
+        view_names.len()
+    )
+}
+
 impl Presenter {
     pub fn new(window_id: WindowId) -> Self {
         Self {
@@ -458,6 +469,17 @@ impl Presenter {
                         .is_none_or(|parent_id| !self.mounted_views.contains(parent_id))
             })
             .collect();
+        // #1979 measurement, numbers only: which hidden views this flush re-rendered in place.
+        // `RUST_LOG=warpui::frame_cause=debug`; nothing is collected while that is off.
+        if !unmounted.is_empty()
+            && log::log_enabled!(target: "warpui::frame_cause", log::Level::Debug)
+        {
+            let names: Vec<&str> = unmounted
+                .iter()
+                .map(|view_id| app.view_name(self.window_id, *view_id).unwrap_or("?"))
+                .collect();
+            log::debug!(target: "warpui::frame_cause", "{}", unmounted_render_line(&names));
+        }
         for view_id in &unmounted {
             match app.render_view(self.window_id, *view_id) {
                 Ok(element) => {

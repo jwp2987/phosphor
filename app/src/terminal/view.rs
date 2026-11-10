@@ -16280,6 +16280,19 @@ impl TerminalView {
             decided
         };
         self.last_wakeup_redraw = Some(redraw);
+        // #1979 measurement, numbers only: what this wakeup asks the window for and whether the
+        // view is on screen. `RUST_LOG=warpui::frame_cause=debug`; nothing runs while that is off.
+        if log::log_enabled!(target: "warpui::frame_cause", log::Level::Debug) {
+            log::debug!(
+                target: "warpui::frame_cause",
+                "{}",
+                wakeup_redraw::wakeup_log_line(
+                    redraw,
+                    ctx.is_view_reachable(ctx.window_id(), ctx.view_id()),
+                    ctx.view_id(),
+                )
+            );
+        }
 
         self.maybe_emit_terminal_view_state_changed_for_long_running_block(ctx);
 
