@@ -144,7 +144,19 @@ async fn read_remote_file(
                 match fc.content {
                     Some(remote_server::proto::file_context_proto::Content::TextContent(
                         content,
-                    )) => FileReadResult::Found(content),
+                    )) => {
+                        // `ReadFileContext` hands the model LF-normalised text. The diff is
+                        // applied to, shown from and written back as this text, so the file's
+                        // own line endings have to come from its bytes (see
+                        // `with_the_files_own_line_endings`). A failed raw read keeps the
+                        // normalised text, as before.
+                        let raw = if content.is_empty() {
+                            None
+                        } else {
+                            backend.read_file_bytes(path.to_string()).await.ok()
+                        };
+                        FileReadResult::Found(with_the_files_own_line_endings(content, raw))
+                    }
                     Some(remote_server::proto::file_context_proto::Content::BinaryContent(_)) => {
                         // apply-diff only works with text files
                         FileReadResult::ReadError("File is binary".to_string())
@@ -168,3 +180,57 @@ async fn read_remote_file(
         Err(err) => FileReadResult::ReadError(format!("{err}")),
     }
 }
+
+/// The text of a remote file as the diff application must see it: `raw` (the file's bytes)
+/// when it is the same text as `normalised` apart from `\r\n` line endings, `normalised`
+/// otherwise.
+///
+/// `normalised` is what `ReadFileContext` returned: both arms (the helper and the shell
+/// backend, `remote_server::shellcmd::read`) split on `\n` and drop one `\r` in front of it,
+/// which is right for the model and wrong for an edit. The local path reads the file with
+/// `std::fs::read_to_string` and so keeps every ending; with the normalised text a remote CRLF
+/// file got an LF diff base and an LF buffer, and the accept was then refused by the write
+/// guard ("line endings were converted", `warp_files::compare_pre_image`) while a file mixing
+/// CRLF and LF lines was written back with LF only (lab job 17885063245,
+/// `lab_fam_agent_edit_endings`).
+///
+/// `raw` is only ever used when it is provably the same file: valid UTF-8 that normalises to
+/// exactly `normalised`. Bytes that differ (the file changed between the two reads, a read
+/// that was cut short) or that are missing leave today's behaviour.
+fn with_the_files_own_line_endings(normalised: String, raw: Option<Vec<u8>>) -> String {
+    let Some(raw) = raw.and_then(|bytes| String::from_utf8(bytes).ok()) else {
+        return normalised;
+    };
+    if !raw.contains('\r') {
+        return normalised;
+    }
+    if as_read_file_context_normalises(&raw) == normalised {
+        raw
+    } else {
+        normalised
+    }
+}
+
+/// `text` with one `\r` dropped at the end of every line, the way
+/// `remote_server::shellcmd::read::read_text` builds the lines of a `ReadFileContext` answer
+/// (a line is what `\n` ends, or the unterminated rest of the file).
+fn as_read_file_context_normalises(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let (line, tail, has_newline) = match rest.find('\n') {
+            Some(index) => (&rest[..index], &rest[index + 1..], true),
+            None => (rest, "", false),
+        };
+        out.push_str(line.strip_suffix('\r').unwrap_or(line));
+        if has_newline {
+            out.push('\n');
+        }
+        rest = tail;
+    }
+    out
+}
+
+#[cfg(test)]
+#[path = "apply_diff_model_tests.rs"]
+mod tests;

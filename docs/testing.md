@@ -4496,3 +4496,11 @@ defects, five are faults of the harness or the job. Everything below is worked, 
   fish and nu arms, `Received PlainSSHFallback hook`, two `Starting session: command for u_<shell>` lines in the lab sshd log and a remote prompt.
   **Owner question:** these hosts get a plain session with no remote features; the agent-mode `nu` arms are expected to get past the connect and then
   fail on their first remote tool call until a managed session for such login shells is designed.
+- **APP, #2020: remote agent edits lost the file's line endings (`lab_fam_agent_edit_endings.bash.lan.nohelper`).** On an ssh pane a CRLF file's accept
+  was refused every time (`family=fs_basic`, then `Failed to save file for accepted AgentMode diffs`) and a mixed CRLF / LF file was written back with LF
+  only; the local `agent_edit_endings` wrote the right bytes in the same pipeline. The remote diff read (`apply_diff_model.rs` `read_remote_file`) used
+  `ReadFileContext` text, which is LF-normalised for the model, where the local path reads the file itself. It now also reads the bytes
+  (`read_file_bytes`) and uses them when they are the same text (`with_the_files_own_line_endings`). Unit tests `apply_diff_model_tests.rs`: a CRLF and a
+  mixed file keep their endings and a missing final newline; an LF file, bytes of a different text, a failed read and non-UTF-8 bytes keep the normalised
+  text; the normaliser equals `shellcmd::read::read_text`'s per-line rule. The case is unchanged. The next lab run should show all five shapes
+  byte-exact and one `family=fs_basic` line next to each `family=file_context` line at proposal time (one more side call per proposed file).
