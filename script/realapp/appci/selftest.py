@@ -424,6 +424,10 @@ def enter_segment_split():
     s = cases.enter_segments(L[:2] + ["input_order hop=preexec_received t=1004.5"], 0)
     assert s["write_to_preexec_ms"] == 4.0, s
     assert cases.enter_segments(L, 5000.0) == {}                                       # t0 is wall seconds: older lines ignored
+    # the per-Enter samples behind the medians (#1970: a verdict over EVERY Enter), in log order; every key present, empty when the log has none
+    raw = cases.enter_segment_samples(L, 0)
+    assert raw["enter_to_write_ms"] == [0.5, 1.5] and raw["write_to_preexec_ms"] == [] and set(raw) == set(cases.ENTER_SEGMENT_KEYS), raw
+    assert cases.enter_segment_samples(L, 5000.0)["enter_to_write_ms"] == []
 
 
 @check
@@ -3700,7 +3704,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_enter_no_network_wait", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop"}
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_", "lab_git_write_remote")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -4034,6 +4038,24 @@ def lab_verdict_maths():
     v = L.paired_verdict([166.0] * 12, plain)
     assert v["allowed"] == 165.0 and v["over_ms"] == 1.0
     assert L.paired_verdict([1.0] * 3, plain)["verdict"] == "no-data"
+    # #1970 enter_wait_verdict: the app's own Enter -> write times with a delayed link, against the same session without the delay
+    fast, lan = [0.6, 0.8, 0.5, 1.1, 0.7, 0.9, 0.6, 0.8, 0.7, 1.0], [0.5, 0.7, 0.6, 0.9, 0.6, 0.8, 0.5, 0.7, 0.6, 0.9]
+    v = L.enter_wait_verdict(fast, lan, 150)
+    assert v["verdict"] == "pass" and v["limit"] == 75.0 and v["worst"] == 1.1 and v["lan_median"] == 0.65 and v["delta"] == 0.1, v
+    v = L.enter_wait_verdict(fast[:-1] + [151.0], lan, 150)
+    assert v["verdict"] == "fail" and "waited on the network" in v["why"], "ONE Enter that waited a round trip fails, whatever the median says: %s" % v
+    assert L.enter_wait_verdict(fast[:-1] + [75.0], lan, 150)["verdict"] == "fail" and L.enter_wait_verdict(fast[:-1] + [74.9], lan, 150)["verdict"] == "pass"
+    assert L.enter_wait_verdict(fast[:-1] + [100.0], lan, 300)["verdict"] == "pass", "the limit is half the arm's RTT (150 ms at 300)"
+    v = L.enter_wait_verdict([x + 2.5 for x in fast], lan, 150)
+    assert v["verdict"] == "fail" and v["delta"] == 2.6 and "must not grow" in v["why"], v                 # under half the RTT, but 2.6 ms slower than the control
+    assert L.enter_wait_verdict([x + 1.9 for x in fast], lan, 150)["verdict"] == "pass"
+    assert L.enter_wait_verdict([x + 2.5 for x in fast], lan, 150, budget_ms=5.0)["verdict"] == "pass"
+    v = L.enter_wait_verdict(fast, None, 150)
+    assert v["verdict"] == "pass" and v["lan_median"] is None and "no undelayed control" in v["why"], v        # the half-RTT rule alone
+    assert L.enter_wait_verdict(fast, lan[:3], 150)["lan_median"] is None, "too few control samples: no control"
+    assert L.enter_wait_verdict(fast[:7], lan, 150)["verdict"] == "no-data" and L.enter_wait_verdict([], lan, 150)["verdict"] == "no-data"
+    assert L.enter_wait_verdict(fast, lan, 0)["verdict"] == "no-data", "a LAN arm has no delay to wait on"
+    assert L.enter_wait_verdict([None] * 4 + fast, lan, 150)["n"] == 10
     # outliers do not move a median
     assert L.paired_verdict([150.0] * 10 + [900.0, 900.0], plain)["verdict"] == "pass"
     # sshd channel counts, clock offset (smallest round trip wins), known_hosts and ssh config text

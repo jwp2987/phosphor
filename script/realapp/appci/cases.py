@@ -71,7 +71,9 @@ PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_i
                                                          "agent_gate_", "agent_question_")) or n in ("agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming", "network_gate_notice"))
 # The PROVING lab cases (cases_lab*.py, the fake ssh lab). Globs, as --cases takes them. The fix tier plays app-test-lab-linux with these
 # (script/ci/ci_seq.py LAB_FIX_CASES), Linux only, APPCI_FAKE_MODEL=1, APPCI_LAB_MATRIX=quick.
-PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*")
+# #1970 / #1983 (round 10): the slow-link and Ctrl-C lab cases had existed since 2026-11-08 but no tier ever played them. lab_enter_no_network_wait is new;
+# lab_enter_start (only its 150 ms arms here: the netem test the annoyance review found never run) and lab_ctrl_c_no_esc_i are the existing cases.
+PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wait.*", "lab_enter_start.*.150.*", "lab_ctrl_c_no_esc_i.*")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):
@@ -405,8 +407,24 @@ def enter_segments(lines, t0):
                                answering the Enter waited for the model lock the UI held while building a frame (0 when none was logged,
                                absent when the build has none of the #1606 hops)
     Lines before wall time t0 are ignored."""
-    keys = ("event_age_ms", "event_to_enter_ms", "enter_to_write_ms", "submit_bookkeeping_ms", "effect_flush_ms", "write_to_first_read_ms",
-            "write_to_preexec_ms", "pty_lock_wait_ms")
+    seg = enter_segment_samples(lines, t0)
+    out = {}
+    for k in ENTER_SEGMENT_KEYS:
+        v = seg[k]
+        if v:
+            out[k] = round(statistics.median(v), 2)
+            out[k.replace("_ms", "_n")] = len(v)
+    return out
+
+
+ENTER_SEGMENT_KEYS = ("event_age_ms", "event_to_enter_ms", "enter_to_write_ms", "submit_bookkeeping_ms", "effect_flush_ms", "write_to_first_read_ms",
+                      "write_to_preexec_ms", "pty_lock_wait_ms")
+
+
+def enter_segment_samples(lines, t0):
+    """the per-Enter samples behind enter_segments: {key: [ms, ...]} for every key of ENTER_SEGMENT_KEYS, in log order (an empty list when the log has
+    none). A verdict that must hold for EVERY Enter (lab_enter_no_network_wait, #1970) reads these; a median hides one Enter that waited."""
+    keys = ENTER_SEGMENT_KEYS
     seg = {k: [] for k in keys}
     pending, wrote, read_seen, chord = None, None, True, False
     sent, executed, submitted, lock_wait = None, None, None, None
@@ -460,13 +478,7 @@ def enter_segments(lines, t0):
             sw = re.search(r"since_write_ms=(\d+(?:\.\d+)?)", l)
             seg["write_to_first_read_ms"].append(float(sw.group(1)) if sw else t - wrote)
             read_seen = True          # only the FIRST read after a write counts; `wrote` stays for a later preexec hop
-    out = {}
-    for k in keys:
-        v = seg[k]
-        if v:
-            out[k] = round(statistics.median(v), 2)
-            out[k.replace("_ms", "_n")] = len(v)
-    return out
+    return seg
 
 
 def os_key_ages(lines, t0, t1=None, enter=None, ctrl=None):
@@ -1148,6 +1160,10 @@ class Ctx:
         """median ms from the app's `enter_begin` hop to the `pty_write` that carries the line (>10 bytes) since wall time t0: the APP's own share
         of Enter->command-start, read from its input_order log (None without a trace). The rest is the shell/ConPTY side."""
         return self.app_enter_segments(t0).get("enter_to_write_ms")
+
+    def app_enter_write_samples(self, t0):
+        """every Enter's `enter_begin` -> line `pty_write` time in ms since wall time t0, in order ([] without a trace): enter_segment_samples"""
+        return enter_segment_samples(self.app_log_lines(), t0)["enter_to_write_ms"]
 
     def app_enter_segments(self, t0):
         """the app-log split of one Enter (#1583 W3) since wall time t0: {enter_to_write_ms, write_to_first_read_ms, write_to_preexec_ms?}, medians

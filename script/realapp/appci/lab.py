@@ -132,6 +132,33 @@ def paired_verdict(app, plain, floor_ms=15.0, pct=0.10, min_n=10):
     return dict(verdict="pass" if ma <= allowed else "fail", app=round(ma, 1), plain=round(mp, 1), allowed=round(allowed, 1), over_ms=round(ma - allowed, 1))
 
 
+def enter_wait_verdict(delayed_ms, lan_ms, rtt_ms, budget_ms=2.0, min_n=8):
+    """#1970: did an Enter wait on the network before its line was written? Inputs are the APP's own Enter -> write times in ms (`hop=enter_begin` -> the
+    line's `pty_write`, cases.enter_segment_samples): `delayed_ms` typed with the link at `rtt_ms`, `lan_ms` typed in the same ssh session with the delay
+    removed (None or too few: no control). Two rules:
+      1. no delayed sample may reach HALF the RTT. A wait on any network round trip costs at least one whole RTT, so a sample under half of it cannot
+         contain one; the bound follows from the delay itself and is not a tuned number.
+      2. with a control, median(delayed) <= median(lan) + budget_ms (the owner's Enter budget, 2 ms): the app's share of Enter must not grow with the link.
+    -> dict(verdict pass|fail|no-data, n, worst, limit, median, lan_median, delta, why)"""
+    d = [x for x in (delayed_ms or []) if x is not None]
+    l = [x for x in (lan_ms or []) if x is not None]
+    if len(d) < min_n or not rtt_ms:
+        return dict(verdict="no-data", n=len(d), why="%d Enter -> write sample(s) at the delayed link, %d needed" % (len(d), min_n) if rtt_ms else "no link delay: nothing to judge")
+    worst, limit, med = max(d), rtt_ms / 2.0, statistics.median(d)
+    out = dict(n=len(d), worst=round(worst, 2), limit=limit, median=round(med, 2), lan_median=None, delta=None)
+    if worst >= limit:
+        return dict(out, verdict="fail", why="an Enter's line was written %.1f ms after the Enter with a %d ms link: that is half a round trip or more (limit %.0f ms), "
+                    "so the Enter waited on the network" % (worst, rtt_ms, limit))
+    if len(l) < min_n:
+        return dict(out, verdict="pass", why="every Enter -> write under half the RTT (worst %.2f ms, limit %.0f ms); no undelayed control (%d sample(s))" % (worst, limit, len(l)))
+    lm = statistics.median(l)
+    out.update(lan_median=round(lm, 2), delta=round(med - lm, 2))
+    if med - lm > budget_ms:
+        return dict(out, verdict="fail", why="Enter -> write median %.2f ms with a %d ms link against %.2f ms without it in the same session: %.2f ms more, the budget is %.1f ms "
+                    "(the app's share of Enter must not grow with the link delay)" % (med, rtt_ms, lm, med - lm, budget_ms))
+    return dict(out, verdict="pass", why="worst Enter -> write %.2f ms (limit %.0f ms); median %.2f ms delayed against %.2f ms undelayed" % (worst, limit, med, lm))
+
+
 def count_starts(sshd_log_text, kinds=("command", "shell", "subsystem")):
     """sshd (LogLevel VERBOSE) 'Starting session: command for u from ip port N id K' lines -> {kind: count}; the exec channels the app opened"""
     out = {k: 0 for k in kinds}
