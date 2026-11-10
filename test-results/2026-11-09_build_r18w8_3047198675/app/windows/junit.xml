@@ -1,0 +1,442 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="148" failures="24" skipped="66">
+<testcase classname="terminal" name="mode_proof" time="1.20">
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.10">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="96.70">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="53.60">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="5.40">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="21.80">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="330.00">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_flood_ab" time="0.00">
+<skipped message="not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="terminal" name="ps_ctrl_break" time="34.80">
+<failure message="Ctrl+Break reached the program as SIGBREAK in 0/3 runs: [['READY'], ['READY'], ['READY']]">Ctrl+Break reached the program as SIGBREAK in 0/3 runs: [['READY'], ['READY'], ['READY']]
+pty writes: 12, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="harness_crash" time="0.00">
+<failure message="the terminal pass crashed outside a case: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')">the terminal pass crashed outside a case: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="mode_proof" time="1.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="cadence" time="6.10">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_loss_control" time="33.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="enter_loss_control" time="56.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="fast_typing" time="49.10">
+</testcase>
+<testcase classname="terminal@gitbash" name="paste_instant_enter" time="15.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="tab_enter" time="18.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_d" time="348.70">
+<failure message="REGRESSION Ctrl-C: median 87.01 vs baseline build +6.77 ms (+8.4%); re-measured once: median 83.89 (warn)">REGRESSION Ctrl-C: median 87.01 vs baseline build +6.77 ms (+8.4%); re-measured once: median 83.89 (warn)
+#1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells
+NO-REFERENCE: Ctrl-C: overhead 17.86 +/- 4.41 ms (SE) vs budget 20 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 87.01 ms includes the input-tool spawn (harness floor 0.07810001261532307 ms)
+Ctrl-C: overhead 17.86 +/- 4.41 ms (SE of the median difference) vs budget 20 ms: neither within nor over budget at 2 SE; more samples needed
+measurement mode: sequential (this backend cannot keep both windows, or interleaving is disabled (APPCI_LAT_INTERLEAVE=0))
+Ctrl-C under flood, app side (#1606): key_to_write p50 0.39 max 3.22 (n=33)
+Ctrl-C under flood budget 45 ms: ACCEPTED_FOR_RELEASE v0.1.17 (#1606); the owner budget is 20 ms
+NO-REFERENCE: Ctrl-C under flood: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)
+Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; NOREF: the reference was not interleaved (this backend cannot keep both windows, or interleaving is disabled (APPCI_LAT_INTERLEAVE=0)), so no overhead is judged
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran
+pty writes: 297, of which carrying a CR (\r): 0; Enter(s) the input editor started: 99 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_flood_ab" time="0.00">
+<skipped message="not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ps_ctrl_break" time="0.00">
+<skipped message="not run in the Git Bash pane: #1888: Ctrl+Break to a Python SIGBREAK receiver through the PowerShell pane's `&amp;` call; the Git Bash pane's msys signals differ"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ps_fast_command_young_enter" time="0.00">
+<skipped message="not run in the Git Bash pane: #1889: PowerShell's Add-Content lines and its ConPTY young-Enter window; the Git Bash pane has the prompt-hold gates instead"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_sh_probe" time="0.00">
+<skipped message="not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_rc_questions" time="8.00">
+<failure message="two answers re-armed the setup (hops verdict=ReArm): 0">two answers re-armed the setup (hops verdict=ReArm): 0
+the setup was written (hop subshell_setup_ready_write)
+no cancel: the answers were ReArms, not UserDrove</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_vim_typeahead" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_unsupported_tcsh" time="0.00">
+<skipped message="not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_secret_after_prompt" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY pro"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_relay_shape" time="0.00">
+<skipped message="not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_exec_fish_rc" time="0.00">
+<skipped message="not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_docker_t_without_i" time="0.00">
+<skipped message="not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_zsh_newuser_install" time="0.00">
+<skipped message="not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_rc_clear" time="6.00">
+<failure message="the setup was written after the clear">the setup was written after the clear</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_connect_typing" time="40.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_enter_then_immediate_command" time="11.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_nested_typeahead" time="18.80">
+<failure message="ssh_nested_typeahead (outer): before `exit`, a fresh probe ran in the LOCAL shell, not the remote one: `exit` NOT typed; stopping">ssh_nested_typeahead (outer): before `exit`, a fresh probe ran in the LOCAL shell, not the remote one: `exit` NOT typed; stopping
+ssh trial verdicts: exact=1</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_connect_typing_wrapper" time="0.70">
+<skipped message="set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_nested_typeahead_wrapper" time="0.70">
+<skipped message="set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_enter" time="184.50">
+<skipped message="NO-REFERENCE (not a pass): G1: Git Bash fork+exec costs 40.9 ms per process on this host (outside the app); every forking shell hook adds about that"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_key_log" time="12.20">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 0.68 ms (p95 0.92, n=60): within the 1 ms target"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_paint" time="0.70">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="routing_table" time="59.80">
+</testcase>
+<testcase classname="terminal@gitbash" name="agent_mode_switch" time="10.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="remote_tab_no_helper" time="7.80">
+<failure message="the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)">the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)
+path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="remote_tab_enter_no_helper" time="8.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_completions_as_you_type_local" time="2.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no OCR on this machine (tesseract): the completion menu is not checked"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_fish" time="0.80">
+<skipped message="package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_nu" time="0.80">
+<skipped message="package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_no_esc_i_local" time="0.80">
+<skipped message="the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ps_read_host_secure" time="0.00">
+<skipped message="not run in the Git Bash pane: #1882/#1891: Read-Host -AsSecureString is PowerShell; the Git Bash twin is gitbash_precmd_secret"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="gitbash_precmd_secret" time="41.20">
+<failure message="the PIN did not reach `read -s` whole and in order: gbpin.txt holds [], want ['pint242vjy1u8'] (the first half was handed to the editor as text, or keys were lost)">the PIN did not reach `read -s` whole and in order: gbpin.txt holds [], want ['pint242vjy1u8'] (the first half was handed to the editor as text, or keys were lost)
+the line typed after the read did not run
+pty writes: 3, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_gitbash_precmd_secret" time="0.00">
+<failure message="after gitbash_precmd_secret the pane's shell was not the root shell (none; root pid 828); the app is relaunched so later cases start clean">after gitbash_precmd_secret the pane's shell was not the root shell (none; root pid 828); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="md_viewer" time="2.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="zero_network_startup" time="0.00">
+<skipped message="not run on Windows: Wave N: traces the app with Linux strace; a Windows/macOS network trace is not built yet"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="keyring_unavailable_startup" time="0.00">
+<skipped message="not run on Windows: #1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="claude_plugin_offline" time="0.00">
+<skipped message="not run on Windows: Wave N: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the plugin's hook scripts are bash+jq"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="agent_plugins_offline" time="0.00">
+<skipped message="not run on Windows: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the Codex and Gemini hook scripts are bash+jq and write to /dev/tty"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="network_gate_switch" time="0.00">
+<skipped message="not run on Windows: needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle) and the Linux profile layout"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="cb_report_problem" time="0.00">
+<skipped message="not run on Windows: the Windows Downloads folder is a known folder, not under the scratch HOME, so the bundle does not land where the case looks (set PHOSPHOR_DIAG_BUNDLE_DIR in the app's environment "/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.30">
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="22.10">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="5.40">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="21.20">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="178.50">
+</testcase>
+<testcase classname="agent" name="ctrl_c_flood_ab" time="0.00">
+<skipped message="not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="agent" name="ps_ctrl_break" time="34.80">
+<failure message="Ctrl+Break reached the program as SIGBREAK in 0/3 runs: [['READY'], ['READY'], ['READY']]">Ctrl+Break reached the program as SIGBREAK in 0/3 runs: [['READY'], ['READY'], ['READY']]
+pty writes: 12, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="harness_crash" time="0.00">
+<failure message="the agent pass crashed outside a case: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')">the agent pass crashed outside a case: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="mode_proof" time="0.20">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="fast_typing" time="19.80">
+</testcase>
+<testcase classname="agent@gitbash" name="paste_instant_enter" time="7.90">
+</testcase>
+<testcase classname="agent@gitbash" name="tab_enter" time="16.90">
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_d" time="83.50">
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_flood_ab" time="0.00">
+<skipped message="not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ps_ctrl_break" time="0.00">
+<skipped message="not run in the Git Bash pane: #1888: Ctrl+Break to a Python SIGBREAK receiver through the PowerShell pane's `&amp;` call; the Git Bash pane's msys signals differ"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ps_fast_command_young_enter" time="0.00">
+<skipped message="not run in the Git Bash pane: #1889: PowerShell's Add-Content lines and its ConPTY young-Enter window; the Git Bash pane has the prompt-hold gates instead"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_sh_probe" time="0.00">
+<skipped message="not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_rc_questions" time="7.60">
+<failure message="two answers re-armed the setup (hops verdict=ReArm): 0">two answers re-armed the setup (hops verdict=ReArm): 0
+the setup was written (hop subshell_setup_ready_write)
+no cancel: the answers were ReArms, not UserDrove</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_vim_typeahead" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_unsupported_tcsh" time="0.00">
+<skipped message="not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_secret_after_prompt" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY pro"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_relay_shape" time="0.00">
+<skipped message="not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_exec_fish_rc" time="0.00">
+<skipped message="not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_docker_t_without_i" time="0.00">
+<skipped message="not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_zsh_newuser_install" time="0.00">
+<skipped message="not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_rc_clear" time="6.00">
+<failure message="the setup was written after the clear">the setup was written after the clear</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_connect_typing" time="37.40">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_enter_then_immediate_command" time="25.40">
+<failure message="ssh_enter_then_immediate_command: T92_fmb5ir never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 15:29:26 client input ended: 70 bytes in 53 chunks, 70 written to the pseudo console | 15:29:26 connection closed: authenticated=False channels=1 | 15:29:27 connect from ('127.0.0.1', 61643) | 15:29:27 auth publickey user=Winters key=ssh-ed25519 8be4ca3a7389ebd5e0a47e6cdd44c995 -&gt; ok | 15:29:27 auth publickey user=Winters key=ssh-ed25519 8be4ca3a7389ebd5e0a47e6cdd44c995 -&gt; ok | 15:29:27 session shell None pty | 15:29:27 conpty shell pid 5312 | 15:29:28 conpty first output after 0.62 s: 68 bytes; fakesshd.stderr: ConnectionResetError: [WinError 10054] An existing connection was forcibly closed by the remote host | During handling of the above exception, another exception occurred: | Traceback (most recent call last): |   File &quot;C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py&quot;, line 2043, in run |     self._check_banner() |   File &quot;C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py&quot;, line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; test sshd (fakesshd-win) listening on 127.0.0.1:61186; app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=6023 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794266967457.065 | [DEBUG] input_order hop=kh_hold_exit seq=6023 branch=gate_open_live gate_armed=true table=1 t=1794266967457.072 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=6024 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794266967469.967 | [DEBUG] input_order hop=kh_hold_exit seq=6024 branch=gate_open_live gate_armed=true table=1 t=1794266967469.974 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=6025 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794266967470.572 | [DEBUG] input_order hop=kh_hold_exit seq=6025 branch=gate_open_live gate_armed=true table=1 t=1794266967470.578 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)">ssh_enter_then_immediate_command: T92_fmb5ir never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 15:29:26 client input ended: 70 bytes in 53 chunks, 70 written to the pseudo console | 15:29:26 connection closed: authenticated=False channels=1 | 15:29:27 connect from ('127.0.0.1', 61643) | 15:29:27 auth publickey user=Winters key=ssh-ed25519 8be4ca3a7389ebd5e0a47e6cdd44c995 -&gt; ok | 15:29:27 auth publickey user=Winters key=ssh-ed25519 8be4ca3a7389ebd5e0a47e6cdd44c995 -&gt; ok | 15:29:27 session shell None pty | 15:29:27 conpty shell pid 5312 | 15:29:28 conpty first output after 0.62 s: 68 bytes; fakesshd.stderr: ConnectionResetError: [WinError 10054] An existing connection was forcibly closed by the remote host | During handling of the above exception, another exception occurred: | Traceback (most recent call last): |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; test sshd (fakesshd-win) listening on 127.0.0.1:61186; app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=6023 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794266967457.065 | [DEBUG] input_order hop=kh_hold_exit seq=6023 branch=gate_open_live gate_armed=true table=1 t=1794266967457.072 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=6024 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794266967469.967 | [DEBUG] input_order hop=kh_hold_exit seq=6024 branch=gate_open_live gate_armed=true table=1 t=1794266967469.974 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=6025 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794266967470.572 | [DEBUG] input_order hop=kh_hold_exit seq=6025 branch=gate_open_live gate_armed=true table=1 t=1794266967470.578 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)
+remote shell received 1/2 immediately-typed commands exactly: ['T90_if3tac', 'T92_mb5ir']
+ssh_enter_then_immediate_command trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None
+ssh_enter_then_immediate_command trial 2: #1345/#1394: ONE key lost: char 10 ('f') of 27; held 1 key(s)/1 byte(s), hand-over finish@1, finish delivered=tty_owner; the app saw every key of the line; remote got 'echo T92_mb5ir &gt;&gt; ~/rh.txt'
+ssh trial verdicts: #1292=1, #1345/#1394=1</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_nested_typeahead" time="18.00">
+<failure message="ssh_nested_typeahead (outer): before `exit`, a fresh probe ran in the LOCAL shell, not the remote one: `exit` NOT typed; stopping">ssh_nested_typeahead (outer): before `exit`, a fresh probe ran in the LOCAL shell, not the remote one: `exit` NOT typed; stopping
+ssh trial verdicts: exact=1</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_connect_typing_wrapper" time="0.60">
+<skipped message="set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_nested_typeahead_wrapper" time="0.60">
+<skipped message="set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="agent_stream_cancel" time="19.00">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_input_exact" time="6.60">
+</testcase>
+<testcase classname="agent@gitbash" name="routing_table" time="57.40">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_mode_switch" time="9.70">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_lrc_no_false_takeover" time="135.20">
+<failure message="part 2: `printf 'Continue? [y/N] '; read` sat at its prompt for 60 s and was neither handed to the user (a proven tty read must be, #1811) nor given the take-over notice (agent_command_wait awaited=None)">part 2: `printf 'Continue? [y/N] '; read` sat at its prompt for 60 s and was neither handed to the user (a proven tty read must be, #1811) nor given the take-over notice (agent_command_wait awaited=None)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+detector saw the quiet `Waiting:` line and kept the command with the agent: not logged (the model's tool call may not have waited for completion) (agent_command_wait awaited=None)
+pty writes: 3, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="remote_tab_no_helper" time="7.40">
+<failure message="the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)">the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)
+path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="remote_tab_enter_no_helper" time="7.80">
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_no_esc_i_local" time="0.70">
+<skipped message="the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log"/>
+</testcase>
+<testcase classname="agent@gitbash" name="keyring_unavailable_startup" time="0.00">
+<skipped message="not run on Windows: #1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)"/>
+</testcase>
+<testcase classname="agent@fake" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_password" time="54.50">
+<failure message="ai_pw: `read -s` at its prompt was never handed to the user within 45 s (awaited=None)">ai_pw: `read -s` at its prompt was never handed to the user within 45 s (awaited=None)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+pty writes: 7, of which carrying a CR (\r): 1; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@fake" name="harness_crash" time="0.00">
+<failure message="the agent@fake pass crashed outside a case: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')">the agent@fake pass crashed outside a case: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_interactive_password" time="0.00">
+<skipped message="not run in the Git Bash pane: #1882: the hand-over on ConPTY is the PowerShell bootstrap's Read-Host marker; bash `read -s` in a Git Bash pane announces nothing (no termios), so the POSIX form of the "/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_edit_accept" time="0.00">
+<skipped message="not run on Windows: #1835: the file path typed to the scripted model and read back is POSIX-form; the fake-model pass is Git Bash only"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_edit_reject" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_edit_conflict" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_edit_touch_only" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_edit_endings" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_429" time="16.50">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_500" time="26.50">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_disconnect" time="13.10">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_down" time="35.20">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_slow_cancel" time="13.80">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_queued_rows" time="19.50">
+<skipped message="the 2 /queue row(s) did not appear (no hop=queued_row queued within 12 s): the queue precondition cannot be proven, so nothing is judged"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_latency_key" time="54.90">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_interactive_vim" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_quit_stream" time="0.60">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_quit_queued" time="0.50">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_quit_blocked" time="0.50">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_answer" time="155.00">
+<failure message="answer: the turn is neither answerable nor ended after 150 s (verdict hung, last turn state 'blocked', ask actions []): the card hangs on 'Preparing question...'">answer: the turn is neither answerable nor ended after 150 s (verdict hung, last turn state 'blocked', ask actions []): the card hangs on 'Preparing question...'
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_cut" time="5.60">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_nodone" time="155.10">
+<failure message="nodone: the turn is neither answerable nor ended after 150 s (verdict hung, last turn state 'blocked', ask actions []): the card hangs on 'Preparing question...'">nodone: the turn is neither answerable nor ended after 150 s (verdict hung, last turn state 'blocked', ask actions []): the card hangs on 'Preparing question...'
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_trunc" time="5.10">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_empty" time="5.40">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_slow" time="155.00">
+<failure message="slow: the turn is neither answerable nor ended after 150 s (verdict hung, last turn state 'blocked', ask actions []): the card hangs on 'Preparing question...'">slow: the turn is neither answerable nor ended after 150 s (verdict hung, last turn state 'blocked', ask actions []): the card hangs on 'Preparing question...'
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_ctrl_c" time="7.60">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_steer" time="8.90">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_after_command" time="190.70">
+<failure message="after the command ended the ask never became answerable (verdict hung)">after the command ended the ask never became answerable (verdict hung)
+after_command: the prompt after the question made no model request (the input is stuck)
+after_command: the prompt after the question ended None, expected `success`
+after_command: the next prompt reached the model 0 times (expected once)
+after_command: the next prompt made 0 request(s), expected 1
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+no OCR on this runner: the loading text was not read from the screen
+pty writes: 2, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_steer_at_end" time="366.50">
+<failure message="the steer prompt never reached the model">the steer prompt never reached the model
+the turn is neither answerable nor ended (verdict hung, last turn state 'blocked')
+the steer prompt reached the model 0 times
+steer_at_end: the prompt after the question made no model request (the input is stuck)
+steer_at_end: the prompt after the question ended None, expected `success`
+steer_at_end: the next prompt reached the model 0 times (expected once)
+steer_at_end: the next prompt made 0 request(s), expected 1
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_latency_enter" time="236.60">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_interactive_ssh" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_kill_stream" time="53.00">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_kill_queued" time="46.40">
+<skipped message="the 2 /queue row(s) did not appear (no hop=queued_row queued within 12 s): the queue precondition cannot be proven, so nothing is judged"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_kill_blocked" time="42.50">
+<skipped message="ar_kill_blocked: typing under the blocked card made no queued row (hop=queued_row): the queue precondition cannot be proven"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_steer_fast" time="24.40">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_interactive_less" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_noninteractive_no_takeover" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="network_gate_notice" time="0.00">
+<skipped message="not run on Windows: needs the Linux pointer + OCR path and a relaunch on a rewritten settings file"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_gate_deny_allow" time="0.00">
+<skipped message="not run on Windows: Linux-only: pointer + OCR for the toast and live edits of the Linux profile's settings.toml"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_gate_off_live" time="0.00">
+<skipped message="not run on Windows: Linux-only: live edits of the Linux profile's settings.toml"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_mcp_faults" time="0.00">
+<skipped message="not run on Windows: #1834: the fake MCP servers are configured through the HOME-relative ~/.warp/.mcp.json, which the Windows profile does not use in this harness"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_gate_key_never_leaves" time="0.00">
+<skipped message="not run on Windows: Linux-only: live edits of the Linux profile's settings.toml and the fake model's request headers"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_multitab_streaming" time="0.00">
+<skipped message="not run on Windows: #1833: needs the rc-hook received-command proof and the pty-echo frame pairing, neither verified for a Windows pane; Linux and macOS run it"/>
+</testcase>
+<testcase classname="-" name="restore" time="0.00">
+</testcase>
+</testsuite>

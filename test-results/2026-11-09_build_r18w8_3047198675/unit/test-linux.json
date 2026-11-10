@@ -1,0 +1,31 @@
+{
+ "summary_line": null,
+ "duration_s": null,
+ "run": null,
+ "passed": 0,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 0,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::agent_providers::tools::web_runtime::websearch_tests::real_exa_anonymous_search",
+   "seconds": 0.236
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::fuzz_tests::paced_random_sequences_hold_the_invariants",
+   "seconds": 126.371
+  }
+ ],
+ "regressions": [],
+ "notes": [],
+ "errors": [],
+ "job": "test-linux",
+ "status": "failed",
+ "duration": 1377.323569
+}

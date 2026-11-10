@@ -1,0 +1,431 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="133" failures="24" skipped="26">
+<testcase classname="terminal" name="mode_proof" time="1.60">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.30">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="88.80">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="62.70">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="56.60">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.50">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="19.40">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="429.50">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_flood_ab" time="1.50">
+<skipped message="the blocked-frame gate (#1838) exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="terminal" name="ps_ctrl_break" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ps_fast_command_young_enter" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe" time="24.30">
+<failure message="dash: the app logged the unsupported-shell event (hop subshell_setup_unsupported)">dash: the app logged the unsupported-shell event (hop subshell_setup_unsupported)
+APPCI_SU_SH_USER unset: the `su` to an sh-shelled user leg did not run (needs a passwordless su on this runner)
+injector accounting: injector sent 652; app saw 673; lost-before-app 0 (Enter: sent 18, app saw 19); app logged 21 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_questions" time="8.10">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_vim_typeahead" time="11.70">
+<failure message="no Write decision before the one that wrote: ['2026-11-09T23:08:25Z [DEBUG] input_order hop=subshell_ready_judged source=output decision=Write(None) kind=LineReader leader=Shell comm=&quot;bash&quot; tail=ShellPrompt queue_empty=Some(true) bytes=44 lines=2 age_ms=4425 t=1794265705978.358']">no Write decision before the one that wrote: ['2026-11-09T23:08:25Z [DEBUG] input_order hop=subshell_ready_judged source=output decision=Write(None) kind=LineReader leader=Shell comm="bash" tail=ShellPrompt queue_empty=Some(true) bytes=44 lines=2 age_ms=4425 t=1794265705978.358']
+injector accounting: injector sent 248; app saw 274; lost-before-app 0 (Enter: sent 8, app saw 9); app logged 26 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_unsupported_tcsh" time="1.50">
+<skipped message="tcsh is not installed"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_prompt" time="52.10">
+<failure message="the secret read after our first line cancelled the attempt (hop why=Secret)">the secret read after our first line cancelled the attempt (hop why=Secret)
+the password reached the read -s, not a command: ['set | command grep "^WARP_BOOTSTRAPPED[= ]" &gt;/dev/null || printf "\\033]9278;f;{"hook": "InitSubshell", "value": { "shell": "%s", "uname": "%s", "session_id": 11709564215281041966 }}\\a" $(set | command grep "^FISH_VERSION[= ]" &gt;/dev/null &amp;&amp; echo "fish" || { echo $0 | command -p grep -q zsh &amp;&amp; echo "zsh"; } || { echo $0 | command -p grep -q bash &amp;&amp; echo "bash"; } || echo "unknown") $(uname); command -v shopt &gt;/dev/null 2&gt;&amp;1 &amp;&amp; eval \'case $0 in *bash*|*zsh*) ;; *) HISTCONTROL=${__hc0-}; unset __hc0;; esac\'; command -v setopt &gt;/dev/null 2&gt;&amp;1 &amp;&amp; eval \'case $0 in *bash*|*zsh*) ;; *) [ "${__whi-}" = 1 ] || unsetopt hist_ignore_space; unset __whi; [ "${__wpe-}" != 1 ] || setopt print_exit_value; unset __wpe;; esac\'; true']
+the setup was written again after the secret was answered
+the held line went to the editor, not the pty: []
+the handed-back line ran once when the user pressed Enter on it: []
+secret: exact lines in the inner shell then the pane's bash: got ['back_T242_u87r'], wanted ['T238_souzyl', 'back_T242_u87r']
+injector accounting: injector sent 274; app saw 300; lost-before-app 0 (Enter: sent 9, app saw 10); app logged 26 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="1.50">
+<skipped message="no passwordless sudo on this runner (sudo -n true failed)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_exec_fish_rc" time="9.60">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_docker_t_without_i" time="1.50">
+<skipped message="docker with a local alpine image is not available (never pulled by the harness)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_zsh_newuser_install" time="35.00">
+<failure message="nothing was written into the newuser-install menu">nothing was written into the newuser-install menu
+zshnew: the line typed into the inner shell ran (file [])
+the menu footer read as an InputPrompt in at least one sample
+zshnew: the shell in front after leaving is the pane's ROOT shell (got none)
+zshnew: exact lines in the inner shell then the pane's bash: got ['back_T256_i7xd'], wanted ['T253_bpz32g', 'back_T256_i7xd']
+injector accounting: injector sent 205; app saw 230; lost-before-app 0 (Enter: sent 5, app saw 6); app logged 25 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_subshell_ready_zsh_newuser_install" time="0.00">
+<failure message="after subshell_ready_zsh_newuser_install the pane's shell was not the root shell (none; root pid 2468278); the app is relaunched so later cases start clean">after subshell_ready_zsh_newuser_install the pane's shell was not the root shell (none; root pid 2468278); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="7.60">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="28.80">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="7.40">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="5.80">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing_wrapper" time="0.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead_wrapper" time="0.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="160.60">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="14.10">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 4.23 ms (p95 6.11, n=60): OVER the 1 ms target"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="61.20">
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="9.90">
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="6.50">
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="7.50">
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="3.20">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="29.60">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="39.60">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_no_esc_i_local" time="23.90">
+</testcase>
+<testcase classname="terminal" name="ps_read_host_secure" time="0.70">
+<skipped message="PowerShell pane only (Read-Host -AsSecureString; the Git Bash pane's bash `read -s` announces nothing on ConPTY, see gitbash_precmd_secret)"/>
+</testcase>
+<testcase classname="terminal" name="gitbash_precmd_secret" time="0.70">
+<skipped message="Git Bash pane only (bash precmd_functions; ConPTY prompt hold)"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="3.80">
+</testcase>
+<testcase classname="terminal" name="zero_network_startup" time="169.20">
+<failure message="the app tried to reach the network at startup/idle: connect <redacted-endpoint>; connect <redacted-endpoint>; connect <redacted-endpoint>; connect <redacted-endpoint>">the app tried to reach the network at startup/idle: connect <redacted-endpoint>; connect <redacted-endpoint>; connect <redacted-endpoint>; connect <redacted-endpoint>
+Escape left the settings page open (the shell did not take the probe line); closed it with key ctrl+shift+w
+scripted session: settings page walked with the keyboard (best effort; shots/zns_settings_*), allowlist beyond loopback: none
+injector accounting: injector sent 89; app saw 69; lost-before-app 20 (Enter: sent 4, app saw 4)</failure>
+</testcase>
+<testcase classname="terminal" name="keyring_unavailable_startup" time="56.30">
+</testcase>
+<testcase classname="terminal" name="claude_plugin_offline" time="6.40">
+</testcase>
+<testcase classname="terminal" name="agent_plugins_offline" time="13.10">
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="66.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the denial notice (toast naming the purpose and host), its 'Allow this origin' link and the log row's 'Allow' button need a request the gate refuses, wh"/>
+</testcase>
+<testcase classname="terminal" name="cb_report_problem" time="13.30">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.70">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.30">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.20">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="6.40">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="18.70">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="436.60">
+</testcase>
+<testcase classname="agent" name="ctrl_c_flood_ab" time="1.50">
+<skipped message="the blocked-frame gate (#1838) exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="agent" name="ps_ctrl_break" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ps_fast_command_young_enter" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe" time="24.10">
+<failure message="dash: the app logged the unsupported-shell event (hop subshell_setup_unsupported)">dash: the app logged the unsupported-shell event (hop subshell_setup_unsupported)
+APPCI_SU_SH_USER unset: the `su` to an sh-shelled user leg did not run (needs a passwordless su on this runner)
+injector accounting: injector sent 640; app saw 659; lost-before-app 0 (Enter: sent 18, app saw 19); app logged 19 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_questions" time="8.00">
+</testcase>
+<testcase classname="agent" name="subshell_ready_vim_typeahead" time="45.60">
+<failure message="vim: the line typed into the inner shell ran (file [])">vim: the line typed into the inner shell ran (file [])
+vim received exactly the typed text: []
+while vim ran the judge waited (AltScreen or an Unknown leader in the hops)
+no Write decision before the one that wrote: ['2026-11-09T23:33:12Z [DEBUG] input_order hop=subshell_ready_judged source=output decision=Write(None) kind=LineReader leader=Shell comm="bash" tail=ShellPrompt queue_empty=Some(true) bytes=33 lines=1 age_ms=1376 t=1794267192622.003']
+vim: the shell in front after leaving is the pane's ROOT shell (got none)
+vim: exact lines in the inner shell then the pane's bash: got [], wanted ['T99_nqe7fe', 'back_T102_m4eq']
+injector accounting: injector sent 244; app saw 267; lost-before-app 0 (Enter: sent 7, app saw 8); app logged 23 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_subshell_ready_vim_typeahead" time="0.00">
+<failure message="after subshell_ready_vim_typeahead the pane's shell was not the root shell (none; root pid 2676700); the app is relaunched so later cases start clean">after subshell_ready_vim_typeahead the pane's shell was not the root shell (none; root pid 2676700); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="subshell_ready_unsupported_tcsh" time="2.40">
+<skipped message="tcsh is not installed"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_prompt" time="52.10">
+<failure message="the secret read after our first line cancelled the attempt (hop why=Secret)">the secret read after our first line cancelled the attempt (hop why=Secret)
+the password reached the read -s, not a command: ['set | command grep "^WARP_BOOTSTRAPPED[= ]" &gt;/dev/null || printf "\\033]9278;f;{"hook": "InitSubshell", "value": { "shell": "%s", "uname": "%s", "session_id": 10868374999110877128 }}\\a" $(set | command grep "^FISH_VERSION[= ]" &gt;/dev/null &amp;&amp; echo "fish" || { echo $0 | command -p grep -q zsh &amp;&amp; echo "zsh"; } || { echo $0 | command -p grep -q bash &amp;&amp; echo "bash"; } || echo "unknown") $(uname); command -v shopt &gt;/dev/null 2&gt;&amp;1 &amp;&amp; eval \'case $0 in *bash*|*zsh*) ;; *) HISTCONTROL=${__hc0-}; unset __hc0;; esac\'; command -v setopt &gt;/dev/null 2&gt;&amp;1 &amp;&amp; eval \'case $0 in *bash*|*zsh*) ;; *) [ "${__whi-}" = 1 ] || unsetopt hist_ignore_space; unset __whi; [ "${__wpe-}" != 1 ] || setopt print_exit_value; unset __wpe;; esac\'; true']
+the setup was written again after the secret was answered
+the held line went to the editor, not the pty: []
+the handed-back line ran once when the user pressed Enter on it: []
+secret: exact lines in the inner shell then the pane's bash: got ['back_T112_xis0'], wanted ['T108_qa1cx0', 'back_T112_xis0']
+injector accounting: injector sent 274; app saw 299; lost-before-app 0 (Enter: sent 9, app saw 10); app logged 25 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="subshell_ready_relay_shape" time="1.50">
+<skipped message="no passwordless sudo on this runner (sudo -n true failed)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_exec_fish_rc" time="9.50">
+</testcase>
+<testcase classname="agent" name="subshell_ready_docker_t_without_i" time="1.50">
+<skipped message="docker with a local alpine image is not available (never pulled by the harness)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_zsh_newuser_install" time="35.00">
+<failure message="nothing was written into the newuser-install menu">nothing was written into the newuser-install menu
+zshnew: the line typed into the inner shell ran (file [])
+the menu footer read as an InputPrompt in at least one sample
+zshnew: the shell in front after leaving is the pane's ROOT shell (got none)
+zshnew: exact lines in the inner shell then the pane's bash: got ['back_T126_0rr4'], wanted ['T123_rd82tg', 'back_T126_0rr4']
+injector accounting: injector sent 205; app saw 229; lost-before-app 0 (Enter: sent 5, app saw 6); app logged 24 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_subshell_ready_zsh_newuser_install" time="0.00">
+<failure message="after subshell_ready_zsh_newuser_install the pane's shell was not the root shell (none; root pid 2682283); the app is relaunched so later cases start clean">after subshell_ready_zsh_newuser_install the pane's shell was not the root shell (none; root pid 2682283); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="7.90">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="28.40">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="7.40">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="5.70">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing_wrapper" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead_wrapper" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="163.80">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="15.10">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 16.50 ms (p95 17.29, n=60): OVER the 1 ms target"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="30.60">
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="5.80">
+</testcase>
+<testcase classname="agent" name="routing_table" time="60.30">
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="10.80">
+</testcase>
+<testcase classname="agent" name="agent_lrc_no_false_takeover" time="163.90">
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="6.60">
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="7.70">
+</testcase>
+<testcase classname="agent" name="shell_fish" time="29.40">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="40.00">
+</testcase>
+<testcase classname="agent" name="ctrl_c_no_esc_i_local" time="24.10">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_ctrl_c_no_esc_i_local" time="0.00">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="3.40">
+</testcase>
+<testcase classname="agent" name="keyring_unavailable_startup" time="63.20">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_keyring_unavailable_startup" time="0.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_password" time="26.00">
+<failure message="ai_pw: request 2 carries the typed text 'PWT2NG5BY1A2' in a user message (it leaked into the conversation)">ai_pw: request 2 carries the typed text 'PWT2NG5BY1A2' in a user message (it leaked into the conversation)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 214; app saw 208; lost-before-app 6 (Enter: sent 7, app saw 6)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_accept" time="18.50">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_reject" time="78.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_conflict" time="28.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_touch_only" time="19.40">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_endings" time="109.40">
+<failure message="lf_no_eol: the accepted multi-hunk edit: 218 bytes on disk, 217 expected; first difference at byte 217 (b'\n' vs b''); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 9, 0, False)">lf_no_eol: the accepted multi-hunk edit: 218 bytes on disk, 217 expected; first difference at byte 217 (b'\n' vs b''); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 9, 0, False)
+crlf_no_eol: the accepted multi-hunk edit: 228 bytes on disk, 226 expected; first difference at byte 226 (b'\r\n' vs b''); line endings (crlf, bare lf, bare cr, final newline) (10, 0, 0, True) vs expected (9, 0, 0, False)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 981; app saw 986; lost-before-app 0 (Enter: sent 10, app saw 8); app logged 5 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_429" time="16.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_500" time="27.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_disconnect" time="14.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_down" time="27.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_slow_cancel" time="14.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_queued_rows" time="33.40">
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_key" time="256.20">
+<failure message="agent_latency_key/streaming: Phosphor overhead 7.24 +/- 0.21 ms (SE) over same app, terminal-mode input editor exceeds the 2 ms budget (overhead - 2 SE &gt; budget)">agent_latency_key/streaming: Phosphor overhead 7.24 +/- 0.21 ms (SE) over same app, terminal-mode input editor exceeds the 2 ms budget (overhead - 2 SE &gt; budget)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+agent_latency_key/idle: reference = the same key-&gt;frame measure typed into the terminal-mode input editor of this session (before and after the agent phases); both are the app's own keydown -&gt; first frame built, so the shared vsync wait cancels in the overhead
+agent_latency_key/streaming: reference = the same key-&gt;frame measure typed into the terminal-mode input editor of this session (before and after the agent phases); both are the app's own keydown -&gt; first frame built, so the shared vsync wait cancels in the overhead
+agent_latency_key/streaming: keys typed while the fake model's reply streamed (12 s slow steady stream, restarted per chunk of keys)
+UI work (agent_streaming): 9 frame item(s) &gt;= 4 ms (max 4.2 ms); frame items include rasterisation: WARN on software GL, not a failure
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+present-mode A/B mailbox vs default (streaming key-&gt;frame p50, negative = faster): raw -0.92 ms, slot-adjusted 0.1 ms; present_ms p50 0.1 vs default 0.1 (n 58 / 58)
+present-mode A/B lat1 vs default (streaming key-&gt;frame p50, negative = faster): raw 0.52 ms, slot-adjusted 0.1 ms; present_ms p50 0.1 vs default 0.1 (n 58 / 58)
+injector accounting: injector sent 951; app saw 838; lost-before-app 113 (Enter: sent 28, app saw 27)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_vim" time="36.50">
+<failure message="ai_vim: neither hop=fullscreen_handover nor a pty-owned hand_route in the app log after typing into the full-screen program: the keys' route is not proven">ai_vim: neither hop=fullscreen_handover nor a pty-owned hand_route in the app log after typing into the full-screen program: the keys' route is not proven
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+ai_vim: hand-over line in the app log: no (a full-screen program may be driven without the prompt hand-over)
+injector accounting: injector sent 202; app saw 195; lost-before-app 7 (Enter: sent 7, app saw 6)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_stream" time="72.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_queued" time="76.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_blocked" time="76.40">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_answer" time="12.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_cut" time="5.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_nodone" time="31.30">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_trunc" time="5.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_empty" time="5.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_slow" time="17.40">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_ctrl_c" time="8.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_steer" time="8.50">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_after_command" time="16.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_steer_at_end" time="41.90">
+<failure message="the steer prompt never reached the model">the steer prompt never reached the model
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 115; app saw 122; lost-before-app 0 (Enter: sent 6, app saw 6); app logged 7 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_enter" time="257.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_ssh" time="69.80">
+<failure message="ai_ssh: the remote `read` at its prompt was never handed to the user within 60 s">ai_ssh: the remote `read` at its prompt was never handed to the user within 60 s
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+injector accounting: injector sent 157; app saw 175; lost-before-app 0 (Enter: sent 4, app saw 4); app logged 18 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_stream" time="69.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_queued" time="74.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_blocked" time="73.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_steer_fast" time="23.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_less" time="37.30">
+<skipped message="ai_less: no hop=alt_screen_enter within 30 s, so less never took the screen and no keys were typed"/>
+</testcase>
+<testcase classname="agent@fake" name="pane_not_local_after_agent_interactive_less" time="0.00">
+<failure message="after agent_interactive_less the pane's shell was not the root shell (none; root pid 2732378); the app is relaunched so later cases start clean">after agent_interactive_less the pane's shell was not the root shell (none; root pid 2732378); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_noninteractive_no_takeover" time="30.40">
+</testcase>
+<testcase classname="agent@fake" name="network_gate_notice" time="36.30">
+<failure message="the remote image from an unlisted host was not refused by the gate (no 'network gate: denied &quot;remote-asset&quot; (host hash 714ef6f9d3c78218)' line)">the remote image from an unlisted host was not refused by the gate (no 'network gate: denied "remote-asset" (host hash 714ef6f9d3c78218)' line)
+the app log names the host or the image URL of a refused request
+NO-REFERENCE: UNVERIFIABLE: the 'Allow this origin' link was not found on screen by OCR (shots/ngn_find_allow.png): the click, the settings.toml write and the retry were not judged
+injector accounting: injector sent 60; app saw 73; lost-before-app 0 (Enter: sent 1, app saw 2); app logged 13 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_deny_allow" time="378.50">
+<failure message="the image from the unlisted loopback NAME localhost was not refused (no 'network gate: denied &quot;remote-asset&quot; (host hash db3f053403ad937a)' line)">the image from the unlisted loopback NAME localhost was not refused (no 'network gate: denied "remote-asset" (host hash db3f053403ad937a)' line)
+keyboard Allow on the log row: the app log has no 'hop=network_gate_ui action=allow_from_log origin_hash=db3f053403ad937a' (the page action did not run)
+keyboard Allow: settings.toml holds localhost:42879 0 times (expected once)
+after the keyboard Allow: the request did not reach the listener (paths [])
+keyboard Remove: the app log has no 'hop=network_gate_ui action=remove_origin origin_hash=db3f053403ad937a' (the page action did not run)
+after the keyboard Remove: the gate did not refuse it (no 'network gate: denied "remote-asset" (host hash db3f053403ad937a)')
+after the keyboard add: the request did not reach the listener (paths [])
+removing the origin from settings.toml with the app running: the gate did not refuse it (no 'network gate: denied "remote-asset" (host hash db3f053403ad937a)')
+adding the origin to settings.toml with the app running: the request did not reach the listener (paths [])
+pointer pass: the origin removed live was not refused
+after the toast's Allow, settings.toml holds localhost:42879 0 times (expected once)
+after the toast's Allow click: the request did not reach the listener (paths [])
+NO-REFERENCE: UNVERIFIABLE: pointer Remove: the Network page or its Remove button was not found by OCR (shots/agdn_ptr_remove.png, agnet_ptr_side.png)
+NO-REFERENCE: UNVERIFIABLE: pointer add: the Add button was not found by OCR (shots/agdn_ptr_add.png)
+injector accounting: injector sent 662; app saw 635; lost-before-app 27 (Enter: sent 13, app saw 2)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_off_live" time="147.10">
+<failure message="precondition: the gate (on) did not refuse the unlisted origin">precondition: the gate (on) did not refuse the unlisted origin
+with the gate off the request did not reach the listener
+with the gate back on the request was not refused again
+NO-REFERENCE: UNVERIFIABLE: gate switch by pointer: no click to the right of the 'Network gate' label toggled it (no toggle_gate hop; shots/agoff_ptr_switch.png)
+never uploaded: the whole-case strace oracle (NetOracle) judges every connect/sendto/sendmsg destination of this case
+injector accounting: injector sent 255; app saw 248; lost-before-app 7 (Enter: sent 4, app saw 4)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_mcp_faults" time="45.20">
+<skipped message="precondition: the healthy control server's tool was not offered to the model or the call never returned (servers seen: []; starts (0, 0)): the app did not load ~/.warp/.mcp.json, so no fault could be "/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_key_never_leaves" time="170.10">
+<failure message="the denied origin was not refused (no 'network gate: denied &quot;remote-asset&quot; (host hash db3f053403ad937a)')">the denied origin was not refused (no 'network gate: denied "remote-asset" (host hash db3f053403ad937a)')
+the allowed origin did not receive its request (no leak judgement without it)
+the redirecting loopback origin did not receive its request
+with the gate off the request did not reach the (previously denied) listener
+injector accounting: injector sent 344; app saw 341; lost-before-app 3 (Enter: sent 6, app saw 6)</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_multitab_streaming" time="146.10">
+</testcase>
+<testcase classname="agent@fake" name="left_agent_mode_after_agent_multitab_streaming" time="0.00">
+<failure message="after agent_multitab_streaming the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.">after agent_multitab_streaming the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+</testsuite>

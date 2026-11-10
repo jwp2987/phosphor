@@ -1,0 +1,36 @@
+{
+ "summary_line": "Summary [  30.349s] 3632 tests run: 3630 passed, 2 failed, 19 skipped",
+ "duration_s": 30.349,
+ "run": 3632,
+ "passed": 3630,
+ "failed": 2,
+ "timed_out": 0,
+ "skipped": 19,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "remote_server",
+   "test": "backend::contract_tests::the_shell_arm_handles_directory_symlink_hardlink_and_tilde_targets",
+   "seconds": 0.22
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp_terminal",
+   "test": "model::escape_sequences::tests::test_ctrl_break_win32_input_sequence",
+   "seconds": 0.006
+  }
+ ],
+ "regressions": [
+  "backend::contract_tests::the_shell_arm_handles_directory_symlink_hardlink_and_tilde_targets",
+  "model::escape_sequences::tests::test_ctrl_break_win32_input_sequence"
+ ],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures.txt:"
+ ],
+ "job": "test-workspace-rest",
+ "status": "failed",
+ "duration": 138.866574
+}
