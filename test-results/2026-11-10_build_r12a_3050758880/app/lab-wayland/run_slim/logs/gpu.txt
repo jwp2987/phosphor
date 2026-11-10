@@ -1,0 +1,28 @@
+== uname
+Linux 7.2.3-1-t2-resolute x86_64
+== dri
+total 0
+drwxr-xr-x 2 root root         80 Sep  4 08:41 by-path
+crw-rw---- 1 root video  226,   0 Sep  4 08:41 card0
+crw-rw---- 1 root render 226, 128 Sep  4 08:41 renderD128
+== vulkan
+WARNING: [Loader Message] Code 0 : ICD for selected physical device does not export vkGetPhysicalDeviceDisplayPlanePropertiesKHR!
+WARNING: [Loader Message] Code 0 : ICD for selected physical device does not export vkGetPhysicalDeviceDisplayPropertiesKHR!
+==========
+VULKANINFO
+==========
+
+Vulkan Instance Version: 1.4.341
+
+
+Instance Extensions: count = 26
+-------------------------------
+VK_EXT_acquire_drm_display             : extension revision 1
+VK_EXT_acquire_xlib_display            : extension revision 1
+VK_EXT_debug_report                    : extension revision 10
+VK_EXT_debug_utils                     : extension revision 2
+VK_EXT_direct_mode_display             : extension revision 1
+VK_EXT_display_surface_counter         : extension revision 1
+VK_EXT_headless_surface                : extension revision 1
+VK_EXT_layer_settings                  : extension revision 2
+VK_EXT_surface_maintenance1            : extension revision 1
