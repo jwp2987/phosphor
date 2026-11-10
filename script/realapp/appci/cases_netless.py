@@ -571,33 +571,33 @@ def fnv_host_hash(host):
 
 @case("network_gate_notice", modes=("agent",), order=89, gui=True)
 def c_network_gate_notice(ctx, r):
-    """AGENT MODE ONLY (the denial path is the same in terminal mode: the toast belongs to the workspace, not the input mode). The fake model answers 'Please show this image:
-    <url>' with a markdown image of an unlisted TEST-NET host. Remote images load through the network gate (purpose remote-asset, Automatic kind: allowlist only), so the gate
-    refuses: the app log has 'network gate: denied "remote-asset" (host hash <hash>)' (no host, no URL), and the toast with 'Allow this origin' shows. The case clicks Allow
-    (OCR + pointer; skipped as not-judged without them), then settings.toml has network.allowed_origins with the origin exactly once; a second image from the same origin is not
-    refused. Finally gate_enabled=false: a third image is not refused and the log says 'turned OFF'."""
+    """AGENT MODE ONLY (the denial path is the same in terminal mode: the toast belongs to the workspace, not the input mode). A one-image markdown file naming an unlisted
+    TEST-NET origin is opened in the app's markdown viewer (cases_agent_netgate.show_image; rounds 6-9 asked the fake model for a markdown image, which agent output never
+    loads, so no request was ever made: docs/design/r10-wl-gate.md). Remote images load through the network gate (purpose remote-asset, Automatic kind: allowlist only), so
+    the gate refuses: the app log has 'network gate: denied "remote-asset" (host hash <hash>)' (no host, no URL), and the toast with 'Allow this origin' shows. The case clicks
+    Allow (OCR + pointer; skipped as not-judged without them), then settings.toml has network.allowed_origins with the origin exactly once; a second image from the same
+    origin is not refused. Finally gate_enabled=false: a third image is not refused and the log says 'turned OFF'."""
     import cases_replay as CRP
     import cases_ui as UI
-    import cases_caseagent as AG
+    import cases_agent_netgate as NG
     R.need_linux_app(ctx, "network_gate_notice")
     CRP.need_model(ctx, r)
     m = UI.mouse_or_skip(ctx, r)
     UI.need_tesseract(r)
     host, port = "192.0.2.1", 8099                      # TEST-NET-1: never routable; the gate refuses before any connection is made
-    origin = "%s:%d" % (host, port)
+    origin = "%s:%d" % (host, port)                      # what the toast's Allow writes: the request's host and port (rounds 6-9 asked for port 80 and looked for :8099)
     hh = fnv_host_hash(host)
     denied_line = 'network gate: denied "remote-asset" (host hash %s)' % hh
     p = R.settings_file(ctx)
+    url = lambda tok, tag: "http://%s/%s_%s.png" % (origin, tag, tok)
 
     def show(tag):
-        off = ctx.log_size()
-        tok = ctx.tok(6).lower()
-        AG.type_fast(ctx, "Please show this image: http://%s/%s_%s.png" % (host, tag, tok))
+        off, tok, opened = NG.show_image(ctx, r, tag, url)
         time.sleep(4.0)
-        return off, tok
+        return off, tok, opened
 
     try:
-        off, tok = show("a")
+        off, tok, opened = show("a")
         ctx.until(lambda: denied_line in ctx.log_since(off), 30, step=0.5)
         log = ctx.log_since(off)
         r.check(denied_line in log, "the remote image from an unlisted host was not refused by the gate (no '%s' line)" % denied_line)
@@ -605,6 +605,7 @@ def c_network_gate_notice(ctx, r):
         ctx.shot("ngn_denied")
         w, _ = UI.find_word(ctx, "ngn_find_allow", "allow")
         if not w:
+            NG.close_viewer(ctx, opened)
             r.unverifiable("the 'Allow this origin' link was not found on screen by OCR (shots/ngn_find_allow.png): the click, the settings.toml write and the retry were not judged")
             return
         m.click(w[1], w[2])
@@ -615,8 +616,10 @@ def c_network_gate_notice(ctx, r):
             if origin in text:
                 break
         r.check(text.count(origin) == 1, "after Allow, settings.toml holds the origin %d times (expected once)" % text.count(origin))
-        off2, _ = show("b")
+        NG.close_viewer(ctx, opened)
+        off2, _, opened = show("b")
         r.check(denied_line not in ctx.log_since(off2), "a second image from the now-allowed origin was still refused")
+        NG.close_viewer(ctx, opened)
         # the gate off: a third origin is passed and the switch is logged
         q = R.stop_for_restart(ctx, r, 20, "ngn_off")
         r.check(q["exited"], "ngn_off: the app did not exit within 20 s")
@@ -626,10 +629,11 @@ def c_network_gate_notice(ctx, r):
         _, up = R.start_app(ctx, r, "ngn_off")
         if not up:
             return
-        off3, _ = show("c")
+        off3, _, opened = show("c")
         log3 = ctx.log_since(0)
         r.check(GATE_OFF_LOG in log3, "gate_enabled=false: no '%s' line" % GATE_OFF_LOG)
         r.check(denied_line not in ctx.log_since(off3), "the gate is off but the image was still refused")
+        NG.close_viewer(ctx, opened)
     finally:
         try:
             t = open(p, encoding="utf-8", errors="replace").read()

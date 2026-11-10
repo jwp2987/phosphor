@@ -1,6 +1,13 @@
 # appci/cases_agent_netgate.py (#1830): the network gate under the agent, in the real app (docs/testing.md "Agent network gate cases"). Registered by one import line at the end of cases.py.
-#   agent_gate_deny_allow         agent mode: the fake model answers "Please show this image: <url>" with a markdown image; the app fetches it through the gate (purpose remote-asset, allowlist
-#                                 only). The URL names `localhost` + a port where a LOCAL LISTENER waits: a loopback NAME is refused unless configured, so the gate must refuse, the denial must reach the
+# HOW A GATE-CHECKED REQUEST IS MADE (round 10, docs/design/r10-wl-gate.md): through the app's MARKDOWN VIEWER. show_image() writes a small .md whose only content is a
+#   heading and `![img](<url>)` on its own line and hands it to the running app the way the OS does (cases.open_file_in_app -> uri::open_file -> a viewer tab). The viewer
+#   paints the image block, the asset cache fetches the URL, and `asset_cache::fetch_file_to_memory` asks the gate (purpose remote-asset, allowlist only). The viewer tab is
+#   closed again with the close-pane key (close_viewer), only after the app log showed the tab opening.
+#   Rounds 6-9 asked the fake model for a markdown image instead. That never made a request: an http(s) image in AGENT OUTPUT is not loaded at all
+#   (ai/blocklist/block/view_impl/common.rs is_supported_blocklist_image_source: "HTTP / HTTPS sources are intentionally rejected", the alt text is shown), so the gate was
+#   never asked and every case failed at its first step. agent_gate_deny_allow now asserts that fact too (step 0: the model's image reaches no listener and no gate line).
+#   agent_gate_deny_allow         a viewer image names `localhost` + a port where a LOCAL LISTENER waits: a loopback NAME is refused unless configured, so the gate must refuse,
+#                                 the denial must reach the
 #                                 app log as `network gate: denied "remote-asset" (host hash <fnv>)` (never the host, port or URL), and the listener must have got NOTHING. Then the Settings > Network
 #                                 page is driven BY KEYBOARD (#1830: Tab enters its focus ring, Enter/Space/Delete act): Allow on the log row, Remove on the origin, typing an origin + Enter; each
 #                                 asserted by the app's `hop=network_gate_ui action=... origin_hash=<fnv>` line, settings.toml and the listener (reached / silent). Then the same edits as live
@@ -106,9 +113,13 @@ def gate_lines(log):
     return [l for l in log.splitlines() if "network gate" in l]
 
 
+HEX16 = re.compile(r"\b[0-9a-f]{16}\b")
+
+
 def host_leaks(log, needles):
-    """pure: the gate lines of an app log that name any of `needles` (host, port, token, sentinel): a gate line carries a purpose and a host hash only"""
-    return [l for l in gate_lines(log) if any(n and n in l for n in needles)]
+    """pure: the gate lines of an app log that name any of `needles` (host, port, token, sentinel): a gate line carries a purpose and a host hash only. The 16-digit hex
+    hashes themselves (host hash, asset key fingerprint) are taken out before the search: a 5-digit port can occur inside one by chance, and a hash names nothing."""
+    return [l for l in gate_lines(log) if any(n and n in HEX16.sub("", l) for n in needles)]
 
 
 def edit_setting(ctx, table, key, literal):
@@ -124,13 +135,51 @@ def setting(ctx, table, key):
     return span.split("=", 1)[1].strip() if span and "=" in span else None
 
 
-def ask_image(ctx, tag, url_for_tok):
-    """the agent turn: the fake model answers with a markdown image of the URL. Returns (log offset before, token). Every image gets a fresh token so the asset cache never answers."""
-    import cases_caseagent as AG
+VIEWER_OPENED = 'dispatching action for "root_view:add_file_pane"'      # warpui_core App::dispatch_action (Info), from uri::open_file for a file the OS handed over
+IMAGE_DOC_WORDS = ("allow", "remove", "add", "network", "gate", "example", "clear")   # words the pointer steps look for by OCR: the document and its name must not show them
+
+
+def image_doc(url, name_tok):
+    """pure: (file name, markdown text) of the document that makes the viewer request `url`. The image is on its OWN line (the markdown parser only makes an image block
+    from such a line). The file name carries `name_tok` only, never the URL's token, host or port: the app may log the path of a file it opens, and the cases assert that
+    the log never shows the host, port or URL token of a gate-checked request."""
+    return "gimg_%s.md" % name_tok, "# GIMG %s\n\n![img](%s)\n" % (name_tok.upper(), url)
+
+
+def viewer_opened(log):
+    """pure: whether an app-log excerpt shows the app taking a handed-over file into a viewer tab"""
+    return VIEWER_OPENED in log
+
+
+def show_image(ctx, r, tag, url_for_tok):
+    """make the app request an image URL through the network gate: open a one-image markdown file in the app's markdown viewer (see the module header). Returns
+    (log offset before, URL token, opened). Every image gets a fresh token so the asset cache never answers. `opened` is whether the app log showed the viewer tab opening;
+    the caller passes it to close_viewer() once it has read its oracle."""
     off = ctx.log_size()
     tok = ctx.tok(6).lower()
-    AG.type_fast(ctx, "Please show this image: " + url_for_tok(tok, tag))
-    return off, tok
+    name, text = image_doc(url_for_tok(tok, tag), ctx.tok(6).lower())
+    path = os.path.join(ctx.W, name)
+    with open(path, "w") as f:
+        f.write(text)
+    err = cases.open_file_in_app(ctx, path)
+    opened = err is None and bool(ctx.until(lambda: viewer_opened(ctx.log_since(off)), 15, step=0.3))
+    r.check(opened, "image %s: the markdown file was not opened in the app's viewer (%s), so no gate-checked request was made"
+            % (tag, err or "no '%s' line in the app log within 15 s" % VIEWER_OPENED))
+    return off, tok, opened
+
+
+def close_viewer(ctx, opened):
+    """close the viewer tab show_image() opened (the close-pane key acts on the tab in front, which is the tab just added). Nothing is pressed when the open was not seen in
+    the app log: the key would then close whatever else is in front."""
+    if opened and R.CLOSE_PANE:
+        ctx.be.key(R.CLOSE_PANE)
+        time.sleep(0.8)
+
+
+def ask_model_image(ctx, url):
+    """the agent turn of rounds 6-9: the fake model answers with a markdown image of the URL (fake_model.py IMG_RE). Agent output does not load http(s) images at all."""
+    import cases_caseagent as AG
+    AG.type_fast(ctx, "Please show this image: " + url)
 
 
 def settle(ctx, off, line, secs=12, want=True):
@@ -264,17 +313,19 @@ def click_exact(ctx, m, tag, text, pick="top"):
 
 
 def expect_reach(ctx, r, cap, url, tag, why):
-    off, tok = ask_image(ctx, tag, url)
+    off, tok, opened = show_image(ctx, r, tag, url)
     r.check(ctx.until(lambda: cap.saw(tok), 30, step=0.5), "%s: the request did not reach the listener (paths %s)" % (why, cap.paths()[-3:]))
     r.check(denied_line() not in ctx.log_since(off), "%s: the gate refused it" % why)
+    close_viewer(ctx, opened)
 
 
 def expect_denied(ctx, r, cap, url, tag, why):
     n = len(cap.hits)
-    off, tok = ask_image(ctx, tag, url)
+    off, tok, opened = show_image(ctx, r, tag, url)
     r.check(settle(ctx, off, denied_line(), 30), "%s: the gate did not refuse it (no '%s')" % (why, denied_line()))
     time.sleep(3.0)
     r.check(len(cap.hits) == n, "%s: the listener received a request (%s)" % (why, cap.paths()[n:]))
+    close_viewer(ctx, opened)
 
 
 def origin_count(ctx, origin):
@@ -285,6 +336,27 @@ def expect_hop(ctx, r, off, action, why, host="localhost"):
     ok = ctx.until(lambda: hop_line(action, host) in ctx.log_since(off), 10, step=0.3)
     r.check(ok, "%s: the app log has no '%s' (the page action did not run)" % (why, hop_line(action, host)))
     return ok
+
+
+SWITCH_DX = (720, 700, 740, 680, 760)        # from the row label's word "gate" to the switch at the row's right edge (1600 px wide window: label at x~705, switch at x~1425)
+ADD_DX = (280, 260, 300)                     # from the origin editor's placeholder to the Add button on the same row (placeholder at x~1146, button at x~1425)
+
+
+def switch_spots(ws):
+    """pure: the (x, y) points to click for the Settings > Network gate switch, best first, from the OCR words of the page. The page shows 'Network gate' TWICE: the section
+    heading, and below it the switch row's label; the switch is at the right end of the LABEL row (rounds 8/9 clicked right of the heading, the top-most 'gate', and
+    toggled nothing). 'Gate log' further down is not a candidate (no 'network' before it on its line). The right edge is where the 'Add' button is, when OCR read it."""
+    low = [(w[0].strip(".,:;").lower(),) + tuple(w[1:]) for w in ws]
+    rows = sorted([w for w in low if w[0] == "gate" and any(o[0] == "network" and abs(o[2] - w[2]) <= 10 and o[1] < w[1] for o in low)], key=lambda w: w[2])
+    if not rows:
+        return []
+    order = ([rows[1]] if len(rows) > 1 else []) + [rows[0]]
+    add = sorted([w for w in low if w[0] == "add"], key=lambda w: w[2])
+    out = []
+    for g in order:
+        xs = ([add[0][1]] if add and add[0][1] > g[1] else []) + [g[1] + dx for dx in SWITCH_DX]
+        out += [(x, g[2]) for x in xs if (x, g[2]) not in out]
+    return out
 
 
 def pointer_gate_switch(ctx, r, cap, url):
@@ -298,21 +370,19 @@ def pointer_gate_switch(ctx, r, cap, url):
         r.unverifiable("gate switch by pointer: the Network page was not found by OCR (shots/agnet_ptr_side.png)")
         return
     ws, _ = UI.words(ctx, "agoff_ptr_switch")
-    lab = [w for w in ws if w[0].strip().lower() == "gate"]
-    if not lab:
+    spots = switch_spots(ws)
+    if not spots:
         r.unverifiable("gate switch by pointer: the 'Network gate' row label was not found by OCR (shots/agoff_ptr_switch.png)")
         close_settings(ctx)
         return
-    g = sorted(lab, key=lambda w: w[2])[0]
     spot = None
-    for dx in (260, 420, 600, 800):
-        m.click(g[1] + dx, g[2])
-        time.sleep(0.6)
-        if "hop=network_gate_ui action=toggle_gate" in ctx.log_since(off):
-            spot = dx
+    for x, y in spots:
+        m.click(x, y)
+        if ctx.until(lambda: "hop=network_gate_ui action=toggle_gate" in ctx.log_since(off), 1.5, step=0.2):
+            spot = (x, y)
             break
     if spot is None:
-        r.unverifiable("gate switch by pointer: no click to the right of the 'Network gate' label toggled it (no toggle_gate hop; shots/agoff_ptr_switch.png)")
+        r.unverifiable("gate switch by pointer: no click on the 'Network gate' row toggled it (no toggle_gate hop; tried %s; shots/agoff_ptr_switch.png)" % spots)
         close_settings(ctx)
         return
     r.check("hop=network_gate_ui action=toggle_gate on=false" in ctx.log_since(off), "the switch click did not turn the gate OFF (hop on=false missing)")
@@ -322,7 +392,7 @@ def pointer_gate_switch(ctx, r, cap, url):
     expect_reach(ctx, r, cap, url, "p", "with the gate switched off by pointer")
     on = ctx.log_size()
     if open_network_pointer(ctx, r, m):
-        m.click(g[1] + spot, g[2])
+        m.click(spot[0], spot[1])
         time.sleep(0.8)
         r.check("hop=network_gate_ui action=toggle_gate on=true" in ctx.log_since(on), "the second switch click did not turn the gate back ON (hop on=true missing)")
     close_settings(ctx)
@@ -364,8 +434,21 @@ def c_agent_gate_deny_allow(ctx, r):
     try:
         r.check((setting(ctx, "network", "allowed_origins") or '""') in ('""', "''"), "precondition: network.allowed_origins is not empty before the case")
         oracle.begin(ctx, r)
+        # 0. AGENT OUTPUT never loads a remote image (by design, see the module header): the fake model's markdown image makes no request and asks the gate nothing
+        import fake_model as FM
+        off0, mtok = ctx.log_size(), ctx.tok(6).lower()
+        murl = url(mtok, "m")
+        ask_model_image(ctx, murl)
+        fake = FM.ACTIVE
+        answered = bool(fake is not None and ctx.until(lambda: any(murl in t for t in fake.fresh), 30, step=0.5))
+        time.sleep(4.0)                                                # the reply is a few bytes; a fetch, if one were made, would start as soon as it is drawn
+        if answered:
+            r.check(not cap.hits, "an http image in the AGENT'S ANSWER was requested (%s): agent output must not load remote images" % cap.paths()[:3])
+            r.check('"remote-asset"' not in ctx.log_since(off0), "an http image in the agent's answer reached the network gate (agent output must not load remote images at all)")
+        else:
+            r.unverifiable("the scripted model did not receive the 'show this image' turn within 30 s: 'agent output loads no remote image' is not judged")
         # 1. denied: the log has the hashed line, the listener nothing
-        off, tok = ask_image(ctx, "a", url)
+        off, tok, opened = show_image(ctx, r, "a", url)
         got = settle(ctx, off, denied_line(), 30)
         r.check(got, "the image from the unlisted loopback NAME %s was not refused (no '%s' line)" % ("localhost", denied_line()))
         time.sleep(3.0)                                                # a refused request must stay refused: give a late connection time to show up
@@ -373,6 +456,7 @@ def c_agent_gate_deny_allow(ctx, r):
         log = ctx.log_since(off)
         r.check(not host_leaks(log, ["localhost", str(cap.port), tok]), "a gate line in the app log names the host, port or URL: %s" % host_leaks(log, ["localhost", str(cap.port), tok])[:2])
         ctx.shot("agdn_denied")
+        close_viewer(ctx, opened)
         # 2. KEYBOARD: Allow on the page's log row (Tab from the editor lands on it: no origins are listed)
         off = ctx.log_size()
         open_network_kb(ctx, r)
@@ -418,16 +502,18 @@ def c_agent_gate_deny_allow(ctx, r):
         # 6. POINTER pass. 6a: the toast's Allow (the origin is removed live first so a fresh denial raises the toast)
         edit_setting(ctx, "network", "allowed_origins", '""')
         time.sleep(2.0)
-        off, tok = ask_image(ctx, "g", url)
+        off, tok, opened = show_image(ctx, r, "g", url)
         r.check(settle(ctx, off, denied_line(), 30), "pointer pass: the origin removed live was not refused")
         w, _ = UI.find_word(ctx, "agdn_find_allow", "allow")
         if w:
             m.click(w[1], w[2])
             ctx.until(lambda: origin_count(ctx, origin) >= 1, 10, step=0.5)
             r.check(origin_count(ctx, origin) == 1, "after the toast's Allow, settings.toml holds %s %d times (expected once)" % (origin, origin_count(ctx, origin)))
+            close_viewer(ctx, opened)
             expect_reach(ctx, r, cap, url, "h", "after the toast's Allow click")
         else:
             r.unverifiable("the toast's 'Allow' was not found by OCR (shots/agdn_find_allow.png): the click is not judged")
+            close_viewer(ctx, opened)
             edit_setting(ctx, "network", "allowed_origins", '"%s"' % origin)
         # 6b. pointer Remove on the page
         off = ctx.log_size()
@@ -463,14 +549,23 @@ def c_agent_gate_deny_allow(ctx, r):
                 time.sleep(0.3)
                 ctx.be.type(origin, 12)
                 time.sleep(0.3)
-                if click_exact(ctx, m, "agdn_ptr_add", "add", pick="top"):
+                clicked = click_exact(ctx, m, "agdn_ptr_add", "add", pick="top")
+                if not clicked:
+                    # rounds 8/9: tesseract did not read the button's white-on-blue label. The button is on the editor's row, right of it: click there, and
+                    # count the click only when the app's own add_origin hop shows it landed on the button
+                    for dx in ADD_DX:
+                        m.click(ed[0][1] + dx, ed[0][2])
+                        if ctx.until(lambda: hop_line("add_origin", "localhost") in ctx.log_since(off), 1.5, step=0.2):
+                            clicked = True
+                            break
+                if clicked:
                     time.sleep(0.8)
                     expect_hop(ctx, r, off, "add_origin", "pointer add (editor + Add)")
                     r.check(origin_count(ctx, origin) == 1, "pointer add: settings.toml holds %s %d times (expected once)" % (origin, origin_count(ctx, origin)))
                     close_settings(ctx)
                     expect_reach(ctx, r, cap, url, "k", "after the pointer add")
                 else:
-                    r.unverifiable("pointer add: the Add button was not found by OCR (shots/agdn_ptr_add.png)")
+                    r.unverifiable("pointer add: the Add button was not found by OCR and no click right of the editor added the origin (shots/agdn_ptr_add.png)")
             else:
                 r.unverifiable("pointer add: the origin editor's placeholder was not found by OCR (shots/agdn_ptr_editor.png)")
         close_settings(ctx)
@@ -491,25 +586,28 @@ def c_agent_gate_off_live(ctx, r):
     oracle = NetOracle("agoff")
     try:
         oracle.begin(ctx, r)
-        off, tok = ask_image(ctx, "a", url)
+        off, tok, opened = show_image(ctx, r, "a", url)
         r.check(settle(ctx, off, denied_line(), 30), "precondition: the gate (on) did not refuse the unlisted origin")
         time.sleep(2.0)
         r.check(not cap.hits, "the listener received a request while the gate was on and the origin unlisted")
+        close_viewer(ctx, opened)
         off_log = ctx.log_size()
         edit_setting(ctx, "network", "gate_enabled", "false")
         r.check(settle(ctx, off_log, "network gate: turned OFF", 20), "gate_enabled=false written with the app running did not log 'network gate: turned OFF' (not live?)")
         r.check(ctx.log_since(off_log).count("network gate: turned OFF") == 1, "the OFF line was logged more than once")
-        off, tok = ask_image(ctx, "b", url)
+        off, tok, opened = show_image(ctx, r, "b", url)
         r.check(ctx.until(lambda: cap.saw(tok), 30, step=0.5), "with the gate off the request did not reach the listener")
         r.check(denied_line() not in ctx.log_since(off), "the gate is off but the app log shows a denial")
+        close_viewer(ctx, opened)
         on_log = ctx.log_size()
         edit_setting(ctx, "network", "gate_enabled", "true")
         r.check(settle(ctx, on_log, "network gate: turned ON", 20), "gate_enabled=true written with the app running did not log 'network gate: turned ON'")
         n = len(cap.hits)
-        off, tok = ask_image(ctx, "c", url)
+        off, tok, opened = show_image(ctx, r, "c", url)
         r.check(settle(ctx, off, denied_line(), 30), "with the gate back on the request was not refused again")
         time.sleep(3.0)
         r.check(len(cap.hits) == n, "the listener received a request after the gate was turned back on")
+        close_viewer(ctx, opened)
         log = ctx.log_since(0)
         r.check(not host_leaks(log, ["localhost", str(cap.port)]), "a gate line in the app log names the host or port")
         # the page's own switch, by pointer: OFF -> request reaches, ON -> refused (the switch sits in the row labelled 'Network gate')
@@ -559,23 +657,27 @@ def c_agent_gate_key_never_leaves(ctx, r):
             return
         r.metric("provider_requests_with_key", sum(1 for h in fake.headers if sentinel in json.dumps(h)))
         # a. denied origin
-        off, tok = ask_image(ctx, "a", mk(denied))
+        off, tok, opened = show_image(ctx, r, "a", mk(denied))
         r.check(settle(ctx, off, denied_line(), 30), "the denied origin was not refused (no '%s')" % denied_line())
+        close_viewer(ctx, opened)
         # b. allowed origin (live edit) -> reaches, with no key
         edit_setting(ctx, "network", "allowed_origins", '"localhost:%d"' % allowed.port)
         time.sleep(2.0)
-        off, tok = ask_image(ctx, "b", mk(allowed))
+        off, tok, opened = show_image(ctx, r, "b", mk(allowed))
         r.check(ctx.until(lambda: allowed.saw(tok), 30, step=0.5), "the allowed origin did not receive its request (no leak judgement without it)")
+        close_viewer(ctx, opened)
         # c. allowed 127.0.0.1 origin that redirects to a name that is NOT allowed
-        off, tok = ask_image(ctx, "c", mk(redir, "127.0.0.1"))
+        off, tok, opened = show_image(ctx, r, "c", mk(redir, "127.0.0.1"))
         r.check(ctx.until(lambda: redir.saw(tok), 30, step=0.5), "the redirecting loopback origin did not receive its request")
         time.sleep(4.0)
         r.check(not final.hits, "the redirect target (a denied origin) received %d request(s): a redirect hop skipped the gate (%s)" % (len(final.hits), final.paths()[:3]))
+        close_viewer(ctx, opened)
         # d. gate off
         edit_setting(ctx, "network", "gate_enabled", "false")
         off_ok = settle(ctx, 0, "network gate: turned OFF", 20)
-        off, tok = ask_image(ctx, "d", mk(denied))
+        off, tok, opened = show_image(ctx, r, "d", mk(denied))
         r.check(off_ok and ctx.until(lambda: denied.saw(tok), 30, step=0.5), "with the gate off the request did not reach the (previously denied) listener")
+        close_viewer(ctx, opened)
         # the safety property, over everything every listener was sent
         for name, c in (("denied", denied), ("allowed", allowed), ("redirect-first-hop", redir), ("redirect-target", final)):
             bad = leaks(c.hits, sentinel)

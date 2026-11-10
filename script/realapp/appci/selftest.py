@@ -5257,6 +5257,92 @@ def agent_netgate_pure_parts():
 
 
 @check
+def r10_netgate_request_comes_from_the_markdown_viewer():
+    """round 10 (docs/design/r10-wl-gate.md): the gate cases make their request by opening a one-image markdown file in the app's viewer (agent output never loads an
+    http image, so the fake model's markdown image asked the gate nothing in rounds 6-9). Pins the pure parts and that the viewer tab is closed only when its opening
+    was seen in the app log (the close key acts on whatever tab is in front)."""
+    import re
+    import cases as C
+    import cases_agent_netgate as NG
+    import fake_model as FM
+    url = "http://localhost:38267/a_t328_v0bwxx.png"
+    name, text = NG.image_doc(url, "t329_k3k3k3")
+    assert name == "gimg_t329_k3k3k3.md" and text.splitlines()[-1] == "![img](%s)" % url and text.endswith("\n"), (name, text)
+    assert not any(n in name for n in ("localhost", "38267", "t328", "v0bwxx"))             # the app may log the path of a file it opens
+    shown = (name + " " + text.replace(url, "")).lower()
+    assert not any(re.search(r"\b%s\b" % w, shown) for w in NG.IMAGE_DOC_WORDS), shown   # nothing the pointer steps search for by OCR
+    assert NG.viewer_opened('2026-11-10T06:20:14Z [INFO] dispatching action for "root_view:add_file_pane"\n')
+    assert not NG.viewer_opened('2026-11-10T06:20:14Z [INFO] dispatching action for "root_view:open_new_with_file_notebook"\n') and not NG.viewer_opened("")
+    # the fake model still answers the old turn with a markdown image: agent_gate_deny_allow step 0 asserts the app requests nothing for it
+    assert FM.reply_for([{"role": "user", "content": "Please show this image: " + url}])["text"].endswith("![img](%s)" % url)
+    # a hash is not a host or a port: a 5-digit port inside a 16-digit hash is no leak; the same digits outside one are
+    hashed = 'W Asset fetch failed (Async { id: AsyncAssetId { key_len: 40, key_hash: 0038267aaaaaaaaa } }): network gate denied a request for "remote-asset" (host db3f053403ad937a)'
+    assert NG.host_leaks(hashed, ["localhost", "38267", "v0bwxx"]) == []
+    named = 'W Asset fetch failed (Async { id: AsyncAssetId { key: "%s" } }): network gate denied a request for "remote-asset" (host db3f053403ad937a)' % url
+    assert NG.host_leaks(named, ["38267"]) == [named] and NG.host_leaks(named, ["localhost"]) == [named] and NG.host_leaks(named, ["v0bwxx"]) == [named]
+
+    keys, logs, checks, opened_paths = [], [""], [], []
+    be = types.SimpleNamespace(key=keys.append)
+    n = [0]
+
+    def tok(k=8):
+        n[0] += 1
+        return "T%d_abcdef" % n[0]
+    W = tempfile.mkdtemp(prefix="appci_ng_")
+    ctx = types.SimpleNamespace(be=be, W=W, tok=tok, log_size=lambda: 0, log_since=lambda off: logs[0],
+                                until=lambda pred, timeout=10, step=0.05: pred())
+    r = types.SimpleNamespace(check=lambda ok, msg: (checks.append((bool(ok), msg)), bool(ok))[1])
+    saved, saved_sleep = C.open_file_in_app, NG.time.sleep
+    NG.time.sleep = lambda s: None
+    try:
+        # the app took the file: opened, the URL carries the first token, the file is written with the second
+        C.open_file_in_app = lambda c, path: (opened_paths.append(path), logs.__setitem__(0, 'I dispatching action for "root_view:add_file_pane"\n'), None)[2]
+        off, t, opened = NG.show_image(ctx, r, "a", lambda tk, tag: "http://localhost:1/%s_%s.png" % (tag, tk))
+        assert opened and t == "t1_abcdef" and checks[-1][0], (opened, t, checks)
+        assert os.path.basename(opened_paths[0]) == "gimg_t2_abcdef.md" and "![img](http://localhost:1/a_t1_abcdef.png)" in open(opened_paths[0]).read()
+        NG.close_viewer(ctx, opened)
+        assert keys == [R_CLOSE()], keys
+        # the hand-over failed, or the app log never showed the tab: the check fails and NO close key is pressed
+        del keys[:]
+        logs[0] = ""
+        C.open_file_in_app = lambda c, path: "the forwarding invocation did not exit within 30 s"
+        _, _, opened = NG.show_image(ctx, r, "b", lambda tk, tag: "http://localhost:1/%s_%s.png" % (tag, tk))
+        assert not opened and not checks[-1][0] and "did not exit" in checks[-1][1], checks[-1]
+        C.open_file_in_app = lambda c, path: None
+        _, _, opened = NG.show_image(ctx, r, "c", lambda tk, tag: "http://localhost:1/%s_%s.png" % (tag, tk))
+        assert not opened and not checks[-1][0] and "root_view:add_file_pane" in checks[-1][1], checks[-1]
+        NG.close_viewer(ctx, opened)
+        assert keys == [], keys
+    finally:
+        C.open_file_in_app, NG.time.sleep = saved, saved_sleep
+        shutil.rmtree(W, ignore_errors=True)
+
+
+def R_CLOSE():
+    import cases_robust as R
+    return R.CLOSE_PANE
+
+
+@check
+def r10_netgate_gate_switch_is_on_the_label_row_not_the_heading():
+    """rounds 8/9: 'no click to the right of the Network gate label toggled it'. The page shows 'Network gate' twice (section heading, then the switch row's label) and the
+    case clicked right of the top-most one. Word positions are those of the round 8 Wayland screenshot (1600 px wide)."""
+    import cases_agent_netgate as NG
+    w = lambda text, x, y: (text, x, y, x - 20, x + 20, y - 7, y + 7)
+    page = [w("Network", 692, 111), w("Network", 676, 149), w("gate", 722, 149), w("Network", 667, 216), w("gate", 706, 216), w("Allowed", 668, 282), w("origins", 712, 282),
+            w("Gate", 660, 374), w("log", 682, 374), w("Clear", 1405, 366), w("Network", 304, 545)]
+    spots = NG.switch_spots(page)
+    assert spots[0] == (706 + 720, 216), spots[:3]                       # the label row first; x ~1426 is on the switch (1407..1443)
+    assert all(y in (216, 149) for _, y in spots) and [y for _, y in spots].index(149) == len(NG.SWITCH_DX), spots   # the heading row only after every label-row spot
+    assert not any(y == 374 for _, y in spots)                           # 'Gate log' is not a candidate
+    with_add = NG.switch_spots(page + [w("Add", 1425, 291)])
+    assert with_add[0] == (1425, 216) and with_add[1] == (1426, 216), with_add[:3]      # the Add button marks the right edge when OCR read it
+    assert NG.switch_spots([w("Network", 676, 149), w("gate", 722, 149)])[0] == (722 + 720, 149)       # only one row read: use it
+    assert NG.switch_spots([w("Gate", 660, 374), w("log", 682, 374)]) == [] and NG.switch_spots([]) == []
+    assert NG.switch_spots([w("gate", 600, 216), w("Network", 667, 216)]) == []                          # 'network' must be LEFT of 'gate' on the line
+
+
+@check
 def agent_netgate_strace_destination_parser():
     import cases_agent_netgate as NG
     f = NG.non_local_destinations

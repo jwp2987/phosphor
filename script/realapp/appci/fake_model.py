@@ -6,7 +6,7 @@
 #     "Please delete exactly this file and nothing else: <path>" -> apply_file_diffs (the remote file-tool lab cases, cases_lab_remote.py);
 #   * "Please edit exactly this file: <path> with these edits: <search>=><replace> ;; <search>=><replace>" -> apply_file_diffs with one op "edit" per pair, in order
 #     (a multi-hunk diff; a literal backslash-n in a pair is a newline; cases_agent_file_edits.py, #1835);
-#   * "Please show this image: <url>" -> the text "Here it is:\n\n![img](<url>)", the image on its OWN line because the markdown parser only makes an image block from a line that is nothing else (an inline one renders as the link "!img" and is never fetched) (network_gate_notice: the app fetches the image through the network gate);
+#   * "Please show this image: <url>" -> the text "Here it is:\n\n![img](<url>)", the image on its OWN line because the markdown parser only makes an image block from a line that is nothing else. The app does NOT fetch an http(s) image in agent output (is_supported_blocklist_image_source rejects http/https on purpose; the alt text "img" is drawn), so this turn makes no request: agent_gate_deny_allow step 0 asserts exactly that. The gate cases make their request through the markdown viewer instead (cases_agent_netgate.show_image, docs/design/r10-wl-gate.md);
 #   * "Please carry out these steps in order: <step> ;; <step> ..." (agent_remote_*, cases_agent_remote.py): one tool call per step, the step being the number of tool
 #     results already answered since that user turn; steps: `read <path>`, `grep <query> <dir>`, `glob <pattern> <dir>`, `edit <path> :: <search> :: <replace>`,
 #     `run <command>`, `codebase <query>`; after the last step -> "Done.". Every request is recorded (FakeModel.turns) so a case can check the tool results the model
@@ -355,7 +355,7 @@ def reply_for(messages, tools=None):
             args = {}
         return {"text": "", "tool": {"name": fn, "arguments": args}, "mcp": (m.group(2), m.group(1))}
     m = IMG_RE.search(text)
-    if m:                                      # a markdown image: the app fetches it through the network gate (purpose remote-asset)
+    if m:                                      # a markdown image: agent output never loads an http(s) image, so the app must request nothing for it (agent_gate_deny_allow step 0)
         return {"text": "Here it is:\n\n![img](%s)" % m.group(1), "tool": None}
     m = ASKCMD_RE.search(text)
     if m:                                      # #1858: the ask trails a running command; the card must not say "Preparing question..." meanwhile
