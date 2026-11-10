@@ -1,0 +1,98 @@
+Returns at the session tap: 2303; Phosphor app_send_event lines: 729; Phosphor pids: [3794, 9203, 9610, 10016, 10348, 10684, 11011, 11337, 11656, 11981, 12304, 12627, 12951, 13277, 38177, 38442, 38703, 38937, 39173, 39285, 39416, 39658, 39892, 40123, 40363, 40593, 40824, 41054, 41275, 41567, 41854, 42124, 42392, 42661, 42933, 43202, 43470, 43733, 44001, 44271, 44539, 45681, 46098, 46508, 46846, 47180, 47507, 47837, 48169, 48501, 48839, 49169, 49500, 49834, 57227, 57976, 58168, 58339, 66841, 75416, 75492, 75643, 75760, 75852, 76018, 76058, 76248, 76290, 76481, 76516, 76720, 76731, 76953, 76954, 77171, 77187, 77421, 77656, 77888, 78059, 78122, 78357, 78406, 78581, 78865, 79152, 79421, 79690, 79958, 80226, 80494, 80762, 81030, 81304, 81566, 81834, 94511, 94720, 94891]
+targeted at Phosphor but never reached its NSApplication: 1354 (of which UNCOVERED, no app_send_event within 3 s = app-log gap, cause not established: 1354; LOST with neighbours logged: 0)
+  app log logs/agent/phosphor.1.log: 2026-11-10T18:48:50Z .. 2026-11-10T18:57:06Z (16709183 bytes)
+  app log logs/agent/phosphor.1.old.0.log: 2026-11-10T18:48:30Z .. 2026-11-10T18:48:50Z (128089 bytes)
+  app log logs/agent/phosphor.1.old.1.log: 2026-11-10T18:48:09Z .. 2026-11-10T18:48:29Z (146442 bytes)
+  app log logs/agent/phosphor.1.old.2.log: 2026-11-10T18:47:49Z .. 2026-11-10T18:48:09Z (128781 bytes)
+  app log logs/agent/phosphor.1.old.3.log: 2026-11-10T18:47:28Z .. 2026-11-10T18:47:48Z (136826 bytes)
+  app log logs/agent/phosphor.1.old.4.log: 2026-11-10T18:47:08Z .. 2026-11-10T18:47:28Z (129426 bytes)
+  app log logs/agent/phosphor.ar_kill_blocked_end.log: 2026-11-10T19:23:14Z .. 2026-11-10T19:23:36Z (201696 bytes)
+  app log logs/agent/phosphor.ar_kill_blocked_kill.log: 2026-11-10T19:22:50Z .. 2026-11-10T19:23:13Z (766182 bytes)
+  app log logs/agent/phosphor.ar_kill_queued_end.log: 2026-11-10T19:22:16Z .. 2026-11-10T19:22:39Z (207035 bytes)
+  app log logs/agent/phosphor.ar_kill_queued_kill.log: 2026-11-10T19:21:51Z .. 2026-11-10T19:22:16Z (633161 bytes)
+  app log logs/agent/phosphor.ar_kill_stream_end.log: 2026-11-10T19:21:20Z .. 2026-11-10T19:21:40Z (197196 bytes)
+  app log logs/agent/phosphor.ar_kill_stream_kill.log: 2026-11-10T19:20:59Z .. 2026-11-10T19:21:20Z (383000 bytes)
+  app log logs/agent/phosphor.log: 2026-11-10T18:58:01Z .. 2026-11-10T19:01:51Z (11370797 bytes)
+  app log logs/agent/phosphor.old.0.log: 2026-11-10T18:57:50Z .. 2026-11-10T18:58:01Z (254478 bytes)
+  app log logs/agent/phosphor.old.1.log: 2026-11-10T18:57:37Z .. 2026-11-10T18:57:49Z (442402 bytes)
+  app log logs/agent/phosphor.old.2.log: 2026-11-10T18:57:06Z .. 2026-11-10T18:57:36Z (2747192 bytes)
+  app log logs/agent/phosphor.old.3.in_session.0.log: 2026-11-10T18:48:50Z .. 2026-11-10T18:55:07Z (10485673 bytes)
+  app log logs/agent/phosphor.old.3.log: 2026-11-10T18:55:07Z .. 2026-11-10T18:57:06Z (6224271 bytes)
+  app log logs/agent/phosphor.old.4.log: 2026-11-10T18:48:30Z .. 2026-11-10T18:48:50Z (128089 bytes)
+  app log logs/agent@fake/phosphor.log: 2026-11-10T19:25:57Z .. 2026-11-10T19:28:57Z (6410421 bytes)
+  app log logs/agent@fake/phosphor.old.0.log: 2026-11-10T19:25:35Z .. 2026-11-10T19:25:57Z (312598 bytes)
+  app log logs/agent@fake/phosphor.old.1.log: 2026-11-10T19:23:36Z .. 2026-11-10T19:25:35Z (3684314 bytes)
+  app log logs/agent@fake/phosphor.old.2.log: 2026-11-10T19:23:14Z .. 2026-11-10T19:23:36Z (201682 bytes)
+  app log logs/agent@fake/phosphor.old.3.log: 2026-11-10T19:22:50Z .. 2026-11-10T19:23:13Z (766168 bytes)
+  app log logs/agent@fake/phosphor.old.4.log: 2026-11-10T19:22:39Z .. 2026-11-10T19:22:50Z (210065 bytes)
+  app log logs/terminal/phosphor.log: 2026-11-10T18:04:53Z .. 2026-11-10T18:08:58Z (11488165 bytes)
+  app log logs/terminal/phosphor.old.0.log: 2026-11-10T18:04:41Z .. 2026-11-10T18:04:52Z (261362 bytes)
+  app log logs/terminal/phosphor.old.1.log: 2026-11-10T18:04:27Z .. 2026-11-10T18:04:40Z (432403 bytes)
+  app log logs/terminal/phosphor.old.2.in_session.0.log: 2026-11-10T17:59:09Z .. 2026-11-10T18:02:56Z (10485710 bytes)
+  app log logs/terminal/phosphor.old.2.log: 2026-11-10T18:02:56Z .. 2026-11-10T18:04:27Z (4997827 bytes)
+  app log logs/terminal/phosphor.old.3.log: 2026-11-10T17:58:49Z .. 2026-11-10T17:59:08Z (136823 bytes)
+  app log logs/terminal/phosphor.old.4.log: 2026-11-10T17:58:28Z .. 2026-11-10T17:58:48Z (130227 bytes)
+  UNCOVERED ts=2233021.292604 wall=1794330955.131 target_pid=39285
+  UNCOVERED ts=2233028.257531 wall=1794330962.093 target_pid=39285
+  UNCOVERED ts=2233034.883327 wall=1794330968.720 target_pid=39285
+  UNCOVERED ts=2233036.098367 wall=1794330969.939 target_pid=39285
+  UNCOVERED ts=2233037.303616 wall=1794330971.139 target_pid=39285
+  UNCOVERED ts=2233038.469186 wall=1794330972.306 target_pid=39285
+  UNCOVERED ts=2233039.688690 wall=1794330973.532 target_pid=39285
+  UNCOVERED ts=2233040.859106 wall=1794330974.695 target_pid=39285
+  UNCOVERED ts=2233042.043820 wall=1794330975.883 target_pid=39285
+  UNCOVERED ts=2233043.227496 wall=1794330977.063 target_pid=39285
+  UNCOVERED ts=2233044.459678 wall=1794330978.299 target_pid=39285
+  UNCOVERED ts=2233045.640084 wall=1794330979.475 target_pid=39285
+  UNCOVERED ts=2233046.803373 wall=1794330980.640 target_pid=39285
+  UNCOVERED ts=2233048.001920 wall=1794330981.837 target_pid=39285
+  UNCOVERED ts=2233050.562230 wall=1794330984.398 target_pid=39285
+  UNCOVERED ts=2233155.493622 wall=1794331089.328 target_pid=39285
+  UNCOVERED ts=2233156.225737 wall=1794331090.062 target_pid=39285
+  UNCOVERED ts=2233156.824301 wall=1794331090.659 target_pid=39285
+  UNCOVERED ts=2233157.657874 wall=1794331091.493 target_pid=39285
+  UNCOVERED ts=2233158.346597 wall=1794331092.181 target_pid=39285
+  UNCOVERED ts=2233159.096884 wall=1794331092.931 target_pid=39285
+  UNCOVERED ts=2233160.146076 wall=1794331093.980 target_pid=39285
+  UNCOVERED ts=2233160.787216 wall=1794331094.623 target_pid=39285
+  UNCOVERED ts=2233161.879324 wall=1794331095.714 target_pid=39285
+  UNCOVERED ts=2233162.879590 wall=1794331096.714 target_pid=39285
+  UNCOVERED ts=2233163.812050 wall=1794331097.646 target_pid=39285
+  UNCOVERED ts=2233164.933744 wall=1794331098.768 target_pid=39285
+  UNCOVERED ts=2233166.080968 wall=1794331099.916 target_pid=39285
+  UNCOVERED ts=2233167.220151 wall=1794331101.054 target_pid=39285
+  UNCOVERED ts=2233167.905924 wall=1794331101.740 target_pid=39285
+  UNCOVERED ts=2233169.081634 wall=1794331102.916 target_pid=39285
+  UNCOVERED ts=2233170.226761 wall=1794331104.061 target_pid=39285
+  UNCOVERED ts=2233171.396469 wall=1794331105.231 target_pid=39285
+  UNCOVERED ts=2233172.340484 wall=1794331106.175 target_pid=39285
+  UNCOVERED ts=2233173.517406 wall=1794331107.351 target_pid=39285
+  UNCOVERED ts=2233174.308229 wall=1794331108.144 target_pid=39285
+  UNCOVERED ts=2233175.485434 wall=1794331109.319 target_pid=39285
+  UNCOVERED ts=2233176.337652 wall=1794331110.172 target_pid=39285
+  UNCOVERED ts=2233177.242690 wall=1794331111.077 target_pid=39285
+  UNCOVERED ts=2233178.268962 wall=1794331112.103 target_pid=39285
+  UNCOVERED ts=2233179.271118 wall=1794331113.105 target_pid=39285
+  UNCOVERED ts=2233180.178227 wall=1794331114.012 target_pid=39285
+  UNCOVERED ts=2233181.256267 wall=1794331115.094 target_pid=39285
+  UNCOVERED ts=2233182.030465 wall=1794331115.864 target_pid=39285
+  UNCOVERED ts=2233182.950646 wall=1794331116.787 target_pid=39285
+  UNCOVERED ts=2233184.535887 wall=1794331118.371 target_pid=39285
+  UNCOVERED ts=2233185.714256 wall=1794331119.548 target_pid=39285
+  UNCOVERED ts=2233186.787728 wall=1794331120.623 target_pid=39285
+  UNCOVERED ts=2233187.724390 wall=1794331121.558 target_pid=39285
+  UNCOVERED ts=2233188.704401 wall=1794331122.538 target_pid=39285
+targeted at another process: 376
+  pid 69791 (?): 76, first wall=1794332452.049
+  pid 33139 (?): 76, first wall=1794335515.157
+  pid 40007 (?): 61, first wall=1794331015.616
+  pid 43442 (?): 40, first wall=1794331472.403
+  pid 6987 (?): 40, first wall=1794334540.375
+  pid 42715 (?): 34, first wall=1794331312.058
+  pid 6247 (?): 34, first wall=1794334380.466
+  pid 39809 (?): 13, first wall=1794330989.911
+  pid 74512 (?): 1, first wall=1794333067.458
+  pid 37184 (?): 1, first wall=1794336049.565
+seen by Phosphor but not by the tap (join check, expect 0): 0
+injector posted 1811 Returns; never seen by macOS (no tap event within 200 ms): 0
+ALL KEYS: injector sent 137486; macOS delivered 106238 to Phosphor, 34204 to other processes; never in macOS (sent - delivered) 0
