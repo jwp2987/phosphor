@@ -255,6 +255,49 @@ def connect_or_fail(ctx, r, arm, label=""):
     return secs
 
 
+# ---- #2019: a host whose LOGIN shell is fish or nu gets a plain ssh session, by decision (DECLINED.md, PLAIN_SESSION_DECLINED). The agent works on a
+# remote host through the managed session, so an agent-mode arm on such a host has nothing to judge: in a plain session the keys are ssh's and the agent
+# prompt would be typed into the remote shell. The premise is read from the APP'S OWN LOG of this connect, never from the arm's name alone.
+PLAIN_SESSION_LOGIN_SHELLS = ("fish", "nu")
+PLAIN_SESSION_HOOK = "Received PlainSSHFallback hook"                                            # ansi/mod.rs: log::info!("Received {} hook")
+MANAGED_SESSION_RE = re.compile(r"Received ManagedSSHSessionStarting hook|hop=ssh_wrapper verdict managed=true")
+PLAIN_SESSION_DECLINED = "DECLINED.md, 'A remote host whose login shell is fish or nu gets a plain ssh session: no agent tools on that host (#2019)'"
+
+
+def plain_session_limit(shell, log_text):
+    """pure: the reason an agent-mode arm cannot be judged, or None when it must be judged in full. A reason needs ALL of: the arm's login shell is one the
+    app gives a plain session by decision (fish, nu); the app log of this connect says it took the plain session (the PlainSSHFallback hook); and it has no
+    managed-session line. So a bash / zsh / dash / ash / pwsh arm never gets one (a plain session there is a defect and the case's own checks fail), and a
+    fish / nu arm that got a managed session, or whose connect logged neither line, is judged like any other."""
+    if shell not in PLAIN_SESSION_LOGIN_SHELLS:
+        return None
+    text = log_text or ""
+    if PLAIN_SESSION_HOOK not in text or MANAGED_SESSION_RE.search(text):
+        return None
+    return ("KNOWN LIMITATION (owner decision, #2019): the host's login shell is %s, which gets a plain ssh session by decision (the app log of this "
+            "connect has '%s' and no managed-session line), and the agent's remote tools need a managed session. Not judged; see %s" % (
+                shell, PLAIN_SESSION_HOOK, PLAIN_SESSION_DECLINED))
+
+
+def agent_connect(ctx, r, arm):
+    """connect for a case in which the AGENT works on the remote host. True = connected and the case goes on. False = the case ends here: either no remote
+    prompt (the failed check of connect_or_fail, pane reset), or the arm is the decided limitation (plain_session_limit over the app log of this connect):
+    the row is then UNVERIFIABLE with the DECLINED reference, the agent steps are NOT typed (in a plain session they would go to the remote shell), and the
+    remote session is left through finish_remote, whose check stands."""
+    off = ctx.log_size()
+    if connect_or_fail(ctx, r, arm) is None:
+        ctx.reset()
+        return False
+    time.sleep(1.0 + 2 * rtt_s(arm))
+    why = plain_session_limit(arm["shell"], ctx.log_since(off))
+    if why is None:
+        return True
+    r.metric("plain_session_by_decision", arm["shell"])
+    r.unverifiable(why)
+    finish_remote(ctx, r)
+    return False
+
+
 def finish_remote(ctx, r, label=""):
     """every lab case ends with the pane provably LOCAL"""
     ok = CR.leave(ctx)

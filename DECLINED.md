@@ -3173,3 +3173,37 @@ goes back to on only by another owner decision, after the replacement delivery (
 `docs/design/r13-gbssh.md`) has passed a Windows run. Tests: `msys_ssh_wrapper_runs_one_managed_connection_or_the_plain_ssh`
 (cases `default-is-off`, `kill-switch`, `not-one-is-off`; `terminal/bootstrap_test.rs`), appci `ssh_gitbash_kill_switch`
 (the default and `=0` are both plain) and selftest `msys_managed_ssh_default_off_2051`.
+
+## A remote host whose login shell is fish or nu gets a plain ssh session: no agent tools on that host (#2019) — DECIDED 2026-11-10
+
+`ssh <host>` from a Phosphor pane hands sshd a POSIX sh script as the remote command, and sshd runs it as
+`<login shell> -c <script>`. fish and nushell (also csh, tcsh, xonsh, elvish) parse the whole text before running any of
+it and refuse it, so before round 10 the session to such a host ended at once (#2019; the same text is in the pinned
+upstream wrapper). Since round 10 the wrapper asks the host one more question (`sh -c 'echo warp-login-$SHELL-'`) and,
+for a login shell of one of those names, runs the user's plain interactive ssh over the same connection
+(`PlainSSHFallback`, the path a Windows host already takes, #1035; design `docs/design/r10-lab.md` A). Seen working in
+the round 11 lab: every fish and nu arm connects.
+
+Owner decision 2026-11-10: that plain session is the answer for these hosts, and what it lacks is a known limitation,
+not debt. On a host whose LOGIN shell is fish or nu the pane works like a plain terminal: keys go to ssh as typed, no
+blocks in the remote shell, no remote completions from the app, and the agent has no tools on that host (no remote
+`read_files`, grep, glob, edits or commands: the remote backends hang off the managed session, and a prompt typed for
+the agent in that pane is typed to the remote shell). A host whose login shell is bash, zsh or another POSIX shell is
+not affected, whatever shell the user starts there by hand afterwards.
+
+Why not a managed session there: the remote shell would never be bootstrapped, so the app would have no event that says
+ssh owns the tty and typed keys would rest on a probe or a give-up timer (owner rule: timers only as give-up nets), and
+the bootstrap would have to be quoted and written per shell (`docs/design/r10-lab.md`, "Rejected").
+
+Revisit only by another owner decision, and only with a design that gives these login shells an announced managed
+session with an event-driven key release (a native fish / nu bootstrap, or the helper path as the session's only
+door). Do not file the missing remote features on such a host as bugs, and do not "fix" the lab rows below by making
+the wrapper guess.
+
+Tests: unit `ssh_wrapper_decides_after_connecting_over_one_master`, `ssh_login_shell_question_is_answered_by_every_login_shell`
+(`terminal/bootstrap_test.rs`), `script/test_ssh_probe_cache`. Lab: the terminal-mode fish / nu arms judge the plain
+session itself. The agent-mode arms with a nu login shell (`lab_agent_remote_{flow,errors,drop}.nu`,
+`lab_fam_agent_edit_conflict.nu`, `lab_read_files_remote.nu`, `lab_diff_apply_remote.nu`) report this entry by name as
+UNVERIFIABLE (status `noref`, never a pass) when the app log of their connect shows the plain session
+(`cases_lab.plain_session_limit`, selftest `lab_plain_session_limit_2019`); a bash / zsh / dash / ash / pwsh arm is
+judged in full whatever the log says, and so is a fish / nu arm that gets a managed session.

@@ -5187,3 +5187,24 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
   positive of the check: read the scenario before changing an allowance. No appci case was added: the fake model cannot make the app
   lose a call, a batch or a card, which is what the heal is for.
 - **Kill switch.** `PHOSPHOR_AGENT_TURN_SELF_HEAL=0`: faults are logged (`healed=0`), nothing is healed.
+
+## Round 14: routed (#1981, #1956, #2019; design `docs/design/r14-routed.md`)
+
+Everything below is worked, unproven: nothing was compiled or run against a build (the appci self-test was run).
+
+- **#2019, TEST + DECLINED: the agent-mode lab arms on a `nu` login shell report the decided limitation by name.** Owner decision
+  2026-11-10 (`DECLINED.md`, "A remote host whose login shell is fish or nu gets a plain ssh session: no agent tools on that host"): such
+  a host gets a plain ssh session, and the agent's remote tools need a managed one. `cases_lab.agent_connect` (used by
+  `lab_agent_remote_{flow,errors,drop}`, the `lab_fam_agent_*` cases through `lab_ready`, `lab_read_files_remote` and
+  `lab_diff_apply_remote`) connects, then asks `cases_lab.plain_session_limit(shell, app log of this connect)`. The premise needs all
+  three: the arm's login shell is `fish` or `nu`; the log has `Received PlainSSHFallback hook`; the log has no
+  `Received ManagedSSHSessionStarting hook` and no `hop=ssh_wrapper verdict managed=true`. Then the row is UNVERIFIABLE (status `noref`,
+  never a pass) with the DECLINED reference, metric `plain_session_by_decision`, the agent steps are not typed (in a plain session they
+  would be typed into the remote shell), and the pane is left with `exit`, whose check stands. **No check is weakened for any other
+  arm:** a bash / zsh / dash / ash / pwsh arm is judged in full whatever the log says (a plain session there fails on the case's own
+  checks), a `nu` arm that gets a managed session is judged in full, and "no remote prompt" is a FAIL on every shell. The rows stay
+  registered (`lab_agent_remote_flow.nu.lan.nohelper` and the others), so they are reported, not dropped. Self-test
+  `lab_plain_session_limit_2019` (the pure verdict per shell and log, `agent_connect` driven with stubs: what it records and that the
+  `exit` check is not waived, the six cases connect through it, the DECLINED entry exists under the title the reason quotes).
+  **Next Linux lab run:** the four rows `lab_agent_remote_{flow,errors,drop}.nu`, `lab_fam_agent_edit_conflict.nu` NOREF with
+  "KNOWN LIMITATION (owner decision, #2019)", no `exit` line; the bash rows unchanged.

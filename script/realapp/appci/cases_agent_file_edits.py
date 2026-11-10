@@ -436,12 +436,10 @@ def c_agent_edit_endings(ctx, r):
 
 # ---------------------------------------------------------------- lab cases (remote host; nohelper = shell backend, the primary design; upload = the helper)
 def lab_ready(ctx, r, arm):
+    """False = the case ends here: no remote prompt (a failed check), or the arm's login shell gets a plain session by decision (#2019: UNVERIFIABLE with
+    the DECLINED reference, CL.agent_connect)"""
     CRP.need_model(ctx, r)
-    if CL.connect_or_fail(ctx, r, arm) is None:
-        ctx.reset()
-        return False
-    time.sleep(1.0 + 2 * CL.rtt_s(arm))
-    return True
+    return CL.agent_connect(ctx, r, arm)
 
 
 @CL.lab_case("fam_agent_edit_conflict", shells=("bash", "dash", "nu", "pwsh"), lat=("lan",), helper=("nohelper", "upload"), modes=("agent",))

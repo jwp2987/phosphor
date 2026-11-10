@@ -7118,6 +7118,71 @@ def gitbash_bootstrap_in_command_2051():
     assert ("`%s`" % n) in doc and "gitbash_bootstrap_in_command_2051" in doc and "PHOSPHOR_MSYS_SSH_BOOTSTRAP=typed" in doc
 
 
+@check
+def lab_plain_session_limit_2019():
+    """#2019 (owner 2026-11-10): an agent-mode lab arm on a host whose login shell gets a plain ssh session by decision (fish, nu) is UNVERIFIABLE with the
+    DECLINED reference, on the app log's own evidence; bash / zsh / dash / ash / pwsh arms are judged in full whatever the log says, and so is a fish / nu
+    arm that got a managed session or whose connect logged neither line"""
+    import inspect
+    import cases_lab as CL
+    import cases_agent_remote as AR, cases_agent_file_edits as FE, cases_lab_remote as LR
+    plain = "15:49:23.421 [INFO] Received PlainSSHFallback hook\n15:49:23.421 [DEBUG] input_order hop=ssh_wrapper verdict managed=false tty_owned_deferred=false t=1\n"
+    managed = "15:49:23.421 [INFO] Received ManagedSSHSessionStarting hook\n15:49:23.5 [DEBUG] input_order hop=ssh_wrapper verdict managed=true tty_owned_deferred=true t=1\n"
+    lim = CL.plain_session_limit
+    for shell in ("nu", "fish"):
+        why = lim(shell, plain)
+        assert why and "DECLINED.md" in why and "#2019" in why and shell in why and "KNOWN LIMITATION" in why, why
+        assert lim(shell, managed) is None and lim(shell, "") is None and lim(shell, None) is None
+        assert lim(shell, plain + managed) is None          # a managed-session line anywhere in the connect: judged in full
+    for shell in ("bash", "zsh", "dash", "ash", "pwsh", "rbash"):
+        assert lim(shell, plain) is None and lim(shell, managed) is None, shell
+    assert CL.PLAIN_SESSION_LOGIN_SHELLS == ("fish", "nu")
+    # the entry the reason names exists in DECLINED.md, word for word
+    root = os.path.join(HERE, "..", "..", "..")
+    declined = open(os.path.join(root, "DECLINED.md"), encoding="utf-8").read()
+    title = CL.PLAIN_SESSION_DECLINED.split("'")[1]
+    assert ("## " + title) in declined, title
+
+    # agent_connect, driven with stubs: what it returns, what it records, and that it never types the agent steps
+    def drive(shell, log, connected=True, left=True):
+        calls = []
+        ctx = types.SimpleNamespace(log_size=lambda: 0, log_since=lambda off: log, reset=lambda: calls.append("reset"), ssh_diag=lambda: "diag",
+                                    left_unproven=None)
+        r = cases.Result("lab_x.%s.lan.nohelper" % shell, "agent")
+        real = (CL.CR.connect, CL.CR.leave, CL.time.sleep)
+        CL.CR.connect = lambda c, host, timeout: calls.append("connect " + host) or (1.0 if connected else None)
+        CL.CR.leave = lambda c: calls.append("leave") or left
+        CL.time.sleep = lambda s: None
+        try:
+            ok = CL.agent_connect(ctx, r, dict(shell=shell, user="u_" + shell, lat_ms=0))
+        finally:
+            CL.CR.connect, CL.CR.leave, CL.time.sleep = real
+        return ok, r, calls
+    ok, r, calls = drive("nu", plain)
+    assert ok is False and not r.fails and len(r.noref) == 1 and r.noref[0].startswith("UNVERIFIABLE: KNOWN LIMITATION") and "DECLINED.md" in r.noref[0], (r.fails, r.noref)
+    assert calls == ["connect lab-u_nu", "leave", "reset"] and r.metrics.get("plain_session_by_decision") == "nu", calls
+    ok, r, calls = drive("nu", plain, left=False)            # the pane must still be left: that check is not waived
+    assert ok is False and len(r.fails) == 1 and "exit" in r.fails[0] and len(r.noref) == 1
+    for shell, log in (("bash", plain), ("bash", managed), ("dash", plain), ("pwsh", plain), ("nu", managed), ("nu", ""), ("fish", managed)):
+        ok, r, calls = drive(shell, log)
+        assert ok is True and not r.fails and not r.noref and calls == ["connect lab-u_" + shell], (shell, calls, r.noref)
+    ok, r, calls = drive("nu", plain, connected=False)       # no remote prompt is a FAIL on every shell, never the limitation
+    assert ok is False and len(r.fails) == 1 and "no remote prompt" in r.fails[0] and not r.noref and calls == ["connect lab-u_nu", "reset"]
+    ok, r, calls = drive("bash", plain, connected=False)
+    assert ok is False and len(r.fails) == 1 and not r.noref
+    # every agent-mode lab case that has a nu arm connects through it (the four rows of #2019 and the two older cases with the same premise)
+    for fn in (AR.c_agent_remote_flow, AR.c_agent_remote_errors, AR.c_agent_remote_drop, LR.c_read_files_remote, LR.c_diff_apply_remote):
+        src = inspect.getsource(fn)
+        assert "CL.agent_connect(ctx, r, arm)" in src and "connect_or_fail" not in src, fn.__name__
+    assert "CL.agent_connect(ctx, r, arm)" in inspect.getsource(FE.lab_ready) and "lab_ready(ctx, r, arm)" in inspect.getsource(FE.c_lab_agent_edit_conflict)
+    names = {c["name"] for c in cases.CASES}
+    for n in ("lab_agent_remote_flow.nu.lan.nohelper", "lab_agent_remote_errors.nu.lan.nohelper", "lab_agent_remote_drop.nu.lan.nohelper",
+              "lab_fam_agent_edit_conflict.nu.lan.nohelper", "lab_agent_remote_flow.bash.lan.nohelper"):
+        assert n in names, n                                 # the nu rows are still registered: reported by name, not dropped
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    assert "lab_plain_session_limit_2019" in doc and "plain_session_limit" in doc
+
+
 def main():
     failed = 0
     for f in CHECKS:
