@@ -12032,6 +12032,14 @@ impl TerminalView {
     /// applies now (delivering what is held to ssh, or the termios guard discarding it), else the
     /// next ownership event does. A managed verdict for the announced block's still-running ssh
     /// with no window (one that ended without this hold) re-arms a window for the bootstrap.
+    ///
+    /// #2051: one plain verdict is accepted AFTER a managed one. On the one-connection path the
+    /// managed answer (`M`) is given before the remote command runs, and only a remote whose
+    /// login shell is bash is managed: any other login shell (and a bash that cannot open the
+    /// bootstrap) prints `PlainSSHFallback` and becomes the plain login. Accepted only while the
+    /// window is managed by that sync and the remote has announced nothing (no SSH hook, no
+    /// session): then the keys held since `auth_done` go to ssh in typed order, as at the `plain`
+    /// stage. After the SSH hook the session is the managed one and a plain verdict is ignored.
     fn ssh_on_wrapper_verdict(
         &mut self,
         managed: bool,
@@ -12050,7 +12058,14 @@ impl TerminalView {
         let session_differs = gate.wrapper_session.is_some()
             && session_id.is_some()
             && gate.wrapper_session != session_id;
-        if gate.wrapper != SshWrapperHold::AwaitingVerdict || session_differs {
+        // #2051: the remote of a one-connection session says it is a plain login after all.
+        let remote_plain = ssh_single_remote_plain_applies(
+            managed,
+            gate.wrapper,
+            gate.single_awaits_remote,
+            gate.managed || gate.saw_pending,
+        );
+        if (gate.wrapper != SshWrapperHold::AwaitingVerdict && !remote_plain) || session_differs {
             warpui::input_order::log_hop("ssh_wrapper", || {
                 format!(
                     "verdict_ignored managed={managed} state={:?} session_differs={session_differs}",
@@ -12061,10 +12076,11 @@ impl TerminalView {
         }
         warpui::input_order::log_hop("ssh_wrapper", || {
             format!(
-                "verdict managed={managed} tty_owned_deferred={}",
+                "verdict managed={managed} tty_owned_deferred={} remote_plain={remote_plain}",
                 gate.tty_owned_deferred
             )
         });
+        gate.single_awaits_remote = false;
         if managed {
             gate.wrapper = SshWrapperHold::Managed;
             gate.armed_at = Instant::now();
@@ -12073,6 +12089,13 @@ impl TerminalView {
             return;
         }
         gate.wrapper = SshWrapperHold::Off;
+        if remote_plain {
+            // ssh has owned the console since the login; the ownership was remembered at
+            // `auth_done` and is applied below, whatever the window recorded since.
+            gate.tty_owned = false;
+            gate.tty_owned_by_event = false;
+            gate.tty_owned_deferred = true;
+        }
         let deferred = std::mem::take(&mut gate.tty_owned_deferred);
         let block_id = gate.block_id.clone();
         self.ssh_observe(ctx);
@@ -12216,6 +12239,15 @@ impl TerminalView {
                     None => {
                         self.write_to_pty(vec![SSH_SINGLE_MODE_MANAGED], ctx);
                         self.ssh_on_wrapper_verdict(true, session_id, ctx);
+                        // #2051: the remote command has not run yet. Until it announces the
+                        // managed shell (the SSH hook) it may still answer that its login shell
+                        // is not bash: the one plain verdict `ssh_on_wrapper_verdict` accepts
+                        // from a managed window.
+                        if let Some(gate) = self.ssh_connect_gate.as_mut()
+                            && gate.wrapper == SshWrapperHold::Managed
+                        {
+                            gate.single_awaits_remote = true;
+                        }
                     }
                     // `P` (the remote command execs a plain login shell), then the drained keys
                     // as the bytes they are, then the plain verdict delivers what was held since
@@ -41727,6 +41759,24 @@ struct SshConnectGate {
     /// Preexec hook's own report it tells that the started block is this ssh's, so the echoed
     /// command text (a screen read) never ends the window of its own command.
     submitted_command: Option<String>,
+    /// #2051: the window became `Managed` by the one-connection sync (`M` was written) and the
+    /// remote command has announced nothing yet. Only then may the remote still turn the session
+    /// into a plain login with `PlainSSHFallback` (a login shell that is not bash). Cleared by
+    /// the next verdict; the SSH hook (`managed`) ends it too.
+    single_awaits_remote: bool,
+}
+
+/// #2051: whether a plain verdict (`PlainSSHFallback`) applies to a window that is already
+/// `Managed`: only one made managed by the one-connection sync (`awaits_remote`), and only while
+/// the remote has announced nothing (`remote_announced`: the SSH hook or a session). Every other
+/// second verdict is ignored, as before.
+fn ssh_single_remote_plain_applies(
+    managed: bool,
+    wrapper: SshWrapperHold,
+    awaits_remote: bool,
+    remote_announced: bool,
+) -> bool {
+    !managed && wrapper == SshWrapperHold::Managed && awaits_remote && !remote_announced
 }
 
 /// #2013: whether the block that just started runs the ssh command the user submitted, although
@@ -41854,6 +41904,7 @@ impl SshConnectGate {
             tty_read_detectable: false,
             auth_pass_through: false,
             submitted_command: None,
+            single_awaits_remote: false,
         }
     }
 

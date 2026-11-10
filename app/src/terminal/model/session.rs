@@ -742,6 +742,10 @@ pub enum IsLegacySSHSession {
         /// MSYS2); `socket_path` is empty and nothing may use it. See
         /// `SSHValue::single_connection`.
         single_connection: bool,
+        /// The remote shell got its bootstrap in the remote command and runs it by itself
+        /// (#2051): nothing is written for it on `InitShell`. See
+        /// `SSHValue::bootstrap_in_command`.
+        bootstrap_in_command: bool,
     },
     No,
 }
@@ -755,6 +759,18 @@ impl IsLegacySSHSession {
             self,
             IsLegacySSHSession::Yes {
                 single_connection: false,
+                ..
+            }
+        )
+    }
+
+    /// Whether the remote shell of this ssh session runs its bootstrap by itself, from the
+    /// remote command (#2051), so that nothing may be written for it on `InitShell`.
+    pub fn bootstrap_in_command(&self) -> bool {
+        matches!(
+            self,
+            IsLegacySSHSession::Yes {
+                bootstrap_in_command: true,
                 ..
             }
         )
@@ -853,6 +869,7 @@ impl SessionInfo {
                 external_control_master: ssh_value.external_control_master,
                 raw_bootstrap: ssh_value.raw_bootstrap,
                 single_connection: ssh_value.single_connection,
+                bootstrap_in_command: ssh_value.bootstrap_in_command,
             },
             None => IsLegacySSHSession::No,
         };
@@ -2523,6 +2540,7 @@ pub mod testing {
                 external_control_master: false,
                 raw_bootstrap: false,
                 single_connection: false,
+                bootstrap_in_command: false,
             };
             self
         }
@@ -2538,7 +2556,21 @@ pub mod testing {
                 external_control_master: false,
                 raw_bootstrap: false,
                 single_connection: true,
+                bootstrap_in_command: false,
             };
+            self
+        }
+
+        /// Marks an ssh session (see [`Self::with_single_connection_ssh`]) as one whose remote
+        /// shell got its bootstrap in the remote command (#2051).
+        pub fn with_bootstrap_in_command(mut self, in_command: bool) -> Self {
+            if let IsLegacySSHSession::Yes {
+                ref mut bootstrap_in_command,
+                ..
+            } = self.is_legacy_ssh_session
+            {
+                *bootstrap_in_command = in_command;
+            }
             self
         }
 

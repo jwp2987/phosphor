@@ -18,6 +18,31 @@ def need_ssh(ctx, r):
     cases.need_ssh(ctx, r)      # one rule for every ssh case (#2043): skip in a local run without sshd, NOREF where the host is required
 
 
+MSYS_MANAGED_SSH = "PHOSPHOR_MSYS_MANAGED_SSH"
+
+
+def msys_managed_ssh_lines(on):
+    """pure: the line typed into the Git Bash pane's shell to switch the one-connection managed ssh on for that shell, and the one that restores the
+    default (#2051, owner 2026-11-10: the path is OFF unless the shell has PHOSPHOR_MSYS_MANAGED_SSH=1)"""
+    return "export %s=1" % MSYS_MANAGED_SSH if on else "unset %s" % MSYS_MANAGED_SSH
+
+
+def in_msys_managed_ssh(ctx, body):
+    """runs body() with the one-connection managed ssh switched ON in the pane's shell when the pane is the Windows Git Bash pane (the only one whose
+    ssh wrapper has that path), and restores the default afterwards whatever body did, so the next case gets the default (plain ssh) again.
+    Elsewhere it only runs body(): Linux and macOS ssh is managed over a ControlMaster and has no switch. The two lines are typed at the LOCAL
+    prompt, before the case takes its marks and after its own reset."""
+    if not (getattr(ctx, "win", False) and getattr(ctx, "pane", None) == "gitbash"):
+        return body()
+    ctx.be.type(msys_managed_ssh_lines(True), 12, enter=True)
+    time.sleep(0.5)
+    try:
+        return body()
+    finally:
+        ctx.be.type(msys_managed_ssh_lines(False), 12, enter=True)
+        time.sleep(0.5)
+
+
 def rm_remote(ctx, *names):
     rem = getattr(ctx, "remote", None)
     if rem is not None and hasattr(rem, "rm"):          # the fake ssh lab (lab.LabRemote) removes over HTTP; lab.LocalRemote is the loop below
@@ -962,6 +987,11 @@ def c_remote_tab_no_helper(ctx, r):
     Path highlighting of a typed remote directory is not observable from outside the app: a note, not judged (see testing.md, #1801 lab case).
     The netem 150 ms variant is the same case with `PHOSPHOR_APPCI_NETEM_NOTE` set by whoever applied the delay (needs root; never applied by the harness)."""
     need_ssh(ctx, r)
+    # #2051: on the Windows Git Bash pane the in-band Tab needs the managed session, which is off by default there; this case tests the managed path
+    in_msys_managed_ssh(ctx, lambda: _remote_tab_no_helper(ctx, r))
+
+
+def _remote_tab_no_helper(ctx, r):
     tok = ctx.tok(6).lower()
     rdir = "phxtab_" + tok
     os.makedirs(os.path.join(ctx.prof.rhome, rdir), exist_ok=True)
@@ -1017,6 +1047,11 @@ def c_remote_tab_enter_no_helper(ctx, r):
     line back and runs nothing, which is a FAIL here (a fake sshd on loopback answers in milliseconds) unless PHOSPHOR_APPCI_NETEM_NOTE says a
     delay over the cap was applied. Nothing may run locally. Repeated ctx.count(3) times with fresh directories."""
     need_ssh(ctx, r)
+    # #2051: as remote_tab_no_helper, the Windows Git Bash pane needs the managed session switched on for this case
+    in_msys_managed_ssh(ctx, lambda: _remote_tab_enter_no_helper(ctx, r))
+
+
+def _remote_tab_enter_no_helper(ctx, r):
     netem = os.environ.get("PHOSPHOR_APPCI_NETEM_NOTE")
     if netem:
         r.note("network delay applied outside the harness: %s" % netem)

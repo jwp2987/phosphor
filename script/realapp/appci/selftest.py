@@ -7027,6 +7027,97 @@ def ssh_test_host_missing_is_loud():
     assert "ssh_test_host" in doc and "APPCI_REQUIRE_SSH" in doc and "#2043" in doc
 
 
+@check
+def msys_managed_ssh_default_off_2051():
+    """#2051 (owner 2026-11-10): the one-connection managed ssh of the Windows Git Bash pane is OFF unless the pane's shell has
+    PHOSPHOR_MSYS_MANAGED_SSH=1. The cases that test the managed path switch it on themselves and restore the default whatever happened; the
+    kill-switch case judges the default AND the explicit 0; no case reads the old default"""
+    import inspect
+    import cases_caseremote as rm
+    import cases_win_input as wi
+    assert rm.msys_managed_ssh_lines(True) == "export PHOSPHOR_MSYS_MANAGED_SSH=1" and rm.msys_managed_ssh_lines(False) == "unset PHOSPHOR_MSYS_MANAGED_SSH"
+    typed = []
+    be = types.SimpleNamespace(type=lambda text, delay, enter=False: typed.append((text, enter)))
+    real_sleep, rm.time.sleep = rm.time.sleep, lambda s: None
+    try:
+        git = types.SimpleNamespace(win=True, pane="gitbash", be=be)
+        assert rm.in_msys_managed_ssh(git, lambda: typed.append("body") or 7) == 7
+        assert typed == [("export PHOSPHOR_MSYS_MANAGED_SSH=1", True), "body", ("unset PHOSPHOR_MSYS_MANAGED_SSH", True)], typed
+        del typed[:]
+        try:                                    # a case that skips or dies inside still leaves the default behind
+            rm.in_msys_managed_ssh(git, lambda: (_ for _ in ()).throw(RuntimeError("skip")))
+            raise AssertionError("the body's exception was swallowed")
+        except RuntimeError:
+            pass
+        assert typed == [("export PHOSPHOR_MSYS_MANAGED_SSH=1", True), ("unset PHOSPHOR_MSYS_MANAGED_SSH", True)], typed
+        for other in (types.SimpleNamespace(win=True, pane="powershell", be=be), types.SimpleNamespace(win=False, pane=None, be=be), types.SimpleNamespace(be=be)):
+            del typed[:]
+            assert rm.in_msys_managed_ssh(other, lambda: 3) == 3 and typed == [], typed       # no wrapper path there: nothing is typed
+    finally:
+        rm.time.sleep = real_sleep
+    # every case that needs the managed session of the Git Bash pane asks for it; its expectations are in the body, unchanged
+    for fn in (wi.c_ssh_gitbash_managed, wi.c_ssh_gitbash_typeahead_managed, wi._wrapper_variant, rm.c_remote_tab_no_helper, rm.c_remote_tab_enter_no_helper):
+        assert "in_msys_managed_ssh(ctx, lambda:" in inspect.getsource(fn), fn.__name__
+    assert 'stages == ["auth", "auth_done", "managed"]' in inspect.getsource(wi._ssh_gitbash_managed)
+    assert 'stages == ["auth", "auth_done", "managed"]' in inspect.getsource(wi._ssh_gitbash_typeahead_managed)
+    assert '"candidates from the remote shell" in l' in inspect.getsource(rm._remote_tab_no_helper)
+    ks = inspect.getsource(wi.c_ssh_gitbash_kill_switch)
+    assert "msys_managed_ssh_lines(False)" in ks and '"export %s=0" % R.MSYS_MANAGED_SSH' in ks and "in_msys_managed_ssh" not in ks
+    assert ks.count('"verdict managed=false" in ln') == 1 and "finally:" in ks
+    # the wrapper's own rule: only the value 1 switches the path on
+    sh = open(os.path.join(HERE, "..", "..", "..", "app", "assets", "bundled", "bootstrap", "bash_body.sh"), encoding="utf-8").read()
+    assert '[[ "${PHOSPHOR_MSYS_MANAGED_SSH:-0}" != "1" ]] || ! warp_ssh_msys_has_terminal' in sh and "PHOSPHOR_MSYS_MANAGED_SSH:-1" not in sh
+    reg = {c["name"] for c in cases.CASES}
+    for n in ("ssh_gitbash_managed", "ssh_gitbash_typeahead_managed", "ssh_gitbash_kill_switch"):
+        assert n in reg and n in cases.PROVING and n in winmap.GITBASH_ONLY, n
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md"), encoding="utf-8").read()
+    assert "msys_managed_ssh_default_off_2051" in doc and "PHOSPHOR_MSYS_MANAGED_SSH=1" in doc
+
+
+@check
+def gitbash_bootstrap_in_command_2051():
+    """#2051: ssh_gitbash_bootstrap_in_command reads the delivery of the remote bootstrap from the app log: the in-command hop, the largest single
+    pty write, the give-up line. The round 12 log (one write of 62000, then `Bootstrapping failed`) must read as the typed delivery"""
+    import inspect
+    import cases_win_input as wi
+    r12 = "\n".join([
+        "18:22:29.882 [DEBUG] input_order hop=ssh_wrapper verdict managed=true tty_owned_deferred=true t=1",
+        "18:22:29.883 [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes=\"M\" t=1",
+        "18:22:34.177 [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=62000 of_job=62000 t=2",
+        "18:22:40.700 [WARN] Bootstrapping failed for shell \"bash\" on ssh true"])
+    assert wi.bootstrap_delivery(r12) == dict(in_command=False, max_write=62000, failed=True)
+    good = "\n".join([
+        "x [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=18 of_job=18 t=1",
+        "x [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 t=1",
+        "x [DEBUG] input_order hop=bootstrap_in_command shell=Bash wrote=0 t=2",
+        "x [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=notanumber t=3"])
+    assert wi.bootstrap_delivery(good) == dict(in_command=True, max_write=18, failed=False)
+    assert wi.bootstrap_delivery("") == dict(in_command=False, max_write=0, failed=False)
+    assert wi.BOOTSTRAP_WRITE_LIMIT == 4096
+    # the texts the case reads are the app's own (a rename there must fail here)
+    root = os.path.join(HERE, "..", "..", "..")
+    pc = open(os.path.join(root, "app", "src", "terminal", "writeable_pty", "pty_controller.rs"), encoding="utf-8").read()
+    assert 'log_hop("bootstrap_in_command", || {' in pc and 'format!("shell={shell_type:?} wrote=0")' in pc
+    assert 'log::warn!("Bootstrapping failed for shell {shell:?}' in open(os.path.join(root, "app", "src", "terminal", "view.rs"), encoding="utf-8").read()
+    assert 'log_hop("pty_write_bytes", || {' in open(os.path.join(root, "app", "src", "terminal", "local_tty", "event_loop.rs"), encoding="utf-8").read()
+    body = inspect.getsource(wi._ssh_gitbash_bootstrap_in_command)
+    for needle in ('how["in_command"]', 'how["max_write"] < BOOTSTRAP_WRITE_LIMIT', 'not how["failed"]', '["auth", "auth_done", "managed"]',
+                   '"verdict managed=true" in ln', "got < 8192", "_remote_line_once("):
+        assert needle in body, needle
+    assert "in_msys_managed_ssh(ctx, lambda:" in inspect.getsource(wi.c_ssh_gitbash_bootstrap_in_command)
+    reg = {c["name"]: c for c in cases.CASES}
+    n = "ssh_gitbash_bootstrap_in_command"
+    assert n in reg and n in cases.PROVING and n not in cases.SMOKE and n in winmap.GITBASH_ONLY
+    assert winmap.skip_reason(n, "gitbash") is None and winmap.skip_reason(n, "powershell")
+    # the wrapper's side of it: the hook field, the fd-9 here-document, the plain login for a login shell that is not bash, the measured fit
+    sh = open(os.path.join(root, "app", "assets", "bundled", "bootstrap", "bash_body.sh"), encoding="utf-8").read()
+    for needle in ('\\"bootstrap_in_command\\": true', "} 9<<'$warp_bs_delim'", "command -p cat <&9) 9<&-", 'if test "\'"${SHELL##*/}"\'" != bash; then',
+                   'command ssh -V "$1$pad"', '"${PHOSPHOR_MSYS_SSH_BOOTSTRAP:-}" != "typed"'):
+        assert needle in sh, needle
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    assert ("`%s`" % n) in doc and "gitbash_bootstrap_in_command_2051" in doc and "PHOSPHOR_MSYS_SSH_BOOTSTRAP=typed" in doc
+
+
 def main():
     failed = 0
     for f in CHECKS:

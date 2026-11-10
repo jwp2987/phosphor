@@ -46,12 +46,14 @@ fn a_one_connection_ssh_session_never_uses_the_control_master_executor() {
         external_control_master: false,
         raw_bootstrap: true,
         single_connection: false,
+        bootstrap_in_command: false,
     };
     let single = IsLegacySSHSession::Yes {
         socket_path: PathBuf::new(),
         external_control_master: false,
         raw_bootstrap: true,
         single_connection: true,
+        bootstrap_in_command: true,
     };
     assert!(multiplexed.has_control_socket());
     assert!(uses_control_master_executor(&multiplexed));

@@ -21414,6 +21414,171 @@ fn one_connection_ssh_plain_stage_writes_the_drained_keys_then_the_held_ones_in_
     }
 }
 
+/// #2051 (owner 2026-11-10: on the one-connection path only a remote whose login shell is bash is
+/// managed; zsh, fish and the rest get a plain login). The app answered `M` before the remote
+/// command ran, so the remote says it with `PlainSSHFallback` when its login shell is not bash:
+/// that one plain verdict is accepted from the managed window while the remote has announced
+/// nothing. The keys held since `auth_done` (and the ones the LocalCommand drained, at their
+/// front, #1959) go to ssh once, in typed order, and later keys pass straight through: the
+/// plain console's rule, by the remote's event, with no clock. Legacy and Table.
+#[test]
+fn one_connection_ssh_remote_that_is_not_bash_gets_the_held_keys_as_a_plain_login() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for drained in [false, true] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::workspace::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = record_all_pty_writes(&mut app, &terminal);
+                let written = {
+                    let pty_writes = pty_writes.clone();
+                    move || -> String {
+                        let bytes: Vec<u8> =
+                            pty_writes.borrow().iter().flatten().copied().collect();
+                        String::from_utf8_lossy(&bytes).into_owned()
+                    }
+                };
+                let what = format!("{mode:?}, keys drained by the LocalCommand: {drained}");
+                terminal.update(&mut app, |view, ctx| {
+                    one_connection_ssh_announced_for_test(view, ctx);
+                    ssh_wrapper_sync_for_test(view, "auth", "7", "", ctx);
+                    ssh_wrapper_sync_for_test(view, "auth_done", "7", "", ctx);
+                    view.typed_characters_on_terminal("ls", ctx);
+                    view.keydown_on_terminal("\r", ctx);
+                    // `ec` was in the console in front of the token (hex), or nothing was.
+                    ssh_wrapper_sync_for_test(
+                        view,
+                        "managed",
+                        "7",
+                        if drained { "6563" } else { "" },
+                        ctx,
+                    );
+                    assert!(view.ssh_typeahead_holding, "{what}: held for the remote");
+                    let gate = view.ssh_connect_gate.as_ref().expect("the window is open");
+                    assert_eq!(gate.wrapper, SshWrapperHold::Managed, "{what}");
+                    assert!(
+                        gate.single_awaits_remote,
+                        "{what}: the remote has not spoken"
+                    );
+                });
+                assert_eq!(written(), "ab:PHX7:M", "{what}: only the mode byte so far");
+                terminal.update(&mut app, |view, ctx| {
+                    // The remote command: the login shell is zsh, this is a plain login.
+                    ssh_wrapper_verdict_for_test(view, false, ctx);
+                    assert!(!view.ssh_typeahead_holding, "{what}: the hold ended");
+                    assert!(view.ssh_held_is_empty(), "{what}: delivered to ssh");
+                    let gate = view.ssh_connect_gate.as_ref().expect("the window is open");
+                    assert_eq!(gate.wrapper, SshWrapperHold::Off, "{what}");
+                    assert!(gate.tty_owned, "{what}: ssh owns the tty");
+                    assert!(!gate.single_awaits_remote, "{what}");
+                    assert_eq!(
+                        view.build_route_facts(
+                            crate::terminal::input_queue::QueueFacts::default(),
+                            ctx
+                        )
+                        .ssh,
+                        crate::terminal::input_queue::SshPhase::Idle,
+                        "{what}: later keys pass straight through"
+                    );
+                    view.typed_characters_on_terminal("y", ctx);
+                    // A repeat changes nothing and writes nothing.
+                    ssh_wrapper_verdict_for_test(view, false, ctx);
+                });
+                assert_eq!(
+                    written(),
+                    if drained {
+                        "ab:PHX7:Mecls\ry"
+                    } else {
+                        "ab:PHX7:Mls\ry"
+                    },
+                    "{what}: the mode byte, then every held key once in typed order, then the \
+                     live key"
+                );
+            })
+        }
+    }
+}
+
+/// #2051: the plain verdict from the remote counts only BEFORE the remote announced the managed
+/// shell. Once the SSH hook was seen (a bash login that opened its bootstrap), a
+/// `PlainSSHFallback` is ignored as every second verdict is (#1641 review, finding 4): the keys
+/// stay held and the remote shell's first prompt gets them once. Legacy and Table.
+#[test]
+fn one_connection_ssh_plain_verdict_after_the_ssh_hook_is_ignored() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let written = {
+                let pty_writes = pty_writes.clone();
+                move || -> String {
+                    let bytes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+                    String::from_utf8_lossy(&bytes).into_owned()
+                }
+            };
+            let armed = terminal.update(&mut app, |view, ctx| {
+                let armed = one_connection_ssh_announced_for_test(view, ctx);
+                ssh_wrapper_sync_for_test(view, "auth", "7", "", ctx);
+                ssh_wrapper_sync_for_test(view, "auth_done", "7", "", ctx);
+                view.typed_characters_on_terminal("ls", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                ssh_wrapper_sync_for_test(view, "managed", "7", "", ctx);
+                // The remote bash printed the SSH hook: the session is the managed one.
+                simulate_ssh_hook(view);
+                view.refresh_ssh_connect_gate();
+                view.ssh_observe(ctx);
+                ssh_wrapper_verdict_for_test(view, false, ctx);
+                assert_eq!(
+                    view.ssh_connect_gate.as_ref().map(|gate| gate.wrapper),
+                    Some(SshWrapperHold::Managed),
+                    "{mode:?}: a plain verdict after the SSH hook changed nothing"
+                );
+                assert!(view.ssh_typeahead_holding, "{mode:?}");
+                armed
+            });
+            assert_eq!(written(), "ab:PHX7:M", "{mode:?}: nothing released");
+            terminal.update(&mut app, |view, ctx| {
+                managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
+            });
+            assert_eq!(
+                written(),
+                "ab:PHX7:Mls\r",
+                "{mode:?}: the held keys once, at the remote shell's first prompt"
+            );
+        })
+    }
+}
+
+/// #2051: the rule behind the two tests above, row by row. A plain verdict applies to a managed
+/// window only when the one-connection sync made it managed and the remote announced nothing.
+#[test]
+fn a_plain_verdict_reaches_a_managed_window_only_from_a_silent_one_connection_remote() {
+    use SshWrapperHold::{AwaitingVerdict, Managed, Off};
+    assert!(ssh_single_remote_plain_applies(false, Managed, true, false));
+    // The remote announced the managed shell (SSH hook or session): too late.
+    assert!(!ssh_single_remote_plain_applies(false, Managed, true, true));
+    // A multiplexed managed session (`ManagedSSHSessionStarting`): never.
+    assert!(!ssh_single_remote_plain_applies(
+        false, Managed, false, false
+    ));
+    // A managed verdict is not a plain one; other states take the ordinary path.
+    assert!(!ssh_single_remote_plain_applies(true, Managed, true, false));
+    assert!(!ssh_single_remote_plain_applies(
+        false,
+        AwaitingVerdict,
+        true,
+        false
+    ));
+    assert!(!ssh_single_remote_plain_applies(false, Off, true, false));
+}
+
 /// #1933: a stage is honoured only in order and with the nonce of the `auth` stage. A forged or
 /// stray `auth_done` (wrong nonce) leaves the login's pass-through as it is and writes no token;
 /// a verdict stage before `auth_done` writes no mode byte and changes nothing; an unknown stage is

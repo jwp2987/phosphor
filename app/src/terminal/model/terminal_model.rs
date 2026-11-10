@@ -4201,6 +4201,12 @@ impl ansi::Handler for TerminalModel {
                      no remote helper, side commands in-band"
                 );
             }
+            if value.bootstrap_in_command {
+                log::info!(
+                    "SSH wrapper sent the bootstrap in the remote command (#2051): the remote \
+                     shell runs it by itself, nothing is written on InitShell"
+                );
+            }
             if value.external_control_master {
                 log::info!(
                     "SSH wrapper attached to an external ControlMaster at {}; \
