@@ -594,6 +594,130 @@ def c_enter_no_network_wait(ctx, r, arm):
     finish_remote(ctx, r)
 
 
+# ------------------------------------------------------------------ 4c. a key to a raw-input program, paired with plain ssh (#985)
+PTY_WRITE_RE = re.compile(r"input_order pty_write bytes=(\d+) t=(\d+(?:\.\d+)?)")
+
+
+def key_write_times(log_text, t0):
+    """pure: the time (epoch seconds, this machine's clock) of every byte the APP wrote to its pty at or after wall time t0, in write order, from its
+    `input_order pty_write bytes=N t=<ms>` lines (one per finished user write on every platform; replies to terminal queries are logged under another
+    name and are not in it). A write of several bytes (keys the write queue coalesced) gives each byte that write's time. [] without such lines."""
+    out = []
+    for m in PTY_WRITE_RE.finditer(log_text):
+        t = float(m.group(2)) / 1000.0
+        if t >= t0:
+            out += [t] * int(m.group(1))
+    return out
+
+
+def tos_note(app_tos, plain_tos):
+    """pure: (in_cs1, words). `app_tos`: the TOS bytes of the app's ssh connection(s) to the lab, `plain_tos`: the plain control's (None = not seen).
+    in_cs1: a connection of the app is in the lower-effort class CS1, which is what #985 was (OpenSSH <= 10.0 with a session without a tty on the
+    connection). Any other difference from plain ssh is reported in words and judged by nobody: OpenSSH >= 10.1 marks a connection with such a session
+    with its second IPQoS value, the system default, and the lab link treats every class alike."""
+    in_cs1 = L.TOS_CS1 in app_tos
+    if plain_tos is None or not app_tos:
+        return in_cs1, "TOS of the app's ssh connection(s): %s; plain ssh: %s" % ([hex(x) for x in app_tos] or "not seen", "not seen" if plain_tos is None else hex(plain_tos))
+    same = all(x == plain_tos for x in app_tos)
+    return in_cs1, "TOS of the app's ssh connection(s): %s; plain ssh: %s (%s)" % ([hex(x) for x in app_tos], hex(plain_tos), "the same class" if same else "NOT the class plain ssh uses")
+
+
+@lab_case("raw_key_arrival", shells=("bash", "zsh"), lat=("lan", "150"), helper=("nohelper", "helper"))
+def c_raw_key_arrival(ctx, r, arm):
+    """#985 ("keystrokes to raw-input programs arrive 40-100 ms late because the remote-server proxy shares the interactive ssh connection"): a program on the
+    server reads its tty one byte at a time and stamps each byte (lab.RAW_KEY_LOGGER). Keys are typed at 10-25 ms into the app's managed session and,
+    interleaved, written to a PLAIN `ssh -tt` session of the same user running the same program.
+      delivery time of a key = the server's stamp (mapped to this clock by /health) minus the moment the key was handed to ssh: the app's own pty write
+      (its `input_order pty_write` line), the plain control's write to its pty. What the app does BEFORE that write is other cases' subject (latency_key_log).
+      verdict  median(app) <= median(plain) + max(15 ms, 10 %) (lab.paired_verdict, the owner's remote budget of 2026-11-08), and the logger read exactly the
+               typed keys, in order, in both sessions.
+    The `helper` arms have the remote-server proxy as a second session on the connection, the `nohelper` arms do not: that pair is the issue's A/B.
+    The lab link delays every packet alike, so the DSCP class cannot show as time here. It is therefore read directly where the machine can
+    (`ss --tos`, Linux): a connection of the app in CS1, the class behind the issue's numbers, fails the arm; any other difference from the plain control
+    is a note and a metric (tos_app / tos_plain)."""
+    lab, u, rt = ctx.lab, arm["user"], rtt_s(arm)
+    n = ctx.count_lat(30)
+    script = work(arm, L.RAW_KEY_LOGGER_NAME)
+    uid = unique(ctx, 4)
+    app_out, plain_out = work(arm, "rk_app_%s.txt" % uid), work(arm, "rk_plain_%s.txt" % uid)
+    lab.tree(u, {L.RAW_KEY_LOGGER_NAME: L.RAW_KEY_LOGGER})
+    plain = L.PlainSsh(os.path.join(ctx.prof.home, ".ssh", "config"), u)
+    plain_up = False
+    try:
+        plain_up = plain.open(30 + 5 * rt) if not ctx.win else False
+    except Exception as e:  # noqa: BLE001
+        r.note("plain ssh control could not start: %r" % (e,))
+    if not plain_up:
+        r.no_reference("no plain ssh control (%s): the paired verdict cannot be given" % ("Windows" if ctx.win else "its session did not start"))
+    if connect_or_fail(ctx, r, arm) is None:
+        plain.close()
+        ctx.reset()
+        return
+    time.sleep(1.0 + 2 * rt)
+    off = lab.offset or 0.0
+    keys = [ctx.rng.choice(L.RAW_KEY_ALPHABET) for _ in range(n)]
+    pkeys = [ctx.rng.choice(L.RAW_KEY_ALPHABET) for _ in range(n)]
+    plain_sends, tos = [], None
+    try:
+        ctx.be.type(L.raw_key_logger_line(script, app_out, n), type_pace(ctx), enter=True)
+        if plain_up:
+            plain.run_line(L.raw_key_logger_line(script, plain_out, n), rng=ctx.rng)
+        ready = ctx.until(lambda: ctx.remote.exists(app_out + ".ready") and (not plain_up or ctx.remote.exists(plain_out + ".ready")), 20 + 6 * rt, step=0.05)
+        r.check(bool(ready), "the key logger did not start on the server (%s%s)" % (app_out + ".ready", " / " + plain_out + ".ready" if plain_up else ""))
+        if ready:
+            time.sleep(0.3 + rt)
+            log_off, t0 = ctx.log_size(), time.time()
+            for k, pk in zip(keys, pkeys):
+                ctx.be.type(k, type_pace(ctx))
+                time.sleep(type_pace(ctx) / 1000.0)
+                if plain_up:
+                    plain_sends.append(plain.send_key(pk))
+                    plain._pump(type_pace(ctx) / 1000.0)
+            ctx.until(lambda: len(ctx.remote.lines(app_out)) >= n and (not plain_up or len(ctx.remote.lines(plain_out)) >= n), 10 + 4 * rt, step=0.05)
+            tos = L.ssh_conn_tos(lab.ports[22])          # both sessions are still connected: the logger ended, the shells did not
+            time.sleep(0.2)
+            app_arr = L.raw_key_arrivals(ctx.remote.lines(app_out))
+            CA.exact_lines(r, "the server's logger read exactly the keys typed into the app, in order", keys, [c for _, c in app_arr])
+            sends = key_write_times(ctx.log_since(log_off), t0)
+            app_ms = L.raw_key_samples(keys, sends, app_arr, off)
+            plain_ms = []
+            if plain_up:
+                plain_arr = L.raw_key_arrivals(ctx.remote.lines(plain_out))
+                CA.exact_lines(r, "the server's logger read exactly the keys written to plain ssh, in order", pkeys, [c for _, c in plain_arr])
+                plain_ms = L.raw_key_samples(pkeys, plain_sends, plain_arr, off)
+            r.metric("key_arrival_app_ms", app_ms)
+            r.metric("key_arrival_plain_ms", plain_ms)
+            if tos is None:
+                r.note("the DSCP class of the connections was not read on this machine (no `ss`): only the delivery times are judged")
+            else:
+                app_tos = sorted({t for pid, (prog, t) in tos.items() if pid != plain.pid and prog == "ssh"})
+                plain_tos = (tos.get(plain.pid) or (None, None))[1] if plain_up else None
+                in_cs1, words = tos_note(app_tos, plain_tos)
+                r.metric("tos_app", app_tos)
+                r.metric("tos_plain", plain_tos)
+                r.note(words)
+                r.check(not in_cs1, "the app's ssh connection is in the lower-effort DSCP class CS1 (TOS 0x20), the class behind #985: %s" % words)
+            r.metric("app_bytes_written", len(sends))
+            if len(sends) != n:
+                r.unverifiable("the app log has %d byte(s) in `pty_write` lines for the %d keys (0: input-order logging is off): which write carried which key "
+                               "is not known, so no delivery time is given" % (len(sends), n))
+            elif plain_up:
+                pv = L.paired_verdict(app_ms, plain_ms)
+                r.metric("paired_verdict", pv)
+                if pv["verdict"] == "no-data":
+                    r.unverifiable("paired key delivery has too few samples: %s" % pv)
+                else:
+                    r.check(pv["verdict"] == "pass", "key -> raw-input program on the server: app median %.1f ms vs plain ssh %.1f ms; allowed %.1f ms (over by %.1f ms)" % (
+                        pv["app"], pv["plain"], pv["allowed"], pv["over_ms"]))
+        if not ctx.until(lambda: ctx.remote.exists(app_out + ".done"), 3 + 2 * rt, step=0.05):
+            ctx.be.key("ctrl+c")           # a logger still waiting for a key that never came: end it, so `exit` meets a prompt
+            time.sleep(0.5 + 2 * rt)
+    finally:
+        plain.close()
+    ctx.remote.rm(app_out, app_out + ".ready", app_out + ".done", plain_out, plain_out + ".ready", plain_out + ".done")
+    finish_remote(ctx, r)
+
+
 # ------------------------------------------------------------------ 5. dropped / reset / stalled connections
 @lab_case("ssh_drop_reconnect", modes=("terminal",), shells=("bash", "zsh", "nu"), lat=("lan", "150"), helper=("nohelper", "helper"), faults=("rst", "stall10"))
 def c_lab_drop(ctx, r, arm):

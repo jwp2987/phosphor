@@ -245,6 +245,86 @@ def enter_wait_verdict(delayed_ms, lan_ms, rtt_ms, budget_ms=2.0, min_n=8):
     return dict(out, verdict="pass", why="worst Enter -> write %.2f ms (limit %.0f ms); median %.2f ms delayed against %.2f ms undelayed" % (worst, limit, med, lm))
 
 
+# ---- lab_raw_key_arrival: a key written to the pty -> the byte read by a raw-input program on the server (#985)
+RAW_KEY_LOGGER_NAME = "rawkeys.sh"
+RAW_KEY_GIVE_UP_S = 120             # give-up net of the logger's read: a key that never comes ends the logger, the case fails on the missing bytes
+# bash >= 5 ($EPOCHREALTIME; the lab image's bash). The tty is put in non-canonical, no-echo mode ONCE, so a byte is readable the moment it arrives and
+# nothing is echoed between two reads; the stamp is taken right after the read returns. `<out>.ready` says the logger owns the tty, `<out>.done` that it ended.
+RAW_KEY_LOGGER = """#!/bin/bash
+out=$1; n=$2
+old=$(stty -g)
+trap 'stty "$old"; : > "$out.done"' EXIT
+stty -icanon -echo min 1 time 0
+: > "$out"
+: > "$out.ready"
+i=0
+while [ "$i" -lt "$n" ] && IFS= read -r -s -N 1 -t %d c; do
+  printf '%%s %%s\\n' "$EPOCHREALTIME" "$c" >> "$out"
+  i=$((i + 1))
+done
+""" % RAW_KEY_GIVE_UP_S
+RAW_KEY_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"       # one byte each, no shell or terminal meaning, the same key on every layout the harness maps
+
+
+def raw_key_logger_line(script_path, out_path, n):
+    """pure: the line that starts the logger from any lab login shell (an external command with three plain words)"""
+    return "bash %s %s %d" % (script_path, out_path, n)
+
+
+def raw_key_arrivals(lines):
+    """pure: [(epoch seconds on the REMOTE clock, character)] from the logger's file (`1794305734.123456 a`; a locale's decimal comma is read too).
+    A line that is not `<number> <one character>` is left out, so a caller comparing the characters with the typed ones sees it as a missing key."""
+    out = []
+    for l in lines:
+        p = l.split(" ")
+        if len(p) == 2 and len(p[1]) == 1:
+            try:
+                out.append((float(p[0].replace(",", ".")), p[1]))
+            except ValueError:
+                pass
+    return out
+
+
+def raw_key_samples(keys, send_times, arrivals, offset):
+    """pure: per typed key, ms from the moment it was WRITTEN towards ssh (local clock) to the moment the server's logger read it (remote clock; `offset` =
+    remote minus local). `send_times`: the epoch seconds of every byte written in the window, in write order; `arrivals`: raw_key_arrivals(). The pairing
+    is by position, so it is made only when it cannot be wrong: the arrivals ARE the typed keys, in order, and exactly one byte was written per key.
+    Anything else gives no sample at all ([]): a time between two different keys is not a delivery time."""
+    if [c for _, c in arrivals] != list(keys) or len(send_times) != len(keys):
+        return []
+    return [(arr_t - offset - t) * 1000.0 for (arr_t, _), t in zip(arrivals, send_times)]
+
+
+# DSCP classes as the IP TOS byte `ss --tos` prints (DSCP << 2). CS1 is the lower-effort class OpenSSH <= 10.0 uses for a connection whose newest
+# session has no tty (`IPQoS af21 cs1`): Wi-Fi sends it in the background queue, which is the 40-100 ms of #985.
+TOS_CS1, TOS_AF21, TOS_EF = 0x20, 0x48, 0xB8
+SS_USER_RE = re.compile(r'users:\(\("([^"]*)",pid=(\d+)')
+SS_TOS_RE = re.compile(r"\btos:(0x[0-9a-fA-F]+|\d+)")
+
+
+def ss_tos_by_pid(text):
+    """pure: {pid: (program, TOS byte)} from `ss -Htnp --tos` output, one entry per socket line that names its owner and a tos (a line without either,
+    the header included, is left out; a process with several sockets keeps its last line)"""
+    out = {}
+    for l in text.splitlines():
+        u, t = SS_USER_RE.search(l), SS_TOS_RE.search(l)
+        if u and t:
+            out[int(u.group(2))] = (u.group(1), int(t.group(1), 0))
+    return out
+
+
+def ssh_conn_tos(port, timeout=10):
+    """{pid: (program, TOS byte)} of this machine's TCP sockets connected to remote port `port` (Linux `ss`); None where `ss` is missing or fails (macOS,
+    Windows: the marking is then not observed, which is said, never assumed)"""
+    if not shutil.which("ss"):
+        return None
+    try:
+        p = subprocess.run(["ss", "-H", "-t", "-n", "-p", "--tos", "dport", "=", ":%d" % int(port)], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return ss_tos_by_pid(p.stdout) if p.returncode == 0 else None
+
+
 def count_starts(sshd_log_text, kinds=("command", "shell", "subsystem")):
     """sshd (LogLevel VERBOSE) 'Starting session: command for u from ip port N id K' lines -> {kind: count}; the exec channels the app opened"""
     out = {k: 0 for k in kinds}
@@ -831,6 +911,12 @@ class PlainSsh:
             self._pump(rng.uniform(*gap_ms) / 1000.0)
         t = time.time()
         os.write(self.fd, b"\r")
+        return t
+
+    def send_key(self, ch):
+        """write ONE key to the session, returns the wall time (time.time()) right before the write: the plain twin of the app's pty write (#985)"""
+        t = time.time()
+        os.write(self.fd, ch if isinstance(ch, bytes) else ch.encode())
         return t
 
     def close(self):

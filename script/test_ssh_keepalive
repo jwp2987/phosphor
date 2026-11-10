@@ -3,7 +3,10 @@
 ONLY when `ssh -G` reports `serveraliveinterval 0`, and only while
 WARP_SSH_KEEPALIVE is not "0". #1243: it adds ObscureKeystrokeTiming=no ONLY
 when WARP_SSH_OBSCURE_KEYSTROKE_TIMING is "0" AND `ssh -G` reports
-`obscurekeystroketiming yes`.
+`obscurekeystroketiming yes`. #985: it adds `IPQoS=af21 af21` ONLY when `ssh -G`
+reports `ipqos af21 cs1` (the default of OpenSSH 7.8 to 10.0, whose second
+class Wi-Fi delays); the default of OpenSSH 10.1 and later (`ipqos ef cs0`) and
+anything a user set are passed through untouched.
 
 It extracts the real `ssh -G` capture and the probe block (from the
 `warp_ipqos_args` declaration up to the obscure-timing `fi`) out of bash_body.sh,
@@ -84,6 +87,13 @@ CASES = [
     ("opt out", "serveraliveinterval 0\nipqos lowdelay", {"WARP_SSH_KEEPALIVE": "0"}, []),
     ("explicit on", "serveraliveinterval 0\nipqos lowdelay", {"WARP_SSH_KEEPALIVE": "1"}, KEEPALIVE),
     ("ssh -G printed nothing", "", {}, []),
+    # #985: only the default whose bulk class is cs1 is pinned
+    ("OpenSSH 10.1+ default is not pinned", "serveraliveinterval 60\nipqos ef cs0", {}, []),
+    ("OpenSSH 10.1+ default with keepalive", "serveraliveinterval 0\nipqos ef cs0", {}, KEEPALIVE),
+    ("a bulk class spelled none is not pinned", "serveraliveinterval 60\nipqos ef none", {}, []),
+    ("a user's own two classes win", "serveraliveinterval 60\nipqos af21 af21", {}, []),
+    ("a user's cs1 for both is not ours to change", "serveraliveinterval 60\nipqos cs1 cs1", {}, []),
+    ("one class only (older OpenSSH, or user-set)", "serveraliveinterval 60\nipqos af21", {}, []),
     # #1243
     ("obscure default kept", "serveraliveinterval 60\nobscurekeystroketiming yes", {}, []),
     ("obscure off by setting", "serveraliveinterval 60\nobscurekeystroketiming yes", OBSCURE_OFF, NO_OBSCURE),

@@ -4413,7 +4413,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_enter_no_network_wait", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_enter_no_network_wait", "lab_raw_key_arrival", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop"}
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_", "lab_git_write_remote")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -5052,6 +5052,39 @@ def r11_wl_round10_test_faults():
     assert pv["verdict"] == "pass" and labmod.paired_verdict([140.7] * 12, [88.2] * 12)["verdict"] == "fail"   # the budget itself is unchanged
     src = open(os.path.join(HERE, "cases_lab.py")).read()
     assert "L.app_enter_epoch(log_lines, t)" in src and "L.start_stamp_line(tok, eff)" in src and '"injector_enter_delay_ms"' in src
+    # (4c) #985 lab_raw_key_arrival: the logger's file, the app's per-key pty writes, the paired samples, the DSCP class from `ss --tos`
+    assert "read -r -s -N 1 -t %d c" % labmod.RAW_KEY_GIVE_UP_S in labmod.RAW_KEY_LOGGER and "$EPOCHREALTIME" in labmod.RAW_KEY_LOGGER
+    assert labmod.RAW_KEY_LOGGER.startswith("#!/bin/bash\n") and "stty -icanon -echo min 1 time 0" in labmod.RAW_KEY_LOGGER and "trap 'stty \"$old\"" in labmod.RAW_KEY_LOGGER
+    assert "printf '%s %s\\n' \"$EPOCHREALTIME\" \"$c\" >> \"$out\"" in labmod.RAW_KEY_LOGGER, "the logger's own % signs survive the give-up substitution"
+    assert labmod.raw_key_logger_line("/work/u/rawkeys.sh", "/work/u/rk.txt", 30) == "bash /work/u/rawkeys.sh /work/u/rk.txt 30"
+    arr = labmod.raw_key_arrivals(["1794305734.100000 a", "1794305734,200000 b", "junk", "1794305734.3 cc", "x y", "1794305734.400000 7", ""])
+    assert arr == [(1794305734.1, "a"), (1794305734.2, "b"), (1794305734.4, "7")]
+    sends = [1794305732.000, 1794305732.110, 1794305732.300]                # the remote clock is 2 s ahead
+    ms = labmod.raw_key_samples("ab7", sends, arr, 2.0)
+    assert [round(x, 1) for x in ms] == [100.0, 90.0, 100.0], ms
+    assert labmod.raw_key_samples("ab7", sends[:2], arr, 2.0) == [] and labmod.raw_key_samples("ab7", sends + [1794305732.4], arr, 2.0) == [], "one write per key, or no pairing"
+    assert labmod.raw_key_samples("ab8", sends, arr, 2.0) == [] and labmod.raw_key_samples("ab", sends[:2], arr, 2.0) == [], "other keys than the typed ones: no sample at all"
+    ss_out = ('ESTAB 0 0 127.0.0.1:50012 127.0.0.1:42022 users:(("ssh",pid=4101,fd=3)) tos:0xb8 class_id:0\n'
+              'ESTAB 0 0 127.0.0.1:50014 127.0.0.1:42022 users:(("ssh",pid=4188,fd=3)) tos:0x20 class_id:0\n'
+              'ESTAB 0 0 127.0.0.1:50016 127.0.0.1:42022 users:(("python3",pid=4200,fd=7)) tos:0 class_id:0\n'
+              'ESTAB 0 0 127.0.0.1:50018 127.0.0.1:42022 tos:0x48\nState Recv-Q Send-Q Local Address:Port Peer Address:Port\n')
+    assert labmod.ss_tos_by_pid(ss_out) == {4101: ("ssh", 0xB8), 4188: ("ssh", 0x20), 4200: ("python3", 0)} and labmod.ss_tos_by_pid("") == {}
+    assert (labmod.TOS_CS1, labmod.TOS_AF21, labmod.TOS_EF) == (8 << 2, 18 << 2, 46 << 2)
+    import cases_lab as CLk
+    kw = CLk.key_write_times("x [DEBUG] input_order pty_write bytes=1 t=1794305730000.000\n"
+                             "x [DEBUG] input_order pty_write bytes=1 t=1794305732000.000\n"
+                             "x [DEBUG] input_order hop=pty_write_reply bytes=4 t=1794305732050.000\n"
+                             "x [DEBUG] input_order hop=ctrl_c_pty_write bytes=1 t=1794305732060.000\n"
+                             "x [DEBUG] input_order pty_write bytes=2 t=1794305732110.500\n", 1794305731.0)
+    assert kw == [1794305732.0, 1794305732.1105, 1794305732.1105], kw
+    assert CLk.tos_note([0x20], 0x48)[0] is True and CLk.tos_note([0x48], 0x48) == (False, "TOS of the app's ssh connection(s): ['0x48']; plain ssh: 0x48 (the same class)")
+    cs0 = CLk.tos_note([0x0], 0xB8)
+    assert cs0[0] is False and "NOT the class plain ssh uses" in cs0[1], "best effort next to plain ssh's EF (OpenSSH >= 10.1 with the helper) is reported, not failed"
+    assert CLk.tos_note([], None) == (False, "TOS of the app's ssh connection(s): not seen; plain ssh: not seen")
+    assert "L.paired_verdict(app_ms, plain_ms)" in src and "L.ssh_conn_tos(lab.ports[22])" in src and "key_write_times(ctx.log_since(log_off), t0)" in src
+    rk = sorted(c["name"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_raw_key_arrival."))
+    assert rk == sorted("lab_raw_key_arrival.%s.%s.%s" % (s_, l_, h_) for s_ in ("bash", "zsh") for l_ in ("lan", "150") for h_ in ("nohelper", "helper")), rk
+    assert "lab_raw_key_arrival.*" in cases.PROVING_LAB
     # (6) Ctrl-C bursts: one prompt per command, plus at most one per further Ctrl-C the app wrote
     one = "hop=ctrl_c_route route=pty long_running=true\nhop=ctrl_c_pty_write bytes=1\n"
     assert labmod.ctrl_c_prompt_bounds(one, 1) == (2, 2)

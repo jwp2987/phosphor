@@ -2375,11 +2375,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 esac
             fi
 
-            # #985: the remote-server-proxy channel makes OpenSSH mark the connection "bulk"
-            # (IPQoS second class `cs1`), which delays keystrokes on some networks. Pin both
-            # classes to the interactive one, but ONLY when `ssh -G` reports exactly OpenSSH's
-            # current default (`af21 cs1`): a user-configured IPQoS is never overridden, and an
-            # older OpenSSH (different default / no two-value form) is left alone.
+            # #985: a session without a tty on the connection (the remote-server-proxy, a side
+            # command) makes OpenSSH <= 10.0 mark it with the second IPQoS class, `cs1`, which Wi-Fi
+            # sends 40-100 ms late. Pin both classes to the interactive one, but ONLY when `ssh -G`
+            # reports exactly that default (`af21 cs1`): a user's IPQoS is never overridden. OpenSSH
+            # >= 10.1 (`ef cs0`: best effort, not a penalised class) is left alone (r14-remoteprox.md).
             local warp_ipqos_args=()
             local warp_ssh_ipqos
             warp_ssh_g_value warp_ssh_ipqos ipqos "$warp_ssh_g"
