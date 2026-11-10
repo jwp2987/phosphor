@@ -5,8 +5,9 @@
 #   agent_edit_reject          the same diff, rejected: the file is byte-identical to before (and the model still gets its answer)
 #   agent_edit_conflict        the file is changed on disk AFTER the diff was proposed and BEFORE it is accepted: the save is refused, the user's change is intact,
 #                              the conflict is reported (app log: "Failed to save file for accepted AgentMode diffs"; the toast text is warp_files "changed on disk")
-#   agent_edit_endings         CRLF file / LF file with no trailing newline / CRLF with none: after an accepted edit (including an edit of the LAST line) every line
-#                              ending and the missing-or-present final newline are exactly what they were
+#   agent_edit_endings         CRLF file / LF file with no trailing newline / CRLF with none / a file that MIXES CRLF and LF lines, with and without a final newline
+#                              (#1956): after an accepted edit (including an edit of the LAST line) every line ending and the missing-or-present final newline are
+#                              exactly what they were (#1925)
 #   lab_fam_agent_edit_conflict   the accept + conflict pair on a REMOTE host (lab, arms nohelper = the shell backend over the ControlMaster, the primary design; upload =
 #                              the helper). The accept re-reads the file, checks it against the proposal, and writes with a SHA-256 of the bytes it read
 #                              (#1837): the shell script (nohelper) or the helper (`WriteFile.expect`, capability file_write_expect) compares atomically with the write
@@ -38,10 +39,14 @@ STREAM = "[byop] opening stream"
 
 # ---------------------------------------------------------------- pure parts (selftest.py exercises these)
 def make_file(tok, eol=b"\n", final_newline=True):
-    """ten lines `L01 alpha <tok>` ... `L10 kappa <tok>` joined by `eol`; the last one ends with `eol` only when final_newline"""
+    """ten lines `L01 alpha <tok>` ... `L10 kappa <tok>` joined by `eol`; the last one ends with `eol` only when final_newline. `eol` is one line ending, or a
+    tuple of them taken in turn line by line (a file with MIXED endings, #1956: line i ends with eol[i % len(eol)])"""
     lines = [("L%02d %s %s" % (i + 1, w, tok)).encode() for i, w in enumerate(WORDS)]
-    body = eol.join(lines)
-    return body + eol if final_newline else body
+    eols = eol if isinstance(eol, tuple) else (eol,)
+    out = b""
+    for i, line in enumerate(lines):
+        out += line + (eols[i % len(eols)] if final_newline or i < len(lines) - 1 else b"")
+    return out
 
 
 def three_edits(tok):
@@ -387,12 +392,15 @@ def c_agent_edit_touch_only(ctx, r):
         ctx.be.key("ctrl+c")
 
 
-ENDINGS = (("crlf", b"\r\n", True), ("lf_no_eol", b"\n", False), ("crlf_no_eol", b"\r\n", False))
+# MIXED (#1956): lines 2, 5 and 8 end in LF, the other seven in CRLF. The edit touches two LF lines (2, 5) and the CRLF last line; every other line must keep
+# its own ending (the editor buffer can only write one ending, so an accept that wrote the buffer text turned the three LF lines into CRLF)
+MIXED = (b"\r\n", b"\n", b"\r\n")
+ENDINGS = (("crlf", b"\r\n", True), ("lf_no_eol", b"\n", False), ("crlf_no_eol", b"\r\n", False), ("mixed", MIXED, True), ("mixed_no_eol", MIXED, False))
 
 
 @case("agent_edit_endings", modes=("agent",), order=52, gui=True)
 def c_agent_edit_endings(ctx, r):
-    """CRLF files and files without a final newline keep their endings through an accepted edit that touches the last line"""
+    """CRLF files, files without a final newline and files with mixed endings keep every ending through an accepted edit that touches the last line"""
     local_ready(ctx, r)
     host = LocalHost(ctx)
     try:
@@ -450,7 +458,7 @@ def c_lab_agent_delete_conflict(ctx, r, arm):
 
 @CL.lab_case("fam_agent_edit_endings", shells=("bash", "pwsh"), lat=("lan",), helper=("nohelper", "upload"), modes=("agent",))
 def c_lab_agent_edit_endings(ctx, r, arm):
-    """CRLF, no-final-newline and both, edited on the remote host: the bytes written back keep their endings"""
+    """CRLF, no-final-newline, both, and mixed endings, edited on the remote host: the bytes written back keep their endings"""
     if not lab_ready(ctx, r, arm):
         return
     host = LabHost(ctx, arm)
