@@ -11262,6 +11262,13 @@ impl TerminalView {
             note_shadow_leaf(DestClass::Dropped);
             return;
         }
+        // #1852: a ^C / ^D that arrives as a sequence voids an Enter that waits on the input queue
+        // and the keys behind it, as on the key path (`keydown_on_terminal_legacy`) and as the
+        // table does for either arrival (`execute_arrival_signal`). ^Z / ^\ leave them alone.
+        if is_abort_key(bytes) && self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
+            self.input
+                .update(ctx, |input, ctx| input.abort_enter_queue(ctx));
+        }
         if self.is_long_running()
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(bytes))
