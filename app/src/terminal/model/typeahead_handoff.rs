@@ -872,6 +872,11 @@ pub struct TypeaheadHandoff {
     /// one), and then they are in the tty for the shell's line editor: when the reader ends they
     /// become the shell's line (`wrote_user_bytes`), so the report request collects them.
     prompt_reader_line_dirty: bool,
+    /// #2047: the young hold with this id was given to the reader ahead of the line editor
+    /// ([`Self::give_young_hold_to_prompt_reader`]) and its keys are not routed yet: the next
+    /// [`Self::route_expired_young_chunks`] routes them to that reader, not as the shell's line.
+    /// Taken by that call (which may run later, from the view queue's mailbox).
+    young_hold_for_reader: Option<u64>,
     /// #1882: a command announced that it reads the tty itself (`TtyRead` marker, e.g.
     /// `Read-Host`; `Some(secret)`), until its `TtyReadEnd` or the next Precmd/Preexec. While set,
     /// the counts are never proven stale: the line editor is not the reader, so no later key may
@@ -1166,6 +1171,18 @@ pub enum YoungHoldEnd {
     /// them as the user bytes they are ([`TypeaheadHandoff::route_expired_young_chunks`]). An
     /// event-driven write, never a timer's.
     Typeahead,
+}
+
+/// #2047: the fact that says whether a held young Enter belongs to a reader ahead of the shell's
+/// line editor ([`TypeaheadHandoff::young_hold_reader_look`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YoungHoldReaderLook {
+    /// ConPTY, where nothing samples the tty: the screen ends in a question for input (#2038's
+    /// fact, `key_facts::block_tail_asks_for_input`).
+    Screen,
+    /// A platform that samples the tty: it is canonical with echo off (#2050's fact, one
+    /// `tcgetattr`: [`TypeaheadHandoff::tty_reads_secret`]).
+    Tty,
 }
 
 /// What a queued young hold's give-up cap should do.
@@ -1897,6 +1914,71 @@ impl TypeaheadHandoff {
         self.routes_to_prompt_reader() && self.foreground_probe.samples_secret_read()
     }
 
+    /// #2047: whether a queued young hold should have the tty looked at for a reader ahead of
+    /// the line editor, and which fact says so. A young Enter is held for a prompt the app has
+    /// yet to notice; when the look for a reader missed at that Enter (#2038's look only takes a
+    /// free model; #2050's is not due while a request is in flight or an Enter is deferred), the
+    /// Enter that ENDS a precmd function's `read -s` is held as a young Enter: for a line report
+    /// that cannot be asked for while the `read` has the tty, until the hold's 10 s net writes it
+    /// as the shell's line (a line no prompt answers, an enter window nothing closes). With a
+    /// hold queued neither key-time look is due, so nothing looked again.
+    ///
+    /// `Some` in exactly the states those two looks are allowed in, with the young hold live
+    /// instead of "no hold queued": the pty owns input, no reader is noted, no prompt hold is
+    /// queued, no Enter is deferred, and
+    /// - [`YoungHoldReaderLook::Screen`]: #2038's state ([`Self::prompt_reader_may_ask`]: ConPTY, a
+    ///   shell that signals, this prompt's line editor has not signalled);
+    /// - [`YoungHoldReaderLook::Tty`]: #2050's state (the tty is sampled, a Precmd was parsed and
+    ///   neither the line editor's marker nor a Preexec since).
+    /// A state fact: no clock, no sample.
+    pub fn young_hold_reader_look(&self) -> Option<YoungHoldReaderLook> {
+        if !self.young_hold_queued
+            || self.prompt_reader_asks
+            || self.prompt_hold_queued
+            || self.deferred_gate.is_some()
+            || !matches!(self.state, HandoffState::PtyOwned { .. })
+        {
+            return None;
+        }
+        if self.prompt_reader_may_ask() {
+            return Some(YoungHoldReaderLook::Screen);
+        }
+        (self.shell_activity == ShellActivity::Prompt
+            && self.foreground_probe.samples_secret_read())
+        .then_some(YoungHoldReaderLook::Tty)
+    }
+
+    /// #2047: whether something reads a secret from the tty right now (#2050's sample: canonical,
+    /// echo off; one `tcgetattr`). `false` where the tty is not sampled.
+    pub fn tty_reads_secret(&self) -> bool {
+        self.foreground_probe.reads_secret()
+    }
+
+    /// #2047 (main thread): the fact [`Self::young_hold_reader_look`] named holds, so the queued
+    /// young hold's Enter and the keys typed behind it are the reader's. The hold ends, the
+    /// reader of #2038 is noted, and the view releases the hold's keys through
+    /// [`Self::route_expired_young_chunks`], which routes them to the reader: written at once in
+    /// typed order, not the shell's line, the Enter not a line a prompt must answer, no enter
+    /// window. The reader ends on its own events ([`Self::end_prompt_reader`]).
+    ///
+    /// Returns the hold's id, or `None` (nothing changed) when the look is not due any more.
+    pub fn give_young_hold_to_prompt_reader(&mut self) -> Option<u64> {
+        self.young_hold_reader_look()?;
+        self.young_hold_queued = false;
+        self.young_hold_evidence = None;
+        // As a hold that ends at its net: the line the keys were typed on is not a line at an
+        // unnoticed prompt (`finish_young_hold_handed_back`).
+        self.young_line = false;
+        self.end_keys_follow_editor("young_hold_reader");
+        self.prompt_reader_asks = true;
+        self.prompt_reader_line_dirty = false;
+        self.young_hold_for_reader = Some(self.young_hold_id);
+        warpui::input_order::log_hop("prompt_reader_asks", || {
+            format!("by=young_hold hold_id={}", self.young_hold_id)
+        });
+        Some(self.young_hold_id)
+    }
+
     /// #2038: an event says the reader of [`Self::note_prompt_reader_asks`] is over (the line
     /// editor's signal, a Preexec, the next Precmd). Keys written to it after its last Enter may
     /// be unread in the tty, where the shell's line editor takes them: they count as the shell's
@@ -2242,6 +2324,7 @@ impl TypeaheadHandoff {
         // #2038: the reader, and the keys written to it, were the old session's.
         self.prompt_reader_asks = false;
         self.prompt_reader_line_dirty = false;
+        self.young_hold_for_reader = None;
         self.line_editor_markers_live = false;
         self.last_parsed_hook = None;
         // ... and the latch of the command that handed the pty over is the old session's.
@@ -4126,6 +4209,16 @@ impl TypeaheadHandoff {
     /// Models a command that has been running a while: no activity, and (where nothing samples
     /// the shell) a stream barrier that says everything is applied, so an Enter is typeahead for
     /// the command, not a line at an unnoticed prompt.
+    /// Test-only (#2047): this prompt's wait for the line editor's signal is older than the
+    /// prompt hold's cap, so a key that finds no reader is not held for the prompt any more.
+    #[cfg(test)]
+    pub(crate) fn age_line_editor_wait_past_the_cap_for_test(&mut self) {
+        if self.awaiting_line_editor_since.is_some() {
+            self.awaiting_line_editor_since =
+                Some(Instant::now() - CONPTY_PROMPT_HOLD_GIVE_UP - Duration::from_millis(1));
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn age_last_activity_for_test(&mut self) {
         self.last_activity_at = None;
@@ -4372,8 +4465,17 @@ impl TypeaheadHandoff {
         } else {
             vec![chunks.concat()]
         };
+        // #2047: a hold given to the reader ahead of the line editor: its keys are that reader's,
+        // while it still has the tty. (It ended meanwhile: the line editor reads, and the keys
+        // are the shell's line like any released hold's.)
+        let to_reader = self.young_hold_for_reader.take() == Some(self.young_hold_id)
+            && self.routes_to_prompt_reader();
         for chunk in &chunks {
-            self.route_user_bytes_unheld(chunk, true);
+            if to_reader {
+                self.route_prompt_reader_bytes(chunk);
+            } else {
+                self.route_user_bytes_unheld(chunk, true);
+            }
         }
         chunks
     }
