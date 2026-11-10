@@ -5008,3 +5008,24 @@ same reason text. No existing expectation changed: the same cases run the same c
 **What the next Windows run should show.** The job log line `ssh test host: ...` (the measured `exec` + pty arm) in every pass, no
 `ssh_test_host` row, and the six ssh cases with real verdicts in both panes and both modes. Their verdicts are the first evidence for the #2007
 repair on Windows: failures there are new information, not regressions of this change. If the server fails for another reason, the row says which.
+
+## Round 12: the round 11 failures in the Linux lab (build/r11a; design `docs/design/r12-lab2.md`; #2044 #2045 #2046; nothing compiled or run when written)
+
+Round 11 (integ/r11 `c61b6a3b8`, pipeline 3049602519, job `app-test-lab-linux`): 29 PASS / 21 FAIL / 50 NOREF. The round 10 lab changes were in that
+build and each is seen working (#2019 fish and nu connect, #2020, #2021, #2027). The 21 FAIL rows have four causes; everything below is worked,
+unproven.
+
+| rows | verdict | what changed |
+|---|---|---|
+| `lab_ctrl_c_no_esc_i.{fish,nu}.{lan,150}.nohelper`, both modes (8) | **APP #2044**: in an ssh session Phosphor does not manage, a Ctrl-C was SIGINT to the local ssh (the connect window stays armed for the whole session since #1809, and the #1001 rule never asked whether ssh already owns the tty); the connection ended and the rest of the case ran in the local shell | `SshConnectGate::plain_ssh_owns_tty` / `interrupt_is_sigint`: after the ownership event of a window no wrapper holds the Ctrl-C is the byte, which is what `DECLINED.md` already records ("Ctrl-C before ownership as SIGINT (after it, the byte)") |
+
+Unit tests (`app/src/terminal/view/route_parity_a_tests.rs`, run with the `warp` lib tests):
+
+- `ssh_gate_interrupt_is_the_byte_once_a_plain_ssh_owns_the_tty`: pure, the window's answer by state (connecting, owned by event, born owned on
+  ConPTY, under the wrapper before and after a managed verdict, block ended).
+- `ctrl_c_in_a_plain_ssh_session_is_the_byte_not_sigint`: announcement, ownership, `PlainSSHFallback`; the keyboard's Ctrl-C and the Ctrl-C action
+  each write `\x03` and no `SigintForegroundToPty` is emitted. Legacy and Table.
+- `ctrl_c_after_the_ownership_event_of_an_unwrapped_ssh_is_the_byte`: the same with no wrapper. Legacy and Table.
+
+No existing expectation changed. The SIGINT tests of #1001, #1641 and #1856 stay as they are: none of them has an ownership event in an unheld
+window.

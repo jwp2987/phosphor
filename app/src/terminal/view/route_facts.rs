@@ -315,7 +315,7 @@ impl TerminalView {
             .is_some(),
             ssh_sigint_applies: !snapshot.has_pending_ssh_session
                 && pending_now.is_none()
-                && gate.is_some_and(|g| !g.block_done),
+                && gate.is_some_and(|g| g.interrupt_is_sigint()),
             focus,
             approval_card,
             ai_awaiting_confirmation,

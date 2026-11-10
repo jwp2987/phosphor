@@ -13145,6 +13145,11 @@ impl TerminalView {
     /// pending, no ssh hook yet) is delivered as SIGINT to the pty's foreground group. The local
     /// tty may already be raw after authentication, where a written ^C byte is forwarded to the
     /// remote startup instead of stopping the client; the signal ends it in cooked and raw mode.
+    ///
+    /// #2044: not once a plain ssh owns the tty (`SshConnectGate::plain_ssh_owns_tty`). The window
+    /// of an unmanaged session lives as long as its ssh does (#1809: no clock where the tty-read
+    /// probe works), and the SIGINT ended the connection on every Ctrl-C typed into the remote
+    /// shell. The byte is the plain terminal's rule there.
     fn ssh_connect_sigint_applies(&mut self) -> bool {
         let (hook_seen, pending) = {
             let facts = self.model_facts();
@@ -13159,7 +13164,7 @@ impl TerminalView {
             && self
                 .ssh_connect_gate
                 .as_ref()
-                .is_some_and(|g| !g.block_done)
+                .is_some_and(SshConnectGate::interrupt_is_sigint)
     }
 
     /// Tells the user (once per pending remote session) that an interrupt was held (#1001).
@@ -41722,6 +41727,27 @@ impl SshConnectGate {
         // #1933: nor while the one-connection login passes every key through (nothing is held).
         self.wrapper == SshWrapperHold::AwaitingVerdict
             && (self.tty_read_detectable || self.auth_pass_through)
+    }
+
+    /// #2044: a plain ssh owns the tty: the ownership event came for this window's block and no
+    /// wrapper holds the window (none announced itself, or its verdict was `PlainSSHFallback`). A
+    /// managed session never gets here before its remote shell's first prompt: the wrapper defers
+    /// the ownership until its verdict, and a managed verdict keeps it deferred. Not on ConPTY,
+    /// where the window is born owned without an event (and no SIGINT route exists anyway).
+    ///
+    /// From here the keys are ssh's, as in a plain terminal (owner 2026-11-04: hold until ssh owns
+    /// the tty, then straight through), and that includes Ctrl-C: while ssh still connects or asks
+    /// a question the tty is cooked and the kernel turns the byte into the SIGINT that ends ssh;
+    /// once the session is up the tty is raw and the byte interrupts the REMOTE command.
+    fn plain_ssh_owns_tty(&self) -> bool {
+        self.tty_owned && self.tty_owned_by_event && self.wrapper == SshWrapperHold::Off
+    }
+
+    /// Whether a Ctrl-C in this window is SIGINT to the pty's foreground group rather than the
+    /// byte (#1001): while the ssh command runs (its block has not ended) and ssh's tty is not a
+    /// plain session's (#2044).
+    fn interrupt_is_sigint(&self) -> bool {
+        !self.block_done && !self.plain_ssh_owns_tty()
     }
 
     /// The no-session half: hold keys until ssh owns the tty, for the whole post-block bootstrap
