@@ -10,6 +10,8 @@ use serde::Deserialize;
 
 use http_client::Client;
 
+use super::chat_stream::redact_endpoint_for_log;
+
 /// A single model entry returned by the `/models` endpoint.
 ///
 /// We only care about `id` (used by the Agent as the model name). The other
@@ -137,14 +139,17 @@ pub async fn fetch_openai_compatible_models(
         // log::error, so the button appeared to do nothing at all.
         if super::is_plaintext_bearer_risk(&base) {
             log::warn!(
-                "[provider-fetch] not sending the API key to {base} over plaintext HTTP \
-                 (non-loopback); fetching unauthenticated instead"
+                "[provider-fetch] not sending the API key to {} over plaintext HTTP \
+                 (non-loopback); fetching unauthenticated instead",
+                redact_endpoint_for_log(&base)
             );
         } else {
             req = req.bearer_auth(key);
         }
     }
-    log::info!("[provider-fetch] GET {url}");
+    // The endpoint is logged as its host hash, never the URL the user configured (#1930).
+    let endpoint_for_log = redact_endpoint_for_log(&base);
+    log::info!("[provider-fetch] GET /models from {endpoint_for_log}");
 
     let response = req.send().await?;
     let status = response.status();
@@ -165,7 +170,10 @@ pub async fn fetch_openai_compatible_models(
     let mut models = parsed.data;
     models.sort_by(|a, b| a.id.cmp(&b.id));
     models.dedup_by(|a, b| a.id == b.id);
-    log::info!("[provider-fetch] {url} returned {} models", models.len());
+    log::info!(
+        "[provider-fetch] /models from {endpoint_for_log} returned {} models",
+        models.len()
+    );
     Ok(models)
 }
 
@@ -194,14 +202,16 @@ pub async fn fetch_ollama_models(
         // Same plaintext-key rule as the OpenAI-compatible path above.
         if super::is_plaintext_bearer_risk(&root) {
             log::warn!(
-                "[provider-fetch] not sending the API key to {root} over plaintext HTTP \
-                 (non-loopback); fetching unauthenticated instead"
+                "[provider-fetch] not sending the API key to {} over plaintext HTTP \
+                 (non-loopback); fetching unauthenticated instead",
+                redact_endpoint_for_log(&root)
             );
         } else {
             req = req.bearer_auth(key);
         }
     }
-    log::info!("[provider-fetch] GET {url}");
+    let endpoint_for_log = redact_endpoint_for_log(&root);
+    log::info!("[provider-fetch] GET /api/tags from {endpoint_for_log}");
 
     let response = req.send().await?;
     let status = response.status();
@@ -229,7 +239,10 @@ pub async fn fetch_ollama_models(
         .collect();
     models.sort_by(|a, b| a.id.cmp(&b.id));
     models.dedup_by(|a, b| a.id == b.id);
-    log::info!("[provider-fetch] {url} returned {} models", models.len());
+    log::info!(
+        "[provider-fetch] /api/tags from {endpoint_for_log} returned {} models",
+        models.len()
+    );
     Ok(models)
 }
 
@@ -387,8 +400,9 @@ async fn fetch_ollama_model_context(
         // as "no metadata" by design.
         if super::is_plaintext_bearer_risk(&root) {
             log::warn!(
-                "[provider-fetch] not sending the API key to {root} over plaintext HTTP \
-                 (non-loopback); requesting /api/show unauthenticated instead"
+                "[provider-fetch] not sending the API key to {} over plaintext HTTP \
+                 (non-loopback); requesting /api/show unauthenticated instead",
+                redact_endpoint_for_log(&root)
             );
         } else {
             req = req.bearer_auth(key);

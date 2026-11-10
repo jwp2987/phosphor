@@ -3449,26 +3449,41 @@ fn redact_url_userinfo(url: &str) -> String {
     format!("{scheme_prefix}<redacted-userinfo>@{}", &rest[at + 1..])
 }
 
-/// Reduces a provider endpoint URL to `scheme://host[:port]` for logging.
+/// Reduces a provider endpoint URL to `scheme://<host:HASH>[:port]` for logging.
 ///
 /// `[byop] build_client` (and the insecure-endpoint refusal beside it) used to log
 /// `endpoint_url` verbatim, which for a self-hosted or corporate gateway can carry userinfo, a
 /// path segment naming an internal service, or a query string with a deployment id or API
 /// version — none of which is needed to answer "which provider/gateway did this request go to",
-/// the only question these lines exist to answer. Only the scheme, host and an explicit port
-/// survive; userinfo, path, query and fragment are dropped.
+/// the only question these lines exist to answer. Only the scheme, the host's hash and an
+/// explicit port survive; userinfo, path, query and fragment are dropped.
+///
+/// The host itself is not logged (owner rule: no hosts in logs, #1930): a host the user typed
+/// into their provider settings names their company, gateway or LAN box, and `warp.log` ships
+/// in the diagnostics bundle. It is replaced by the network gate's `hash_host` value, the same
+/// number the gate's own lines print, so "which endpoint" and "is it the one the gate denied"
+/// can still be answered by comparing hashes. A loopback host (`localhost`, `127.0.0.0/8`,
+/// `::1`) names nothing and stays readable: local or remote is the first thing these lines
+/// are read for.
 ///
 /// Returns a fixed placeholder, never the input, when `url` cannot be parsed or has no host.
 /// `normalize_endpoint_url` passes a URL that failed to parse straight through unchanged (so the
 /// eventual HTTP call errors out instead of this code panicking), so the string reaching this
 /// function is not guaranteed to be a valid URL.
-fn redact_endpoint_for_log(url: &str) -> String {
+pub(crate) fn redact_endpoint_for_log(url: &str) -> String {
     const PLACEHOLDER: &str = "<unparseable-endpoint>";
     let Ok(parsed) = url::Url::parse(url) else {
         return PLACEHOLDER.to_owned();
     };
     let Some(host) = parsed.host_str() else {
         return PLACEHOLDER.to_owned();
+    };
+    let host = if super::is_loopback_host(host) {
+        host.to_owned()
+    } else {
+        // Brackets off an IPv6 literal first: the gate hashes the bare address.
+        let bare = host.trim_start_matches('[').trim_end_matches(']');
+        format!("<host:{:016x}>", http_client::gate::hash_host(bare))
     };
     match parsed.port() {
         Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
@@ -3477,7 +3492,7 @@ fn redact_endpoint_for_log(url: &str) -> String {
 }
 
 /// Reduces every `http://`/`https://` URL substring inside free-form error text to
-/// `scheme://host[:port]` (see [`redact_endpoint_for_log`]), leaving everything else alone.
+/// `scheme://<host:HASH>[:port]` (see [`redact_endpoint_for_log`]), leaving everything else alone.
 ///
 /// For `[byop] open stream failed`: `map_genai_error`'s `Display` output can wrap a
 /// `reqwest::Error`, whose own `Display` embeds the request URL in prose (e.g. `error sending
@@ -3486,7 +3501,7 @@ fn redact_endpoint_for_log(url: &str) -> String {
 /// instead: a URL substring runs from `http(s)://` to the first character that cannot appear
 /// unescaped in one (whitespace or one of `)]}'"><,`), which is generous enough to catch the
 /// shapes reqwest and genai actually produce without needing a full URL grammar.
-fn redact_urls_in_error_text(text: &str) -> String {
+pub(crate) fn redact_urls_in_error_text(text: &str) -> String {
     fn url_start(s: &str) -> Option<usize> {
         let http = s.find("http://");
         let https = s.find("https://");
@@ -3631,11 +3646,10 @@ fn diag_message_with_redacted_binaries(message: &ChatMessage) -> std::borrow::Co
 ///   trade as the provider error body: the arguments themselves are now a shape
 ///   (`args_shape_for_log`), and without the error the shape diagnoses nothing.
 /// * `[byop] build_client: … endpoint_url={..}` and the insecure-endpoint refusal beside it
-///   both log the provider endpoint reduced to `scheme://host[:port]` (`redact_endpoint_for_log`)
-///   — userinfo, path, query and fragment are dropped, but the host itself is kept deliberately:
-///   knowing which provider/gateway a request went to is most of what these lines exist for, and
-///   a host the user typed into their own provider settings is the same class of information as
-///   the proxy host below.
+///   both log the provider endpoint reduced to `scheme://<host:HASH>[:port]`
+///   (`redact_endpoint_for_log`) — userinfo, path, query and fragment are dropped and the host
+///   is replaced by the network gate's host hash (owner rule: no hosts in logs, #1930); only a
+///   loopback host stays readable.
 /// * The proxy-URL warning (`[byop] proxy URL '...' is invalid, skipping proxy configuration`)
 ///   redacts only its `user:password@` segment (`redact_url_userinfo`) and keeps the host — a
 ///   password is a different class from a host name, and the only time this fires is when the
@@ -3643,7 +3657,7 @@ fn diag_message_with_redacted_binaries(message: &ChatMessage) -> std::borrow::Co
 /// * `[byop] open stream failed: {mapped}` — `mapped` can wrap a `reqwest::Error`, whose own
 ///   `Display` embeds the request URL in prose (`... for url (https://host/path)`) rather than
 ///   through a field this file controls. `redact_urls_in_error_text` reduces any `http(s)://`
-///   substring in the rendered text to `scheme://host[:port]` before this logs, so the residual
+///   substring in the rendered text to `scheme://<host:HASH>[:port]` before this logs, so the residual
 ///   here is the same shape as the `endpoint_url` line above, not the full URL.
 /// * `[byop][webfetch] error: {e:#}` prints the URL the agent tried to fetch (`web_runtime`
 ///   builds `HTTP GET {url}` into its context chain). It is the model's chosen target rather
@@ -16873,27 +16887,50 @@ mod byop_diag_privacy_tests {
         );
     }
 
+    /// The host as `redact_endpoint_for_log` prints it: the network gate's hash, so a log line
+    /// and a gate line about the same host carry the same number.
+    fn hashed_host(host: &str) -> String {
+        format!("<host:{:016x}>", http_client::gate::hash_host(host))
+    }
+
     #[test]
-    fn provider_endpoint_is_reduced_to_scheme_host_port() {
-        // Userinfo, path, query and fragment all dropped; host and explicit port kept.
+    fn provider_endpoint_is_reduced_to_scheme_host_hash_port() {
+        // Userinfo, path, query and fragment all dropped; the explicit port is kept and the
+        // host is replaced by the gate's hash of it (#1930: no hosts in logs).
         let redacted = redact_endpoint_for_log(&format!(
             "https://user:{SECRET}@gateway.corp.internal:8443/v1/messages?api-version=2024&key={SECRET}#frag"
         ));
-        assert_eq!(redacted, "https://gateway.corp.internal:8443");
+        let gateway = hashed_host("gateway.corp.internal");
+        assert_eq!(redacted, format!("https://{gateway}:8443"));
         assert_no_secret_substring(&redacted, "redact_endpoint_for_log");
+        for part in ["gateway", "corp", "internal"] {
+            assert!(!redacted.contains(part), "{redacted}");
+        }
+        // The hash is the one the network gate prints for the same host, whatever its case.
+        assert_eq!(
+            redact_endpoint_for_log("https://Gateway.Corp.Internal/v1"),
+            format!("https://{gateway}")
+        );
 
-        // No explicit port -> no port in the output.
+        // No explicit port -> no port in the output. A loopback host names nothing and stays.
         assert_eq!(
             redact_endpoint_for_log("http://localhost/v1/chat/completions"),
             "http://localhost"
         );
-
-        // IPv6 host: `url::Url::host_str` already carries the brackets.
         assert_eq!(
-            redact_endpoint_for_log("https://[2001:db8::1]:9443/v1"),
-            "https://[2001:db8::1]:9443"
+            redact_endpoint_for_log("http://127.0.0.1:11434/api/chat"),
+            "http://127.0.0.1:11434"
         );
+
+        // IPv6 host: `url::Url::host_str` carries the brackets; the hash is of the bare address.
+        let v6 = redact_endpoint_for_log("https://[2001:db8::1]:9443/v1");
+        assert_eq!(v6, format!("https://{}:9443", hashed_host("2001:db8::1")));
+        assert!(!v6.contains("2001:db8"), "{v6}");
         assert_eq!(redact_endpoint_for_log("https://[::1]/v1"), "https://[::1]");
+        // A LAN address is a host like any other.
+        let lan = redact_endpoint_for_log("http://192.168.1.50:11434/v1");
+        assert_eq!(lan, format!("http://{}:11434", hashed_host("192.168.1.50")));
+        assert!(!lan.contains("192.168"), "{lan}");
 
         // No scheme, or outright garbage -> a fixed placeholder, never the input verbatim.
         assert_eq!(
@@ -16916,10 +16953,12 @@ mod byop_diag_privacy_tests {
         );
         let redacted = redact_urls_in_error_text(&text);
         assert_no_secret_substring(&redacted, "redact_urls_in_error_text");
+        let api_host = hashed_host("api.example.com");
         assert!(
-            redacted.contains("(https://api.example.com:8443)"),
+            redacted.contains(&format!("(https://{api_host}:8443)")),
             "{redacted}"
         );
+        assert!(!redacted.contains("api.example.com"), "{redacted}");
         assert!(
             redacted.starts_with(
                 "Web call failed for adapter 'OpenAi'.\nCause: Reqwest error: \
@@ -16935,7 +16974,11 @@ mod byop_diag_privacy_tests {
         assert_no_secret_substring(&redacted_two, "redact_urls_in_error_text (two urls)");
         assert_eq!(
             redacted_two,
-            "first http://a.example.com then https://b.example.com:9000"
+            format!(
+                "first http://{} then https://{}:9000",
+                hashed_host("a.example.com"),
+                hashed_host("b.example.com")
+            )
         );
 
         // No URL at all -> text passes through unchanged.
