@@ -427,6 +427,38 @@ def enter_segment_split():
 
 
 @check
+def windows_break_keys_are_the_real_keys():
+    """#1906: `ctrl+break` is the Break key (VK_CANCEL, scan 46, EXTENDED), `ctrl+scrollbreak` is Ctrl+ScrollLock (scan 46, not extended); rounds 8/9
+    sent the second under the first name. Pure table check: SendInput itself only exists on Windows."""
+    import backend
+    W = backend.WindowsBackend
+    assert W.vk_cancel_events("break") == ((0x03, 0x46, 1), (0x03, 0x46, 3)), W.vk_cancel_events("break")
+    assert W.vk_cancel_events("cancel") == W.vk_cancel_events("break")
+    assert W.vk_cancel_events("scrollbreak") == ((0x03, 0x46, 0), (0x03, 0x46, 2)), W.vk_cancel_events("scrollbreak")
+    assert all(W.NAMED[k] == 0x03 for k in W.VK_CANCEL_KEYS), "every VK_CANCEL key is a named key"
+    assert 0x03 not in W.EXTENDED, "VK_CANCEL's extended flag depends on the key (VK_CANCEL_KEYS), not on the vk"
+
+
+@check
+def ctrl_break_case_names_the_hop_it_stopped_at():
+    """#1906: ps_ctrl_break reads the app log after one injected key and names the first hop missing (keydown -> pane_key -> pty_write)"""
+    import cases_win_input as wi
+    full = ("x [DEBUG] input_order keydown key=pause ctrl=true alt=false shift=false cmd=false t=1.0 seq=7\n"
+            "x [DEBUG] input_order hop=kh_pane_key seq=7 class=Control target=Terminal t=1.1\n"
+            "x [DEBUG] input_order hop=pty_write_bytes class=User wrote=32 of_job=32 bytes=\"\\x1b[3;70;0;1;8;1_\\x1b[3;70;0;0;8;1_\" t=1.2\n")
+    seen, stopped, dropped = wi.break_hops(full)
+    assert stopped is None and all(seen.values()) and dropped == [], (seen, stopped, dropped)
+    seen, stopped, dropped = wi.break_hops("x [DEBUG] input_order hop=key_unconverted outcome=dropped logical=ScrollLock physical=Code(ScrollLock) ctrl=true t=1\n")
+    assert stopped == "keydown" and not seen["pty_write"], (seen, stopped)
+    assert dropped == ["hop=key_unconverted outcome=dropped logical=ScrollLock physical=Code(ScrollLock) ctrl=true t=1"], dropped
+    seen, stopped, _ = wi.break_hops(full.splitlines()[0] + "\n" + full.splitlines()[1] + "\ninput_order hop=pty_write_bytes bytes=\"\\x03\" t=2\n")
+    assert stopped == "pty_write", (seen, stopped)                 # written as Ctrl-C (the focus-gap path): not the Break sequence
+    assert wi.break_hops("")[1] == "keydown"
+    assert "ps_ctrl_break" in cases.PROVING and "ps_ctrl_scrolllock_break" in cases.PROVING
+    assert "ps_ctrl_scrolllock_break" in winmap.PS_ONLY
+
+
+@check
 def enter_segments_count_the_powershell_insert_chord():
     """#1401: a PowerShell line is served on the pipe and only the 2-byte chord is written; that write is the line's pty write"""
     L = ["input_order hop=enter_begin t=1000.0", "input_order hop=pwsh_command_via_pipe bytes=83 t=1001.0",

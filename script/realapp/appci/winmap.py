@@ -79,6 +79,7 @@ GITBASH_ONLY = {
 # PowerShell-only: the same idea as a case that already exists for the other pane
 PS_ONLY = {
     "ps_ctrl_break": "#1888: Ctrl+Break to a Python SIGBREAK receiver through the PowerShell pane's `&` call; the Git Bash pane's msys signals differ",
+    "ps_ctrl_scrolllock_break": "#1906: Ctrl+ScrollLock (the other VK_CANCEL key) to the same SIGBREAK receiver; the Git Bash pane's msys signals differ",
     "ps_fast_command_young_enter": "#1889: PowerShell's Add-Content lines and its ConPTY young-Enter window; the Git Bash pane has the prompt-hold gates instead",
     "agent_interactive_password": "#1882: the hand-over on ConPTY is the PowerShell bootstrap's Read-Host marker; bash `read -s` in a Git Bash pane announces nothing (no termios), so the POSIX form of the case does not apply there",
     "ps_read_host_secure": "#1882/#1891: Read-Host -AsSecureString is PowerShell; the Git Bash twin is gitbash_precmd_secret",

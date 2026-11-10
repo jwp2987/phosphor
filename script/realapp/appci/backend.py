@@ -1095,7 +1095,14 @@ class WindowsBackend(Backend):
     UNSUPPORTED_CHORDS = ("alt+f4", "alt+tab", "alt+escape", "ctrl+escape", "ctrl+shift+escape", "ctrl+alt+delete", "ctrl+alt+del")
     NAMED = {"return": 0x0D, "enter": 0x0D, "tab": 0x09, "escape": 0x1B, "esc": 0x1B, "backspace": 0x08, "delete": 0x2E, "del": 0x2E,
              "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28, "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
-             "insert": 0x2D, "space": 0x20, "pause": 0x13, "break": 0x03, "cancel": 0x03}     # ctrl+break = VK_CANCEL (#1888)
+             "insert": 0x2D, "space": 0x20, "pause": 0x13, "break": 0x03, "cancel": 0x03,     # ctrl+break = VK_CANCEL (#1888)
+             "scrollbreak": 0x03}
+    # #1906: the two keys that are VK_CANCEL, as (vk, scan code, extended), never left to MapVirtualKey. With Ctrl held the Break key sends scan E0 46
+    # (extended) and ScrollLock sends scan 46 (not extended); Windows gives both VK_CANCEL and a console reads both as Ctrl+Break. Rounds 8 and 9 sent
+    # `ctrl+break` as scan 46 WITHOUT the extended flag (MapVirtualKey drops the E0 prefix and VK_CANCEL was not in EXTENDED): that is Ctrl+ScrollLock,
+    # which the app's key layer names differently from the Break key. `break` / `cancel` are now the Break key; `scrollbreak` is Ctrl+ScrollLock.
+    # Both are refused without ctrl (no keyboard sends VK_CANCEL without it).
+    VK_CANCEL_KEYS = {"break": (0x03, 0x46, True), "cancel": (0x03, 0x46, True), "scrollbreak": (0x03, 0x46, False)}
     EXTENDED = {0x25, 0x26, 0x27, 0x28, 0x24, 0x23, 0x21, 0x22, 0x2D, 0x2E, 0xA5, 0xA3}
     MODVK = {"ctrl": 0xA2, "shift": 0xA0, "alt": 0xA4}
     PUNCT = {"`": (0xC0, 0), "~": (0xC0, 1), "-": (0xBD, 0), "_": (0xBD, 1), "=": (0xBB, 0), "+": (0xBB, 1), "[": (0xDB, 0), "{": (0xDB, 1),
@@ -1312,7 +1319,20 @@ class WindowsBackend(Backend):
         if "altgr" in want:
             down.append(self._vkev(0xA5))
             up.insert(0, self._vkev(0xA5, True))
-        return down + [self._vkev(vk)], [self._vkev(vk, True)] + up, vk
+        if k in self.VK_CANCEL_KEYS:
+            if "ctrl" not in want:
+                raise ValueError("%r needs ctrl: VK_CANCEL only exists with Ctrl held (#1906)" % spec)
+            key_dn, key_up = self.vk_cancel_events(k)
+        else:
+            key_dn, key_up = self._vkev(vk), self._vkev(vk, True)
+        return down + [key_dn], [key_up] + up, vk
+
+    @classmethod
+    def vk_cancel_events(cls, name):
+        """(key-down, key-up) SendInput events (vk, scan, flags) of a VK_CANCEL_KEYS key: flags bit 0 = KEYEVENTF_EXTENDEDKEY, bit 1 = KEYEVENTF_KEYUP"""
+        vk, scan, ext = cls.VK_CANCEL_KEYS[name]
+        fl = 1 if ext else 0
+        return (vk, scan, fl), (vk, scan, fl | 2)
 
     def key(self, spec, repeat=1, delay_ms=15):
         self.keys([spec] * repeat, delay_ms=delay_ms)
