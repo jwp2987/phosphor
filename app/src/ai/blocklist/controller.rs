@@ -540,9 +540,19 @@ pub enum BlocklistAIControllerEvent {
     /// A blocked action was resolved without a follow-up request (the user rejected it, or
     /// pressed Stop), so no turn will end to drain the conversation's queued prompts (#1026).
     /// The terminal view restores the queue head into the input, as every other cancel does:
-    /// a Reject and a Stop both arrive as `CancellationReason::ManuallyCancelled`, so they cannot
-    /// be told apart here, and the conservative reading is never to send on the user's behalf.
+    /// a turn that ends here ended `Cancelled` (a Stop, or a Reject that left no finished result
+    /// to send back), and a cancelled turn never sends on the user's behalf.
     QueuedPromptsReleased { conversation_id: AIConversationId },
+
+    /// A request that carried the user's own typed prompt was waiting behind a live tool call
+    /// (`pending_byop_requests`) and was dropped unsent: the user stopped the conversation, the
+    /// pane was closed, or a newer request took its place. The prompt is in no exchange, so the
+    /// terminal view puts `text` back into the input with a notice: a typed prompt is never
+    /// lost (#1948, owner decision 2026-11-09). Never emitted for an automatic request.
+    StashedPromptRestored {
+        conversation_id: AIConversationId,
+        text: String,
+    },
 
     /// Emitted when the export-to-file slash command is executed.
     ExportConversationToFile { filename: Option<String> },
@@ -592,7 +602,8 @@ pub(crate) struct FinishedBatchPlan {
     pub follow_up: Option<FollowUpTrigger>,
     /// Without a follow-up, the status the turn ends in. `Cancelled` for any mix of cancelled,
     /// failed and successful results, and always for a batch the user stopped (#1942): a batch
-    /// with a non-cancelled result that nobody stopped sends a follow-up instead.
+    /// with a non-cancelled result that nobody stopped (a Reject is not a stop) sends a
+    /// follow-up instead.
     pub final_status: ConversationStatus,
     /// Without a follow-up, the stop reason to show when nobody asked for the stop (#1178).
     pub silent_stop: Option<String>,
@@ -613,14 +624,19 @@ pub(crate) fn plan_finished_batch(
     // of truth for the reason -> status mapping, rather than re-tested per reason.
     let outcome = cancellation_reason.map(|reason| reason.conversation_outcome());
     let treat_as_success = matches!(outcome, Some(CancellationOutcome::Succeeded));
-    // Stop means stop (#1942, owner decision 2026-11-09): a reason whose outcome is `Cancelled`
-    // (Stop, Ctrl-C, Delete, a shell command run by the user, a submit into another
-    // conversation) sends NO automatic follow-up, however many results of the batch finished
-    // before the stop. The finished results stay in `finished_action_results` and ride on the
-    // user's next request (`send_query` drains them, the BYOP preflight dedups). Before this,
-    // `[success, cancelled]` after a Stop opened a request, whose reply could queue
-    // auto-executable actions that then ran after the user had stopped the agent.
-    let stopped_by_user = matches!(outcome, Some(CancellationOutcome::Cancelled));
+    // Stop means stop (#1942, owner decision 2026-11-09): a user stop (Stop, Ctrl-C, Delete, a
+    // shell command run by the user, a submit into another conversation) sends NO automatic
+    // follow-up, however many results of the batch finished before the stop. The finished
+    // results stay in `finished_action_results` and ride on the user's next request
+    // (`send_query` drains them, the BYOP preflight dedups). Before this, `[success, cancelled]`
+    // after a Stop opened a request, whose reply could queue auto-executable actions that then
+    // ran after the user had stopped the agent.
+    //
+    // A Reject is not a stop (same decision, second part): it answers one card. With an earlier
+    // result of the step finished, the batch goes back to the model at once (the rejected
+    // call's result says it was rejected) and the agent continues; with nothing finished there
+    // is nothing to report, and the turn ends `Cancelled` like any all-cancelled batch.
+    let stopped_by_user = cancellation_reason.is_some_and(|reason| reason.is_user_stop());
     let follow_up = if has_manual_follow_up {
         Some(FollowUpTrigger::UserRequested)
     } else if !is_passive_code_diff
@@ -652,6 +668,28 @@ pub(crate) fn plan_finished_batch(
         final_status,
         silent_stop: silent_stop_reason(cancellation_reason, results),
     }
+}
+
+/// The results of a passive code diff's step that the user answered (accepted: the edit was
+/// applied, or its application failed), for recording in the conversation when the step ends
+/// with no follow-up (#1951, owner decision 2026-11-09). Empty for any other step, and for a
+/// diff that was cancelled or rejected: that call stays unanswered on disk, which is what makes
+/// a relaunch show it `Cancelled`.
+pub(crate) fn answered_passive_diff_results(
+    is_passive_code_diff: bool,
+    results: &[Arc<AIAgentActionResult>],
+) -> Vec<AIAgentActionResult> {
+    if !is_passive_code_diff {
+        return Vec::new();
+    }
+    results
+        .iter()
+        .filter(|result| {
+            matches!(result.result, AIAgentActionResultType::RequestFileEdits(_))
+                && !result.result.is_cancelled()
+        })
+        .map(|result| AIAgentActionResult::clone(result))
+        .collect()
 }
 
 /// Whether a ^C was written to the pty of `block_id`'s command (false for a block that is gone).
@@ -708,6 +746,11 @@ struct RequestConversationSnapshot {
 /// to converge. A small upper bound is kept here so a genuine infinite loop returns
 /// blocked early, instead of spinning silently.
 const BYOP_PREFLIGHT_MAX_ITERATIONS: usize = 6;
+
+/// What the model reads as the result of a tool call the user rejected on its card (#1942).
+pub(crate) const REJECTED_BY_USER_DETAIL: &str = "The user rejected this tool call, so it did \
+     not run. Do not issue it again unless the user asks for it; continue with what the other \
+     results allow, or ask the user how to proceed.";
 
 impl RequestInput {
     fn for_task(
@@ -1058,6 +1101,21 @@ struct PendingByopRequest {
     is_queued_prompt: bool,
 }
 
+/// The prompt the user typed that a stashed request carries, as they would type it again (a
+/// plan-mode prompt keeps its `/plan` prefix); `None` for an automatic request (a resume, a
+/// completion report, tool results alone). Several typed prompts in one request come back one
+/// per line. This is what decides whether dropping a stashed request must put text
+/// back into the input (#1948, owner decision 2026-11-09).
+pub(crate) fn stashed_user_prompt(request_input: &RequestInput) -> Option<String> {
+    let prompts = request_input
+        .all_inputs()
+        .filter(|input| input.is_user_query())
+        .filter_map(|input| input.user_query())
+        .filter(|prompt| !prompt.trim().is_empty())
+        .collect_vec();
+    (!prompts.is_empty()).then(|| prompts.join("\n"))
+}
+
 /// Everything `send_query` has decided by the time it needs the attachments' content, carried
 /// across the (off-thread) attachment read.
 struct UserQuerySend {
@@ -1282,6 +1340,8 @@ impl BlocklistAIController {
                     matches!(result.result, AIAgentActionResultType::RequestFileEdits(_))
                 });
             let has_manual_follow_up = me.pending_passive_follow_ups.contains(conversation_id);
+            let passive_diff_answers =
+                answered_passive_diff_results(is_passive_code_diff, finished_action_results);
 
             let plan = plan_finished_batch(
                 *cancellation_reason,
@@ -1294,22 +1354,33 @@ impl BlocklistAIController {
             // whatever the plan says (#1948). It used to be flushed only when the plan had a
             // follow-up, so a step whose last live call ended cancelled (plan `None`) dropped
             // the stashed prompt on the floor. A user stop is the exception: Stop means stop
-            // (`cancel_conversation_progress` already dropped the stash for it; a Reject, which
-            // does not go through there, drops it here), and a shell exit ends the conversation
-            // as an error and sends nothing either. A user's own submit never waits behind a
-            // card the user can reject -- `send_query` cancels every pending action first -- so
-            // the stash a stop drops is an automatic request (a resume, a completion report).
-            let turn_was_stopped = matches!(
-                cancellation_reason.map(|reason| reason.conversation_outcome()),
-                Some(CancellationOutcome::Cancelled | CancellationOutcome::FinalizedExternally)
-            );
+            // (`cancel_conversation_progress` already dropped the stash for it), and a shell
+            // exit ends the conversation as an error and sends nothing either. The stash a stop
+            // drops is normally an automatic request (a resume, a completion report): a user's
+            // own submit cancels every pending action first (`send_query`). When it does carry
+            // the user's typed prompt (the call it waited on was still winding down), the
+            // prompt is not sent and not lost: its text goes back into the input
+            // (`drop_stashed_byop_request`, owner decision 2026-11-09).
+            // A Reject is not a stop: when it sends the step's results back (an earlier result
+            // had finished), the stashed request is the one request that carries them. A Reject
+            // with nothing to report ends the turn, and an automatic request stashed behind
+            // the rejected card must not restart it; a stashed prompt the user typed still
+            // goes out, the reject having answered the card it waited on.
+            let stash_has_user_prompt = me
+                .pending_byop_requests
+                .get(conversation_id)
+                .is_some_and(|pending| stashed_user_prompt(&pending.request_input).is_some());
+            let turn_was_stopped = cancellation_reason.is_some_and(|reason| {
+                reason.is_user_stop()
+                    || reason.conversation_outcome() == CancellationOutcome::FinalizedExternally
+                    || (reason.is_rejected() && plan.follow_up.is_none() && !stash_has_user_prompt)
+            });
             if turn_was_stopped {
-                if me.pending_byop_requests.remove(conversation_id).is_some() {
-                    log::info!(
-                        "[byop-readiness] dropping the request stashed for conversation \
-                         {conversation_id:?}: the turn it waited on was stopped"
-                    );
-                }
+                me.drop_stashed_byop_request(
+                    *conversation_id,
+                    "the turn it waited on was stopped",
+                    ctx,
+                );
             } else if me.flush_pending_byop_request_after_finished_action(*conversation_id, ctx) {
                 return;
             }
@@ -1355,6 +1426,17 @@ impl BlocklistAIController {
                         );
                     });
 
+                    // An accepted passive code diff sends nothing, so no request's preflight
+                    // ever writes its result into the conversation: on disk the edit's tool
+                    // call stayed unanswered, and a relaunch could not tell an accepted edit
+                    // from one the app was closed on (#1951). Record the answer now, the way
+                    // a follow-up would have; a later follow-up finds it already recorded.
+                    me.record_answered_passive_diff_results(
+                        *conversation_id,
+                        &passive_diff_answers,
+                        ctx,
+                    );
+
                     // #1178: no request follows and nobody asked for that: say so instead of
                     // leaving a finished-looking turn with no message.
                     if let Some(reason) = plan.silent_stop {
@@ -1381,13 +1463,15 @@ impl BlocklistAIController {
 
                     // Unlocking alone left the row queued with nothing left to drain it (#1026):
                     // the conversation is idle now and no `FinishedReceivingOutput` is coming.
-                    // Tell the view to restore it. Only for a reject/Stop (`None` or
-                    // `ManuallyCancelled`); other reasons (a follow-up submitted, a revert, a
-                    // delete) are driven by their own paths, and draining from here would
-                    // re-enter them.
+                    // Tell the view to restore it. Only for a reject/Stop (`None`,
+                    // `ManuallyCancelled` or `Rejected`); other reasons (a follow-up submitted,
+                    // a revert, a delete) are driven by their own paths, and draining from here
+                    // would re-enter them.
                     if matches!(
                         cancellation_reason,
-                        None | Some(CancellationReason::ManuallyCancelled)
+                        None | Some(
+                            CancellationReason::ManuallyCancelled | CancellationReason::Rejected
+                        )
                     ) && QueuedQueryModel::as_ref(ctx).has_queue(*conversation_id)
                     {
                         ctx.emit(BlocklistAIControllerEvent::QueuedPromptsReleased {
@@ -1853,7 +1937,9 @@ impl BlocklistAIController {
         conversation_id: AIConversationId,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.pending_byop_requests.remove(&conversation_id);
+        // A stashed prompt the user typed goes back into this pane's input (hidden while the
+        // pane is closed; it is there if the close is undone) rather than vanish (#1948).
+        self.drop_stashed_byop_request(conversation_id, "the pane was closed", ctx);
         self.pending_passive_follow_ups.remove(&conversation_id);
         self.pending_passive_suggestion_results
             .remove(&conversation_id);
@@ -3340,6 +3426,43 @@ impl BlocklistAIController {
         self.pending_passive_follow_ups.remove(&conversation_id);
     }
 
+    /// Drops the request stashed for `conversation_id`, if any, without sending it (`why` is for
+    /// the log). An automatic request just goes. One that carries a prompt the user typed is
+    /// never lost (#1948, owner decision 2026-11-09): the prompt was not sent and is in no
+    /// exchange, so its text is handed to the terminal view, which puts it back into the input
+    /// with a notice (`StashedPromptRestored`). Returns whether a request was dropped.
+    fn drop_stashed_byop_request(
+        &mut self,
+        conversation_id: AIConversationId,
+        why: &str,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let Some(pending) = self.pending_byop_requests.remove(&conversation_id) else {
+            return false;
+        };
+        match stashed_user_prompt(&pending.request_input) {
+            Some(text) => {
+                log::info!(
+                    "[byop-readiness] not sending the request stashed for conversation \
+                     {conversation_id:?} ({why}); it carries the user's prompt ({} chars), \
+                     which goes back into the input",
+                    text.chars().count()
+                );
+                ctx.emit(BlocklistAIControllerEvent::StashedPromptRestored {
+                    conversation_id,
+                    text,
+                });
+            }
+            None => {
+                log::info!(
+                    "[byop-readiness] dropping the request stashed for conversation \
+                     {conversation_id:?}: {why}"
+                );
+            }
+        }
+        true
+    }
+
     /// When a conversation's live action finishes, if that conversation previously
     /// had a BYOP request stashed because readiness reported PendingToolResults,
     /// prefer resending that request (so the user's original prompt isn't lost),
@@ -4386,7 +4509,7 @@ impl BlocklistAIController {
             grouped_messages
                 .entry(result.task_id.clone())
                 .or_default()
-                .push(Self::byop_action_result_message(&request_id, result));
+                .push(self.byop_result_message_for(&request_id, result, ctx));
         }
 
         let mut appended = 0;
@@ -4553,7 +4676,7 @@ impl BlocklistAIController {
             grouped_messages
                 .entry(result.task_id.clone())
                 .or_default()
-                .push(Self::byop_action_result_message(&request_id, result));
+                .push(self.byop_result_message_for(&request_id, result, ctx));
         }
 
         let mut appended = 0;
@@ -4648,6 +4771,95 @@ impl BlocklistAIController {
             fetched_memories: vec![],
             message: Some(message::Message::ToolCallResult(message::ToolCallResult {
                 tool_call_id: tool_call_id.to_owned(),
+                context: None,
+                result: None,
+            })),
+            request_id: request_id.to_owned(),
+            timestamp: None,
+        }
+    }
+
+    /// Writes the answered results of a passive code diff into the conversation (and, with
+    /// persistence on, to disk) when its step ended with no follow-up; see
+    /// [`answered_passive_diff_results`]. Only for a conversation on a BYOP model, whose
+    /// requests commit tool results the same way (`append_byop_action_result_messages` skips a
+    /// result that is already recorded, so a later follow-up does not add it twice). A failure
+    /// to record is logged and changes nothing else: the edit itself is already applied.
+    fn record_answered_passive_diff_results(
+        &self,
+        conversation_id: AIConversationId,
+        results: &[AIAgentActionResult],
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if results.is_empty() {
+            return;
+        }
+        let on_byop_model = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .and_then(|conversation| conversation.latest_exchange())
+            .is_some_and(|exchange| {
+                crate::ai::agent_providers::lookup_byop(ctx, &exchange.model_id).is_some()
+            });
+        if !on_byop_model {
+            return;
+        }
+        match self.append_byop_action_result_messages(conversation_id, results, ctx) {
+            Ok(recorded) => log::info!(
+                "recorded {recorded} accepted passive code diff result(s) in conversation \
+                 {conversation_id:?}"
+            ),
+            Err(e) => log::warn!(
+                "could not record the accepted passive code diff result for conversation \
+                 {conversation_id:?}: {e:#}"
+            ),
+        }
+    }
+
+    /// The persisted tool-result message for `result`: the "rejected by the user" form for the
+    /// call whose own card the user rejected, the ordinary form for everything else.
+    fn byop_result_message_for(
+        &self,
+        request_id: &str,
+        result: &AIAgentActionResult,
+        ctx: &mut ModelContext<Self>,
+    ) -> agent_proto::Message {
+        if result.result.is_cancelled()
+            && self
+                .action_model
+                .as_ref(ctx)
+                .was_rejected_by_user(&result.id)
+        {
+            Self::byop_rejected_by_user_message(request_id, result)
+        } else {
+            Self::byop_action_result_message(request_id, result)
+        }
+    }
+
+    /// The tool-result message for a call the user rejected on its card (#1942, owner decision
+    /// 2026-11-09). A Reject tells the model at once when an earlier call of the step had
+    /// finished, and the ordinary cancelled form (`{"status":"cancelled"}`) reads like
+    /// something to try again, so this one says who said no. Same shape as
+    /// `byop_synthetic_cancellation_message`: the text travels in `server_message_data` and the
+    /// structured result is left empty, which the request builder and the readiness pass
+    /// already accept as an answered call.
+    fn byop_rejected_by_user_message(
+        request_id: &str,
+        result: &AIAgentActionResult,
+    ) -> agent_proto::Message {
+        let server_message_data = serde_json::json!({
+            "status": "rejected",
+            "reason": "rejected_by_user",
+            "detail": REJECTED_BY_USER_DETAIL,
+        })
+        .to_string();
+        agent_proto::Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            task_id: result.task_id.to_string(),
+            server_message_data,
+            citations: vec![],
+            fetched_memories: vec![],
+            message: Some(message::Message::ToolCallResult(message::ToolCallResult {
+                tool_call_id: result.id.to_string(),
                 context: None,
                 result: None,
             })),
@@ -4894,8 +5106,11 @@ impl BlocklistAIController {
         };
         // At the start of a new request round, first drop any old request stashed
         // earlier due to readiness Pending; if this preflight hits
-        // PendingToolResults again, it'll be written back below.
-        self.pending_byop_requests.remove(&conversation_id);
+        // PendingToolResults again, it'll be written back below. (A flush takes its request
+        // out of the stash before it gets here, so anything found now is a different, older
+        // request that this one replaces. If that one carried a prompt the user typed, the
+        // text goes back into the input instead of being lost, #1948.)
+        self.drop_stashed_byop_request(conversation_id, "a newer request replaced it", ctx);
 
         // Make sure there's no existing response stream for the conversation. If
         // there is, something has gone wrong.
@@ -5286,20 +5501,17 @@ impl BlocklistAIController {
         // sends a request after a Stop / Ctrl-C / Delete / submit elsewhere. A requested
         // passive follow-up (#1950) used to survive here and turn a later Stop or Reject into
         // a `UserRequested` follow-up; a BYOP request stashed for a live call (#1948) would be
-        // flushed by the stopped call's own `FinishedAction`. Both go.
-        let stopped_by_user = reason.conversation_outcome() == CancellationOutcome::Cancelled;
+        // flushed by the stopped call's own `FinishedAction`. Both go. A stashed request that
+        // carries a prompt the user typed is not sent either, but its text goes back into the
+        // input: never lost (`drop_stashed_byop_request`).
+        let stopped_by_user = reason.is_user_stop();
         if stopped_by_user {
             self.pending_passive_follow_ups.remove(&conversation_id);
-            if self
-                .pending_byop_requests
-                .remove(&conversation_id)
-                .is_some()
-            {
-                log::info!(
-                    "[byop-readiness] dropping the request stashed for conversation \
-                     {conversation_id:?}: the user stopped the conversation ({reason})"
-                );
-            }
+            self.drop_stashed_byop_request(
+                conversation_id,
+                &format!("the user stopped the conversation ({reason})"),
+                ctx,
+            );
         }
 
         if !self

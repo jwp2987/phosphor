@@ -179,6 +179,9 @@ async fn drive(
                     stopped = true;
                     oracle.tab_closed();
                 }
+                // A Reject is not a stop (#1942, owner decision 2026-11-09): with an earlier
+                // result of the step finished it opens the follow-up that tells the model, so
+                // it is the user acting, like an approve. I8b / I8c still judge what it sends.
                 Op::Approve
                 | Op::Reject
                 | Op::Edit { .. }

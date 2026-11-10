@@ -3157,10 +3157,17 @@ fn cancel_explanation_for_reason(
     }
     match reason {
         None => Some(COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE),
-        Some(CancellationReason::ManuallyCancelled) if rejected_by_user => {
+        // `Rejected` is what a card's own Reject sends since #1942's follow-up; it also reaches
+        // the later rows of the turn that the reject cancelled (#1799), which this row's own
+        // `rejected_by_user` tells apart exactly as before.
+        Some(CancellationReason::ManuallyCancelled | CancellationReason::Rejected)
+            if rejected_by_user =>
+        {
             Some(*COMMAND_REJECTED_BY_USER_MESSAGE)
         }
-        Some(CancellationReason::ManuallyCancelled) => Some(*COMMAND_CANCELLED_BY_USER_MESSAGE),
+        Some(CancellationReason::ManuallyCancelled | CancellationReason::Rejected) => {
+            Some(*COMMAND_CANCELLED_BY_USER_MESSAGE)
+        }
         Some(CancellationReason::FollowUpSubmitted { .. }) => {
             Some(*COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE)
         }

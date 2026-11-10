@@ -807,6 +807,24 @@ mod tests {
         assert_eq!(oracle.request_limit, Some(7));
     }
 
+    /// A Reject is not a stop (#1942, owner decision 2026-11-09): rejecting a card after an
+    /// earlier result of the step finished sends the results to the model at once. The runner
+    /// reports a Reject as the user acting, never as a stop, so it draws no line of its own and
+    /// lifts one an earlier Stop drew; the follow-up it opens is not an I8a finding.
+    #[test]
+    fn i8_a_reject_never_freezes_the_request_count() {
+        let mut oracle = Oracle::default();
+        // A Reject on its own: no line.
+        oracle.user_acted(2);
+        assert_eq!(oracle.request_limit, None);
+        assert_eq!(oracle.late_request_slack, 0);
+        // A Stop, then a Reject of a later card: the stop no longer stands.
+        oracle.user_stopped(2, false);
+        assert_eq!(oracle.request_limit, Some(2));
+        oracle.user_acted(2);
+        assert_eq!(oracle.request_limit, None);
+    }
+
     #[test]
     fn i8_one_message_one_request() {
         let scenario = Scenario::new(1);

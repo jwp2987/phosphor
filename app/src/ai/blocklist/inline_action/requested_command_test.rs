@@ -205,6 +205,25 @@ fn manually_cancelled_without_the_reject_flag_says_cancelled_by_you() {
     );
 }
 
+/// The card's Reject sends its own reason, `Rejected`, since the #1942 follow-up decision. The
+/// labels are unchanged: the rejected row says "rejected", and a later row of the turn that the
+/// reject cancelled with it (#1799, same reason, no reject flag of its own) says "cancelled".
+#[test]
+fn the_reject_reason_keeps_both_labels() {
+    assert_eq!(
+        cancel_explanation_for_reason(Some(CancellationReason::Rejected), false, true),
+        Some(*COMMAND_REJECTED_BY_USER_MESSAGE)
+    );
+    assert_eq!(
+        cancel_explanation_for_reason(Some(CancellationReason::Rejected), false, false),
+        Some(*COMMAND_CANCELLED_BY_USER_MESSAGE)
+    );
+    assert_eq!(
+        cancel_explanation_for_reason(Some(CancellationReason::Rejected), true, true),
+        None
+    );
+}
+
 #[test]
 fn follow_up_submitted_names_the_follow_up() {
     assert_eq!(

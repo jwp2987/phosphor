@@ -2993,24 +2993,43 @@ work to race and nothing drains the main queue, so such a read runs in place.
   `app/src/ai/blocklist/controller.rs`).
   **Upstream:** the end-of-step decision sends the step's results back to the model whenever
   any result is not cancelled (`should_trigger_request_upon_completion`), whatever cancelled
-  the rest. A Stop, Ctrl-C, Delete or Reject on the second card of a step whose first call had
-  already finished therefore opens a new request, and the reply can queue actions that run
-  after the user stopped the agent.
-  **We do instead:** a cancellation whose outcome is `Cancelled` (Stop / Ctrl-C / Delete / a
-  shell command the user ran / a submit into another conversation / a Reject, which arrives
-  with the same reason) sends nothing and ends the turn `Cancelled`. The finished results stay
-  with the action model and ride on the user's next request. A follow-up the user asked for
-  explicitly still goes out after a Reject; a Stop withdraws it (#1950) and drops a request
-  stashed for the stopped call (#1948). Calls of a reply whose stream was stopped between its
+  the rest. A Stop, Ctrl-C or Delete on the second card of a step whose first call had already
+  finished therefore opens a new request, and the reply can queue actions that run after the
+  user stopped the agent. A Reject does the same there, with the result reading "cancelled".
+  **We do instead:** a user stop (`CancellationReason::is_user_stop`: Stop / Ctrl-C / Delete /
+  a shell command the user ran / a submit into another conversation) sends nothing and ends
+  the turn `Cancelled`. The finished results stay with the action model and ride on the user's
+  next request.
+  **A Reject is not a stop** (second part of the decision, same day). A card's Reject has its
+  own reason, `CancellationReason::Rejected`. Rejecting a card after an earlier call of the
+  same step finished tells the model at once: one automatic follow-up carries the step's
+  results, the rejected call's result says the user rejected it (`{"status":"rejected",
+  "reason":"rejected_by_user", ...}`, not a bare "cancelled"), and the agent continues. The
+  later calls of the turn are still cancelled with the rejected one (#1799) and go in the same
+  request. A Reject with nothing else finished has nothing to report and ends the turn
+  `Cancelled`, as before. A reject of an action that is already running, and a reject that
+  takes the command over, are stops. A follow-up the user asked for explicitly still goes out
+  after a Reject; a Stop withdraws it (#1950) and drops a request stashed for the stopped call
+  (#1948). **A typed prompt is never lost to that drop** (third part of the decision): when
+  the stashed request carries a prompt the user typed, it is still not sent, but its text
+  goes back into the input with a notice (`StashedPromptRestored`; appended after a draft,
+  never over it). Automatic stashed requests (a resume, a completion report, tool results)
+  are dropped as before. Calls of a reply whose stream was stopped between its
   end and its hand-off to the action queue get their cancelled results at once (#1946), and a
   conversation restored with unanswered tool calls is `Cancelled`, not `Success` (#1951).
+  An accepted file edit counts as answered there (fourth part of the decision): a passive
+  code diff the user accepted sends no follow-up, so the controller writes its result into
+  the conversation when it is accepted and the relaunch shows `Success`; only a call that
+  really has no answer (the app closed on its card, a rejected or cancelled edit) restores
+  as `Cancelled`.
   **Not changed:** a step nobody stopped (a tool cancelled itself, a command took a ^C, a
   long-running command pushed the other commands out) still follows up when any result
   finished (#1178), and input typed during a reply is still a steer (#851).
   **Evidence:** `docs/design/agent-lifecycle-audit.md` finding 1; tests
-  `a_user_stop_after_a_finished_result_sends_no_request`, `agent_fuzz::stop_tests`, fuzzer
-  invariant I8. A re-pin diff that restores the follow-up after a `Cancelled` outcome is drift
-  to reject.
+  `a_user_stop_after_a_finished_result_sends_no_request`,
+  `a_reject_after_a_finished_result_tells_the_model_at_once`, `agent_fuzz::stop_tests` (one
+  test per half), fuzzer invariant I8. A re-pin diff that restores the follow-up after a user
+  stop, or that folds a Reject back into the Stop's reason, is drift to reject.
 
 ## OSC 52 clipboard: write allowed by default, read still denied — IMPROVED 2026-11-09 (#1963)
 

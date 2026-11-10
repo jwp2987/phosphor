@@ -1132,11 +1132,19 @@ impl CLISubagentView {
             return;
         };
 
+        // A plain Reject answers the card and the agent may carry on (#1942: the model is told
+        // at once when an earlier call of the step finished). A reject that takes the command
+        // over is the user stepping in: nothing is sent on their behalf.
+        let reason = if should_user_take_over {
+            CancellationReason::ManuallyCancelled
+        } else {
+            CancellationReason::Rejected
+        };
         self.action_model.update(ctx, |action_model, ctx| {
             action_model.cancel_action_with_id(
                 self.conversation_id,
                 &blocked_action.id,
-                CancellationReason::ManuallyCancelled,
+                reason,
                 ctx,
             );
         });

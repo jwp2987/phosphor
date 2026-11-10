@@ -89,6 +89,16 @@ pub enum CancellationReason {
     /// The user explicitly cancelled without providing a follow-up.
     ManuallyCancelled,
 
+    /// The user rejected one tool-call card (the card's Reject / Cancel button or its own
+    /// keybinding) while it was still waiting for a decision. Not a stop (owner decision
+    /// 2026-11-09, #1942): when an earlier call of the same step had already finished, the
+    /// step's results go back to the model at once -- the rejected call's result saying it was
+    /// rejected -- and the agent continues. With nothing else finished it ends the turn
+    /// `Cancelled`, as a Stop does. Only ever attached to a pending action's cancelled result
+    /// (`BlocklistAIActionModel::cancel_action_with_id`); streams and running actions are
+    /// never cancelled with it.
+    Rejected,
+
     /// The user submitted a follow-up query during streaming which implicitly cancelled the current one.
     FollowUpSubmitted {
         is_for_same_conversation: bool,
@@ -142,6 +152,7 @@ impl Display for CancellationReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CancellationReason::ManuallyCancelled => write!(f, "manual cancellation"),
+            CancellationReason::Rejected => write!(f, "tool call rejected by the user"),
             CancellationReason::FollowUpSubmitted { .. } => write!(f, "follow-up submission"),
             CancellationReason::UserCommandExecuted => write!(f, "user command execution"),
             CancellationReason::Reverted => write!(f, "revert"),
@@ -168,6 +179,18 @@ impl CancellationReason {
 impl CancellationReason {
     pub fn is_manually_cancelled(&self) -> bool {
         matches!(self, CancellationReason::ManuallyCancelled)
+    }
+
+    /// The user rejected one card; see [`CancellationReason::Rejected`].
+    pub fn is_rejected(&self) -> bool {
+        matches!(self, CancellationReason::Rejected)
+    }
+
+    /// A stop the user asked for: nothing may be sent to the model on their behalf afterwards
+    /// (Stop means stop, #1942). Every reason whose outcome is `Cancelled` except a Reject,
+    /// which is an answer to one card, not a stop.
+    pub fn is_user_stop(&self) -> bool {
+        self.conversation_outcome() == CancellationOutcome::Cancelled && !self.is_rejected()
     }
 
     pub fn is_reverted(&self) -> bool {
@@ -202,7 +225,11 @@ impl CancellationReason {
             // finalizes this as a terminal `Error` directly, so the cancellation
             // machinery must not stamp a status over it.
             CancellationReason::AgentExitedShell => CancellationOutcome::FinalizedExternally,
+            // `Rejected`: the status a turn ends in when the reject leaves nothing to send (the
+            // rejected call was all the step had). When an earlier result finished, the
+            // follow-up keeps the conversation going instead; `plan_finished_batch` decides.
             CancellationReason::ManuallyCancelled
+            | CancellationReason::Rejected
             | CancellationReason::UserCommandExecuted
             | CancellationReason::Deleted
             | CancellationReason::FollowUpSubmitted {

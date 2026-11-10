@@ -4955,7 +4955,7 @@ impl AIBlock {
             action_model.cancel_action_with_id(
                 self.client_ids.conversation_id,
                 action_id,
-                CancellationReason::ManuallyCancelled,
+                CancellationReason::Rejected,
                 ctx,
             )
         });
