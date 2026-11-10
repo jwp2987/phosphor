@@ -48,9 +48,9 @@ use crate::terminal::input_queue::shadow::{DestClass, note_leaf as note_shadow_l
 use crate::terminal::input_queue::table::{Class, Outcome};
 use crate::terminal::input_queue::{
     Deferred, DeliverOutcome, DestFacts, Destination, DestinationMode, DiscardReason, EntryKind,
-    FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, HELD_KEY, HELD_SEQ, Host, InputEntry,
-    Origin, PaneQueue, PasteOwner, PowershellKeysThen, SignalKind, Stamp, destination_mode,
-    is_editor_paste_id, is_pty_entry, trace,
+    FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, HELD_KEY, HELD_SEQ, HELD_TYPED, Host,
+    InputEntry, Origin, PaneQueue, PasteOwner, PowershellKeysThen, SignalKind, Stamp,
+    destination_mode, is_editor_paste_id, is_pty_entry, trace,
 };
 use crate::terminal::model::typeahead_handoff::{
     CONPTY_PROMPT_HOLD_GIVE_UP, PromptHoldCap, YoungHoldEnd, YoungHoldEvidence, YoungHoldExpiry,
@@ -2092,8 +2092,12 @@ impl TerminalView {
         match &entry.kind {
             EntryKind::Enter => return Some(b"\r".to_vec()),
             EntryKind::Text(text) => return Some(text.clone().into_bytes()),
+            // #1922 (Windows round 8): a typed character of the ssh connect typeahead that the
+            // hand-over delivered while a ConPTY prompt hold was open goes back under that hold
+            // as a `Held` entry; taken out again it is its text, in its place. It used to fall
+            // through to the warning below and was dropped (`ssh fake` arrived as `ssh fae`).
             EntryKind::Held {
-                class: HELD_KEY | HELD_SEQ,
+                class: HELD_TYPED | HELD_KEY | HELD_SEQ,
                 text,
             } => return Some(text.clone().into_bytes()),
             _ => {}

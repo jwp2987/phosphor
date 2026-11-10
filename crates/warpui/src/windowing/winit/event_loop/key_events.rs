@@ -111,6 +111,11 @@ pub fn convert_keyboard_input_event(
     let shift = window_state.modifiers.shift_key();
 
     let logical_key = match &input.logical_key {
+        // Ctrl+Break is VK_CANCEL, which winit's Windows layer reports as `Unidentified` (its source
+        // comment: "I don't think this can be represented with a Key"), so `convert_key` dropped the
+        // key before any binding or the pty saw it (#1888 / #1906). Name it `Cancel` here.
+        #[cfg(windows)]
+        key if is_windows_vk_cancel(key) => Key::Named(NamedKey::Cancel),
         // When keystrokes with ctrl-alt are pressed on Windows, `input.logical_key` is
         // Unidentified.
         #[cfg(windows)]
@@ -259,6 +264,16 @@ fn get_input_key(logical_key: &Key, is_shift: bool) -> Key {
         (Character(character), false) => Character(character.to_lowercase().into()),
         (non_char_key, _) => non_char_key.clone(),
     }
+}
+
+/// `VK_CANCEL`, the virtual key Windows delivers for Ctrl+Break.
+#[cfg(any(windows, test))]
+const VK_CANCEL_CODE: u16 = 0x03;
+
+/// Whether `key` is winit's `Unidentified` report of the Windows `VK_CANCEL` key (Ctrl+Break).
+#[cfg(any(windows, test))]
+fn is_windows_vk_cancel(key: &Key) -> bool {
+    matches!(key, Key::Unidentified(NativeKey::Windows(vk)) if *vk == VK_CANCEL_CODE)
 }
 
 /// Converts a winit [`winit::keyboard::Key`] to the corresponding string version

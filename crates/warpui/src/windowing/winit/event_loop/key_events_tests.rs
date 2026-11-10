@@ -1,10 +1,10 @@
 use super::{
-    get_input_key, mark_composing, text_fallback_event_for_unconverted_key,
+    get_input_key, is_windows_vk_cancel, mark_composing, text_fallback_event_for_unconverted_key,
     typed_characters_follow_keydown, us_qwerty_fallback_for_chord,
 };
 use winit::event::ElementState;
 use winit::keyboard::{
-    Key::Character, KeyCode, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr,
+    Key::Character, KeyCode, ModifiersState, NativeKey, NativeKeyCode, PhysicalKey, SmolStr,
 };
 
 #[test]
@@ -307,4 +307,20 @@ fn mark_composing_sets_the_flag_only_while_composing() {
     let mut typed = crate::Event::TypedCharacters { chars: "a".into() };
     mark_composing(&mut typed, true);
     assert!(matches!(typed, crate::Event::TypedCharacters { .. }));
+}
+
+/// #1888 / #1906: winit's Windows layer reports Ctrl+Break (VK_CANCEL, 0x03) as `Unidentified`; it must be recognised so it
+/// is named `Cancel` (then `pause`) instead of being dropped. Other virtual keys stay as they are.
+#[test]
+fn test_windows_vk_cancel_is_recognised() {
+    use winit::keyboard::Key;
+    assert!(is_windows_vk_cancel(&Key::Unidentified(
+        NativeKey::Windows(0x03)
+    )));
+    assert!(!is_windows_vk_cancel(&Key::Unidentified(
+        NativeKey::Windows(0x13)
+    )));
+    assert!(!is_windows_vk_cancel(&Key::Unidentified(
+        NativeKey::Unidentified
+    )));
 }
