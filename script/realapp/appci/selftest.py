@@ -4481,6 +4481,8 @@ def lab_first_run_fixes_round10():
             raise cases.Skip(msg)
     d = tempfile.mkdtemp()
     old_bin = os.environ.pop("APPCI_LAB_HELPER_BIN", None)
+    old_cache = os.environ.get("PHOSPHOR_CI_HELPER_CACHE")
+    os.environ["PHOSPHOR_CI_HELPER_CACHE"] = os.path.join(d, "no-helper-cache")      # this machine's real cache (the box has one) must not answer here
     try:
         prof = P.Profile(d)
         local = L.LocalRemote(prof)
@@ -4505,6 +4507,10 @@ def lab_first_run_fixes_round10():
     finally:
         if old_bin is not None:
             os.environ["APPCI_LAB_HELPER_BIN"] = old_bin
+        if old_cache is None:
+            os.environ.pop("PHOSPHOR_CI_HELPER_CACHE", None)
+        else:
+            os.environ["PHOSPHOR_CI_HELPER_CACHE"] = old_cache
         shutil.rmtree(d, ignore_errors=True)
     # (2)
     lab_fish = P.lab_hooks()["fish"] % {"ctl": "/c"}
@@ -6210,6 +6216,133 @@ def r11_mac_round10_test_faults():
     assert cases.ocr_agent_markers(" ".join((vision + "\n" + tess).lower().split())) == (True, False)
     doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
     assert "r11_mac_round10_test_faults" in doc and "close_file_viewer" in doc and "ocr_engines" in doc
+
+
+@check
+def lab_helper_from_the_cache_r12():
+    """Owner decision 2026-11-10 (docs/design/r12-policy.md 3): the lab's helper arms take the static phosphor-remote from the machine-local cache the manual
+    `lab-helper` job fills (script/ci/lab_helper.py), unless APPCI_LAB_HELPER_BIN names one. (1) the resolver: explicit wins and a wrong explicit path is not
+    papered over by the cache; no variable -> this checkout's cache entry; neither -> the reason, naming the job. (2) a helper that cannot be started on this
+    machine is read from the version file built next to it; one that starts and fails is not. (3) a bundled build with no pinned digest
+    (APPCI_APP_PINNED_DIGESTS=0) makes upload / upgrade / never UNVERIFIABLE before anything is touched, and leaves the pre-installed `helper` arm alone.
+    (4) lab_prepare with a cached helper pre-installs exactly that binary under the name its version line gives. (5) the CI wiring and the documentation."""
+    import cases_lab as CL
+    import lab as L
+    import profile as P
+    LH = CL.lab_helper_cache()
+    assert LH is not None and LH.BIN == "phosphor-remote" and callable(LH.cached_entry)
+    d = tempfile.mkdtemp()
+    keep = {k: os.environ.get(k) for k in ("APPCI_LAB_HELPER_BIN", "PHOSPHOR_CI_HELPER_CACHE", "APPCI_APP_PINNED_DIGESTS", "LAB_HELPER_TAG", CL.HELPER_ASSET_ENV)}
+    try:
+        for k in keep:
+            os.environ.pop(k, None)
+        cache = os.path.join(d, "cache")
+        os.environ["PHOSPHOR_CI_HELPER_CACHE"] = cache
+        # (1) nothing anywhere
+        path, why = CL.resolve_helper_bin()
+        assert path == "" and "APPCI_LAB_HELPER_BIN" in why and "lab-helper" in why, why
+        # a cache entry for this checkout's key (the real key when the tree has one; a dirty tree under crates/ has none and says so)
+        try:
+            key = LH.key_of(LH.key_inputs(LH.ROOT, LH.helper_tag(LH.ROOT)))
+        except LH.NoKey:
+            key = None
+        script = os.path.join(d, "fake-helper")
+        tag = LH.helper_tag(LH.ROOT)
+        line = "phosphor-remote %s protocol 1" % tag
+        open(script, "w").write("#!/bin/sh\necho '%s'\n" % line)
+        os.chmod(script, 0o755)
+        if key is not None:
+            entry = LH.store(cache, key, script, line, {"tag": tag})
+            path, why = CL.resolve_helper_bin()
+            assert why is None and path == os.path.join(entry, "phosphor-remote"), (path, why)
+            # explicit wins; a wrong explicit path is reported, the cache does not cover for it
+            assert CL.resolve_helper_bin({"APPCI_LAB_HELPER_BIN": script, "PHOSPHOR_CI_HELPER_CACHE": cache}) == (script, None)
+            path, why = CL.resolve_helper_bin({"APPCI_LAB_HELPER_BIN": os.path.join(d, "nope"), "PHOSPHOR_CI_HELPER_CACHE": cache})
+            assert path == "" and "does not name a built phosphor-remote binary" in why
+        # (2) the version line
+        if os.name == "posix":
+            assert CL.helper_version_line(script) == line
+            bad = os.path.join(d, "fails")
+            open(bad, "w").write("#!/bin/sh\nexit 3\n")
+            os.chmod(bad, 0o755)
+            open(bad + ".version", "w").write(line + "\n")
+            assert CL.helper_version_line(bad) is None, "a helper that starts and fails is not excused by its version file"
+        foreign = os.path.join(d, "foreign")
+        open(foreign, "wb").write(b"\x7fELF not runnable here")           # no exec bit: starting it raises OSError, as a Linux ELF does on macOS / Windows
+        assert CL.helper_version_line(foreign) is None, "no version file: unknown"
+        open(foreign + ".version", "w").write(line + "\n")
+        assert CL.helper_version_line(foreign) == line and CL.helper_file_name(CL.helper_version_line(foreign)) == "phosphor-remote-" + tag
+        open(foreign + ".version", "w").write("something else\n")
+        assert CL.helper_version_line(foreign) is None
+
+        # (3) + (4)
+        class FakeLab:
+            info = {"flavor": "full"}
+
+            def __init__(self):
+                self.helpers = []
+
+            def helper(self, user, files=None):
+                self.helpers.append((user, dict(files or {})))
+
+        class R:
+            msg = None
+
+            def unverifiable(self, msg):
+                self.msg = msg
+
+            def skip(self, msg):
+                raise cases.Skip(msg)
+        prof = P.Profile(d)
+        local = L.LocalRemote(prof)
+
+        def run(helper):
+            lab = FakeLab()
+            ctx = types.SimpleNamespace(lab=lab, lab_why=None, prof=prof, remote=local, arm=None, lab_helper_mode=helper, run=d)
+            arm = dict(name="lab_x.bash.lan.%s" % helper, user="u_bash", shell="bash", helper=helper, lat_ms=0, flavor="full")
+            r = R()
+            try:
+                ok = CL.lab_prepare(ctx, r, arm)
+            except Exception as e:                      # past the helper gates lab_prepare talks to a real lab (fault, RTT): not this check's business
+                ok = e
+            finally:
+                CL.lab_cleanup(ctx, arm)
+            return ok, r, lab, arm
+        os.environ["APPCI_APP_PINNED_DIGESTS"] = "0"
+        for helper in CL.UPLOAD_ARMS:
+            ok, r, lab, arm = run(helper)
+            assert ok is False and "no pinned helper digest" in r.msg and "APPCI_APP_PINNED_DIGESTS=0" in r.msg and lab.helpers == [], (helper, ok, r.msg, lab.helpers)
+        assert CL.UPLOAD_ARMS == ("upload", "upgrade", "never") and "helper" not in CL.UPLOAD_ARMS and "nohelper" not in CL.UPLOAD_ARMS
+        if key is not None and os.name == "posix":
+            os.environ.pop("APPCI_LAB_HELPER_BIN", None)
+            ok, r, lab, arm = run("helper")             # pins=0 does not gate the pre-installed arm
+            assert r.msg is None, r.msg
+            assert lab.helpers and lab.helpers[0][0] == "u_bash" and list(lab.helpers[0][1]) == ["phosphor-remote-" + tag], lab.helpers
+            assert lab.helpers[0][1]["phosphor-remote-" + tag] == open(script, "rb").read() and arm["helper_file"] == "phosphor-remote-" + tag
+            assert os.environ.get("APPCI_LAB_HELPER_BIN") == os.path.join(cache, key, "phosphor-remote")
+        os.environ.pop("APPCI_APP_PINNED_DIGESTS", None)
+        os.environ.pop("APPCI_LAB_HELPER_BIN", None)
+        os.environ["PHOSPHOR_CI_HELPER_CACHE"] = os.path.join(d, "empty")
+        ok, r, lab, arm = run("upload")                 # unset: a source build's arm goes on to the helper lookup, as before
+        assert ok is False and "lab-helper" in r.msg and "no pinned" not in r.msg, r.msg
+    finally:
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(d, ignore_errors=True)
+    # (5)
+    ci = open(os.path.join(HERE, "..", "..", "..", ".gitlab-ci.yml")).read()
+    job = ci[ci.index("\nlab-helper:"):]
+    job = job[:job.index("\n\n")]
+    assert "script/ci/lab_helper.py build" in job and "when: manual" in job and "helper-artifacts/" in job and "tags: [little-thing]" in job, job
+    assert "install" not in job.replace("installs nothing", "").replace("not installed", "").lower(), "the job installs nothing on the box"
+    labjob = ci[ci.index("\napp-test-lab-linux:"):]
+    labjob = labjob[:labjob.index("\n\n")]
+    assert 'APPCI_APP_PINNED_DIGESTS: "0"' in labjob and "script/ci/lab_helper.py path" in labjob, labjob
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
+    assert "lab_helper.py" in doc and "lab-helper" in doc and "APPCI_APP_PINNED_DIGESTS=0" in doc and "PHOSPHOR_CI_HELPER_CACHE" in doc
 
 
 def main():
