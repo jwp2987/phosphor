@@ -8,13 +8,13 @@
 //! | I2b | Stop, and Ctrl-C, leave it terminal within 2 s, nothing pending / running, no stream in flight. Not for a Ctrl-C typed into a running command while later actions of the same reply still wait: that is the command's interrupt and the turn goes on (#850) |
 //! | I2c | that Ctrl-C: the command it was typed into stops running within 2 s (the cards that follow are the closing user's, and I2a still ends the turn) |
 //! | I3 | when the conversation is terminal, locked queued rows unlock within 2 s; unlocked rows of a conversation that succeeded are sent within 3 s (a cancel restores rows to the input instead: #690 / #1026, kept by #1799) |
-//! | I4 | each request carries exactly one tool message per emitted call id, in order, none extra and none orphaned (duplicates renamed `id#2`); the last request holds the calls of the replies to the requests before it |
+//! | I4 | each request carries exactly one tool message per emitted call id, in order, none extra and none orphaned (duplicates renamed `id#2`); the last request holds the calls of the replies to the requests before it, except a reply whose stream the user cut (a message sent, Stop or Ctrl-C while it was still in flight): that one is whole or absent |
 //! | I5 | `prompt_tests.rs`: a command is handed to the user only if it reads the tty |
 //! | I6 | no panic (any thread) and no ERROR log beyond the allowance per chaos kind and count (`error_allowance`) |
 //! | I7 | no card takes accept keys for an action that is done or cancelled (read from the card's own key routing, `AIBlock::pending_command_card_view_id`, not from the action status) |
 //! | I8 | the model is asked only when it should be, counted on the requests the seam received (#1942, #1896, #1901): (a) after a Stop, or a Ctrl-C with no command running, no request is opened until the user acts again; (b) a message the user sent is the newest message of at most one request per submit (plus one per failed reply, which is retried), and a plain submit in a run without a stop reaches the model; (c) no request repeats an earlier one, or goes back to a prefix of it, unless a reply in between failed |
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use fake_llm::scenario::{Reply, Scenario};
@@ -102,6 +102,8 @@ pub struct Oracle {
     /// The tab was closed: the rig's close discards the finished results on purpose
     /// (`discard_pending_work_for_close`), so the "status or result" half of I1 no longer holds.
     tab_closed: bool,
+    /// I4: requests whose reply stream the user cut (see [`Oracle::reply_cut`]).
+    cut_replies: BTreeSet<usize>,
 }
 
 impl Oracle {
@@ -126,6 +128,22 @@ impl Oracle {
 
     pub fn tab_closed(&mut self) {
         self.tab_closed = true;
+    }
+
+    /// I4: the user sent a message, pressed Stop, or pressed Ctrl-C with no command running
+    /// while the reply to request `request_index` was still in flight. That cancels the stream.
+    /// A reply's tool calls enter the conversation in one piece when the stream loop has gone
+    /// through all of them (`chat_stream.rs`, the single `final_messages` yield), and a tool the
+    /// app runs inside the stream (websearch, webfetch) awaits its network call before that, so
+    /// a reply the script emitted in full may never have been committed. It is then in no later
+    /// request, and that is the user's cancel, not a lost call.
+    pub fn reply_cut(&mut self, request_index: usize) {
+        self.cut_replies.insert(request_index);
+    }
+
+    /// The requests whose reply the user cut (for [`check_tool_messages`]).
+    pub fn cut_replies(&self) -> &BTreeSet<usize> {
+        &self.cut_replies
     }
 
     /// I8a, on every look.
@@ -381,10 +399,12 @@ impl Oracle {
     }
 }
 
-/// I4 over every request the model received.
+/// I4 over every request the model received. `cut`: the requests whose reply stream the user
+/// cut ([`Oracle::reply_cut`]).
 pub fn check_tool_messages(
     requests: &[RecordedRequest],
     emitted: &[EmittedTurn],
+    cut: &BTreeSet<usize>,
 ) -> Result<(), Violation> {
     for request in requests {
         let mut seen_calls: Vec<&str> = Vec::new();
@@ -458,25 +478,51 @@ pub fn check_tool_messages(
         .filter(|m| m.role == RecordedRole::Assistant && !m.tool_call_ids.is_empty())
         .map(|m| &m.tool_call_ids)
         .collect();
-    let scripted: Vec<&Vec<String>> = emitted
+    let scripted: Vec<&EmittedTurn> = emitted
         .iter()
         .filter(|t| t.request_index < last.index && !t.aborted && !t.call_ids.is_empty())
-        .map(|t| &t.call_ids)
         .collect();
-    for (got, sent) in in_request.iter().rev().zip(scripted.iter().rev()) {
-        let want = uniquify(sent);
-        let ok =
-            got.len() == want.len() && got.iter().zip(&want).all(|(g, w)| w.is_empty() || g == w);
-        if !ok {
-            return Err(violation(
-                "I4",
-                format!(
-                    "the request holds calls {got:?}, but the model emitted {sent:?} (expected {want:?})"
-                ),
-            ));
+    // A reply the user cut is in the request whole or not at all: when the request's calls do
+    // not match it, it is stepped over and the same calls are held against the reply before
+    // it. Any other reply must match in place, exactly as before. A request whose calls match
+    // no reply at all still fails, against the newest reply that was stepped over.
+    let mut scripted = scripted.into_iter().rev();
+    for got in in_request.iter().rev() {
+        let mut stepped_over: Option<&EmittedTurn> = None;
+        loop {
+            let Some(turn) = scripted.next() else {
+                match stepped_over {
+                    Some(turn) => return Err(wrong_calls(got, &turn.call_ids)),
+                    // More call groups in the request than replies on record: not judged,
+                    // as before.
+                    None => return Ok(()),
+                }
+            };
+            let want = uniquify(&turn.call_ids);
+            let ok = got.len() == want.len()
+                && got.iter().zip(&want).all(|(g, w)| w.is_empty() || g == w);
+            if ok {
+                break;
+            }
+            if !cut.contains(&turn.request_index) {
+                return Err(wrong_calls(got, &turn.call_ids));
+            }
+            if stepped_over.is_none() {
+                stepped_over = Some(turn);
+            }
         }
     }
     Ok(())
+}
+
+fn wrong_calls(got: &[String], sent: &[String]) -> Violation {
+    violation(
+        "I4",
+        format!(
+            "the request holds calls {got:?}, but the model emitted {sent:?} (expected {:?})",
+            uniquify(sent)
+        ),
+    )
 }
 
 /// A user text I8b can follow through the requests: plain lowercase words, long enough not to
@@ -747,7 +793,7 @@ mod tests {
             msg(RecordedRole::Tool, &[], &["a"]),
             msg(RecordedRole::Tool, &[], &["b"]),
         ]);
-        assert!(check_tool_messages(&[ok], &[]).is_ok());
+        assert!(check_tool_messages(&[ok], &[], &BTreeSet::new()).is_ok());
         let missing = request(vec![
             msg(RecordedRole::User, &[], &[]),
             msg(RecordedRole::Assistant, &["a", "b"], &[]),
@@ -755,7 +801,9 @@ mod tests {
             msg(RecordedRole::User, &[], &[]),
         ]);
         assert_eq!(
-            check_tool_messages(&[missing], &[]).unwrap_err().invariant,
+            check_tool_messages(&[missing], &[], &BTreeSet::new())
+                .unwrap_err()
+                .invariant,
             "I4"
         );
     }
@@ -766,13 +814,13 @@ mod tests {
             msg(RecordedRole::User, &[], &[]),
             msg(RecordedRole::Tool, &[], &["zz"]),
         ]);
-        assert!(check_tool_messages(&[orphan], &[]).is_err());
+        assert!(check_tool_messages(&[orphan], &[], &BTreeSet::new()).is_err());
         let reordered = request(vec![
             msg(RecordedRole::Assistant, &["a", "b"], &[]),
             msg(RecordedRole::Tool, &[], &["b"]),
             msg(RecordedRole::Tool, &[], &["a"]),
         ]);
-        assert!(check_tool_messages(&[reordered], &[]).is_err());
+        assert!(check_tool_messages(&[reordered], &[], &BTreeSet::new()).is_err());
     }
 
     /// The cross-check lines the last request up with the replies to the requests BEFORE it.
@@ -807,16 +855,81 @@ mod tests {
             },
         ];
         let emitted = [emitted_for(0, "c0"), emitted_for(1, "c1")];
-        assert!(check_tool_messages(&requests, &emitted).is_ok());
+        assert!(check_tool_messages(&requests, &emitted, &BTreeSet::new()).is_ok());
 
         // Still caught: the last request holds a call the earlier reply never made.
         let wrong = [emitted_for(0, "other"), emitted_for(1, "c1")];
         assert_eq!(
-            check_tool_messages(&requests, &wrong)
+            check_tool_messages(&requests, &wrong, &BTreeSet::new())
                 .unwrap_err()
                 .invariant,
             "I4"
         );
+    }
+
+    /// The round 10 failure of both paced fuzz tests (#2010): request 0's reply runs a command,
+    /// the user sends a message (request 1), the reply to it asks for a websearch, and the user
+    /// sends another message while the app is still running that search inside the stream. The
+    /// second message cancels the stream before the reply's calls are committed, so request 2
+    /// holds only the first reply's call. Fails on the check as it was ("the request holds
+    /// [c0], but the model emitted [c1]").
+    #[test]
+    fn a_reply_the_user_cut_may_be_absent_from_later_requests_and_no_other_reply_may() {
+        let emitted_for = |request_index: usize, call: &str| EmittedTurn {
+            request_index,
+            turn: Some(request_index),
+            call_ids: vec![call.to_owned()],
+            chaos: Vec::new(),
+            aborted: false,
+        };
+        let last = |calls: &[&str]| {
+            let mut messages = vec![msg(RecordedRole::User, &[], &[])];
+            for call in calls {
+                messages.push(msg(RecordedRole::Assistant, &[*call], &[]));
+                messages.push(msg(RecordedRole::Tool, &[], &[*call]));
+            }
+            messages.push(msg(RecordedRole::User, &[], &[]));
+            vec![RecordedRequest {
+                index: 2,
+                model_id: "m".into(),
+                messages,
+                tools_offered: Vec::new(),
+            }]
+        };
+        let emitted = [
+            emitted_for(0, "c0"),
+            emitted_for(1, "c1"),
+            emitted_for(2, "c2"),
+        ];
+        let cut_1 = BTreeSet::from([1]);
+        let none = BTreeSet::new();
+
+        // The cut reply is absent: fine. It is whole: fine too (the cancel came after the commit).
+        assert!(check_tool_messages(&last(&["c0"]), &emitted, &cut_1).is_ok());
+        assert!(check_tool_messages(&last(&["c0", "c1"]), &emitted, &cut_1).is_ok());
+
+        // Not cut: its absence is a lost reply, as before.
+        let err = check_tool_messages(&last(&["c0"]), &emitted, &none).unwrap_err();
+        assert_eq!(err.invariant, "I4");
+        assert!(err.detail.contains("\"c1\""), "{}", err.detail);
+
+        // A cut excuses that reply only. Request 3 after replies 0, 1 (cut) and 2: without
+        // reply 1 it passes, without reply 2 it fails.
+        let request_3 = |calls: &[&str]| {
+            let mut requests = last(calls);
+            requests[0].index = 3;
+            requests
+        };
+        assert!(check_tool_messages(&request_3(&["c0", "c2"]), &emitted, &cut_1).is_ok());
+        let err = check_tool_messages(&request_3(&["c0", "c1"]), &emitted, &cut_1).unwrap_err();
+        assert_eq!(err.invariant, "I4");
+        assert!(err.detail.contains("\"c2\""), "{}", err.detail);
+
+        // Calls that match no reply fail even when every reply before them was cut.
+        let all_cut = BTreeSet::from([0, 1]);
+        let err = check_tool_messages(&last(&["zz"]), &emitted, &all_cut).unwrap_err();
+        assert_eq!(err.invariant, "I4");
+        assert!(err.detail.contains("\"zz\""), "{}", err.detail);
     }
 
     #[test]

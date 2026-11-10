@@ -12242,13 +12242,26 @@ async fn mid_batch(app: &mut App) -> MidBatch {
         start_running_conversation_for_close(view, ctx)
     });
     let action_model = terminal.read(app, |view, _| view.ai_action_model.clone());
+    // The batch's actions belong to the conversation's own root task. The follow-up that carries
+    // their results is added to the task the results name, and since #1945 a request whose task
+    // does not exist is refused before `SentRequest` ("Not sending the request: no exchange could
+    // be added ... NoActiveTask"). With the made-up task id this fixture had before, the
+    // positive control below could send nothing, and the two "sends nothing" tests could not
+    // fail.
+    let task_id = BlocklistAIHistoryModel::handle(app).read(app, |history, _| {
+        history
+            .conversation(&conversation_id)
+            .expect("conversation should exist")
+            .get_root_task_id()
+            .clone()
+    });
 
     let blocked_action_id = AIAgentActionId::from("awaiting-approval".to_owned());
     action_model.update(app, |action_model, ctx| {
         action_model.queue_action_for_test(
             AIAgentAction {
                 id: blocked_action_id.clone(),
-                task_id: TaskId::new("task".to_owned()),
+                task_id: task_id.clone(),
                 action: AIAgentActionType::RequestCommandOutput {
                     command: "free -h".to_owned(),
                     is_read_only: None,
@@ -12286,7 +12299,7 @@ async fn mid_batch(app: &mut App) -> MidBatch {
             conversation_id,
             AIAgentActionResult {
                 id: AIAgentActionId::from("already-ran".to_owned()),
-                task_id: TaskId::new("task".to_owned()),
+                task_id: task_id.clone(),
                 result: AIAgentActionResultType::TransferShellCommandControlToUser(
                     TransferShellCommandControlToUserResult::Snapshot {
                         block_id: BlockId::default(),
@@ -18338,6 +18351,10 @@ fn a_line_typed_behind_a_deferred_enter_never_reaches_the_pty_before_that_enters
 /// run is `make clean` + Enter released, once, to wherever keys typed at that moment belong (the
 /// running command's tty, or the next prompt). The release is the gate's own (#1571); this test
 /// is about the order. Legacy and Table.
+///
+/// Round 10 (#2010): the Legacy arm failed with `pty=[]` although the queue was empty and no gate
+/// was open. The test listened for `WriteBytesToPty` only; see the recorder below. The Table arm
+/// has never run (Legacy is first in the loop and panicked).
 #[test]
 fn a_line_typed_behind_a_deferred_enter_follows_that_enters_held_line_at_readiness() {
     use crate::terminal::input_queue::DestinationMode;
@@ -18347,7 +18364,12 @@ fn a_line_typed_behind_a_deferred_enter_follows_that_enters_held_line_at_readine
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_pty_writes(&mut app, &terminal);
+            // Both kinds of pty write. `make clean` is released into the running `cd build`,
+            // a command the hand-off did not write: the hand-off adopts those keys (#1089) and
+            // they go out through its counted route (`WriteHandoffUserBytesToPty`), which
+            // `record_pty_writes` does not see. In the app the line's own write makes the
+            // hand-off pty-owned, so the release is a counted write there too.
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
             let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
             let sink = executed.clone();
             app.update(|ctx| {

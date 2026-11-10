@@ -724,6 +724,12 @@ fn a_bare_enter_that_finds_the_held_lines_gate_gone_is_written_behind_the_line()
 /// absorbed either: it takes the normal Enter path on what the editor shows, so that text is
 /// kept in the editor (held for the still-unready shell, or waiting for its verdict) or run by
 /// the editor, exactly once. Legacy and Table.
+///
+/// "Once" is counted on what ran, by name. A command the editor ran stays in the buffer until its
+/// block completes (`Input::try_execute_command_from_source`: "we do not clear the input box
+/// here", `BlockCompleted` does), and no block completes in this rig, so "still in the editor"
+/// plus "ran" is 2 for one `ls` that ran once. That sum was the round 10 failure of the Legacy
+/// arm (#2010: `executed=1`, left 2); the Table arm has never run (Legacy is first and panicked).
 #[test]
 fn an_enter_that_finds_the_gate_gone_over_other_text_sends_only_the_held_line_and_then_acts() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
@@ -733,7 +739,15 @@ fn an_enter_that_finds_the_gate_gone_over_other_text_sends_only_the_held_line_an
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
             let pty = collect_pty_writes(&mut app, &terminal);
-            let executed = count_executed_commands(&mut app, &terminal);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
             terminal.update(&mut app, |view, ctx| {
                 hold_a_line_for_the_unready_shell_and_lose_its_gate(view, "cd build", ctx);
                 view.input
@@ -748,12 +762,24 @@ fn an_enter_that_finds_the_gate_gone_over_other_text_sends_only_the_held_line_an
                 "{mode:?}: the requested line and its Enter, and nothing else, at the pty"
             );
             terminal.read(&app, |view, ctx| {
-                let in_editor = usize::from(view.input.as_ref(ctx).buffer_text(ctx) == "ls");
-                assert_eq!(
-                    in_editor + *executed.borrow(),
-                    1,
-                    "{mode:?}: `ls` is still in the editor or was run by it, once; executed={}",
-                    executed.borrow()
+                let buffer = view.input.as_ref(ctx).buffer_text(ctx);
+                let executed = executed.borrow();
+                // The editor ran nothing but `ls`: `cd build` went to the pty as bytes and must
+                // not run a second time as a command; `ls` ran at most once.
+                assert!(
+                    executed.len() <= 1 && executed.iter().all(|command| command == "ls"),
+                    "{mode:?}: the editor ran only `ls`, at most once; executed={executed:?}"
+                );
+                // Not lost: it ran, or it is still in the editor (held, or waiting).
+                assert!(
+                    executed.len() == 1 || buffer == "ls",
+                    "{mode:?}: `ls` is still in the editor or was run by it; \
+                     executed={executed:?} buffer={buffer:?}"
+                );
+                // Never a second copy in the editor (`lsls`, or `ls` behind other text).
+                assert!(
+                    buffer.is_empty() || buffer == "ls",
+                    "{mode:?}: the editor shows `ls` or nothing; buffer={buffer:?}"
                 );
             });
         });

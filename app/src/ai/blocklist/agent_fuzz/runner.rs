@@ -190,6 +190,20 @@ async fn drive(
                 | Op::FollowUp { .. } => oracle.user_acted(rig.seam.request_count()),
                 Op::ModeSwitch | Op::Escape | Op::TakeOver | Op::GiveBack | Op::Wait { .. } => {}
             }
+            // I4. A message that is sent (not queued), a Stop, and a Ctrl-C with no command
+            // running cancel the reply stream that is in flight. If the app was still working
+            // through that reply (a websearch it runs inside the stream), the reply's calls were
+            // never committed and no later request holds them: `Oracle::reply_cut`. The stream
+            // in flight is the one of the newest request the seam has recorded.
+            let cuts_the_stream = match &step.op {
+                Op::Stop => true,
+                Op::CtrlC => !obs.running(),
+                Op::FollowUp { .. } => rig.submitted.last().is_some_and(|sent| !sent.queued),
+                _ => false,
+            };
+            if cuts_the_stream && obs.stream_in_flight && requests_before > 0 {
+                oracle.reply_cut(requests_before - 1);
+            }
             if let Op::Wait { ms } = &step.op {
                 pump_for(app, knobs.scale(Duration::from_millis(*ms))).await;
             }
@@ -268,7 +282,7 @@ async fn drive(
     // I4, I8b/c, I6.
     let requests = rig.seam.requests();
     let emitted = rig.player.emitted();
-    oracle::check_tool_messages(&requests, &emitted)?;
+    oracle::check_tool_messages(&requests, &emitted, oracle.cut_replies())?;
     oracle::check_requests(&requests, &emitted, scenario, &rig.submitted, stopped)?;
     oracle::check_logs(mark, &emitted, capture, &panic_watch.panics())?;
 
