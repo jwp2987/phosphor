@@ -3133,6 +3133,17 @@ struct ArmedSubshellSetup {
     /// a model lock on the key path.
     last_tty: Option<crate::terminal::model::subshell_tty::SubshellTtySample>,
     last_tail: subshell_ready::Tail,
+    /// #1924: the tail at the last look BEFORE the first byte of the line now being typed. The
+    /// echo of the user's own typing turns `Name: ` into `Name: me`, no longer an input prompt,
+    /// so a line end is judged against what the screen showed when the line was begun.
+    tail_before_line: subshell_ready::Tail,
+    /// Bytes of the current line have been typed (cleared at its line end).
+    line_started: bool,
+    /// The pane has no tty probe (ConPTY): line ends are judged from screen facts only (#1924).
+    no_tty_probe: bool,
+    /// #1941: the text of a line typed ahead of the line editor, while it is outstanding
+    /// (`ledger.typed_ahead`), for `row_shows_typed_line`. In memory only; never logged.
+    typed_ahead_line: Option<String>,
     /// R4 hop binding: a shell leader was seen; a relay after it is an unpredicted hop.
     seen_shell_leader: bool,
 }
@@ -3168,6 +3179,10 @@ struct WrittenSubshellSetup {
     secret_probe: Option<crate::terminal::model::block::interactive_latch::SecretReadProbe>,
     /// Tells a confirmation timer which attempt it belongs to.
     generation: u64,
+    /// #1905's first line (review r8 D3): the probe named this shell (`InitSubshell`) and stage 2
+    /// waits, with the keys still held, for the look that proves a prompt drawn after the probe's
+    /// hook (`subshell_ready::stage_two_pending`). Nothing of stage 2 is written before it.
+    stage_two_pending: Option<ShellType>,
 }
 
 /// Where the readiness-judged subshell setup is (#1679 step 3).
@@ -3207,8 +3222,13 @@ struct SubshellPaneLook {
     echo_started: bool,
     marker_count: u64,
     last_marker: Option<(u64, usize)>,
-    /// Printable text was output since the latest setup-line marker (#1905).
+    /// Printable text was output since the latest setup-line marker (#1905) or, later, the
+    /// probe's `InitSubshell` hook (the model counts it as a marker).
     text_since_marker: bool,
+    /// #1941: the text of the cursor's line (empty at column 0), and whether the cursor's row
+    /// continues the row above it (a soft wrap).
+    cursor_line: String,
+    cursor_row_continues: bool,
 }
 
 /// How the keys typed during a PowerShell subshell setup are held (#1048). See
@@ -16121,8 +16141,8 @@ impl TerminalView {
         self.dismiss_warpify_banner(&RememberForWarpification::DoNotRememberSubshellCommand, ctx);
 
         // The readiness judge made the checks (a prompt for input, a dirty line) before saying
-        // Write, and a stage-2 write after `InitSubshell` follows a line the shell provably
-        // read: the write goes now.
+        // Write, and a stage-2 write after `InitSubshell` waited for the prompt after the probe's
+        // hook (`stage_two_after_init_subshell`, #1905): the write goes now.
         self.trigger_subshell_bootstrap_now(shell_type, triggered_by_rc_file_snippet, ctx);
     }
 
@@ -16158,12 +16178,27 @@ impl TerminalView {
         } else {
             BOOTSTRAP_FAILED_DURATION
         };
-        self.start_bootstrap_timer(bootstrap_failed_after, ctx);
-        // #1711: the give-up is re-armed on every setup progress, so a slow but healthy
-        // marker-paced setup (each line acknowledged, the whole longer than 7 s) does not trip it;
-        // a setup that stops progressing still does, 7 s after its last progress.
-        if let Some(net) = self.subshell_setup_net.as_mut() {
-            net.bootstrap_failed_after = Some(bootstrap_failed_after);
+        // #1939 (review r8 D8, invariant I7): ONE net per setup. A readiness-judged subshell setup
+        // (banner, auto-warpify, rc file: the state is Written) has the setup net (quiet 30 s /
+        // ceiling 120 s: hand-back, unhide, abandon); the 7 s bootstrap give-up beside it was a
+        // second, independent give-up for the same setup (it marked the session failed while the
+        // net still held the keys). It is no longer armed for those. A setup written with no
+        // judged attempt (tmux control mode, the ssh warpify fallbacks) keeps it: the ssh
+        // hand-back of `on_bootstrap_failed_timer_complete` is theirs.
+        let judged_subshell_setup =
+            matches!(self.subshell_setup_state, SubshellSetupState::Written(_));
+        if judged_subshell_setup {
+            warpui::input_order::log_hop("subshell_setup_no_bootstrap_timer", || {
+                "the setup net is the one give-up".to_owned()
+            });
+        } else {
+            self.start_bootstrap_timer(bootstrap_failed_after, ctx);
+            // #1711: the give-up is re-armed on every setup progress, so a slow but healthy
+            // marker-paced setup (each line acknowledged, the whole longer than 7 s) does not trip
+            // it; a setup that stops progressing still does, 7 s after its last progress.
+            if let Some(net) = self.subshell_setup_net.as_mut() {
+                net.bootstrap_failed_after = Some(bootstrap_failed_after);
+            }
         }
 
         send_telemetry_from_ctx!(
@@ -19741,7 +19776,7 @@ impl TerminalView {
                 self.model.lock().unregister_session_id(probe_id);
                 self.note_subshell_setup_progress(SubshellSetupProgress::InitSubshell, ctx);
                 let shell_type = event.shell_type;
-                self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
+                self.stage_two_after_init_subshell(shell_type, ctx);
             }
             ModelEvent::SubshellNotPhosphorizable { shell_name } => {
                 self.end_subshell_setup_unsupported(shell_name, ctx);
@@ -22897,7 +22932,10 @@ impl TerminalView {
 
     /// One look at the pane for the judge, under one model lock (R10). The tail is classified
     /// here: no visible text or the cursor at column 0 is `None`; unterminated text that asks for
-    /// input is `InputPrompt`; any other unterminated text is `ShellPrompt`.
+    /// input is `InputPrompt`; any other unterminated text is `ShellPrompt`. The rows classified
+    /// END AT THE CURSOR'S ROW (#1934): after a `clear` (zsh-newuser-install clears before its
+    /// menu) the grid's last rows are blank, and classifying them read the menu's footer as a
+    /// shell prompt and wrote the probe into the menu.
     fn take_subshell_pane_look(&self) -> SubshellPaneLook {
         use subshell_ready::Tail;
         let model = self.model.lock();
@@ -22905,10 +22943,17 @@ impl TerminalView {
         let grid = block.output_grid();
         let cursor = grid.grid_handler().cursor_point();
         let position = (grid.len(), cursor.row, cursor.col);
+        let mut cursor_line = String::new();
         let tail = if cursor.col == 0 {
             Tail::None
         } else {
-            let contents = grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
+            let contents = grid.contents_through_row_to_string(cursor.row, OUTPUT_TAIL_ROWS);
+            cursor_line = contents
+                .rsplit('\n')
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('\r')
+                .to_owned();
             if !output_has_visible_text(&contents) {
                 Tail::None
             } else if output_tail_is_input_prompt(&contents) {
@@ -22917,6 +22962,8 @@ impl TerminalView {
                 Tail::ShellPrompt
             }
         };
+        let cursor_row_continues =
+            cursor.row > 0 && grid.grid_handler().row_soft_wraps(cursor.row - 1);
         SubshellPaneLook {
             block_id: block.id().clone(),
             position,
@@ -22929,6 +22976,8 @@ impl TerminalView {
             marker_count: model.setup_line_marker_count(),
             last_marker: model.last_setup_line_marker(),
             text_since_marker: model.text_since_setup_marker(),
+            cursor_line,
+            cursor_row_continues,
         }
     }
 
@@ -22975,6 +23024,10 @@ impl TerminalView {
             tracker: subshell_ready::LineTracker::default(),
             last_tty: None,
             last_tail: subshell_ready::Tail::None,
+            tail_before_line: subshell_ready::Tail::None,
+            line_started: false,
+            no_tty_probe: false,
+            typed_ahead_line: None,
             seen_shell_leader: false,
         });
         self.judge_armed_subshell_setup("armed", ctx);
@@ -23033,6 +23086,37 @@ impl TerminalView {
         let relay = look.tty.kind == SubshellTtyKind::Relay;
         armed.last_tty = Some(look.tty.clone());
         armed.last_tail = look.tail;
+        armed.no_tty_probe = no_tty_probe;
+        if !armed.line_started {
+            armed.tail_before_line = look.tail;
+        }
+        if armed.ledger.typed_ahead != subshell_ready::TypedAhead::None {
+            // #1941: a line typed ahead of the line editor is outstanding: what this look says
+            // about who took it and whether it was run.
+            let line_shown = subshell_ready::row_shows_typed_line(
+                &look.cursor_line,
+                look.cursor_row_continues,
+                armed.typed_ahead_line.as_deref(),
+            );
+            let rows = look.position.1.saturating_sub(armed.line_end_baseline.1);
+            let before = armed.ledger.typed_ahead;
+            let after = subshell_ready::typed_ahead_after_look(
+                before, &look.tty, look.tail, line_shown, rows,
+            );
+            armed.ledger.typed_ahead = after;
+            if after != before {
+                warpui::input_order::log_hop("subshell_ready_typed_ahead", || {
+                    format!(
+                        "from={before:?} to={after:?} kind={:?} tail={:?} \
+                         line_shown={line_shown:?} rows={rows}",
+                        look.tty.kind, look.tail
+                    )
+                });
+            }
+            if after == subshell_ready::TypedAhead::None {
+                armed.typed_ahead_line = None;
+            }
+        }
         armed.last_position = look.position;
         let decision =
             subshell_ready::subshell_ready(&sample, &armed.ledger, armed.trigger.shell_type());
@@ -23100,6 +23184,7 @@ impl TerminalView {
             echo_end_position: None,
             secret_probe: None,
             generation: self.subshell_setup_generation,
+            stage_two_pending: None,
         });
         self.last_subshell_setup_session_id = None;
         match armed.trigger {
@@ -23161,7 +23246,92 @@ impl TerminalView {
         written.last_prompt_position = None;
         written.echo_end_position = None;
         written.secret_probe = secret_probe;
+        written.stage_two_pending = None;
         let _ = ctx;
+    }
+
+    /// #1905's first line (review r8 D3, addendum 1): the probe named the shell. Stage 2's first
+    /// line used to be written HERE, on the event, with no look at the pane: a `PROMPT_COMMAND` /
+    /// rc `read -s` (or a question, or a program) that opened between the probe's hook and the
+    /// next prompt was fed the bootstrap. For a readiness-judged attempt (banner, auto-warpify,
+    /// rc file: the state is Written) stage 2 now WAITS, the keys still held behind the setup
+    /// gate, for the look that proves a prompt drawn after the hook; it is judged at once (the
+    /// prompt may have been parsed with the hook) and then on every output / hand-off look. The
+    /// quiet net is the give-up. PowerShell (PSReadLine redraws every line; its own "reading
+    /// again" marker is its proof) and a setup written with no judged attempt (tmux control mode,
+    /// owner Q11: no OS fact exists there) keep the write on the event.
+    fn stage_two_after_init_subshell(
+        &mut self,
+        shell_type: ShellType,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let judged = matches!(self.subshell_setup_state, SubshellSetupState::Written(_));
+        if !judged || shell_type == ShellType::PowerShell {
+            self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
+            return;
+        }
+        if let SubshellSetupState::Written(written) = &mut self.subshell_setup_state {
+            written.stage_two_pending = Some(shell_type);
+            // A hand-back from here on re-arms knowing the shell: no second probe.
+            if let SubshellPromptTrigger::Banner { shell_type: known } = &mut written.trigger {
+                *known = Some(shell_type);
+            }
+        }
+        warpui::input_order::log_hop("subshell_stage_two_pending", || {
+            format!("shell={shell_type:?}")
+        });
+        self.judge_written_subshell_setup("init_subshell", ctx);
+    }
+
+    /// Judges a stage 2 waiting for its first line on one look (#1905): write it, keep waiting,
+    /// or end the attempt on a secret read / a question drawn after the probe's hook (held keys
+    /// back to the editor, re-armed with the shell known).
+    fn judge_pending_stage_two(
+        &mut self,
+        shell_type: ShellType,
+        look: &SubshellPaneLook,
+        source: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use subshell_ready::{StageTwoPending, WrittenCancel};
+        let verdict = subshell_ready::stage_two_pending(
+            look.tail,
+            look.echo_mid_line,
+            look.text_since_marker,
+            look.alt_screen,
+            &look.tty,
+        );
+        warpui::input_order::log_hop("subshell_stage_two_judged", || {
+            format!(
+                "source={source} verdict={verdict:?} shell={shell_type:?} kind={:?} leader={:?} \
+                 tail={:?} text_since_hook={} alt_screen={}",
+                look.tty.kind, look.tty.leader, look.tail, look.text_since_marker, look.alt_screen
+            )
+        });
+        let proof = WrittenCancelProof {
+            fresh_prompt_proven: false,
+            queue_empty: look.tty.queue_empty,
+            echo_started: look.echo_started,
+        };
+        match verdict {
+            StageTwoPending::Wait => {}
+            StageTwoPending::Write => {
+                if let SubshellSetupState::Written(written) = &mut self.subshell_setup_state {
+                    written.stage_two_pending = None;
+                }
+                self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
+            }
+            StageTwoPending::Secret => self.cancel_subshell_setup(
+                SubshellCancel::Written(WrittenCancel::Secret),
+                proof,
+                ctx,
+            ),
+            StageTwoPending::Question => self.cancel_subshell_setup(
+                SubshellCancel::Written(WrittenCancel::Question),
+                proof,
+                ctx,
+            ),
+        }
     }
 
     /// Judges a written attempt on one look (#1679 step 3): E-GONE, E-SECRET, E-QUESTION and the
@@ -23172,6 +23342,14 @@ impl TerminalView {
         let SubshellSetupState::Written(written) = &mut self.subshell_setup_state else {
             return;
         };
+        if let Some(shell_type) = written.stage_two_pending {
+            if look.block_id == written.block_id {
+                self.judge_pending_stage_two(shell_type, &look, source, ctx);
+            }
+            // (Another block in front: the shell is gone; the block-completed path and the net
+            // end the attempt, nothing is written.)
+            return;
+        }
         if look.marker_count > written.marker_count_at_write
             && look
                 .last_marker
@@ -23303,11 +23481,24 @@ impl TerminalView {
         armed.ledger.bytes_since_arm = armed.ledger.bytes_since_arm.saturating_add(bytes.len());
         let ends = armed.tracker.note(bytes);
         if ends.is_empty() {
+            armed.line_started = true;
             return;
         }
+        // #1936 (review r8 D5, invariant I6): the line end is judged with the tty facts AT THE KEY,
+        // not those of the last look. No look happens between keys while the program is silent,
+        // so a child started (or ended) since then was judged by the shell's (or the child's)
+        // facts: a wrong Cancel(UserDrove), or a ReArm that should cancel. The sample is ioctls
+        // and at most one `/proc` read; the key never waits for the model (a busy model: the last
+        // look's facts, as before).
+        let key_tty = self
+            .model
+            .try_lock()
+            .filter(|model| model.has_subshell_tty_probe())
+            .map(|model| model.subshell_tty_sample());
+        let sampled_at_key = key_tty.is_some();
+        let tty_at_enter = key_tty.or_else(|| armed.last_tty.clone());
         let (fact_at_enter, cooked_reading) =
-            armed
-                .last_tty
+            tty_at_enter
                 .as_ref()
                 .map_or((SubshellTtyKind::Unknown, false), |tty| {
                     (
@@ -23315,12 +23506,24 @@ impl TerminalView {
                         tty.kind == SubshellTtyKind::Cooked && tty.queue_empty == Some(true),
                     )
                 });
-        let tail_at_enter = armed.last_tail;
-        // A program (vim, less, a REPL) in front at the last look owns the line the user ends now.
-        let program_owns_tty = armed.last_tty.as_ref().is_some_and(|tty| {
-            tty.leader == crate::terminal::model::subshell_tty::LeaderKind::Other
-        });
+        // #1924: what the line answers is what the screen showed before its first key; the tail at
+        // the Enter is the echo of the user's own line (`Name: me` is no input prompt).
+        let tail_at_enter = armed.tail_before_line;
+        // A program (vim, less, a REPL) in front owns the line the user ends now. #1924: without a
+        // tty probe (ConPTY), a line typed before any prompt or question was drawn (the rc is
+        // still running, nothing unterminated on screen) is typeahead for a shell that is not
+        // reading yet, not a command run at a prompt: it re-arms, as it does on a pane whose
+        // probe sees the rc's cooked tty.
+        let typeahead_before_prompt =
+            armed.no_tty_probe && armed.tail_before_line == subshell_ready::Tail::None;
+        let program_owns_tty = typeahead_before_prompt
+            || tty_at_enter.as_ref().is_some_and(|tty| {
+                tty.leader == crate::terminal::model::subshell_tty::LeaderKind::Other
+            });
+        armed.line_started = armed.tracker.line_has_content();
+        let last_line = armed.tracker.take_last_line();
         let mut cancel = false;
+        let mut typed_ahead = false;
         for end in ends {
             armed.ledger.lines_ended = armed.ledger.lines_ended.saturating_add(1);
             let verdict = subshell_ready::on_user_line_ended(
@@ -23333,7 +23536,7 @@ impl TerminalView {
             warpui::input_order::log_hop("subshell_ready_line_end", || {
                 format!(
                     "non_empty={} fact={fact_at_enter:?} cooked_reading={cooked_reading} \
-                     tail={tail_at_enter:?} verdict={verdict:?}",
+                     tail={tail_at_enter:?} at_key={sampled_at_key} verdict={verdict:?}",
                     end.non_empty
                 )
             });
@@ -23341,6 +23544,11 @@ impl TerminalView {
                 cancel = true;
                 break;
             }
+            // #1941: a line ended on the cooked tty of a line-editor shell that asked nothing sits
+            // unread until a `read` or the line editor takes it; the editor would RUN it.
+            typed_ahead |= tty_at_enter.as_ref().is_some_and(|tty| {
+                subshell_ready::line_end_is_typed_ahead(end.non_empty, tty, tail_at_enter)
+            });
         }
         if cancel {
             // Judged on the key path: nothing is held, nothing is written; the state goes Idle
@@ -23368,6 +23576,13 @@ impl TerminalView {
         // that carries a fresh prompt) compares against where the output was before the Enter.
         armed.baseline = armed.last_position;
         armed.line_end_baseline = armed.last_position;
+        if typed_ahead {
+            armed.ledger.typed_ahead = subshell_ready::TypedAhead::Unread;
+            armed.typed_ahead_line = last_line;
+            warpui::input_order::log_hop("subshell_ready_typed_ahead", || {
+                "from=None to=Unread at=line_end".to_owned()
+            });
+        }
     }
 
     /// The ONE cancel of a readiness-judged setup (#1679 step 3). Armed: nothing was written or
@@ -23452,8 +23667,11 @@ impl TerminalView {
         let line_consumed = proof.queue_empty == Some(true);
         let dest =
             subshell_ready::held_keys_destination(kind, proof.fresh_prompt_proven, line_consumed);
-        let flush =
-            subshell_ready::cancel_flushes_unread_setup(proof.queue_empty, proof.echo_started);
+        // A stage 2 that was still waiting wrote nothing: there are no setup bytes to flush (R9),
+        // only what the user may have typed to whatever reads now.
+        let stage_two_pending = written.stage_two_pending.is_some();
+        let flush = !stage_two_pending
+            && subshell_ready::cancel_flushes_unread_setup(proof.queue_empty, proof.echo_started);
         warpui::input_order::log_hop("subshell_setup_cancelled", || {
             format!(
                 "why={kind:?} dest={dest:?} chunks={} bytes={} flush={flush} age_ms={}",
@@ -23532,8 +23750,10 @@ impl TerminalView {
             WrittenCancel::Gone | WrittenCancel::Net => {}
         }
         ctx.notify();
-        if kind == WrittenCancel::Secret {
+        if kind == WrittenCancel::Secret || (kind == WrittenCancel::Question && stage_two_pending) {
             // The shell is reading a secret the user will answer; the setup waits for it again.
+            // #1905: so does a stage 2 that met a question after the probe's hook: the shell is
+            // known (the trigger carries it), the attempt goes on at the prompt that follows.
             self.arm_subshell_setup(written.trigger, ctx);
         }
     }

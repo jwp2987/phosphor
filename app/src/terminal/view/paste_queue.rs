@@ -2786,7 +2786,13 @@ impl TerminalView {
             return SubshellPrep::Normal;
         }
         let abort = queue_signal_of(bytes).is_some();
-        if abort && in_flight.is_some() {
+        // #1905's first line: a stage 2 that waits for its prompt is a setup in flight with no line
+        // out; the user's abort ends it like one whose lines are being written (review F1).
+        let stage_two_pending = matches!(
+            &self.subshell_setup_state,
+            super::SubshellSetupState::Written(written) if written.stage_two_pending.is_some()
+        );
+        if abort && (in_flight.is_some() || stage_two_pending) {
             // The rest of a chunked line-clear write is dropped (#1354, now a writer job #1384).
             ctx.emit(super::Event::CancelPacedSetupWrites);
             self.note_abort_key_for_deferred_ssh_warpify(bytes);

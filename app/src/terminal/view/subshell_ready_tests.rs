@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use super::{
     CancelKind, Decision, HeldKeysDest, LineEnd, LineEndVerdict, LineTracker, PRE_READY_CEILING,
-    ReadinessSample, Tail, UserLedger, WaitWhy, WrittenCancel, WrittenSample, WrittenVerdict,
-    cancel_flushes_unread_setup, held_keys_destination, judge_written, on_user_line_ended,
-    subshell_ready,
+    ReadinessSample, StageTwoPending, Tail, TypedAhead, UserLedger, WaitWhy, WrittenCancel,
+    WrittenSample, WrittenVerdict, cancel_flushes_unread_setup, held_keys_destination,
+    judge_written, line_end_is_typed_ahead, on_user_line_ended, row_shows_typed_line,
+    stage_two_pending, subshell_ready, typed_ahead_after_look,
 };
 use crate::terminal::model::subshell_tty::{LeaderKind, SubshellTtyKind, SubshellTtySample};
 use crate::terminal::shell::ShellType;
@@ -46,6 +47,7 @@ fn typed() -> UserLedger {
         bytes_since_arm: 5,
         lines_ended: 1,
         hop_changed_shell_to_relay: false,
+        typed_ahead: TypedAhead::None,
     }
 }
 
@@ -99,14 +101,54 @@ fn row_2_a_line_reader_with_nothing_unread_is_written() {
         subshell_ready(&line_reader("-zsh"), &typed(), Some(ShellType::Zsh)),
         Decision::Write(Some(ShellType::Zsh))
     );
-    // No new prompt is asked of a line editor: ^U redraws the line, not the prompt.
+    // No MOVED prompt is asked of a line editor: ^U redraws the line, not the prompt, and a click
+    // at an idle prompt finds it where it was. The prompt shape itself is asked for (#1934).
     let mut s = line_reader("zsh");
     s.prompt_moved_since_baseline = false;
     s.prompt_moved_since_line_end = false;
-    s.tail = Tail::None;
     assert_eq!(
         subshell_ready(&s, &typed(), Some(ShellType::Zsh)),
         Decision::Write(Some(ShellType::Zsh))
+    );
+    assert_eq!(
+        subshell_ready(&s, &no_bytes(), Some(ShellType::Zsh)),
+        Decision::Write(Some(ShellType::Zsh))
+    );
+}
+
+/// #1934 (review r8 D1a): a line-editor shell with NO prompt shape at the cursor waits. zsh's own
+/// `read -k` / `read -q` / `vared` / `select` and zsh-newuser-install's menu are a Shell leader on
+/// a raw tty too; the prompt on the cursor's row is the evidence that the line editor reads. An
+/// input prompt there is the earlier veto; the queue proof still applies behind a prompt.
+#[test]
+fn d1_a_line_reader_without_a_prompt_shape_waits() {
+    for user in [no_bytes(), typed()] {
+        let mut s = line_reader("zsh");
+        s.tail = Tail::None;
+        assert_eq!(
+            subshell_ready(&s, &user, Some(ShellType::Zsh)),
+            Decision::Wait(WaitWhy::NoPrompt),
+            "{user:?}"
+        );
+        s.tail = Tail::InputPrompt;
+        assert_eq!(
+            subshell_ready(&s, &user, Some(ShellType::Zsh)),
+            Decision::Wait(WaitWhy::InputPrompt),
+            "{user:?}"
+        );
+    }
+    // A prompt at the cursor, unmoved since the baseline, nothing typed: the idle click writes.
+    let mut s = line_reader("zsh");
+    s.prompt_moved_since_baseline = false;
+    assert_eq!(
+        subshell_ready(&s, &no_bytes(), Some(ShellType::Zsh)),
+        Decision::Write(Some(ShellType::Zsh))
+    );
+    // Typed bytes behind a prompt need the queue proof, as before.
+    s.tty.queue_empty = Some(false);
+    assert_eq!(
+        subshell_ready(&s, &typed(), Some(ShellType::Zsh)),
+        Decision::Wait(WaitWhy::NotConsumed)
     );
 }
 
@@ -174,9 +216,11 @@ fn idle_untouched_editor_less_prompt_is_written_without_a_moved_prompt() {
             Decision::Wait(WaitWhy::CookedNoPrompt | WaitWhy::InputPrompt)
         )
     };
+    // #1935 (review r8 D2), CHANGED EXPECTATION: no prompt-shaped tail (an empty PS1) used to
+    // wait; the idle reader with nothing unread is written to without any prompt.
     let mut t = s.clone();
     t.tail = Tail::None;
-    assert!(waits(&t, &no_bytes()), "no prompt-shaped tail");
+    assert_eq!(subshell_ready(&t, &no_bytes(), None), Decision::Write(None));
     let mut t = s.clone();
     t.tail = Tail::InputPrompt;
     assert!(waits(&t, &no_bytes()), "an input prompt");
@@ -239,12 +283,74 @@ fn rows_5_6_cooked_without_a_new_shell_prompt_waits() {
         subshell_ready(&s, &typed(), None),
         Decision::Wait(WaitWhy::CookedNoPrompt)
     );
+    // #1935 (review r8 D2), CHANGED EXPECTATION: this row asserted Wait(CookedNoPrompt) for an
+    // untouched dash with no prompt drawn; it is written to now (see d2_* below). With bytes
+    // typed since arming the prompt is still asked for.
     let mut s = cooked("dash");
     s.tail = Tail::None;
+    assert_eq!(subshell_ready(&s, &no_bytes(), None), Decision::Write(None));
     assert_eq!(
-        subshell_ready(&s, &no_bytes(), None),
+        subshell_ready(&s, &typed(), None),
         Decision::Wait(WaitWhy::CookedNoPrompt)
     );
+}
+
+/// #1935 (review r8 D2): the truth rows of an editor-less cooked shell that draws no prompt (dash
+/// with an inherited empty PS1: cursor at column 0, `Tail::None`, nothing ever moves).
+#[test]
+fn d2_an_idle_editor_less_shell_needs_no_prompt_only_an_empty_queue() {
+    for comm in ["dash", "sh", "ash", "busybox", "ksh"] {
+        let mut s = cooked(comm);
+        s.tail = Tail::None;
+        s.prompt_moved_since_baseline = false;
+        s.prompt_moved_since_line_end = false;
+        assert_eq!(
+            subshell_ready(&s, &no_bytes(), None),
+            Decision::Write(None),
+            "{comm}: idle reader, queue empty, nothing typed"
+        );
+        let mut t = s.clone();
+        t.tail = Tail::InputPrompt;
+        assert_eq!(
+            subshell_ready(&t, &no_bytes(), None),
+            Decision::Wait(WaitWhy::InputPrompt),
+            "{comm}: a question at the tail"
+        );
+        for queue in [Some(false), None] {
+            let mut t = s.clone();
+            t.tty.queue_empty = queue;
+            assert_eq!(
+                subshell_ready(&t, &no_bytes(), None),
+                Decision::Wait(WaitWhy::CookedNoPrompt),
+                "{comm}: queue {queue:?}"
+            );
+        }
+        let mut t = s.clone();
+        t.tty.leader = LeaderKind::Other;
+        assert_eq!(
+            subshell_ready(&t, &no_bytes(), None),
+            Decision::Wait(WaitWhy::CookedNoPrompt),
+            "{comm}: a program in front"
+        );
+        // Bytes passed through: the accepted loss, there is no visible proof they were run.
+        assert_eq!(
+            subshell_ready(&s, &typed(), None),
+            Decision::Wait(WaitWhy::CookedNoPrompt),
+            "{comm}: typed since arming, no prompt"
+        );
+    }
+    // Unread bytes with a NEW prompt and nothing typed since arming (typed before the click):
+    // not consumed. The old rule wrote here.
+    let mut s = cooked("dash");
+    s.tty.queue_empty = Some(false);
+    assert_eq!(
+        subshell_ready(&s, &no_bytes(), None),
+        Decision::Wait(WaitWhy::NotConsumed)
+    );
+    // The queue cannot be probed: the old proof (a new prompt) stands.
+    let mut s = cooked("dash");
+    s.tty.queue_empty = None;
+    assert_eq!(subshell_ready(&s, &no_bytes(), None), Decision::Write(None));
 }
 
 /// Rows 7 and 8 + owner Q8: behind a cooked prompt or a relay, user bytes are consumed only when
@@ -543,8 +649,8 @@ fn every_sample() -> Vec<ReadinessSample> {
     out
 }
 
-/// Over every combination of the facts: a write needs a shell leader at a raw tty or a new prompt
-/// behind an editor-less cooked shell or a raw relay, the block unchanged, no alt screen, no
+/// Over every combination of the facts: a write needs a shell leader at a raw tty with a prompt
+/// shape at the cursor (#1934), or a new prompt behind an editor-less cooked shell or a raw relay, the block unchanged, no alt screen, no
 /// secret, a clean line, no input prompt, the user's bytes consumed, and a young attempt; nothing
 /// else ever writes. The invariants, not the table rows.
 #[test]
@@ -573,6 +679,8 @@ fn exhaustive_a_write_needs_every_precondition_and_a_proof() {
                     let comm = s.tty.leader_comm.as_deref().unwrap_or_default();
                     match s.tty.kind {
                         SubshellTtyKind::LineReader => {
+                            // #1934: the prompt shape at the cursor, moved or not.
+                            assert_eq!(s.tail, Tail::ShellPrompt, "{s:?}");
                             assert!(
                                 user.bytes_since_arm == 0 || s.tty.queue_empty == Some(true),
                                 "{s:?}"
@@ -592,16 +700,21 @@ fn exhaustive_a_write_needs_every_precondition_and_a_proof() {
                         _ => unreachable!(),
                     }
                     if s.tty.kind != SubshellTtyKind::LineReader {
-                        // #1847: the one write without a moved prompt is the idle, untouched,
-                        // editor-less shell that is the tty's reader.
+                        // #1847 / #1935: the one write without a moved prompt, or without any
+                        // prompt, is the idle, untouched, editor-less shell that is the tty's
+                        // reader with nothing unread.
                         let idle = s.tty.kind == SubshellTtyKind::Cooked
                             && user.bytes_since_arm == 0
                             && s.tty.leader == LeaderKind::Shell
                             && s.tty.queue_empty == Some(true);
                         assert!(
-                            s.tail == Tail::ShellPrompt && (s.prompt_moved_since_baseline || idle),
+                            idle || (s.tail == Tail::ShellPrompt && s.prompt_moved_since_baseline),
                             "{s:?}"
                         );
+                        if s.tty.kind == SubshellTtyKind::Cooked && user.bytes_since_arm == 0 {
+                            assert_eq!(s.tty.leader, LeaderKind::Shell, "{s:?}");
+                            assert_ne!(s.tty.queue_empty, Some(false), "{s:?}");
+                        }
                         assert!(
                             user.bytes_since_arm == 0
                                 || (s.tty.queue_empty == Some(true)
@@ -995,4 +1108,200 @@ fn stage_two_may_follow_only_a_prompt_after_the_marker_on_a_non_secret_tty() {
         true,
         &unknown
     ));
+    // Review r8 addendum 3: a program in front (vim, fzf) is never written to, prompt-shaped
+    // last line or not.
+    let program = tty(SubshellTtyKind::Unknown, LeaderKind::Other, "vim");
+    assert!(!stage_two_may_follow(
+        Tail::ShellPrompt,
+        false,
+        true,
+        &program
+    ));
+    let cooked_program = tty(SubshellTtyKind::Cooked, LeaderKind::Other, "cat");
+    assert!(!stage_two_may_follow(
+        Tail::None,
+        false,
+        true,
+        &cooked_program
+    ));
+    // Addendum 4 (#1935): an editor-less cooked shell with an empty PS1 draws nothing after the
+    // marker; nothing unread in the queue is its proof, a question still vetoes, and so do unread
+    // bytes without a prompt.
+    let dash = tty(SubshellTtyKind::Cooked, LeaderKind::Shell, "dash");
+    assert!(stage_two_may_follow(Tail::None, false, false, &dash));
+    assert!(stage_two_may_follow(Tail::ShellPrompt, false, true, &dash));
+    assert!(!stage_two_may_follow(Tail::InputPrompt, false, true, &dash));
+    assert!(!stage_two_may_follow(Tail::None, true, false, &dash));
+    let mut busy = dash.clone();
+    busy.queue_empty = Some(false);
+    assert!(!stage_two_may_follow(Tail::None, false, false, &busy));
+    busy.queue_empty = None;
+    assert!(!stage_two_may_follow(Tail::None, false, false, &busy));
+    assert!(stage_two_may_follow(Tail::ShellPrompt, false, true, &busy));
+}
+
+/// #1905's first line (review r8 D3): the truth rows of a stage 2 waiting for its first line.
+#[test]
+fn stage_two_pending_rows() {
+    use StageTwoPending::*;
+    let reading = tty(SubshellTtyKind::LineReader, LeaderKind::Shell, "bash");
+    let secret = tty(SubshellTtyKind::Secret, LeaderKind::Unreadable, "");
+    let cooked = tty(SubshellTtyKind::Cooked, LeaderKind::Shell, "bash");
+    let program = tty(SubshellTtyKind::Unknown, LeaderKind::Other, "fzf");
+    let p = Tail::ShellPrompt;
+    // A prompt drawn after the hook, the editor reading: one write.
+    assert_eq!(stage_two_pending(p, false, true, false, &reading), Write);
+    // Nothing drawn after the hook yet (the old prompt is still the tail), a finished line.
+    assert_eq!(stage_two_pending(p, false, false, false, &reading), Wait);
+    assert_eq!(
+        stage_two_pending(Tail::None, false, true, false, &reading),
+        Wait
+    );
+    // A secret read wins over everything, drawn prompt or not, alt screen or not.
+    for (tail, text, alt) in [
+        (p, true, false),
+        (Tail::None, false, false),
+        (p, true, true),
+    ] {
+        assert_eq!(stage_two_pending(tail, false, text, alt, &secret), Secret);
+    }
+    // A question drawn after the hook; the same shape from BEFORE the hook is not one.
+    assert_eq!(
+        stage_two_pending(Tail::InputPrompt, false, true, false, &cooked),
+        Question
+    );
+    assert_eq!(
+        stage_two_pending(Tail::InputPrompt, false, false, false, &cooked),
+        Wait
+    );
+    assert_eq!(
+        stage_two_pending(Tail::InputPrompt, true, true, false, &cooked),
+        Wait
+    );
+    // The alt screen, a `read` builtin's cooked tty, a program in front: wait.
+    assert_eq!(stage_two_pending(p, false, true, true, &reading), Wait);
+    assert_eq!(stage_two_pending(p, false, true, false, &cooked), Wait);
+    assert_eq!(stage_two_pending(p, false, true, false, &program), Wait);
+}
+
+/// #1941 (review r8 D4): a line typed AHEAD of the line editor. Round 8, agent pass: `vim f` +
+/// Enter typed into a bash whose rc slept; readline came up, read the line, and for 0.7 ms the
+/// facts were "line editor, prompt shape, queue empty": the probe was written there and went into
+/// vim. The line editor row waits while such a line is outstanding.
+#[test]
+fn d4_a_line_typed_ahead_of_the_line_editor_blocks_the_write_until_it_was_accepted() {
+    let rc = tty(SubshellTtyKind::Cooked, LeaderKind::Shell, "bash");
+    // The line end: typed ahead only when non-empty, on a cooked line-editor shell, no question.
+    assert!(line_end_is_typed_ahead(true, &rc, Tail::None));
+    assert!(line_end_is_typed_ahead(true, &rc, Tail::ShellPrompt));
+    assert!(!line_end_is_typed_ahead(false, &rc, Tail::None));
+    assert!(!line_end_is_typed_ahead(true, &rc, Tail::InputPrompt));
+    assert!(!line_end_is_typed_ahead(
+        true,
+        &tty(SubshellTtyKind::Cooked, LeaderKind::Shell, "dash"),
+        Tail::None
+    ));
+    assert!(!line_end_is_typed_ahead(
+        true,
+        &SubshellTtySample::line_reader("bash"),
+        Tail::ShellPrompt
+    ));
+    assert!(!line_end_is_typed_ahead(
+        true,
+        &tty(SubshellTtyKind::Unknown, LeaderKind::Other, "vim"),
+        Tail::None
+    ));
+    // The looks. Unread: the line sits in the queue of the sleeping rc.
+    let mut unread_rc = rc.clone();
+    unread_rc.queue_empty = Some(false);
+    let editor = SubshellTtySample::line_reader("bash");
+    let vim = tty(SubshellTtyKind::Unknown, LeaderKind::Other, "vim");
+    let p = Tail::ShellPrompt;
+    let (none, unread, runs) = (TypedAhead::None, TypedAhead::Unread, TypedAhead::EditorRuns);
+    let look = typed_ahead_after_look;
+    let (shown, gone, opaque) = (Some(true), Some(false), Option::<bool>::None);
+    assert_eq!(look(none, &editor, p, shown, 1), none);
+    assert_eq!(look(unread, &unread_rc, Tail::None, gone, 1), unread);
+    // A `read` builtin took it: nothing will run.
+    assert_eq!(look(unread, &rc, Tail::None, gone, 1), none);
+    // The editor came up with it outstanding, queue already empty or not; its echo on the prompt
+    // row, not yet parsed (the bare prompt, one row below the Enter), or not predictable.
+    let mut editor_behind = editor.clone();
+    editor_behind.queue_empty = Some(false);
+    for fact in [&editor, &editor_behind] {
+        assert_eq!(look(unread, fact, p, shown, 1), runs);
+        assert_eq!(look(unread, fact, p, gone, 1), runs);
+        assert_eq!(look(unread, fact, p, shown, 4), runs);
+        assert_eq!(look(unread, fact, p, opaque, 4), runs);
+    }
+    // One burst carried the editor's accept, the command and the next prompt: it ran already.
+    assert_eq!(look(unread, &editor, p, gone, 2), none);
+    // Still the prompt row with the echoed line (also soft-wrapped): it runs.
+    assert_eq!(look(runs, &editor, p, shown, 1), runs);
+    assert_eq!(look(runs, &editor, p, shown, 2), runs);
+    assert_eq!(look(runs, &editor, p, gone, 1), runs);
+    assert_eq!(look(runs, &editor, p, opaque, 9), runs);
+    // Accepted: the newline, the cooked gap, the program, or the next prompt below.
+    assert_eq!(look(runs, &editor, Tail::None, shown, 1), none);
+    assert_eq!(look(runs, &rc, p, shown, 1), none);
+    assert_eq!(look(runs, &vim, p, shown, 1), none);
+    assert_eq!(look(runs, &editor, p, gone, 2), none);
+
+    // The cursor row against the typed line.
+    let typed = Some("vim -u NONE f.txt");
+    let shows = |row: &str, continues: bool| row_shows_typed_line(row, continues, typed);
+    assert_eq!(shows("LAB$ vim -u NONE f.txt", false), Some(true));
+    assert_eq!(shows("LAB$ vim -u N", false), Some(true), "echo arriving");
+    assert_eq!(shows("LAB$ v", false), Some(true));
+    assert_eq!(shows("LAB$ ", false), Some(false), "a bare prompt");
+    assert_eq!(shows("LAB$", false), Some(false));
+    assert_eq!(shows("", false), Some(false));
+    assert_eq!(shows("NE f.txt", true), Some(true), "the soft-wrapped end");
+    assert_eq!(shows("NE f.txt", false), Some(false), "not a continuation");
+    assert_eq!(row_shows_typed_line("LAB$ x", false, None), None);
+    assert_eq!(row_shows_typed_line("LAB$ x", false, Some("  ")), None);
+
+    // The tracker keeps the line's text only while its echo can be predicted, and hands it over
+    // once.
+    let mut tracker = LineTracker::default();
+    tracker.note(b"vim -u NONE f.txt\r");
+    assert_eq!(
+        tracker.take_last_line().as_deref(),
+        Some("vim -u NONE f.txt")
+    );
+    assert_eq!(tracker.take_last_line(), None, "taken once");
+    let opaque_lines: [&[u8]; 4] = [
+        b"vi\x7fm f\r",
+        b"ls \t\r",
+        b"\x1b[Aecho\r",
+        b"\x1b[200~pasted\x1b[201~\r",
+    ];
+    for opaque_line in opaque_lines {
+        tracker.note(opaque_line);
+        assert_eq!(tracker.take_last_line(), None, "{opaque_line:?}");
+    }
+    tracker.note(b"abc\x15");
+    assert_eq!(tracker.take_last_line(), None, "a killed line");
+    tracker.note(b"next\r");
+    assert_eq!(tracker.take_last_line().as_deref(), Some("next"));
+    tracker.note(&[b'x'; 600]);
+    tracker.note(b"\r");
+    assert_eq!(tracker.take_last_line(), None, "too long to keep");
+
+    // The judge: the round-8 sample (line editor, prompt shape, queue empty, 33 bytes, 1 line)
+    // waits while the line is outstanding, in both states, and is written once it is not.
+    let s = line_reader("bash");
+    for state in [unread, runs] {
+        let user = UserLedger {
+            bytes_since_arm: 33,
+            typed_ahead: state,
+            ..typed()
+        };
+        assert_eq!(
+            subshell_ready(&s, &user, None),
+            Decision::Wait(WaitWhy::TypedLineRuns),
+            "{state:?}"
+        );
+    }
+    assert_eq!(subshell_ready(&s, &typed(), None), Decision::Write(None));
 }

@@ -4398,6 +4398,9 @@ impl ansi::Handler for TerminalModel {
     fn init_subshell(&mut self, data: InitSubshellValue) {
         let is_tmux_ssh = self.pending_warp_initiated_control_mode.is_some();
         let shell_type = ShellType::from_name(data.shell.as_str());
+        // #1905's first line: the probe's hook counts as a setup-line marker for "text since": the
+        // prompt the view waits for before stage 2's first line is one drawn AFTER this hook.
+        self.text_since_setup_marker = false;
         if let Some(shell_type) = shell_type {
             self.event_proxy
                 .send_terminal_event(Event::InitSubshell(InitSubshellEvent {

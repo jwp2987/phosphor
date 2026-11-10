@@ -133,6 +133,8 @@ fn subshell_bootstrap_waits_for_a_line_holding_delivered_keys() {
                     register_local_session_for_ssh_test(view, ctx);
                     view.model.lock().simulate_long_running_block("bash", "");
                     install_subshell_tty_for_test(view, bash_reading());
+                    // #1934: the line editor reads AT A PROMPT IT DREW; the shape is asked for.
+                    view.model.lock().process_bytes("bash-5.1$ ");
                     deliver_keys_to_an_unmanaged_prompt(view);
                     view.arm_subshell_setup(
                         SubshellPromptTrigger::AutoWarpify {

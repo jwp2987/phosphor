@@ -538,6 +538,29 @@ impl BlockGrid {
         )
     }
 
+    /// The plain-text contents of the rows ENDING at `row` (inclusive, clamped to the grid's
+    /// bounds), at most `max_rows` of them: the same rendering as [`Self::contents_to_string`]
+    /// with `Some(max_rows)`, addressed by the row the cursor is on instead of the grid's last
+    /// row. The subshell readiness look classifies the output's tail from it (#1934): after a
+    /// `clear` the rows below the cursor are blank (or hold an earlier screen), so the grid's last
+    /// row is not where the shell or a program just wrote.
+    pub fn contents_through_row_to_string(&self, row: usize, max_rows: usize) -> String {
+        if self.is_empty() || max_rows == 0 {
+            return String::new();
+        }
+        let end_row = row.min(self.len() - 1);
+        let start_row = end_row.saturating_sub(max_rows - 1);
+        let columns = self.grid_handler.columns().saturating_sub(1);
+        self.grid_handler.bounds_to_string(
+            Point::new(start_row, 0),
+            Point::new(end_row, columns),
+            false, /* include_esc_sequences */
+            RespectObfuscatedSecrets::Yes,
+            false, /* force_secrets_obfuscated */
+            RespectDisplayedOutput::Yes,
+        )
+    }
+
     /// Returns the grid's contents from `start_row` (inclusive, clamped to the grid's
     /// bounds) through the end, as plain text with secrets obfuscated -- the same
     /// rendering as [`Self::contents_to_string`] with `max_rows: None`, but addressed

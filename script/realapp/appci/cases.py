@@ -56,6 +56,8 @@ PROVING = (
     # Windows handover and secrets (#1882, #1883, #1891): Read-Host marker, Git Bash precmd `read -s`
     "ps_read_host_secure", "gitbash_precmd_secret",
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
+    # subshell setup review r8 (#1905 first line, #1935): the secret read right after the probe answered; a dash with an empty PS1
+    "subshell_ready_secret_after_probe", "subshell_sh_probe_empty_ps1",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).

@@ -212,21 +212,15 @@ def c_ready_unsupported_tcsh(ctx, r):
     leave_and_prove_parent(ctx, r, "tcsh", f, [tok])
 
 
-@case("subshell_ready_secret_after_prompt", order=22)
-@guarded
-def c_ready_secret_after_prompt(ctx, r):
-    """E-SECRET after the first line: a bash whose PROMPT_COMMAND runs ONE `read -s` before its SECOND prompt, i.e. right after
-    our first setup line was read and ran (the marker is progress, the secret read still wins). The line typed while the setup was
-    written is handed back to the editor (hop why=Secret dest=Editor), the password typed next goes to the read (recorded by the
-    rc, not run as a command), the setup is written again (a fresh attempt) and completes; the handed-back line is not run until
-    the user presses Enter on it (the first Enter is the guard's)."""
+def secret_read_case(ctx, r, at, label):
+    """the body of the two E-SECRET cases: a bash whose PROMPT_COMMAND runs ONE `read -s` before the prompt numbered `at` (0 = the first prompt)"""
     need_posix(ctx, r)
-    f, pw = "lab_secret.txt", "lab_secret_pw.txt"
+    f, pw = "lab_%s.txt" % label, "lab_%s_pw.txt" % label
     ctx.rm(f, pw)
     # The `sleep 1` keeps the secret read from starting before the typist's first key: Linux round 7 saw it start 5 ms after the setup write
     # (cancel with 0 held chunks), so the line typed next went to the read in order and the case's "held line" premise was gone.
-    rc = write_rc(ctx, "lab_secret.rc",
-                  'n=0; PROMPT_COMMAND=\'if [ "$n" = 1 ]; then sleep 1; read -s -p "Secret: " x; echo "$x" > ~/w/%s; echo; fi; n=$((n+1))\'; PS1="LAB$ "\n' % pw)
+    rc = write_rc(ctx, "lab_%s.rc" % label,
+                  'n=0; PROMPT_COMMAND=\'if [ "$n" = %d ]; then sleep 1; read -s -p "Secret: " x; echo "$x" > ~/w/%s; echo; fi; n=$((n+1))\'; PS1="LAB$ "\n' % (at, pw))
     off = ctx.log_size()
     ctx.be.type("bash --rcfile " + rc, 12, enter=True)
     time.sleep(BANNER_S)
@@ -250,7 +244,79 @@ def c_ready_secret_after_prompt(ctx, r):
     if tok not in ctx.lines(f):
         ctx.be.key("Return")
     r.check(ctx.until(lambda: ctx.lines(f) == [tok], 8), "the handed-back line ran once when the user pressed Enter on it: %r" % ctx.lines(f))
-    leave_and_prove_parent(ctx, r, "secret", f, [tok])
+    leave_and_prove_parent(ctx, r, label, f, [tok])
+    return hs
+
+
+@case("subshell_ready_secret_after_prompt", order=22)
+@guarded
+def c_ready_secret_after_prompt(ctx, r):
+    """E-SECRET after the first line: a bash whose PROMPT_COMMAND runs ONE `read -s` before its SECOND prompt, i.e. right after
+    our first setup line was read and ran (the marker is progress, the secret read still wins). The line typed while the setup was
+    written is handed back to the editor (hop why=Secret dest=Editor), the password typed next goes to the read (recorded by the
+    rc, not run as a command), the setup is written again (a fresh attempt) and completes; the handed-back line is not run until
+    the user presses Enter on it (the first Enter is the guard's)."""
+    secret_read_case(ctx, r, 1, "secret")
+
+
+@case("subshell_ready_secret_after_probe", order=22)
+@guarded
+def c_ready_secret_after_probe(ctx, r):
+    """#1905's first line (review r8 D3): the same rc with the `read -s` before the THIRD prompt, i.e. right after the PROBE answered
+    (the prelude and the probe line both ran; InitSubshell named bash). Stage 2's first line used to be written on that event,
+    into the read. Now stage 2 waits for the prompt after the probe's hook (hop subshell_stage_two_pending), the secret read
+    cancels it (why=Secret dest=Editor), the password alone reaches the read, and the attempt is re-armed KNOWING the shell: the
+    second write names bash (shell=Some(Bash)), no second probe. Everything else as subshell_ready_secret_after_prompt."""
+    hs = secret_read_case(ctx, r, 2, "secret2")
+    pend = first_index(hs, "subshell_stage_two_pending")
+    cancel = first_index(hs, "subshell_setup_cancelled", "why=Secret")
+    r.check(pend is not None, "stage 2 waited for the prompt after the probe's hook (hop subshell_stage_two_pending)")
+    if pend is not None and cancel is not None:
+        r.check(pend < cancel, "the secret read was met while stage 2 was pending, not after a stage-2 line")
+        r.check(not any(h == "subshell_setup_ready_write" for h, _ in hs[pend:cancel]), "nothing of stage 2 was written before the cancel")
+    writes = [ln for h, ln in hs if h == "subshell_setup_ready_write"]
+    r.check(len(writes) >= 2 and "shell=Some(Bash)" in writes[1], "the re-armed attempt wrote the bash script, no second probe: %r" % writes[1:2])
+
+
+@case("subshell_sh_probe_empty_ps1", order=22)
+@guarded
+def c_sh_probe_empty_ps1(ctx, r):
+    """#1935 (review r8 D2 and addendum 4): a dash with an EMPTY PS1 draws no prompt at all (round 8 Linux: the pane's bash exports PS1 and
+    Phosphor blanks it, so a child dash inherits ""). Phosphorize must still write the probe at once (the idle reader with nothing
+    unread needs no prompt), the probe's second line must follow the prelude's marker without waiting for a prompt, and the
+    unsupported-shell EVENT ends the setup: the line typed right behind Ctrl-I runs in dash < 2 s after its Enter, no give-up, no
+    cancel. `export PS1` (exporting the value the pane already has) is left set, as the appci bashrc sets it on Linux."""
+    need_posix(ctx, r)
+    if not shutil.which("dash"):
+        r.skip("dash is not installed")
+    f = "lab_ps1.txt"
+    ctx.rm(f)
+    ctx.be.type("unset ENV; export PS1", 12, enter=True)       # no rc for dash; the pane's (blanked) PS1 is inherited
+    time.sleep(0.5)
+    off = ctx.log_size()
+    ctx.be.type("dash", 12, enter=True)
+    time.sleep(BANNER_S)
+    ctx.shot("empty_ps1_banner")
+    ctx.be.key("ctrl+i")
+    tok = ctx.tok(6)
+    ctx.be.type(ctx.append_cmd("sh", tok, f), 12, enter=True)  # held through the probe, delivered by the unsupported event
+    t0 = time.time()
+    got = ctx.until(lambda: tok in ctx.lines(f), 10)
+    dt = time.time() - t0
+    r.metric("empty_ps1_inner_line_after_enter_s", round(dt, 3))
+    r.check(got, "the first inner line ran at all (file %r)" % ctx.lines(f))
+    r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)" % dt)
+    r.check(ctx.until(lambda: first_index(hops(ctx, off), "subshell_setup_unsupported") is not None, 6),
+            "the probe answered and the unsupported-shell event ended the setup (its second line was not stalled for a prompt)")
+    ctx.be.type("printf '[%s]\\n' \"$PS1\" >> " + f, 12, enter=True)   # what PS1 this dash really has
+    ctx.until(lambda: len(ctx.lines(f)) >= 2, 6)
+    l = ctx.lines(f)
+    r.check(l[1:2] == ["[]"], "this dash has an EMPTY PS1 (else the case proved nothing about #1935): %r" % l[1:2])
+    hs = hops(ctx, off)
+    r.check(first_index(hs, "subshell_setup_ready_write") is not None, "the probe was written with no prompt drawn (hop subshell_setup_ready_write)")
+    r.check(first_index(hs, "subshell_setup_cancelled") is None, "no cancel")
+    r.check(not any("subshell_setup_given_up" in ln for ln in ctx.log_since(off).splitlines()), "no give-up net fired")
+    leave_and_prove_parent(ctx, r, "empty_ps1", f, l[:2])
 
 
 @case("subshell_ready_relay_shape", order=22)
