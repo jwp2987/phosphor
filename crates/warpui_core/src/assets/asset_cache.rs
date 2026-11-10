@@ -60,11 +60,32 @@ impl AsyncAssetId {
 
 impl std::fmt::Debug for AsyncAssetId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TypeId's Debug output is opaque, so just print the key.
+        // Never the key itself. The key of a URL asset is the whole URL
+        // (`asset_cache::url_source`), and this output is what the "Asset fetch failed",
+        // "Asset fetch succeeded" and image-paint log lines print. The app log may carry a
+        // host hash at most (the network gate's rule: a denial never carries the URL), so a
+        // remote image's host, port and path must not reach it through `{:?}`. The length
+        // and a fingerprint still tell two assets apart in a log.
+        // Deliberate divergence from Warp (the pin prints `key`): Warp has no network gate
+        // and no "the log never names a host" promise. Nothing reads this output back.
         f.debug_struct("AsyncAssetId")
-            .field("key", &self.key)
+            .field("key_len", &self.key.len())
+            .field(
+                "key_hash",
+                &format_args!("{:016x}", key_fingerprint(&self.key)),
+            )
             .finish()
     }
+}
+
+/// FNV-1a 64 of an async asset key, for [`AsyncAssetId`]'s `Debug` output only.
+fn key_fingerprint(key: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 /// A content fingerprint for a local file on disk.

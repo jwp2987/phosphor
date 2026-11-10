@@ -76,3 +76,37 @@ fn data_uri_exceeds_limit_flags_only_oversized_base64_payloads() {
     assert!(!data_uri_exceeds_limit("https://example.com/a.png"));
     assert!(!data_uri_exceeds_limit("relative/path.png"));
 }
+
+/// The asset cache logs a URL source with `{:?}` and a failed fetch with its error. Neither
+/// may name the remote image's host, port or path: the app log carries a host hash at most.
+#[test]
+fn url_source_debug_and_gate_denial_never_show_the_url() {
+    // `.invalid` never resolves and is on no allowlist: the gate refuses it before any
+    // connection or DNS lookup, so this test makes no network request.
+    let url = "http://asset-gate-test.invalid:8099/private/a_tok123.png";
+    for source in [
+        url_source(url),
+        url_source_with_persistence(url, Path::new("asset-cache-test-dir-that-is-never-created")),
+    ] {
+        let shown = format!("{source:?}");
+        for needle in ["asset-gate-test", "invalid", "8099", "private", "a_tok123"] {
+            assert!(
+                !shown.contains(needle),
+                "Debug of a URL asset source shows {needle:?}: {shown}"
+            );
+        }
+
+        let err = fetch_bytes(&source).expect_err("an unlisted host must be refused by the gate");
+        let logged = format!("{err:#}");
+        assert!(
+            logged.contains("network gate denied"),
+            "expected the gate's denial, got: {logged}"
+        );
+        for needle in ["asset-gate-test", "8099", "private", "a_tok123"] {
+            assert!(
+                !logged.contains(needle),
+                "the fetch error shows {needle:?}: {logged}"
+            );
+        }
+    }
+}
