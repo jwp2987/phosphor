@@ -2973,6 +2973,84 @@ def wayland_pointer_gate_follows_the_holder_1789():
 
 
 @check
+def big_paste_time_budgets_2004():
+    """#2004 (#1191): big_paste's PROPOSED time budgets (time-to-Enter 1500 ms, largest single UI item 250 ms), env-overridable, judged only where measured; time-to-Enter
+    only on a byte-exact paste; poll_file_size measures from t0 and returns None when the file never gets there"""
+    import time as _t
+    J = cases.judge_big_paste_time
+    assert cases.big_paste_budgets({}) == (1500.0, 250.0) and cases.big_paste_budgets({"APPCI_BIGPASTE_ENTER_MS": "900", "APPCI_BIGPASTE_UI_ITEM_MS": "x"}) == (900.0, 250.0)
+    assert J(1400.0, 240.0, True, {}) == [] and J(1500.0, 250.0, True, {}) == []                                          # at the budget passes
+    assert len(J(1500.1, 10.0, True, {})) == 1 and "ENTER_MS" in J(1500.1, 10.0, True, {})[0]                            # #1191: Enter 1.4-5 s
+    assert len(J(100.0, 6500.0, True, {})) == 1 and "UI_ITEM_MS" in J(100.0, 6500.0, True, {})[0]                         # #1191: UI froze 6-7 s
+    assert len(J(5000.0, 6500.0, True, {})) == 2
+    assert J(5000.0, 10.0, False, {}) == []                                                                              # a shortfall is the byte check's business
+    assert len(J(5000.0, 6500.0, False, {})) == 1                                                                         # ... but a frozen UI is judged regardless
+    assert J(None, None, True, {}) == []                                                                                 # nothing measured, nothing judged
+    assert J(1000.0, 200.0, True, {"APPCI_BIGPASTE_ENTER_MS": "500", "APPCI_BIGPASTE_UI_ITEM_MS": "100"}).__len__() == 2  # overrides apply
+    tmp = tempfile.mkdtemp()
+    try:
+        f = os.path.join(tmp, "f")
+        t0 = _t.time()
+        assert cases.poll_file_size(f, 3, 0.1, t0) is None                                                               # no file
+        open(f, "w").write("ab")
+        assert cases.poll_file_size(f, 3, 0.1, t0) is None                                                               # too small
+        open(f, "a").write("c")
+        el = cases.poll_file_size(f, 3, 1.0, t0 - 2.0)
+        assert el is not None and 2.0 <= el < 2.5, el
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@check
+def windows_rust_log_enables_every_hop_module_1966():
+    """#1966: the Windows launcher's RUST_LOG (bare `warn` base) enables every module that emits, with a plain `log::info!`/`debug!`, a `hop=` line some appci
+    case reads. Scans the Rust sources; the module path comes from the file path (app -> warp, crates/x -> x). `backend_route` is logged through a helper
+    (`route_log_line`) so it is listed by hand. Also proves the matcher: the pre-fix string hid action_model, the longest prefix wins, no default = off"""
+    import re
+    import app as A
+    root = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+    read = set()
+    for fn in os.listdir(HERE):
+        if fn.endswith(".py") and fn != "selftest.py":
+            read |= set(re.findall(r"hop=([a-z_0-9]+)", open(os.path.join(HERE, fn), encoding="utf-8").read()))
+    assert "agent_action" in read, "the scan found no hops: the case sources moved?"
+    pat = re.compile(r'log::(info|debug|trace)!\(\s*(?:target:[^,]*,\s*)?"([^"]*)"', re.S)
+
+    def module_of(rel):
+        parts = rel.replace(os.sep, "/").split("/")
+        if parts[0] == "app":
+            crate, parts = "warp", parts[2:]
+        else:
+            crate, parts = parts[1].replace("-", "_"), parts[3:]
+        parts[-1] = parts[-1][:-3]
+        if parts[-1] in ("mod", "lib", "main"):
+            parts = parts[:-1]
+        return "::".join([crate] + parts)
+    found = {("remote_server::backend::router", "info", "backend_route")}
+    for top in ("app/src", "crates"):
+        for d, _, fs in os.walk(os.path.join(root, top)):
+            for fn in fs:
+                if not fn.endswith(".rs") or "_test" in fn or "/target" in d:
+                    continue
+                p = os.path.join(d, fn)
+                if not re.search(r"hop=", open(p, encoding="utf-8", errors="replace").read()):
+                    continue
+                for m in pat.finditer(open(p, encoding="utf-8", errors="replace").read()):
+                    for h in re.findall(r"hop=([a-z_0-9]+)", m.group(2)):
+                        if h in read:
+                            found.add((module_of(os.path.relpath(p, root)), m.group(1), h))
+    assert len(found) >= 10, found
+    hidden = sorted(x for x in found if not A.rust_log_enabled(A.WINDOWS_RUST_LOG, x[0], x[1]))
+    assert not hidden, "hop lines the cases read are hidden by the Windows RUST_LOG (add the module to app.WINDOWS_RUST_LOG): %r" % (hidden,)
+    pre_fix = "warn,winit=info,warp::ai::agent_providers=info,warp::ai::blocklist::controller=info,warp::input_order=debug"
+    assert not A.rust_log_enabled(pre_fix, "warp::ai::blocklist::action_model", "info")      # the #1966 defect, still detectable
+    assert A.rust_log_enabled(pre_fix, "warp::input_order", "info") and not A.rust_log_enabled(pre_fix, "warp::input_order_x", "info")
+    assert A.rust_log_enabled("warn,warp::a=info,warp::a::b=warn", "warp::a::c", "info")
+    assert not A.rust_log_enabled("warn,warp::a=info,warp::a::b=warn", "warp::a::b", "info")      # longest prefix wins
+    assert not A.rust_log_enabled("warp::a=info", "other", "warn")                                 # no default: off
+
+
+@check
 def app_find_hook_harness_side_1789():
     """#1789 app find hook, harness side: RUST_LOG carries the hook's log target; hook_find reads only lines after `since`; find_token uses the hook on
     X11 and Wayland (OCR is not called when the hook has the token), and notes the OCR fallback on `r` when it does not; x11_window_origin is None
@@ -3547,7 +3625,20 @@ def r18u13_mac_harness_fixes():
                                    "agent_fullscreen=false match_line=busy")["on_screen"] is None
     assert _R.find_scroll_geometry("result=scroll block=16 moved=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { }") is None
     assert _R.find_scroll_geometry("result=no_match pending=false") is None and _R.find_scroll_geometry(None) is None
-    assert 'ctx.mode == "agent" and hops and not scroll_hops' in src and "raise cases.Skip" in src and src.index("raise cases.Skip") < src.index("r.check(seen and scrolled")
+    # #1985: OCR-blind runs rest on the app's own geometry; OFF screen still fails; nothing to judge from is noref, never a pass
+    _on = _R.find_scroll_geometry("result=scroll block=16 moved=true viewport_lines=37.00 rendered_mode=PinnedToBottom scroll_mode=PinnedToBottom agent_fullscreen=true match_line=32.00")
+    _off = _R.find_scroll_geometry("result=scroll block=3 moved=true viewport_lines=20.00 rendered_mode=PinnedToBottom scroll_mode=PinnedToTop agent_fullscreen=true match_line=-4.50")
+    _busy = _R.find_scroll_geometry("result=scroll block=3 moved=true viewport_lines=20.00 rendered_mode=Waterfall scroll_mode=Waterfall agent_fullscreen=false match_line=busy")
+    _h_on = ["result=scroll block=16 moved=true viewport_lines=37.00 match_line=32.00"]
+    assert _R.find_verdict(True, True, [], None)[0] == "pass" and _R.find_verdict(True, False, _h_on, _on)[0] == "fail"          # OCR-seen: unchanged
+    assert _R.find_verdict(False, False, _h_on, _on)[0] == "pass" and "ON screen" in _R.find_verdict(False, False, _h_on, _on)[1]  # blind OCR, app says ON
+    assert _R.find_verdict(False, True, ["result=scroll block=3 moved=true"], _off)[0] == "fail"                                 # blind OCR, app says OFF
+    assert _R.find_verdict(False, True, ["result=no_match pending=false"], None)[0] == "fail"                                    # the app found nothing
+    assert _R.find_verdict(False, True, [], None)[0] == "noref" and _R.find_verdict(False, True, None, None)[0] == "noref"       # no OCR, no app record
+    assert _R.find_verdict(False, True, ["result=scroll block=3 moved=true"], None)[0] == "noref"                                # hop without geometry
+    assert _R.find_verdict(False, True, ["result=scroll block=3 moved=true"], _busy)[0] == "noref"                               # geometry busy
+    assert _R.find_verdict(False, True, ["result=scroll block=16 moved=false viewport_lines=37.00 match_line=32.00"], _on)[0] == "noref"  # on screen but nothing moved
+    assert 'ctx.mode == "agent" and hops and not scroll_hops' in src and "raise cases.Skip" in src and src.index("raise cases.Skip") < src.index("find_verdict(seen, scrolled")
     import cases as _C
     assert _C.verdict_gave_up("input_order hop=kh_enter_gate_give_up seq=16685 by=verdict_cap behind=0 submitted=false t=1") is True
     assert _C.verdict_gave_up("input_order hop=kh_enter_gate_give_up seq=6 by=route_wait behind=1 submitted=true t=5") is False

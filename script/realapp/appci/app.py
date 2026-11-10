@@ -28,6 +28,39 @@ exec %(wrap)s"%(bin)s" >> "%(run)s/app.stdout" 2>&1
 '''
 
 
+# The Windows launcher's RUST_LOG. Its bare `warn` base hides every plain `log::info!` line, so each module whose lines a case reads has its own directive
+# (#1966: `hop=agent_action` comes from warp::ai::blocklist::action_model, which had none, so agent_question judged a card that was shown as "hung").
+# selftest `windows_rust_log_enables_every_hop_module_1966` scans the Rust sources for plain-log `hop=` lines the cases read and fails on a module this
+# string does not enable; a new such hop needs its module added here.
+WINDOWS_RUST_LOG = ",".join([
+    "warn", "winit=info",
+    "warp::ai::agent_providers=info", "warp::ai::blocklist::controller=info",
+    "warp::ai::blocklist::action_model=info", "warp::ai::blocklist::block::cli_controller=info", "warp::ai::blocklist::queued_query=info",
+    "warp::code_review::diff_state_remote=info", "warp::code_review::git_status_update_remote=info", "warp::code_review::github_repo_model::remote=info",
+    "warp::completer::pushed_listing=info", "warp::remote_server::remote_index_driver=info", "warp::settings_view::network_page=info",
+    "remote_server::manager=info", "remote_server::backend::router=info",
+    "warp::input_order=debug", "warp::terminal::model_lock_trace=debug", "warpui::frame_cause=debug", "warpui::appci_find=info",
+    "phosphor::routing=debug", "editor_memory=debug",
+])
+
+
+def rust_log_enabled(spec, module, level):
+    """True when an env_logger-style RUST_LOG `spec` lets `module` log at `level` (error < warn < info < debug < trace): the longest directive naming a prefix
+    of the module wins, a bare level is the default, no default means off"""
+    order = ["error", "warn", "info", "debug", "trace"]
+    best, best_len, default = None, -1, None
+    for d in (x.strip() for x in spec.split(",") if x.strip()):
+        if "=" not in d:
+            if d in order:
+                default = d
+            continue
+        name, lv = d.split("=", 1)
+        if lv in order and (module == name or module.startswith(name + "::")) and len(name) > best_len:
+            best, best_len = lv, len(name)
+    lv = best or default
+    return lv is not None and order.index(level) <= order.index(lv)
+
+
 # #1532: environment variables that must reach the app under test even where the launcher does not inherit os.environ (macOS `open --env`).
 # Linux and Windows pass the whole environment. APPCI_APP_ENV="K=V,K2=V2" (run.py) sets more of them for one run.
 PASSTHROUGH_ENV = ("PHOSPHOR_QUEUE_DESTINATION", "PHOSPHOR_CONPTY_ENTER_HOLD", "PHOSPHOR_EDITOR_TRIM_AFTER_OPEN", "PHOSPHOR_HEAP_TRIM", "PHOSPHOR_HEAP_TRIM_ON_CLOSE")  # the last three: editor_memory_7mb trim A/B and the close-trim kill switch (#1607)
@@ -373,7 +406,7 @@ class WindowsApp:
         # agent_stream_cancel / agent_approval reported "no model request" on a run whose screenshot showed the finished reply. Only those two modules go to info.
         # r18u13 (#1629): winit too. Its keyboard-layout trace (WM_INPUTLANGCHANGE enter/exit, LAYOUT_CACHE takes, layout-build timing; lib/winit
         # CHANGES-PHOSPHOR.md) logs at info, and under the bare `warn` base the AltGr hang run carried none of it. winit logs nothing else through `log`.
-        e["RUST_LOG"] = "warn,winit=info,warp::ai::agent_providers=info,warp::ai::blocklist::controller=info,warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug"
+        e["RUST_LOG"] = WINDOWS_RUST_LOG
         e["WARP_INPUT_ORDER_LOG_TEXT"] = "1"
         e["PA_CTL"] = fwd(self.ctl)
         e["APPCI_W"] = fwd(os.path.join(self.home, "w"))

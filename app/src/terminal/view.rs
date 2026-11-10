@@ -14253,6 +14253,14 @@ impl TerminalView {
         // Ctrl-u + ctrl-k clears everything before the cursor, then everything after the cursor.
         // Ctrl-c is dangerous because it could cancel an ongoing command. We add an arbitrary space
         // first so that the ctrl-u always clears at least one character, avoiding the audible bell.
+        //
+        // #1938 / decision D7 (accepted loss): the three leading bytes assume a line editor (or a
+        // cooked tty driver that erases on ^U). A cooked-tty editor-less shell (dash, ash, ksh)
+        // that is blocked in its own `read` builtin looks exactly like the same shell at its prompt
+        // to termios, so those bytes (space, ^K, ^U, then the line) can reach that `read` as data.
+        // The readiness check vetoes a question at the screen tail first but cannot tell the two
+        // apart beyond that; see `idle_reader_untouched` in `view/subshell_ready.rs`. Accepted, not
+        // guarded: the alternative is to never write to such a shell.
         let mut to_write = vec![
             b' ',
             escape_sequences::C0::VT,  // ctrl-k to clear forward

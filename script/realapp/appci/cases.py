@@ -2052,6 +2052,46 @@ def c_paste_arrows(ctx, r):
     r.check(got == exp, "arrow keys behind a paste: %d/%d exact" % (sum(a == b for a, b in zip(exp, got)), len(exp)))
 
 
+def poll_file_size(path, size, timeout, t0, step=0.02):
+    """seconds from `t0` until `path` is at least `size` bytes (polled every `step` s), or None when it never gets there within `timeout` s"""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if os.path.getsize(path) >= size:
+                return max(0.0, time.time() - t0)
+        except OSError:
+            pass
+        time.sleep(step)
+    return None
+
+
+# #2004 (#1191): PROPOSED budgets, owner to confirm (docs/testing.md). Env-overridable.
+BIGPASTE_ENTER_MS = 1500.0       # end of a 1 MB paste -> its Enter takes effect (#1191: Enter took 1.4-5 s)
+BIGPASTE_UI_ITEM_MS = 250.0      # the largest single main-thread item while the paste streamed (#1191: the UI froze 6-7 s)
+
+
+def big_paste_budgets(env=None):
+    env = os.environ if env is None else env
+    def f(k, d):
+        try:
+            return float(env.get(k, d))
+        except ValueError:
+            return d
+    return f("APPCI_BIGPASTE_ENTER_MS", BIGPASTE_ENTER_MS), f("APPCI_BIGPASTE_UI_ITEM_MS", BIGPASTE_UI_ITEM_MS)
+
+
+def judge_big_paste_time(enter_ms, ui_max_ms, byte_exact, env=None):
+    """failure messages of the big_paste time budgets (pure). `enter_ms` None = not measured, `ui_max_ms` None = no app log: neither judged. Time is
+    only judged on a byte-exact paste (a shortfall is the byte check's, and the platform control's, business)."""
+    enter_b, ui_b = big_paste_budgets(env)
+    out = []
+    if byte_exact and enter_ms is not None and enter_ms > enter_b:
+        out.append("the Enter took %.0f ms to take effect after the paste (> %.0f ms, APPCI_BIGPASTE_ENTER_MS, proposed; #1191)" % (enter_ms, enter_b))
+    if ui_max_ms is not None and ui_max_ms > ui_b:
+        out.append("the largest main-thread UI item while the paste streamed took %.0f ms (> %.0f ms, APPCI_BIGPASTE_UI_ITEM_MS, proposed; #1191)" % (ui_max_ms, ui_b))
+    return out
+
+
 @case("big_paste", order=15, gui=True)
 def c_big(ctx, r):
     mb = float(os.environ.get("APPCI_BIG_MB", "1"))
@@ -2070,21 +2110,34 @@ def c_big(ctx, r):
     ctx.be.clip_set(data)
     ui_off = ctx.log_size()
     ctx.be.paste()
+    t_paste_end = time.time()
+    # #2004 (#1191): the Enter goes in at once behind the paste, as a user's would; the time from the end of the paste until the Enter's effect (cat gets
+    # the last, newline-less line, so big.out reaches its full size) is the time-to-Enter. The shell's rec.log cannot time it: it logs `cat > big.out`
+    # at the NEXT prompt, after Ctrl-D, so that stamp is the end of the command, not the Enter.
+    ctx.be.key("Return")
+    want_size = len(data) + 1
+    enter_s = poll_file_size(os.path.join(ctx.W, "big.out"), want_size, 30 + 20 * mb, t_paste_end)
 
     def stable():
         p = os.path.join(ctx.W, "big.out")
         a = os.path.getsize(p) if os.path.exists(p) else -1
         time.sleep(1.5)
         return a > 0 and a == (os.path.getsize(p) if os.path.exists(p) else -2)
-    ctx.until(stable, 30 + 20 * mb, step=0.1)
-    ctx.be.key("Return")
+    if enter_s is None:
+        ctx.until(stable, 30 + 20 * mb, step=0.1)       # a shortfall (ConPTY, below): settle as before so the byte check and its control see the final file
     time.sleep(0.5)
     ctx.be.key("ctrl+d")
     time.sleep(2)
     got = open(os.path.join(ctx.W, "big.out"), "rb").read() if os.path.exists(os.path.join(ctx.W, "big.out")) else b""
     r.metric("bytes_expected", len(data) + 1)
     r.metric("bytes_got", len(got))
-    ui_item_metrics(ctx, r, ui_off, "big_paste")    # #1191: which main-thread items broke the 4 ms budget while the paste streamed
+    ui_audit = ui_item_metrics(ctx, r, ui_off, "big_paste")    # #1191: which main-thread items broke the 4 ms budget while the paste streamed
+    if enter_s is not None:
+        r.metric("big_paste_time_to_enter_ms", round(enter_s * 1000, 1))
+    for msg in judge_big_paste_time(None if enter_s is None else enter_s * 1000, None if ui_audit is None else ui_audit["max_ms"], got == (data + "\n").encode()):
+        r.check(False, "big_paste: " + msg)
+    if enter_s is None:
+        r.note("big_paste: time-to-Enter not measured (big.out never reached its full %d bytes within the wait: the byte check below says why)" % want_size)
     if ctx.log_path and os.path.exists(ctx.log_path):
         judge_paste_read(r, ctx.log_since(ui_off), plat(), "big_paste")    # #1782: macOS copies the pasteboard on the main thread
     want = (data + "\n").encode()

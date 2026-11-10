@@ -208,6 +208,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 | `test_init_shell_escaping` | InitShell JSON round-trips hostile user/host values (#879) |
 | `test_hijack_bootstrap` | user `echo/printf/cd/read/pwd` functions never run inside the bootstrap (#929) |
 | `test_line_editor_markers` | `LineEditorReading` / `ContinuationPrompt` OSC markers and `seq` per Precmd (#1390-#1392) |
+| `test_child_ps1` | a command started from a Phosphor bash does not inherit an EMPTY exported PS1 (#1907): exported / `set -a` / plain PS1, Phosphor prompt and user's prompt, and the `warp_change_prompt_modes_to_ps1` switch; fails on the pre-fix bootstrap (child sees `empty`) |
 | `test_local_counted_bootstrap` | counted-read bootstrap behaves identically to the here-doc form (#1226) |
 | `test_ssh_keepalive`, `test_ssh_probe_cache`, `test_ssh_wrapper_forks`, `test_ssh_raw_bootstrap_hook` | ssh wrapper options, probe cache, fork budget, `raw_bootstrap` hook (#1171, #1136, #1172, #1243) |
 | `test_ssh_auth_once` | a failed ssh login (master step 255, no control socket) or a Ctrl-C at its prompt runs ssh ONCE and returns its status, so no second password prompt eats the next command (#1626); a ssh that authenticated but cannot multiplex (socket created, then 255) still falls back to the user's plain ssh once (#1551); r18u13: the same, plus a successful login, with a `$HOME` that is not the passwd home and the absolute passwd-home SSH_SOCKET_DIR the app now exports there (the fake ssh expands `~` from `$PWHOME`, as ssh does from the passwd entry; the old literal `~/.ssh` export made the wrapper miss its own master and log in twice): the wrapper logs in ONCE and multiplexes the session over its master; #1641: the hooks the wrapper prints are logged in order with the ssh calls: `ManagedSSHSessionStarting` exactly once after the master and right before the managed session, `PlainSSHFallback` right before each plain ssh (mux failure, a RemoteCommand, a non-POSIX remote, MSYS2 in bash), nothing on an auth failure or Ctrl-C; #1641 host-key retry: under the default `stricthostkeychecking ask` the master carries `StrictHostKeyChecking=yes`, an unknown host (real `ssh-keygen` known_hosts lookup) gets ONE plain ssh retry with the fallback hook before it, a known host's auth failure makes exactly one call, a user's `accept-new` gets no override (these cases need ssh-keygen and are SKIPPED without it); bash/zsh/fish |
@@ -4393,3 +4394,31 @@ about the test machine's process count and not about the app.
 about 0.1 ms as on macOS for the keys that take no sample; `typing_prompt_samples.samples` about one per `cat` line typed (its first key),
 not one per key, with `lookups` showing `list_confirm` for `cat` (reads = 7; its `us` is the list's cost on that machine, expect a few
 hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and never `walk` for a plain program.
+
+## Round 10 group A (#1966 #1985 #2004 #1907 #1938; design `docs/design/r10-groupa.md`)
+
+- **Windows RUST_LOG covers every module whose `hop=` lines a case reads (#1966).** The Windows launcher's `warn` base hid the plain `log::info!`
+  `hop=agent_action` line (module `warp::ai::blocklist::action_model`), so `agent_question` on Git Bash judged a shown card `hung`. The string is now
+  `app.WINDOWS_RUST_LOG` with an `=info` directive for each of the 13 modules that emit a case-read `hop=` through a plain log call. Selftest
+  `windows_rust_log_enables_every_hop_module_1966` scans the Rust sources and fails when such a module is not enabled (a new plain-log hop needs its
+  module added to the constant); it also proves the pre-fix string hid `action_model`. Worked, unproven: no Windows run yet; the next Git Bash
+  `agent_question` run should show `hop=agent_action ... status=blocked` and verdict `answerable`.
+- **`flood_scrollback_find` rests on the app's record when OCR is blind (#1985).** `cases_robust.find_verdict`: OCR reading the marker is judged as before;
+  when OCR read the marker nowhere the verdict comes from the `hop=find_scroll` lines. Match ON screen and `moved=true` -> pass (noted as app
+  evidence); match OFF screen -> FAIL; only `no_match` hops -> FAIL; no hop, no usable geometry (`busy`, older build) or on screen with `moved=false` -> NOREF
+  (`unverifiable`), never a pass. Selftest `coverage` row in the `flood_scrollback_find` block of `selftest.py` has one assertion per situation. Worked,
+  unproven: the next Mac agent-mode run that OCRs blind should now be a pass with the note "OCR was blind; the app's own record says ...".
+- **`big_paste` times the Enter and the largest UI item (#2004, #1191).** The case now sends Return at once behind the 1 MB paste and polls `big.out` for its
+  full size (the Enter's effect: the paste's last line has no newline, so cat only gets it on Return): `big_paste_time_to_enter_ms` is that time from the end of
+  the paste. rec.log cannot time it (it stamps `cat > big.out` after Ctrl-D). **PROPOSED budgets, owner to confirm:** time-to-Enter <= 1500 ms
+  (`APPCI_BIGPASTE_ENTER_MS`), judged only on a byte-exact paste; largest single `hop=ui_item` <= 250 ms (`APPCI_BIGPASTE_UI_ITEM_MS`), judged whenever an app
+  log exists. The byte check, the Windows conhost control and both session modes are unchanged. Selftest `big_paste_time_budgets_2004`. Worked, unproven:
+  the next run should print `big_paste_time_to_enter_ms` and `big_paste_ui_items.max_ms`; set the two variables from those numbers once the owner agrees.
+- **Child shells get no PS1 instead of an empty one (#1907).** `bash_body.sh` blanked PS1 after every prompt in the Phosphor-prompt mode; a user who
+  exported PS1 (`export PS1=...` or `set -a`) made every child shell (dash / sh / ash read PS1 from the environment) draw no prompt. The blank now un-exports
+  PS1 first (`compgen -A export -X '!PS1'` says whether it is exported; builtins only), and `warp_change_prompt_modes_to_ps1` exports it again. `script/test_child_ps1`
+  (real bootstrap in a pty, `printenv PS1` in a child) fails on the old bootstrap with `empty` and passes now; the other bash script tests were re-run
+  (`test_bash_bootstrap_builtins`, `_nounset`, `test_hijack_bootstrap`, `test_bash_preexec_large_command`, `test_line_editor_markers --only bash`, `test_hook_forks`,
+  `test_local_counted_bootstrap`, `test_bootstrap_hook_equivalence`, `test_ssh_raw_bootstrap_hook`). `test_init_shell_escaping` fails the same way on the
+  base commit (its `_hostname` snippet search finds nothing in `bash_body.sh`), unrelated to this change. Not covered: the real app's `sh` child in a real
+  pane (no run yet; worked, unproven).
