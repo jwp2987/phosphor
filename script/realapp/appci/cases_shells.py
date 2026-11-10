@@ -139,6 +139,21 @@ def kept_with_line_facts(log):
     return [dict(why=m.group(1), keys=int(m.group(2)), chars=int(m.group(3)), line_chars=int(m.group(4))) for m in _KEPT_WITH_LINE_HOP_RE.finditer(log or "")]
 
 
+# #2012 (round 9 Windows, PowerShell): a command the shell started by itself (PowerShell sends a Preexec for an EMPTY typed-ahead line too) took input from
+# an editor that already held text; the keys typed while it ran came back in the shell's report and were put in FRONT of that text (`Add-Co` -> `d-AdCo`).
+# The app now remembers the editor's text at that Preexec (`handoff_report_anchor_set anchor_chars=N`, N=0: the editor was empty) and places the report
+# behind it (`handoff_insert_anchor anchor_chars=N`).
+_REPORT_ANCHOR_SET_RE = re.compile(r"hop=handoff_report_anchor_set\b[^\n]*?\banchor_chars=(\d+)")
+_REPORT_ANCHOR_USED_RE = re.compile(r"hop=handoff_insert_anchor\b[^\n]*?\banchor_chars=(\d+)")
+
+
+def report_anchor_facts(log):
+    """Pure: (takeovers, with_text, placed) from an app-log window: how often a shell-started command took input from the editor, how often the editor
+    held text then (an anchor was recorded), and how many reports were placed behind such text instead of at the front of the input (#2012)."""
+    sets = [int(m.group(1)) for m in _REPORT_ANCHOR_SET_RE.finditer(log or "")]
+    return len(sets), sum(1 for n in sets if n > 0), len(_REPORT_ANCHOR_USED_RE.findall(log or ""))
+
+
 def ran_out_of_order(exp, got):
     """Pure: the keep-together rule on the lines that RAN (`got`) against the lines typed (`exp`, in typed order): a line may only have run if every
     line typed before it ran before it, i.e. `got` is a prefix of `exp`. -> None when it holds, else (index, expected, got) of the first line that ran
@@ -160,7 +175,9 @@ def c_giveup_keys_reach_shell(ctx, r):
     every line typed before it (the lines that ran are a prefix of the lines typed); (2) the app log has no discard and no young-Enter hand-back (the old
     behaviours); (3) every give-up that wrote to the pty wrote all its bytes (none became input text while the shell was alive); (4) a give-up that kept
     keys with an unrun line is reported with its counts: those lines are in the input by design, not run, so (1) fails for them and says why.
-    The number of give-ups is a metric: zero means the timers were not exercised in this run (the lines still have to arrive exactly)."""
+    The number of give-ups is a metric: zero means the timers were not exercised in this run (the lines still have to arrive exactly).
+    #2012 metrics (`report_anchor_facts`): how often a shell-started command (on PowerShell the bare Enter's empty line) took input from the editor, how
+    often the editor held text then, and how many reports were placed behind that text; the round 9 failure was a line of exactly that path."""
     f = "gup_%s.txt" % ctx.tok(4)
     ctx.rm(f)
     off = ctx.log_size()
@@ -186,6 +203,11 @@ def c_giveup_keys_reach_shell(ctx, r):
     bad = ran_out_of_order(exp, got)
     r.check(bad is None, "KEEP-TOGETHER broken: line %s of the file is %r where %r was typed: a line ran without every line typed before it (or twice)" % (
         (bad[0] + 1, bad[2], bad[1]) if bad else (0, None, None)))
+    # #2012: how often this run took the path that reordered a line in round 9 (a metric, not a verdict: the lines above are the verdict).
+    takeovers, with_text, placed = report_anchor_facts(log)
+    r.metric("shell_started_takeovers", takeovers)
+    r.metric("shell_started_takeovers_with_editor_text", with_text)
+    r.metric("reports_placed_behind_editor_text", placed)
     ups, old = give_up_facts(log)
     r.metric("give_ups", len(ups))
     r.check(not old, "a hold gave up the old way (keys discarded, or an Enter handed back to the input with the 'waiting too long' toast): %r" % old)

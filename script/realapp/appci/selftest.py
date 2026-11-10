@@ -1764,6 +1764,22 @@ def give_up_facts_read_both_shapes_and_the_keep_together_rule():
 
 
 @check
+def report_anchor_facts_count_the_2012_path():
+    """#2012: giveup_keys_reach_shell's metrics of the path that reordered a line in round 9 (a shell-started command took input from an editor holding text)"""
+    import cases_shells
+    log = "\n".join([
+        "x input_order hop=handoff_report_anchor_set anchor_chars=2 t=1.0",
+        'x input_order hop=handoff_insert_anchor anchor_chars=2 t=2.0',
+        'x input_order hop=handoff_insert replaced_prefix_chars=0 report="d-" before="AdCo" after="Add-Co" t=2.1',
+        "x input_order hop=handoff_report_anchor_set anchor_chars=0 t=3.0",
+        "x input_order hop=handoff_report_anchor_dropped why=no_report_pending t=4.0"])
+    assert cases_shells.report_anchor_facts(log) == (2, 1, 1), cases_shells.report_anchor_facts(log)
+    assert cases_shells.report_anchor_facts("") == (0, 0, 0) and cases_shells.report_anchor_facts(None) == (0, 0, 0)
+    # the round 9 log (no anchor hops: the report went to the front) counts nothing
+    assert cases_shells.report_anchor_facts('x hop=handoff_insert replaced_prefix_chars=0 report="d-" before="AdCo" after="d-AdCo"') == (0, 0, 0)
+
+
+@check
 def ssh_trial_facts_name_the_issue():
     """#1292/#1332/#1345/#1394/#1400/#1596/#1614: one ssh typeahead trial's app-log window -> the hop that went wrong, by issue"""
     line = "echo T1_abc >> ~/rl.txt"
