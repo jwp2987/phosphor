@@ -56,6 +56,42 @@ fn add_ephemeral_toasts_caps_at_three_newest() {
 }
 
 #[test]
+fn same_text_ephemeral_toast_refreshes_instead_of_stacking() {
+    App::test((), |mut app| async move {
+        let stack = stack_handle(&mut app);
+        stack.update(&mut app, |stack, ctx| {
+            stack.add_ephemeral_toast(toast("gave up"), ctx);
+            stack.add_ephemeral_toast(toast("gave up"), ctx);
+            stack.add_ephemeral_toast(toast("other"), ctx);
+            stack.add_ephemeral_toast(toast("gave up"), ctx);
+        });
+
+        stack.read(&app, |stack, _| {
+            assert_eq!(
+                stack
+                    .toasts
+                    .iter()
+                    .map(|toast| toast.dismissible_toast.main_text.as_str())
+                    .collect::<Vec<_>>(),
+                ["gave up", "other"]
+            );
+        });
+    });
+}
+
+#[test]
+fn persistent_toast_is_not_deduplicated_by_an_ephemeral_one() {
+    App::test((), |mut app| async move {
+        let stack = stack_handle(&mut app);
+        stack.update(&mut app, |stack, ctx| {
+            stack.add_persistent_toast(toast("same"), ctx);
+            stack.add_ephemeral_toast(toast("same"), ctx);
+        });
+        stack.read(&app, |stack, _| assert_eq!(stack.toasts.len(), 2));
+    });
+}
+
+#[test]
 fn add_persistent_toasts_caps_at_three_newest() {
     App::test((), |mut app| async move {
         let stack = stack_handle(&mut app);

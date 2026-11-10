@@ -3011,3 +3011,14 @@ work to race and nothing drains the main queue, so such a read runs in place.
   `a_user_stop_after_a_finished_result_sends_no_request`, `agent_fuzz::stop_tests`, fuzzer
   invariant I8. A re-pin diff that restores the follow-up after a `Cancelled` outcome is drift
   to reject.
+
+## OSC 52 clipboard: write allowed by default, read still denied — IMPROVED 2026-11-09 (#1963)
+
+`terminal.osc52_clipboard_access` defaulted to `deny`, so tmux, vim and remote `pbcopy`-style yanks silently did
+nothing (a denied write was one log line). Owner decision 2026-11-09: the default is now `write_only` (programs may
+SET the clipboard; reading it back stays denied, the risky half). The first time a program sets the clipboard the
+terminal shows one non-blocking toast saying so and naming Settings > Features > OSC 52 clipboard access; it is
+recorded once per install in the private `terminal.osc52_write_notice_shown` setting. Only the default changed: a
+user who wrote `deny`, `write_only` or `read_write` in settings.toml keeps it. A re-pin diff that restores `deny` as
+the default is drift to reject. Tests: `osc52_default_is_write_only_read_denied`, `osc52_explicit_deny_is_kept`,
+`osc52_write_notice_fires_once` (`terminal/settings_tests.rs`).

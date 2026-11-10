@@ -15,13 +15,16 @@ use super::FeaturesPageAction;
 use crate::server::telemetry::TelemetryEvent;
 use crate::terminal::settings::Osc52ClipboardAccess;
 
-/// AGENTS §5.10: changing the default is a separate maintainer decision.
+/// Default is write-only since the owner decision of 2026-11-09 (annoyance review 8a).
 /// This also pins the dropdown's item order (Deny, WriteOnly, ReadWrite, per
 /// `FeaturesPageView::update_osc52_clipboard_access_dropdown`) against the
 /// enum's own label mapping, so the two can't silently drift apart.
 #[test]
-fn osc52_clipboard_access_default_is_deny_and_labels_are_distinct() {
-    assert_eq!(Osc52ClipboardAccess::default(), Osc52ClipboardAccess::Deny);
+fn osc52_clipboard_access_default_is_write_only_and_labels_are_distinct() {
+    assert_eq!(
+        Osc52ClipboardAccess::default(),
+        Osc52ClipboardAccess::WriteOnly
+    );
 
     let labels: Vec<&str> = [
         Osc52ClipboardAccess::Deny,
