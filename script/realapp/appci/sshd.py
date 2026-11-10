@@ -16,9 +16,95 @@ def _free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
 
-def _start_windows(prof, run, d, port):
+def _start_pty_host(d, rhome, bash, clientkey, hostkey):
+    """#2007: Git for Windows' own sshd.exe on a second loopback port, as the pty host of the fake sshd's exec + pty (ptyhost.py): it gives the
+    remote command a real msys pty, which passes every byte, where a pseudo console does not. Runs as the CI user: the scratch client key only,
+    loopback only, every session forced into <ssh>/ptyhost/force.sh (HOME = the scratch remote home). Never the system's or the user's sshd, and
+    nothing outside the run directory is written. -> (dict(port, popen, log), None) or (None, why); never raises."""
+    try:
+        import ptyhost
+        root = os.path.dirname(os.path.dirname(bash))            # ...\Git\bin\bash.exe -> ...\Git
+        usr = os.path.join(root, "usr", "bin")
+        sshd_exe, ubash = os.path.join(usr, "sshd.exe"), os.path.join(usr, "bash.exe")
+        if not (os.path.isfile(sshd_exe) and os.path.isfile(ubash)):
+            return None, "Git for Windows has no usr\\bin\\sshd.exe next to its bash (%s)" % usr
+        h = os.path.join(d, "ptyhost")
+        os.makedirs(h, exist_ok=True)
+        mp = ptyhost.msys_path
+        with open(os.path.join(h, "authorized_keys"), "w", newline="\n") as f:
+            f.write(ptyhost.pubkey_line(ptyhost.load_key(clientkey)))
+        with open(os.path.join(h, "force.sh"), "w", newline="\n") as f:
+            f.write(ptyhost.force_script(mp(rhome)))
+        # its own copy of the scratch host key, readable by this user only: where msys maps NTFS ACLs to modes, sshd refuses a key others can read
+        hk = os.path.join(h, "hostkey")
+        shutil.copyfile(hostkey, hk)
+        subprocess.run(["icacls", hk, "/inheritance:r", "/grant:r", "%s:F" % os.environ.get("USERNAME", "runner")], capture_output=True)
+        port = _free_port()
+        conf = os.path.join(h, "sshd_config")
+        with open(conf, "w", newline="\n") as f:
+            f.write(ptyhost.sshd_config(port, mp(hk), mp(os.path.join(h, "authorized_keys")), mp(os.path.join(h, "sshd.pid")), mp(os.path.join(h, "force.sh"))))
+        log = os.path.join(h, "sshd.log")
+        # through bash so that sshd's argv[0] is the absolute msys path it insists on ("sshd re-exec requires execution with an absolute path");
+        # usr\bin first on PATH so the remote command finds stty / dd / od / tr / md5sum the way a Git Bash user's shell does
+        p = subprocess.Popen([ubash, "-c", 'exec /usr/bin/sshd -D -e -f "$0"', mp(conf)], stdout=subprocess.DEVNULL, stderr=open(log, "w"),
+                             stdin=subprocess.DEVNULL, env=dict(os.environ, PATH=usr + os.pathsep + os.environ.get("PATH", "")))
+        for _ in range(80):
+            try:
+                socket.create_connection(("127.0.0.1", port), 0.2).close()
+                return {"port": port, "popen": p, "log": log}, None
+            except OSError:
+                if p.poll() is not None:
+                    break
+                time.sleep(0.1)
+        try:
+            tail = " | ".join([l.strip() for l in open(log, errors="replace").read().splitlines() if l.strip()][-3:])
+        except OSError:
+            tail = ""
+        _kill_tree(p)
+        return None, "Git for Windows' sshd.exe did not listen on 127.0.0.1:%d (%s)" % (port, tail or "no output")
+    except Exception as e:
+        return None, "the pty host could not be set up: %r" % (e,)
+
+
+def _kill_tree(p):
+    """Windows: end exactly this process and what it started (the msys bash stub, sshd and its sessions; the fake server's console children)"""
+    if p is None or p.poll() is not None:
+        return
+    try:
+        subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, timeout=30)
+    except Exception:
+        pass
+    try:
+        p.wait(5)
+    except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
+
+
+def _measure_exec_pty(d, port, ident, arms, notes):
+    """#2007: measure every available exec + pty arm of the fake sshd through the server itself (ptyhost.probe: a long OSC out, a counted raw read
+    in), write the arm that serves from now on to <ssh>/exec_pty_arm, and return the one-line result (job log, ssh_diag). Never raises: a probe
+    that cannot run leaves the server on its own order of what is available."""
+    try:
+        import ptyhost
+        user = os.environ.get("USERNAME", "tester")
+        results = [ptyhost.probe(port, user, ident, a) for a in arms]
+        chosen = ptyhost.choose_arm(results)
+        if chosen:
+            with open(os.path.join(d, "exec_pty_arm"), "w") as f:
+                f.write(chosen + "\n")
+        return ptyhost.summary(results, chosen, notes)
+    except Exception as e:
+        return "exec+pty of the test sshd was not measured: %r%s" % (e, ("; " + "; ".join(notes)) if notes else "")
+
+
+def _start_windows(prof, run, d, port, app_bin=None):
     """Windows: fakesshd_win.py (paramiko + a ConPTY running Git Bash) on 127.0.0.1; the Windows OpenSSH Server service is never used.
-    The scratch keys come from the built-in ssh-keygen.exe (else a paramiko RSA key). None -> the ssh cases SKIP with the reason in Windows_why."""
+    The scratch keys come from the built-in ssh-keygen.exe (else a paramiko RSA key). None -> the ssh cases SKIP with the reason in Windows_why.
+    #2007: exec + pty (a managed ssh session) is served by the first arm that measures byte-exact: an msys pty on the pty host, the app's own
+    conpty.dll (next to `app_bin`), or kernel32's pseudo console; the measurement is in the returned dict as "exec_pty"."""
     global WHY
     WHY = None
     import winapi
@@ -41,19 +127,42 @@ def _start_windows(prof, run, d, port):
         else:
             paramiko.RSAKey.generate(2048).write_private_key_file(kp)
     log = os.path.join(d, "sshd.log")
+    ident = os.path.join(d, "clientkey")
+    arm_file = os.path.join(d, "exec_pty_arm")
+    try:
+        os.remove(arm_file)             # a pass never inherits the arm an earlier pass measured
+    except OSError:
+        pass
+    notes, arms = [], ["inbox"]
+    host, why = _start_pty_host(d, prof.rhome, bash, ident, os.path.join(d, "hostkey"))
+    if host:
+        arms.insert(0, "msys")
+    else:
+        notes.append("no msys pty host: %s" % why)
+    dll = os.path.join(os.path.dirname(os.path.abspath(app_bin)), "conpty.dll") if app_bin else ""
+    if dll and os.path.isfile(dll):
+        arms.insert(len(arms) - 1, "app")
+    else:
+        notes.append("no app conpty.dll (%s)" % (dll or "the app binary's folder is not known here"))
+        dll = ""
+    env = dict(os.environ, FAKE_PASSWORD=PW_PASSWORD, FAKE_PW_USER=PW_USER, FAKE_ARM_FILE=arm_file, FAKE_CONPTY_DLL=dll,
+               FAKE_PTY_PORT=str(host["port"]) if host else "0")
     p = subprocess.Popen([sys.executable, os.path.join(HERE, "fakesshd_win.py"), str(port), d, prof.rhome, bash, log],
-                         stdout=subprocess.DEVNULL, stderr=open(os.path.join(d, "fakesshd.stderr"), "w"), stdin=subprocess.DEVNULL,
-                         env=dict(os.environ, FAKE_PASSWORD=PW_PASSWORD, FAKE_PW_USER=PW_USER))
+                         stdout=subprocess.DEVNULL, stderr=open(os.path.join(d, "fakesshd.stderr"), "w"), stdin=subprocess.DEVNULL, env=env)
     for _ in range(50):
         try:
             socket.create_connection(("127.0.0.1", port), 0.2).close()
-            return {"port": port, "ident": os.path.join(d, "clientkey"), "kind": "fakesshd-win", "popen": p,
+            exec_pty = _measure_exec_pty(d, port, ident, arms, notes)
+            print("ssh test host: %s" % exec_pty, flush=True)
+            return {"port": port, "ident": ident, "kind": "fakesshd-win", "popen": p, "ptyhost": host, "exec_pty": exec_pty,
                     "pwhost": {"port": port, "user": PW_USER, "password": PW_PASSWORD}}      # the same server also takes the password login (#1535)
         except OSError:
             if p.poll() is not None:
                 break
             time.sleep(0.1)
     p.kill()
+    if host:
+        _kill_tree(host["popen"])
     WHY = "fakesshd_win.py did not listen on 127.0.0.1:%d (see ssh/fakesshd.stderr)" % port
     return None
 
@@ -61,12 +170,12 @@ def _start_windows(prof, run, d, port):
 WHY = None      # why start() returned None on Windows (run.py reports it as the skip reason)
 
 
-def start(prof, run):
-    """returns dict(port, ident, kind, popen) or None"""
+def start(prof, run, app_bin=None):
+    """returns dict(port, ident, kind, popen) or None. `app_bin` (Windows): the app binary, whose folder holds the app's own conpty.dll (#2007)."""
     d = os.path.join(run, "ssh"); os.makedirs(d, exist_ok=True)
     port = _free_port()
     if os.name == "nt":
-        return _start_windows(prof, run, d, port)
+        return _start_windows(prof, run, d, port, app_bin)
     sshd = shutil.which("sshd") or ("/usr/sbin/sshd" if os.path.exists("/usr/sbin/sshd") else None)
     kg = shutil.which("ssh-keygen")
     if sshd and kg:
@@ -161,6 +270,9 @@ def stop(info):
             pw["popen"].wait(5)
         except Exception:
             pw["popen"].kill()
+    host = (info or {}).get("ptyhost") or {}
+    if os.name == "nt" and host.get("popen") is not None:      # #2007: the msys sshd pty host of the Windows fake sshd; exact PID and its children
+        _kill_tree(host["popen"])
     if info and info.get("popen") and info["popen"].poll() is None:
         if os.name == "nt":      # taskkill /T also ends the ConPTY bash children of the fake server; exact PID only
             subprocess.run(["taskkill", "/PID", str(info["popen"].pid), "/T", "/F"], capture_output=True, timeout=30)

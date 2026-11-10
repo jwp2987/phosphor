@@ -1368,6 +1368,8 @@ class Ctx:
                 except OSError as e:
                     out.append("test sshd (%s) NOT listening on 127.0.0.1:%d (%s)%s" % (info.get("kind"), port, e,
                                "; process EXITED rc=%s" % info["popen"].poll() if info.get("popen") is not None and info["popen"].poll() is not None else ""))
+            if info.get("exec_pty"):        # #2007: which terminal the Windows fake sshd gives exec + pty (a managed session), as measured at start
+                out.append(info["exec_pty"])
             if getattr(self, "lab", None) is not None:
                 out.append(self.lab.diag())
             if not self.win:

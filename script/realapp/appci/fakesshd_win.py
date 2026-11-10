@@ -4,9 +4,14 @@
 # client key; passwords are rejected EXCEPT when FAKE_PASSWORD is set: then user FAKE_PW_USER (default pwuser) with exactly that password logs in
 # (#1535: a real password prompt for the Windows ssh clients, no account needed). A shell request gets a REAL pseudo console (ConPTY, CreatePseudoConsole through ctypes: the same
 # mechanism Windows' own sshd uses) running Git Bash with HOME = the scratch remote home and the scratch rc (--rcfile <rhome>/.bashrc), so the
-# remote side logs prompt.log / rec.log exactly like the POSIX sshd.py does. An exec request runs `bash -c <cmd>` on pipes.
+# remote side logs prompt.log / rec.log exactly like the POSIX sshd.py does. An exec request without a pty runs `bash -c <cmd>` on pipes.
+# An exec request WITH a pty (a managed ssh session) gets one of three terminals, "arms" (#2007, ptyhost.py): `msys`, a real msys pty on the
+# loopback pty host sshd.py starts (FAKE_PTY_PORT); `app`, a pseudo console of the app's own conpty.dll (FAKE_CONPTY_DLL); `inbox`, kernel32's
+# pseudo console. kernel32's on Windows 10 cuts every escape sequence over 256 bytes that an msys program prints, so the remote's hooks never
+# reached the app there. Which arm serves: the one sshd.py measured and wrote to FAKE_ARM_FILE, else the first available in that order.
 # usage: fakesshd_win.py PORT KEYDIR REMOTE_HOME BASH_EXE LOGFILE      (KEYDIR holds hostkey + clientkey)
 import ctypes
+import logging
 import msvcrt
 import os
 import socket
@@ -18,6 +23,8 @@ from ctypes import wintypes as wt
 
 import paramiko
 
+import ptyhost
+
 PORT, KEYDIR, RHOME, BASH, LOGF = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 PW = os.environ.get("FAKE_PASSWORD", "")
 PWU = os.environ.get("FAKE_PW_USER", "pwuser")
@@ -27,6 +34,14 @@ LAT = float(os.environ.get("FAKE_LAT", "0"))        # artificial connect delay b
 # plain ssh); FAKE_SSH_ID= (empty) keeps paramiko's own "SSH-2.0-paramiko_<version>".
 SSH_ID = os.environ.get("FAKE_SSH_ID", "SSH-2.0-OpenSSH_9.6 fakesshd")
 LOG = open(LOGF, "a", buffering=1)
+PTY_PORT = int(os.environ.get("FAKE_PTY_PORT", "0") or 0)       # the pty host (Git for Windows' sshd.exe on loopback), 0 = none
+PTY_USER = os.environ.get("FAKE_PTY_USER") or os.environ.get("USERNAME", "tester")
+ARM_FILE = os.environ.get("FAKE_ARM_FILE", "")                  # sshd.py writes the measured arm here; read per exec request
+# #2007: paramiko logs a traceback for every TCP connection that closes before its SSH banner. The harness makes such connections itself (the
+# "is it listening" checks of sshd.py and ssh_diag), and with no handler Python printed them to this process's stderr: round 9's failing rows
+# quoted them as if the session had been reset. serve() logs the same event as one `serve err` line; paramiko's own log goes nowhere.
+logging.getLogger("paramiko").addHandler(logging.NullHandler())
+logging.getLogger("paramiko").propagate = False
 
 
 def log(*a):
@@ -74,11 +89,29 @@ class PROCESS_INFORMATION(ctypes.Structure):
     _fields_ = [("hProcess", ctypes.c_void_p), ("hThread", ctypes.c_void_p), ("dwProcessId", wt.DWORD), ("dwThreadId", wt.DWORD)]
 
 
+def _pseudo_console_api(lib):
+    """declare the three pseudo console calls on `lib` (kernel32, or the app's conpty.dll: same names, same signatures); -> lib"""
+    lib.CreatePseudoConsole.argtypes = [COORD, ctypes.c_void_p, ctypes.c_void_p, wt.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+    lib.CreatePseudoConsole.restype = ctypes.c_long
+    lib.ResizePseudoConsole.argtypes = [ctypes.c_void_p, COORD]
+    lib.ResizePseudoConsole.restype = ctypes.c_long
+    lib.ClosePseudoConsole.argtypes = [ctypes.c_void_p]
+    lib.ClosePseudoConsole.restype = None
+    return lib
+
+
 k32.CreatePipe.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, wt.DWORD]
-k32.CreatePseudoConsole.argtypes = [COORD, ctypes.c_void_p, ctypes.c_void_p, wt.DWORD, ctypes.POINTER(ctypes.c_void_p)]
-k32.CreatePseudoConsole.restype = ctypes.c_long
-k32.ResizePseudoConsole.argtypes = [ctypes.c_void_p, COORD]
-k32.ClosePseudoConsole.argtypes = [ctypes.c_void_p]
+_pseudo_console_api(k32)
+# #2007: the app's own console host (conpty.dll starts the OpenConsole.exe next to it), for the `app` arm of exec + pty. None when the harness
+# gave no path or the library does not load: that arm is then not available, nothing else changes.
+APPCON = None
+if os.environ.get("FAKE_CONPTY_DLL"):
+    try:
+        APPCON = _pseudo_console_api(ctypes.WinDLL(os.environ["FAKE_CONPTY_DLL"], use_last_error=True))
+        log("app conpty.dll loaded:", os.environ["FAKE_CONPTY_DLL"])
+    except Exception as e:
+        APPCON = None
+        log("app conpty.dll NOT loaded (%s): %r" % (os.environ["FAKE_CONPTY_DLL"], e))
 k32.InitializeProcThreadAttributeList.argtypes = [ctypes.c_void_p, wt.DWORD, wt.DWORD, ctypes.POINTER(ctypes.c_size_t)]
 k32.UpdateProcThreadAttribute.argtypes = [ctypes.c_void_p, wt.DWORD, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
 k32.CreateProcessW.argtypes = [wt.LPCWSTR, wt.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, wt.BOOL, wt.DWORD, ctypes.c_void_p, wt.LPCWSTR,
@@ -90,12 +123,13 @@ k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(wt.DWORD)]
 
 
 class ConPty:
-    def __init__(self, cmdline, env, cwd, cols, rows):
+    def __init__(self, cmdline, env, cwd, cols, rows, api=None):
+        self.api = api or k32           # whose pseudo console: kernel32's, or the app's conpty.dll (APPCON)
         in_r, in_w, out_r, out_w = (ctypes.c_void_p() for _ in range(4))
         if not k32.CreatePipe(ctypes.byref(in_r), ctypes.byref(in_w), None, 0) or not k32.CreatePipe(ctypes.byref(out_r), ctypes.byref(out_w), None, 0):
             raise OSError("CreatePipe failed: %d" % ctypes.get_last_error())
         self.hpc = ctypes.c_void_p()
-        hr = k32.CreatePseudoConsole(COORD(cols, rows), in_r, out_w, 0, ctypes.byref(self.hpc))
+        hr = self.api.CreatePseudoConsole(COORD(cols, rows), in_r, out_w, 0, ctypes.byref(self.hpc))
         if hr != 0:
             raise OSError("CreatePseudoConsole failed: HRESULT 0x%08x" % (hr & 0xFFFFFFFF))
         k32.CloseHandle(in_r)
@@ -134,7 +168,7 @@ class ConPty:
             pass
 
     def resize(self, cols, rows):
-        k32.ResizePseudoConsole(self.hpc, COORD(cols, rows))
+        self.api.ResizePseudoConsole(self.hpc, COORD(cols, rows))
 
     def exited(self):
         return k32.WaitForSingleObject(self.hproc, 0) == 0
@@ -150,7 +184,7 @@ class ConPty:
         self.closed = True
         if not self.exited():
             k32.TerminateProcess(self.hproc, 1)
-        k32.ClosePseudoConsole(self.hpc)
+        self.api.ClosePseudoConsole(self.hpc)
         k32.CloseHandle(self.hproc)
 
 
@@ -241,36 +275,81 @@ def remote_env(term, extra):
     return env
 
 
+def arms_available():
+    """the exec + pty arms this process can serve, in ptyhost.ARMS order"""
+    return [a for a in ptyhost.ARMS if (a == "msys" and PTY_PORT) or (a == "app" and APPCON is not None) or a == "inbox"]
+
+
+def exec_arm_order(requested):
+    """ptyhost.arm_order for this process: what it can serve, what the client pinned, what sshd.py measured (ARM_FILE, read per request)"""
+    chosen = ""
+    if ARM_FILE:
+        try:
+            with open(ARM_FILE) as f:
+                chosen = f.read().strip()
+        except OSError:
+            pass
+    return ptyhost.arm_order(arms_available(), requested, chosen)
+
+
+def open_exec_pty(arm, cmd, env, spty, client_env):
+    """the terminal of one exec + pty request on `arm`; raises when that arm cannot serve it"""
+    if arm == "msys":
+        return ptyhost.BackendPty(PTY_PORT, PTY_USER, CK, spty[0], spty[1], spty[2], cmd, env={k: v for k, v in client_env.items() if k != ptyhost.ARM_ENV})
+    # #1992: exec WITH a pty (`ssh -t fake '<cmd>'`, which is what a managed ssh session is: the bootstrap command) gets a pseudo console
+    # like a shell does; on pipes the remote bash had no terminal. The command goes through a file (a Windows command line cannot carry a
+    # multi-line script with quotes intact); bash runs it with the pseudo console as its stdin, as sshd's `$SHELL -c` would.
+    script = os.path.join(RHOME, ".fakesshd-exec-%d.sh" % time.time_ns())
+    with open(script, "w", encoding="utf-8", newline="\n") as f:
+        f.write((cmd or "true") + "\n")
+    return ConPty('"%s" "%s"' % (BASH, script), env, RHOME, spty[1], spty[2], api=APPCON if arm == "app" else k32)
+
+
 def handle(ch, srv):
     srv.ev(ch).wait(10)
     kind, cmd = srv.reqs.get(ch.chanid, (None, None))
     spty = srv.ptys.get(ch.chanid)
-    env = remote_env(spty[0] if spty else "dumb", srv.envs.get(ch.chanid, {}))
+    client_env = srv.envs.get(ch.chanid, {})
+    env = remote_env(spty[0] if spty else "dumb", client_env)
     log("session", kind, cmd, "pty" if spty else "nopty")
     try:
         if spty and kind in ("shell", "exec"):
             if kind == "shell":
-                cl = '"%s" --rcfile "%s" -i' % (BASH, os.path.join(RHOME, ".bashrc"))
+                cp = ConPty('"%s" --rcfile "%s" -i' % (BASH, os.path.join(RHOME, ".bashrc")), env, RHOME, spty[1], spty[2])
+                log("conpty %s pid" % kind, cp.pid)
             else:
-                # #1992: exec WITH a pty (`ssh -t fake '<cmd>'`, which is what a managed ssh session is: the bootstrap command) gets a pseudo console
-                # like a shell does; on pipes the remote bash had no terminal. The command goes through a file (a Windows command line cannot carry a
-                # multi-line script with quotes intact); bash runs it with the pseudo console as its stdin, as sshd's `$SHELL -c` would.
-                script = os.path.join(RHOME, ".fakesshd-exec-%d.sh" % time.time_ns())
-                with open(script, "w", encoding="utf-8", newline="\n") as f:
-                    f.write((cmd or "true") + "\n")
-                cl = '"%s" "%s"' % (BASH, script)
-            cp = ConPty(cl, env, RHOME, spty[1], spty[2])
+                order, pinned = exec_arm_order(client_env.get(ptyhost.ARM_ENV, ""))
+                cp, errs = None, []
+                for arm in order:
+                    try:
+                        cp = open_exec_pty(arm, cmd, env, spty, client_env)
+                    except Exception as e:
+                        errs.append("%s: %r" % (arm, e))
+                        log("exec pty arm %s failed: %r" % (arm, e))
+                        continue
+                    log("exec pty arm %s (%s)%s" % (arm, ptyhost.ARM_TEXT[arm], " pinned by the client" if pinned else ""))
+                    log(("ptyhost exec" if arm == "msys" else "conpty exec pid"), cp.pid)
+                    break
+                if cp is None:
+                    why = "fakesshd: no exec pty arm could serve this request (asked %r, available %r): %s" % (
+                        client_env.get(ptyhost.ARM_ENV, ""), arms_available(), "; ".join(errs) or "the pinned arm is not available")
+                    try:
+                        ch.sendall(why.encode() + b"\r\n")
+                        ch.send_exit_status(97)
+                    except Exception:
+                        pass
+                    raise RuntimeError(why)
             srv.pty[ch.chanid] = cp
-            log("conpty %s pid" % kind, cp.pid)
 
             def pump_out():
-                t_open, sent = time.time(), 0
+                t_open, sent, hooks = time.time(), 0, 0
                 while True:
                     d = cp.read()
                     if not d:
                         break
                     if not sent:
                         log("conpty first output after %.2f s: %d bytes" % (time.time() - t_open, len(d)))   # r18ct: 0 bytes ever = the shell's output is not on the pseudo console
+                    hooks += d.count(b"\x1b]9278;")
                     sent += len(d)
                     t_s = time.time()
                     try:
@@ -280,6 +359,10 @@ def handle(ch, srv):
                     if time.time() - t_s > 2.0:      # r18u19 (H7): the CLIENT stopped taking output (channel window full)
                         log("conpty output: sending %d bytes to the client took %.1f s (%d sent in total)" % (len(d), time.time() - t_s, sent))
                 log("conpty output ended: %d bytes sent to the client in total" % sent)
+                if kind == "exec":
+                    # #2007: a managed session's remote side prints the SSH and InitShell hooks first (two OSC 9278). 0 here with output above means
+                    # the terminal of this arm did not pass them on (kernel32's pseudo console on Windows 10: only the tail of each came out).
+                    log("exec output carried %d OSC 9278 sequence start(s)" % hooks)
                 # r18cz: EOF alone leaves the channel open (the main loop below blocks in recv until the CLIENT closes), so ssh.exe stayed in front for ~40 s
                 # after the remote `exit` and the next trial's `ssh fake` was typed into the dead client. A real sshd sends the exit status and closes.
                 try:

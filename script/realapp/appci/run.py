@@ -327,7 +327,7 @@ def main():
             continue
         try:
             prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b')
-            ssh_info = None if sim else sshd.start(prof, run)
+            ssh_info = None if sim else sshd.start(prof, run, app_bin=a.bin)
             if ssh_info is None and win and sshd.WHY:
                 ssh_why = sshd.WHY
                 print("no ssh test host on Windows, ssh cases will skip: %s" % ssh_why, flush=True)
