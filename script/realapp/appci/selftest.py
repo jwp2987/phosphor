@@ -1657,6 +1657,30 @@ def ssh_trial_plan_and_loss_report():
 
 
 @check
+def give_up_facts_read_both_shapes_and_the_keep_together_rule():
+    """#1996 (owner decisions 2026-11-09): giveup_keys_reach_shell's pure parts: a give-up's pty write, keys kept with an unrun line, the old marks,
+    and the keep-together rule on the lines that ran (a later line never ran without the line before it)"""
+    import cases_shells
+    log = "\n".join([
+        "x input_order hop=give_up_keys_to_pty why=unready_enter keys=9 bytes=20 written=20 to_editor=0 pty_gone=0 t=1.0",
+        "x input_order hop=give_up_keys_kept_with_line why=enter_gate keys=11 chars=12 line_chars=8 t=2.0",
+        "x input_order hop=give_up_keys_to_pty why=young_hold_cap keys=1 bytes=1 written=0 to_editor=1 pty_gone=1 t=3.0"])
+    ups, old = cases_shells.give_up_facts(log)
+    assert [u["why"] for u in ups] == ["unready_enter", "young_hold_cap"] and ups[0]["written"] == 20 and ups[1]["pty_gone"] and not old, (ups, old)
+    assert cases_shells.kept_with_line_facts(log) == [dict(why="enter_gate", keys=11, chars=12, line_chars=8)]
+    assert cases_shells.kept_with_line_facts("") == [] and cases_shells.kept_with_line_facts(None) == []
+    _, old = cases_shells.give_up_facts("x hop=young_hold_handed_back why=young_hold_cap\nx hop=prompt_hold_handed_back hold=2 kind=PromptSeen why=young_hold_cap")
+    assert "hop=young_hold_handed_back" in old and "hop=prompt_hold_handed_back kind=PromptSeen" in old, old
+    exp = ["a", "b", "c", "d"]
+    assert cases_shells.ran_out_of_order(exp, exp) is None and cases_shells.ran_out_of_order(exp, []) is None
+    assert cases_shells.ran_out_of_order(exp, ["a", "b"]) is None              # the rest stayed in the input with its unrun line: in order
+    assert cases_shells.ran_out_of_order(exp, ["a", "c"]) == (1, "b", "c")     # `c` ran without `b`: the shape the owner ruled out
+    assert cases_shells.ran_out_of_order(exp, ["b"]) == (0, "a", "b")
+    assert cases_shells.ran_out_of_order(exp, ["a", "a"]) == (1, "b", "a")     # a line run twice
+    assert cases_shells.ran_out_of_order(exp, exp + ["e"]) == (4, None, "e")   # a line nobody typed
+
+
+@check
 def ssh_trial_facts_name_the_issue():
     """#1292/#1332/#1345/#1394/#1400/#1596/#1614: one ssh typeahead trial's app-log window -> the hop that went wrong, by issue"""
     line = "echo T1_abc >> ~/rl.txt"
