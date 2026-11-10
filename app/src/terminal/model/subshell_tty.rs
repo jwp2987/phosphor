@@ -175,7 +175,8 @@ pub enum SubshellTtyKind {
 
 /// One sample of the pty, taken at an output wakeup, the hand-off's change or a banner click;
 /// never on a timer. One `tcgetattr`, one `tcgetpgrp`, at most one `/proc` read and the queue
-/// probe's ioctls (R10: the ioctls first, `/proc` only for a candidate).
+/// probe's ioctls (R10: the ioctls first, `/proc` only for a candidate); for an editor-less cooked
+/// shell with an empty queue, on Linux, the leader's blocked-read fact on top (`reader_blocked`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubshellTtySample {
     pub kind: SubshellTtyKind,
@@ -191,6 +192,14 @@ pub struct SubshellTtySample {
     /// when the platform cannot tell. macOS: `FIONREAD` on the master; Linux: a slave peer opened
     /// `O_NOCTTY|O_NONBLOCK`, `poll(0)`, `FIONREAD`, closed.
     pub queue_empty: Option<bool>,
+    /// Whether the leader is BLOCKED IN `read(2)` ON A TTY at this sample (owner decision
+    /// 2026-11-09, #1935): the shell itself sits in its read, waiting for the next line. Linux
+    /// only (`/proc/<pgid>/syscall`: the `read` syscall number of the architecture and an fd that
+    /// is a terminal), read once per look, after the queue probe, and only for the one candidate
+    /// it decides: an editor-less shell leader on a cooked tty with an empty queue. `None`
+    /// everywhere else: another platform, another kind of sample, or a leader whose `/proc` files
+    /// the kernel will not show (another user's shell, Yama `ptrace_scope` >= 2).
+    pub reader_blocked: Option<bool>,
 }
 
 impl SubshellTtySample {
@@ -202,6 +211,7 @@ impl SubshellTtySample {
             leader_comm: None,
             canonical: None,
             queue_empty: None,
+            reader_blocked: None,
         }
     }
 
@@ -214,6 +224,7 @@ impl SubshellTtySample {
             leader_comm: Some(comm.to_owned()),
             canonical: Some(false),
             queue_empty: Some(true),
+            reader_blocked: None,
         }
     }
 }

@@ -23080,6 +23080,10 @@ impl TerminalView {
             tail: look.tail,
             prompt_moved_since_baseline: moved(armed.baseline),
             prompt_moved_since_line_end: moved(armed.line_end_baseline),
+            // #1935: the Enter's echo moved the cursor down a row (the line end reached the tty),
+            // and nothing typed since waits for its own line end.
+            newline_since_line_end: look.position.1 > armed.line_end_baseline.1
+                && !armed.tracker.line_has_content(),
             elapsed: armed.armed_at.elapsed(),
             no_tty_probe,
         };
@@ -23123,12 +23127,15 @@ impl TerminalView {
         warpui::input_order::log_hop("subshell_ready_judged", || {
             format!(
                 "source={source} decision={decision:?} kind={:?} leader={:?} comm={:?} tail={:?} \
-                 queue_empty={:?} bytes={} lines={} age_ms={}",
+                 queue_empty={:?} reader_blocked={:?} newline_since_line_end={} bytes={} lines={} \
+                 age_ms={}",
                 look.tty.kind,
                 look.tty.leader,
                 look.tty.leader_comm.as_deref().unwrap_or("-"),
                 look.tail,
                 look.tty.queue_empty,
+                look.tty.reader_blocked,
+                sample.newline_since_line_end,
                 armed.ledger.bytes_since_arm,
                 armed.ledger.lines_ended,
                 sample.elapsed.as_millis()
