@@ -2987,3 +2987,27 @@ work to race and nothing drains the main queue, so such a read runs in place.
   `http` to `https`). **Evidence:** `x-api-key`, `api-key` and user `extra_headers` are not
   on reqwest's strip list, so a 30x from one provider to another handed over the key.
   <!-- markers: keep:check_redirect_from -->
+
+- **Agent: Stop means stop -- no automatic follow-up after a user stop, however much of the
+  step had finished** (#1942, owner decision 2026-11-09, `plan_finished_batch` in
+  `app/src/ai/blocklist/controller.rs`).
+  **Upstream:** the end-of-step decision sends the step's results back to the model whenever
+  any result is not cancelled (`should_trigger_request_upon_completion`), whatever cancelled
+  the rest. A Stop, Ctrl-C, Delete or Reject on the second card of a step whose first call had
+  already finished therefore opens a new request, and the reply can queue actions that run
+  after the user stopped the agent.
+  **We do instead:** a cancellation whose outcome is `Cancelled` (Stop / Ctrl-C / Delete / a
+  shell command the user ran / a submit into another conversation / a Reject, which arrives
+  with the same reason) sends nothing and ends the turn `Cancelled`. The finished results stay
+  with the action model and ride on the user's next request. A follow-up the user asked for
+  explicitly still goes out after a Reject; a Stop withdraws it (#1950) and drops a request
+  stashed for the stopped call (#1948). Calls of a reply whose stream was stopped between its
+  end and its hand-off to the action queue get their cancelled results at once (#1946), and a
+  conversation restored with unanswered tool calls is `Cancelled`, not `Success` (#1951).
+  **Not changed:** a step nobody stopped (a tool cancelled itself, a command took a ^C, a
+  long-running command pushed the other commands out) still follows up when any result
+  finished (#1178), and input typed during a reply is still a steer (#851).
+  **Evidence:** `docs/design/agent-lifecycle-audit.md` finding 1; tests
+  `a_user_stop_after_a_finished_result_sends_no_request`, `agent_fuzz::stop_tests`, fuzzer
+  invariant I8. A re-pin diff that restores the follow-up after a `Cancelled` outcome is drift
+  to reject.

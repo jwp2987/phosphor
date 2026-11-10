@@ -24,7 +24,7 @@ use crate::ai::agent::{AIAgentActionType, CancellationReason};
 use crate::ai::blocklist::action_model::PendingStage;
 
 use super::oracle::Knobs;
-use super::rig::{Rig, pump_for, settle_until};
+use super::rig::{Rig, Submitted, pump_for, settle_until};
 
 /// What a step did, for the coverage table and the failure message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,7 +180,12 @@ pub fn perform(app: &mut App, rig: &mut Rig, op: &Op) -> Option<&'static str> {
             let queued = terminal.update(app, |view, ctx| {
                 view.type_and_try_queue_for_test(&text, ctx)
             });
-            if !queued {
+            if queued {
+                rig.submitted.push(Submitted {
+                    text: text.clone(),
+                    queued: true,
+                });
+            } else {
                 rig.send(app, &text);
             }
         }

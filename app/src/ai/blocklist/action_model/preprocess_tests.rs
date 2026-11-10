@@ -129,6 +129,39 @@ fn abandon_pending_unparks_later_batches() {
     assert_eq!(actions.0.len(), 0);
 }
 
+/// #1944: a Stop has to know whether it dropped a batch that was still preprocessing (its
+/// actions get no result at the stop, so nothing else ends the turn). A batch that finished and
+/// is merely parked, an abandoned one, and no batch at all are not that.
+#[test]
+fn has_pending_is_true_only_while_a_batch_is_still_preprocessing() {
+    let mut actions = PendingPreprocessedActions::default();
+    assert!(!actions.has_pending());
+
+    let (first_id, first_batch) = batch_of(&mut actions);
+    let (second_id, second_batch) = batch_of(&mut actions);
+    assert!(actions.has_pending());
+
+    // The second batch finishes and is parked behind the first: one is still preprocessing.
+    let parked = actions.handle_preprocess_actions_result(
+        second_batch,
+        vec![create_test_action(second_id.clone())],
+    );
+    assert!(parked.is_empty());
+    assert!(actions.has_pending());
+
+    // The first finishes: both drain, nothing is preprocessing.
+    let out = actions
+        .handle_preprocess_actions_result(first_batch, vec![create_test_action(first_id.clone())]);
+    assert_eq!(out.len(), 2);
+    assert!(!actions.has_pending());
+
+    // An abandoned batch is no longer preprocessing as far as the queue is concerned.
+    let (_hung_id, _hung_batch) = batch_of(&mut actions);
+    assert!(actions.has_pending());
+    actions.abandon_pending();
+    assert!(!actions.has_pending());
+}
+
 /// #1859: a late result from an abandoned batch must not resurrect its actions.
 #[test]
 fn abandoned_batch_late_result_is_dropped() {

@@ -3,7 +3,7 @@
 //!
 //! | id | invariant |
 //! |---|---|
-//! | I1 | every blocked action has an actionable card within delta; nothing pending sits neither blocked-with-card, runnable nor running for longer than delta |
+//! | I1 | every blocked action has an actionable card within delta; nothing pending sits neither blocked-with-card, runnable nor running for longer than delta; every tool call of the last finished reply has an action-model status or a result within delta (#1946) |
 //! | I2a | once the script is used up and the user has answered every card, the conversation is terminal within 5 s |
 //! | I2b | Ctrl-C / Stop leaves it terminal within 2 s, nothing pending / running, no stream in flight |
 //! | I3 | when the conversation is terminal, locked queued rows unlock within 2 s; unlocked rows of a conversation that succeeded are sent within 3 s (a cancel restores rows to the input instead: #690 / #1026, kept by #1799) |
@@ -11,9 +11,12 @@
 //! | I5 | `prompt_tests.rs`: a command is handed to the user only if it reads the tty |
 //! | I6 | no panic (any thread) and no ERROR log beyond the allowance per chaos kind and count (`error_allowance`) |
 //! | I7 | no card takes accept keys for an action that is done or cancelled (read from the card's own key routing, `AIBlock::pending_command_card_view_id`, not from the action status) |
+//! | I8 | the model is asked only when it should be, counted on the requests the seam received (#1942, #1896, #1901): (a) after a Stop, or a Ctrl-C with no command running, no request is opened until the user acts again; (b) a message the user sent is the newest message of at most one request per submit (plus one per failed reply, which is retried), and a plain submit in a run without a stop reaches the model; (c) no request repeats an earlier one, or goes back to a prefix of it, unless a reply in between failed |
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+
+use fake_llm::scenario::{Reply, Scenario};
 
 use crate::ai::agent_providers::fake_stream_seam::{RecordedRequest, RecordedRole};
 use crate::ai::blocklist::QueuedQueryOrigin;
@@ -21,7 +24,7 @@ use crate::ai::blocklist::action_model::PendingStage;
 
 use super::log_capture::{self, Mark};
 use super::player::EmittedTurn;
-use super::rig::{Obs, Rig};
+use super::rig::{Obs, Rig, Submitted};
 
 /// A broken invariant. `Display` is the failure message; the runner appends the scenario JSON.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,9 +92,69 @@ fn env_f64(name: &str, default: f64) -> f64 {
 #[derive(Default)]
 pub struct Oracle {
     since: HashMap<String, Instant>,
+    /// I8a: while the user's stop stands, the most requests the seam may have received.
+    request_limit: Option<usize>,
+    /// I8a: one request that was sent before a stop but may not have reached the seam by then
+    /// (a request is recorded when its stream opens, a moment after it is sent), carried over
+    /// while it has not shown up.
+    late_request_slack: usize,
+    /// The tab was closed: the rig's close discards the finished results on purpose
+    /// (`discard_pending_work_for_close`), so the "status or result" half of I1 no longer holds.
+    tab_closed: bool,
 }
 
 impl Oracle {
+    /// I8a: the user pressed Stop (or Ctrl-C with no command running). `requests_before` and
+    /// `stream_was_in_flight` are from just before the key. From here until the user acts again
+    /// the model must not be asked anything: at most the one request that was already on its way.
+    pub fn user_stopped(&mut self, requests_before: usize, stream_was_in_flight: bool) {
+        if self.request_limit.is_some() {
+            return;
+        }
+        let slack = usize::from(stream_was_in_flight).max(self.late_request_slack);
+        self.request_limit = Some(requests_before + slack);
+    }
+
+    /// The user did something that may ask the model again (an answer to a card, a message):
+    /// the stop no longer stands.
+    pub fn user_acted(&mut self, requests_now: usize) {
+        if let Some(limit) = self.request_limit.take() {
+            self.late_request_slack = limit.saturating_sub(requests_now).min(1);
+        }
+    }
+
+    pub fn tab_closed(&mut self) {
+        self.tab_closed = true;
+    }
+
+    /// I8a, on every look.
+    fn check_request_limit(&self, rig: &Rig) -> Result<(), Violation> {
+        let Some(limit) = self.request_limit else {
+            return Ok(());
+        };
+        if rig.seam.request_count() <= limit {
+            return Ok(());
+        }
+        let requests = rig.seam.requests();
+        let Some(extra) = requests.get(limit) else {
+            return Ok(());
+        };
+        let newest = extra.messages.last();
+        Err(violation(
+            "I8",
+            format!(
+                "a request was opened after the user stopped the conversation: {} request(s), \
+                 {limit} allowed; request {} ends with a {:?} message (tool results {:?})",
+                requests.len(),
+                extra.index,
+                newest.map(|m| m.role),
+                newest
+                    .map(|m| m.tool_response_ids.clone())
+                    .unwrap_or_default(),
+            ),
+        ))
+    }
+
     fn holds_for(&mut self, key: String, bad: bool, delta: Duration, now: Instant) -> bool {
         if !bad {
             self.since.remove(&key);
@@ -175,6 +238,35 @@ impl Oracle {
                 ));
             }
         }
+        // I1, the calls nothing holds (#1946): a reply that finished cleanly had tool calls, and
+        // one of them is in no queue, has no card state and no result. While a stream is in
+        // flight the calls of the reply before it are being answered (or its own are not queued
+        // yet), so the clock only runs while nothing is streaming.
+        let unsettled: HashSet<String> = if self.tab_closed || obs.stream_in_flight {
+            HashSet::new()
+        } else {
+            obs.unsettled_calls
+                .iter()
+                .map(|id| format!("unsettled:{id:?}"))
+                .collect()
+        };
+        self.since
+            .retain(|key, _| !key.starts_with("unsettled:") || unsettled.contains(key));
+        for key in unsettled {
+            if self.holds_for(key.clone(), true, knobs.delta, now) {
+                return Err(violation(
+                    "I1",
+                    format!(
+                        "a tool call of the last reply ({key}) has no status in the action model \
+                         and no result in the conversation for over {:?}: its card can never \
+                         settle (conversation is {:?})",
+                        knobs.delta, obs.status
+                    ),
+                ));
+            }
+        }
+        // I8a.
+        self.check_request_limit(rig)?;
         Ok(())
     }
 
@@ -350,6 +442,159 @@ pub fn check_tool_messages(
     Ok(())
 }
 
+/// A user text I8b can follow through the requests: plain lowercase words, long enough not to
+/// occur by chance. Anything else (empty, whitespace the input trims, quotes, a slash command) is
+/// left to the other invariants.
+fn trackable(text: &str) -> Option<&str> {
+    let text = text.trim();
+    let plain = text.chars().all(|c| c.is_ascii_lowercase() || c == ' ');
+    (plain && text.len() >= 8 && !text.contains("  ")).then_some(text)
+}
+
+/// A reply with no text and no tool call: the app treats it like a failed one.
+fn says_nothing(reply: &Reply) -> bool {
+    match reply {
+        Reply::Empty | Reply::Reasoning { .. } => true,
+        Reply::Text { text } => text.trim().is_empty(),
+        Reply::ToolCalls { calls } => calls.is_empty(),
+        Reply::Mixed { text, calls } => text.trim().is_empty() && calls.is_empty(),
+    }
+}
+
+/// I8b and I8c, over every request the model received, at the end of a case.
+///
+/// `submitted`: every message the user sent. `stopped`: the user pressed Stop / Ctrl-C or closed
+/// the tab at some point (a message may then legitimately never reach the model: a stop discards
+/// what was not sent yet).
+pub fn check_requests(
+    requests: &[RecordedRequest],
+    emitted: &[EmittedTurn],
+    scenario: &Scenario,
+    submitted: &[Submitted],
+    stopped: bool,
+) -> Result<(), Violation> {
+    // A reply that failed, never ended, or said nothing: the app may ask again with the same
+    // request (the in-stream retry, the stream-level retry, a resume). A request with no record
+    // of its reply is treated the same way.
+    let reply_failed = |request_index: usize| {
+        let mut answers = emitted
+            .iter()
+            .filter(|turn| turn.request_index == request_index)
+            .peekable();
+        answers.peek().is_none()
+            || answers.any(|turn| {
+                turn.aborted
+                    || turn
+                        .turn
+                        .and_then(|k| scenario.turns.get(k))
+                        .is_some_and(|t| says_nothing(&t.reply))
+            })
+    };
+
+    // I8c: the conversation only moves forward. A request equal to an earlier one, or to a
+    // prefix of it, asks the model the same thing again (a double send) or forgets messages.
+    // Not judged for a request that ends with a text the user sent more than once: the user
+    // repeating a message is the user's doing, and I8b counts those.
+    let sent_more_than_once = |text: &str| {
+        submitted
+            .iter()
+            .filter(|s| s.text.trim() == text.trim())
+            .count()
+            > 1
+    };
+    for (j, later) in requests.iter().enumerate() {
+        let ends_with_a_repeated_message = later.messages.last().is_some_and(|newest| {
+            newest.role == RecordedRole::User
+                && submitted
+                    .iter()
+                    .any(|s| sent_more_than_once(&s.text) && newest.text.contains(s.text.trim()))
+        });
+        if ends_with_a_repeated_message {
+            continue;
+        }
+        for (i, earlier) in requests.iter().enumerate().take(j) {
+            let repeats = later.messages.len() <= earlier.messages.len()
+                && earlier.messages[..later.messages.len()] == later.messages[..];
+            if repeats && !(i..j).any(&reply_failed) {
+                return Err(violation(
+                    "I8",
+                    format!(
+                        "request {j} ({} message(s)) repeats request {i} ({} message(s)) or a \
+                         prefix of it, and no reply in between failed: the model was asked the \
+                         same thing twice",
+                        later.messages.len(),
+                        earlier.messages.len()
+                    ),
+                ));
+            }
+        }
+    }
+
+    // I8b: one submit, one request that ends with it.
+    let texts: Vec<&str> = submitted
+        .iter()
+        .filter_map(|s| trackable(&s.text))
+        .collect();
+    let mut seen: Vec<&str> = Vec::new();
+    for text in texts.iter().copied() {
+        if seen.contains(&text) {
+            continue;
+        }
+        seen.push(text);
+        // Two different texts where one contains the other cannot be told apart.
+        if texts
+            .iter()
+            .any(|other| *other != text && (other.contains(text) || text.contains(*other)))
+        {
+            continue;
+        }
+        let submits = texts.iter().filter(|other| **other == text).count();
+        let ending_with: Vec<usize> = requests
+            .iter()
+            .filter(|request| {
+                request
+                    .messages
+                    .last()
+                    .is_some_and(|m| m.role == RecordedRole::User && m.text.contains(text))
+            })
+            .map(|request| request.index)
+            .collect();
+        let retried = ending_with.iter().filter(|i| reply_failed(**i)).count();
+        if ending_with.len() > submits + retried {
+            return Err(violation(
+                "I8",
+                format!(
+                    "the user sent {text:?} {submits} time(s), but {} requests end with it \
+                     (requests {ending_with:?}; {retried} of their replies failed and were \
+                     retried): one message opened more than one request",
+                    ending_with.len()
+                ),
+            ));
+        }
+        // The lost message: a plain submit (not queued behind a turn) in a run nobody stopped
+        // must be in some request.
+        let plain_submit = submitted
+            .iter()
+            .any(|s| !s.queued && trackable(&s.text) == Some(text));
+        let reached_the_model = requests.iter().any(|request| {
+            request
+                .messages
+                .iter()
+                .any(|m| m.role == RecordedRole::User && m.text.contains(text))
+        });
+        if plain_submit && !stopped && !reached_the_model {
+            return Err(violation(
+                "I8",
+                format!(
+                    "the user sent {text:?} and never stopped the conversation, but no request \
+                     carries it: the message was lost"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The app's duplicate rule, restated independently: a repeat of an id seen earlier in the same
 /// reply becomes `<id>#2`, `#3`, ... (`chat_stream::unique_call_ids`).
 fn uniquify(ids: &[String]) -> Vec<String> {
@@ -491,5 +736,162 @@ mod tests {
     fn duplicates_are_renamed_like_the_app_does() {
         let ids: Vec<String> = ["c", "c", "c#2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(uniquify(&ids), vec!["c", "c#2", "c#2#2"]);
+    }
+
+    // ---- I8 --------------------------------------------------------------------------------
+
+    fn user(text: &str) -> RecordedMessage {
+        RecordedMessage {
+            role: RecordedRole::User,
+            text: text.to_owned(),
+            tool_call_ids: Vec::new(),
+            tool_response_ids: Vec::new(),
+        }
+    }
+
+    fn numbered(messages: Vec<Vec<RecordedMessage>>) -> Vec<RecordedRequest> {
+        messages
+            .into_iter()
+            .enumerate()
+            .map(|(index, messages)| RecordedRequest {
+                index,
+                model_id: "m".into(),
+                messages,
+                tools_offered: Vec::new(),
+            })
+            .collect()
+    }
+
+    /// One delivered reply per request (the implicit `END`), except the listed failed ones.
+    fn replies(count: usize, failed: &[usize]) -> Vec<EmittedTurn> {
+        (0..count)
+            .map(|request_index| EmittedTurn {
+                request_index,
+                turn: None,
+                call_ids: Vec::new(),
+                chaos: Vec::new(),
+                aborted: failed.contains(&request_index),
+            })
+            .collect()
+    }
+
+    fn sent(text: &str, queued: bool) -> Submitted {
+        Submitted {
+            text: text.to_owned(),
+            queued,
+        }
+    }
+
+    const START: &str = "start the task";
+    const MORE: &str = "and then list the files";
+
+    #[test]
+    fn i8_a_stop_freezes_the_request_count_until_the_user_acts() {
+        let mut oracle = Oracle::default();
+        // Nothing was streaming: not one more request.
+        oracle.user_stopped(3, false);
+        assert_eq!(oracle.request_limit, Some(3));
+        // A second stop does not move the line.
+        oracle.user_stopped(5, true);
+        assert_eq!(oracle.request_limit, Some(3));
+        oracle.user_acted(3);
+        assert_eq!(oracle.request_limit, None);
+        assert_eq!(oracle.late_request_slack, 0);
+        // A stream was in flight: its own request may still reach the seam, once.
+        oracle.user_stopped(4, true);
+        assert_eq!(oracle.request_limit, Some(5));
+        // It never showed up: the allowance carries to the next stop.
+        oracle.user_acted(4);
+        assert_eq!(oracle.late_request_slack, 1);
+        oracle.user_stopped(6, false);
+        assert_eq!(oracle.request_limit, Some(7));
+    }
+
+    #[test]
+    fn i8_one_message_one_request() {
+        let scenario = Scenario::new(1);
+        let submitted = [sent(START, false), sent(MORE, false)];
+        let assistant = msg(RecordedRole::Assistant, &[], &[]);
+        // The ordinary run: each message ends exactly one request.
+        let ok = numbered(vec![
+            vec![user(START)],
+            vec![user(START), assistant.clone(), user(MORE)],
+        ]);
+        assert!(check_requests(&ok, &replies(2, &[]), &scenario, &submitted, false).is_ok());
+
+        // The follow-up opened two requests (the second with one more message, so it is not a
+        // plain repeat): one message, two requests.
+        let twice = numbered(vec![
+            vec![user(START)],
+            vec![user(START), assistant.clone(), user(MORE)],
+            vec![
+                user(START),
+                assistant.clone(),
+                msg(RecordedRole::Assistant, &[], &[]),
+                user(MORE),
+            ],
+        ]);
+        let broken =
+            check_requests(&twice, &replies(3, &[]), &scenario, &submitted, false).unwrap_err();
+        assert_eq!(broken.invariant, "I8");
+        // ... unless the first of them failed and was retried.
+        assert!(check_requests(&twice, &replies(3, &[1]), &scenario, &submitted, false).is_ok());
+        // ... or the user really sent it twice.
+        let sent_twice = [sent(START, false), sent(MORE, false), sent(MORE, false)];
+        assert!(check_requests(&twice, &replies(3, &[]), &scenario, &sent_twice, false).is_ok());
+    }
+
+    #[test]
+    fn i8_a_repeated_request_fails_unless_a_reply_in_between_failed() {
+        let scenario = Scenario::new(1);
+        let submitted = [sent(START, false)];
+        let tool_step = vec![
+            user(START),
+            msg(RecordedRole::Assistant, &["a"], &[]),
+            msg(RecordedRole::Tool, &[], &["a"]),
+        ];
+        let repeated = numbered(vec![
+            vec![user(START)],
+            tool_step.clone(),
+            tool_step.clone(),
+        ]);
+        let broken =
+            check_requests(&repeated, &replies(3, &[]), &scenario, &submitted, false).unwrap_err();
+        assert_eq!(broken.invariant, "I8");
+        assert!(broken.detail.contains("repeats"), "{}", broken.detail);
+        // A retry after a failed reply is the same request again, by design.
+        assert!(check_requests(&repeated, &replies(3, &[1]), &scenario, &submitted, false).is_ok());
+        // Going back to a prefix of an earlier request is a repeat too.
+        let backwards = numbered(vec![
+            vec![user(START)],
+            tool_step.clone(),
+            vec![user(START)],
+        ]);
+        assert!(
+            check_requests(&backwards, &replies(3, &[]), &scenario, &submitted, false).is_err()
+        );
+    }
+
+    #[test]
+    fn i8_a_plain_submit_that_reaches_no_request_is_a_lost_message() {
+        let scenario = Scenario::new(1);
+        let requests = numbered(vec![vec![user(START)]]);
+        let emitted = replies(1, &[]);
+        let lost = [sent(START, false), sent(MORE, false)];
+        let broken = check_requests(&requests, &emitted, &scenario, &lost, false).unwrap_err();
+        assert_eq!(broken.invariant, "I8");
+        assert!(broken.detail.contains("lost"), "{}", broken.detail);
+        // A stop may discard a message that was not sent yet; a queued one is handed back to the
+        // input when its turn is cancelled (I3 covers the clean finish).
+        assert!(check_requests(&requests, &emitted, &scenario, &lost, true).is_ok());
+        let queued = [sent(START, false), sent(MORE, true)];
+        assert!(check_requests(&requests, &emitted, &scenario, &queued, false).is_ok());
+        // Texts the input may rewrite (trimmed, quoted, empty) are not followed.
+        let odd = [
+            sent(START, false),
+            sent("  ", false),
+            sent("say \"hi\"", false),
+        ];
+        assert!(check_requests(&requests, &emitted, &scenario, &odd, false).is_ok());
     }
 }

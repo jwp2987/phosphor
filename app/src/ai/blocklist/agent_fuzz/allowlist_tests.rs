@@ -9,7 +9,7 @@
 //!   scenario with a user who only approves / answers ends in the same status, the same number of
 //!   requests and the same tool messages whether the allowlist is ON or OFF. The only permitted
 //!   difference is the skipped approvals themselves.
-//! * the ON runs of every sweep (`matrix`, corpus replay, the paced proptest) check I1-I7 with it ON.
+//! * the ON runs of every sweep (`matrix`, corpus replay, the paced proptest) check I1-I8 with it ON.
 
 use fake_llm::scenario::*;
 use proptest::prelude::*;

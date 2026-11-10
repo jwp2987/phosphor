@@ -2,7 +2,7 @@
 //!
 //! Real terminal view, controller, action model and queue in `App::test`; the model is a script
 //! (`fake_llm::scenario`) played through `agent_providers::fake_stream_seam`; a scripted user
-//! steps through the same entry points the UI uses; an oracle checks invariants I1-I7 after every
+//! steps through the same entry points the UI uses; an oracle checks invariants I1-I8 after every
 //! step and at the end. A failing case prints its scenario as schema JSON.
 //!
 //! * `player` - scenario -> seam turns, and the record of what was emitted (I4)
@@ -14,7 +14,7 @@
 //! * `coverage` - which (tool x op x timing) and (chaos x phase) cells the run hit
 //! * `matrix` (the deterministic approvals matrix: action kind x response, timings, orders, malformed args, command behaviours)
 //! * `fuzz_tests` (proptest), `corpus_replay_tests` (+ `corpus/*.json`, `known_failures.toml`),
-//!   `prompt_tests` (I5)
+//!   `prompt_tests` (I5), `stop_tests` (Stop means stop, #1942, counted on the seam's requests)
 
 mod actor;
 mod coverage;
@@ -37,3 +37,5 @@ mod matrix;
 mod prompt_tests;
 #[cfg(test)]
 mod smoke_tests;
+#[cfg(test)]
+mod stop_tests;

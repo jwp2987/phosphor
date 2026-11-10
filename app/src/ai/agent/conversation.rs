@@ -985,12 +985,53 @@ impl AIConversation {
                 AIAgentOutputStatus::Finished {
                     finished_output: FinishedAIAgentOutput::Error { .. },
                 } => return ConversationStatus::Error,
+                // Nothing is streaming in a conversation read back from disk: the app went
+                // away mid-reply, which interrupted the turn (#1951).
+                AIAgentOutputStatus::Streaming { .. } => return ConversationStatus::Cancelled,
                 _ => {}
             }
         }
 
+        // #1951: a turn whose last tool calls were never answered did not finish: the app was
+        // closed while they waited for approval, ran, or after a Stop / Reject whose results
+        // had not gone out yet. It used to restore as `Success`, a finished-looking turn with
+        // calls left hanging. Restore never re-queues or runs those calls (stale calls are
+        // cancelled, never run); the next request's preflight answers them as interrupted.
+        if Self::has_unanswered_trailing_tool_calls(root_task) {
+            return ConversationStatus::Cancelled;
+        }
+
         // If not cancelled or errored, it's successful
         ConversationStatus::Success
+    }
+
+    /// Whether the root task's messages end in client tool calls with no result. Only the
+    /// trailing batch counts: once the model wrote text or the user sent a message after a call,
+    /// the turn moved on. A subagent call is not a client tool call and never gets a result on
+    /// the root task (see `finished_cli_subagent_task_ids`), and a carrier call with no tool
+    /// (unparseable arguments) is answered by its synthetic result or not at all.
+    fn has_unanswered_trailing_tool_calls(root_task: &Task) -> bool {
+        let mut unanswered: Vec<&str> = Vec::new();
+        for message in root_task.messages() {
+            match &message.message {
+                Some(api::message::Message::ToolCall(call)) => {
+                    let is_client_tool = call.tool.as_ref().is_some_and(|tool| {
+                        !matches!(tool, api::message::tool_call::Tool::Subagent(_))
+                    });
+                    if is_client_tool {
+                        unanswered.push(call.tool_call_id.as_str());
+                    }
+                }
+                Some(api::message::Message::ToolCallResult(result)) => {
+                    unanswered.retain(|id| *id != result.tool_call_id);
+                }
+                Some(
+                    api::message::Message::UserQuery(_) | api::message::Message::AgentOutput(_),
+                ) => unanswered.clear(),
+                _ => {}
+            }
+        }
+        !unanswered.is_empty()
     }
 
     /// Total agent response time for the last completed set of agent responses

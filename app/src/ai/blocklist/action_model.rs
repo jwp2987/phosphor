@@ -287,6 +287,18 @@ fn user_accept_lacks_question_answer(action: &AIAgentActionType, has_staged_answ
         && !has_staged_answer
 }
 
+/// What [`BlocklistAIActionModel::cancel_all_pending_actions`] did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct CancelledPendingActions {
+    /// At least one action got its cancelled result in the call. Each one emits `FinishedAction`,
+    /// so the controller's subscriber decides the turn's end.
+    pub cancelled_any: bool,
+    /// At least one batch was still preprocessing and was dropped. Its actions are held by the
+    /// preprocess future, so they have no result yet (`record_stale_cancelled` records one,
+    /// silently, if the future ever resolves) and no `FinishedAction` is emitted for them.
+    pub dropped_preprocessing: bool,
+}
+
 /// Whether rejecting one pending action cancels every later pending action of the same turn
 /// with it (#1799). True for the user's own reject / stop (`ManuallyCancelled`), the reason
 /// every Reject button, the status bar's Ctrl-C / Stop and the TUI reject pass.
@@ -1660,7 +1672,9 @@ impl BlocklistAIActionModel {
 
     /// Gives actions that were never queued (the turn's stream was cancelled by a follow-up
     /// before `queue_actions`) a cancelled result, so the follow-up request carries a result
-    /// for every tool call and is never blocked on an unanswered one (#1861).
+    /// for every tool call and is never blocked on an unanswered one (#1861). Also used when the
+    /// stream was cancelled by a Stop / Ctrl-C / Delete in that same window (#1946): every call
+    /// of a reply gets exactly one result, at once, whoever cancelled it.
     pub(super) fn cancel_discarded_actions(
         &mut self,
         actions: Vec<AIAgentAction>,
@@ -1677,19 +1691,21 @@ impl BlocklistAIActionModel {
                 continue;
             }
             log::info!(
-                "hop=agent_action id={} status=discarded stream cancelled by a follow-up before the action was queued",
+                "hop=agent_action id={} status=discarded stream cancelled before the action was queued",
                 action.id
             );
             self.cancel_pending_action(conversation_id, action, reason, ctx);
         }
     }
 
+    /// Returns what it did, for the caller that has to know whether anything will still end the
+    /// turn (#1944): see [`CancelledPendingActions`].
     pub(super) fn cancel_all_pending_actions(
         &mut self,
         conversation_id: AIConversationId,
         reason: Option<CancellationReason>,
         ctx: &mut ModelContext<Self>,
-    ) {
+    ) -> CancelledPendingActions {
         self.executor.update(ctx, |executor, ctx| {
             executor.cancel_all_running_async_actions_for_conversation(conversation_id, reason, ctx)
         });
@@ -1697,11 +1713,16 @@ impl BlocklistAIActionModel {
         // Preprocess batches of a cancelled turn can no longer produce cards, and one that never
         // resolves would park every later batch (#1859). Give parked, already-preprocessed
         // actions their cancel results.
+        let dropped_preprocessing = self
+            .pending_preprocessed_actions
+            .get(&conversation_id)
+            .is_some_and(|batches| batches.has_pending());
         let parked_actions = self
             .pending_preprocessed_actions
             .get_mut(&conversation_id)
             .map(|batches| batches.abandon_all())
             .unwrap_or_default();
+        let mut cancelled_any = !parked_actions.is_empty();
         for action in parked_actions {
             log::warn!(
                 "hop=agent_action id={} status=parked cancelled while parked behind a preprocess batch",
@@ -1716,11 +1737,15 @@ impl BlocklistAIActionModel {
         self.commands_being_edited
             .retain(|(conversation, _), _| *conversation != conversation_id);
 
-        let Some(actions_to_cancel) = self.pending_actions.get_mut(&conversation_id) else {
-            return;
-        };
-        for action in actions_to_cancel.drain(..).collect_vec() {
-            self.cancel_pending_action(conversation_id, action, reason, ctx);
+        if let Some(actions_to_cancel) = self.pending_actions.get_mut(&conversation_id) {
+            for action in actions_to_cancel.drain(..).collect_vec() {
+                cancelled_any = true;
+                self.cancel_pending_action(conversation_id, action, reason, ctx);
+            }
+        }
+        CancelledPendingActions {
+            cancelled_any,
+            dropped_preprocessing,
         }
     }
 

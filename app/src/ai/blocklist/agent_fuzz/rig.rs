@@ -13,6 +13,7 @@ use warpui::{App, ModelHandle, SingletonEntity, ViewHandle};
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::agent::AIAgentActionType;
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
+use crate::ai::agent::{AIAgentOutputStatus, FinishedAIAgentOutput};
 use crate::ai::agent_providers::fake_stream_seam::{self, SeamHandle};
 use crate::ai::agent_providers::mock_wiring::wire_mock_provider_config_with_model;
 use crate::ai::blocklist::action_model::{PendingActionSnapshot, PendingStage};
@@ -44,6 +45,17 @@ pub struct Rig {
     /// A command that never ends has been reported to the agent (as the executor's stall
     /// snapshot does) and is still alive in the terminal: a hand-over has something to hand over.
     pub lrc_alive: bool,
+    /// Every message the user sent, in order (I8): the opening one and each follow-up.
+    pub submitted: Vec<Submitted>,
+}
+
+/// One message the scripted user sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Submitted {
+    pub text: String,
+    /// The input queued it behind the running turn (it is sent when that turn ends, or handed
+    /// back to the input when the turn is cancelled); `false` = a plain submit.
+    pub queued: bool,
 }
 
 /// One queued row, as the oracle sees it.
@@ -62,6 +74,9 @@ pub struct Obs {
     /// Actions whose card would take accept keys now (the card's own key routing).
     pub routed: Vec<AIAgentActionId>,
     pub rows: Vec<Row>,
+    /// Tool calls of the last finished reply that the action model knows nothing about (no
+    /// status of any kind) and that have no result in the conversation either (I1, #1946).
+    pub unsettled_calls: Vec<AIAgentActionId>,
 }
 
 impl Obs {
@@ -140,6 +155,7 @@ pub fn setup(app: &mut App, scenario: &Scenario, safe_allowlist: bool) -> Rig {
         cmd_keys: HashMap::new(),
         running_since: HashMap::new(),
         lrc_alive: false,
+        submitted: Vec::new(),
     }
 }
 
@@ -160,7 +176,11 @@ fn enable_safe_allowlist(app: &mut App) {
 
 impl Rig {
     /// The user submits `text` in the conversation.
-    pub fn send(&self, app: &mut App, text: &str) {
+    pub fn send(&mut self, app: &mut App, text: &str) {
+        self.submitted.push(Submitted {
+            text: text.to_owned(),
+            queued: false,
+        });
         let conversation_id = self.conversation_id;
         let text = text.to_owned();
         self.controller.update(app, |controller, ctx| {
@@ -198,6 +218,7 @@ impl Rig {
                     origin: row.origin(),
                 })
                 .collect();
+            let unsettled_calls = self.unsettled_calls(ctx);
             Obs {
                 status,
                 stream_in_flight,
@@ -205,8 +226,53 @@ impl Rig {
                 cards,
                 routed,
                 rows,
+                unsettled_calls,
             }
         })
+    }
+
+    /// The calls of the conversation's last reply, when that reply finished cleanly, that have
+    /// neither an action-model status (preprocessing, queued, blocked, running, finished) nor a
+    /// result message in the conversation. Read from the conversation and the action model
+    /// separately: a call the stream delivered but nothing ever queued or answered shows up
+    /// only here.
+    fn unsettled_calls(&self, ctx: &warpui::AppContext) -> Vec<AIAgentActionId> {
+        let Some(conversation) =
+            BlocklistAIHistoryModel::as_ref(ctx).conversation(&self.conversation_id)
+        else {
+            return Vec::new();
+        };
+        let exchanges = conversation.all_exchanges();
+        let Some(last) = exchanges.last() else {
+            return Vec::new();
+        };
+        let AIAgentOutputStatus::Finished {
+            finished_output: FinishedAIAgentOutput::Success { output },
+        } = &last.output_status
+        else {
+            return Vec::new();
+        };
+        let call_ids: Vec<AIAgentActionId> = {
+            let output = output.get();
+            output.actions().map(|action| action.id.clone()).collect()
+        };
+        let action_model = self.action_model.as_ref(ctx);
+        call_ids
+            .into_iter()
+            .filter(|id| action_model.get_action_status(id).is_none())
+            .filter(|id| {
+                let wanted = id.to_string();
+                !conversation.all_tasks().any(|task| {
+                    task.messages().any(|message| {
+                        matches!(
+                            &message.message,
+                            Some(agent_proto::message::Message::ToolCallResult(result))
+                                if result.tool_call_id == wanted
+                        )
+                    })
+                })
+            })
+            .collect()
     }
 
     /// The front pending action, with its type.

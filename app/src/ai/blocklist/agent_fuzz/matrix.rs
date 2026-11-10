@@ -2,7 +2,7 @@
 //! asked for, next to the proptest in `fuzz_tests.rs` (which samples; this enumerates).
 //!
 //! Every case is a [`Scenario`] built in code (no randomness; seeds come from the case index), run
-//! through the same rig and oracle as every other case: I1-I7 are checked after every step, so a
+//! through the same rig and oracle as every other case: I1-I8 are checked after every step, so a
 //! stuck card, a lost tool message, a card that still takes keys, a panic or an ERROR log in ANY
 //! cell fails it and prints the scenario as schema JSON. Each sweep runs with the safe read-only
 //! allowlist OFF (the shipped default, and the gate) and ON (a separate test, so an ON failure

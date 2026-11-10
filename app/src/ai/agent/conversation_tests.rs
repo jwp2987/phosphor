@@ -1032,10 +1032,11 @@ fn waiting_for_events_display_label_is_waiting() {
 
 /// A conversation that was yielded via `wait_for_events` at shutdown
 /// restores as whatever `derive_status_from_root_task` returns (Success
-/// for a cleanly-streamed last exchange). The unresolved tool call stays
-/// in the transcript as an orphan; the next outbound request triggers
-/// the server's existing supersede mechanism to synthesize the matching
-/// `Cancel`. The waiting state itself is not durable across restart.
+/// for this fixture, whose root task has no messages; a root task that ends
+/// in an unanswered client tool call restores as Cancelled since #1951). The
+/// unresolved tool call stays in the transcript as an orphan; the next
+/// outbound request answers it as interrupted. The waiting state itself is
+/// not durable across restart: it never restores as WaitingForEvents.
 #[test]
 fn restored_conversation_does_not_re_enter_waiting_for_events() {
     let conversation_data: AgentConversationData =
@@ -1505,4 +1506,95 @@ fn persistence_snapshot_shares_task_sources() {
             "snapshot must alias the live task, not copy it"
         );
     }
+}
+
+fn restored_with_root_messages(messages: Vec<api::Message>) -> AIConversation {
+    AIConversation::new_restored(
+        AIConversationId::new(),
+        vec![api::Task {
+            id: "root-task".to_string(),
+            messages,
+            dependencies: None,
+            description: String::new(),
+            summary: String::new(),
+            server_data: String::new(),
+        }],
+        None,
+    )
+    .unwrap()
+}
+
+fn finished_echo_result(id: &str, call_id: &str) -> api::Message {
+    tool_call_result_message_with_result(
+        id,
+        call_id,
+        api::message::tool_call_result::Result::RunShellCommand(api::RunShellCommandResult {
+            command: "echo hi".to_string(),
+            output: String::new(),
+            exit_code: 0,
+            result: Some(api::run_shell_command_result::Result::CommandFinished(
+                api::ShellCommandFinished {
+                    command_id: "block-1".to_string(),
+                    output: "hi".to_string(),
+                    exit_code: 0,
+                    start_ts: None,
+                    finish_ts: None,
+                },
+            )),
+        }),
+    )
+}
+
+/// #1951: a conversation saved with its last tool call unanswered (the app was closed while the
+/// card waited, or after a Stop whose results had not gone out) restores as `Cancelled`, not as a
+/// finished turn. Fails on the old code, which restored it as `Success`.
+#[allow(deprecated)]
+#[test]
+fn a_restored_turn_with_an_unanswered_tool_call_is_cancelled_not_successful() {
+    let conversation = restored_with_root_messages(vec![
+        user_query_message("user-1", "request-1", "run it"),
+        tool_call_message_with_tool("tool-call-1", "call-1", run_shell_command_tool()),
+    ]);
+    assert_eq!(conversation.status(), &ConversationStatus::Cancelled);
+
+    // One of two calls answered is still an interrupted turn.
+    let conversation = restored_with_root_messages(vec![
+        user_query_message("user-1", "request-1", "run both"),
+        tool_call_message_with_tool("tool-call-1", "call-1", run_shell_command_tool()),
+        tool_call_message_with_tool("tool-call-2", "call-2", run_shell_command_tool()),
+        finished_echo_result("tool-result-1", "call-1"),
+    ]);
+    assert_eq!(conversation.status(), &ConversationStatus::Cancelled);
+}
+
+/// #1951, the other side: answered calls, a turn that moved on after its calls, and calls that
+/// never get a client result (a subagent call, a carrier with no tool) all still restore as a
+/// finished turn.
+#[allow(deprecated)]
+#[test]
+fn a_restored_turn_with_every_tool_call_answered_is_successful() {
+    let answered = restored_with_root_messages(vec![
+        user_query_message("user-1", "request-1", "run it"),
+        tool_call_message_with_tool("tool-call-1", "call-1", run_shell_command_tool()),
+        finished_echo_result("tool-result-1", "call-1"),
+    ]);
+    assert_eq!(answered.status(), &ConversationStatus::Success);
+
+    let moved_on = restored_with_root_messages(vec![
+        user_query_message("user-1", "request-1", "run it"),
+        tool_call_message_with_tool("tool-call-1", "call-1", run_shell_command_tool()),
+        agent_output_message("agent-1", "request-2"),
+    ]);
+    assert_eq!(moved_on.status(), &ConversationStatus::Success);
+
+    let not_client_calls = restored_with_root_messages(vec![
+        user_query_message("user-1", "request-1", "run it"),
+        tool_call_message_with_tool(
+            "subagent-call-1",
+            "subagent-call-1",
+            cli_subagent_tool("cli-task-1", "block-1"),
+        ),
+        tool_call_message("carrier-1", "call-9"),
+    ]);
+    assert_eq!(not_client_calls.status(), &ConversationStatus::Success);
 }

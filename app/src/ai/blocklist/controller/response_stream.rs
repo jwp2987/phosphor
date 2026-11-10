@@ -1286,6 +1286,17 @@ impl ResponseStream {
                             self.recovery.attempts_used() + 1,
                         );
                         self.emit_retryable_agent_mode_error_telemetry(format!("{e:?}"), ctx);
+                        // #1943: the failed attempt is over as far as this stream is concerned.
+                        // Its transport still ends, and that end used to be taken for the end
+                        // of the whole stream (`on_response_stream_complete` matched the id):
+                        // the controller found the exchange still streaming, ended the turn
+                        // with an "unfinished exchange" error and dropped this model, and the
+                        // parked retry died with it. `Retry` never had the problem because
+                        // `retry()` rotates the id at once; here the retry is parked until
+                        // connectivity returns, so retire the id now. `retry()` assigns the
+                        // fresh one, and `cancel()` still works while parked (it does not look
+                        // at the id).
+                        self.current_request_id = None;
                         self.defer_retry_until_online(ctx);
                         return;
                     }

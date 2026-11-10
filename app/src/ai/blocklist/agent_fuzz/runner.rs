@@ -130,6 +130,8 @@ async fn drive(
     let mut rig = rig::setup(app, scenario, safe_allowlist);
     let mut oracle = Oracle::default();
     let mut report = CaseReport::default();
+    // The user pressed Stop / Ctrl-C or closed the tab at some point (I8b).
+    let mut stopped = false;
 
     rig.send(app, "start the task");
     watch(
@@ -155,7 +157,36 @@ async fn drive(
             let obs = rig.observe(app);
             record.stage = obs.snapshot.first().map(|s| stage_name(s.stage));
             record.tool = rig.front_action(app).map(|a| fuzz_action_kind(&a.action));
+            let requests_before = rig.seam.request_count();
             actor::perform(app, &mut rig, &step.op);
+            match &step.op {
+                // I8a. Stop always stops the conversation. Ctrl-C does when no command is
+                // running; into a running command it is that command's interrupt, whose result
+                // may still go back to the model (#1178). CloseTab is not counted: the rig's
+                // close only discards pending work, it does not suspend the pane as the real
+                // close does, so a command still running may report afterwards.
+                Op::Stop => {
+                    stopped = true;
+                    oracle.user_stopped(requests_before, obs.stream_in_flight);
+                }
+                Op::CtrlC => {
+                    stopped = true;
+                    if !obs.running() {
+                        oracle.user_stopped(requests_before, obs.stream_in_flight);
+                    }
+                }
+                Op::CloseTab => {
+                    stopped = true;
+                    oracle.tab_closed();
+                }
+                Op::Approve
+                | Op::Reject
+                | Op::Edit { .. }
+                | Op::AnswerQuestion { .. }
+                | Op::SkipQuestion
+                | Op::FollowUp { .. } => oracle.user_acted(rig.seam.request_count()),
+                Op::ModeSwitch | Op::Escape | Op::TakeOver | Op::GiveBack | Op::Wait { .. } => {}
+            }
             if let Op::Wait { ms } = &step.op {
                 pump_for(app, knobs.scale(Duration::from_millis(*ms))).await;
             }
@@ -206,10 +237,11 @@ async fn drive(
         }
     }
 
-    // I4, I6.
+    // I4, I8b/c, I6.
     let requests = rig.seam.requests();
     let emitted = rig.player.emitted();
     oracle::check_tool_messages(&requests, &emitted)?;
+    oracle::check_requests(&requests, &emitted, scenario, &rig.submitted, stopped)?;
     oracle::check_logs(mark, &emitted, capture, &panic_watch.panics())?;
 
     report.requests = requests.len();
@@ -277,6 +309,7 @@ async fn closing_user(
         let obs: Obs = rig.observe(app);
         if !obs.cards.is_empty() {
             answer_front_card(app, rig);
+            oracle.user_acted(rig.seam.request_count());
             continue;
         }
         // A reply still being retried or streamed is not "settled".
