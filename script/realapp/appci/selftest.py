@@ -6511,6 +6511,62 @@ def lab_helper_from_the_cache_r12():
     assert "lab_helper.py" in doc and "lab-helper" in doc and "APPCI_APP_PINNED_DIGESTS=0" in doc and "PHOSPHOR_CI_HELPER_CACHE" in doc
 
 
+@check
+def precmd_secret_honor_ps1_pure_parts():
+    """#1923 round 12 (cases_precmd_secret.py): the honor-PS1 arm of the precmd secret. The sourced function, the pane's own mode probe, the settings edit, the
+    relaunch plan, the PIN-in-the-editor reader, and the wiring: both session modes, PROVING only, Git Bash pane on Windows, the setting's real TOML path."""
+    import cases_precmd_secret as PS, toml_text as T
+    n = PS.names("hp1")
+    assert len(set(n.values())) == len(n) and all("hp1" in v for v in n.values())
+    sc = PS.install_script(n)
+    assert 'read -s -p "vault pin: " x' in sc and "precmd_functions+=(__pp_pin)" in sc and sc.endswith("echo installed > pp_hp1_inst.txt\n")
+    assert sc.index("echo asked > pp_hp1_asked.txt") < sc.index("read -s") < sc.index('echo "$x" > pp_hp1_pin.txt'), "asked is recorded BEFORE the read, the PIN after"
+    assert sc.index("rm -f pp_hp1_go.txt") < sc.index("read -s"), "the function asks once"
+    assert PS.QUESTION_WORD in PS.QUESTION and PS.QUESTION.rstrip().endswith(":"), "the app's own question test (key_facts::output_tail_is_input_prompt) needs the colon"
+    # nothing the case TYPES may contain the word the screen check looks for
+    assert PS.QUESTION_WORD not in PS.mode_probe_line(n["mode"]) and PS.QUESTION_WORD not in "source ./%s 2> %s" % (n["script"], n["err"]) and PS.QUESTION_WORD not in "touch " + n["go"]
+    assert PS.mode_probe_line("m.txt") == 'echo "hp=${WARP_HONOR_PS1:-unset} sh=${BASH_VERSION:+bash}" > m.txt'
+    assert PS.parse_mode_probe(["hp=1 sh=bash"]) == (True, True) and PS.parse_mode_probe(["hp=0 sh=bash"]) == (False, True)
+    assert PS.parse_mode_probe(["hp=1 sh="]) == (True, False), "zsh: BASH_VERSION is unset"
+    assert PS.parse_mode_probe(["hp=unset sh=bash"]) == (None, True) and PS.parse_mode_probe([]) is None and PS.parse_mode_probe(["junk"]) is None
+    assert PS.parse_mode_probe(["hp=0 sh=bash", "hp=1 sh=bash"]) == (True, True), "the newest line wins"
+    # the relaunch plan: only a bash pane already in the wanted mode runs as it is
+    assert PS.arm_plan(False, True, False) is False and PS.arm_plan(True, True, True) is False
+    assert PS.arm_plan(False, True, True) and PS.arm_plan(True, True, False) and PS.arm_plan(False, False, False) and PS.arm_plan(None, True, False) and PS.arm_plan(None, False, True)
+    # the settings edit: a bare profile, a profile that already has the table, and the macOS bash override
+    bare = '[general]\ndefault_session_mode = "agent"\nrestore_session = false\n'
+    on = PS.settings_for(bare, True, False)
+    assert T.get_key(on, "terminal.input", "honor_ps1") == "honor_ps1 = true" and T.get_key(on, "general", "default_session_mode") == 'default_session_mode = "agent"'
+    assert T.get_key(on, "session", "startup_shell_override") is None
+    has = bare + '\n[terminal.input]\nhonor_ps1 = true\nother = 1\n\n[session]\nstartup_shell_override = "zsh"\n'
+    off = PS.settings_for(has, False, True)
+    assert T.get_key(off, "terminal.input", "honor_ps1") == "honor_ps1 = false" and off.count("honor_ps1") == 1 and T.get_key(off, "terminal.input", "other") == "other = 1"
+    assert T.get_key(off, "session", "startup_shell_override") == 'startup_shell_override = "bash"' and off.count("startup_shell_override") == 1
+    # the PIN in the editor at an Enter: the whole PIN, either half, text logging on and off
+    pin = "pinab12cd"
+    log = ('a input_order hop=enter_begin deferred=false buffer="touch pp_hp1_go.txt" input_type=Shell t=1\n'
+           'b input_order hop=enter_begin deferred=false buffer="pinab12cd" input_type=AI t=2\n'
+           'c input_order hop=kh_pane_key text="pinab12cd" t=3\n'
+           'd input_order hop=enter_begin deferred=false buffer="2cd" input_type=Shell t=4\n')
+    assert PS.pin_in_editor_enters(log, pin) == ["AI"], PS.pin_in_editor_enters(log, pin)       # a pty-key line and text that is no half of the PIN do not count
+    assert PS.pin_in_editor_enters(log.replace('buffer="2cd"', 'buffer="b12cd"'), pin) == ["AI", "Shell"], "the second half alone, run as a command"
+    assert PS.pin_in_editor_enters('x hop=enter_begin deferred=false buffer=<9 chars> input_type=AI\n', pin) == [] and PS.pin_in_editor_enters("", pin) == [] and PS.pin_in_editor_enters(None, pin) == []
+    assert PS.enter_text_logged(log) is True and PS.enter_text_logged('x hop=enter_begin deferred=false buffer=<9 chars> input_type=AI\n') is False and PS.enter_text_logged("no enters") is None
+    # wiring
+    c = [x for x in cases.CASES if x["name"] == "precmd_secret_honor_ps1"]
+    assert len(c) == 1 and set(c[0]["modes"]) == {"terminal", "agent"} and c[0]["gui"], "both session modes (owner: one mode = not tested)"
+    assert "precmd_secret_honor_ps1" in cases.PROVING and "precmd_secret_honor_ps1" not in cases.SMOKE and "precmd_secret_honor_ps1" not in cases.PROVING_FAKE
+    assert winmap.skip_reason("precmd_secret_honor_ps1", "gitbash") is None and "Git Bash" in winmap.skip_reason("precmd_secret_honor_ps1", "powershell")
+    assert cases.wants_depth_check("precmd_secret_honor_ps1", cases.PROVING)
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    src = lambda p: open(os.path.join(root, p), encoding="utf-8").read()
+    assert 'toml_path: "terminal.input.honor_ps1"' in src("app/src/terminal/session_settings.rs"), "the key the case writes must be the setting's path"
+    assert 'builder.env("WARP_HONOR_PS1"' in src("app/src/terminal/local_tty/unix.rs") and '"${WARP_HONOR_PS1:-}" == "1"' in src("app/assets/bundled/bootstrap/bash_body.sh")
+    assert 'log_hop("enter_begin"' in src("app/src/terminal/input.rs") and "input_type={:?}" in src("app/src/terminal/input.rs"), "the hop the case reads must exist in the app"
+    doc = src("docs/testing.md")
+    assert "precmd_secret_honor_ps1" in doc and "r12-ps1case.md" in doc
+
+
 def main():
     failed = 0
     for f in CHECKS:

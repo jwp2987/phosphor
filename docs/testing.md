@@ -4852,3 +4852,20 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   with the app's prompt), `a_fresh_prompt_with_nothing_printed_asks_nothing`, `a_question_in_an_unstarted_grid_is_read_from_its_cells` (the
   round 12 arm, kept for a block written directly). Next unit run: all four pass; if the first fails at `written.is_background()` this reading
   is wrong and the round 12 one stands.
+- **New appci case `precmd_secret_honor_ps1`** (`appci/cases_precmd_secret.py`, `cases.PROVING`, both session modes; no case ran with honor PS1
+  on before). A bash precmd function (sourced from a file the harness writes) runs `read -s -p "vault pin: "` once; the PIN is typed in two halves
+  around a pause longer than the prompt hold's give-up (1.5 s). Two arms: `hp0`, honor PS1 off (the app's prompt: the control, and on Windows the
+  scenario of `gitbash_precmd_secret`), and `hp1`, honor PS1 on. The setting is read when the pane's shell starts, so the case writes
+  `terminal.input.honor_ps1` into the profile's `settings.toml` and relaunches the app (`cases_robust.stop_for_restart` / `start_app`), and it puts
+  the file back and relaunches once more at the end. Each arm first proves its premise from the pane itself (a typed line records
+  `$WARP_HONOR_PS1` and whether the shell is bash); an arm whose premise is not met is UNVERIFIABLE. Oracles per arm: the function reached its
+  `read` (a file it writes first); the question is on screen (OCR for `vault`, which no typed line contains: a failing check in terminal mode,
+  a metric `question_on_screen_<arm>` in agent mode, where a block that belongs to no command of the conversation may be hidden by design); the
+  `read` got the PIN whole and in order (effect file); no `hop=enter_begin` line of the app log shows the PIN or a half of it in the input
+  editor's buffer (needs `WARP_INPUT_ORDER_LOG_TEXT=1`, which the harness sets; without it a note says the check was not judged); no command in
+  `rec.log` holds it; the line typed after it runs. Platforms: Linux (the pane's bash), Windows (Git Bash pane only, `winmap.GITBASH_ONLY`),
+  macOS (the pane is zsh, so both arms relaunch with `session.startup_shell_override = "bash"`, the system bash 3.2; metric `pane_made_bash`).
+  Cost: two relaunches on Linux and Windows, three on macOS, about 1.5 min per pass. Selftest `precmd_secret_honor_ps1_pure_parts`. Unverified
+  on every platform: the first run is its first execution. To read in that run: a FAIL in `hp1` only is the honor-PS1 path; a FAIL in both arms
+  is the precmd read itself on that platform (on Linux and macOS no root-pane precmd `read -s` was ever tested: the prompt hold is ConPTY-only,
+  there the pty's termios facts have to route the keys).
