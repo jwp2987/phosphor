@@ -87,8 +87,15 @@ def byop_errors(text):
     return [l for l in lines if allowed_re.search(l)], [l for l in lines if not allowed_re.search(l)]
 
 
-def judge_errors(text, limit=BYOP_ERR_LIMIT):
+# macOS test session (ssh, no login): there is no default keychain, so EVERY launch (the first one too) logs these two ERROR lines when it reads its settings; the app is
+# fine (Round 8: `A default keychain could not be found`, 5 secure-storage lines per launch, the first launch included). Dropped on macOS only, so a Linux/Windows ERROR still counts.
+ENV_ERR_RE = re.compile(r"Failed to read (?:local control mode|API keys) from secure storage")
+
+
+def judge_errors(text, limit=BYOP_ERR_LIMIT, platform=None):
     """failure strings: any ERROR outside the [byop] allowlist, or more than `limit` expected ones"""
+    if (platform or sys.platform) == "darwin":
+        text = "\n".join(l for l in (text or "").split("\n") if not ENV_ERR_RE.search(l))
     exp, unexp = byop_errors(text)
     out = ["unexpected ERROR line: %s" % l for l in unexp[:5]]
     if len(exp) > limit:

@@ -3792,7 +3792,10 @@ def agent_interactive_oracles():
     # a real Round 7 run: the agent's wait-for-completion vim has no control state, so only the pty-owned hand_route proves the keys
     hr = "hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_written=1 bytes=\"e\""
     assert AI.fullscreen_keys_proven("x hop=alt_screen_enter  t=1\n" + hr) and not AI.fullscreen_keys_proven(hr) and not AI.fullscreen_keys_proven("hop=alt_screen_enter\nhop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false")
+    # a real Round 8 run (Linux): the keys of an agent-run vim are routed with state=editor_owned, command_interactive=true
+    assert AI.fullscreen_keys_proven("hop=alt_screen_enter  t=1\n" + hr.replace("pty_owned", "editor_owned"))
     assert AI.fullscreen_keys_proven("hop=fullscreen_handover agent_in_control=0 t=1") and not AI.fullscreen_keys_proven("")
+    assert AI.notice_seen("x [DEBUG] input_order hop=may_be_waiting_notice shown=1 t=1") and AI.notice_seen("showing a take-over notice (the command") and not AI.notice_seen("hop=handover")
     names = {c["name"] for c in cases.CASES}
     # the app's real hand-over line (cli_controller.rs switch_control_to_user), a prompt-shape line, and the non-hand-over lines seen in a real run
     assert AI.handover_seen("2026-11-09T20:03:10Z [INFO] hop=handover action=call_abc123 reason=blocked_on_input\n")
@@ -3980,6 +3983,8 @@ def agent_resilience_pure_parts():
     assert len(exp) == 1 and len(unexp) == 1, (exp, unexp)
     assert len(ar.judge_errors(errs)) == 1 and ar.judge_errors("2026 [ERROR] [byop] open stream failed: x\n" * 2) == []
     assert len(ar.judge_errors("[ERROR] [byop] stream chunk error: x\n" * 3)) == 1
+    kc = "2026 [ERROR] Failed to read local control mode from secure storage: unknown error: A default keychain could not be found.\n2026 [ERROR] Failed to read API keys from secure storage: unknown error\n"
+    assert ar.judge_errors(kc, platform="darwin") == [] and len(ar.judge_errors(kc, platform="linux")) == 2 and len(ar.judge_errors(kc + "2026 [ERROR] boom\n", platform="darwin")) == 1
     hops = [("r1", "queued"), ("r2", "queued"), ("r1", "fired")]
     assert ar.judge_rows(["A1", "B1"], ["Reply A1"], hops, ["B1"]) == []                                    # A1 sent once, B1 held
     assert any("lost" in p for p in ar.judge_rows(["A1", "B1"], ["Reply A1"], hops, []))

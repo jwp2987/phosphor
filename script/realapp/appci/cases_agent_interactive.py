@@ -84,7 +84,9 @@ FS_HANDOVER_RE = re.compile(r"hop=fullscreen_handover agent_in_control=0")      
 # The user's keys reached the full-screen program's pty as the user's own bytes (`hop=hand_route ... state=pty_owned ... command_interactive=true`, written by both input
 # modes). An ordinary agent command waiting for completion has NO control state (take_over_for_user refuses a Manual take-over then, by design #1796/#1811), so the
 # `fullscreen_handover` hop above never fires for it, yet the agent is not driving the program: its keys are exact and the agent only waits for the result.
-FS_KEYS_RE = re.compile(r"hop=hand_route reason=unheld state=pty_owned \S+ \S+ \S+ command_interactive=true")
+# Round 8: the state is `pty_owned` OR `editor_owned` (an agent-requested command never moved the typeahead state machine off its editor-owned default, while the keys still
+# went straight to the pty: `hop=kh_iq_deliver ... dest=pty` follows each line); `command_interactive=true` is what says a running program is reading them.
+FS_KEYS_RE = re.compile(r"hop=hand_route reason=unheld state=(?:pty_owned|editor_owned) \S+ \S+ \S+ command_interactive=true")
 
 
 def hop_count(text, rx):
@@ -118,6 +120,16 @@ HANDOVER_RE = re.compile(r"hop=handover action=\S+ reason=(?:blocked_on_input|tr
 def handover_seen(text):
     """pure: the app handed an agent command to the user (the real hand-over hop, or the prompt-shape line that precedes it)"""
     return bool(HANDOVER_RE.search(text or "")) or AG.LRC_HANDED_TO_USER in (text or "")
+
+
+# The take-over notice has two log shapes: the prompt detector's info line (AG.LRC_NOTICE, a prompt-shaped line left quiet) and the view's `hop=may_be_waiting_notice` (a stalled
+# program with an unknown tty-read probe, e.g. an `ssh -tt` whose remote read the local OS cannot see; the only line Round 8 Linux logged for it).
+NOTICE_HOP = "hop=may_be_waiting_notice"
+
+
+def notice_seen(text):
+    """pure: the app showed the 'may be waiting for input -- Take over' notice (either log shape)"""
+    return AG.LRC_NOTICE in (text or "") or NOTICE_HOP in (text or "")
 
 
 def handed(ctx, off):
@@ -159,7 +171,7 @@ def c_agent_password(ctx, r):
         if not ctx.until(lambda: handed(ctx, off), 45, step=0.5):
             ctx.shot("ai_pw_nohandover")
             aw = AG.lrc_awaited(ctx.log_since(off))
-            if AG.LRC_NOTICE in ctx.log_since(off):
+            if notice_seen(ctx.log_since(off)):
                 r.unverifiable("ai_pw: the OS cannot say the command reads the tty; only the take-over notice was logged (no hand-over on silence, #1811)")
             if aw is False:
                 r.unverifiable("ai_pw: agent_command_wait awaited=false: the tool call did not wait, the hand-over detector was never armed")
@@ -229,8 +241,8 @@ def c_agent_ssh(ctx, r):
         off, n0 = ask_run(ctx, r, cmd, "ai_ssh")
         if not ctx.until(lambda: handed(ctx, off), 60, step=0.5):
             ctx.shot("ai_ssh_nohandover")
-            if AG.LRC_NOTICE in ctx.log_since(off) or AG.lrc_awaited(ctx.log_since(off)) is False:
-                r.unverifiable("ai_ssh: no hand-over (take-over notice only, or the tool call did not wait): the ssh hand-over is not verified")
+            if notice_seen(ctx.log_since(off)) or AG.lrc_awaited(ctx.log_since(off)) is False:
+                r.unverifiable("ai_ssh: no hand-over (take-over notice only, #1811: the local OS cannot see the remote read, or the tool call did not wait): the ssh hand-over is not verified")
                 return
             r.check(False, "ai_ssh: the remote `read` at its prompt was never handed to the user within 60 s")
             return
@@ -265,9 +277,15 @@ def c_agent_less(ctx, r):
             f.write("".join("line %d\n" % i for i in range(1, 601)))
         ctx.rm("ai_less.txt")
         tok = "less" + ctx.tok(6).lower().replace("_", "")
-        off, n0 = ask_run(ctx, r, "less ai_long.txt", "ai_less")
+        # Agent commands run with LESS=-FRX (#1813); -X means less never takes the alt screen, so the case set LESS for this one command (`LESS=R less`: no -F/-X) to get the
+        # full-screen pager it is about. (Round 8: with -FRX no hop=alt_screen_enter ever came, the case skipped, and the still-running less made the next case's pane probe fail.)
+        off, n0 = ask_run(ctx, r, "LESS=R less ai_long.txt", "ai_less")
         if not wait_alt_screen(ctx, off, 30):
             ctx.shot("ai_less_notup")
+            if "is interactive/long running" in ctx.log_since(off):
+                ctx.be.key("ctrl+c")                 # less ignores SIGINT: a `q` is what ends it, or the pane keeps it and the next case finds no root shell
+                time.sleep(0.5)
+                ctx.be.type("q", 15)
             r.skip("ai_less: no hop=alt_screen_enter within 30 s, so less never took the screen and no keys were typed")
         ctx.shot("ai_less_up")
         r.note("ai_less: hand-over line in the app log: %s" % ("yes" if handed(ctx, off) else "no (a pager may be driven without the prompt hand-over)"))
