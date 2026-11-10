@@ -293,14 +293,18 @@ def c_agent_question_steer_at_end(ctx, r):
         r.check(AG.wait_marker(ctx, off, "[byop] opening stream", timeout=60), "no model request within 60 s of the prompt")
         tok2 = "T" + ctx.tok(6).upper()
         AG.type_fast(ctx, "Reply with the word %s" % tok2)
-        r.check(ctx.until(lambda: f.fresh_with(tok2) >= 1, 30, step=0.25), "the steer prompt never reached the model")
-        # either the steer won (the ask was discarded) or the ask card came first and the steer sits behind it: both must END in something answerable/terminal
+        # Two legitimate races (the fake model's reply is instant, so the whole ask is usually in before the steer is typed):
+        #  (a) the steer won: it cancelled the finished stream, the ask was discarded, the steer prompt reaches the model by itself;
+        #  (b) the ask card came first: the typed prompt is QUEUED behind the pending question (hop=enter_queued origin=pending_approval, Round 8 Linux), so it can only reach
+        #      the model after the card is answered. Requiring the steer at the model before answering (the old first check) failed (b) although the app did the right thing.
+        ctx.until(lambda: f.fresh_with(tok2) >= 1 or verdict(ctx.log_since(off)) == "answerable", 30, step=0.25)
         ctx.until(lambda: verdict(ctx.log_since(off)) in ("answerable", "ended"), BOUND_S, step=0.5)
         v = verdict(ctx.log_since(off))
         ctx.shot("question_steer_at_end_state")
         r.check(v in ("answerable", "ended"), "the turn is neither answerable nor ended (verdict %s, last turn state %r)" % (v, AR.last_turn_state(ctx.log_since(off))))
         if v == "answerable":
             r.check(answer_card(ctx, r, off, "steer_at_end"), "Enter did not answer the card")
+        r.check(ctx.until(lambda: f.fresh_with(tok2) >= 1, 30, step=0.25), "the steer prompt never reached the model (after the card was %s)" % ("answered" if v == "answerable" else "discarded"))
         AR.wait_turn(ctx, off, ("success", "error", "cancelled"), 60)
         r.check(f.fresh_with(tok2) == 1, "the steer prompt reached the model %d times" % f.fresh_with(tok2))
         next_prompt_works(ctx, r, f, off, "steer_at_end")

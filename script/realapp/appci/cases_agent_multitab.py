@@ -221,4 +221,14 @@ def c_agent_multitab_streaming(ctx, r):
         r.check(ctx.app.alive(), "the app died during the multi-tab streaming case")
         r.check(not [l for l in ctx.log_since(off_idle).splitlines() if "panicked at" in l], "panic in the app log during the case")
     finally:
+        # The case's own terminal phases pressed Escape (terminal_phase), so the typing tab may be left in the terminal view; the case owns that exit and re-enters the agent
+        # view itself (same rule as agent_code_recycle, r18u8) instead of the runner reporting it as an app finding (Round 8: left_agent_mode_after_agent_multitab_streaming).
+        try:
+            time.sleep(0.8)
+            if ctx.log_view_mode() == "terminal":
+                ctx.be.type("/agent", 12, enter=True)
+                ok = ctx.until(lambda: ctx.log_view_mode() == "agent", 10)
+                r.note("the case's own Escape left the agent view; it re-entered with /agent (%s)" % ("agent view again" if ok else "NOT proven: the runner will relaunch"))
+        except Exception:
+            pass
         CA.cleanup_tmp(ctx)
