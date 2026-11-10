@@ -3251,6 +3251,7 @@ I5 (`prompt_tests.rs`): the rig has no pty, so I5 drives the real `PromptDetecto
 | test | what it proves |
 |---|---|
 | `controller_tests::finished_batch::a_user_stop_after_a_finished_result_sends_no_request` | #1942: `plan_finished_batch` for Stop / Delete / a user shell command / a submit elsewhere over `[completed, rejected]` plans no follow-up, ends `Cancelled`, shows no notice; the same batch with no reason still follows up (#1178) |
+| `preprocess_tests::has_pending_is_true_only_while_a_batch_is_still_preprocessing` | #1944: the fact a Stop keys its own status write on (a batch still preprocessing was dropped); parked, drained and abandoned batches are not it. The Stop path itself has no test (the rig cannot hold a preprocess) |
 | `agent_fuzz::stop_tests::a_stop_after_a_finished_result_opens_no_request_and_the_results_ride_on_the_next_message` | #1942 on the rig, counted on `seam.request_count()` before and after `cancel_conversation_progress(.., ManuallyCancelled)` with one result already recorded |
 | `agent_fuzz::oracle::tests::i8_*` | the I8 checks themselves, on hand-built requests |
 | `response_stream_tests::an_offline_failure_parks_the_retry_and_the_dead_attempts_end_is_not_the_streams_end` | #1943: offline, a pre-action failure parks the retry; the failed attempt's transport ending emits no `AfterStreamFinished`; a Stop while parked emits exactly one |

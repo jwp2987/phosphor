@@ -200,6 +200,14 @@ impl PendingPreprocessedActions {
         ready
     }
 
+    /// Whether any batch is still preprocessing (its actions are in the hands of its future, not
+    /// here, so a cancel cannot give them results yet).
+    pub fn has_pending(&self) -> bool {
+        self.0
+            .iter()
+            .any(|batch| matches!(batch.status, PreprocessActionStatus::Pending))
+    }
+
     /// Drops every batch (cancel). Returns the actions of batches that had finished
     /// preprocessing but were still parked, so the caller can give them cancel results.
     pub fn abandon_all(&mut self) -> Vec<AIAgentAction> {

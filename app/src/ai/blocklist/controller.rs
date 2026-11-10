@@ -5307,7 +5307,7 @@ impl BlocklistAIController {
             .try_cancel_streams_for_conversation(conversation_id, reason, ctx)
         {
             // Otherwise, cancel pending actions and update the input state.
-            let finished_action_coming = self.action_model.update(ctx, |action_model, ctx| {
+            let cancelled = self.action_model.update(ctx, |action_model, ctx| {
                 action_model.cancel_all_pending_actions(conversation_id, Some(reason), ctx)
             });
             self.set_input_mode_for_cancellation(ctx);
@@ -5316,16 +5316,19 @@ impl BlocklistAIController {
             // be left to write the turn's final status: a turn whose actions were all still
             // preprocessing (a slow diff apply, #1894) yields no synchronous result and no
             // `FinishedAction`, so the conversation stayed `InProgress` with nothing held until
-            // the user typed (#1944). The same holds for a turn `InProgress` with nothing at
-            // all (its submit was waiting on an attachment read, discarded above).
-            // An action cancelled just now emitted `FinishedAction`, and a cancelled running
-            // action winds down asynchronously and emits it then: in both cases the
-            // `FinishedAction` subscriber ends the turn (status, queued rows), so this write
-            // happens only when no `FinishedAction` is coming -- never both, which would
-            // release the queued prompts twice. Event-driven: decided here, at the stop, never
-            // by a timer.
+            // the user typed (#1944).
+            // Written here only in exactly that case -- a batch still preprocessing was
+            // dropped, and nothing else will report:
+            // * an action cancelled just now emitted `FinishedAction`, and a cancelled running
+            //   action winds down asynchronously and emits it then; in both cases the
+            //   `FinishedAction` subscriber ends the turn (status, queued rows);
+            // * a conversation that is `InProgress` with nothing held for any other reason (a
+            //   new, empty conversation starts `InProgress`) had no turn to end, and is left
+            //   as it was.
+            // Event-driven: decided here, at the stop, never by a timer.
             if stopped_by_user
-                && !finished_action_coming
+                && cancelled.dropped_preprocessing
+                && !cancelled.cancelled_any
                 && !self
                     .action_model
                     .as_ref(ctx)
