@@ -1,0 +1,468 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="158" failures="1" skipped="143">
+<testcase classname="terminal" name="mode_proof" time="3.90">
+</testcase>
+<testcase classname="terminal" name="cadence" time="7.60">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="42.20">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="78.20">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="67.90">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="7.90">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 14; app saw 14; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 6 Enter by a bindi"/>
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="27.70">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 482; app saw 482; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 456 unbound keydown/typed, 13 taken by a key binding, 12 Enter by"/>
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="557.30">
+<skipped message="NO-REFERENCE (not a pass): Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 200.8 ms includes the input-tool spawn "/>
+</testcase>
+<testcase classname="terminal" name="ctrl_c_flood_ab" time="409.30">
+<skipped message="NO-REFERENCE (not a pass): gate on vs off: Δp50 = -18.68 ms (on 180.96 / off 199.64; p95 192.15 / 209.92; n 30 / 30; blocks of 5, relaunch per block)"/>
+</testcase>
+<testcase classname="terminal" name="ps_ctrl_break" time="2.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ps_ctrl_scrolllock_break" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ps_fast_command_young_enter" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe" time="17.60">
+<skipped message="NO-REFERENCE (not a pass): APPCI_SU_SH_USER unset: the `su` to an sh-shelled user leg did not run (needs a passwordless su on this runner)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_questions" time="17.60">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 261; app saw 261; lost-before-app 0 (Enter: sent 9, app saw 9); of the app's: 256 unbound keydown/typed, 2 taken by a key binding, 2 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_vim_typeahead" time="21.50">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 298; app saw 298; lost-before-app 0 (Enter: sent 9, app saw 9); of the app's: 288 unbound keydown/typed, 3 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_unsupported_tcsh" time="15.60">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 235; app saw 235; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 229 unbound keydown/typed, 2 taken by a key binding, 3 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_prompt" time="17.90">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 271; app saw 271; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 261 unbound keydown/typed, 2 taken by a key binding, 7 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_probe" time="17.90">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 274; app saw 274; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 264 unbound keydown/typed, 2 taken by a key binding, 7 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe_empty_ps1" time="17.80">
+<skipped message="NO-REFERENCE (not a pass): empty_ps1 typed-before-the-setup leg: needs the Linux blocked-in-read fact (/proc/&lt;pid&gt;/syscall); not run on darwin"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="2.50">
+<skipped message="no passwordless sudo on this runner (sudo -n true failed)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_exec_fish_rc" time="18.00">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 322; app saw 322; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 311 unbound keydown/typed, 2 taken by a key binding, 8 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_docker_t_without_i" time="2.60">
+<skipped message="docker with a local alpine image is not available (never pulled by the harness)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_zsh_newuser_install" time="6.80">
+<skipped message="this zsh runs no zsh-newuser-install with an empty startup directory (proved on a pty before the case types anything)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="15.90">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 260; app saw 260; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 251 unbound keydown/typed, 2 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="gitbash_long_osc_reaches_app" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="42.50">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="11.70">
+<skipped message="NO-REFERENCE (not a pass): ssh trial verdicts: exact=3"/>
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="7.50">
+<skipped message="NO-REFERENCE (not a pass): ssh trial verdicts: exact=1"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing_wrapper" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead_wrapper" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="494.10">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="57.60">
+<failure message="REGRESSION key to frame: median 7.28 vs baseline build +1.05 ms (+16.9%); re-measured once: median 7.2 (fail)">REGRESSION key to frame: median 7.28 vs baseline build +1.05 ms (+16.9%); re-measured once: median 7.2 (fail)
+#1176 key -&gt; pty write median 0.34 ms (p95 0.77, n=60): within the 1 ms target
+#1958 platform samples while typing 63 key(s): 1 (median 92 us, max 92 us, 0 at or over 1 ms); foreground-group lookups by path: none logged
+key to frame: Phosphor-side keydown to first frame; no same-method reference exists
+injector accounting: injector sent 166; app saw 166; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 156 unbound keydown/typed, 6 taken by a key binding, 2 Enter by a binding; macOS: 166 key-down(s) reached NSApplication, 164 dispatched as key events, 2 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="127.20">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint_ab" time="222.00">
+<skipped message="NO-REFERENCE (not a pass): key frame at the end of the key press, on vs off: key-&gt;paint Δp50 = -4.71 ms (on 30.36 / off 35.07; p95 36.4 / 41.88; n 30 / 30; blocks of 5, relaunch per block; kl3 resolution 4.1"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_views_ab" time="263.90">
+<skipped message="NO-REFERENCE (not a pass): #1962 views re-rendered per key, skips on vs off, first keys (terminal mode): views p50 1 / 6 (Δ -5), render_ms p50 0.06 / 0.23 (Δ -0.17), frame build total_ms p50 1.1 / 1.21 (Δ -0"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="80.00">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 694; app saw 694; lost-before-app 0 (Enter: sent 28, app saw 28); of the app's: 597 unbound keydown/typed, 29 taken by a key binding, 28 Enter by"/>
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="15.50">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 222; app saw 222; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 200 unbound keydown/typed, 8 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="9.50">
+<skipped message="NO-REFERENCE (not a pass): path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="11.80">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 160; app saw 160; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 143 unbound keydown/typed, 5 taken by a key binding, 10 Enter by "/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="1.40">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_typeahead_managed" time="1.40">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_kill_switch" time="1.40">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="6.80">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 16; app saw 16; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 11 unbound keydown/typed, 3 taken by a key binding, 0 Enter by a bind"/>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="35.40">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 755; app saw 755; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 744 unbound keydown/typed, 3 taken by a key binding, 2 Enter by a"/>
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="56.30">
+<skipped message='NO-REFERENCE (not a pass): nu app log: 2026-11-10T13:43:52Z [DEBUG] frame 1: updated=["Menu", "Dropdown", "Menu", "DriveIndex", "Banner", "AcceptAutosuggestionKeybinding", "ReasoningDepthSelector", "Menu", "'/>
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_output" time="12.90">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 233; app saw 233; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 221 unbound keydown/typed, 1 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_drag" time="1.50">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="terminal" name="ctrl_c_no_esc_i_local" time="33.60">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 461; app saw 461; lost-before-app 0 (Enter: sent 18, app saw 18); of the app's: 423 unbound keydown/typed, 10 taken by a key binding, 18 Enter by"/>
+</testcase>
+<testcase classname="terminal" name="giveup_keys_reach_shell" time="23.30">
+<skipped message="NO-REFERENCE (not a pass): no hold gave up in this run: the give-up write was not exercised here (unit and view tests cover it); the typed lines arrived exactly"/>
+</testcase>
+<testcase classname="terminal" name="ps_read_host_secure" time="1.50">
+<skipped message="PowerShell pane only (Read-Host -AsSecureString; the Git Bash pane's bash `read -s` announces nothing on ConPTY, see gitbash_precmd_secret)"/>
+</testcase>
+<testcase classname="terminal" name="gitbash_precmd_secret" time="1.50">
+<skipped message="Git Bash pane only (bash precmd_functions; ConPTY prompt hold)"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="12.60">
+<skipped message="NO-REFERENCE (not a pass): no pointer synthesis on this backend: the pointer stays where the last case left it"/>
+</testcase>
+<testcase classname="terminal" name="zero_network_startup" time="1.50">
+<skipped message="zero_network_startup (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="keyring_unavailable_startup" time="1.50">
+<skipped message="needs the Linux App launcher (its private D-Bus session decides which Secret Service exists)"/>
+</testcase>
+<testcase classname="terminal" name="claude_plugin_offline" time="1.50">
+<skipped message="claude_plugin_offline (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="agent_plugins_offline" time="1.50">
+<skipped message="agent_plugins_offline (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_many" time="121.40">
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_panel_click" time="1.60">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="1.60">
+<skipped message="network_gate_switch (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="output_frames" time="83.00">
+<skipped message="NO-REFERENCE (not a pass): #1979: idle 2.0 frames/s; shown tab streaming 32.0 frames/s for 29.2 wakeups/s (0 Full); 4 hidden tabs streaming 2.5 frames/s, 120.7 hidden wakeups/s (0 Full), 3 in-place re-render"/>
+</testcase>
+<testcase classname="terminal" name="cb_report_problem" time="8.20">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 22; app saw 22; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 16 unbound keydown/typed, 2 taken by a key binding, 1 Enter by a bind"/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="3.00">
+</testcase>
+<testcase classname="agent" name="cadence" time="7.70">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="67.10">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="8.00">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 14; app saw 14; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 6 Enter by a bindi"/>
+</testcase>
+<testcase classname="agent" name="tab_enter" time="27.20">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 470; app saw 470; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 444 unbound keydown/typed, 13 taken by a key binding, 12 Enter by"/>
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="556.20">
+<skipped message="NO-REFERENCE (not a pass): Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 207.58 ms includes the input-tool spawn"/>
+</testcase>
+<testcase classname="agent" name="ctrl_c_flood_ab" time="406.70">
+<skipped message="NO-REFERENCE (not a pass): gate on vs off: Δp50 = -18.98 ms (on 184.58 / off 203.56; p95 191.33 / 218.85; n 30 / 30; blocks of 5, relaunch per block)"/>
+</testcase>
+<testcase classname="agent" name="ps_ctrl_break" time="2.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ps_ctrl_scrolllock_break" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ps_fast_command_young_enter" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe" time="17.50">
+<skipped message="NO-REFERENCE (not a pass): APPCI_SU_SH_USER unset: the `su` to an sh-shelled user leg did not run (needs a passwordless su on this runner)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_questions" time="17.60">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 256; app saw 256; lost-before-app 0 (Enter: sent 9, app saw 9); of the app's: 251 unbound keydown/typed, 2 taken by a key binding, 2 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_vim_typeahead" time="21.30">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 293; app saw 293; lost-before-app 0 (Enter: sent 9, app saw 9); of the app's: 283 unbound keydown/typed, 3 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_unsupported_tcsh" time="15.60">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 235; app saw 235; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 229 unbound keydown/typed, 2 taken by a key binding, 3 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_prompt" time="18.00">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 271; app saw 271; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 261 unbound keydown/typed, 2 taken by a key binding, 7 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_probe" time="18.10">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 274; app saw 274; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 264 unbound keydown/typed, 2 taken by a key binding, 7 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe_empty_ps1" time="17.70">
+<skipped message="NO-REFERENCE (not a pass): empty_ps1 typed-before-the-setup leg: needs the Linux blocked-in-read fact (/proc/&lt;pid&gt;/syscall); not run on darwin"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_relay_shape" time="2.60">
+<skipped message="no passwordless sudo on this runner (sudo -n true failed)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_exec_fish_rc" time="18.10">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 322; app saw 322; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 311 unbound keydown/typed, 2 taken by a key binding, 8 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_docker_t_without_i" time="2.50">
+<skipped message="docker with a local alpine image is not available (never pulled by the harness)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_zsh_newuser_install" time="6.70">
+<skipped message="this zsh runs no zsh-newuser-install with an empty startup directory (proved on a pty before the case types anything)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="16.00">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 260; app saw 260; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 251 unbound keydown/typed, 2 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="gitbash_long_osc_reaches_app" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="42.50">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="11.80">
+<skipped message="NO-REFERENCE (not a pass): ssh trial verdicts: exact=3"/>
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="7.50">
+<skipped message="NO-REFERENCE (not a pass): ssh trial verdicts: exact=1"/>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing_wrapper" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead_wrapper" time="1.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="412.40">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="58.80">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 0.37 ms (p95 0.74, n=60): within the 1 ms target"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="126.70">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks"/>
+</testcase>
+<testcase classname="agent" name="latency_paint_ab" time="223.00">
+<skipped message="NO-REFERENCE (not a pass): key frame at the end of the key press, on vs off: key-&gt;paint Δp50 = -3.59 ms (on 30.21 / off 33.8; p95 38.25 / 42.37; n 30 / 30; blocks of 5, relaunch per block; kl3 resolution 4.1"/>
+</testcase>
+<testcase classname="agent" name="latency_key_views_ab" time="262.80">
+<skipped message="NO-REFERENCE (not a pass): #1962 views re-rendered per key, skips on vs off, first keys (agent mode): views p50 3 / 6 (Δ -3), render_ms p50 0.24 / 0.38 (Δ -0.14), frame build total_ms p50 1.36 / 1.52 (Δ -0.1"/>
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="47.60">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="9.20">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 159; app saw 159; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 151 unbound keydown/typed, 3 taken by a key binding, 2 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="routing_table" time="74.40">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 631; app saw 631; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 548 unbound keydown/typed, 29 taken by a key binding, 27 Enter by"/>
+</testcase>
+<testcase classname="agent" name="routing_typo_head" time="10.90">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 73; app saw 73; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 58 unbound keydown/typed, 6 taken by a key binding, 4 Enter by a bind"/>
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="15.40">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 220; app saw 220; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 200 unbound keydown/typed, 8 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="agent_lrc_no_false_takeover" time="174.10">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="9.40">
+<skipped message="NO-REFERENCE (not a pass): path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)"/>
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="11.90">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 160; app saw 160; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 143 unbound keydown/typed, 5 taken by a key binding, 10 Enter by "/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_managed" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_typeahead_managed" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_kill_switch" time="1.40">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="35.60">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 755; app saw 755; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 744 unbound keydown/typed, 3 taken by a key binding, 2 Enter by a"/>
+</testcase>
+<testcase classname="agent" name="shell_nu" time="57.90">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 951; app saw 951; lost-before-app 0 (Enter: sent 28, app saw 28); of the app's: 940 unbound keydown/typed, 3 taken by a key binding, 2 Enter by a"/>
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_output" time="13.60">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 233; app saw 233; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 221 unbound keydown/typed, 1 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_drag" time="1.40">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="agent" name="ctrl_c_no_esc_i_local" time="33.80">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 461; app saw 461; lost-before-app 0 (Enter: sent 18, app saw 18); of the app's: 423 unbound keydown/typed, 10 taken by a key binding, 18 Enter by"/>
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_ctrl_c_no_esc_i_local" time="0.00">
+</testcase>
+<testcase classname="agent" name="giveup_keys_reach_shell" time="23.40">
+<skipped message="NO-REFERENCE (not a pass): no hold gave up in this run: the give-up write was not exercised here (unit and view tests cover it); the typed lines arrived exactly"/>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="12.60">
+<skipped message="NO-REFERENCE (not a pass): no pointer synthesis on this backend: the pointer stays where the last case left it"/>
+</testcase>
+<testcase classname="agent" name="keyring_unavailable_startup" time="1.40">
+<skipped message="needs the Linux App launcher (its private D-Bus session decides which Secret Service exists)"/>
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_many" time="121.10">
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_panel_click" time="1.50">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="agent" name="output_frames" time="82.60">
+<skipped message="NO-REFERENCE (not a pass): #1979: idle 2.0 frames/s; shown tab streaming 32.5 frames/s for 29.3 wakeups/s (0 Full); 4 hidden tabs streaming 2.7 frames/s, 126.7 hidden wakeups/s (0 Full), 3 in-place re-render"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_password" time="30.60">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_accept" time="17.80">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_reject" time="76.10">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_conflict" time="27.50">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_touch_only" time="20.00">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_endings" time="88.60">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_429" time="20.50">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_500" time="31.80">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_disconnect" time="17.90">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_down" time="31.60">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_slow_cancel" time="16.50">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_queued_rows" time="36.70">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_key" time="129.70">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_vim" time="31.30">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_stream" time="1.60">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_queued" time="1.60">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_blocked" time="1.50">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_answer" time="15.30">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_cut" time="7.90">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_nodone" time="35.20">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_trunc" time="7.80">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_empty" time="7.90">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_slow" time="20.80">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_ctrl_c" time="11.10">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_steer" time="11.40">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_after_command" time="18.80">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_steer_at_end" time="15.50">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_enter" time="299.70">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_ssh" time="72.00">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_stream" time="51.50">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_queued" time="58.80">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_blocked" time="57.10">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_steer_fast" time="32.10">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_less" time="33.70">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_noninteractive_no_takeover" time="35.20">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="network_gate_notice" time="1.50">
+<skipped message="network_gate_notice (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_deny_allow" time="1.50">
+<skipped message="agent_gate (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_off_live" time="1.50">
+<skipped message="agent_gate (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_mcp_faults" time="31.50">
+<skipped message="precondition: the healthy control server's tool was not offered to the model or the call never returned (servers seen: []; starts (0, 0)): the app did not load ~/.warp/.mcp.json, so no fault could be "/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_key_never_leaves" time="2.60">
+<skipped message="agent_gate (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_multitab_streaming" time="168.20">
+</testcase>
+</testsuite>

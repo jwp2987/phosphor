@@ -1,0 +1,516 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="100" failures="21" skipped="50">
+<testcase classname="terminal" name="lab_enter_start.bash.150.nohelper" time="93.60">
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.zsh.150.nohelper" time="94.00">
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.fish.150.nohelper" time="76.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no paired timing for fish (no timestamped history hook for this shell)"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.nu.150.nohelper" time="138.70">
+<failure message="`exit` did not return to the local shell (none)">`exit` did not return to the local shell (none)
+30 of 30 Enters have no hop=enter_begin line with the line's text in the app log: those are timed from before the injector call, which counts the injector's own time against the app
+injector accounting: injector sent 1825; app saw 1825; lost-before-app 0 (Enter: sent 32, app saw 32); of the app's: 1820 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.bash.150.nohelper" time="100.10">
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.zsh.150.nohelper" time="98.80">
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.fish.150.nohelper" time="102.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no Enter -&gt; write times in the app log (0 Enter -&gt; write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.nu.150.nohelper" time="119.40">
+<failure message="`exit` did not return to the local shell (none)">`exit` did not return to the local shell (none)
+NO-REFERENCE: UNVERIFIABLE: no Enter -&gt; write times in the app log (0 Enter -&gt; write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path that logs no hop=enter_begin / pty_write
+injector accounting: injector sent 3715; app saw 3715; lost-before-app 0 (Enter: sent 62, app saw 62); of the app's: 3710 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.bash.lan.nohelper" time="28.10">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.bash.150.nohelper" time="40.30">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.zsh.lan.nohelper" time="28.80">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.zsh.150.nohelper" time="38.10">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.fish.lan.nohelper" time="126.30">
+<failure message="[x1 gap 0 ms] effect file: expected ['t557yrfjap5u'], got []">[x1 gap 0 ms] effect file: expected ['t557yrfjap5u'], got []
+[x1 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 50 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66'], got []
+[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 200 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo'], got []
+[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 0 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg'], got []
+[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 50 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg', 't561tjdja0kp'], got []
+[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 200 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg', 't561tjdja0kp', 't562r3i4l1xt'], got []
+[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 0 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg', 't561tjdja0kp', 't562r3i4l1xt', 't563fri4atlx'], got []
+[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 50 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg', 't561tjdja0kp', 't562r3i4l1xt', 't563fri4atlx', 't564raivx68j'], got []
+[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 200 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg', 't561tjdja0kp', 't562r3i4l1xt', 't563fri4atlx', 't564raivx68j', 't5652rnn2m7e'], got []
+[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+`exit` did not return to the local shell (local)
+injector accounting: injector sent 606; app saw 606; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 565 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.fish.150.nohelper" time="144.60">
+<failure message="[x1 gap 0 ms] effect file: expected ['t570l5qgmtgx'], got []">[x1 gap 0 ms] effect file: expected ['t570l5qgmtgx'], got []
+[x1 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 50 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z'], got []
+[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 200 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh'], got []
+[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 0 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt'], got []
+[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 50 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt', 't574zinmbkwi'], got []
+[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 200 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt', 't574zinmbkwi', 't575fbddq6mm'], got []
+[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 0 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt', 't574zinmbkwi', 't575fbddq6mm', 't5766ynfshng'], got []
+[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 50 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt', 't574zinmbkwi', 't575fbddq6mm', 't5766ynfshng', 't57788irfmub'], got []
+[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 200 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt', 't574zinmbkwi', 't575fbddq6mm', 't5766ynfshng', 't57788irfmub', 't578fncb2t9p'], got []
+[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+`exit` did not return to the local shell (local)
+injector accounting: injector sent 606; app saw 606; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 565 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.nu.lan.nohelper" time="198.40">
+<failure message="[x1 gap 0 ms] effect file: expected ['t583ait449c2'], got []">[x1 gap 0 ms] effect file: expected ['t583ait449c2'], got []
+[x1 gap 0 ms] the shell received ['sleep 30'], expected exactly [sleep 30, the echo]
+[x1 gap 50 ms] no prompt after the Ctrl-C burst
+[x1 gap 50 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r'], got []
+[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 200 ms] no prompt after the Ctrl-C burst
+[x1 gap 200 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr'], got []
+[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 0 ms] no prompt after the Ctrl-C burst
+[x2 gap 0 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt'], got []
+[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 50 ms] no prompt after the Ctrl-C burst
+[x2 gap 50 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt', 't5872illk50u'], got []
+[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 200 ms] no prompt after the Ctrl-C burst
+[x2 gap 200 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt', 't5872illk50u', 't588q8bz8rl8'], got []
+[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 0 ms] no prompt after the Ctrl-C burst
+[x3 gap 0 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt', 't5872illk50u', 't588q8bz8rl8', 't5898qcl1beb'], got []
+[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 50 ms] no prompt after the Ctrl-C burst
+[x3 gap 50 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt', 't5872illk50u', 't588q8bz8rl8', 't5898qcl1beb', 't59081xjldax'], got []
+[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 200 ms] no prompt after the Ctrl-C burst
+[x3 gap 200 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt', 't5872illk50u', 't588q8bz8rl8', 't5898qcl1beb', 't59081xjldax', 't591hjjbqome'], got []
+[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+`exit` did not return to the local shell (local)
+injector accounting: injector sent 586; app saw 586; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 545 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.nu.150.nohelper" time="217.10">
+<failure message="[x1 gap 0 ms] effect file: expected ['t596r9m0pyng'], got []">[x1 gap 0 ms] effect file: expected ['t596r9m0pyng'], got []
+[x1 gap 0 ms] the shell received ['sleep 30'], expected exactly [sleep 30, the echo]
+[x1 gap 50 ms] no prompt after the Ctrl-C burst
+[x1 gap 50 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk'], got []
+[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 200 ms] no prompt after the Ctrl-C burst
+[x1 gap 200 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk'], got []
+[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 0 ms] no prompt after the Ctrl-C burst
+[x2 gap 0 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne'], got []
+[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 50 ms] no prompt after the Ctrl-C burst
+[x2 gap 50 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne', 't60063odquzj'], got []
+[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 200 ms] no prompt after the Ctrl-C burst
+[x2 gap 200 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne', 't60063odquzj', 't6012k7g3ija'], got []
+[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 0 ms] no prompt after the Ctrl-C burst
+[x3 gap 0 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne', 't60063odquzj', 't6012k7g3ija', 't602ig9nhd5o'], got []
+[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 50 ms] no prompt after the Ctrl-C burst
+[x3 gap 50 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne', 't60063odquzj', 't6012k7g3ija', 't602ig9nhd5o', 't603sfoxbgqr'], got []
+[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 200 ms] no prompt after the Ctrl-C burst
+[x3 gap 200 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne', 't60063odquzj', 't6012k7g3ija', 't602ig9nhd5o', 't603sfoxbgqr', 't604l15uyr9z'], got []
+[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+`exit` did not return to the local shell (local)
+injector accounting: injector sent 586; app saw 586; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 545 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.lan.nohelper" time="5.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.150.nohelper" time="10.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.lan.nohelper" time="5.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.150.nohelper" time="10.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.lan.nohelper" time="5.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.150.nohelper" time="9.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.lan.nohelper" time="13.00">
+<failure message="`exit` did not return to the local shell (none)">`exit` did not return to the local shell (none)
+NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes
+injector accounting: injector sent 55; app saw 55; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 50 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.150.nohelper" time="17.10">
+<failure message="`exit` did not return to the local shell (none)">`exit` did not return to the local shell (none)
+NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes
+injector accounting: injector sent 55; app saw 55; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 50 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.bash.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.zsh.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.fish.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.nu.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.bash.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.zsh.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.fish.150.helper" time="0.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.nu.150.helper" time="0.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.bash.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.bash.150.helper" time="0.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.zsh.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.zsh.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.fish.lan.helper" time="0.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.fish.150.helper" time="0.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.nu.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.nu.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.lan.helper" time="0.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.150.helper" time="0.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.lan.helper" time="0.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_start.bash.150.nohelper" time="93.50">
+</testcase>
+<testcase classname="agent" name="lab_enter_start.zsh.150.nohelper" time="94.00">
+</testcase>
+<testcase classname="agent" name="lab_enter_start.fish.150.nohelper" time="76.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no paired timing for fish (no timestamped history hook for this shell)"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_start.nu.150.nohelper" time="138.60">
+<failure message="`exit` did not return to the local shell (none)">`exit` did not return to the local shell (none)
+30 of 30 Enters have no hop=enter_begin line with the line's text in the app log: those are timed from before the injector call, which counts the injector's own time against the app
+injector accounting: injector sent 1825; app saw 1825; lost-before-app 0 (Enter: sent 32, app saw 32); of the app's: 1820 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.bash.150.nohelper" time="100.00">
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.zsh.150.nohelper" time="99.00">
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.fish.150.nohelper" time="102.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no Enter -&gt; write times in the app log (0 Enter -&gt; write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.nu.150.nohelper" time="119.50">
+<failure message="`exit` did not return to the local shell (none)">`exit` did not return to the local shell (none)
+NO-REFERENCE: UNVERIFIABLE: no Enter -&gt; write times in the app log (0 Enter -&gt; write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path that logs no hop=enter_begin / pty_write
+injector accounting: injector sent 3715; app saw 3715; lost-before-app 0 (Enter: sent 62, app saw 62); of the app's: 3710 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.bash.lan.nohelper" time="27.90">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.bash.lan.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.bash.150.nohelper" time="39.90">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.bash.150.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.zsh.lan.nohelper" time="28.60">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.zsh.lan.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.zsh.150.nohelper" time="38.00">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.zsh.150.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.fish.lan.nohelper" time="125.90">
+<failure message="[x1 gap 0 ms] effect file: expected ['t561yrfjap5u'], got []">[x1 gap 0 ms] effect file: expected ['t561yrfjap5u'], got []
+[x1 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 50 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66'], got []
+[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 200 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo'], got []
+[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 0 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg'], got []
+[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 50 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg', 't565tjdja0kp'], got []
+[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 200 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg', 't565tjdja0kp', 't566r3i4l1xt'], got []
+[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 0 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg', 't565tjdja0kp', 't566r3i4l1xt', 't567fri4atlx'], got []
+[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 50 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg', 't565tjdja0kp', 't566r3i4l1xt', 't567fri4atlx', 't568raivx68j'], got []
+[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 200 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg', 't565tjdja0kp', 't566r3i4l1xt', 't567fri4atlx', 't568raivx68j', 't5692rnn2m7e'], got []
+[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+`exit` did not return to the local shell (local)
+injector accounting: injector sent 606; app saw 606; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 565 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.fish.lan.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.fish.150.nohelper" time="144.20">
+<failure message="[x1 gap 0 ms] effect file: expected ['t574l5qgmtgx'], got []">[x1 gap 0 ms] effect file: expected ['t574l5qgmtgx'], got []
+[x1 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 50 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z'], got []
+[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 200 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh'], got []
+[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 0 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt'], got []
+[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 50 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt', 't578zinmbkwi'], got []
+[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 200 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt', 't578zinmbkwi', 't579fbddq6mm'], got []
+[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 0 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt', 't578zinmbkwi', 't579fbddq6mm', 't5806ynfshng'], got []
+[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 50 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt', 't578zinmbkwi', 't579fbddq6mm', 't5806ynfshng', 't58188irfmub'], got []
+[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 200 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt', 't578zinmbkwi', 't579fbddq6mm', 't5806ynfshng', 't58188irfmub', 't582fncb2t9p'], got []
+[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+`exit` did not return to the local shell (local)
+injector accounting: injector sent 606; app saw 606; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 565 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.fish.150.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.nu.lan.nohelper" time="198.20">
+<failure message="[x1 gap 0 ms] effect file: expected ['t587ait449c2'], got []">[x1 gap 0 ms] effect file: expected ['t587ait449c2'], got []
+[x1 gap 0 ms] the shell received ['sleep 30'], expected exactly [sleep 30, the echo]
+[x1 gap 50 ms] no prompt after the Ctrl-C burst
+[x1 gap 50 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r'], got []
+[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 200 ms] no prompt after the Ctrl-C burst
+[x1 gap 200 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr'], got []
+[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 0 ms] no prompt after the Ctrl-C burst
+[x2 gap 0 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt'], got []
+[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 50 ms] no prompt after the Ctrl-C burst
+[x2 gap 50 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt', 't5912illk50u'], got []
+[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 200 ms] no prompt after the Ctrl-C burst
+[x2 gap 200 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt', 't5912illk50u', 't592q8bz8rl8'], got []
+[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 0 ms] no prompt after the Ctrl-C burst
+[x3 gap 0 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt', 't5912illk50u', 't592q8bz8rl8', 't5938qcl1beb'], got []
+[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 50 ms] no prompt after the Ctrl-C burst
+[x3 gap 50 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt', 't5912illk50u', 't592q8bz8rl8', 't5938qcl1beb', 't59481xjldax'], got []
+[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 200 ms] no prompt after the Ctrl-C burst
+[x3 gap 200 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt', 't5912illk50u', 't592q8bz8rl8', 't5938qcl1beb', 't59481xjldax', 't595hjjbqome'], got []
+[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+`exit` did not return to the local shell (local)
+injector accounting: injector sent 586; app saw 586; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 545 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.nu.lan.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.nu.150.nohelper" time="216.40">
+<failure message="[x1 gap 0 ms] effect file: expected ['t600r9m0pyng'], got []">[x1 gap 0 ms] effect file: expected ['t600r9m0pyng'], got []
+[x1 gap 0 ms] the shell received ['sleep 30'], expected exactly [sleep 30, the echo]
+[x1 gap 50 ms] no prompt after the Ctrl-C burst
+[x1 gap 50 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk'], got []
+[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x1 gap 200 ms] no prompt after the Ctrl-C burst
+[x1 gap 200 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk'], got []
+[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 0 ms] no prompt after the Ctrl-C burst
+[x2 gap 0 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne'], got []
+[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 50 ms] no prompt after the Ctrl-C burst
+[x2 gap 50 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne', 't60463odquzj'], got []
+[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x2 gap 200 ms] no prompt after the Ctrl-C burst
+[x2 gap 200 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne', 't60463odquzj', 't6052k7g3ija'], got []
+[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 0 ms] no prompt after the Ctrl-C burst
+[x3 gap 0 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne', 't60463odquzj', 't6052k7g3ija', 't606ig9nhd5o'], got []
+[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 50 ms] no prompt after the Ctrl-C burst
+[x3 gap 50 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne', 't60463odquzj', 't6052k7g3ija', 't606ig9nhd5o', 't607sfoxbgqr'], got []
+[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]
+[x3 gap 200 ms] no prompt after the Ctrl-C burst
+[x3 gap 200 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne', 't60463odquzj', 't6052k7g3ija', 't606ig9nhd5o', 't607sfoxbgqr', 't608l15uyr9z'], got []
+[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]
+`exit` did not return to the local shell (local)
+injector accounting: injector sent 586; app saw 586; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 545 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.nu.150.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_flow.bash.lan.nohelper" time="17.70">
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_flow.nu.lan.nohelper" time="200.80">
+<failure message="the agent turn did not finish: the model received 0 of 5 tool results">the agent turn did not finish: the model received 0 of 5 tool results
+the edited file on the host is ['alpha tkat615zwbsih', 'second line']
+no hop=backend_route line for file_context: the call never reached the router
+no hop=backend_route line for file_write: the call never reached the router
+no hop=backend_route line for ripgrep_search: the call never reached the router
+no hop=backend_route line for fs_basic: the call never reached the router
+the feature typed into the remote shell: ['Please carry out these steps in order: read /work/u_nu/agf_t615zwbsih/a.txt ;; grep tknt615zwbsih /work/u_nu/agf_t615zwbsih ;; glob *.txt /work/u_nu/agf_t615zwbsih ;; edit /work/u_nu/agf_t615zwbsih/a.txt :: alpha tkat615zwbsih :: alpha tket615zwbsih ;; run cat /work/u_nu/agf_t615zwbsih/a.txt | /usr/bin/tee -a /work/u_nu/ran_t615zwbsih.txt']
+the approved `cat` ran 0 times on the host (its effect file holds [], expected exactly one copy of the edited file ['alpha tket615zwbsih', 'second line'])
+`exit` did not return to the local shell (none)
+codebase step not run: APPCI_FAKE_EMBEDDINGS=1 is off, so the host has no embeddings provider to index with
+injector accounting: injector sent 396; app saw 396; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 391 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_errors.bash.lan.nohelper" time="14.60">
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_errors.nu.lan.nohelper" time="168.70">
+<failure message="the agent turn did not finish: the model received 0 of 4 tool results">the agent turn did not finish: the model received 0 of 4 tool results
+no hop=backend_route line for file_context: the call never reached the router
+the feature typed into the remote shell: ['Please carry out these steps in order: read /work/u_nu/age_t622kq7zdo/nope_t622kq7zdo.txt ;; edit /work/u_nu/age_t622kq7zdo/a.txt :: not_in_file_t622kq7zdo :: whatever ;; grep zzt622kq7zdoqq /work/u_nu/age_t622kq7zdo ;; glob *.nothing_t622kq7zdo /work/u_nu/age_t622kq7zdo']
+`exit` did not return to the local shell (none)
+injector accounting: injector sent 327; app saw 327; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 322 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_drop.bash.lan.nohelper" time="37.40">
+<failure message="the approved command never started on the host (no /work/u_bash/started_t626vv6ca0sa there), so the drop could not hit a running tool call">the approved command never started on the host (no /work/u_bash/started_t626vv6ca0sa there), so the drop could not hit a running tool call
+injector accounting: injector sent 150; app saw 150; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 143 unbound keydown/typed, 3 taken by a key binding, 4 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_lab_agent_remote_drop.bash.lan.nohelper" time="0.00">
+<failure message="after lab_agent_remote_drop.bash.lan.nohelper the pane's shell was not the root shell (none; root pid 4173502); the app is relaunched so later cases start clean">after lab_agent_remote_drop.bash.lan.nohelper the pane's shell was not the root shell (none; root pid 4173502); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_drop.nu.lan.nohelper" time="95.20">
+<failure message="no approval card for the run_shell_command within 90 s">no approval card for the run_shell_command within 90 s
+injector accounting: injector sent 150; app saw 150; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 145 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_conflict.bash.lan.nohelper" time="152.90">
+<failure message="remote: the accepted multi-hunk edit: 207 bytes on disk, 228 expected; first difference at byte 25 (b'beta t633nmdwrx\nL03 gamm' vs b'BETA-EDITED t633nmdwrx\nL'); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 10, 0, True)">remote: the accepted multi-hunk edit: 207 bytes on disk, 228 expected; first difference at byte 25 (b'beta t633nmdwrx\nL03 gamm' vs b'BETA-EDITED t633nmdwrx\nL'); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 10, 0, True)
+lab_fam_agent_edit_conflict: no hop=backend_route family=file_write line: the edit was not written through the backend router
+accept: no follow-up model request within 40 s (the tool result may not have reached the model)
+NO-REFERENCE: UNVERIFIABLE: no action card for the proposed edit within 60 s (no '[byop-diag] queue_actions' in the app log): the fake model's edit never reached the diff view, nothing to accept or reject
+partial accept: the diff card has no per-hunk accept (Up/Down only move between hunks, code_diff_view.rs); accept applies every hunk, reject none: not testable, not claimed
+injector accounting: injector sent 553; app saw 553; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 543 unbound keydown/typed, 3 taken by a key binding, 7 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_conflict.nu.lan.nohelper" time="143.60">
+<failure message="lab_fam_agent_edit_conflict: no hop=backend_route family=file_write line: the edit was not written through the backend router">lab_fam_agent_edit_conflict: no hop=backend_route family=file_write line: the edit was not written through the backend router
+`exit` did not return to the local shell (none)
+NO-REFERENCE: UNVERIFIABLE: no action card for the proposed edit within 60 s (no '[byop-diag] queue_actions' in the app log): the fake model's edit never reached the diff view, nothing to accept or reject
+NO-REFERENCE: UNVERIFIABLE: no action card for the proposed edit within 60 s (no '[byop-diag] queue_actions' in the app log): the fake model's edit never reached the diff view, nothing to accept or reject
+partial accept: the diff card has no per-hunk accept (Up/Down only move between hunks, code_diff_view.rs); accept applies every hunk, reject none: not testable, not claimed
+injector accounting: injector sent 540; app saw 540; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 536 unbound keydown/typed, 3 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_delete_conflict.bash.lan.nohelper" time="22.40">
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_endings.bash.lan.nohelper" time="71.80">
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_touch_only.bash.lan.nohelper" time="20.40">
+</testcase>
+<testcase classname="agent" name="lab_enter_start.bash.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_start.zsh.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_start.fish.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_start.nu.150.helper" time="0.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.bash.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.zsh.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.fish.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.nu.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.bash.lan.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.bash.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.zsh.lan.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.zsh.150.helper" time="0.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.fish.lan.helper" time="0.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.fish.150.helper" time="0.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.nu.lan.helper" time="0.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.nu.150.helper" time="0.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary"/>
+</testcase>
+</testsuite>

@@ -1,0 +1,5594 @@
+{
+ "meta": {
+  "platform": "linux-wayland",
+  "backend": "wayland",
+  "app_display": "wayland",
+  "seed": "1",
+  "commit": "c61b6a3b",
+  "sha": "c61b6a3b8f5d96beb1c61d4bf968eaa65ce1e334",
+  "owner_settings": "sha256 a0613b641a27",
+  "tier": "smoke",
+  "scale": "1"
+ },
+ "generated": "2026-11-10T10:49:43-0600",
+ "summary": {
+  "pass": 29,
+  "fail": 21,
+  "skip": 0,
+  "noref": 50
+ },
+ "cases": [
+  {
+   "name": "lab_enter_start.bash.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 93.6,
+   "evidence": [
+    "enter_route: 33 Enter(s) reached the input editor: Shell=33 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794324788.762,
+    1794324882.371
+   ],
+   "detail": [
+    "injector accounting: injector sent 1887; app saw 1887; lost-before-app 0 (Enter: sent 33, app saw 33); of the app's: 1850 unbound keydown/typed, 4 taken by a key binding, 33 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 33 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector_enter_delay_ms": [
+     33.9,
+     34.1,
+     34.6,
+     34.4,
+     34.6,
+     34.4,
+     34.5,
+     34.4,
+     34.2,
+     34.5,
+     34.6,
+     34.3,
+     33.5,
+     34.1,
+     34.6,
+     33.0,
+     34.0,
+     33.9,
+     34.5,
+     34.9,
+     34.1,
+     34.3,
+     34.1,
+     34.4,
+     33.8,
+     34.1,
+     34.4,
+     31.6,
+     34.2,
+     34.3
+    ],
+    "enter_to_next_prompt_app_ms": [
+     119.43650245666504,
+     86.66777610778809,
+     88.00768852233887,
+     106.44173622131348,
+     106.39548301696777,
+     106.00090026855469,
+     108.98280143737793,
+     109.88283157348633,
+     107.07473754882812,
+     107.97452926635742,
+     108.2468032836914,
+     109.05265808105469,
+     108.23273658752441,
+     107.4516773223877,
+     107.57684707641602,
+     106.80651664733887,
+     106.9796085357666,
+     107.66863822937012,
+     107.01370239257812,
+     106.97484016418457,
+     108.32571983337402,
+     108.65378379821777,
+     107.421875,
+     107.79762268066406,
+     108.13164710998535,
+     107.29789733886719,
+     87.29982376098633,
+     108.03580284118652,
+     86.20071411132812,
+     107.70988464355469
+    ],
+    "enter_to_next_prompt_plain_ms": [
+     86.20738983154297,
+     87.85057067871094,
+     79.24032211303711,
+     83.39858055114746,
+     83.50777626037598,
+     96.97127342224121,
+     87.48435974121094,
+     94.62118148803711,
+     91.84575080871582,
+     87.77976036071777,
+     80.65176010131836,
+     85.41560173034668,
+     93.78981590270996,
+     96.01068496704102,
+     79.4379711151123,
+     96.03452682495117,
+     82.08918571472168,
+     99.49851036071777,
+     87.91375160217285,
+     78.95684242248535,
+     92.85497665405273,
+     94.2695140838623,
+     79.43224906921387,
+     80.5063247680664,
+     97.77426719665527,
+     84.53869819641113,
+     97.34511375427246,
+     86.05480194091797,
+     79.01811599731445,
+     81.21490478515625
+    ],
+    "enter_start_basis": "the command's own start stamp",
+    "enter_start_app_ms": [
+     98.17361831665039,
+     81.81285858154297,
+     83.1148624420166,
+     85.58177947998047,
+     85.235595703125,
+     85.07990837097168,
+     85.40678024291992,
+     85.39962768554688,
+     85.39462089538574,
+     85.9217643737793,
+     85.75868606567383,
+     85.96348762512207,
+     85.6618881225586,
+     85.65974235534668,
+     85.52384376525879,
+     85.35456657409668,
+     85.79564094543457,
+     86.22169494628906,
+     85.65878868103027,
+     85.49380302429199,
+     85.82162857055664,
+     86.03167533874512,
+     85.45374870300293,
+     86.05575561523438,
+     85.90579032897949,
+     85.42776107788086,
+     82.82876014709473,
+     86.10367774963379,
+     81.71868324279785,
+     85.68477630615234
+    ],
+    "enter_start_plain_ms": [
+     83.10437202453613,
+     87.0656967163086,
+     76.13134384155273,
+     80.2605152130127,
+     80.40189743041992,
+     93.83821487426758,
+     83.96434783935547,
+     91.5682315826416,
+     88.75584602355957,
+     84.60760116577148,
+     77.60381698608398,
+     83.65845680236816,
+     90.70372581481934,
+     92.93675422668457,
+     76.37190818786621,
+     92.99755096435547,
+     79.02407646179199,
+     96.23265266418457,
+     84.8226547241211,
+     75.84190368652344,
+     89.81204032897949,
+     91.20869636535645,
+     76.37524604797363,
+     77.38327980041504,
+     94.77519989013672,
+     82.55863189697266,
+     94.32816505432129,
+     82.79585838317871,
+     75.97112655639648,
+     78.70888710021973
+    ],
+    "paired_verdict": {
+     "verdict": "pass",
+     "app": 85.6,
+     "plain": 83.8,
+     "allowed": 98.8,
+     "over_ms": -13.2
+    },
+    "injector": {
+     "sent": 1887,
+     "enters_sent": 33,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1887,
+     "unbound": 1850,
+     "bound": 4,
+     "enters_bound": 33,
+     "seen": 1887,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 33
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 33
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_start.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 94.0,
+   "evidence": [
+    "enter_route: 33 Enter(s) reached the input editor: Shell=33 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794324883.385,
+    1794324977.366
+   ],
+   "detail": [
+    "injector accounting: injector sent 1904; app saw 1904; lost-before-app 0 (Enter: sent 33, app saw 33); of the app's: 1867 unbound keydown/typed, 4 taken by a key binding, 33 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 33 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector_enter_delay_ms": [
+     33.9,
+     34.1,
+     34.4,
+     34.2,
+     33.9,
+     33.9,
+     34.3,
+     34.4,
+     33.9,
+     34.0,
+     34.0,
+     34.1,
+     33.9,
+     34.5,
+     34.1,
+     34.3,
+     34.4,
+     33.9,
+     34.1,
+     34.0,
+     34.2,
+     34.1,
+     34.3,
+     34.0,
+     34.1,
+     33.8,
+     34.0,
+     34.2,
+     34.2,
+     33.7
+    ],
+    "enter_to_next_prompt_app_ms": [
+     81.86674118041992,
+     81.78257942199707,
+     81.76517486572266,
+     81.9084644317627,
+     82.1688175201416,
+     81.61711692810059,
+     81.61568641662598,
+     82.40532875061035,
+     81.77614212036133,
+     81.83765411376953,
+     81.83503150939941,
+     81.80546760559082,
+     81.69317245483398,
+     81.84003829956055,
+     81.63762092590332,
+     81.68792724609375,
+     81.69913291931152,
+     81.91180229187012,
+     82.05628395080566,
+     81.93588256835938,
+     82.21793174743652,
+     82.3526382446289,
+     82.02052116394043,
+     81.70175552368164,
+     82.0307731628418,
+     81.82001113891602,
+     81.90560340881348,
+     81.91871643066406,
+     81.92968368530273,
+     80.54542541503906
+    ],
+    "enter_to_next_prompt_plain_ms": [
+     90.32011032104492,
+     91.61567687988281,
+     94.46907043457031,
+     88.67168426513672,
+     88.45829963684082,
+     90.7585620880127,
+     95.50738334655762,
+     88.76442909240723,
+     85.42823791503906,
+     86.42339706420898,
+     75.26302337646484,
+     83.08291435241699,
+     78.38153839111328,
+     84.18989181518555,
+     79.24437522888184,
+     85.42156219482422,
+     92.95868873596191,
+     86.93313598632812,
+     81.81929588317871,
+     83.30130577087402,
+     95.48044204711914,
+     76.16400718688965,
+     83.91475677490234,
+     91.25185012817383,
+     85.48593521118164,
+     89.2188549041748,
+     94.24853324890137,
+     77.7885913848877,
+     87.29004859924316,
+     80.02281188964844
+    ],
+    "enter_start_basis": "the command's own start stamp",
+    "enter_start_app_ms": [
+     81.36844635009766,
+     81.2978744506836,
+     81.28857612609863,
+     81.34102821350098,
+     81.60591125488281,
+     81.10308647155762,
+     81.13455772399902,
+     81.65907859802246,
+     81.29763603210449,
+     81.33053779602051,
+     81.3145637512207,
+     81.27188682556152,
+     81.19010925292969,
+     81.32386207580566,
+     81.12859725952148,
+     81.18915557861328,
+     81.22134208679199,
+     81.41231536865234,
+     81.47120475769043,
+     81.43997192382812,
+     81.70461654663086,
+     81.65693283081055,
+     81.38227462768555,
+     81.20274543762207,
+     81.39586448669434,
+     81.33316040039062,
+     81.40730857849121,
+     81.39920234680176,
+     81.4051628112793,
+     80.06119728088379
+    ],
+    "enter_start_plain_ms": [
+     89.98322486877441,
+     91.3095474243164,
+     94.15984153747559,
+     88.33765983581543,
+     88.13714981079102,
+     90.45529365539551,
+     95.20125389099121,
+     88.37628364562988,
+     85.11662483215332,
+     86.07029914855957,
+     75.17504692077637,
+     82.77535438537598,
+     77.99243927001953,
+     83.83798599243164,
+     78.94229888916016,
+     85.07990837097168,
+     92.62681007385254,
+     86.63177490234375,
+     81.45880699157715,
+     82.99827575683594,
+     95.17574310302734,
+     76.00212097167969,
+     83.61244201660156,
+     90.95096588134766,
+     85.08563041687012,
+     88.91415596008301,
+     93.86563301086426,
+     77.47983932495117,
+     86.96436882019043,
+     79.71882820129395
+    ],
+    "paired_verdict": {
+     "verdict": "pass",
+     "app": 81.3,
+     "plain": 86.4,
+     "allowed": 101.4,
+     "over_ms": -20.0
+    },
+    "injector": {
+     "sent": 1904,
+     "enters_sent": 33,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1904,
+     "unbound": 1867,
+     "bound": 4,
+     "enters_bound": 33,
+     "seen": 1904,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 33
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 33
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_start.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.fish.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 76.4,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794324978.388,
+    1794325054.748
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no paired timing for fish (no timestamped history hook for this shell)",
+    "injector accounting: injector sent 1532; app saw 1532; lost-before-app 0 (Enter: sent 33, app saw 33); of the app's: 1527 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "paired_verdict": null,
+    "injector": {
+     "sent": 1532,
+     "enters_sent": 33,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1532,
+     "unbound": 1527,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 1532,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 33
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_start.fish.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.nu.150.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 138.7,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325055.778,
+    1794325194.432
+   ],
+   "detail": [
+    "`exit` did not return to the local shell (none)",
+    "30 of 30 Enters have no hop=enter_begin line with the line's text in the app log: those are timed from before the injector call, which counts the injector's own time against the app",
+    "injector accounting: injector sent 1825; app saw 1825; lost-before-app 0 (Enter: sent 32, app saw 32); of the app's: 1820 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector_enter_delay_ms": [],
+    "enter_to_rec_app_ms": [
+     125.05292892456055,
+     124.05204772949219,
+     120.89252471923828,
+     113.36040496826172,
+     110.89873313903809,
+     125.59723854064941,
+     113.6784553527832,
+     117.34700202941895,
+     114.17102813720703,
+     120.87464332580566,
+     126.21855735778809,
+     130.05709648132324,
+     115.2493953704834,
+     123.77619743347168,
+     121.24395370483398,
+     117.28262901306152,
+     121.7195987701416,
+     116.39261245727539,
+     112.86544799804688,
+     133.11767578125,
+     117.4919605255127,
+     124.01580810546875,
+     113.68656158447266,
+     114.22419548034668,
+     116.8050765991211,
+     110.84413528442383,
+     117.34986305236816,
+     119.30251121520996,
+     114.78900909423828,
+     125.26202201843262
+    ],
+    "enter_to_rec_plain_ms": [
+     91.52579307556152,
+     1673.8576889038086,
+     1886.0602378845215,
+     1364.7584915161133,
+     1450.6826400756836,
+     1281.691074371338,
+     1219.6035385131836,
+     1324.2676258087158,
+     1296.3173389434814,
+     1877.202033996582,
+     1217.0615196228027,
+     1635.7815265655518,
+     1213.5155200958252,
+     1466.728925704956,
+     1571.6204643249512,
+     1677.1159172058105,
+     1979.489803314209,
+     1641.0915851593018,
+     1574.3749141693115,
+     1933.028221130371,
+     1499.1834163665771,
+     1477.6592254638672,
+     1642.7619457244873,
+     1637.4375820159912,
+     1671.0741519927979,
+     1438.5197162628174,
+     1356.5826416015625,
+     1677.8240203857422,
+     1135.8466148376465,
+     1223.7019538879395
+    ],
+    "enter_start_basis": "the shell's rec.log line",
+    "enter_start_app_ms": [
+     125.05292892456055,
+     124.05204772949219,
+     120.89252471923828,
+     113.36040496826172,
+     110.89873313903809,
+     125.59723854064941,
+     113.6784553527832,
+     117.34700202941895,
+     114.17102813720703,
+     120.87464332580566,
+     126.21855735778809,
+     130.05709648132324,
+     115.2493953704834,
+     123.77619743347168,
+     121.24395370483398,
+     117.28262901306152,
+     121.7195987701416,
+     116.39261245727539,
+     112.86544799804688,
+     133.11767578125,
+     117.4919605255127,
+     124.01580810546875,
+     113.68656158447266,
+     114.22419548034668,
+     116.8050765991211,
+     110.84413528442383,
+     117.34986305236816,
+     119.30251121520996,
+     114.78900909423828,
+     125.26202201843262
+    ],
+    "enter_start_plain_ms": [
+     91.52579307556152,
+     1673.8576889038086,
+     1886.0602378845215,
+     1364.7584915161133,
+     1450.6826400756836,
+     1281.691074371338,
+     1219.6035385131836,
+     1324.2676258087158,
+     1296.3173389434814,
+     1877.202033996582,
+     1217.0615196228027,
+     1635.7815265655518,
+     1213.5155200958252,
+     1466.728925704956,
+     1571.6204643249512,
+     1677.1159172058105,
+     1979.489803314209,
+     1641.0915851593018,
+     1574.3749141693115,
+     1933.028221130371,
+     1499.1834163665771,
+     1477.6592254638672,
+     1642.7619457244873,
+     1637.4375820159912,
+     1671.0741519927979,
+     1438.5197162628174,
+     1356.5826416015625,
+     1677.8240203857422,
+     1135.8466148376465,
+     1223.7019538879395
+    ],
+    "paired_verdict": {
+     "verdict": "pass",
+     "app": 117.4,
+     "plain": 1488.4,
+     "allowed": 1637.3,
+     "over_ms": -1519.8
+    },
+    "injector": {
+     "sent": 1825,
+     "enters_sent": 32,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1825,
+     "unbound": 1820,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 1825,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 32
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_start.nu.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.bash.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 100.1,
+   "evidence": [
+    "enter_route: 63 Enter(s) reached the input editor: Shell=63 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325196.618,
+    1794325296.723
+   ],
+   "detail": [
+    "worst Enter -> write 1.26 ms (limit 75 ms); median 1.12 ms delayed against 1.14 ms undelayed",
+    "injector accounting: injector sent 3122; app saw 3122; lost-before-app 0 (Enter: sent 63, app saw 63); of the app's: 3055 unbound keydown/typed, 4 taken by a key binding, 63 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 63 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "control_rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "enter_to_write_delayed_ms": [
+     1.255859375,
+     1.179931640625,
+     0.7998046875,
+     1.18505859375,
+     1.197021484375,
+     1.135986328125,
+     1.130859375,
+     1.09814453125,
+     1.123046875,
+     1.115966796875,
+     1.14111328125,
+     1.115966796875,
+     1.07080078125,
+     1.125,
+     1.172119140625,
+     1.181884765625,
+     1.0849609375,
+     1.139892578125,
+     0.346923828125,
+     1.079833984375,
+     0.81396484375,
+     1.087890625,
+     1.108154296875,
+     1.10302734375,
+     0.31396484375,
+     1.0458984375,
+     1.156005859375,
+     1.10107421875,
+     1.1181640625,
+     1.107177734375
+    ],
+    "enter_to_write_lan_ms": [
+     1.14697265625,
+     1.175048828125,
+     1.18701171875,
+     1.10888671875,
+     1.14697265625,
+     0.321044921875,
+     1.09912109375,
+     0.84912109375,
+     1.139892578125,
+     1.08203125,
+     1.133056640625,
+     1.2880859375,
+     1.10205078125,
+     0.41015625,
+     1.136962890625,
+     1.10302734375,
+     1.107177734375,
+     1.10595703125,
+     1.1689453125,
+     1.12890625,
+     1.1669921875,
+     1.125,
+     1.14208984375,
+     0.996826171875,
+     1.15283203125,
+     1.133056640625,
+     1.14501953125,
+     1.157958984375,
+     1.171142578125,
+     1.19677734375
+    ],
+    "enter_wait_verdict": {
+     "n": 30,
+     "worst": 1.26,
+     "limit": 75.0,
+     "median": 1.12,
+     "lan_median": 1.14,
+     "delta": -0.02,
+     "verdict": "pass",
+     "why": "worst Enter -> write 1.26 ms (limit 75 ms); median 1.12 ms delayed against 1.14 ms undelayed"
+    },
+    "injector": {
+     "sent": 3122,
+     "enters_sent": 63,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3122,
+     "unbound": 3055,
+     "bound": 4,
+     "enters_bound": 63,
+     "seen": 3122,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 63
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 63
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_no_network_wait.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 98.8,
+   "evidence": [
+    "enter_route: 63 Enter(s) reached the input editor: Shell=63 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325297.703,
+    1794325396.473
+   ],
+   "detail": [
+    "worst Enter -> write 1.28 ms (limit 75 ms); median 1.07 ms delayed against 1.08 ms undelayed",
+    "injector accounting: injector sent 3061; app saw 3061; lost-before-app 0 (Enter: sent 63, app saw 63); of the app's: 2994 unbound keydown/typed, 4 taken by a key binding, 63 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 63 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "control_rtt_gate": {
+     "verdict": "ok",
+     "median": 0.5,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "enter_to_write_delayed_ms": [
+     1.280029296875,
+     1.10888671875,
+     0.283935546875,
+     0.3662109375,
+     1.052978515625,
+     1.079833984375,
+     1.0419921875,
+     1.09912109375,
+     1.06494140625,
+     0.77685546875,
+     0.48095703125,
+     1.044921875,
+     1.113037109375,
+     1.02001953125,
+     1.115966796875,
+     1.06884765625,
+     1.07421875,
+     1.083984375,
+     1.093994140625,
+     0.77587890625,
+     1.052001953125,
+     1.155029296875,
+     1.055908203125,
+     1.091064453125,
+     1.10107421875,
+     1.007080078125,
+     1.047119140625,
+     1.1162109375,
+     0.64892578125,
+     1.0810546875
+    ],
+    "enter_to_write_lan_ms": [
+     1.14990234375,
+     0.81689453125,
+     1.155029296875,
+     1.031982421875,
+     1.031982421875,
+     1.094970703125,
+     1.0888671875,
+     1.03515625,
+     0.990966796875,
+     1.02783203125,
+     1.0791015625,
+     1.091064453125,
+     1.09912109375,
+     1.074951171875,
+     0.798095703125,
+     1.105224609375,
+     1.055908203125,
+     1.106201171875,
+     1.01708984375,
+     1.196044921875,
+     1.0830078125,
+     1.080078125,
+     1.135986328125,
+     1.06689453125,
+     1.114990234375,
+     1.053955078125,
+     1.03515625,
+     1.06787109375,
+     1.08203125,
+     1.068115234375
+    ],
+    "enter_wait_verdict": {
+     "n": 30,
+     "worst": 1.28,
+     "limit": 75.0,
+     "median": 1.07,
+     "lan_median": 1.08,
+     "delta": -0.01,
+     "verdict": "pass",
+     "why": "worst Enter -> write 1.28 ms (limit 75 ms); median 1.07 ms delayed against 1.08 ms undelayed"
+    },
+    "injector": {
+     "sent": 3061,
+     "enters_sent": 63,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3061,
+     "unbound": 2994,
+     "bound": 4,
+     "enters_bound": 63,
+     "seen": 3061,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 63
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 63
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_no_network_wait.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.fish.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 102.8,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325397.452,
+    1794325500.277
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no Enter -> write times in the app log (0 Enter -> write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path that logs no hop=enter_begin / pty_write",
+    "injector accounting: injector sent 3122; app saw 3122; lost-before-app 0 (Enter: sent 63, app saw 63); of the app's: 3117 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "control_rtt_gate": {
+     "verdict": "ok",
+     "median": 0.5,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "enter_to_write_delayed_ms": [],
+    "enter_to_write_lan_ms": [],
+    "enter_wait_verdict": {
+     "verdict": "no-data",
+     "n": 0,
+     "why": "0 Enter -> write sample(s) at the delayed link, 8 needed"
+    },
+    "injector": {
+     "sent": 3122,
+     "enters_sent": 63,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3122,
+     "unbound": 3117,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 3122,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 63
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_no_network_wait.fish.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.nu.150.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 119.4,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325501.255,
+    1794325620.649
+   ],
+   "detail": [
+    "`exit` did not return to the local shell (none)",
+    "NO-REFERENCE: UNVERIFIABLE: no Enter -> write times in the app log (0 Enter -> write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path that logs no hop=enter_begin / pty_write",
+    "injector accounting: injector sent 3715; app saw 3715; lost-before-app 0 (Enter: sent 62, app saw 62); of the app's: 3710 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "control_rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "enter_to_write_delayed_ms": [],
+    "enter_to_write_lan_ms": [],
+    "enter_wait_verdict": {
+     "verdict": "no-data",
+     "n": 0,
+     "why": "0 Enter -> write sample(s) at the delayed link, 8 needed"
+    },
+    "injector": {
+     "sent": 3715,
+     "enters_sent": 62,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3715,
+     "unbound": 3710,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 3715,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 62
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_no_network_wait.nu.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 28.1,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325622.842,
+    1794325650.933
+   ],
+   "detail": [
+    "injector accounting: injector sent 611; app saw 611; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 568 unbound keydown/typed, 22 taken by a key binding, 21 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 611,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 611,
+     "unbound": 568,
+     "bound": 22,
+     "enters_bound": 21,
+     "seen": 611,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.bash.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 40.3,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325651.914,
+    1794325692.191
+   ],
+   "detail": [
+    "injector accounting: injector sent 611; app saw 611; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 568 unbound keydown/typed, 22 taken by a key binding, 21 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 611,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 611,
+     "unbound": 568,
+     "bound": 22,
+     "enters_bound": 21,
+     "seen": 611,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.zsh.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 28.8,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325693.168,
+    1794325722.003
+   ],
+   "detail": [
+    "injector accounting: injector sent 601; app saw 601; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 558 unbound keydown/typed, 22 taken by a key binding, 21 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.5,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 601,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 601,
+     "unbound": 558,
+     "bound": 22,
+     "enters_bound": 21,
+     "seen": 601,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 38.1,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325722.985,
+    1794325761.083
+   ],
+   "detail": [
+    "injector accounting: injector sent 601; app saw 601; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 558 unbound keydown/typed, 22 taken by a key binding, 21 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 601,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 601,
+     "unbound": 558,
+     "bound": 22,
+     "enters_bound": 21,
+     "seen": 601,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.fish.lan.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 126.3,
+   "evidence": [
+    "enter_route: 19 Enter(s) reached the input editor: Shell=19 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325762.064,
+    1794325888.402
+   ],
+   "detail": [
+    "[x1 gap 0 ms] effect file: expected ['t557yrfjap5u'], got []",
+    "[x1 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 50 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66'], got []",
+    "[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 200 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo'], got []",
+    "[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 0 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg'], got []",
+    "[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 50 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg', 't561tjdja0kp'], got []",
+    "[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 200 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg', 't561tjdja0kp', 't562r3i4l1xt'], got []",
+    "[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 0 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg', 't561tjdja0kp', 't562r3i4l1xt', 't563fri4atlx'], got []",
+    "[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 50 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg', 't561tjdja0kp', 't562r3i4l1xt', 't563fri4atlx', 't564raivx68j'], got []",
+    "[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 200 ms] effect file: expected ['t557yrfjap5u', 't558tjla6m66', 't5594gqvtrxo', 't560e8ryi9jg', 't561tjdja0kp', 't562r3i4l1xt', 't563fri4atlx', 't564raivx68j', 't5652rnn2m7e'], got []",
+    "[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "`exit` did not return to the local shell (local)",
+    "injector accounting: injector sent 606; app saw 606; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 565 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 606,
+     "enters_sent": 20,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 606,
+     "unbound": 565,
+     "bound": 22,
+     "enters_bound": 19,
+     "seen": 606,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 20
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 19
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.fish.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.fish.150.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 144.6,
+   "evidence": [
+    "enter_route: 19 Enter(s) reached the input editor: Shell=19 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794325890.602,
+    1794326035.186
+   ],
+   "detail": [
+    "[x1 gap 0 ms] effect file: expected ['t570l5qgmtgx'], got []",
+    "[x1 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 50 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z'], got []",
+    "[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 200 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh'], got []",
+    "[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 0 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt'], got []",
+    "[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 50 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt', 't574zinmbkwi'], got []",
+    "[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 200 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt', 't574zinmbkwi', 't575fbddq6mm'], got []",
+    "[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 0 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt', 't574zinmbkwi', 't575fbddq6mm', 't5766ynfshng'], got []",
+    "[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 50 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt', 't574zinmbkwi', 't575fbddq6mm', 't5766ynfshng', 't57788irfmub'], got []",
+    "[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 200 ms] effect file: expected ['t570l5qgmtgx', 't571fanugn2z', 't572p11iwrxh', 't573x5luf3pt', 't574zinmbkwi', 't575fbddq6mm', 't5766ynfshng', 't57788irfmub', 't578fncb2t9p'], got []",
+    "[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "`exit` did not return to the local shell (local)",
+    "injector accounting: injector sent 606; app saw 606; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 565 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 606,
+     "enters_sent": 20,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 606,
+     "unbound": 565,
+     "bound": 22,
+     "enters_bound": 19,
+     "seen": 606,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 20
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 19
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.fish.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.nu.lan.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 198.4,
+   "evidence": [
+    "enter_route: 19 Enter(s) reached the input editor: Shell=19 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326037.383,
+    1794326235.765
+   ],
+   "detail": [
+    "[x1 gap 0 ms] effect file: expected ['t583ait449c2'], got []",
+    "[x1 gap 0 ms] the shell received ['sleep 30'], expected exactly [sleep 30, the echo]",
+    "[x1 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x1 gap 50 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r'], got []",
+    "[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x1 gap 200 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr'], got []",
+    "[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 0 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 0 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt'], got []",
+    "[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 50 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt', 't5872illk50u'], got []",
+    "[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 200 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt', 't5872illk50u', 't588q8bz8rl8'], got []",
+    "[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 0 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 0 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt', 't5872illk50u', 't588q8bz8rl8', 't5898qcl1beb'], got []",
+    "[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 50 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt', 't5872illk50u', 't588q8bz8rl8', 't5898qcl1beb', 't59081xjldax'], got []",
+    "[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 200 ms] effect file: expected ['t583ait449c2', 't584ea1jad8r', 't585oa8igwmr', 't5863j8ukznt', 't5872illk50u', 't588q8bz8rl8', 't5898qcl1beb', 't59081xjldax', 't591hjjbqome'], got []",
+    "[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "`exit` did not return to the local shell (local)",
+    "injector accounting: injector sent 586; app saw 586; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 545 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 586,
+     "enters_sent": 20,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 586,
+     "unbound": 545,
+     "bound": 22,
+     "enters_bound": 19,
+     "seen": 586,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 20
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 19
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.nu.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.nu.150.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 217.1,
+   "evidence": [
+    "enter_route: 19 Enter(s) reached the input editor: Shell=19 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326237.955,
+    1794326455.04
+   ],
+   "detail": [
+    "[x1 gap 0 ms] effect file: expected ['t596r9m0pyng'], got []",
+    "[x1 gap 0 ms] the shell received ['sleep 30'], expected exactly [sleep 30, the echo]",
+    "[x1 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x1 gap 50 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk'], got []",
+    "[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x1 gap 200 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk'], got []",
+    "[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 0 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 0 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne'], got []",
+    "[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 50 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne', 't60063odquzj'], got []",
+    "[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 200 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne', 't60063odquzj', 't6012k7g3ija'], got []",
+    "[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 0 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 0 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne', 't60063odquzj', 't6012k7g3ija', 't602ig9nhd5o'], got []",
+    "[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 50 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne', 't60063odquzj', 't6012k7g3ija', 't602ig9nhd5o', 't603sfoxbgqr'], got []",
+    "[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 200 ms] effect file: expected ['t596r9m0pyng', 't597zpu8xcnk', 't5983gal8xmk', 't599hmy91tne', 't60063odquzj', 't6012k7g3ija', 't602ig9nhd5o', 't603sfoxbgqr', 't604l15uyr9z'], got []",
+    "[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "`exit` did not return to the local shell (local)",
+    "injector accounting: injector sent 586; app saw 586; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 545 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 586,
+     "enters_sent": 20,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 586,
+     "unbound": 545,
+     "bound": 22,
+     "enters_bound": 19,
+     "seen": 586,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 20
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 19
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.nu.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 5.4,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326457.297,
+    1794326462.662
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes",
+    "injector accounting: injector sent 62; app saw 62; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 55 unbound keydown/typed, 4 taken by a key binding, 3 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 62,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 62,
+     "unbound": 55,
+     "bound": 4,
+     "enters_bound": 3,
+     "seen": 62,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.bash.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 10.6,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326463.694,
+    1794326474.322
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes",
+    "injector accounting: injector sent 62; app saw 62; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 55 unbound keydown/typed, 4 taken by a key binding, 3 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 62,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 62,
+     "unbound": 55,
+     "bound": 4,
+     "enters_bound": 3,
+     "seen": 62,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.zsh.lan.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 5.5,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326475.355,
+    1794326480.814
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes",
+    "injector accounting: injector sent 61; app saw 61; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 54 unbound keydown/typed, 4 taken by a key binding, 3 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 61,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 61,
+     "unbound": 54,
+     "bound": 4,
+     "enters_bound": 3,
+     "seen": 61,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 10.3,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326481.846,
+    1794326492.132
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes",
+    "injector accounting: injector sent 61; app saw 61; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 54 unbound keydown/typed, 4 taken by a key binding, 3 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 61,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 61,
+     "unbound": 54,
+     "bound": 4,
+     "enters_bound": 3,
+     "seen": 61,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.fish.lan.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 5.2,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326493.162,
+    1794326498.36
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes",
+    "injector accounting: injector sent 62; app saw 62; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 57 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 62,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 62,
+     "unbound": 57,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 62,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.fish.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.fish.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 9.5,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326499.34,
+    1794326508.861
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes",
+    "injector accounting: injector sent 62; app saw 62; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 57 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 62,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 62,
+     "unbound": 57,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 62,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.fish.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.nu.lan.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 13.0,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326509.84,
+    1794326522.828
+   ],
+   "detail": [
+    "`exit` did not return to the local shell (none)",
+    "NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes",
+    "injector accounting: injector sent 55; app saw 55; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 50 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 55,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 55,
+     "unbound": 50,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 55,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.nu.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.nu.150.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 17.1,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326525.035,
+    1794326542.173
+   ],
+   "detail": [
+    "`exit` did not return to the local shell (none)",
+    "NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes",
+    "injector accounting: injector sent 55; app saw 55; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 50 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 55,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 55,
+     "unbound": 50,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 55,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.nu.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.bash.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326544.422,
+    1794326545.306
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_start.bash.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.zsh.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326546.333,
+    1794326547.188
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_start.zsh.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.fish.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326548.216,
+    1794326549.071
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_start.fish.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.nu.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326550.051,
+    1794326550.903
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_start.nu.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.bash.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326551.881,
+    1794326552.784
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_no_network_wait.bash.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.zsh.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326553.816,
+    1794326554.672
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_no_network_wait.zsh.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.fish.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326555.651,
+    1794326556.487
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_no_network_wait.fish.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.nu.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326557.517,
+    1794326558.355
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_enter_no_network_wait.nu.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.bash.lan.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326559.385,
+    1794326560.242
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.bash.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.bash.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326561.273,
+    1794326562.112
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.bash.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.zsh.lan.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326563.091,
+    1794326563.944
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.zsh.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.zsh.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326564.975,
+    1794326565.866
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.zsh.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.fish.lan.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326566.846,
+    1794326567.695
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.fish.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.fish.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326568.725,
+    1794326569.559
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.fish.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.nu.lan.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326570.539,
+    1794326571.441
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.nu.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.nu.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326572.422,
+    1794326573.275
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.nu.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.bash.lan.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326574.307,
+    1794326575.161
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.bash.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.bash.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326576.19,
+    1794326577.096
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.bash.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.zsh.lan.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326578.127,
+    1794326579.033
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.zsh.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.zsh.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326580.014,
+    1794326580.918
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.zsh.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.fish.lan.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326581.947,
+    1794326582.784
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.fish.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.fish.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326583.816,
+    1794326584.653
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.fish.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.nu.lan.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326585.681,
+    1794326586.525
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.nu.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_context.nu.150.helper",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 0.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794326587.554,
+    1794326588.416
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_agent_context.nu.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.bash.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 93.5,
+   "evidence": [
+    "enter_route: 33 Enter(s) reached the input editor: Shell=33 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326603.256,
+    1794326696.712
+   ],
+   "detail": [
+    "injector accounting: injector sent 1887; app saw 1887; lost-before-app 0 (Enter: sent 33, app saw 33); of the app's: 1850 unbound keydown/typed, 4 taken by a key binding, 33 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 33 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector_enter_delay_ms": [
+     33.9,
+     34.1,
+     34.7,
+     34.1,
+     34.2,
+     34.6,
+     34.4,
+     34.1,
+     34.3,
+     34.1,
+     34.2,
+     34.5,
+     31.7,
+     33.6,
+     27.7,
+     31.8,
+     34.0,
+     34.1,
+     34.1,
+     34.0,
+     34.2,
+     34.1,
+     34.2,
+     34.0,
+     34.3,
+     34.4,
+     34.7,
+     31.5,
+     34.4,
+     34.3
+    ],
+    "enter_to_next_prompt_app_ms": [
+     117.63834953308105,
+     109.16829109191895,
+     106.99820518493652,
+     106.4453125,
+     106.66847229003906,
+     108.15644264221191,
+     87.64052391052246,
+     95.05724906921387,
+     108.21127891540527,
+     109.0242862701416,
+     107.78641700744629,
+     109.14731025695801,
+     107.6204776763916,
+     108.66022109985352,
+     108.98518562316895,
+     107.04326629638672,
+     107.83147811889648,
+     109.41529273986816,
+     109.66348648071289,
+     105.84020614624023,
+     107.65838623046875,
+     106.33039474487305,
+     107.05018043518066,
+     108.06441307067871,
+     106.25314712524414,
+     107.70058631896973,
+     106.84633255004883,
+     107.70630836486816,
+     107.66839981079102,
+     108.28614234924316
+    ],
+    "enter_to_next_prompt_plain_ms": [
+     79.15163040161133,
+     84.26117897033691,
+     94.45834159851074,
+     82.88216590881348,
+     83.31298828125,
+     95.52860260009766,
+     78.8416862487793,
+     90.27600288391113,
+     94.20132637023926,
+     96.60506248474121,
+     95.15929222106934,
+     89.13540840148926,
+     81.00152015686035,
+     79.95033264160156,
+     88.82355690002441,
+     94.74921226501465,
+     89.30826187133789,
+     87.23998069763184,
+     88.2270336151123,
+     93.2774543762207,
+     97.43976593017578,
+     84.5332145690918,
+     93.52707862854004,
+     81.55226707458496,
+     78.73845100402832,
+     78.67789268493652,
+     95.74580192565918,
+     94.25973892211914,
+     95.43538093566895,
+     89.86282348632812
+    ],
+    "enter_start_basis": "the command's own start stamp",
+    "enter_start_app_ms": [
+     96.48728370666504,
+     86.07339859008789,
+     85.6480598449707,
+     86.33136749267578,
+     85.77346801757812,
+     85.91938018798828,
+     83.21833610534668,
+     84.86723899841309,
+     85.92748641967773,
+     86.06123924255371,
+     85.90245246887207,
+     86.32922172546387,
+     85.77251434326172,
+     86.46225929260254,
+     85.59823036193848,
+     85.8762264251709,
+     86.23528480529785,
+     85.63446998596191,
+     85.86835861206055,
+     85.7083797454834,
+     86.04955673217773,
+     85.9835147857666,
+     85.64615249633789,
+     86.21954917907715,
+     85.75725555419922,
+     85.80946922302246,
+     85.84141731262207,
+     86.07029914855957,
+     86.25531196594238,
+     86.43507957458496
+    ],
+    "enter_start_plain_ms": [
+     76.14469528198242,
+     81.22134208679199,
+     91.34626388549805,
+     79.7421932220459,
+     80.13701438903809,
+     92.10848808288574,
+     75.84357261657715,
+     87.19110488891602,
+     91.20726585388184,
+     93.42813491821289,
+     93.32823753356934,
+     86.98630332946777,
+     77.74949073791504,
+     76.80916786193848,
+     85.72578430175781,
+     91.77637100219727,
+     86.20929718017578,
+     84.0451717376709,
+     85.25800704956055,
+     90.16656875610352,
+     94.3918228149414,
+     81.36630058288574,
+     90.47722816467285,
+     78.45139503479004,
+     75.53625106811523,
+     77.04401016235352,
+     92.64779090881348,
+     91.19272232055664,
+     92.35739707946777,
+     86.81583404541016
+    ],
+    "paired_verdict": {
+     "verdict": "pass",
+     "app": 85.9,
+     "plain": 86.5,
+     "allowed": 101.5,
+     "over_ms": -15.6
+    },
+    "injector": {
+     "sent": 1887,
+     "enters_sent": 33,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1887,
+     "unbound": 1850,
+     "bound": 4,
+     "enters_bound": 33,
+     "seen": 1887,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 33
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 33
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_start.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.zsh.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 94.0,
+   "evidence": [
+    "enter_route: 33 Enter(s) reached the input editor: Shell=33 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326697.679,
+    1794326791.712
+   ],
+   "detail": [
+    "injector accounting: injector sent 1904; app saw 1904; lost-before-app 0 (Enter: sent 33, app saw 33); of the app's: 1867 unbound keydown/typed, 4 taken by a key binding, 33 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 33 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector_enter_delay_ms": [
+     33.9,
+     33.1,
+     34.1,
+     34.2,
+     34.2,
+     34.2,
+     34.6,
+     31.3,
+     33.9,
+     34.3,
+     34.4,
+     31.6,
+     34.2,
+     31.6,
+     32.7,
+     34.2,
+     29.6,
+     30.4,
+     34.3,
+     34.0,
+     34.4,
+     34.4,
+     34.2,
+     34.0,
+     34.1,
+     31.2,
+     33.9,
+     34.0,
+     34.1,
+     34.2
+    ],
+    "enter_to_next_prompt_app_ms": [
+     82.39173889160156,
+     81.95948600769043,
+     82.39626884460449,
+     82.2455883026123,
+     82.13925361633301,
+     82.23295211791992,
+     82.08584785461426,
+     82.1375846862793,
+     82.09466934204102,
+     82.0763111114502,
+     82.15808868408203,
+     82.00478553771973,
+     82.19528198242188,
+     82.53908157348633,
+     82.21197128295898,
+     82.07988739013672,
+     82.5645923614502,
+     81.2225341796875,
+     82.04340934753418,
+     82.15785026550293,
+     82.60321617126465,
+     82.12018013000488,
+     82.20076560974121,
+     82.12518692016602,
+     82.21316337585449,
+     82.24034309387207,
+     82.63731002807617,
+     82.73124694824219,
+     82.71598815917969,
+     82.4284553527832
+    ],
+    "enter_to_next_prompt_plain_ms": [
+     85.39462089538574,
+     85.14714241027832,
+     86.74120903015137,
+     87.97574043273926,
+     91.60065650939941,
+     92.5443172454834,
+     94.29788589477539,
+     76.26056671142578,
+     88.38057518005371,
+     87.43000030517578,
+     92.28873252868652,
+     94.00773048400879,
+     80.36327362060547,
+     77.00181007385254,
+     77.49128341674805,
+     77.68845558166504,
+     92.98229217529297,
+     80.31654357910156,
+     88.82451057434082,
+     82.50594139099121,
+     85.98852157592773,
+     77.14462280273438,
+     93.57762336730957,
+     90.99459648132324,
+     84.87558364868164,
+     87.27121353149414,
+     93.65487098693848,
+     77.89397239685059,
+     85.11805534362793,
+     91.8433666229248
+    ],
+    "enter_start_basis": "the command's own start stamp",
+    "enter_start_app_ms": [
+     81.79974555969238,
+     81.40730857849121,
+     81.91037178039551,
+     81.71701431274414,
+     81.65597915649414,
+     81.74657821655273,
+     81.55202865600586,
+     81.56704902648926,
+     81.61306381225586,
+     81.56895637512207,
+     81.95209503173828,
+     81.52341842651367,
+     81.68697357177734,
+     81.84242248535156,
+     81.67648315429688,
+     81.53057098388672,
+     81.86507225036621,
+     80.53731918334961,
+     81.5432071685791,
+     81.6812515258789,
+     82.03387260437012,
+     81.64811134338379,
+     81.71486854553223,
+     81.54749870300293,
+     81.72941207885742,
+     81.72059059143066,
+     81.93540573120117,
+     82.02385902404785,
+     82.04245567321777,
+     81.73656463623047
+    ],
+    "enter_start_plain_ms": [
+     85.02674102783203,
+     84.78212356567383,
+     86.35115623474121,
+     87.65459060668945,
+     91.26615524291992,
+     92.15474128723145,
+     93.96100044250488,
+     75.95491409301758,
+     88.07611465454102,
+     87.03994750976562,
+     91.98641777038574,
+     93.61457824707031,
+     80.08551597595215,
+     76.59912109375,
+     77.11482048034668,
+     77.38542556762695,
+     92.66018867492676,
+     80.01470565795898,
+     88.51027488708496,
+     82.20243453979492,
+     85.65211296081543,
+     76.77221298217773,
+     93.27340126037598,
+     90.69037437438965,
+     84.52248573303223,
+     86.97295188903809,
+     93.34278106689453,
+     77.58593559265137,
+     84.81192588806152,
+     91.5372371673584
+    ],
+    "paired_verdict": {
+     "verdict": "pass",
+     "app": 81.7,
+     "plain": 86.7,
+     "allowed": 101.7,
+     "over_ms": -20.0
+    },
+    "injector": {
+     "sent": 1904,
+     "enters_sent": 33,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1904,
+     "unbound": 1867,
+     "bound": 4,
+     "enters_bound": 33,
+     "seen": 1904,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 33
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 33
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_start.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.fish.150.nohelper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 76.4,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326792.764,
+    1794326869.206
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no paired timing for fish (no timestamped history hook for this shell)",
+    "injector accounting: injector sent 1532; app saw 1532; lost-before-app 0 (Enter: sent 33, app saw 33); of the app's: 1527 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "paired_verdict": null,
+    "injector": {
+     "sent": 1532,
+     "enters_sent": 33,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1532,
+     "unbound": 1527,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 1532,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 33
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_start.fish.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.nu.150.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 138.6,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794326870.196,
+    1794327008.835
+   ],
+   "detail": [
+    "`exit` did not return to the local shell (none)",
+    "30 of 30 Enters have no hop=enter_begin line with the line's text in the app log: those are timed from before the injector call, which counts the injector's own time against the app",
+    "injector accounting: injector sent 1825; app saw 1825; lost-before-app 0 (Enter: sent 32, app saw 32); of the app's: 1820 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector_enter_delay_ms": [],
+    "enter_to_rec_app_ms": [
+     124.18937683105469,
+     115.22221565246582,
+     112.16473579406738,
+     129.64987754821777,
+     116.6384220123291,
+     118.44921112060547,
+     112.48087882995605,
+     120.55158615112305,
+     121.02937698364258,
+     124.91202354431152,
+     129.96935844421387,
+     118.1025505065918,
+     122.42531776428223,
+     105.30853271484375,
+     116.07885360717773,
+     120.84293365478516,
+     119.10176277160645,
+     127.41279602050781,
+     116.9884204864502,
+     121.06680870056152,
+     121.93155288696289,
+     113.87133598327637,
+     129.93240356445312,
+     113.2512092590332,
+     125.22649765014648,
+     127.69222259521484,
+     133.22162628173828,
+     129.8511028289795,
+     122.92599678039551,
+     126.24049186706543
+    ],
+    "enter_to_rec_plain_ms": [
+     82.7178955078125,
+     1691.9636726379395,
+     1887.7589702606201,
+     1356.3117980957031,
+     1446.9397068023682,
+     1286.1318588256836,
+     1225.3527641296387,
+     1315.2124881744385,
+     1287.0023250579834,
+     1871.410846710205,
+     1218.0070877075195,
+     1643.3579921722412,
+     1206.5656185150146,
+     1476.4435291290283,
+     1561.2528324127197,
+     1680.4261207580566,
+     1971.5425968170166,
+     1631.4277648925781,
+     1560.1985454559326,
+     1951.120376586914,
+     1496.314287185669,
+     1481.2912940979004,
+     1632.950782775879,
+     1642.9393291473389,
+     1666.4025783538818,
+     1403.1901359558105,
+     1344.1781997680664,
+     1658.1330299377441,
+     1125.9706020355225,
+     1222.9411602020264
+    ],
+    "enter_start_basis": "the shell's rec.log line",
+    "enter_start_app_ms": [
+     124.18937683105469,
+     115.22221565246582,
+     112.16473579406738,
+     129.64987754821777,
+     116.6384220123291,
+     118.44921112060547,
+     112.48087882995605,
+     120.55158615112305,
+     121.02937698364258,
+     124.91202354431152,
+     129.96935844421387,
+     118.1025505065918,
+     122.42531776428223,
+     105.30853271484375,
+     116.07885360717773,
+     120.84293365478516,
+     119.10176277160645,
+     127.41279602050781,
+     116.9884204864502,
+     121.06680870056152,
+     121.93155288696289,
+     113.87133598327637,
+     129.93240356445312,
+     113.2512092590332,
+     125.22649765014648,
+     127.69222259521484,
+     133.22162628173828,
+     129.8511028289795,
+     122.92599678039551,
+     126.24049186706543
+    ],
+    "enter_start_plain_ms": [
+     82.7178955078125,
+     1691.9636726379395,
+     1887.7589702606201,
+     1356.3117980957031,
+     1446.9397068023682,
+     1286.1318588256836,
+     1225.3527641296387,
+     1315.2124881744385,
+     1287.0023250579834,
+     1871.410846710205,
+     1218.0070877075195,
+     1643.3579921722412,
+     1206.5656185150146,
+     1476.4435291290283,
+     1561.2528324127197,
+     1680.4261207580566,
+     1971.5425968170166,
+     1631.4277648925781,
+     1560.1985454559326,
+     1951.120376586914,
+     1496.314287185669,
+     1481.2912940979004,
+     1632.950782775879,
+     1642.9393291473389,
+     1666.4025783538818,
+     1403.1901359558105,
+     1344.1781997680664,
+     1658.1330299377441,
+     1125.9706020355225,
+     1222.9411602020264
+    ],
+    "paired_verdict": {
+     "verdict": "pass",
+     "app": 121.0,
+     "plain": 1488.8,
+     "allowed": 1637.7,
+     "over_ms": -1516.6
+    },
+    "injector": {
+     "sent": 1825,
+     "enters_sent": 32,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1825,
+     "unbound": 1820,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 1825,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 32
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_start.nu.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.bash.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 100.0,
+   "evidence": [
+    "enter_route: 63 Enter(s) reached the input editor: Shell=63 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327011.109,
+    1794327111.152
+   ],
+   "detail": [
+    "worst Enter -> write 1.66 ms (limit 75 ms); median 1.46 ms delayed against 1.42 ms undelayed",
+    "injector accounting: injector sent 3121; app saw 3121; lost-before-app 0 (Enter: sent 63, app saw 63); of the app's: 3055 unbound keydown/typed, 3 taken by a key binding, 63 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 63 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "control_rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "enter_to_write_delayed_ms": [
+     1.596923828125,
+     1.447021484375,
+     1.423828125,
+     1.43798828125,
+     1.538818359375,
+     1.390869140625,
+     1.455078125,
+     1.41796875,
+     1.43994140625,
+     1.664794921875,
+     1.47705078125,
+     1.469970703125,
+     1.5419921875,
+     1.480224609375,
+     1.468017578125,
+     1.445068359375,
+     1.31396484375,
+     1.555908203125,
+     1.053955078125,
+     0.428955078125,
+     1.515869140625,
+     1.39794921875,
+     1.4580078125,
+     1.423828125,
+     1.448974609375,
+     1.4931640625,
+     1.536865234375,
+     0.52587890625,
+     1.47998046875,
+     1.512939453125
+    ],
+    "enter_to_write_lan_ms": [
+     1.44189453125,
+     1.240966796875,
+     1.4501953125,
+     1.47802734375,
+     1.071044921875,
+     0.942138671875,
+     1.470947265625,
+     1.404052734375,
+     1.3828125,
+     1.0478515625,
+     1.273193359375,
+     0.458984375,
+     1.3779296875,
+     1.43212890625,
+     0.510009765625,
+     1.1279296875,
+     1.571044921875,
+     1.462158203125,
+     1.387939453125,
+     1.427978515625,
+     1.402099609375,
+     0.48583984375,
+     1.534912109375,
+     1.087890625,
+     1.501953125,
+     1.465087890625,
+     1.430908203125,
+     1.568115234375,
+     1.4638671875,
+     1.513916015625
+    ],
+    "enter_wait_verdict": {
+     "n": 30,
+     "worst": 1.66,
+     "limit": 75.0,
+     "median": 1.46,
+     "lan_median": 1.42,
+     "delta": 0.04,
+     "verdict": "pass",
+     "why": "worst Enter -> write 1.66 ms (limit 75 ms); median 1.46 ms delayed against 1.42 ms undelayed"
+    },
+    "injector": {
+     "sent": 3121,
+     "enters_sent": 63,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3121,
+     "unbound": 3055,
+     "bound": 3,
+     "enters_bound": 63,
+     "seen": 3121,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 63
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 63
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_no_network_wait.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.zsh.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 99.0,
+   "evidence": [
+    "enter_route: 63 Enter(s) reached the input editor: Shell=63 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327112.159,
+    1794327211.179
+   ],
+   "detail": [
+    "worst Enter -> write 1.56 ms (limit 75 ms); median 1.39 ms delayed against 1.38 ms undelayed",
+    "injector accounting: injector sent 3061; app saw 3061; lost-before-app 0 (Enter: sent 63, app saw 63); of the app's: 2994 unbound keydown/typed, 4 taken by a key binding, 63 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 63 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "control_rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "enter_to_write_delayed_ms": [
+     1.448974609375,
+     1.097900390625,
+     1.40283203125,
+     1.468994140625,
+     1.37890625,
+     1.43896484375,
+     1.43408203125,
+     1.5078125,
+     1.389892578125,
+     1.3759765625,
+     1.4150390625,
+     1.414794921875,
+     1.4140625,
+     1.3349609375,
+     1.39404296875,
+     1.508056640625,
+     0.406005859375,
+     1.329833984375,
+     0.52099609375,
+     1.3837890625,
+     1.423095703125,
+     1.473876953125,
+     1.324951171875,
+     1.03515625,
+     1.35693359375,
+     0.99609375,
+     1.510009765625,
+     1.55908203125,
+     0.449951171875,
+     0.494140625
+    ],
+    "enter_to_write_lan_ms": [
+     1.4150390625,
+     1.406982421875,
+     1.419921875,
+     0.5849609375,
+     1.3720703125,
+     1.43408203125,
+     1.37890625,
+     1.408935546875,
+     1.43994140625,
+     0.51904296875,
+     1.35791015625,
+     1.43896484375,
+     1.426025390625,
+     1.3740234375,
+     1.013916015625,
+     1.444091796875,
+     0.783935546875,
+     1.513916015625,
+     1.4560546875,
+     1.56494140625,
+     1.35693359375,
+     0.992919921875,
+     1.342041015625,
+     0.565185546875,
+     0.97900390625,
+     1.427978515625,
+     1.2109375,
+     1.369873046875,
+     1.39111328125,
+     0.39990234375
+    ],
+    "enter_wait_verdict": {
+     "n": 30,
+     "worst": 1.56,
+     "limit": 75.0,
+     "median": 1.39,
+     "lan_median": 1.38,
+     "delta": 0.02,
+     "verdict": "pass",
+     "why": "worst Enter -> write 1.56 ms (limit 75 ms); median 1.39 ms delayed against 1.38 ms undelayed"
+    },
+    "injector": {
+     "sent": 3061,
+     "enters_sent": 63,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3061,
+     "unbound": 2994,
+     "bound": 4,
+     "enters_bound": 63,
+     "seen": 3061,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 63
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 63
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_no_network_wait.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.fish.150.nohelper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 102.7,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327212.197,
+    1794327314.901
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: no Enter -> write times in the app log (0 Enter -> write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path that logs no hop=enter_begin / pty_write",
+    "injector accounting: injector sent 3122; app saw 3122; lost-before-app 0 (Enter: sent 63, app saw 63); of the app's: 3117 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "control_rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "enter_to_write_delayed_ms": [],
+    "enter_to_write_lan_ms": [],
+    "enter_wait_verdict": {
+     "verdict": "no-data",
+     "n": 0,
+     "why": "0 Enter -> write sample(s) at the delayed link, 8 needed"
+    },
+    "injector": {
+     "sent": 3122,
+     "enters_sent": 63,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3122,
+     "unbound": 3117,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 3122,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 63
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_no_network_wait.fish.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.nu.150.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 119.5,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327315.993,
+    1794327435.457
+   ],
+   "detail": [
+    "`exit` did not return to the local shell (none)",
+    "NO-REFERENCE: UNVERIFIABLE: no Enter -> write times in the app log (0 Enter -> write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path that logs no hop=enter_begin / pty_write",
+    "injector accounting: injector sent 3715; app saw 3715; lost-before-app 0 (Enter: sent 62, app saw 62); of the app's: 3710 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "control_rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "enter_to_write_delayed_ms": [],
+    "enter_to_write_lan_ms": [],
+    "enter_wait_verdict": {
+     "verdict": "no-data",
+     "n": 0,
+     "why": "0 Enter -> write sample(s) at the delayed link, 8 needed"
+    },
+    "injector": {
+     "sent": 3715,
+     "enters_sent": 62,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3715,
+     "unbound": 3710,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 3715,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 62
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_no_network_wait.nu.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 27.9,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327437.712,
+    1794327465.574
+   ],
+   "detail": [
+    "injector accounting: injector sent 610; app saw 610; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 568 unbound keydown/typed, 21 taken by a key binding, 21 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 610,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 610,
+     "unbound": 568,
+     "bound": 21,
+     "enters_bound": 21,
+     "seen": 610,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_lab_ctrl_c_no_esc_i.bash.lan.nohelper.png"
+   ],
+   "detail": [
+    "after lab_ctrl_c_no_esc_i.bash.lan.nohelper the pane is a terminal session, and the case sent two Ctrl-C within the 1 s exit-confirmation window: that exits an empty agent conversation by design, so this is not an app finding; the app is relaunched (fresh agent session)"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.bash.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 39.9,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327477.969,
+    1794327517.918
+   ],
+   "detail": [
+    "injector accounting: injector sent 611; app saw 611; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 568 unbound keydown/typed, 22 taken by a key binding, 21 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 611,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 611,
+     "unbound": 568,
+     "bound": 22,
+     "enters_bound": 21,
+     "seen": 611,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.bash.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_lab_ctrl_c_no_esc_i.bash.150.nohelper.png"
+   ],
+   "detail": [
+    "after lab_ctrl_c_no_esc_i.bash.150.nohelper the pane is a terminal session, and the case sent two Ctrl-C within the 1 s exit-confirmation window: that exits an empty agent conversation by design, so this is not an app finding; the app is relaunched (fresh agent session)"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.zsh.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 28.6,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327530.163,
+    1794327558.766
+   ],
+   "detail": [
+    "injector accounting: injector sent 601; app saw 601; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 558 unbound keydown/typed, 22 taken by a key binding, 21 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 601,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 601,
+     "unbound": 558,
+     "bound": 22,
+     "enters_bound": 21,
+     "seen": 601,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.zsh.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_lab_ctrl_c_no_esc_i.zsh.lan.nohelper.png"
+   ],
+   "detail": [
+    "after lab_ctrl_c_no_esc_i.zsh.lan.nohelper the pane is a terminal session, and the case sent two Ctrl-C within the 1 s exit-confirmation window: that exits an empty agent conversation by design, so this is not an app finding; the app is relaunched (fresh agent session)"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.zsh.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 38.0,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327571.125,
+    1794327609.102
+   ],
+   "detail": [
+    "injector accounting: injector sent 601; app saw 601; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 559 unbound keydown/typed, 22 taken by a key binding, 20 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 601,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 601,
+     "unbound": 559,
+     "bound": 22,
+     "enters_bound": 20,
+     "seen": 601,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.zsh.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_lab_ctrl_c_no_esc_i.zsh.150.nohelper.png"
+   ],
+   "detail": [
+    "after lab_ctrl_c_no_esc_i.zsh.150.nohelper the pane is a terminal session, and the case sent two Ctrl-C within the 1 s exit-confirmation window: that exits an empty agent conversation by design, so this is not an app finding; the app is relaunched (fresh agent session)"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.fish.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 125.9,
+   "evidence": [
+    "enter_route: 19 Enter(s) reached the input editor: Shell=19 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327621.402,
+    1794327747.266
+   ],
+   "detail": [
+    "[x1 gap 0 ms] effect file: expected ['t561yrfjap5u'], got []",
+    "[x1 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 50 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66'], got []",
+    "[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 200 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo'], got []",
+    "[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 0 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg'], got []",
+    "[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 50 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg', 't565tjdja0kp'], got []",
+    "[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 200 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg', 't565tjdja0kp', 't566r3i4l1xt'], got []",
+    "[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 0 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg', 't565tjdja0kp', 't566r3i4l1xt', 't567fri4atlx'], got []",
+    "[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 50 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg', 't565tjdja0kp', 't566r3i4l1xt', 't567fri4atlx', 't568raivx68j'], got []",
+    "[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 200 ms] effect file: expected ['t561yrfjap5u', 't562tjla6m66', 't5634gqvtrxo', 't564e8ryi9jg', 't565tjdja0kp', 't566r3i4l1xt', 't567fri4atlx', 't568raivx68j', 't5692rnn2m7e'], got []",
+    "[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "`exit` did not return to the local shell (local)",
+    "injector accounting: injector sent 606; app saw 606; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 565 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 606,
+     "enters_sent": 20,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 606,
+     "unbound": 565,
+     "bound": 22,
+     "enters_bound": 19,
+     "seen": 606,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 20
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 19
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.fish.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.fish.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_lab_ctrl_c_no_esc_i.fish.lan.nohelper.png"
+   ],
+   "detail": [
+    "after lab_ctrl_c_no_esc_i.fish.lan.nohelper the pane is a terminal session, and the case sent two Ctrl-C within the 1 s exit-confirmation window: that exits an empty agent conversation by design, so this is not an app finding; the app is relaunched (fresh agent session)"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.fish.150.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 144.2,
+   "evidence": [
+    "enter_route: 19 Enter(s) reached the input editor: Shell=19 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327759.523,
+    1794327903.759
+   ],
+   "detail": [
+    "[x1 gap 0 ms] effect file: expected ['t574l5qgmtgx'], got []",
+    "[x1 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 50 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z'], got []",
+    "[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 200 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh'], got []",
+    "[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 0 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt'], got []",
+    "[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 50 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt', 't578zinmbkwi'], got []",
+    "[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 200 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt', 't578zinmbkwi', 't579fbddq6mm'], got []",
+    "[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 0 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt', 't578zinmbkwi', 't579fbddq6mm', 't5806ynfshng'], got []",
+    "[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 50 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt', 't578zinmbkwi', 't579fbddq6mm', 't5806ynfshng', 't58188irfmub'], got []",
+    "[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 200 ms] effect file: expected ['t574l5qgmtgx', 't575fanugn2z', 't576p11iwrxh', 't577x5luf3pt', 't578zinmbkwi', 't579fbddq6mm', 't5806ynfshng', 't58188irfmub', 't582fncb2t9p'], got []",
+    "[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "`exit` did not return to the local shell (local)",
+    "injector accounting: injector sent 606; app saw 606; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 565 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 606,
+     "enters_sent": 20,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 606,
+     "unbound": 565,
+     "bound": 22,
+     "enters_bound": 19,
+     "seen": 606,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 20
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 19
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.fish.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.fish.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_lab_ctrl_c_no_esc_i.fish.150.nohelper.png"
+   ],
+   "detail": [
+    "after lab_ctrl_c_no_esc_i.fish.150.nohelper the pane is a terminal session, and the case sent two Ctrl-C within the 1 s exit-confirmation window: that exits an empty agent conversation by design, so this is not an app finding; the app is relaunched (fresh agent session)"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.nu.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 198.2,
+   "evidence": [
+    "enter_route: 19 Enter(s) reached the input editor: Shell=19 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794327916.016,
+    1794328114.264
+   ],
+   "detail": [
+    "[x1 gap 0 ms] effect file: expected ['t587ait449c2'], got []",
+    "[x1 gap 0 ms] the shell received ['sleep 30'], expected exactly [sleep 30, the echo]",
+    "[x1 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x1 gap 50 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r'], got []",
+    "[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x1 gap 200 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr'], got []",
+    "[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 0 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 0 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt'], got []",
+    "[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 50 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt', 't5912illk50u'], got []",
+    "[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 200 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt', 't5912illk50u', 't592q8bz8rl8'], got []",
+    "[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 0 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 0 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt', 't5912illk50u', 't592q8bz8rl8', 't5938qcl1beb'], got []",
+    "[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 50 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt', 't5912illk50u', 't592q8bz8rl8', 't5938qcl1beb', 't59481xjldax'], got []",
+    "[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 200 ms] effect file: expected ['t587ait449c2', 't588ea1jad8r', 't589oa8igwmr', 't5903j8ukznt', 't5912illk50u', 't592q8bz8rl8', 't5938qcl1beb', 't59481xjldax', 't595hjjbqome'], got []",
+    "[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "`exit` did not return to the local shell (local)",
+    "injector accounting: injector sent 586; app saw 586; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 545 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 586,
+     "enters_sent": 20,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 586,
+     "unbound": 545,
+     "bound": 22,
+     "enters_bound": 19,
+     "seen": 586,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 20
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 19
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.nu.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.nu.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_lab_ctrl_c_no_esc_i.nu.lan.nohelper.png"
+   ],
+   "detail": [
+    "after lab_ctrl_c_no_esc_i.nu.lan.nohelper the pane is a terminal session, and the case sent two Ctrl-C within the 1 s exit-confirmation window: that exits an empty agent conversation by design, so this is not an app finding; the app is relaunched (fresh agent session)"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.nu.150.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 216.4,
+   "evidence": [
+    "enter_route: 19 Enter(s) reached the input editor: Shell=19 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794328126.545,
+    1794328342.991
+   ],
+   "detail": [
+    "[x1 gap 0 ms] effect file: expected ['t600r9m0pyng'], got []",
+    "[x1 gap 0 ms] the shell received ['sleep 30'], expected exactly [sleep 30, the echo]",
+    "[x1 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x1 gap 50 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk'], got []",
+    "[x1 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x1 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x1 gap 200 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk'], got []",
+    "[x1 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 0 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 0 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne'], got []",
+    "[x2 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 50 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne', 't60463odquzj'], got []",
+    "[x2 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x2 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x2 gap 200 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne', 't60463odquzj', 't6052k7g3ija'], got []",
+    "[x2 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 0 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 0 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne', 't60463odquzj', 't6052k7g3ija', 't606ig9nhd5o'], got []",
+    "[x3 gap 0 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 50 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 50 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne', 't60463odquzj', 't6052k7g3ija', 't606ig9nhd5o', 't607sfoxbgqr'], got []",
+    "[x3 gap 50 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "[x3 gap 200 ms] no prompt after the Ctrl-C burst",
+    "[x3 gap 200 ms] effect file: expected ['t600r9m0pyng', 't601zpu8xcnk', 't6023gal8xmk', 't603hmy91tne', 't60463odquzj', 't6052k7g3ija', 't606ig9nhd5o', 't607sfoxbgqr', 't608l15uyr9z'], got []",
+    "[x3 gap 200 ms] the shell received [], expected exactly [sleep 30, the echo]",
+    "`exit` did not return to the local shell (local)",
+    "injector accounting: injector sent 586; app saw 586; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 545 unbound keydown/typed, 22 taken by a key binding, 19 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 586,
+     "enters_sent": 20,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 586,
+     "unbound": 545,
+     "bound": 22,
+     "enters_bound": 19,
+     "seen": 586,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 20
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 19
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.nu.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.nu.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_lab_ctrl_c_no_esc_i.nu.150.nohelper.png"
+   ],
+   "detail": [
+    "after lab_ctrl_c_no_esc_i.nu.150.nohelper the pane is a terminal session, and the case sent two Ctrl-C within the 1 s exit-confirmation window: that exits an empty agent conversation by design, so this is not an app finding; the app is relaunched (fresh agent session)"
+   ]
+  },
+  {
+   "name": "lab_agent_remote_flow.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 17.7,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: AI=4 Shell=3 [Shell,AI,AI,AI,AI,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794328355.167,
+    1794328372.834
+   ],
+   "detail": [
+    "codebase step not run: APPCI_FAKE_EMBEDDINGS=1 is off, so the host has no embeddings provider to index with",
+    "injector accounting: injector sent 419; app saw 419; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 407 unbound keydown/typed, 4 taken by a key binding, 8 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 419,
+     "enters_sent": 8,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 419,
+     "unbound": 407,
+     "bound": 4,
+     "enters_bound": 8,
+     "seen": 419,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 8
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/agent_lab_agent_remote_flow.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_agent_remote_flow.nu.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 200.8,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794328373.812,
+    1794328574.629
+   ],
+   "detail": [
+    "the agent turn did not finish: the model received 0 of 5 tool results",
+    "the edited file on the host is ['alpha tkat615zwbsih', 'second line']",
+    "no hop=backend_route line for file_context: the call never reached the router",
+    "no hop=backend_route line for file_write: the call never reached the router",
+    "no hop=backend_route line for ripgrep_search: the call never reached the router",
+    "no hop=backend_route line for fs_basic: the call never reached the router",
+    "the feature typed into the remote shell: ['Please carry out these steps in order: read /work/u_nu/agf_t615zwbsih/a.txt ;; grep tknt615zwbsih /work/u_nu/agf_t615zwbsih ;; glob *.txt /work/u_nu/agf_t615zwbsih ;; edit /work/u_nu/agf_t615zwbsih/a.txt :: alpha tkat615zwbsih :: alpha tket615zwbsih ;; run cat /work/u_nu/agf_t615zwbsih/a.txt | /usr/bin/tee -a /work/u_nu/ran_t615zwbsih.txt']",
+    "the approved `cat` ran 0 times on the host (its effect file holds [], expected exactly one copy of the edited file ['alpha tket615zwbsih', 'second line'])",
+    "`exit` did not return to the local shell (none)",
+    "codebase step not run: APPCI_FAKE_EMBEDDINGS=1 is off, so the host has no embeddings provider to index with",
+    "injector accounting: injector sent 396; app saw 396; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 391 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 396,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 396,
+     "unbound": 391,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 396,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/agent_lab_agent_remote_flow.nu.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_agent_remote_errors.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 14.6,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: AI=4 Shell=3 [Shell,AI,AI,AI,AI,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794328576.851,
+    1794328591.491
+   ],
+   "detail": [
+    "injector accounting: injector sent 343; app saw 343; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 334 unbound keydown/typed, 3 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 343,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 343,
+     "unbound": 334,
+     "bound": 3,
+     "enters_bound": 6,
+     "seen": 343,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/agent_lab_agent_remote_errors.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_agent_remote_errors.nu.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 168.7,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794328592.528,
+    1794328761.181
+   ],
+   "detail": [
+    "the agent turn did not finish: the model received 0 of 4 tool results",
+    "no hop=backend_route line for file_context: the call never reached the router",
+    "the feature typed into the remote shell: ['Please carry out these steps in order: read /work/u_nu/age_t622kq7zdo/nope_t622kq7zdo.txt ;; edit /work/u_nu/age_t622kq7zdo/a.txt :: not_in_file_t622kq7zdo :: whatever ;; grep zzt622kq7zdoqq /work/u_nu/age_t622kq7zdo ;; glob *.nothing_t622kq7zdo /work/u_nu/age_t622kq7zdo']",
+    "`exit` did not return to the local shell (none)",
+    "injector accounting: injector sent 327; app saw 327; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 322 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 327,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 327,
+     "unbound": 322,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 327,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/agent_lab_agent_remote_errors.nu.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_agent_remote_drop.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 37.4,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: AI=4 Shell=1 [Shell,AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794328763.326,
+    1794328800.742
+   ],
+   "detail": [
+    "the approved command never started on the host (no /work/u_bash/started_t626vv6ca0sa there), so the drop could not hit a running tool call",
+    "injector accounting: injector sent 150; app saw 150; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 143 unbound keydown/typed, 3 taken by a key binding, 4 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 150,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 150,
+     "unbound": 143,
+     "bound": 3,
+     "enters_bound": 4,
+     "seen": 150,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots/agent_lab_agent_remote_drop.bash.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_lab_agent_remote_drop.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/shots/agent_not_local_after_lab_agent_remote_drop.bash.lan.nohelper.png"
+   ],
+   "detail": [
+    "after lab_agent_remote_drop.bash.lan.nohelper the pane's shell was not the root shell (none; root pid 4173502); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "lab_agent_remote_drop.nu.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 95.2,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794328830.306,
+    1794328925.492
+   ],
+   "detail": [
+    "no approval card for the run_shell_command within 90 s",
+    "injector accounting: injector sent 150; app saw 150; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 145 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 150,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 150,
+     "unbound": 145,
+     "bound": 4,
+     "enters_bound": 1,
+     "seen": 150,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/agent_lab_agent_remote_drop.nu.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_edit_conflict.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 152.9,
+   "evidence": [
+    "enter_route: 8 Enter(s) reached the input editor: AI=5 Shell=3 [Shell,AI,AI,AI,AI,AI,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794328927.7,
+    1794329080.552
+   ],
+   "detail": [
+    "remote: the accepted multi-hunk edit: 207 bytes on disk, 228 expected; first difference at byte 25 (b'beta t633nmdwrx\\nL03 gamm' vs b'BETA-EDITED t633nmdwrx\\nL'); line endings (crlf, bare lf, bare cr, final newline) (0, 10, 0, True) vs expected (0, 10, 0, True)",
+    "lab_fam_agent_edit_conflict: no hop=backend_route family=file_write line: the edit was not written through the backend router",
+    "accept: no follow-up model request within 40 s (the tool result may not have reached the model)",
+    "NO-REFERENCE: UNVERIFIABLE: no action card for the proposed edit within 60 s (no '[byop-diag] queue_actions' in the app log): the fake model's edit never reached the diff view, nothing to accept or reject",
+    "partial accept: the diff card has no per-hunk accept (Up/Down only move between hunks, code_diff_view.rs); accept applies every hunk, reject none: not testable, not claimed",
+    "injector accounting: injector sent 553; app saw 553; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 543 unbound keydown/typed, 3 taken by a key binding, 7 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 553,
+     "enters_sent": 7,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 553,
+     "unbound": 543,
+     "bound": 3,
+     "enters_bound": 7,
+     "seen": 553,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 7
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/agent_lab_fam_agent_edit_conflict.bash.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_edit_conflict.nu.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 143.6,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794329082.759,
+    1794329226.343
+   ],
+   "detail": [
+    "lab_fam_agent_edit_conflict: no hop=backend_route family=file_write line: the edit was not written through the backend router",
+    "`exit` did not return to the local shell (none)",
+    "NO-REFERENCE: UNVERIFIABLE: no action card for the proposed edit within 60 s (no '[byop-diag] queue_actions' in the app log): the fake model's edit never reached the diff view, nothing to accept or reject",
+    "NO-REFERENCE: UNVERIFIABLE: no action card for the proposed edit within 60 s (no '[byop-diag] queue_actions' in the app log): the fake model's edit never reached the diff view, nothing to accept or reject",
+    "partial accept: the diff card has no per-hunk accept (Up/Down only move between hunks, code_diff_view.rs); accept applies every hunk, reject none: not testable, not claimed",
+    "injector accounting: injector sent 540; app saw 540; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 536 unbound keydown/typed, 3 taken by a key binding, 1 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 540,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 540,
+     "unbound": 536,
+     "bound": 3,
+     "enters_bound": 1,
+     "seen": 540,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots/agent_lab_fam_agent_edit_conflict.nu.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_delete_conflict.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 22.4,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: AI=3 Shell=3 [Shell,AI,AI,AI,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794329228.546,
+    1794329250.956
+   ],
+   "detail": [
+    "injector accounting: injector sent 151; app saw 151; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 142 unbound keydown/typed, 3 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 151,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 151,
+     "unbound": 142,
+     "bound": 3,
+     "enters_bound": 6,
+     "seen": 151,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    }
+   },
+   "shots": [
+    "shots/agent_lab_fam_agent_delete_conflict.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_edit_endings.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 71.8,
+   "evidence": [
+    "enter_route: 18 Enter(s) reached the input editor: AI=15 Shell=3 [Shell,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794329251.998,
+    1794329323.801
+   ],
+   "detail": [
+    "injector accounting: injector sent 1308; app saw 1308; lost-before-app 0 (Enter: sent 18, app saw 18); of the app's: 1286 unbound keydown/typed, 4 taken by a key binding, 18 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 13 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 1308,
+     "enters_sent": 18,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1308,
+     "unbound": 1286,
+     "bound": 4,
+     "enters_bound": 18,
+     "seen": 1308,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 18
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 13
+    }
+   },
+   "shots": [
+    "shots/agent_lab_fam_agent_edit_endings.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_agent_edit_touch_only.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 20.4,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: AI=3 Shell=3 [Shell,AI,AI,AI,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794329324.789,
+    1794329345.154
+   ],
+   "detail": [
+    "injector accounting: injector sent 309; app saw 309; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 299 unbound keydown/typed, 4 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 309,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 309,
+     "unbound": 299,
+     "bound": 4,
+     "enters_bound": 6,
+     "seen": 309,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    }
+   },
+   "shots": [
+    "shots/agent_lab_fam_agent_edit_touch_only.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.bash.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329346.219,
+    1794329346.863
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_start.bash.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.zsh.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329347.929,
+    1794329348.572
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_start.zsh.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.fish.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329349.639,
+    1794329350.282
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_start.fish.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_start.nu.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329351.279,
+    1794329351.973
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_start.nu.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.bash.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329352.972,
+    1794329353.597
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_no_network_wait.bash.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.zsh.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329354.671,
+    1794329355.299
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_no_network_wait.zsh.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.fish.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329356.369,
+    1794329356.998
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_no_network_wait.fish.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_enter_no_network_wait.nu.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329358.019,
+    1794329358.667
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_enter_no_network_wait.nu.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.bash.lan.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329359.749,
+    1794329360.396
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.bash.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.bash.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329361.476,
+    1794329362.123
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.bash.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.zsh.lan.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329363.202,
+    1794329363.84
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.zsh.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.zsh.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329364.922,
+    1794329365.572
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.zsh.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.fish.lan.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329366.647,
+    1794329367.298
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.fish.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.fish.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329368.375,
+    1794329369.055
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.fish.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.nu.lan.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329370.129,
+    1794329370.782
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.nu.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.nu.150.helper",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 0.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794329371.781,
+    1794329372.435
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.nu.150.helper.png"
+   ]
+  }
+ ]
+}
