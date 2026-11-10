@@ -12310,7 +12310,11 @@ async fn mid_batch(app: &mut App) -> MidBatch {
 }
 
 impl MidBatch {
-    /// What the reject button (or a close's action cancellation) does to the pending command.
+    /// What the card's Reject button does to the pending command. Since #1942 (owner decision
+    /// 2026-11-09) a Reject has its own reason: it is not a stop, and with an earlier result of
+    /// the step finished it sends the step's results at once. `ManuallyCancelled`, which this
+    /// helper used to pass (what a Reject sent before the decision), is now a user stop and
+    /// sends nothing in any pane, so it could no longer serve as the positive control.
     fn cancel_blocked_action(&self, app: &mut App) {
         let (conversation_id, blocked_action_id) =
             (self.conversation_id, self.blocked_action_id.clone());
@@ -12318,7 +12322,7 @@ impl MidBatch {
             action_model.cancel_action_with_id(
                 conversation_id,
                 &blocked_action_id,
-                CancellationReason::ManuallyCancelled,
+                CancellationReason::Rejected,
                 ctx,
             );
         });
@@ -12339,9 +12343,10 @@ async fn let_subscribers_run() {
     }
 }
 
-/// Positive control for the mid-batch tests below: in an open pane, cancelling the pending
-/// action of a batch whose earlier action succeeded sends the batch's results as a follow-up.
-/// Without this, "no request was sent" in the tests below could be an artifact of the setup.
+/// Positive control for the mid-batch tests below: in an open pane, rejecting the pending
+/// action of a batch whose earlier action succeeded sends the batch's results as a follow-up
+/// (#1942, second part: a Reject is not a stop). Without this, "no request was sent" in the
+/// tests below could be an artifact of the setup.
 #[test]
 fn open_pane_mid_batch_cancel_sends_the_follow_up() {
     App::test((), |mut app| async move {
