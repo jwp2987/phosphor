@@ -2462,6 +2462,12 @@ def c_sub_sh_probe(ctx, r):
         r.note("APPCI_SU_SH_USER unset: the `su` to an sh-shelled user leg did not run (needs a passwordless su on this runner)")
     if not trials:
         r.skip("neither dash nor busybox is installed")
+    # The pane's bash exports PS1 (the appci rc) and Phosphor blanks it, so a dash started from it inherits an EMPTY PS1 and draws no prompt
+    # at all: the judge sees no shell-shaped tail and (correctly) never writes to a shell it cannot prove idle (round 8 Linux). Give
+    # dash / ash a real `$ ` prompt through $ENV (read by an interactive dash and busybox ash), as a user's dash has.
+    ctx.rm("shp_ash.rc")
+    ctx.be.type("printf \"PS1='$ '\\n\" > shp_ash.rc; export ENV=$PWD/shp_ash.rc", 12, enter=True)
+    time.sleep(0.6)
     for cmd, label, comm_prefixes in trials:
         f = "shp_%s.txt" % label
         ctx.rm(f)
@@ -2481,9 +2487,9 @@ def c_sub_sh_probe(ctx, r):
         r.metric("first_inner_line_after_phosphorize_s_%s" % label, round(dt_trigger, 3))
         r.check(got, "%s: the first inner line ran at all (file %r)" % (label, ctx.lines(f)))
         r.check(dt_enter < 2.0, "%s: the first inner line ran %.2f s after its Enter (budget 2 s, #1710)" % (label, dt_enter))
-        # #1679 step 3: a cooked editor-less shell (dash) is written to only at an IDLE prompt it proved ready (the user's line runs in
-        # it first, never held). Typing line after line with no pause starves the judge, so leave the idle prompt the judge needs and
-        # wait for the unsupported event before the rest; the probe then answers while the following lines are typed behind it.
+        # #1679 step 3 / #1847 option 2 (owner decision 2026-11-09): a cooked editor-less shell (dash) idle at its prompt with nothing typed
+        # is written to at once (the probe, then the first line is held behind it); a busybox ash (a line reader) likewise. Wait for the
+        # unsupported event before the rest, so the probe answers while the following lines are typed behind it.
         t_idle = time.time()
         ctx.until(lambda: any("subshell_setup_unsupported" in ln for ln in ctx.log_since(off).splitlines()), 6)
         r.metric("unsupported_event_after_first_line_s_%s" % label, round(time.time() - t_idle, 3))
@@ -2511,6 +2517,8 @@ def c_sub_sh_probe(ctx, r):
             r.check(not any("writing the rest of the subshell setup on timers" in ln for ln in log),
                     "%s: the probe was marker-paced (no marker give-up fallback in the app log)" % label)
         ctx.reset()
+    ctx.be.type("unset ENV", 12, enter=True)
+    time.sleep(0.3)
 
 
 @case("alt_screen", order=21)
