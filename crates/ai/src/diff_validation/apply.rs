@@ -7,8 +7,11 @@
 //! This is the byte-exact reference for what an accepted edit writes. The TUI writes its result
 //! directly; the GUI shows the edit in an editor buffer (which stores text LF-normalised and can
 //! only write one line ending) and writes this result whenever it is the same text as the buffer.
+//! When it is not (the user changed the proposal before accepting it), the buffer's text is
+//! written with the original's line endings put back line by line (`endings.rs`).
 
 use super::DiffDelta;
+use super::endings::text_with_line_endings_of;
 
 /// The line ending `line` carries: `"\r\n"`, `"\n"`, or `""` for an unterminated last line.
 fn terminator(line: &str) -> &'static str {
@@ -131,7 +134,9 @@ pub fn lf_normalized(text: &str) -> String {
 /// ([`apply_deltas_to_text`]) do not. That result is written when it is the same text as the
 /// buffer's, line endings aside. It is not the same text when the user changed the proposal in
 /// the diff view (or the two ever disagree): then the buffer's text is what the user saw and
-/// accepted, and it is written as before.
+/// accepted, and it is what is written, with each line that is still the original's given back
+/// the original's line ending ([`text_with_line_endings_of`]; a no-op unless the original mixes
+/// line endings).
 ///
 /// An original with no line break at all is left to the buffer too: it has no line ending to
 /// preserve, and the buffer knows the session platform's default for the lines being added.
@@ -141,7 +146,7 @@ pub fn accepted_update_text(buffer_text: String, original: &str, deltas: &[DiffD
     }
     match apply_deltas_to_text(original, deltas) {
         Ok(exact) if lf_normalized(&exact) == lf_normalized(&buffer_text) => exact,
-        _ => buffer_text,
+        _ => text_with_line_endings_of(original, buffer_text),
     }
 }
 

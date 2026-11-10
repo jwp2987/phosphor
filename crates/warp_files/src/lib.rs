@@ -208,13 +208,17 @@ fn line_ending_style(text: &str) -> LineEndingStyle {
 /// anything was converted.
 ///
 /// [`LineEndingStyle::Mixed`] is compatible with everything too, and that is a
-/// **stated blind spot, not an oversight**. An editor buffer can only emit one
-/// convention — `editor::multiline::infer_line_ending` picks the majority — so
-/// *any* accept on a mixed-ending file rewrites its endings uniformly, whether
-/// or not anything external touched it. Refusing there would block accepts on
-/// files nobody had touched, which is the failure mode this guard exists to
-/// avoid. The consequence, stated rather than implied: an external change that
-/// leaves a file with mixed line endings and identical text is not detected.
+/// **stated blind spot, not an oversight**. A style is one word for a whole
+/// file; it cannot say which line ends how. Since #1956 an accept on a
+/// mixed-ending file writes each line with the ending it had when the change
+/// was proposed (`ai::diff_validation::accepted_update_text`), so its incoming
+/// text is `Mixed` and comparing that word with the file's proves nothing
+/// either way; before #1956 the editor buffer wrote its one majority ending
+/// and a refusal here would have blocked accepts on files nobody had touched.
+/// The consequence, stated rather than implied: an external change that only
+/// converts line endings of a mixed-ending file (to one ending, or to another
+/// mix) with identical text is not detected, and the accept writes the lines
+/// with the endings they had at proposal time.
 fn line_endings_preserved(incoming: LineEndingStyle, actual: LineEndingStyle) -> bool {
     matches!(incoming, LineEndingStyle::Absent | LineEndingStyle::Mixed)
         || matches!(actual, LineEndingStyle::Absent | LineEndingStyle::Mixed)

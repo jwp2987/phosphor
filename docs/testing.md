@@ -5233,3 +5233,25 @@ Everything below is worked, unproven: nothing was compiled or run against a buil
   **Next run:** `routing_plain_installed_head` PASS in both modes with `rule=installed-head (#906/#964)` and `surface=PlainTerminal` in
   `plain_installed_rows`; a FAIL there names a line the app sent to the agent on the plain terminal (then read the rule: `model` means
   the session could not say the first word is a command). `routing_table` rows on Wayland carry a surface.
+- **#1956, APP: a file that mixes CRLF and LF lines keeps each line's own ending** (owner decision 2026-11-10). Two paths wrote the editor
+  buffer's one line ending (the file's majority one) over such a file: a save from the code editor, and an accepted agent edit the user had
+  changed in the diff view. Both now go through `ai::diff_validation::text_with_line_endings_of(original, text)`
+  (`crates/ai/src/diff_validation/endings.rs`): lines are aligned by content with the file's raw text as the disk last had it, a line that is
+  still there keeps its ending, a changed line takes the ending of the line it replaces, an inserted one of the line before it; the final
+  newline state is the text's. A file with one line ending is returned untouched, and the function returns its input whenever the result
+  would not be the same text (line endings aside). `GlobalBufferModel` keeps the raw text of mixed-ending files only
+  (`mixed_ending_disk_text`: `FileLoaded`, `FileUpdated`, discard-and-reload, each save) and `save` / `rename_and_save` use it
+  (`text_to_save`). Not covered here: the remote editor save and the remote accept (#2020).
+  - unit, `crates/ai/src/diff_validation/endings_tests.rs`: `raw_lines_split_at_every_kind_of_line_break_and_lose_nothing`,
+    `mixed_means_more_than_one_kind_of_line_break`, `a_file_with_one_line_ending_is_not_touched`, `unchanged_lines_keep_their_own_ending`,
+    `inserted_and_deleted_lines_leave_the_other_lines_alone`, `a_changed_run_takes_the_endings_of_the_lines_it_replaces`,
+    `repeated_lines_are_matched_in_order`, `the_final_newline_state_is_the_texts`, `a_result_that_would_change_the_text_is_never_returned`
+    (a lone `\r` in front of an empty LF line), `only_line_endings_ever_differ_from_the_text`,
+    `a_large_changed_middle_still_keeps_each_line_ending` (the greedy match past `MAX_ALIGNMENT_CELLS`).
+  - unit, `apply_tests.rs`: **expectation changed by the owner decision, not weakened:**
+    `accepted_text_is_the_buffer_when_the_user_changed_the_proposal` expected the buffer's all-CRLF text for a mixed original; it is now
+    `accepted_text_keeps_each_line_ending_when_the_user_changed_the_proposal` (the user's text, each surviving line with its own ending),
+    and `accepted_text_is_the_buffer_when_the_user_changed_the_proposal_of_a_uniform_file` keeps the old expectation for LF / CRLF files with
+    and without a final newline.
+  - unit, `app/src/code/global_buffer_model_tests.rs`: `a_save_of_a_mixed_ending_file_keeps_each_line_ending` (what is remembered, two saves
+    in a row, a uniform file untouched, the record forgotten once the text has one ending).

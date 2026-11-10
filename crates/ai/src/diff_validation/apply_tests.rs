@@ -289,16 +289,40 @@ fn accepted_text_for_a_mixed_file_keeps_each_line_ending() {
     );
 }
 
-/// The user changed the proposal in the diff view: what they saw is what is written.
+/// The user changed the proposal in the diff view: what they saw is what is written. On a file
+/// that mixes line endings every line still keeps its own (#1956, owner decision 2026-11-10;
+/// until then the buffer's one line ending was written over the whole file here).
 #[test]
-fn accepted_text_is_the_buffer_when_the_user_changed_the_proposal() {
+fn accepted_text_keeps_each_line_ending_when_the_user_changed_the_proposal() {
     let original = "one\r\ntwo\nthree\r\n";
     let deltas = [delta(2..3, "TWO")];
     let buffer_text = "one\r\nTWO and more\r\nthree\r\n".to_owned();
     assert_eq!(
-        accepted_update_text(buffer_text.clone(), original, &deltas),
-        buffer_text
+        accepted_update_text(buffer_text, original, &deltas),
+        "one\r\nTWO and more\nthree\r\n"
     );
+    // The user added a line and removed one as well.
+    let original = "one\r\ntwo\nthree\r\nfour\n";
+    let buffer_text = "one\r\nTWO\r\nextra\r\nfour\r\n".to_owned();
+    assert_eq!(
+        accepted_update_text(buffer_text, original, &deltas),
+        "one\r\nTWO\nextra\r\nfour\n"
+    );
+}
+
+/// The same on a file with one line ending: the buffer's text, untouched.
+#[test]
+fn accepted_text_is_the_buffer_when_the_user_changed_the_proposal_of_a_uniform_file() {
+    for_each_shape(|eol, fin| {
+        let original = file(&BASE, eol, fin);
+        let deltas = [delta(2..3, "TWO")];
+        let buffer_text = file(&["one", "TWO and more", "three", "four"], eol, fin);
+        assert_eq!(
+            accepted_update_text(buffer_text.clone(), &original, &deltas),
+            buffer_text,
+            "eol {eol:?}, final newline {fin}"
+        );
+    });
 }
 
 /// Deltas that do not fit the original, or an original with no line break: the buffer decides.
