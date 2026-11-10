@@ -93,7 +93,8 @@ PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_i
 # (script/ci/ci_seq.py LAB_FIX_CASES), Linux only, APPCI_FAKE_MODEL=1, APPCI_LAB_MATRIX=quick.
 # #1970 / #1983 (round 10): the slow-link and Ctrl-C lab cases had existed since 2026-11-08 but no tier ever played them. lab_enter_no_network_wait is new;
 # lab_enter_start (only its 150 ms arms here: the netem test the annoyance review found never run) and lab_ctrl_c_no_esc_i are the existing cases.
-PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wait.*", "lab_enter_start.*.150.*", "lab_ctrl_c_no_esc_i.*")
+# #1982 (round 14): lab_agent_nld_predict_ssh, no query prediction request from an ssh pane by default (local control in the same case).
+PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wait.*", "lab_enter_start.*.150.*", "lab_ctrl_c_no_esc_i.*", "lab_agent_nld_predict_ssh.*")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):

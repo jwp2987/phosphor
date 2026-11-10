@@ -1,5 +1,10 @@
 # Linux secure-storage fallback key (#1932): design note, no code yet
 
+> **Superseded 2026-11-10.** The owner decided the three questions at the end of this note and
+> the change was written: see `docs/design/r14-secure.md` (the per-install secret lives in the
+> keyring when one answers, else in a key file; migration on read; no write with the built-in
+> key). This note is kept for its analysis.
+
 Finding 7 of `docs/design/secrets-privacy-review.md` (2026-11-09). Decision for this round: **no
 code**. The change is a migration of every credential a keyring-less Linux user has saved, the
 gain is small, and a mistake loses those credentials silently. This note is what the code should

@@ -5,6 +5,9 @@
 #                            be told (not "ok with the old content") and the host file must stay byte for byte
 #   lab_agent_remote_drop    the connection RESETS while a run_shell_command is running on the host: the model gets a tool result that says the command did not
 #                            complete (no hang), the pane is local again, and the agent still answers the next prompt
+#   lab_agent_nld_predict_ssh (#1982) query predictions (the ghosted completion of an agent prompt; one model request per typing pause, carrying the input buffer)
+#                            are requested on a LOCAL pane (control) and NOT on an ssh pane with the default settings. Oracle: the fake model's own count of
+#                            `nld_predict` requests (fake_model.by_purpose); a control that sees no request makes the case UNVERIFIABLE, never a pass
 # Agent mode only, against the scripted fake model (fake_model.py, APPCI_FAKE_MODEL=1; the multi-step "Please carry out these steps in order: a ;; b" turn).
 # Oracles (never a screenshot alone):
 #   * the file on the lab host (exact lines after the edit; unchanged after a refused edit);
@@ -268,3 +271,64 @@ def c_agent_remote_drop(ctx, r, arm):
     r.check(ctx.until(lambda: fake.requests > n, 30, step=0.25), "the agent did not answer a new prompt after the connection was lost")
     ctx.remote.rm(started_file)
     ctx.reset()
+
+
+def nld_requests(fake):
+    return fake.by_purpose.get("nld_predict", 0)
+
+
+def nld_verdict(local_delta, ssh_delta):
+    """pure: (#1982) -> ("pass" | "fail" | "unverifiable", why). The local control must have produced a prediction request, or an ssh pane with none proves
+    nothing (no provider for predictions, the flag off, no completed block yet); any request from the ssh pane is the defect."""
+    if local_delta < 1:
+        return "unverifiable", "the LOCAL control produced no nld_predict request, so none in the ssh session proves nothing"
+    if ssh_delta > 0:
+        return "fail", "%d nld_predict request(s) reached the model while typing in the ssh session (natural_language_autosuggestions_in_ssh_enabled is off by default)" % ssh_delta
+    return "pass", ""
+
+
+def type_partial_prompt(ctx, fake, text, wait_s, until_request):
+    """type an agent prompt WITHOUT Enter and wait for the prediction debounce (250 ms) plus the request; returns how many nld_predict requests arrived. The
+    line is cleared afterwards, and a request still in flight gets time to land before the next baseline."""
+    base = nld_requests(fake)
+    AG.type_fast(ctx, text, enter=False)
+    if until_request:
+        ctx.until(lambda: nld_requests(fake) > base, wait_s, step=0.25)
+    else:
+        time.sleep(wait_s)
+    got = nld_requests(fake) - base
+    ctx.reset()
+    time.sleep(1.5)
+    return got
+
+
+@CL.lab_case("agent_nld_predict_ssh", shells=("bash",), lat=("lan",), helper=("nohelper",), modes=("agent",))
+def c_agent_nld_predict_ssh(ctx, r, arm):
+    """#1982: a typing pause in an agent prompt asks the model for a completion on a local pane, and asks for nothing on an ssh pane (default settings)"""
+    fake = fake_model_or_skip(ctx, r)
+    uid = CL.unique(ctx, 6)
+    # a prediction needs a completed block in the pane (its context): run one on each side before typing the prompt
+    ctx.reset()
+    AG.type_fast(ctx, "echo nldpre_%s" % uid)
+    time.sleep(2.0)
+    local_delta = type_partial_prompt(ctx, fake, "please summarize what nldloc%s" % uid, 10, True)
+    ctx.shot("agent_nld_predict_local_%s" % arm["shell"])
+    r.metric("nld_predict_requests_local", local_delta)
+    if CL.connect_or_fail(ctx, r, arm) is None:
+        ctx.reset()
+        return
+    time.sleep(1.0 + 2 * CL.rtt_s(arm))
+    AG.type_fast(ctx, "echo nldrem_%s" % uid)
+    ran = ctx.until(lambda: any("nldrem_%s" % uid in c for _, c in ctx.remote.commands()), 20 + 6 * CL.rtt_s(arm), step=0.5)
+    r.check(bool(ran), "`echo nldrem_%s` did not run in the remote shell, so the ssh pane has no completed block to predict from" % uid)
+    ssh_delta = type_partial_prompt(ctx, fake, "please summarize what nldssh%s" % uid, 5, False)
+    ctx.shot("agent_nld_predict_ssh_%s" % arm["shell"])
+    r.metric("nld_predict_requests_ssh", ssh_delta)
+    verdict, why = nld_verdict(local_delta, ssh_delta)
+    if verdict == "unverifiable":
+        r.unverifiable(why)
+    else:
+        r.check(verdict == "pass", why)
+    leaked = [c for _, c in ctx.remote.commands() if "nldssh%s" % uid in c]
+    r.check(not leaked, "the untyped-Enter prompt reached the remote shell: %r" % leaked[:2])
+    CL.finish_remote(ctx, r)

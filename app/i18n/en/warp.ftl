@@ -1017,6 +1017,7 @@ settings-ai-next-command-label = Next Command
 settings-ai-prompt-suggestions-label = Prompt Suggestions
 settings-ai-suggested-code-banners-label = Suggested Code Banners
 settings-ai-natural-language-autosuggestions-label = Natural Language Autosuggestions
+settings-ai-natural-language-autosuggestions-in-ssh-label = Natural Language Autosuggestions in SSH Sessions
 settings-ai-git-operations-autogen-label = Commit & Pull Request Generation
 
 # Permissions dropdown options
@@ -1810,6 +1811,7 @@ settings-ai-next-command-description = Let AI suggest the next command to run ba
 settings-ai-prompt-suggestions-description = Let AI suggest natural language prompts, as inline banners in the input, based on recent commands and their outputs.
 settings-ai-suggested-code-banners-description = Let AI suggest code diffs and queries as inline banners in the blocklist, based on recent commands and their outputs.
 settings-ai-natural-language-autosuggestions = Let AI suggest natural language autosuggestions, based on recent commands and their outputs.
+settings-ai-natural-language-autosuggestions-in-ssh-description = Also request them while the pane is in an SSH session. Each pause in typing sends the text of the input to the model provider. Off by default.
 settings-ai-git-operations-autogen-description = Let AI generate commit messages and pull request titles and descriptions.
 
 # =============================================================================

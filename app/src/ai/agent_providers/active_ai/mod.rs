@@ -175,7 +175,12 @@ pub mod prompt_suggestions {
 
 pub mod nld_predict {
     use super::*;
-    use warpui::{AppContext, EntityId};
+    use warpui::{AppContext, EntityId, SingletonEntity as _};
+
+    use crate::{
+        settings::AISettings,
+        terminal::{TerminalView, model::session::Session},
+    };
 
     pub struct Input {
         pub partial_query: String,
@@ -183,11 +188,54 @@ pub mod nld_predict {
         pub system_context: Option<String>,
     }
 
+    /// Whether a query prediction may be requested for a pane (#1982). A prediction sends the
+    /// input buffer to the model provider at every typing pause, so in an ssh session it is
+    /// requested only when the user allowed that. `in_ssh_session` is `None` when the pane's
+    /// session is not known; that is treated like an ssh session, so not knowing never sends.
+    pub(crate) fn allowed_for_session(in_ssh_session: Option<bool>, allowed_in_ssh: bool) -> bool {
+        allowed_in_ssh || in_ssh_session == Some(false)
+    }
+
+    /// Whether `session` runs on another host over ssh: one the ssh wrapper set up, or one
+    /// bootstrapped in a plain `ssh` the user ran.
+    fn is_ssh_session(session: &Session) -> bool {
+        !session.is_local() || session.is_legacy_ssh_session()
+    }
+
+    /// Whether the active session of the pane `terminal_view_id` is an ssh session; `None` when
+    /// there is no such pane or it has no active session.
+    fn pane_is_in_ssh_session(app: &AppContext, terminal_view_id: EntityId) -> Option<bool> {
+        let terminal_view = app
+            .window_ids()
+            .find_map(|window_id| app.view_with_id::<TerminalView>(window_id, terminal_view_id))?;
+        let session = terminal_view
+            .as_ref(app)
+            .active_session()
+            .as_ref(app)
+            .session(app)?;
+        Some(is_ssh_session(&session))
+    }
+
     pub fn dispatch(
         app: &AppContext,
         terminal_view_id: Option<EntityId>,
         input: Input,
     ) -> Option<RenderedRequest> {
+        let allowed_in_ssh =
+            AISettings::as_ref(app).is_natural_language_autosuggestions_in_ssh_enabled();
+        // The pane is looked up only when the answer depends on it.
+        let in_ssh_session = if allowed_in_ssh {
+            None
+        } else {
+            terminal_view_id.and_then(|id| pane_is_in_ssh_session(app, id))
+        };
+        if !allowed_for_session(in_ssh_session, allowed_in_ssh) {
+            log::debug!(
+                "[active_ai] nld_predict not requested: ssh session (or unknown) and \
+                 natural_language_autosuggestions_in_ssh_enabled is off"
+            );
+            return None;
+        }
         let cfg = resolve_active_ai_oneshot_with(app, terminal_view_id, WhileKeysLoading::Skip)?;
         let overrides = active_prompt_overrides(app, terminal_view_id);
         let system = render_with_override(
@@ -549,3 +597,7 @@ pub mod next_command {
         sanitized
     }
 }
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod tests;
