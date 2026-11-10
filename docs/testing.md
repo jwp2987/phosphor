@@ -4859,3 +4859,38 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   `a_question_printed_after_a_precmd_that_carries_the_prompt_is_seen` (the app-prompt Precmd, a started grid), with the test helper
   `TerminalModel::finish_block_with_ps1`. No appci case runs with honor PS1 on: `gitbash_precmd_secret` proves the app-prompt mode only, the unit
   tests are the proof for the other. Next unit run: both tests pass.
+
+## Round 12: honor PS1 and the precmd secret (design `docs/design/r12-ps1case.md`; #1923; nothing compiled or run when written)
+
+- **APP, #1923 (rounds 10 to 12 read the wrong block): where a precmd function's question is written.** Read from the code, not yet from a run.
+  What the shell prints between a prompt's Precmd and the command's start is EARLY OUTPUT: the block list's own handler (`blocks.rs` `delegate!`,
+  `is_early_output`) sends it to a background block (`EarlyOutput`), in either prompt mode, and that block's output grid is what the pane draws
+  (the round 10 screenshot's `pin: `). The fresh active block gets none of it. The screen fact at the prompt hold's cap read the ACTIVE block in
+  every round (its output grid, then its prompt-and-command grid, then that grid's cells when unstarted), so it was false with the question on
+  screen and the PIN stayed held (`prompt_hold_kept_overdue`). The round 12 reading ("the grid is unstarted with honor PS1") explains the failing
+  unit test wrongly: `TerminalModel::mock` is past its bootstrap Precmd, so the test's `pin: ` went to a background block too. Now:
+  `BlockList::block_receiving_output` (the block the stream is written to, by the handler's own rule) and `key_facts::block_tail_asks_for_input`
+  (renamed from `active_block_tail_asks_for_input`; the view passes it that block). Unit tests `key_facts_tests.rs`:
+  `a_question_printed_after_the_precmd_is_seen_on_the_block_the_stream_writes_to` (the round 11 test; its last assertion now reads the block
+  the stream writes to, and it also pins that the active block holds nothing of the question: an EXPECTATION CHANGE of an uncompiled round 12
+  assertion, because its premise was wrong, not a weaker test), `a_question_printed_after_a_precmd_that_carries_the_prompt_is_seen` (the same
+  with the app's prompt), `a_fresh_prompt_with_nothing_printed_asks_nothing`, `a_question_in_an_unstarted_grid_is_read_from_its_cells` (the
+  round 12 arm, kept for a block written directly). Next unit run: all four pass; if the first fails at `written.is_background()` this reading
+  is wrong and the round 12 one stands.
+- **New appci case `precmd_secret_honor_ps1`** (`appci/cases_precmd_secret.py`, `cases.PROVING`, both session modes; no case ran with honor PS1
+  on before). A bash precmd function (sourced from a file the harness writes) runs `read -s -p "vault pin: "` once; the PIN is typed in two halves
+  around a pause longer than the prompt hold's give-up (1.5 s). Two arms: `hp0`, honor PS1 off (the app's prompt: the control, and on Windows the
+  scenario of `gitbash_precmd_secret`), and `hp1`, honor PS1 on. The setting is read when the pane's shell starts, so the case writes
+  `terminal.input.honor_ps1` into the profile's `settings.toml` and relaunches the app (`cases_robust.stop_for_restart` / `start_app`), and it puts
+  the file back and relaunches once more at the end. Each arm first proves its premise from the pane itself (a typed line records
+  `$WARP_HONOR_PS1` and whether the shell is bash); an arm whose premise is not met is UNVERIFIABLE. Oracles per arm: the function reached its
+  `read` (a file it writes first); the question is on screen (OCR for `vault`, which no typed line contains: a failing check in terminal mode,
+  a metric `question_on_screen_<arm>` in agent mode, where a block that belongs to no command of the conversation may be hidden by design); the
+  `read` got the PIN whole and in order (effect file); no `hop=enter_begin` line of the app log shows the PIN or a half of it in the input
+  editor's buffer (needs `WARP_INPUT_ORDER_LOG_TEXT=1`, which the harness sets; without it a note says the check was not judged); no command in
+  `rec.log` holds it; the line typed after it runs. Platforms: Linux (the pane's bash), Windows (Git Bash pane only, `winmap.GITBASH_ONLY`),
+  macOS (the pane is zsh, so both arms relaunch with `session.startup_shell_override = "bash"`, the system bash 3.2; metric `pane_made_bash`).
+  Cost: two relaunches on Linux and Windows, three on macOS, about 1.5 min per pass. Selftest `precmd_secret_honor_ps1_pure_parts`. Unverified
+  on every platform: the first run is its first execution. To read in that run: a FAIL in `hp1` only is the honor-PS1 path; a FAIL in both arms
+  is the precmd read itself on that platform (on Linux and macOS no root-pane precmd `read -s` was ever tested: the prompt hold is ConPTY-only,
+  there the pty's termios facts have to route the keys).

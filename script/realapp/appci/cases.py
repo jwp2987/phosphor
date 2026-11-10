@@ -63,6 +63,8 @@ PROVING = (
     "gitbash_long_osc_reaches_app",
     # Windows handover and secrets (#1882, #1883, #1891): Read-Host marker, Git Bash precmd `read -s`
     "ps_read_host_secure", "gitbash_precmd_secret",
+    # #1923 with the shell's own prompt (honor PS1 on), and the app-prompt control arm: a bash precmd function's `read -s` on every platform with a bash pane
+    "precmd_secret_honor_ps1",
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
     # subshell setup review r8 (#1905 first line, #1935): the secret read right after the probe answered; a dash with an empty PS1
     "subshell_ready_secret_after_probe", "subshell_sh_probe_empty_ps1",
@@ -6321,4 +6323,5 @@ import cases_output_frames  # noqa: E402,F401  (#1979: output_frames, frames / w
 import cases_agent_mcp  # noqa: E402,F401  (#1834: agent_mcp_faults, misbehaving fake MCP servers)
 import cases_agent_latency  # noqa: E402,F401  (#1828: agent_latency_key, agent_latency_enter, agent_steer_fast; needs APPCI_FAKE_MODEL=1)
 import cases_win_handover  # noqa: E402,F401  (#1882/#1883/#1891: ps_read_host_secure, gitbash_precmd_secret; Windows secrets and interactive reads on ConPTY)
+import cases_precmd_secret  # noqa: E402,F401  (#1923: precmd_secret_honor_ps1, a bash precmd `read -s` with the app's prompt and with honor PS1 on)
 import cases_wrap_vtabs  # noqa: E402,F401  (#1976: ui_copy_wrapped_output / _drag, copy of soft-wrapped lines; #1990: ui_vertical_tabs_many / _panel_click)

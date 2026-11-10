@@ -392,21 +392,24 @@ pub fn output_tail_is_input_prompt(output: &str) -> bool {
 }
 
 /// Whether the unterminated text at the end of what `block` is writing asks for input, on the
-/// grid the block writes to NOW ([`Block::active_grid_type`]). Between a prompt's Precmd and the
-/// command's start that is the prompt-and-command grid: a precmd function's `read -s -p "pin: "`
-/// prints its question there, and the output grid of that block is empty. #1923's screen fact
-/// read the output grid only, so at the prompt hold's cap the `pin: ` on screen was not seen and
-/// the PIN stayed held (round 10 Windows, `gitbash_precmd_secret`: `prompt_hold_kept_overdue`).
-/// A cursor at column 0 is a finished line: no question.
+/// grid the block writes to NOW ([`Block::active_grid_type`]). A cursor at column 0 is a finished
+/// line: no question.
 ///
-/// Round 11 (unit, build/r11a): that grid is not always STARTED when the question is printed.
-/// The Precmd starts it only when it carries a `ps1` (the app's prompt); with the shell's own
-/// prompt (honor PS1) bash sends `"ps1": ""` and the grid is started by the prompt's start
-/// marker, which bash prints AFTER its precmd functions. An unstarted grid's length is 0 and its
-/// `contents_to_string` is empty, so the first version of this fact saw nothing there and the PIN
-/// stayed held for every honor-PS1 user. The cells hold the question either way: an unstarted
-/// grid is read from its cells, the rows ending at the cursor's row.
-pub fn active_block_tail_asks_for_input(block: &Block) -> bool {
+/// The caller passes the block the stream is written to,
+/// [`BlockList::block_receiving_output`](super::blocks::BlockList::block_receiving_output), not
+/// `active_block()`. #1923 (`gitbash_precmd_secret`): a precmd function's `read -s -p "pin: "`
+/// runs after the prompt's Precmd and before the command starts. The block list writes that
+/// stretch (early output) to a background block, whose output grid is what is drawn; the fresh
+/// active block gets none of it. Rounds 10 to 12 read the active block (its output grid, then its
+/// prompt-and-command grid, then that grid's cells when unstarted) and saw nothing in the app in
+/// either prompt mode, so at the prompt hold's cap the PIN stayed held
+/// (`prompt_hold_kept_overdue`) with `pin: ` on screen.
+///
+/// The unstarted-grid arm stays for a block written to before its grid is started (a session
+/// that has not seen its first prompt yet has no early output: the block itself is written): an
+/// unstarted grid's length is 0 and `contents_to_string` is empty, so it is read from its cells,
+/// the rows ending at the cursor's row.
+pub fn block_tail_asks_for_input(block: &Block) -> bool {
     let Some(grid) = block.grid_of_type(block.active_grid_type()) else {
         return false;
     };

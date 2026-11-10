@@ -107,62 +107,76 @@ fn a_parse_publishes_the_alt_screen_the_key_path_reads() {
 }
 
 /// #1923 (round 10 Windows, `gitbash_precmd_secret`): a precmd function's `read -s -p "pin: "`
-/// runs after the prompt's Precmd, so its question is written to the fresh block's
-/// prompt-and-command grid and the block's output grid stays empty. The screen fact reads the
-/// grid the block writes to, so the question is seen (it read the output grid and saw nothing:
-/// the PIN stayed held at the prompt hold's cap).
+/// runs after the prompt's Precmd and before any command starts. The block list writes that
+/// stretch to the early-output (background) block, so the question is in THAT block's output
+/// grid and the fresh active block holds nothing of it. The screen fact reads the block the
+/// stream is written to, so the question is seen.
 ///
 /// The Precmd here carries no `ps1`, as bash's does with the shell's own prompt (honor PS1:
-/// `"ps1": ""`, read as `None`). That Precmd does not START the prompt-and-command grid (the
-/// prompt's start marker does, and bash prints the prompt after its precmd functions), and an
-/// unstarted grid's length is 0. Round 11 (build/r11a): the fact read the grid through its
-/// length, saw an empty string and failed the last assertion of this test.
+/// `"ps1": ""`, read as `None`). Round 11 (build/r11a) failed this test's last assertion while it
+/// read the active block: `assertion failed: block_tail_asks_for_input(block)`. Round 12
+/// took the cause for an unstarted prompt-and-command grid; the grid is unstarted and it is
+/// empty, because the bytes never went there.
 #[test]
-fn a_question_printed_after_the_precmd_is_seen_on_the_grid_the_block_writes_to() {
+fn a_question_printed_after_the_precmd_is_seen_on_the_block_the_stream_writes_to() {
     let mut model = TerminalModel::mock(None, None);
     model.simulate_block("touch go", "");
     model.process_bytes("pin: ");
-    let block = model.block_list().active_block();
+    let active = model.block_list().active_block();
     assert!(
-        block.is_command_grid_active(),
-        "after the Precmd the fresh block writes to its prompt-and-command grid"
+        active.is_command_grid_active(),
+        "after the Precmd the fresh block is before execution"
     );
     assert_eq!(
-        block.output_grid().grid_handler().cursor_point().col,
+        active.output_grid().grid_handler().cursor_point().col,
         0,
-        "nothing of the question is in the output grid (what the fact used to read)"
+        "nothing of the question is in the active block's output grid (what round 10 read)"
+    );
+    assert_eq!(
+        active
+            .prompt_and_command_grid()
+            .grid_handler()
+            .cursor_point()
+            .col,
+        0,
+        "nor in its prompt-and-command grid (what rounds 11 and 12 read)"
     );
     assert!(
-        !block.prompt_and_command_grid().started(),
-        "a Precmd with no ps1 leaves the grid unstarted: its length reads 0 with the question in it"
+        !block_tail_asks_for_input(active),
+        "the active block holds nothing of the question"
     );
-    assert!(active_block_tail_asks_for_input(block));
+    let written = model.block_list().block_receiving_output();
+    assert!(
+        written.is_background(),
+        "what is printed between the Precmd and the command's start is early output"
+    );
+    assert!(block_tail_asks_for_input(written));
 
     // The question below other text the precmd function printed: the line at the cursor decides.
     let mut model = TerminalModel::mock(None, None);
     model.simulate_block("touch go", "");
     model.process_bytes("vault is locked\r\npin: ");
-    assert!(active_block_tail_asks_for_input(
-        model.block_list().active_block()
+    assert!(block_tail_asks_for_input(
+        model.block_list().block_receiving_output()
     ));
     // The same text with the question answered (the line ended): nothing is asked.
     model.process_bytes("\r\n");
     assert!(
-        !active_block_tail_asks_for_input(model.block_list().active_block()),
+        !block_tail_asks_for_input(model.block_list().block_receiving_output()),
         "a finished line asks nothing"
     );
     // Text that is no question, under a question that was answered.
     model.process_bytes("unlocked");
     assert!(
-        !active_block_tail_asks_for_input(model.block_list().active_block()),
+        !block_tail_asks_for_input(model.block_list().block_receiving_output()),
         "the answered question above the cursor's line is not the tail"
     );
 }
 
 /// The same question with the app's prompt (honor PS1 off, the Windows CI setup): bash's Precmd
 /// carries the rendered PS1 for the prompt preview, which starts the fresh block's
-/// prompt-and-command grid without writing the prompt into it. The fact reads a started grid
-/// through its length, as it reads a running command's output.
+/// prompt-and-command grid without writing the prompt into it. The question is early output all
+/// the same: the prompt mode does not change where it is written or whether it is seen.
 #[test]
 fn a_question_printed_after_a_precmd_that_carries_the_prompt_is_seen() {
     let mut model = TerminalModel::mock(None, None);
@@ -173,18 +187,53 @@ fn a_question_printed_after_a_precmd_that_carries_the_prompt_is_seen() {
         .set_was_long_running(false.into());
     model.finish_block_with_ps1("user@host ~ $ ", false);
     model.process_bytes("pin: ");
+    let active = model.block_list().active_block();
+    assert!(active.is_command_grid_active());
+    assert!(
+        active.prompt_and_command_grid().started(),
+        "a Precmd with a ps1 starts the grid"
+    );
+    let written = model.block_list().block_receiving_output();
+    assert!(written.is_background());
+    assert!(block_tail_asks_for_input(written));
+    model.process_bytes("\r\n");
+    assert!(
+        !block_tail_asks_for_input(model.block_list().block_receiving_output()),
+        "a finished line asks nothing"
+    );
+}
+
+/// With nothing printed since the Precmd there is no early-output block: the block the stream
+/// writes to is the active one, and it asks nothing.
+#[test]
+fn a_fresh_prompt_with_nothing_printed_asks_nothing() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_block("true", "");
+    let written = model.block_list().block_receiving_output();
+    assert!(!written.is_background());
+    assert!(!block_tail_asks_for_input(written));
+}
+
+/// A block written to before its prompt-and-command grid was started (no Precmd `ps1`, no prompt
+/// marker, no command start): the grid's length reads 0 with the text in its cells, and the fact
+/// reads the cells.
+#[test]
+fn a_question_in_an_unstarted_grid_is_read_from_its_cells() {
+    use crate::terminal::model::ansi::Handler as _;
+
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_block("touch go", "");
+    let block = model.block_list_mut().active_block_mut();
+    for c in "pin: ".chars() {
+        block.input(c);
+    }
     let block = model.block_list().active_block();
     assert!(block.is_command_grid_active());
     assert!(
-        block.prompt_and_command_grid().started(),
-        "a Precmd with a ps1 starts the grid"
+        !block.prompt_and_command_grid().started(),
+        "a Precmd with no ps1 leaves the grid unstarted: its length reads 0 with the question in it"
     );
-    assert!(active_block_tail_asks_for_input(block));
-    model.process_bytes("\r\n");
-    assert!(
-        !active_block_tail_asks_for_input(model.block_list().active_block()),
-        "a finished line asks nothing"
-    );
+    assert!(block_tail_asks_for_input(block));
 }
 
 /// The same fact for a running command (the output grid, as before), and what is no question: a
@@ -193,12 +242,10 @@ fn a_question_printed_after_a_precmd_that_carries_the_prompt_is_seen() {
 fn the_tail_fact_reads_a_running_commands_output_and_ignores_a_shell_prompt() {
     let mut model = TerminalModel::mock(None, None);
     model.simulate_long_running_block("sudo true", "Password: ");
-    assert!(active_block_tail_asks_for_input(
-        model.block_list().active_block()
-    ));
+    assert!(block_tail_asks_for_input(model.block_list().active_block()));
     model.process_bytes("\r\n");
     assert!(
-        !active_block_tail_asks_for_input(model.block_list().active_block()),
+        !block_tail_asks_for_input(model.block_list().active_block()),
         "a finished line asks nothing"
     );
 
@@ -206,7 +253,7 @@ fn the_tail_fact_reads_a_running_commands_output_and_ignores_a_shell_prompt() {
     model.simulate_block("true", "");
     model.process_bytes("$ ");
     assert!(
-        !active_block_tail_asks_for_input(model.block_list().active_block()),
+        !block_tail_asks_for_input(model.block_list().block_receiving_output()),
         "a shell prompt is not a question"
     );
 }

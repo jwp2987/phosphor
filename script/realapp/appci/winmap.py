@@ -52,6 +52,7 @@ GITBASH_ONLY = {
     "shell_fish": "fish as a subshell of bash: Git Bash pane only (skips itself when not installed)",
     "shell_nu": "nu as a subshell of bash: Git Bash pane only (skips itself when not installed)",
     "shell_pwsh": "pwsh as a subshell of bash: Git Bash pane only (skips itself when not installed)",
+    "precmd_secret_honor_ps1": "a bash precmd function's `read -s`, with the app's prompt and with honor PS1 on (relaunches the app with terminal.input.honor_ps1; #1923): runs in the Git Bash pane",
     "gitbash_precmd_secret": "bash precmd_functions with `read -s` after the prompt's Precmd, rec.log to prove the PIN was not run as a command (#1883): runs in the Git Bash pane",
     "ui_tab_menu": "asserts the exact line from rec.log: runs in the Git Bash pane",
     "ui_ghost_accept": "asserts the exact line from rec.log: runs in the Git Bash pane",
