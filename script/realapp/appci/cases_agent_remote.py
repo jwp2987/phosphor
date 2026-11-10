@@ -11,8 +11,11 @@
 #   * the app log's `hop=backend_route family=<capability> backend=<helper|shell|unavailable>`: nohelper -> shell, upload -> helper, per family
 #     (file_context, ripgrep_search, fs_basic, file_write, codebase_chunks). file_context and file_write are REQUIRED to be logged; a family the build does not
 #     route yet is reported UNVERIFIABLE (never a pass);
-#   * the lab shell's rec.log: nothing the FEATURE did (the tokens only the read/grep/edit tools carry) was typed into the remote shell; the one approved
-#     `cat <file>` was typed exactly once;
+#   * the lab shell's rec.log: nothing the FEATURE did (the tokens only the read/grep/edit tools carry) was typed into the remote shell;
+#   * the approved command's OWN effect file on the host (`cat <file> | /usr/bin/tee -a <ran file>`: one copy of the edited file = it ran exactly once; the
+#     drop case's `/usr/bin/touch <marker>` = it started). Not rec.log (job 17885063245, both bash arms failed on it): an agent command is typed in its
+#     wrapper, which bash keeps out of the history (`HISTIGNORE=*__phosphor_ap_*`, bash_body.sh, #904), and the bash hook logs `history 1` at the NEXT
+#     prompt, so it can never show a command that is still running. No quote, `&&` or redirection in the flow command: nu and pwsh run it as written;
 #   * the tool results the MODEL received (fake_model.FakeModel.tool_results_for): parsed JSON, status ok, the right paths / lines / new content.
 # Platforms: Linux hosts drive the lab; the drop case is skipped on Windows panes (not ported, like lab_ssh_drop_reconnect). Needs the lab and APPCI_FAKE_MODEL=1:
 # lab_prepare and need_model SKIP with the reason otherwise.
@@ -47,6 +50,15 @@ def result_paths(res, key="files"):
     for e in res.get(key) or []:
         out.append(e.get("path") if isinstance(e, dict) else e)
     return out
+
+
+def drop_command(shell, marker_path, tok):
+    """pure: the plan step of the drop case: leave a marker file on the host (the command started), sleep, then print the final line the tool result must
+    NOT show. bash/dash chain with `&&`; nu has no `&&` and its own `sleep` wants a duration, so there the externals are named by path and chained with `;`
+    (nu stops a `;` chain at a failed command). No quote and no redirection in either form."""
+    if shell == "nu":
+        return "run /usr/bin/touch %s; /usr/bin/sleep 300; echo fin_%s" % (marker_path, tok)
+    return "run /usr/bin/touch %s && sleep 300 && echo fin_%s" % (marker_path, tok)
 
 
 def drive_plan(ctx, steps, timeout=150):
@@ -116,8 +128,9 @@ def c_agent_remote_flow(ctx, r, arm):
         ctx.reset()
         return
     time.sleep(1.0 + 2 * CL.rtt_s(arm))
+    ran = "ran_%s.txt" % uid          # the approved command's own effect file: one copy of the edited file per run
     steps = ["read %s" % a, "grep %s %s" % (toks["n"], d), "glob *.txt %s" % d,
-             "edit %s :: alpha %s :: alpha %s" % (a, toks["a"], toks["e"]), "run cat %s" % a]
+             "edit %s :: alpha %s :: alpha %s" % (a, toks["a"], toks["e"]), "run cat %s | /usr/bin/tee -a %s" % (a, CL.work(arm, ran))]
     index_on = os.environ.get("APPCI_FAKE_EMBEDDINGS_ACTIVE") == "1"
     if index_on:
         steps.append("codebase needle_%s" % toks["n"])
@@ -154,9 +167,15 @@ def c_agent_remote_flow(ctx, r, arm):
     typed = [c for _, c in ctx.remote.commands()]
     leaked = [c for c in typed if any(toks[k] in c for k in ("a", "n", "e"))]
     r.check(not leaked, "the feature typed into the remote shell: %r" % leaked[:2])
+    # the one approved command ran on the host exactly once: its effect file holds ONE copy of the edited file (two runs would hold two). The shell's own
+    # record can only add to that: where the hook logs agent commands (not bash, see the header) a second typed copy is a failure too.
+    edited = ["alpha %s" % toks["e"], "second line"]
+    got_ran = ctx.remote.lines(ran)
+    r.check(got_ran == edited, "the approved `cat` ran %s on the host (its effect file holds %r, expected exactly one copy of the edited file %r)" % (
+        "0 times" if not got_ran else "%.1f times" % (len(got_ran) / float(len(edited))), got_ran[:6], edited))
     cats = [c for c in typed if "cat" in c and a in c]
-    r.check(len(cats) == 1, "the approved `cat` reached the remote shell %d times (%r), expected exactly once" % (len(cats), cats[:3]))
-    ctx.remote.rm("%s/a.txt" % fx, "%s/b.txt" % fx, "%s/c.txt" % fx, "%s/src/lib.rs" % fx)
+    r.check(len(cats) <= 1, "the approved `cat` was typed into the remote shell %d times (%r), expected once" % (len(cats), cats[:3]))
+    ctx.remote.rm("%s/a.txt" % fx, "%s/b.txt" % fx, "%s/c.txt" % fx, "%s/src/lib.rs" % fx, ran)
     CL.finish_remote(ctx, r)
 
 
@@ -210,7 +229,8 @@ def c_agent_remote_drop(ctx, r, arm):
         return
     time.sleep(1.0 + 2 * CL.rtt_s(arm))
     base, off = fake.requests, ctx.log_size()
-    AG.type_fast(ctx, plan_text(["run sleep 300 && echo fin_%s" % tok]))
+    started_file = "started_%s" % tok
+    AG.type_fast(ctx, plan_text([drop_command(arm["shell"], CL.work(arm, started_file), tok)]))
     if not AG.wait_marker(ctx, off, "queue_actions", 1, 90):
         r.check(False, "no approval card for the run_shell_command within 90 s")
         ctx.reset()
@@ -219,9 +239,12 @@ def c_agent_remote_drop(ctx, r, arm):
     ctx.be.key("Return")
     time.sleep(0.6)
     ctx.be.key("Return")
-    started = ctx.until(lambda: any(("fin_%s" % tok) in c for _, c in ctx.remote.commands()), 30 + 6 * CL.rtt_s(arm), step=0.25)
-    r.check(bool(started), "the approved command never reached the remote shell, so the drop could not hit a running tool call")
+    # the command is RUNNING on the host: its first step left the marker file (rec.log cannot say so: bash logs a command at the prompt AFTER it, and never
+    # logs an agent command at all, see the header)
+    started = ctx.until(lambda: ctx.remote.exists(started_file), 30 + 6 * CL.rtt_s(arm), step=0.25)
+    r.check(bool(started), "the approved command never started on the host (no %s there), so the drop could not hit a running tool call" % CL.work(arm, started_file))
     if not started:
+        ctx.remote.rm(started_file)
         ctx.reset()
         return
     time.sleep(1.0)
@@ -243,4 +266,5 @@ def c_agent_remote_drop(ctx, r, arm):
     n = fake.requests
     AG.type_fast(ctx, "Reply with the word after_%s" % tok)
     r.check(ctx.until(lambda: fake.requests > n, 30, step=0.25), "the agent did not answer a new prompt after the connection was lost")
+    ctx.remote.rm(started_file)
     ctx.reset()

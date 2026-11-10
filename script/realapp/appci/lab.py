@@ -238,6 +238,10 @@ class LabRemote:
         w = self._read("/work/%s/%s" % (self.user, name))
         return w if w is not None else (self._read("/home/%s/%s" % (self.user, name)) or [])
 
+    def exists(self, name):
+        """the file is on the host, EMPTY or not (lines() cannot tell an empty file from a missing one): a `touch` marker a running command left"""
+        return self._read(name if name.startswith("/") else "/work/%s/%s" % (self.user, name)) is not None
+
     def rm(self, *names):
         for n in names:
             for base in ("/work/%s/" % self.user, "/home/%s/" % self.user):

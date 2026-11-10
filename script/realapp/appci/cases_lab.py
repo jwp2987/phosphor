@@ -37,9 +37,12 @@ def lab_case(name, shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150"), hel
 
 def _runner(fn, arm):
     def run(ctx, r):
-        if not lab_prepare(ctx, r, arm):
-            return
+        # lab_prepare points ctx.remote at the lab arm BEFORE its gates (helper binary, RTT, relaunch), and each gate leaves by `return False` or by a
+        # skip/unverifiable exception. Job 17885063245: all eight `.helper` arms left that way (no APPCI_LAB_HELPER_BIN) with the swap still in place, and
+        # the runner's leak check reported each as `harness_state_reset_after_<case>` FAIL. The cleanup therefore covers lab_prepare too.
         try:
+            if not lab_prepare(ctx, r, arm):
+                return
             fn(ctx, r, arm)
         finally:
             lab_cleanup(ctx, arm)
