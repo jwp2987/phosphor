@@ -1,5 +1,5 @@
 use super::{
-    Input, InputAction, InputDropTargetData,
+    Input, InputAction, InputDropTargetData, InputSuggestionsMode,
     common::{
         add_command_xray_overlay, add_input_suggestions_overlays, add_voltron_overlay,
         add_workflow_info_overlay, wrap_input_with_terminal_padding_and_focus_handler,
@@ -18,22 +18,145 @@ use crate::{
     context_chips::spacing::{self},
     features::FeatureFlag,
     settings::InputModeSettings,
-    terminal::{settings::TerminalSettings, view::TerminalAction},
+    terminal::{
+        cli_agent_sessions::CLIAgentSessionsModel, settings::TerminalSettings, view::TerminalAction,
+    },
+    util::key_view_skip,
 };
 use warp_core::settings::Setting;
 use warpui::{
-    AppContext, SingletonEntity as _,
+    AppContext, SingletonEntity as _, ViewContext,
     elements::{
         Border, Container, DropTarget, Element, Flex, Hoverable, ParentElement, SavePosition, Stack,
     },
     presenter::ChildView,
 };
 
+/// What [`Input::render_agent_input`] builds the agent input from, besides the theme and the
+/// settings (their changes re-render it on their own): every fact it branches on. The child views
+/// it mounts (editor, footer, status bar, menus, panel) render themselves.
+///
+/// The agent input used to be rendered again for every edit. One more character in a non-empty
+/// buffer changes none of these facts, so that render built the same elements (#1962); an edit
+/// now renders the input only when the facts differ from those of its last render.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct AgentInputDisplayFacts {
+    /// The top border is colored for a non-empty (or locked) shell-mode buffer.
+    pub(super) editor_is_empty: bool,
+    pub(super) slash_command_detected: bool,
+    pub(super) ai_input_enabled: bool,
+    pub(super) input_type_is_ai: bool,
+    pub(super) input_type_locked: bool,
+    /// Which menu, if any, is mounted (the kind; a menu's contents are its own view's).
+    pub(super) suggestions_mode: std::mem::Discriminant<InputSuggestionsMode>,
+    pub(super) shows_prompt_banner: bool,
+    pub(super) attachment_chips: usize,
+    pub(super) shows_workflow_info: bool,
+    pub(super) voltron_open: bool,
+    pub(super) pane_focused: bool,
+    pub(super) active_session: bool,
+    pub(super) shows_command_x_ray: bool,
+    pub(super) shortcut_view_open: bool,
+    pub(super) inline_agent_view: bool,
+    pub(super) shows_queued_prompts_panel: bool,
+    /// Bits of the pane height, which caps the editor's height.
+    pub(super) pane_height_bits: u32,
+}
+
+/// Whether an edit needs the agent input rendered: when the facts it would be built from now
+/// differ from those its last render was built from, or it has not been rendered as the agent
+/// input since another input was shown (`rendered` is `None`). With the #1962 skips off
+/// (`skip_enabled` false) every edit renders it, as before.
+pub(super) fn agent_input_edit_needs_render(
+    rendered: Option<AgentInputDisplayFacts>,
+    now: AgentInputDisplayFacts,
+    skip_enabled: bool,
+) -> bool {
+    !skip_enabled || rendered != Some(now)
+}
+
 impl Input {
+    /// The facts [`Self::render_agent_input`] would be built from now.
+    pub(super) fn agent_input_display_facts(&self, app: &AppContext) -> AgentInputDisplayFacts {
+        let ai_input_model = self.ai_input_model.as_ref(app);
+        AgentInputDisplayFacts {
+            editor_is_empty: self.editor.as_ref(app).is_empty(app),
+            slash_command_detected: self
+                .slash_command_model
+                .as_ref(app)
+                .state()
+                .is_detected_command(),
+            ai_input_enabled: ai_input_model.is_ai_input_enabled(),
+            input_type_is_ai: matches!(ai_input_model.input_type(), InputType::AI),
+            input_type_locked: ai_input_model.is_input_type_locked(),
+            suggestions_mode: std::mem::discriminant(
+                self.suggestions_mode_model.as_ref(app).mode(),
+            ),
+            shows_prompt_banner: self
+                .prompt_suggestions_banner_state
+                .as_ref()
+                .is_some_and(|state| !state.should_hide),
+            attachment_chips: self.attachment_chips.len(),
+            shows_workflow_info: self
+                .workflows_state
+                .selected_workflow_state
+                .as_ref()
+                .is_some_and(|state| state.should_show_more_info_view),
+            voltron_open: self.is_voltron_open,
+            pane_focused: self.is_pane_focused(app),
+            active_session: self.is_active_session(app),
+            shows_command_x_ray: self.command_x_ray_description.is_some(),
+            shortcut_view_open: self
+                .agent_shortcut_view_model
+                .as_ref(app)
+                .is_shortcut_view_open(),
+            inline_agent_view: self.agent_view_controller.as_ref(app).is_inline(),
+            shows_queued_prompts_panel: self
+                .queued_prompts_panel
+                .as_ref()
+                .is_some_and(|panel| panel.as_ref(app).should_render(app)),
+            pane_height_bits: self.size_info(app).pane_height_px().as_f32().to_bits(),
+        }
+    }
+
+    /// Whether `render` takes the [`Self::render_agent_input`] path (the same conditions).
+    pub(super) fn renders_agent_input(&self, app: &AppContext) -> bool {
+        !CLIAgentSessionsModel::as_ref(app).is_input_open(self.terminal_view_id)
+            && FeatureFlag::AgentView.is_enabled()
+            && self.agent_view_controller.as_ref(app).is_active()
+    }
+
+    /// Whether an edit made while the agent input is shown needs the input rendered again; see
+    /// [`agent_input_edit_needs_render`]. Any other input (the CLI-agent input) is rendered for
+    /// every edit, as before.
+    pub(super) fn agent_view_edit_needs_render(&self, app: &AppContext) -> bool {
+        !self.renders_agent_input(app)
+            || agent_input_edit_needs_render(
+                self.agent_input_rendered_facts.get(),
+                self.agent_input_display_facts(app),
+                key_view_skip::enabled(),
+            )
+    }
+
+    /// Renders the agent input again if a fact it is built from changed outside an edit's own
+    /// handler: the slash-command model and the queued-prompts panel settle after the edit that
+    /// moved them, and a replaced buffer is not an edit. Until #1962 the re-render on every edit
+    /// covered these.
+    pub(super) fn rerender_agent_input_if_facts_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.renders_agent_input(ctx)
+            && self.agent_input_rendered_facts.get() != Some(self.agent_input_display_facts(ctx))
+        {
+            ctx.notify();
+        }
+    }
+
     /// Renders the input when there is an active `AgentView`.
     ///
     /// Only used when `FeatureFlag::AgentView` is enabled.
     pub(super) fn render_agent_input(&self, app: &AppContext) -> Box<dyn Element> {
+        // #1962: remember what this render is built from.
+        self.agent_input_rendered_facts
+            .set(Some(self.agent_input_display_facts(app)));
         let appearance = Appearance::as_ref(app);
         let menu_positioning = self.menu_positioning(app);
 
@@ -272,3 +395,7 @@ pub mod styles {
         blended_colors::neutral_2(theme)
     }
 }
+
+#[cfg(test)]
+#[path = "agent_tests.rs"]
+mod tests;
