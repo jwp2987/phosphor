@@ -363,7 +363,7 @@ def drive_repo(ctx, r, arm, fx):
     return max(1, ctx.remote.prompts() - p0), (seen if txt is not None else None)
 
 
-DRIVERS = {"run_command": drive_repo, "git_read": drive_repo, "fs_basic": drive_repo}          # capability -> scripted app driver; the rest report UNVERIFIABLE until one is added
+DRIVERS = {"run_command": drive_repo, "git_read": drive_repo, "fs_basic": drive_repo}          # capability -> scripted app driver; a family without one gets NO generic case (#2068)
 
 
 def fam_pre(cap, variant, info):
@@ -390,11 +390,7 @@ def fam_body(cap):
             ctx.reset()
             return
         settle(ctx, arm, 2.0)
-        drive = DRIVERS.get(cap)
-        if drive is None:
-            r.unverifiable("no scripted app driver for capability %s yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes" % cap)
-            CL.finish_remote(ctx, r)
-            return
+        drive = DRIVERS[cap]                    # #2068: a family with no driver is not registered at all (_register_families)
         size0 = lab.sshd_since(0)["size"]
         c0 = len(ctx.remote.commands())
         prompts, seen = drive(ctx, r, arm, fx)
@@ -423,34 +419,40 @@ def fam_body(cap):
 
 
 def _register_families():
+    """#2068: a generic `lab_fam_<cap>` case exists only for a family that has a scripted driver (DRIVERS). Until round 14 one was generated for EVERY family
+    and counted for the coverage guard, and the eleven without a driver reported UNVERIFIABLE after the connect ("registered so the guard passes"): 48 arms
+    of lab_fam_agent_context alone were NOREF rows in the fix tier (PROVING_LAB's `lab_fam_agent_*`). A family without a driver must now be covered by a
+    real case that declares itself (declare_external), or the guard (coverage(), a self-test) fails."""
     info = parse_rust()
     for variant, cap in sorted(info["families"].items(), key=lambda kv: kv[1]):
-        if cap in NO_SHELL_ARM_EVER:
+        if cap in NO_SHELL_ARM_EVER or cap not in DRIVERS:
             continue
         reg("fam_" + cap, fam_body(cap), caps=[cap], shells=ALL_SHELLS, lat=("lan", "150", "300"), helper=("nohelper", "helper"), pre=fam_pre(cap, variant, info))
 
 
 _register_families()
 
-
-def _register_write_expect():
-    """file_write_expect (#1837) is a refinement of file_write (WriteFile.expect), not a Family of its own, so no fam_ case is generated for it. The real check is
-    lab_fam_agent_edit_conflict (cases_agent_file_edits.py), whose upload arm is the helper refusing a stale accept; this registration keeps the coverage guard honest and
-    the skip names the case that proves it."""
-    reg("fam_file_write_expect", lambda ctx, r, arm: None, caps=["file_write_expect"], shells=("bash",), lat=("lan",), helper=("nohelper", "helper"),
-        pre=lambda arm: "covered by lab_fam_agent_edit_conflict (the stale accept refused on both arms)")
-
-
-_register_write_expect()
-
-
-def _register_delete_expect():
-    """file_delete_expect (#1837 follow-up): the same refinement of file_write for DeleteFile.expect. The real check is lab_fam_agent_delete_conflict (cases_agent_file_edits.py)."""
-    reg("fam_file_delete_expect", lambda ctx, r, arm: None, caps=["file_delete_expect"], shells=("bash",), lat=("lan",), helper=("nohelper", "helper"),
-        pre=lambda arm: "covered by lab_fam_agent_delete_conflict (the stale delete refused on both arms)")
+# Coverage by a real case that lives in a file which does not import this one. Each names the case that JUDGES the capability on both arms:
+#   file_write_expect / file_delete_expect (#1837): refinements of file_write (WriteFile.expect, DeleteFile.expect), not families of their own. The stale
+#     accept and the stale delete are refused on both arms in lab_fam_agent_edit_conflict / lab_fam_agent_delete_conflict (cases_agent_file_edits.py).
+#     Until round 14 two always-SKIP rows (`lab_fam_file_write_expect`, `lab_fam_file_delete_expect`) stood in for these declarations.
+#   ripgrep_search: lab_agent_remote_flow (cases_agent_remote.py) has the agent grep and glob the host on the no-helper and the upload arm, judges both
+#     results and checks the family's `hop=backend_route` line. Its generic lab_fam_ case had no driver and was the only thing the guard saw.
+declare_external("file_write_expect", helper_case="lab_fam_agent_edit_conflict", nohelper_case="lab_fam_agent_edit_conflict")
+declare_external("file_delete_expect", helper_case="lab_fam_agent_delete_conflict", nohelper_case="lab_fam_agent_delete_conflict")
+declare_external("ripgrep_search", helper_case="lab_agent_remote_flow", nohelper_case="lab_agent_remote_flow")
 
 
-_register_delete_expect()
+def unregistered_externals(names=None):
+    """-> [(capability, case)] declared in EXTERNAL_COVERS whose case is not registered (no `<case>.` arm in cases.CASES): a declaration that names nothing
+    would satisfy the guard with no case behind it. The self-test fails on a non-empty list."""
+    names = [c["name"] for c in cases.CASES] if names is None else names
+    out = []
+    for cap, v in sorted(EXTERNAL_COVERS.items()):
+        for case_name in sorted({x for x in (v.get("helper"), v.get("nohelper")) if x}):
+            if not any(n == case_name or n.startswith(case_name + ".") for n in names):
+                out.append((cap, case_name))
+    return out
 
 
 # ------------------------------------------------------------------ 3. routing

@@ -4602,8 +4602,19 @@ def lab_helper_coverage_guard():
     finally:
         H.COVERS.update(saved)
         H.EXTERNAL_COVERS.update(saved_ext)
-    skips = [c for c in cases.CASES if c.get("lab") and c["arm"]["case"].startswith("fam_") and c["arm"]["helper"] == "helper"]
-    assert skips and {c["arm"]["case"] for c in skips} >= {"fam_" + k for k in info["helper"]}
+    # #2068: a generic family case exists only where it has a driver; every other capability is covered by a declared case that IS registered
+    fams = {c["arm"]["case"] for c in cases.CASES if c.get("lab") and c["arm"]["case"].startswith("fam_") and not c["arm"]["case"].startswith("fam_agent_")}
+    assert fams == {"fam_" + k for k in H.DRIVERS}, "generic family cases without a driver judge nothing: %s" % sorted(fams - {"fam_" + k for k in H.DRIVERS})
+    assert not [c["name"] for c in cases.CASES if c["name"].startswith(("lab_fam_agent_context", "lab_fam_file_write_expect", "lab_fam_file_delete_expect"))]
+    assert "no scripted app driver" not in open(os.path.join(HERE, "cases_lab_helper.py"), encoding="utf-8").read()
+    assert H.unregistered_externals() == [], "coverage declared for a case that is not registered: %s" % H.unregistered_externals()
+    assert H.unregistered_externals(["lab_skills_remote.bash.lan.nohelper"]) and ("agent_context", "lab_skills_remote") not in H.unregistered_externals(["lab_skills_remote.bash.lan.nohelper"])
+    for cap in set(info["helper"]) | (set(info["families"].values()) - H.NO_SHELL_ARM_EVER):
+        assert cap in H.DRIVERS or (H.EXTERNAL_COVERS.get(cap, {}).get("helper") and H.EXTERNAL_COVERS[cap].get("nohelper")), "%s: neither a driver nor a declared real case on both arms" % cap
+    assert H.EXTERNAL_COVERS["ripgrep_search"]["nohelper"] == "lab_agent_remote_flow" and "ripgrep_search" in inspect_source(cases_agent_remote_flow())
+    import fnmatch
+    played = [c["name"] for c in cases.CASES if fnmatch.fnmatch(c["name"], "lab_fam_agent_*")]
+    assert played and all(n.startswith(("lab_fam_agent_edit_", "lab_fam_agent_delete_")) for n in played), "PROVING_LAB's lab_fam_agent_* plays only the agent edit cases"
     import lab as L
     assert L.matrix_selection("quick")["shells"] == {"bash", "zsh", "fish", "nu"}
 
@@ -6239,6 +6250,16 @@ def agent_mcp_pure_pieces():
     assert not MC.flaky_verdict(["LAUNCH-1:a", "error", "error"])[0] and not MC.flaky_verdict([])[0] and not MC.flaky_verdict(["error"])[0]
     names = [c["name"] for c in cases.CASES]
     assert "agent_mcp_faults" in names and "agent_multitab_streaming" in names
+
+
+def cases_agent_remote_flow():
+    import cases_agent_remote
+    return cases_agent_remote.c_agent_remote_flow
+
+
+def inspect_source(fn):
+    import inspect
+    return inspect.getsource(fn)
 
 
 @check
