@@ -1147,6 +1147,17 @@ impl TerminalView {
         plan: &Plan,
         ctx: &mut ViewContext<Self>,
     ) {
+        // #2134 (owner decision 2026-11-11): row P1a holds an interrupt while the remote
+        // bootstrap is pending. With the app's own remote-helper question up for that session
+        // there is no bootstrap being fed, and the interrupt ends the ssh instead (the same
+        // rule as `ctrl_c_to_active_block`). A ^D stays held.
+        if plan.outcome == Outcome::HoldSignal
+            && signal == SignalKind::Interrupt
+            && let Some(question_session) = self.helper_question_ended_by_interrupt(ctx)
+        {
+            self.end_ssh_at_helper_question(question_session, ctx);
+            return;
+        }
         if plan.outcome == Outcome::HoldSignal {
             // In typed order with the keys held there; delivered at the hand-over, never to the
             // local shell.

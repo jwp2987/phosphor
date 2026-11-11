@@ -1008,6 +1008,42 @@ fn helper_question_pauses_bootstrap_give_up(
 ) -> bool {
     enabled && pending_session == Some(question_session) && failed_session != Some(question_session)
 }
+
+/// #2135: whether a remote-server setup state says the app itself is installing (or updating)
+/// the remote helper. The remote bootstrap is held by `RemoteServerController` for as long as
+/// that takes, so the bootstrap give-up has nothing to judge until the install reports.
+fn setup_state_is_helper_install(state: &RemoteServerSetupState) -> bool {
+    matches!(
+        state,
+        RemoteServerSetupState::Installing { .. } | RemoteServerSetupState::Updating
+    )
+}
+
+/// Environment variable that, set to `0`, leaves an interrupt key typed while the app's
+/// "install the remote helper?" question is showing on the bootstrap route (held), as before
+/// #2134.
+const HELPER_QUESTION_INTERRUPT_ENDS_SSH_ENV: &str = "PHOSPHOR_HELPER_QUESTION_INTERRUPT_ENDS_SSH";
+
+/// The kill switch of #2134 for a given value of the variable: on unless it says `0`.
+fn helper_question_interrupt_ends_ssh_from(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
+/// #2134 (owner decision 2026-11-11), the pure rule: whether an interrupt key ends the ssh
+/// instead of taking the bootstrap route. It does when the switch is on, an ssh-style session
+/// is pending its bootstrap (`route` is the answer of
+/// [`TerminalView::ssh_bootstrap_interrupt_route`], `None` without one) and the remote-helper
+/// question on screen is about that very session: the bootstrap is then held by the app for a
+/// person, there is no script being fed that the interrupt could cut, and the user asking to
+/// stop is asking to leave the connect, as a Ctrl-C during a plain ssh connect does.
+fn helper_question_interrupt_ends_ssh(
+    enabled: bool,
+    route: Option<SshBootstrapInterruptRoute>,
+    question_session: Option<SessionId>,
+    pending_session: Option<SessionId>,
+) -> bool {
+    enabled && route.is_some() && question_session.is_some() && question_session == pending_session
+}
 /// #1566: how much longer the bootstrap give-up waits, once, when the pending session is
 /// demonstrably progressing (its bootstrap prompt's `Precmd` was seen) and only `Bootstrapped`
 /// is outstanding. A logged give-up net; `Bootstrapped` itself ends the wait.
@@ -2287,6 +2323,12 @@ pub enum Event {
         session_id: SessionId,
         /// "Don't ask me again" was ticked: remember `never` for this host.
         remember: bool,
+    },
+    /// #2134: the user interrupted (Ctrl-C) while the SSH remote-server choice block was
+    /// showing. The ssh is being ended; the controller drops the bootstrap it held for the
+    /// answer, so nothing of it is ever written.
+    RemoteServerQuestionAbandoned {
+        session_id: SessionId,
     },
     OpenThemeChooser,
     OpenConversationHistory,
@@ -3768,6 +3810,15 @@ pub struct TerminalView {
     /// The kill switch of #2127 (`PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION=0`, read
     /// once per pane): off, the give-up clock runs through the question as before.
     bootstrap_give_up_pauses_for_helper_question: bool,
+    /// #2135: the pending session whose bootstrap give-up is off the clock because the app is
+    /// installing (or updating) the remote helper on its host: the bootstrap is held until the
+    /// install reports. Set by the install's own start event, taken by its completion event
+    /// (the give-up is then armed afresh). An install that never reports is ended by the
+    /// install's own timeout, which reports as a failed install. Shares #2127's kill switch.
+    bootstrap_give_up_paused_for_helper_install: Option<SessionId>,
+    /// The kill switch of #2134 (`PHOSPHOR_HELPER_QUESTION_INTERRUPT_ENDS_SSH=0`, read once per
+    /// pane): off, an interrupt key at the remote-helper question is held as before.
+    helper_question_interrupt_ends_ssh: bool,
     /// The edge-driven ssh phase (#1424 step 7): fed by the events that are its edges
     /// (`view/ssh_edges.rs`); in `table` mode the facts carry its phase and the key path no longer
     /// refreshes the connect gate.
@@ -5697,6 +5748,12 @@ impl TerminalView {
                         .ok()
                         .as_deref(),
                 ),
+            bootstrap_give_up_paused_for_helper_install: None,
+            helper_question_interrupt_ends_ssh: helper_question_interrupt_ends_ssh_from(
+                std::env::var(HELPER_QUESTION_INTERRUPT_ENDS_SSH_ENV)
+                    .ok()
+                    .as_deref(),
+            ),
             ssh_phase: input_queue::SshPhaseMachine::default(),
             ssh_give_ups: 0,
             ssh_hold_block_id: None,
@@ -5877,6 +5934,8 @@ impl TerminalView {
                         // subscription to the manager. Notify the view so the
                         // loading footer re-renders with the updated message.
                         ctx.notify();
+                        // #2135: an install the app runs is not on the bootstrap give-up's clock.
+                        me.on_remote_helper_setup_state(*session_id, state, ctx);
 
                         // `Unsupported` is a deliberate fall-back to the legacy
                         // SSH path -- the preinstall check correctly declined an
@@ -6005,6 +6064,8 @@ impl TerminalView {
                         me.remove_ssh_no_helper_chip(*session_id, ctx);
                     }
                     RemoteServerManagerEvent::BinaryInstallComplete { session_id, result } => {
+                        // #2135: the install reported (either way): the give-up clock starts.
+                        me.on_remote_helper_install_finished(*session_id, ctx);
                         let (remote_os, remote_arch) = RemoteServerManager::handle(ctx)
                             .as_ref(ctx)
                             .platform_for_session(*session_id)
@@ -10960,6 +11021,10 @@ impl TerminalView {
                     ctx,
                 );
             });
+        } else if let Some(question_session) = self.helper_question_ended_by_interrupt(ctx) {
+            // #2134: the app's own question holds the bootstrap; the interrupt ends the ssh.
+            log_route("helper_question_end_ssh");
+            self.end_ssh_at_helper_question(question_session, ctx);
         } else if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold)
             || self.ssh_gate_holds_interrupt()
         {
@@ -20937,6 +21002,121 @@ impl TerminalView {
         self.start_bootstrap_timer(BOOTSTRAP_FAILED_DURATION, ctx);
     }
 
+    /// #2135: the remote-server setup of `session_id` changed state. When the app starts to
+    /// install (or update) the helper for the pending session, the bootstrap is held by
+    /// `RemoteServerController` until the install reports, so the armed give-up has nothing to
+    /// judge: it is superseded here and armed afresh by
+    /// [`Self::on_remote_helper_install_finished`]. The same rule and kill switch as the
+    /// question's pause (#2127); no timer is added. Progress updates of a running install find
+    /// the pause already set.
+    fn on_remote_helper_setup_state(
+        &mut self,
+        session_id: SessionId,
+        state: &RemoteServerSetupState,
+        _ctx: &mut ViewContext<Self>,
+    ) {
+        if !setup_state_is_helper_install(state)
+            || self.bootstrap_give_up_paused_for_helper_install == Some(session_id)
+        {
+            return;
+        }
+        let pending = self.model.lock().pending_session_id();
+        if !helper_question_pauses_bootstrap_give_up(
+            self.bootstrap_give_up_pauses_for_helper_question,
+            session_id,
+            pending,
+            self.ssh_bootstrap_failed_session,
+        ) {
+            log::info!(
+                "bootstrap give-up: left running under the remote-helper install of session \
+                 {session_id:?} (switch on: {}, pending {pending:?}, already failed {:?}) (#2135)",
+                self.bootstrap_give_up_pauses_for_helper_question,
+                self.ssh_bootstrap_failed_session
+            );
+            return;
+        }
+        self.cancel_bootstrap_failed_timer();
+        self.bootstrap_give_up_paused_for_helper_install = Some(session_id);
+        log::info!(
+            "bootstrap give-up: off the clock while the app installs the remote helper for \
+             session {session_id:?} (#2135)"
+        );
+    }
+
+    /// #2135: the helper install of `session_id` reported (done, failed, or ended by its own
+    /// timeout). If it had taken the bootstrap give-up off the clock, the give-up is armed
+    /// afresh for the full duration: the event is the install's end, the timer stays the net
+    /// for the connect and bootstrap that follow. A session that is no longer the pending one
+    /// has nothing left to judge.
+    fn on_remote_helper_install_finished(
+        &mut self,
+        session_id: SessionId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.bootstrap_give_up_paused_for_helper_install != Some(session_id) {
+            return;
+        }
+        self.bootstrap_give_up_paused_for_helper_install = None;
+        let pending = self.model.lock().pending_session_id();
+        if pending != Some(session_id) {
+            log::info!(
+                "bootstrap give-up: the remote-helper install of session {session_id:?} \
+                 reported and its session is no longer pending (pending {pending:?}); nothing \
+                 to arm (#2135)"
+            );
+            return;
+        }
+        log::info!(
+            "bootstrap give-up: the remote-helper install of session {session_id:?} reported; \
+             armed afresh for {BOOTSTRAP_FAILED_DURATION:?} from now (#2135)"
+        );
+        self.start_bootstrap_timer(BOOTSTRAP_FAILED_DURATION, ctx);
+    }
+
+    /// #2134: the session whose remote-helper question an interrupt key ends the ssh for, if
+    /// the question is on screen for the pending session
+    /// ([`helper_question_interrupt_ends_ssh`]). `None`: the interrupt takes its usual route.
+    fn helper_question_ended_by_interrupt(&self, ctx: &mut ViewContext<Self>) -> Option<SessionId> {
+        let question_session = self
+            .active_ssh_remote_server_choice_block()?
+            .as_ref(ctx)
+            .session_id();
+        let pending = self.model_facts().pending_session_id;
+        helper_question_interrupt_ends_ssh(
+            self.helper_question_interrupt_ends_ssh,
+            self.ssh_bootstrap_interrupt_route(),
+            Some(question_session),
+            pending,
+        )
+        .then_some(question_session)
+    }
+
+    /// #2134 (owner decision 2026-11-11): an interrupt key while the remote-helper question of
+    /// `session_id` is showing ends the ssh, as a Ctrl-C during a plain ssh connect does.
+    ///
+    /// In order: what was typed during the connect and is still held is void (the tty flushes
+    /// its input on an interrupt, row P1b); the question leaves the screen (which arms the
+    /// bootstrap give-up afresh, #2127: the net for an interrupt that does not end the ssh);
+    /// the controller is told to drop the bootstrap it held for the answer, so it is written
+    /// neither now nor into a later ssh of this pane; and the interrupt goes to the ssh client
+    /// as SIGINT to the pty's foreground group, because the client has the local tty in raw
+    /// mode and a ^C byte would be forwarded to the remote shell, which does not end anything.
+    fn end_ssh_at_helper_question(&mut self, session_id: SessionId, ctx: &mut ViewContext<Self>) {
+        log::info!(
+            "interrupt at the remote-helper question of session {session_id:?}: the question \
+             is dismissed and the ssh is interrupted (#2134)"
+        );
+        warpui::input_order::log_hop("helper_question_interrupt", || {
+            "question dismissed, SIGINT to the ssh client".to_owned()
+        });
+        self.reset_ssh_typeahead();
+        self.remove_ssh_remote_server_choice_block(session_id, ctx);
+        ctx.emit(Event::RemoteServerQuestionAbandoned { session_id });
+        // #1178: the ssh command was interrupted, not ended by itself.
+        self.leave_user_wrote_in_model_inbox(false, true);
+        ctx.emit(Event::SigintForegroundToPty);
+    }
+
     /// Whether the "install the remote helper?" question is on screen (#2122: the failure
     /// state of an integration scenario says so, because the session waits for its answer).
     pub fn ssh_helper_question_showing(&self) -> bool {
@@ -26009,9 +26189,21 @@ impl TerminalView {
             });
             return;
         }
+        let pending = self.model.lock().pending_session_id();
+        // #2135: nor while the app installs the remote helper for the pending session; the
+        // install's completion arms it. A pause left by a session that is gone is dropped.
+        if let Some(installing) = self.bootstrap_give_up_paused_for_helper_install {
+            if pending == Some(installing) {
+                warpui::input_order::log_hop("bootstrap_give_up_not_armed", || {
+                    "the app is installing the remote helper".to_owned()
+                });
+                return;
+            }
+            self.bootstrap_give_up_paused_for_helper_install = None;
+        }
         let arm = BootstrapTimerArm {
             generation: self.bootstrap_timer_generation,
-            session: self.model.lock().pending_session_id(),
+            session: pending,
         };
         self.spawn_bootstrap_timer(duration, arm, ctx);
     }

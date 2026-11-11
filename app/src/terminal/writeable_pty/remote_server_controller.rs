@@ -806,6 +806,34 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         self.flush_stashed_bootstrap(session_info, ctx);
     }
 
+    /// #2134: the user interrupted (Ctrl-C) while the choice block of `session_id` was showing,
+    /// and the ssh is being ended. The bootstrap held for the answer is dropped: it must be
+    /// written neither to the ssh that is ending (it would spill into the local shell) nor,
+    /// by the "release the previous stash" step of [`Self::on_ssh_init_shell_requested`], into
+    /// the next ssh started in this pane.
+    pub fn handle_ssh_remote_server_question_abandoned(&mut self, session_id: SessionId) {
+        match &self.state {
+            SshInitState::AwaitingUserChoice { session_info, .. }
+                if session_info.session_id == session_id => {}
+            SshInitState::Idle
+            | SshInitState::AwaitingCheck { .. }
+            | SshInitState::AwaitingUserChoice { .. }
+            | SshInitState::AwaitingInstall { .. }
+            | SshInitState::AwaitingConnect { .. } => {
+                log::warn!(
+                    "remote helper: the question of session {session_id:?} was abandoned but \
+                     the controller is not waiting for its answer; nothing dropped"
+                );
+                return;
+            }
+        }
+        self.state = SshInitState::Idle;
+        log::info!(
+            "remote helper: the question of session {session_id:?} was abandoned by an \
+             interrupt; its held bootstrap is dropped, not written (#2134)"
+        );
+    }
+
     fn on_binary_install_complete(
         &mut self,
         session_id: SessionId,
