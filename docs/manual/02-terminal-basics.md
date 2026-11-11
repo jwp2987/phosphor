@@ -723,6 +723,8 @@ macOS and `ctrl-shift-X` elsewhere. A dash means the action ships with no key.
 | `terminal:find` | Find in terminal / in block | `cmd-F` | `ctrl-shift-F` |
 | `find:find_next_occurrence` | Next match | `cmd-G` | `F3` |
 | `find:find_prev_occurrence` | Previous match | `cmd-shift-G` | `shift-F3` |
+| `find:toggle_replace` | Code editor find bar: show or hide the replace field (focus moves to it) | `cmd-alt-R` | `ctrl-alt-R` |
+| `find:replace_all` | Code editor find bar: replace all matches | `cmd-alt-enter` | `ctrl-alt-enter` |
 | `terminal:toggle_block_filter_on_selected_or_last_block` | Filter a block's output | `shift-alt-F` | — |
 | `terminal:open_block_list_context_menu_via_keybinding` | Block context menu | `ctrl-M` | — |
 | `terminal:reinput_commands` | Put the command back in the input | — | — |
