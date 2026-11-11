@@ -245,9 +245,12 @@ def main():
         if "=" in kv:
             os.environ[kv.split("=", 1)[0]] = kv.split("=", 1)[1]
     dest = cases.dest_mode()
-    print("destination mode of the app under test: PHOSPHOR_QUEUE_DESTINATION=%s (effective %s)" % (os.environ.get("PHOSPHOR_QUEUE_DESTINATION", "<unset>"), dest), flush=True)
+    refused = cases.retired_dest_switch()
+    if refused is not None:      # #1353 step 8: the legacy / shadow modes are gone; the app says so in its log and runs the table
+        print("WARNING: PHOSPHOR_QUEUE_DESTINATION=%s asks for a destination mode the app no longer has; the app ignores it (one log line) and this is a table run" % refused, flush=True)
+    print("destination logic of the app under test: %s (the only one, #1353 step 8)" % dest, flush=True)
     if not a.cases and os.environ.get("APPCI_TIER") == "smoke":
-        # fix tier = SMOKE + PROVING (owner rule 2026-11-09: a new case runs here until it has passed); legacy (the kill switch): the narrowed list, see winmap.KILL_SWITCH_SMOKE
+        # fix tier = SMOKE + PROVING (owner rule 2026-11-09: a new case runs here until it has passed)
         a.cases = ",".join(winmap.smoke_for(dest, cases.SMOKE + cases.PROVING))
     reg = {c["name"] for c in cases.CASES}
     bad_names = unknown_case_names(a.cases, reg) + unknown_case_names(a.skip, reg)
@@ -740,13 +743,16 @@ def main():
                     if dst == "phosphor.log":
                         dest_log = t
                         save_old_rotations(src, logs, "phosphor", ollama_url)
-            if dest == "shadow" and dest_log is not None:
-                # #1528: the shadow comparison's consumer in the real app: every untagged kh_dest_disagree line is a regression
-                total, untagged = cases.dest_disagreements(dest_log)
-                emit(dict(name="dest_disagree", mode=label, status="fail" if untagged else "pass", seconds=0,
-                          detail=["%d untagged kh_dest_disagree line(s) (%d total, tagged ones are known causes) in the app log" % (untagged, total)],
-                          metrics={"queue_destination": dest, "dest_disagree": total, "dest_disagree_untagged": untagged}, shots=[]))
-                exit_fail = exit_fail or bool(untagged)
+            if dest_log is not None:
+                # #1353 step 8: the run-wide oracle of "the table is the only destination path". A plan no executor had a leaf for used to
+                # re-run the legacy chain; now the key is not applied, and the app says so at error level. One such line fails the pass
+                # (a row is added only then: a clean pass has no row of this name).
+                no_leaf = cases.table_no_leaf_lines(dest_log)
+                if no_leaf:
+                    emit(dict(name="table_no_leaf", mode=label, status="fail", seconds=0,
+                              detail=["%d destination plan(s) had no leaf in the app log (a key that was not applied): %s" % (len(no_leaf), no_leaf[0][-200:])],
+                              metrics={"queue_destination": dest, "table_no_leaf": len(no_leaf)}, shots=[]))
+                    exit_fail = True
             if os.path.exists(run + "/app.stdout"):
                 os.remove(run + "/app.stdout")
             if not sim:

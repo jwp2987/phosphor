@@ -13,94 +13,47 @@
 //! * [`Stamp`]: what was true when a key reached the pane's sink. It travels with the entry
 //!   (`InputEntry::stamp`, `Deferred::Offer`), so a key that waited in the mailbox keeps the
 //!   classification it had when the user pressed it (the focus rows H1, D1, D9).
-//! * [`SshPhase`], [`SubshellPhase`], [`PsPhase`]: DERIVED, read-only, from the legacy fields. The
-//!   ssh phase has a second source since step 7, the edge-driven machine (`ssh_phase.rs`), which
-//!   the facts carry in `table` mode (no ssh refresher runs on the key path).
+//! * [`SubshellPhase`], [`PsPhase`]: DERIVED, read-only, from the view's fields. [`SshPhase`] is
+//!   the edge-driven machine's (`ssh_phase.rs`, step 7): no ssh refresher runs on the key path.
 //!
-//! `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`]) is the kill switch.
-//! The default is `table` (owner, 2026-11-02; was `shadow` after step 4). `shadow`
-//! compares the table with what the legacy leaf actions did (`shadow.rs`, step 3); `table` makes
-//! delivery of replayed text / Enters and ssh-held inputs decide with the table
-//! (`view/dest_table.rs`, step 4); `legacy` is the kill switch that turns the table off entirely.
+//! There is no mode: the table is the only destination path (#1353 step 8). The retired switch
+//! `PHOSPHOR_QUEUE_DESTINATION` is looked at once, to say so ([`note_retired_destination_switch`]).
 
 use std::cell::{Cell, RefCell};
-use std::sync::OnceLock;
+use std::sync::Once;
 
 use super::GateKind;
 use crate::terminal::model::key_facts::{KeyFactsCell, KeyModelCell, load_gen_consistent};
 
-/// Which destination logic is in charge (`PHOSPHOR_QUEUE_DESTINATION`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DestinationMode {
-    /// The legacy chain decides; the table is not consulted.
-    Legacy,
-    /// The table decides next to the legacy chain and the two are compared in the log
-    /// (`kh_dest_disagree`, `input_order` target, debug). Behaviour is legacy's.
-    Shadow,
-    /// The table decides, for the paths that have been moved onto it (steps 4-6: delivery,
-    /// arrival of terminal keys, paste, origin rows). The DEFAULT since 2026-11-02 (owner:
-    /// the table is the real thing, not a shadow); `legacy` is the kill switch.
-    #[default]
-    Table,
+/// The environment variable that selected the destination logic (`legacy` | `shadow` | `table`)
+/// until #1353 step 8. It selects nothing now.
+pub const RETIRED_DESTINATION_SWITCH: &str = "PHOSPHOR_QUEUE_DESTINATION";
+
+/// The value of the retired switch that asks for a mode that no longer exists: anything but unset,
+/// empty or `table` (parsed as the switch was: trimmed, case kept). `None` when there is nothing to
+/// say.
+pub fn retired_switch_value(value: Option<&str>) -> Option<&str> {
+    match value.map(str::trim) {
+        None | Some("") | Some("table") => None,
+        Some(other) => Some(other),
+    }
 }
 
-impl DestinationMode {
-    /// Parsed like `PHOSPHOR_PANE_KEY` (`pane_key::PaneKeyMode::parse`): `shadow` and `table`
-    /// select those modes; unset and empty are the default (`Table`); `legacy`, `0`, `off`,
-    /// `false` and anything unknown are `Legacy` (the kill switch; an
-    /// unknown value must never switch the destination logic on).
-    pub fn parse(value: Option<&str>) -> Self {
-        match value.map(str::trim) {
-            None | Some("") => Self::default(),
-            Some("shadow") => Self::Shadow,
-            Some("table") => Self::Table,
-            _ => Self::Legacy,
+/// Says ONCE per process, in the log, that a `PHOSPHOR_QUEUE_DESTINATION` asking for the legacy or
+/// the shadow mode is ignored: those modes were removed, the destination table decides. Called
+/// when a terminal view is built, so the line is in the log of a run that set the variable. The
+/// value is logged (it is a mode name, not user text).
+pub fn note_retired_destination_switch() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let value = std::env::var(RETIRED_DESTINATION_SWITCH).ok();
+        if let Some(refused) = retired_switch_value(value.as_deref()) {
+            log::warn!(
+                "{RETIRED_DESTINATION_SWITCH}={refused} is ignored: the legacy and shadow \
+                 destination modes were removed (#1353 step 8); the destination table decides"
+            );
         }
-    }
-}
-
-/// The mode of this process, read once. Tests can override it for their own thread with
-/// [`set_destination_mode_for_test`] (never `std::env::set_var`, which races between tests).
-pub fn destination_mode() -> DestinationMode {
-    #[cfg(test)]
-    if let Some(mode) = mode_forced_for_test() {
-        return mode;
-    }
-    static MODE: OnceLock<DestinationMode> = OnceLock::new();
-    *MODE.get_or_init(|| {
-        DestinationMode::parse(std::env::var("PHOSPHOR_QUEUE_DESTINATION").ok().as_deref())
-    })
-}
-
-#[cfg(test)]
-thread_local! {
-    /// The mode a test forces on its own thread (the pane's code runs on the test thread).
-    static TEST_MODE: Cell<Option<DestinationMode>> = const { Cell::new(None) };
-}
-
-/// The mode this test thread forces, if any.
-#[cfg(test)]
-pub fn mode_forced_for_test() -> Option<DestinationMode> {
-    TEST_MODE.with(Cell::get)
-}
-
-/// Restores the previous forced mode when dropped.
-#[cfg(test)]
-#[must_use = "the mode is restored when the guard drops"]
-pub struct DestinationModeGuard(Option<DestinationMode>);
-
-#[cfg(test)]
-impl Drop for DestinationModeGuard {
-    fn drop(&mut self) {
-        TEST_MODE.with(|mode| mode.set(self.0));
-    }
-}
-
-/// Forces `mode` on the calling thread until the guard drops. Forcing `Shadow` also makes the
-/// shadow comparison run without `RUST_LOG=warp::input_order=debug`.
-#[cfg(test)]
-pub fn set_destination_mode_for_test(mode: DestinationMode) -> DestinationModeGuard {
-    DestinationModeGuard(TEST_MODE.with(|slot| slot.replace(Some(mode))))
+    });
 }
 
 /// What had focus when a key reached the sink (the stamped focus chain, design §2.6): the focus
@@ -186,10 +139,9 @@ impl GateMask {
     }
 }
 
-/// Where the ssh connect typeahead stands: the edge-driven machine's phase (`ssh_phase.rs`) in
-/// `table` mode, derived from the legacy fields (`ssh_typeahead_holding`, the connect gate) in
-/// `shadow`. There is no prompt phase: nothing about the ssh connect is read from the screen
-/// (#1611, #1612, #1621).
+/// Where the ssh connect typeahead stands: the edge-driven machine's phase (`ssh_phase.rs`).
+/// There is no prompt phase: nothing about the ssh connect is read from the screen (#1611,
+/// #1612, #1621).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SshPhase {
     /// No ssh connect holds keys.
@@ -487,27 +439,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mode_parses_like_the_pane_key_switch_and_defaults_to_table() {
-        // Unset and empty: the default, the table (owner, 2026-11-02).
-        assert_eq!(DestinationMode::parse(None), DestinationMode::Table);
-        assert_eq!(DestinationMode::parse(Some("")), DestinationMode::Table);
-        assert_eq!(DestinationMode::default(), DestinationMode::Table);
-        // The kill switch, and anything unknown: legacy (an unknown value never turns on more).
-        for legacy in ["legacy", "0", "off", "false", "garbage", " LEGACY "] {
-            assert_eq!(
-                DestinationMode::parse(Some(legacy)),
-                DestinationMode::Legacy,
-                "{legacy:?}"
-            );
+    fn only_a_value_that_asks_for_a_removed_mode_is_refused() {
+        // Unset, empty and `table`: nothing to say (the table is the only path).
+        assert_eq!(retired_switch_value(None), None);
+        assert_eq!(retired_switch_value(Some("")), None);
+        assert_eq!(retired_switch_value(Some("  ")), None);
+        assert_eq!(retired_switch_value(Some(" table ")), None);
+        // The removed modes, and anything else that used to select the legacy chain.
+        for refused in ["legacy", "shadow", "0", "off", "false", "garbage", "LEGACY"] {
+            assert_eq!(retired_switch_value(Some(refused)), Some(refused));
         }
-        assert_eq!(
-            DestinationMode::parse(Some("shadow")),
-            DestinationMode::Shadow
-        );
-        assert_eq!(
-            DestinationMode::parse(Some(" table ")),
-            DestinationMode::Table
-        );
+        assert_eq!(retired_switch_value(Some(" legacy ")), Some("legacy"));
     }
 
     #[test]

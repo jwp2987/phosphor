@@ -366,22 +366,30 @@ class Result:
 
 
 def dest_mode(env=None):
-    """The destination mode the app under test runs in (#1532): PHOSPHOR_QUEUE_DESTINATION as the app parses it
-    (input_queue/facts.rs DestinationMode::parse): unset / empty = table (the default), shadow, table, anything else = legacy (the kill switch).
-    The app inherits this process's environment (Linux, Windows) or gets the variable passed through (macOS, app.passthrough_env), so this is
-    the mode it runs in; the app itself logs no startup line for it."""
+    """The destination logic the app under test runs (#1532). Always "table": since #1353 step 8 the destination table is the app's only
+    destination path (the `legacy` kill switch and the `shadow` comparison were removed with the legacy chain). Kept, with its argument, because
+    the `queue_destination` metric of mode_proof and the fix tier's case list read it. A PHOSPHOR_QUEUE_DESTINATION that asks for a removed mode
+    selects nothing: see retired_dest_switch."""
+    return "table"
+
+
+def retired_dest_switch(env=None):
+    """The value of PHOSPHOR_QUEUE_DESTINATION that asks for a destination mode the app no longer has, or None (#1353 step 8). As the app reads it
+    (input_queue/facts.rs retired_switch_value): unset, empty and `table` say nothing; anything else is refused by the app with one log line
+    (`PHOSPHOR_QUEUE_DESTINATION=<value> is ignored`) and the run is a table run like any other."""
     v = (os.environ if env is None else env).get("PHOSPHOR_QUEUE_DESTINATION")
     v = "" if v is None else v.strip()
-    if not v:
-        return "table"
-    return v if v in ("shadow", "table") else "legacy"
+    return None if v in ("", "table") else v
 
 
-def dest_disagreements(text):
-    """(all, untagged) counts of `kh_dest_disagree` lines in an app log (#1528). Shadow mode logs one per difference between the legacy chain and
-    the table; a line carrying `expected=<tag>` is a known cause (OD1 OD5 OD7 B3 B7 B13 B14), an untagged one is a regression."""
-    ls = [l for l in text.splitlines() if "kh_dest_disagree" in l]
-    return len(ls), len([l for l in ls if " expected=" not in l])
+NO_LEAF_RE = re.compile(r"input queue: (?:an arriving key has )?no leaf for")
+
+
+def table_no_leaf_lines(text):
+    """The app's error lines for a destination plan no executor had a leaf for (#1353 step 8, view/dest_table.rs table_no_leaf and the arrival's
+    last arm). Until step 8 such a plan re-ran the legacy chain; now the key is not applied (text is kept in the editor), so ONE line in a run
+    is an app defect: a key that went nowhere. The lines carry the row and the outcome, never typed text."""
+    return [l for l in text.splitlines() if NO_LEAF_RE.search(l)]
 
 
 def pct(xs, p):
@@ -2025,7 +2033,7 @@ def c_mode_proof(ctx, r):
     logged = ctx.log_view_mode()       # #1568: the app's own view-mode log line, read before any key too (None on a build without it)
     if logged is not None:
         r.metric("log_view_mode", logged)
-    # #1532: which destination logic the app under test runs (the fix tier's kill-switch pass runs with PHOSPHOR_QUEUE_DESTINATION=legacy)
+    # #1532: which destination logic the app under test runs (always "table" since #1353 step 8)
     r.metric("queue_destination", dest_mode())
     if ctx.mode != "agent":
         # r18cx (macOS): this Escape is the agent view's own "esc: go back to terminal", so in the agent pass it left agent mode and every

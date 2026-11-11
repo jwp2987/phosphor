@@ -777,21 +777,6 @@ impl TerminalView {
         guard.on_gate_event(&mut host, GateKind::SshConnect, key);
     }
 
-    /// Delivers one held input the way the same key typed now would be routed.
-    pub(super) fn deliver_held_input(&mut self, input: HeldInput, ctx: &mut ViewContext<Self>) {
-        match input {
-            HeldInput::Typed(text) => self.typed_characters_on_terminal(&text, ctx),
-            HeldInput::Key(key) => self.replay_held_key(&key, ctx),
-            HeldInput::Paste(text) => self.deliver_paste_text(&text, ctx),
-            HeldInput::Seq(seq) => self.control_sequence_on_terminal(seq.as_bytes(), ctx),
-        }
-    }
-
-    /// Host side of the drain: one `Held` entry reaches its destination.
-    pub(super) fn deliver_ssh_held(&mut self, class: u8, text: &str, ctx: &mut ViewContext<Self>) {
-        self.deliver_held_input(HeldInput::from_parts(class, text.to_owned()), ctx);
-    }
-
     /// Whether the only open queue gates are ssh ones: bytes that reach the pty writer then are
     /// not held behind them. The connect's keys are held by the hold itself (as `Held` entries,
     /// before they get to the writer); what reaches the writer is a deliberate pass-through (an

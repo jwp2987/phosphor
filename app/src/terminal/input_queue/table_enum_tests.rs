@@ -27,6 +27,7 @@
 
 use crate::terminal::input_queue::table::{
     Class, DropWhy, Effects, Intent, OnRefused, Outcome, Plan, PtyWrite, Row, decide,
+    delivery_reads_setup_as_announced,
 };
 use crate::terminal::input_queue::{
     Destination, EntryId, FocusSnap, GateKind, GateMask, Origin, PsPhase, RouteFacts, SignalKind,
@@ -971,6 +972,252 @@ fn exhaustive_enumeration_reaches_every_row_but_the_effect_only_ones() {
         missing.is_empty(),
         "rows no enumeration reaches: {missing:?}"
     );
+}
+
+// ---- #1353 step 8: every plan the executors are handed has a leaf --------------------------------
+//
+// The view's executors (`view/dest_table.rs`) match the outcomes a class can get and end in a
+// "no leaf" arm. Until step 8 that arm re-ran the legacy chain; now it is an error in the log and
+// the input is not applied (text is kept in the editor). These two tests state the executors'
+// arms as predicates and prove, over the enumerated facts and the sweep, that `decide` never
+// answers with anything else. An outcome added to the table, or a row changed, that an executor
+// does not handle fails here before it can be a key that goes nowhere.
+
+/// The outcomes `execute_shared_outcome` takes for every content class.
+fn shared_leaf(outcome: Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Hint
+            | Outcome::Swallow(_)
+            | Outcome::Drop(_)
+            | Outcome::Hold(GateKind::SshConnect)
+    )
+}
+
+/// `execute_table_plan` (a delivery): `execute_typed`, `execute_key`, `execute_seq`,
+/// `execute_paste`, `execute_held_signal`.
+fn delivery_has_leaf(class: Class, outcome: Outcome) -> bool {
+    let ps_hold = outcome == Outcome::Hold(GateKind::PowershellSetup);
+    match class {
+        Class::Signal(_) => matches!(outcome, Outcome::SignalToPty(_)),
+        _ if shared_leaf(outcome) => true,
+        Class::Typed => {
+            ps_hold
+                || matches!(
+                    outcome,
+                    Outcome::EditorInsert | Outcome::AgentInput | Outcome::Pty(_)
+                )
+        }
+        // A held key and a replayed Enter are both judged with the Enter class.
+        Class::Enter => {
+            ps_hold
+                || matches!(
+                    outcome,
+                    Outcome::Pty(_) | Outcome::EditorSubmit | Outcome::EditorAction
+                )
+        }
+        Class::Seq => ps_hold || matches!(outcome, Outcome::Pty(_) | Outcome::EditorAction),
+        Class::Paste => {
+            ps_hold
+                || matches!(
+                    outcome,
+                    Outcome::EditorInsert | Outcome::AgentInput | Outcome::PasteToPty { .. }
+                )
+        }
+        _ => false,
+    }
+}
+
+/// `execute_arrival` (a live key): the holds and the queue first, then the shared outcomes, then
+/// `execute_typed`, `execute_key_arrival`, `execute_seq`; a signal takes `execute_arrival_signal`.
+fn arrival_has_leaf(class: Class, outcome: Outcome) -> bool {
+    match class {
+        Class::Signal(_) => matches!(
+            outcome,
+            Outcome::HoldSignal
+                | Outcome::PowershellAbort
+                | Outcome::SigintForeground
+                | Outcome::AbortBytes
+                | Outcome::SignalToPty(_)
+                | Outcome::SignalAtGates
+                | Outcome::Stash
+                | Outcome::Drop(_)
+        ),
+        // Behind a gate (`hold_arrival`) or behind queued entries (`offer_arrival_to_queue`).
+        _ if matches!(outcome, Outcome::Hold(_) | Outcome::Queue) => true,
+        _ if shared_leaf(outcome) => true,
+        Class::Typed => matches!(
+            outcome,
+            Outcome::EditorInsert | Outcome::AgentInput | Outcome::Pty(_)
+        ),
+        Class::Enter | Class::Control => matches!(
+            outcome,
+            Outcome::Pty(_) | Outcome::EditorAction | Outcome::EditorSubmit
+        ),
+        Class::Seq => matches!(outcome, Outcome::Pty(_) | Outcome::EditorAction),
+        _ => false,
+    }
+}
+
+/// The classes the queue delivers through the table (`Replayed::class`), with the origins they are
+/// judged with: text and Enters typed behind an Enter (`Replay`), the ssh-held inputs (`Held`,
+/// the signal among them).
+fn delivered_intents() -> Vec<Intent> {
+    let mut intents = Vec::new();
+    for origin in [Origin::Held, Origin::Replay(EntryId(1))] {
+        for class in [Class::Typed, Class::Enter, Class::Seq, Class::Paste] {
+            for stamp in 0..4 {
+                let intent = Intent::new(class, origin)
+                    .stamped(stamp_of(stamp))
+                    .delivering();
+                intents.push(intent);
+                // A synced entry is delivered passive (#1893).
+                intents.push(intent.passive());
+            }
+        }
+    }
+    for signal in [
+        SignalKind::Interrupt,
+        SignalKind::Eof,
+        SignalKind::Suspend,
+        SignalKind::Quit,
+    ] {
+        intents.push(Intent::new(Class::Signal(signal), Origin::Held).delivering());
+    }
+    intents
+}
+
+/// The facts of a delivery, as `decide_delivery` builds them: no queue facts (no gate covers a
+/// delivered entry) and the announced-only setup read as announced.
+fn as_delivery_facts(mut facts: RouteFacts) -> RouteFacts {
+    facts.gates = GateMask::EMPTY;
+    facts.queued = false;
+    facts.queued_only_pty = false;
+    facts.queue_has_ssh_gate = false;
+    // `BootstrapWriting` is read from the gate mask alone (`build_route_facts`): none is open.
+    if facts.subshell == SubshellPhase::BootstrapWriting {
+        facts.subshell = SubshellPhase::Idle;
+    }
+    let _ = delivery_reads_setup_as_announced(&mut facts);
+    facts
+}
+
+/// The fact sets both tests walk: the enumerated product of the 11 core booleans x every phase,
+/// then a fixed-seed sweep over every field.
+fn for_each_leaf_fact_set(mut visit: impl FnMut(&RouteFacts)) {
+    for bits in 0..(1u32 << 11) {
+        for ssh in 0..2 {
+            for subshell in 0..4 {
+                for ps in 0..5 {
+                    visit(&facts_from(bits, ssh, subshell, ps, GateMask::EMPTY));
+                }
+            }
+        }
+    }
+    let mut rng = Rng(0x1353_0008_5EED_0001);
+    for _ in 0..60_000 {
+        visit(&random_facts(&mut rng));
+    }
+}
+
+/// No delivery plan reaches `table_no_leaf`: for every class the queue delivers, on every fact
+/// set, the outcome is one its executor handles.
+#[test]
+fn every_delivery_plan_has_a_leaf() {
+    let intents = delivered_intents();
+    let mut decided = 0u64;
+    for_each_leaf_fact_set(|facts| {
+        let facts = as_delivery_facts(*facts);
+        for intent in &intents {
+            let plan = decide(intent, &facts, None);
+            assert!(
+                delivery_has_leaf(intent.class, plan.outcome),
+                "no leaf for a delivered {:?} (origin {:?}): {:?} (row {})\nfacts: {facts:?}",
+                intent.class,
+                intent.origin,
+                plan.outcome,
+                plan.row.name()
+            );
+            decided += 1;
+        }
+    });
+    assert!(decided > 1_000_000, "the enumeration shrank: {decided}");
+}
+
+/// The announced-only setup is what the normalisation is for: without it a delivered key gets
+/// `Hold(SubshellSetup)`, which no executor of a delivery can carry out.
+#[test]
+fn an_announced_setup_without_its_gate_does_not_hold_a_delivered_entry() {
+    let mut facts = RouteFacts {
+        subshell: SubshellPhase::SetupHeld,
+        ..RouteFacts::default()
+    };
+    let intent = Intent::new(Class::Typed, Origin::Replay(EntryId(1))).delivering();
+    assert_eq!(
+        decide(&intent, &facts, None).outcome,
+        Outcome::Hold(GateKind::SubshellSetup),
+        "the arrival's reading of an announced setup"
+    );
+    assert!(delivery_reads_setup_as_announced(&mut facts));
+    assert_eq!(facts.subshell, SubshellPhase::Announced);
+    assert!(delivery_has_leaf(
+        Class::Typed,
+        decide(&intent, &facts, None).outcome
+    ));
+    // Idempotent, and a setup whose gate IS open is left alone (an arrival holds behind it).
+    assert!(!delivery_reads_setup_as_announced(&mut facts));
+    let mut gated = RouteFacts {
+        subshell: SubshellPhase::SetupHeld,
+        gates: GateMask::EMPTY.with(GateKind::SubshellSetup),
+        ..RouteFacts::default()
+    };
+    assert!(!delivery_reads_setup_as_announced(&mut gated));
+    assert_eq!(gated.subshell, SubshellPhase::SetupHeld);
+}
+
+/// No arrival plan reaches the executors' last arms: for a live key of every class, from the
+/// keyboard or as synced input, on every fact set (every gate mask of the sweep included), the
+/// outcome is one `execute_arrival` handles.
+#[test]
+fn every_arrival_plan_has_a_leaf() {
+    let mut intents = Vec::new();
+    for origin in [Origin::Keyboard, Origin::Synced] {
+        for class in [
+            Class::Typed,
+            Class::Enter,
+            Class::Control,
+            Class::Seq,
+            Class::Signal(SignalKind::Interrupt),
+            Class::Signal(SignalKind::Eof),
+            Class::Signal(SignalKind::Suspend),
+            Class::Signal(SignalKind::Quit),
+        ] {
+            for stamp in 0..4 {
+                let intent = Intent::new(class, origin).stamped(stamp_of(stamp));
+                intents.push(if origin == Origin::Synced {
+                    intent.passive()
+                } else {
+                    intent
+                });
+            }
+        }
+    }
+    let mut decided = 0u64;
+    for_each_leaf_fact_set(|facts| {
+        for intent in &intents {
+            let plan = decide(intent, facts, None);
+            assert!(
+                arrival_has_leaf(intent.class, plan.outcome),
+                "no leaf for an arriving {:?} (origin {:?}): {:?} (row {})\nfacts: {facts:?}",
+                intent.class,
+                intent.origin,
+                plan.outcome,
+                plan.row.name()
+            );
+            decided += 1;
+        }
+    });
+    assert!(decided > 1_000_000, "the enumeration shrank: {decided}");
 }
 
 // #1529: the table against the legacy destination function.

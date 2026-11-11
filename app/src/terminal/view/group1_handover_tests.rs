@@ -3,7 +3,6 @@
 //! hand-back (#1576). Child of `view_test.rs` (private helpers come in through `super`).
 
 use super::*;
-use crate::terminal::input_queue::DestinationMode;
 
 /// 1e: a focus change while the hand-over drain is yielded must not deliver (or insert) what is
 /// queued behind the yielding entry. `ls` waits behind a test gate, the Enter's command is
@@ -12,9 +11,6 @@ use crate::terminal::input_queue::DestinationMode;
 #[test]
 fn focus_change_during_a_yield_does_not_deliver() {
     App::test((), |mut app| async move {
-        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
-            DestinationMode::Table,
-        );
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -41,9 +37,6 @@ fn focus_change_during_a_yield_does_not_deliver() {
 #[test]
 fn release_without_event_hands_over_before_the_next_key() {
     App::test((), |mut app| async move {
-        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
-            DestinationMode::Table,
-        );
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -80,9 +73,6 @@ fn release_without_event_hands_over_before_the_next_key() {
 #[test]
 fn release_without_event_hands_over_before_the_next_paste() {
     App::test((), |mut app| async move {
-        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
-            DestinationMode::Table,
-        );
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -121,9 +111,6 @@ fn release_without_event_hands_over_before_the_next_paste() {
 #[test]
 fn an_agent_write_after_a_silent_release_schedules_the_handover() {
     App::test((), |mut app| async move {
-        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
-            DestinationMode::Table,
-        );
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -159,112 +146,104 @@ fn an_agent_write_after_a_silent_release_schedules_the_handover() {
 /// nothing. Legacy runs only to prove it does not panic.
 #[test]
 fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell() {
-    for mode in [DestinationMode::Table, DestinationMode::Legacy] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-            let sink = executed.clone();
-            app.update(|ctx| {
-                ctx.subscribe_to_view(&terminal, move |_, event, _| {
-                    if let Event::ExecuteCommand(e) = event {
-                        sink.borrow_mut().push(e.command.clone());
-                    }
-                });
-            });
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                submit_command(view, "ssh host", ctx);
-                view.typed_characters_on_terminal("ssh other", ctx);
-                view.keydown_on_terminal("\r", ctx);
-                view.typed_characters_on_terminal("echo B", ctx);
-                view.keydown_on_terminal("\r", ctx);
-                if mode == DestinationMode::Table {
-                    assert_eq!(view.ssh_held_count(), 4);
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
                 }
-                view.ssh_remote_prompt_seen = true;
-                first_precmd_processed_for_test(view, ctx);
-                release_ssh_gate_for_test(view);
-                view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             });
-            // The inner ssh takes the tty while the drain is yielded after the `ssh other` Enter:
-            // in a SECOND consecutive update (no await between), so the effects of the first one
-            // (the Enter's ExecuteCommand, which arms the nested connect window) are applied
-            // before the ownership event, as in production, and the spawned drain continuation
-            // has not run yet.
-            terminal.update(&mut app, |view, ctx| {
-                // The nested ssh starts running (its preexec), then the latch's ownership event
-                // for it. The inner shell's prompt is output like any other and decides nothing.
-                view.model
-                    .lock()
-                    .simulate_long_running_block("ssh other", "");
-                view.model.lock().process_bytes("inner$ ");
-                view.model.lock().publish_key_facts();
-                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
-                ssh_tty_owned_for_test(view, ctx);
-            });
-            for _ in 0..16 {
-                futures_lite::future::yield_now().await;
-            }
-            if mode != DestinationMode::Table {
-                return;
-            }
-            terminal.read(&app, |view, ctx| {
-                let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
-                if writes.matches("echo B").count() != 1 {
-                    // Tell a dropped line from one still queued (a stuck hand-over).
-                    let queued: Vec<String> = view
-                        .paste_queue
-                        .queue
-                        .peek()
-                        .entries()
-                        .filter_map(|entry| match &entry.kind {
-                            input_queue::EntryKind::Text(text) => Some(text.clone()),
-                            input_queue::EntryKind::Held { text, .. } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let buffer = view.input.as_ref(ctx).buffer_text(ctx);
-                    let still_queued = queued.iter().any(|text| text.contains("echo B"));
-                    let in_editor = buffer.contains("echo B");
-                    let ran_locally = executed.borrow().iter().any(|c| c.contains("echo B"));
-                    let verdict = if still_queued {
-                        "STILL QUEUED (the hand-over never ran after the nested window's \
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("ssh other", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            view.typed_characters_on_terminal("echo B", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(view.ssh_held_count(), 4);
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+        });
+        // The inner ssh takes the tty while the drain is yielded after the `ssh other` Enter:
+        // in a SECOND consecutive update (no await between), so the effects of the first one
+        // (the Enter's ExecuteCommand, which arms the nested connect window) are applied
+        // before the ownership event, as in production, and the spawned drain continuation
+        // has not run yet.
+        terminal.update(&mut app, |view, ctx| {
+            // The nested ssh starts running (its preexec), then the latch's ownership event
+            // for it. The inner shell's prompt is output like any other and decides nothing.
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh other", "");
+            view.model.lock().process_bytes("inner$ ");
+            view.model.lock().publish_key_facts();
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            ssh_tty_owned_for_test(view, ctx);
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        terminal.read(&app, |view, ctx| {
+            let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+            if writes.matches("echo B").count() != 1 {
+                // Tell a dropped line from one still queued (a stuck hand-over).
+                let queued: Vec<String> = view
+                    .paste_queue
+                    .queue
+                    .peek()
+                    .entries()
+                    .filter_map(|entry| match &entry.kind {
+                        input_queue::EntryKind::Text(text) => Some(text.clone()),
+                        input_queue::EntryKind::Held { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let buffer = view.input.as_ref(ctx).buffer_text(ctx);
+                let still_queued = queued.iter().any(|text| text.contains("echo B"));
+                let in_editor = buffer.contains("echo B");
+                let ran_locally = executed.borrow().iter().any(|c| c.contains("echo B"));
+                let verdict = if still_queued {
+                    "STILL QUEUED (the hand-over never ran after the nested window's \
                          ownership event)"
-                    } else if in_editor || ran_locally {
-                        "WENT TO THE WRONG DESTINATION (editor / local run)"
-                    } else {
-                        "DROPPED: not queued, not written, not in the editor (a held line must \
+                } else if in_editor || ran_locally {
+                    "WENT TO THE WRONG DESTINATION (editor / local run)"
+                } else {
+                    "DROPPED: not queued, not written, not in the editor (a held line must \
                          never be dropped on the way to the inner shell; the H4 row that once \
                          did, #1575, is gone with the screen latch, #1611/#1612/#1621)"
-                    };
-                    panic!(
-                        "echo B was written {} time(s), expected 1: {verdict}; writes={writes:?} \
+                };
+                panic!(
+                    "echo B was written {} time(s), expected 1: {verdict}; writes={writes:?} \
                          queued={queued:?} editor={buffer:?} executed={:?} holding={}",
-                        writes.matches("echo B").count(),
-                        executed.borrow(),
-                        view.ssh_typeahead_holding
-                    );
-                }
-                assert_eq!(writes.matches("echo B").count(), 1, "{writes:?}");
-                let at = writes.find("echo B").unwrap_or(0);
-                assert!(writes[at..].contains('\r'), "{writes:?}");
-                assert!(
-                    !view.input.as_ref(ctx).buffer_text(ctx).contains("echo B"),
-                    "the editor took the line"
+                    writes.matches("echo B").count(),
+                    executed.borrow(),
+                    view.ssh_typeahead_holding
                 );
-                assert!(
-                    !executed.borrow().iter().any(|c| c.contains("echo B")),
-                    "{:?}",
-                    executed.borrow()
-                );
-                assert!(!view.ssh_typeahead_holding);
-            });
-        })
-    }
+            }
+            assert_eq!(writes.matches("echo B").count(), 1, "{writes:?}");
+            let at = writes.find("echo B").unwrap_or(0);
+            assert!(writes[at..].contains('\r'), "{writes:?}");
+            assert!(
+                !view.input.as_ref(ctx).buffer_text(ctx).contains("echo B"),
+                "the editor took the line"
+            );
+            assert!(
+                !executed.borrow().iter().any(|c| c.contains("echo B")),
+                "{:?}",
+                executed.borrow()
+            );
+            assert!(!view.ssh_typeahead_holding);
+        });
+    })
 }
 
 /// #1575 (review of bbfe42460): as above, with the inner shell's echo of the line on the grid.
@@ -275,110 +254,102 @@ fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell(
 /// panic.
 #[test]
 fn nested_prompt_then_the_inner_echo_still_delivers_the_line_to_the_inner_shell() {
-    for mode in [DestinationMode::Table, DestinationMode::Legacy] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-            let sink = executed.clone();
-            app.update(|ctx| {
-                ctx.subscribe_to_view(&terminal, move |_, event, _| {
-                    if let Event::ExecuteCommand(e) = event {
-                        sink.borrow_mut().push(e.command.clone());
-                    }
-                });
-            });
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                submit_command(view, "ssh host", ctx);
-                view.typed_characters_on_terminal("ssh other", ctx);
-                view.keydown_on_terminal("\r", ctx);
-                view.typed_characters_on_terminal("echo B", ctx);
-                view.keydown_on_terminal("\r", ctx);
-                if mode == DestinationMode::Table {
-                    assert_eq!(view.ssh_held_count(), 4);
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
                 }
-                view.ssh_remote_prompt_seen = true;
-                first_precmd_processed_for_test(view, ctx);
-                release_ssh_gate_for_test(view);
-                view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             });
-            // As above, with the inner shell's echo of the line arriving after the ownership
-            // event: output before or after it never holds the line again or delivers it twice.
-            terminal.update(&mut app, |view, ctx| {
-                view.model
-                    .lock()
-                    .simulate_long_running_block("ssh other", "");
-                view.model.lock().process_bytes("inner$ ");
-                view.model.lock().publish_key_facts();
-                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
-                ssh_tty_owned_for_test(view, ctx);
-                view.model.lock().process_bytes("echo B");
-                view.model.lock().publish_key_facts();
-                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
-            });
-            for _ in 0..16 {
-                futures_lite::future::yield_now().await;
-            }
-            if mode != DestinationMode::Table {
-                return;
-            }
-            terminal.read(&app, |view, ctx| {
-                let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
-                if writes.matches("echo B").count() != 1 {
-                    // Tell a dropped line from one still queued (a stuck hand-over).
-                    let queued: Vec<String> = view
-                        .paste_queue
-                        .queue
-                        .peek()
-                        .entries()
-                        .filter_map(|entry| match &entry.kind {
-                            input_queue::EntryKind::Text(text) => Some(text.clone()),
-                            input_queue::EntryKind::Held { text, .. } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let buffer = view.input.as_ref(ctx).buffer_text(ctx);
-                    let still_queued = queued.iter().any(|text| text.contains("echo B"));
-                    let in_editor = buffer.contains("echo B");
-                    let ran_locally = executed.borrow().iter().any(|c| c.contains("echo B"));
-                    let verdict = if still_queued {
-                        "STILL QUEUED (the hand-over never ran after the nested window's \
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("ssh other", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            view.typed_characters_on_terminal("echo B", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(view.ssh_held_count(), 4);
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+        });
+        // As above, with the inner shell's echo of the line arriving after the ownership
+        // event: output before or after it never holds the line again or delivers it twice.
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh other", "");
+            view.model.lock().process_bytes("inner$ ");
+            view.model.lock().publish_key_facts();
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            ssh_tty_owned_for_test(view, ctx);
+            view.model.lock().process_bytes("echo B");
+            view.model.lock().publish_key_facts();
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        terminal.read(&app, |view, ctx| {
+            let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+            if writes.matches("echo B").count() != 1 {
+                // Tell a dropped line from one still queued (a stuck hand-over).
+                let queued: Vec<String> = view
+                    .paste_queue
+                    .queue
+                    .peek()
+                    .entries()
+                    .filter_map(|entry| match &entry.kind {
+                        input_queue::EntryKind::Text(text) => Some(text.clone()),
+                        input_queue::EntryKind::Held { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let buffer = view.input.as_ref(ctx).buffer_text(ctx);
+                let still_queued = queued.iter().any(|text| text.contains("echo B"));
+                let in_editor = buffer.contains("echo B");
+                let ran_locally = executed.borrow().iter().any(|c| c.contains("echo B"));
+                let verdict = if still_queued {
+                    "STILL QUEUED (the hand-over never ran after the nested window's \
                          ownership event)"
-                    } else if in_editor || ran_locally {
-                        "WENT TO THE WRONG DESTINATION (editor / local run)"
-                    } else {
-                        "DROPPED: not queued, not written, not in the editor (a held line must \
+                } else if in_editor || ran_locally {
+                    "WENT TO THE WRONG DESTINATION (editor / local run)"
+                } else {
+                    "DROPPED: not queued, not written, not in the editor (a held line must \
                          never be dropped on the way to the inner shell; the H4 row that once \
                          did, #1575, is gone with the screen latch, #1611/#1612/#1621)"
-                    };
-                    panic!(
-                        "echo B was written {} time(s), expected 1: {verdict}; writes={writes:?} \
+                };
+                panic!(
+                    "echo B was written {} time(s), expected 1: {verdict}; writes={writes:?} \
                          queued={queued:?} editor={buffer:?} executed={:?} holding={}",
-                        writes.matches("echo B").count(),
-                        executed.borrow(),
-                        view.ssh_typeahead_holding
-                    );
-                }
-                assert_eq!(writes.matches("echo B").count(), 1, "{writes:?}");
-                let at = writes.find("echo B").unwrap_or(0);
-                assert!(writes[at..].contains('\r'), "{writes:?}");
-                assert!(
-                    !view.input.as_ref(ctx).buffer_text(ctx).contains("echo B"),
-                    "the editor took the line"
+                    writes.matches("echo B").count(),
+                    executed.borrow(),
+                    view.ssh_typeahead_holding
                 );
-                assert!(
-                    !executed.borrow().iter().any(|c| c.contains("echo B")),
-                    "{:?}",
-                    executed.borrow()
-                );
-                assert!(!view.ssh_typeahead_holding);
-            });
-        })
-    }
+            }
+            assert_eq!(writes.matches("echo B").count(), 1, "{writes:?}");
+            let at = writes.find("echo B").unwrap_or(0);
+            assert!(writes[at..].contains('\r'), "{writes:?}");
+            assert!(
+                !view.input.as_ref(ctx).buffer_text(ctx).contains("echo B"),
+                "the editor took the line"
+            );
+            assert!(
+                !executed.borrow().iter().any(|c| c.contains("echo B")),
+                "{:?}",
+                executed.borrow()
+            );
+            assert!(!view.ssh_typeahead_holding);
+        });
+    })
 }
 
 /// #1578: the ssh gate vanished behind the view's back and an UNRELATED op waits in the mailbox.
@@ -387,33 +358,30 @@ fn nested_prompt_then_the_inner_echo_still_delivers_the_line_to_the_inner_shell(
 #[test]
 fn an_unrelated_deferred_op_does_not_make_a_missing_ssh_gate_look_alive() {
     use crate::terminal::input_queue::{Deferred, GateKind};
-    for mode in [DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                submit_command(view, "ssh host", ctx);
-                view.typed_characters_on_terminal("a", ctx);
-                assert!(view.ssh_typeahead_holding, "{mode:?}");
-                let key = view.ssh_iq.gate.expect("the hold opened a gate");
-                {
-                    let q = view.paste_queue.queue.clone();
-                    let _host = paste_queue::PtyQueueHost::new(view, ctx);
-                    q.lock().drop_gate(GateKind::SshConnect, key);
-                }
-                view.paste_queue.queue.defer(Deferred::FocusChanged);
-                view.typed_characters_on_terminal("b", ctx);
-                assert!(ssh_gate_open(view), "{mode:?}: a gate was re-opened");
-                assert_eq!(view.ssh_held_count(), 1, "{mode:?}");
-                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
-            });
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
-        })
-    }
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("a", ctx);
+            assert!(view.ssh_typeahead_holding);
+            let key = view.ssh_iq.gate.expect("the hold opened a gate");
+            {
+                let q = view.paste_queue.queue.clone();
+                let _host = paste_queue::PtyQueueHost::new(view, ctx);
+                q.lock().drop_gate(GateKind::SshConnect, key);
+            }
+            view.paste_queue.queue.defer(Deferred::FocusChanged);
+            view.typed_characters_on_terminal("b", ctx);
+            assert!(ssh_gate_open(view), "a gate was re-opened");
+            assert_eq!(view.ssh_held_count(), 1);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
 }
 
 /// #1576: handed-back ssh text is never discarded. While a command owns the pty it is kept on the
@@ -424,94 +392,76 @@ fn hand_back_into_a_busy_pane_is_kept_and_restored_at_block_end() {
     use crate::terminal::model::block::{BlockId, SerializedBlock};
     use crate::terminal::model::terminal_model::BlockIndex;
     use std::sync::Arc;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-            let sink = executed.clone();
-            app.update(|ctx| {
-                ctx.subscribe_to_view(&terminal, move |_, event, _| {
-                    if let Event::ExecuteCommand(e) = event {
-                        sink.borrow_mut().push(e.command.clone());
-                    }
-                });
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
             });
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                view.model.lock().simulate_long_running_block("sleep 9", "");
-                view.model
-                    .lock()
-                    .block_list()
-                    .active_block()
-                    .interactive_latch()
-                    .force(true);
-                assert!(view.is_long_running(), "{mode:?}");
-                view.hand_back_unexecuted_ssh_text("echo hi".to_owned(), ctx);
-                assert_eq!(
-                    view.input.as_ref(ctx).handed_back_text_for_test(),
-                    Some("echo hi"),
-                    "{mode:?}"
-                );
-                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
-                // The block ends: the text comes back, guarded.
-                view.input.update(ctx, |input, ctx| {
-                    input.set_deferred_ops_latest_block_for_test(BlockId::new());
-                    input.handle_block_completed_event(
-                        BlockCompletedEvent {
-                            block_latency_data: None,
-                            block_type: BlockType::User(UserBlockCompleted::new_for_test(
-                                BlockIndex::zero(),
-                                Arc::new(SerializedBlock::new_for_test(
-                                    b"sleep 9".to_vec(),
-                                    vec![],
-                                )),
-                                "sleep 9".to_owned(),
-                                "sleep 9".to_owned(),
-                                String::new(),
-                                String::new(),
-                                false,
-                                None,
-                                0,
-                                0,
-                            )),
-                            num_secrets_obfuscated: 0,
-                            block_index: BlockIndex::zero(),
-                            eviction_stamp: Default::default(),
-                            block_id: BlockId::new(),
-                            session_id: None,
-                            restored_block_was_local: None,
-                        },
-                        ctx,
-                    );
-                });
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    "echo hi",
-                    "{mode:?}"
-                );
-                assert!(
-                    view.input.as_ref(ctx).ssh_handover_enter_guard_armed(),
-                    "{mode:?}"
-                );
-                editor_key(view, EditorAction::Enter, ctx);
-            });
-            terminal.update(&mut app, |view, ctx| {
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    "echo hi",
-                    "{mode:?}"
-                );
-            });
-            assert!(
-                !executed.borrow().iter().any(|c| c.contains("echo hi")),
-                "{mode:?}: {:?}",
-                executed.borrow()
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model.lock().simulate_long_running_block("sleep 9", "");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            assert!(view.is_long_running());
+            view.hand_back_unexecuted_ssh_text("echo hi".to_owned(), ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).handed_back_text_for_test(),
+                Some("echo hi")
             );
-        })
-    }
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            // The block ends: the text comes back, guarded.
+            view.input.update(ctx, |input, ctx| {
+                input.set_deferred_ops_latest_block_for_test(BlockId::new());
+                input.handle_block_completed_event(
+                    BlockCompletedEvent {
+                        block_latency_data: None,
+                        block_type: BlockType::User(UserBlockCompleted::new_for_test(
+                            BlockIndex::zero(),
+                            Arc::new(SerializedBlock::new_for_test(b"sleep 9".to_vec(), vec![])),
+                            "sleep 9".to_owned(),
+                            "sleep 9".to_owned(),
+                            String::new(),
+                            String::new(),
+                            false,
+                            None,
+                            0,
+                            0,
+                        )),
+                        num_secrets_obfuscated: 0,
+                        block_index: BlockIndex::zero(),
+                        eviction_stamp: Default::default(),
+                        block_id: BlockId::new(),
+                        session_id: None,
+                        restored_block_was_local: None,
+                    },
+                    ctx,
+                );
+            });
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
+            assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            editor_key(view, EditorAction::Enter, ctx);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
+        });
+        assert!(
+            !executed.borrow().iter().any(|c| c.contains("echo hi")),
+            "{:?}",
+            executed.borrow()
+        );
+    })
 }
 
 /// #1580: user bytes already decided for the pty but still in the queue (a drain stopped at a
@@ -519,9 +469,6 @@ fn hand_back_into_a_busy_pane_is_kept_and_restored_at_block_end() {
 #[test]
 fn an_agent_write_does_not_overtake_user_bytes_waiting_in_the_queue() {
     App::test((), |mut app| async move {
-        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
-            DestinationMode::Table,
-        );
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let order: Rc<RefCell<Vec<(&'static str, Vec<u8>)>>> = Rc::new(RefCell::new(Vec::new()));
@@ -642,44 +589,37 @@ fn click_kept_text_banner(
 /// its char count; it is not in the editor and nothing is written.
 #[test]
 fn kept_ssh_text_is_shown_in_a_banner_over_the_running_block() {
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                kept_text_pane_for_test(view, ctx);
-                let banner = view
-                    .ssh_kept_text_banner()
-                    .unwrap_or_else(|| panic!("{mode:?}: a banner is up"));
-                let active = view.model.lock().active_block_id().clone();
-                let banner = banner.as_ref(ctx);
-                assert_eq!(banner.text(), KEPT_TEXT, "{mode:?}");
-                assert_eq!(banner.block_id(), &active, "{mode:?}: over the ssh block");
-                assert!(
-                    banner
-                        .title()
-                        .contains("(10 chars; 1 line runs when typed)"),
-                    "{mode:?}: {}",
-                    banner.title()
-                );
-                assert_eq!(banner.note(), None, "{mode:?}");
-                assert_eq!(
-                    view.input.as_ref(ctx).handed_back_text_for_test(),
-                    Some(KEPT_TEXT),
-                    "{mode:?}: the input still keeps it"
-                );
-                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
-            });
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            kept_text_pane_for_test(view, ctx);
+            let banner = view
+                .ssh_kept_text_banner()
+                .unwrap_or_else(|| panic!("a banner is up"));
+            let active = view.model.lock().active_block_id().clone();
+            let banner = banner.as_ref(ctx);
+            assert_eq!(banner.text(), KEPT_TEXT);
+            assert_eq!(banner.block_id(), &active, "over the ssh block");
             assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: {:?}",
-                pty_writes.borrow()
+                banner
+                    .title()
+                    .contains("(10 chars; 1 line runs when typed)"),
+                "{}",
+                banner.title()
             );
-        })
-    }
+            assert_eq!(banner.note(), None);
+            assert_eq!(
+                view.input.as_ref(ctx).handed_back_text_for_test(),
+                Some(KEPT_TEXT),
+                "the input still keeps it"
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
 }
 
 /// #1596: "Type into session" writes exactly the kept text, each line break as Enter, once; the
@@ -687,46 +627,43 @@ fn kept_ssh_text_is_shown_in_a_banner_over_the_running_block() {
 #[test]
 fn type_into_session_writes_the_kept_text_once() {
     use crate::terminal::view::ssh_kept_text_banner::SshKeptTextBannerAction;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| kept_text_pane_for_test(view, ctx));
-            click_kept_text_banner(
-                &mut app,
-                &terminal,
-                SshKeptTextBannerAction::TypeIntoSession,
-            );
-            for _ in 0..16 {
-                futures_lite::future::yield_now().await;
-            }
-            assert_eq!(
-                pty_writes.borrow().concat(),
-                b"echo hi\rls".to_vec(),
-                "{mode:?}: {:?}",
-                pty_writes.borrow()
-            );
-            terminal.update(&mut app, |view, ctx| {
-                assert!(view.ssh_kept_text_banner().is_none(), "{mode:?}");
-                assert_eq!(view.input.as_ref(ctx).handed_back_text_for_test(), None);
-                // A second click (no banner) and the block's end deliver nothing again.
-                view.type_ssh_kept_text_into_session(ctx);
-                end_kept_text_block_for_test(view, ctx);
-                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
-            });
-            for _ in 0..16 {
-                futures_lite::future::yield_now().await;
-            }
-            assert_eq!(
-                pty_writes.borrow().concat(),
-                b"echo hi\rls".to_vec(),
-                "{mode:?}: written once"
-            );
-        })
-    }
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| kept_text_pane_for_test(view, ctx));
+        click_kept_text_banner(
+            &mut app,
+            &terminal,
+            SshKeptTextBannerAction::TypeIntoSession,
+        );
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            b"echo hi\rls".to_vec(),
+            "{:?}",
+            pty_writes.borrow()
+        );
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.ssh_kept_text_banner().is_none());
+            assert_eq!(view.input.as_ref(ctx).handed_back_text_for_test(), None);
+            // A second click (no banner) and the block's end deliver nothing again.
+            view.type_ssh_kept_text_into_session(ctx);
+            end_kept_text_block_for_test(view, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            b"echo hi\rls".to_vec(),
+            "written once"
+        );
+    })
 }
 
 /// #1596: "Discard" drops the kept text: nothing is written, the banner goes, and the block's end
@@ -734,31 +671,24 @@ fn type_into_session_writes_the_kept_text_once() {
 #[test]
 fn discard_drops_the_kept_text_and_writes_nothing() {
     use crate::terminal::view::ssh_kept_text_banner::SshKeptTextBannerAction;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| kept_text_pane_for_test(view, ctx));
-            click_kept_text_banner(&mut app, &terminal, SshKeptTextBannerAction::Discard);
-            terminal.update(&mut app, |view, ctx| {
-                assert!(view.ssh_kept_text_banner().is_none(), "{mode:?}");
-                assert_eq!(view.input.as_ref(ctx).handed_back_text_for_test(), None);
-                end_kept_text_block_for_test(view, ctx);
-                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
-            });
-            for _ in 0..16 {
-                futures_lite::future::yield_now().await;
-            }
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: {:?}",
-                pty_writes.borrow()
-            );
-        })
-    }
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| kept_text_pane_for_test(view, ctx));
+        click_kept_text_banner(&mut app, &terminal, SshKeptTextBannerAction::Discard);
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.ssh_kept_text_banner().is_none());
+            assert_eq!(view.input.as_ref(ctx).handed_back_text_for_test(), None);
+            end_kept_text_block_for_test(view, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
 }
 
 /// #1596: the block ends with the banner up: the banner goes and the existing end-of-block
@@ -766,44 +696,26 @@ fn discard_drops_the_kept_text_and_writes_nothing() {
 /// nothing, so nothing is delivered twice.
 #[test]
 fn block_end_with_the_banner_up_hands_the_text_back_once() {
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                kept_text_pane_for_test(view, ctx);
-                assert!(view.ssh_kept_text_banner().is_some(), "{mode:?}");
-                end_kept_text_block_for_test(view, ctx);
-                assert!(view.ssh_kept_text_banner().is_none(), "{mode:?}");
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    KEPT_TEXT,
-                    "{mode:?}"
-                );
-                assert!(
-                    view.input.as_ref(ctx).ssh_handover_enter_guard_armed(),
-                    "{mode:?}"
-                );
-                view.type_ssh_kept_text_into_session(ctx);
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    KEPT_TEXT,
-                    "{mode:?}"
-                );
-            });
-            for _ in 0..16 {
-                futures_lite::future::yield_now().await;
-            }
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: {:?}",
-                pty_writes.borrow()
-            );
-        })
-    }
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            kept_text_pane_for_test(view, ctx);
+            assert!(view.ssh_kept_text_banner().is_some());
+            end_kept_text_block_for_test(view, ctx);
+            assert!(view.ssh_kept_text_banner().is_none());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), KEPT_TEXT);
+            assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            view.type_ssh_kept_text_into_session(ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), KEPT_TEXT);
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
 }
 
 /// #1596 review B1: a second hand-back for the same block joins the kept text with a line break
@@ -812,50 +724,39 @@ fn block_end_with_the_banner_up_hands_the_text_back_once() {
 #[test]
 fn type_into_session_is_refused_for_text_joined_from_two_hand_backs() {
     use crate::terminal::view::ssh_kept_text_banner::{REFUSED_NOTE, SshKeptTextBannerAction};
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                kept_text_pane_for_test(view, ctx);
-                view.hand_back_unexecuted_ssh_text("echo b".to_owned(), ctx);
-                let banner = view.ssh_kept_text_banner().expect("one banner");
-                assert!(banner.as_ref(ctx).merged(), "{mode:?}");
-                assert_eq!(banner.as_ref(ctx).text(), "echo hi\nls\necho b", "{mode:?}");
-            });
-            click_kept_text_banner(
-                &mut app,
-                &terminal,
-                SshKeptTextBannerAction::TypeIntoSession,
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            kept_text_pane_for_test(view, ctx);
+            view.hand_back_unexecuted_ssh_text("echo b".to_owned(), ctx);
+            let banner = view.ssh_kept_text_banner().expect("one banner");
+            assert!(banner.as_ref(ctx).merged());
+            assert_eq!(banner.as_ref(ctx).text(), "echo hi\nls\necho b");
+        });
+        click_kept_text_banner(
+            &mut app,
+            &terminal,
+            SshKeptTextBannerAction::TypeIntoSession,
+        );
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        terminal.update(&mut app, |view, ctx| {
+            let banner = view.ssh_kept_text_banner().expect("still up");
+            assert_eq!(banner.as_ref(ctx).note(), Some(REFUSED_NOTE));
+            end_kept_text_block_for_test(view, ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "echo hi\nls\necho b",
+                "both texts come back into the editor"
             );
-            for _ in 0..16 {
-                futures_lite::future::yield_now().await;
-            }
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: {:?}",
-                pty_writes.borrow()
-            );
-            terminal.update(&mut app, |view, ctx| {
-                let banner = view.ssh_kept_text_banner().expect("still up");
-                assert_eq!(banner.as_ref(ctx).note(), Some(REFUSED_NOTE), "{mode:?}");
-                end_kept_text_block_for_test(view, ctx);
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    "echo hi\nls\necho b",
-                    "{mode:?}: both texts come back into the editor"
-                );
-            });
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: {:?}",
-                pty_writes.borrow()
-            );
-        })
-    }
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
 }
 
 /// #1596 review B2: while the session is still connecting (a nested ssh hold, a remote bootstrap)
@@ -863,42 +764,35 @@ fn type_into_session_is_refused_for_text_joined_from_two_hand_backs() {
 #[test]
 fn type_into_session_is_refused_while_the_session_is_connecting() {
     use crate::terminal::view::ssh_kept_text_banner::{REFUSED_NOTE, SshKeptTextBannerAction};
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                kept_text_pane_for_test(view, ctx);
-                // A nested connect holds keys now.
-                view.ssh_typeahead_holding = true;
-            });
-            click_kept_text_banner(
-                &mut app,
-                &terminal,
-                SshKeptTextBannerAction::TypeIntoSession,
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            kept_text_pane_for_test(view, ctx);
+            // A nested connect holds keys now.
+            view.ssh_typeahead_holding = true;
+        });
+        click_kept_text_banner(
+            &mut app,
+            &terminal,
+            SshKeptTextBannerAction::TypeIntoSession,
+        );
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        terminal.update(&mut app, |view, ctx| {
+            let banner = view.ssh_kept_text_banner().expect("still up");
+            assert_eq!(banner.as_ref(ctx).note(), Some(REFUSED_NOTE));
+            assert_eq!(
+                view.input.as_ref(ctx).handed_back_text_for_test(),
+                Some(KEPT_TEXT),
+                "still kept"
             );
-            for _ in 0..16 {
-                futures_lite::future::yield_now().await;
-            }
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: {:?}",
-                pty_writes.borrow()
-            );
-            terminal.update(&mut app, |view, ctx| {
-                let banner = view.ssh_kept_text_banner().expect("still up");
-                assert_eq!(banner.as_ref(ctx).note(), Some(REFUSED_NOTE), "{mode:?}");
-                assert_eq!(
-                    view.input.as_ref(ctx).handed_back_text_for_test(),
-                    Some(KEPT_TEXT),
-                    "{mode:?}: still kept"
-                );
-            });
-        })
-    }
+        });
+    })
 }
 
 /// #1596 review (4): a hand-back for a block other than the one the ssh hold was opened for (a
@@ -906,32 +800,28 @@ fn type_into_session_is_refused_while_the_session_is_connecting() {
 #[test]
 fn no_kept_text_banner_over_a_block_the_hold_was_not_for() {
     use crate::terminal::model::block::BlockId;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                view.model.lock().simulate_long_running_block("sleep 9", "");
-                view.model
-                    .lock()
-                    .block_list()
-                    .active_block()
-                    .interactive_latch()
-                    .force(true);
-                view.ssh_hold_block_id = Some(BlockId::new());
-                view.hand_back_unexecuted_ssh_text("echo hi".to_owned(), ctx);
-                assert!(view.ssh_kept_text_banner().is_none(), "{mode:?}");
-                assert_eq!(
-                    view.input.as_ref(ctx).handed_back_text_for_test(),
-                    Some("echo hi"),
-                    "{mode:?}"
-                );
-            });
-        })
-    }
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model.lock().simulate_long_running_block("sleep 9", "");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            view.ssh_hold_block_id = Some(BlockId::new());
+            view.hand_back_unexecuted_ssh_text("echo hi".to_owned(), ctx);
+            assert!(view.ssh_kept_text_banner().is_none());
+            assert_eq!(
+                view.input.as_ref(ctx).handed_back_text_for_test(),
+                Some("echo hi")
+            );
+        });
+    })
 }
 
 /// #1596 final check: a hold opened before preexec records the submit-time block, which can differ
@@ -940,38 +830,35 @@ fn no_kept_text_banner_over_a_block_the_hold_was_not_for() {
 #[test]
 fn preexec_moves_the_hold_block_to_the_running_ssh_block() {
     use crate::terminal::model::block::BlockId;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                // The hold opened before preexec, on a block that is not the one running ssh.
-                view.ssh_hold_block_id = Some(BlockId::new());
-                view.ssh_typeahead_holding = true;
-                view.model
-                    .lock()
-                    .simulate_long_running_block("ssh host", "");
-                view.model
-                    .lock()
-                    .block_list()
-                    .active_block()
-                    .interactive_latch()
-                    .force(true);
-                let running = view.model.lock().active_block_id().clone();
-                assert_ne!(view.ssh_hold_block_id.as_ref(), Some(&running));
-                // Preexec of the ssh command.
-                view.note_ssh_running_block(running.clone());
-                assert_eq!(view.ssh_hold_block_id.as_ref(), Some(&running), "{mode:?}");
-                view.ssh_typeahead_holding = false;
-                view.hand_back_unexecuted_ssh_text(KEPT_TEXT.to_owned(), ctx);
-                let banner = view
-                    .ssh_kept_text_banner()
-                    .unwrap_or_else(|| panic!("{mode:?}: the banner is up"));
-                assert_eq!(banner.as_ref(ctx).block_id(), &running, "{mode:?}");
-            });
-        })
-    }
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            // The hold opened before preexec, on a block that is not the one running ssh.
+            view.ssh_hold_block_id = Some(BlockId::new());
+            view.ssh_typeahead_holding = true;
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            let running = view.model.lock().active_block_id().clone();
+            assert_ne!(view.ssh_hold_block_id.as_ref(), Some(&running));
+            // Preexec of the ssh command.
+            view.note_ssh_running_block(running.clone());
+            assert_eq!(view.ssh_hold_block_id.as_ref(), Some(&running));
+            view.ssh_typeahead_holding = false;
+            view.hand_back_unexecuted_ssh_text(KEPT_TEXT.to_owned(), ctx);
+            let banner = view
+                .ssh_kept_text_banner()
+                .unwrap_or_else(|| panic!("the banner is up"));
+            assert_eq!(banner.as_ref(ctx).block_id(), &running);
+        });
+    })
 }

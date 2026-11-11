@@ -45,13 +45,12 @@ use super::{AfterEnterInput, Event, KeyPathScope, TerminalView, held_bytes_throu
 use crate::editor::{EditorAction, HeldPasteKey};
 use crate::features::FeatureFlag;
 use crate::terminal::input::{EnterDiscard, take_voided_enter_gate};
-use crate::terminal::input_queue::shadow::{DestClass, note_leaf as note_shadow_leaf};
 use crate::terminal::input_queue::table::{Class, Outcome};
 use crate::terminal::input_queue::{
-    Deferred, DeliverOutcome, DestFacts, Destination, DestinationMode, DiscardReason, EntryKind,
-    FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, HELD_KEY, HELD_SEQ, HELD_TYPED, Host,
-    InputEntry, Origin, PaneQueue, PasteOwner, PowershellKeysThen, SignalKind, SshDropThen, Stamp,
-    destination_mode, is_editor_paste_id, is_pty_entry, switches, trace,
+    Deferred, DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps,
+    GateKeysThen, GateKind, GateSpec, GateToken, HELD_KEY, HELD_SEQ, HELD_TYPED, Host, InputEntry,
+    Origin, PaneQueue, PasteOwner, PowershellKeysThen, SignalKind, SshDropThen, is_editor_paste_id,
+    is_pty_entry, switches, trace,
 };
 use crate::terminal::model::typeahead_handoff::{
     CONPTY_PROMPT_HOLD_GIVE_UP, PromptHoldCap, YoungHoldEnd, YoungHoldEvidence, YoungHoldExpiry,
@@ -157,13 +156,6 @@ pub(super) struct PasteQueueState {
     /// be offered to the queue (the drain owns it): it is recorded in `requeue_request` and the
     /// host puts it back under its gate when the delivery returns, whatever the entry was.
     pub(super) delivering: bool,
-    /// The stamp the entry being delivered got at its sink (#1424): the shadow comparison and the
-    /// table judge a delivered entry by it. Meaningful only while `delivering`.
-    pub(super) delivering_stamp: Stamp,
-    /// The origin the entry being delivered is judged with (#1424): `Held` for an ssh-held input,
-    /// `Replay` for text / an Enter typed behind an Enter that waited, else the entry's own.
-    /// Meaningful only while `delivering`.
-    pub(super) delivering_origin: Origin,
     /// Whether the entry being delivered arrived as synced input (#1893, #1862): its own origin,
     /// never the enclosing arrival's thread-local. Passive at delivery: it never takes over an
     /// agent-run command.
@@ -217,6 +209,9 @@ const CLI_SUBMIT_LEAK_NET: Duration = Duration::from_secs(20);
 
 impl PasteQueueState {
     pub(super) fn new() -> Self {
+        // #1353 step 8: a leftover `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow` is refused with one
+        // log line per process (the first terminal pane says it).
+        crate::terminal::input_queue::facts::note_retired_destination_switch();
         Self {
             queue: PaneQueue::new(),
             payloads: HashMap::new(),
@@ -227,8 +222,6 @@ impl PasteQueueState {
             next_cli_submit_key: 0,
             requeueable_delivery: false,
             delivering: false,
-            delivering_stamp: Stamp::UNSTAMPED,
-            delivering_origin: Origin::Keyboard,
             delivering_synced: false,
             requeue_request: None,
             requeue_replacement: None,
@@ -277,16 +270,8 @@ impl PasteQueueState {
     }
 }
 
-/// The signal an abort key stands for (`is_abort_key`: ^C or ^D only).
-fn abort_signal(bytes: &[u8]) -> Option<SignalKind> {
-    match bytes {
-        [0x03] => Some(SignalKind::Interrupt),
-        [0x04] => Some(SignalKind::Eof),
-        _ => None,
-    }
-}
-
-/// The signal `bytes` stand for, all four of them (OD-1: ^C ^D ^Z ^\).
+/// The signal `bytes` stand for, all four of them (OD-1: ^C ^D ^Z ^\ are signals like ^C: the tty
+/// flushes its pending input on INTR, QUIT and SUSP). The pane queue jumps the queue for each.
 pub(super) fn signal_of(bytes: &[u8]) -> Option<SignalKind> {
     match bytes {
         [0x03] => Some(SignalKind::Interrupt),
@@ -294,17 +279,6 @@ pub(super) fn signal_of(bytes: &[u8]) -> Option<SignalKind> {
         [0x1a] => Some(SignalKind::Suspend),
         [0x1c] => Some(SignalKind::Quit),
         _ => None,
-    }
-}
-
-/// The signal the pane QUEUE jumps the queue for (#1424 OD-1): all four in `table` mode, where
-/// ^Z and ^\ are signals like ^C (the tty flushes its pending input on INTR, QUIT and SUSP);
-/// ^C and ^D only otherwise (`abort_signal`, the legacy classification).
-pub(super) fn queue_signal_of(bytes: &[u8]) -> Option<SignalKind> {
-    if destination_mode() == DestinationMode::Table {
-        signal_of(bytes)
-    } else {
-        abort_signal(bytes)
     }
 }
 
@@ -381,27 +355,12 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
         }
     }
 
-    /// Delivers text or an Enter typed behind an Enter that waited: to the editor or the pty, from
-    /// the facts of this moment. An Enter that waits again returns its gate as `OpensGate`; a key
-    /// the hand-off holds goes back under its gate (`Requeue`).
+    /// Delivers text or an Enter typed behind an Enter that waited, decided by the destination
+    /// table (#1424 step 4): the input is judged once, on the facts of this moment and the stamp
+    /// the entry got at its sink, and executed with the leaf writers. An Enter that waits again
+    /// returns its gate as `OpensGate`; a key the hand-off holds goes back under its gate
+    /// (`Requeue`).
     fn deliver_replayed_entry(&mut self, entry: &InputEntry) -> DeliverOutcome {
-        let input = match &entry.kind {
-            EntryKind::Text(text) => AfterEnterInput::Text(text.clone()),
-            _ => AfterEnterInput::Enter,
-        };
-        self.view
-            .input
-            .as_ref(self.ctx)
-            .note_replayed_after_enter(&input);
-        super::dest_table::note_legacy_chain_delivery();
-        self.view.route_after_enter_input(&input, self.ctx);
-        self.finish_replayed_delivery()
-    }
-
-    /// The same delivery decided by the destination table (`PHOSPHOR_QUEUE_DESTINATION=table`,
-    /// #1424 step 4): the input is judged once, on the facts of this moment and the stamp the
-    /// entry got at its sink, and executed with the leaf writers; the legacy chain is not called.
-    fn deliver_replayed_entry_table(&mut self, entry: &InputEntry) -> DeliverOutcome {
         let input = match &entry.kind {
             EntryKind::Text(text) => AfterEnterInput::Text(text.clone()),
             _ => AfterEnterInput::Enter,
@@ -455,19 +414,15 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
         // Text and Enters typed behind an Enter that waited are routed here, by the view that
         // reaches both destinations and decides where each goes when it is delivered (#1353).
         if matches!(entry.kind, EntryKind::Text(_) | EntryKind::Enter) {
-            if destination_mode() == DestinationMode::Table {
-                return self.deliver_replayed_entry_table(entry);
-            }
             return self.deliver_replayed_entry(entry);
         }
         // An editor paste queued behind an Enter gate follows the line it belongs to (#1585): the
         // table decides it like the Text and Enter entries around it. Where the table says editor
         // it keeps the editor's own delivery (rich content, paste sources) below.
-        if destination_mode() == DestinationMode::Table
-            && let EntryKind::Paste {
-                paste_id,
-                payload: Some(_),
-            } = &entry.kind
+        if let EntryKind::Paste {
+            paste_id,
+            payload: Some(_),
+        } = &entry.kind
             && is_editor_paste_id(*paste_id)
             && let Some(text) = self.view.input.read(self.ctx, |input, _| {
                 input.peek_paste_payload_text(*paste_id)
@@ -573,13 +528,8 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
             // The ssh connect typeahead (phase 4): delivered at the hand-over, routed from the
             // facts of this moment.
             EntryKind::Held { class, text } => {
-                if destination_mode() == DestinationMode::Table {
-                    self.view
-                        .deliver_held_via_table(*class, text, entry.stamp, self.ctx);
-                } else {
-                    super::dest_table::note_legacy_chain_delivery();
-                    self.view.deliver_ssh_held(*class, text, self.ctx);
-                }
+                self.view
+                    .deliver_held_via_table(*class, text, entry.stamp, self.ctx);
                 // #1571: a held Enter that reached a shell not ready yet opened the gate of that
                 // Enter while this drain delivered it: what is still queued behind it waits for
                 // that gate, in order, instead of being delivered into the held line.
@@ -640,13 +590,7 @@ impl Host for PtyQueueHost<'_, '_> {
         // command it submitted, #1418): the key goes back under its gate when this returns, never
         // "as typed" because the queue is held by this very drain.
         self.view.paste_queue.delivering = true;
-        self.view.paste_queue.delivering_stamp = entry.stamp;
         self.view.paste_queue.delivering_synced = matches!(entry.origin, Origin::Synced);
-        self.view.paste_queue.delivering_origin = match &entry.kind {
-            EntryKind::Held { .. } => Origin::Held,
-            EntryKind::Text(_) | EntryKind::Enter => Origin::Replay(entry.id),
-            _ => entry.origin,
-        };
         let outcome = self.deliver_entry(entry, dest, follow);
         self.view.paste_queue.delivering = false;
         self.view.paste_queue.delivering_synced = false;
@@ -795,7 +739,7 @@ impl TerminalView {
         }
         // A young Enter's hold the hand-off's state has outgrown ends before this key is queued
         // behind it (#1353 phase 5b). One borrow-flag read when no such gate is open.
-        if queue_signal_of(bytes).is_none() {
+        if signal_of(bytes).is_none() {
             self.settle_stale_young_hold_before_key(ctx);
             if self
                 .paste_queue
@@ -806,7 +750,7 @@ impl TerminalView {
                 return None;
             }
         }
-        let kind = match queue_signal_of(bytes).filter(|_| !abort_as_entry) {
+        let kind = match signal_of(bytes).filter(|_| !abort_as_entry) {
             Some(signal) => {
                 // Ctrl-C / Ctrl-D skips an announced subshell setup (the held keys follow it).
                 if self
@@ -827,11 +771,6 @@ impl TerminalView {
                 }
             }
         };
-        // The shadow comparison (#1424): a key the pane queue holds is `Held`, not `Pty` (a signal
-        // jumps the queue, it is not held).
-        if !matches!(kind, EntryKind::Signal(_)) {
-            note_shadow_leaf(DestClass::Held);
-        }
         let queue = self.paste_queue.queue.clone();
         let Some(mut guard) = queue.try_lock() else {
             // Became busy since the checks above: the key waits its turn, in order.
@@ -975,15 +914,14 @@ impl TerminalView {
     /// straight to the stages after the paste stage (the keys the user typed behind it wait for
     /// the gate; the submit must not wait behind itself).
     pub(super) fn write_cli_submit_bytes(&mut self, bytes: Vec<u8>, ctx: &mut ViewContext<Self>) {
-        // #1424: the CLI-submit origin is exempt from every hold (row O-cli-submit); the table
-        // logs its plan in `table` mode and shadow compares it with what the write did.
-        let row = self.begin_origin_row(Class::Raw, Origin::CliSubmit, ctx);
-        let written = if self.paste_queue.cli_submit_gate.is_some() {
-            self.write_user_bytes_to_pty_after_paste_stage(Cow::Owned(bytes), true, ctx)
+        // #1424: the CLI-submit origin's row (O-cli-submit); the table logs its plan and the
+        // writer's stages apply the holds the row states.
+        let _ = self.begin_origin_row(Class::Raw, Origin::CliSubmit, ctx);
+        if self.paste_queue.cli_submit_gate.is_some() {
+            self.write_user_bytes_to_pty_after_paste_stage(Cow::Owned(bytes), true, ctx);
         } else {
-            self.write_user_bytes_to_pty(bytes, ctx)
-        };
-        self.end_origin_row(row, written);
+            self.write_user_bytes_to_pty(bytes, ctx);
+        }
     }
 
     /// Whether a paced CLI-agent submit holds the queue, for tests.
@@ -3017,7 +2955,7 @@ impl TerminalView {
         if !setup_gate && !bootstrap_gate && in_flight.is_none() && age.is_none() {
             return SubshellPrep::Normal;
         }
-        let abort = queue_signal_of(bytes).is_some();
+        let abort = signal_of(bytes).is_some();
         // #1905's first line: a stage 2 that waits for its prompt is a setup in flight with no line
         // out; the user's abort ends it like one whose lines are being written (review F1).
         let stage_two_pending = matches!(
@@ -3031,11 +2969,10 @@ impl TerminalView {
             // Review F1 (#1711): the user's ABORT (^C / ^D) ENDS the in-flight setup now:
             // unwritten lines dropped, the signal written at once, the held keys behind it in
             // order. It used to be stashed until the last line was written, which a stuck shell
-            // never did. ^Z / ^\ (signals in `table` mode only, review F-a) are not aborts: they
-            // wait as ordinary entries, in typed order (`HeldInOrder` below), as in `legacy`.
+            // never did. ^Z / ^\ (queue signals, review F-a) are not aborts: they wait as ordinary
+            // entries, in typed order (`HeldInOrder` below).
             if super::is_abort_key(bytes) {
                 self.abort_in_flight_subshell_setup(bytes, ctx);
-                note_shadow_leaf(DestClass::Pty);
                 return SubshellPrep::AbortHandled;
             }
         }
@@ -3135,7 +3072,7 @@ pub(super) enum SubshellPrep {
     /// A Ctrl-C / Ctrl-D typed during the bootstrap lines: it ended the setup and was written
     /// here (`abort_in_flight_subshell_setup`, review F1); nothing more to do with it.
     AbortHandled,
-    /// A ^Z / ^\ (a queue signal in `table` mode) typed during the bootstrap lines: not an abort,
+    /// A ^Z / ^\ (a queue signal) typed during the bootstrap lines: not an abort,
     /// so it waits as an ordinary entry, at its place in what was typed, and goes out after the
     /// last line (a suspend in the middle of the setup script would leave it half run).
     HeldInOrder,

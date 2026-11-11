@@ -3,7 +3,6 @@
 //! (private helpers come in through `super`).
 
 use super::*;
-use crate::terminal::input_queue::DestinationMode;
 
 /// A key down as the pane's key sink receives it, with focus on the terminal view itself.
 fn pane_key_down(
@@ -58,73 +57,62 @@ fn pane_typed_on_terminal(
 /// order, whichever way the destination is decided: nothing lost, duplicated or reordered.
 #[test]
 fn typed_keys_enter_and_ctrl_c_keep_their_order_through_the_sink() {
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                view.model.lock().simulate_long_running_block("cat", "");
-                for c in ["l", "s", " ", "-", "l"] {
-                    assert_eq!(
-                        pane_typed_on_terminal(view, c, ctx),
-                        PaneKeyOutcome::Consumed
-                    );
-                }
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model.lock().simulate_long_running_block("cat", "");
+            for c in ["l", "s", " ", "-", "l"] {
                 assert_eq!(
-                    pane_key_down(view, "enter", "\r", ctx),
+                    pane_typed_on_terminal(view, c, ctx),
                     PaneKeyOutcome::Consumed
                 );
-                for c in ["x", "y"] {
-                    assert_eq!(
-                        pane_typed_on_terminal(view, c, ctx),
-                        PaneKeyOutcome::Consumed
-                    );
-                }
-                assert_eq!(
-                    pane_key_down(view, "ctrl-c", "\u{3}", ctx),
-                    PaneKeyOutcome::Consumed
-                );
-            });
+            }
             assert_eq!(
-                pty_writes.borrow().concat(),
-                b"ls -l\rxy\x03".to_vec(),
-                "{mode:?}: every key once, in typed order"
+                pane_key_down(view, "enter", "\r", ctx),
+                PaneKeyOutcome::Consumed
+            );
+            for c in ["x", "y"] {
+                assert_eq!(
+                    pane_typed_on_terminal(view, c, ctx),
+                    PaneKeyOutcome::Consumed
+                );
+            }
+            assert_eq!(
+                pane_key_down(view, "ctrl-c", "\u{3}", ctx),
+                PaneKeyOutcome::Consumed
             );
         });
-    }
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            b"ls -l\rxy\x03".to_vec(),
+            "every key once, in typed order"
+        );
+    });
 }
 
 /// Arrows, Tab and Enter are translated by the sink: an arrow has no control characters at all.
 #[test]
 fn arrows_and_tab_are_translated_by_the_sink_in_both_modes() {
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                view.model.lock().simulate_long_running_block("cat", "");
-                for (keystroke, chars) in [("up", ""), ("tab", "\t"), ("down", ""), ("enter", "\r")]
-                {
-                    assert_eq!(
-                        pane_key_down(view, keystroke, chars, ctx),
-                        PaneKeyOutcome::Consumed,
-                        "{keystroke}"
-                    );
-                }
-            });
-            assert_eq!(
-                pty_writes.borrow().concat(),
-                b"\x1b[A\t\x1b[B\r".to_vec(),
-                "{mode:?}"
-            );
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model.lock().simulate_long_running_block("cat", "");
+            for (keystroke, chars) in [("up", ""), ("tab", "\t"), ("down", ""), ("enter", "\r")] {
+                assert_eq!(
+                    pane_key_down(view, keystroke, chars, ctx),
+                    PaneKeyOutcome::Consumed,
+                    "{keystroke}"
+                );
+            }
         });
-    }
+        assert_eq!(pty_writes.borrow().concat(), b"\x1b[A\t\x1b[B\r".to_vec());
+    });
 }
 
 /// A printable key down (its typed event follows) with nothing to translate is not taken.
@@ -149,60 +137,57 @@ fn a_plain_printable_key_down_is_left_for_its_typed_event() {
 /// a blocking acquisition on the key path.
 #[test]
 fn control_keys_with_terminal_focus_take_no_model_lock() {
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                {
-                    let mut model = view.model.lock();
-                    model.simulate_long_running_block("cat", "");
-                    model.publish_key_facts();
-                }
-                let model = view.model.clone();
-                let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
-                let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-                let parser = std::thread::spawn(move || {
-                    let _parsing = model.lock();
-                    held_tx.send(()).unwrap();
-                    let _ = done_rx.recv_timeout(Duration::from_secs(3));
-                });
-                held_rx.recv().unwrap();
-                let locks_before = crate::terminal::model_lock_trace::key_path_lock_count();
-                let started = Instant::now();
-                for (keystroke, chars) in [
-                    ("up", ""),
-                    ("tab", "\t"),
-                    ("enter", "\r"),
-                    ("ctrl-d", "\u{4}"),
-                    ("ctrl-c", "\u{3}"),
-                ] {
-                    assert_eq!(
-                        pane_key_down(view, keystroke, chars, ctx),
-                        PaneKeyOutcome::Consumed,
-                        "{keystroke}"
-                    );
-                }
-                let waited = started.elapsed();
-                let locks = crate::terminal::model_lock_trace::key_path_lock_count() - locks_before;
-                done_tx.send(()).unwrap();
-                parser.join().unwrap();
-                assert!(
-                    waited < Duration::from_secs(1),
-                    "{mode:?}: the control keys waited {waited:?} for the parser"
-                );
-                assert_eq!(locks, 0, "{mode:?}: no blocking model lock on the key path");
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("cat", "");
+                model.publish_key_facts();
+            }
+            let model = view.model.clone();
+            let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let parser = std::thread::spawn(move || {
+                let _parsing = model.lock();
+                held_tx.send(()).unwrap();
+                let _ = done_rx.recv_timeout(Duration::from_secs(3));
             });
-            assert_eq!(
-                pty_writes.borrow().concat(),
-                b"\x1b[A\t\r\x04\x03".to_vec(),
-                "{mode:?}: every key once, in order"
+            held_rx.recv().unwrap();
+            let locks_before = crate::terminal::model_lock_trace::key_path_lock_count();
+            let started = Instant::now();
+            for (keystroke, chars) in [
+                ("up", ""),
+                ("tab", "\t"),
+                ("enter", "\r"),
+                ("ctrl-d", "\u{4}"),
+                ("ctrl-c", "\u{3}"),
+            ] {
+                assert_eq!(
+                    pane_key_down(view, keystroke, chars, ctx),
+                    PaneKeyOutcome::Consumed,
+                    "{keystroke}"
+                );
+            }
+            let waited = started.elapsed();
+            let locks = crate::terminal::model_lock_trace::key_path_lock_count() - locks_before;
+            done_tx.send(()).unwrap();
+            parser.join().unwrap();
+            assert!(
+                waited < Duration::from_secs(1),
+                "the control keys waited {waited:?} for the parser"
             );
+            assert_eq!(locks, 0, "no blocking model lock on the key path");
         });
-    }
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            b"\x1b[A\t\r\x04\x03".to_vec(),
+            "every key once, in order"
+        );
+    });
 }
 
 /// A kitty flag the program popped in the middle of a parse slice (so the published copy is one
