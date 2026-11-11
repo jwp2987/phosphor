@@ -255,6 +255,7 @@ impl<T: ModeProvider> ToEscapeSequence<T> for KeystrokeWithDetails<'_> {
             .or_else(|| cursor_movement_keystroke_to_escape_sequence(keystroke, mode_provider))
             .or_else(|| delete_keystroke_to_escape_sequence(keystroke))
             .or_else(|| meta_keystroke_to_escape_sequence(keystroke, mode_provider))
+            .or_else(|| page_keystroke_to_escape_sequence(keystroke))
             .or_else(|| backspace_keystroke_to_escape_sequence(keystroke))
             .or_else(|| ctrl_break_sequence(keystroke))
     }
@@ -589,6 +590,34 @@ fn delete_keystroke_to_escape_sequence(keystroke: &Keystroke) -> Option<Vec<u8>>
     }
     let mut sequence = C1::CSI.to_vec();
     sequence.extend_from_slice(b"3;");
+    sequence.extend_from_slice(modifier.to_string().as_bytes());
+    sequence.push(b'~');
+    Some(sequence)
+}
+
+/// Returns the escape sequence for a *modified* Page Up / Page Down (#2105): xterm's
+/// `CSI 5;<mods>~` / `CSI 6;<mods>~`, the form modified Delete has above (Shift+Page Up is
+/// `CSI 5;2~`, Ctrl+Page Down `CSI 6;5~`).
+///
+/// Before this the two keys had no encoding with a modifier, so a chord the app does not bind
+/// itself (Shift+Page Up in the alternate screen, where the scrollback keys are off) wrote
+/// nothing and the key was lost to the program.
+///
+/// Returns None for any other key and for the *unmodified* keys (fixed bindings of the terminal
+/// view write those). It runs after `meta_keystroke_to_escape_sequence`, so a chord with the
+/// Meta key keeps the ESC-prefixed form it had.
+fn page_keystroke_to_escape_sequence(keystroke: &Keystroke) -> Option<Vec<u8>> {
+    let code: &[u8] = match keystroke.key.as_str() {
+        "pageup" => b"5;",
+        "pagedown" => b"6;",
+        _ => return None,
+    };
+    let modifier = modifier_param(keystroke);
+    if modifier == 1 {
+        return None;
+    }
+    let mut sequence = C1::CSI.to_vec();
+    sequence.extend_from_slice(code);
     sequence.extend_from_slice(modifier.to_string().as_bytes());
     sequence.push(b'~');
     Some(sequence)
