@@ -26,6 +26,9 @@ BOTH = {
     "agent_question_answer", "agent_question_cut", "agent_question_nodone", "agent_question_trunc", "agent_question_empty", "agent_question_slow",   # #1851: the fake model on the host
     "agent_question_ctrl_c", "agent_question_steer", "agent_question_after_command", "agent_question_steer_at_end",
     "crash_kill9_restore", "crash_corrupt_db",       # #1541: taskkill /F /T + relaunch on the same profile (cases_robust.hard_kill; state under %LOCALAPPDATA%\\phosphor)
+    # r14 T29: the reference console takes the focus and gives it back; effect files, rec.log (Git Bash) or PSReadLine history (PowerShell) and the app's
+    # key trace. Its focus-reporting half does not exist under ConPTY (FOCUS_EVENT records, not ESC[I / ESC[O bytes) and is noted as not run.
+    "focus_cycle",
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
 GITBASH_ONLY = {
@@ -157,6 +160,10 @@ NOT_WINDOWS = {
     "network_gate_switch": "needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle) and the Linux profile layout",
     "claude_plugin_offline": "Wave N: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the plugin's hook scripts are bash+jq",
     "agent_plugins_offline": "needs `unshare -rn` (Linux network namespaces) and the Linux pty; the Codex and Gemini hook scripts are bash+jq and write to /dev/tty",
+    "resize_reflow_output": "r14 T26: no window resize call in the Windows backend yet (SetWindowPos, r14-test-gaps T33); the SIGWINCH trap and `stty size` are POSIX",
+    "context_menu_actions": "r14 T27: no pointer synthesis in the Windows backend yet (mouse SendInput, r14-test-gaps T31)",
+    "tab_pointer_use": "r14 T28: no pointer synthesis in the Windows backend yet (r14-test-gaps T31), and the live settings rewrite of ui_vertical_tabs_many",
+    "minimize_fullscreen": "r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33)",
 }
 
 

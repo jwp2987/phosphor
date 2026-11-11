@@ -86,6 +86,9 @@ PROVING = (
     "editor_memory_7mb", "flood_scrollback_find",
     # #1989 / #1988: Alt-. is the editor's last argument; with a program in front Alt-. / Alt-R / Ctrl-R reach it as ESC . / ESC r / 0x12 (Linux backends)
     "ui_readline_keys",
+    # round 14 wave 3 (docs/design/r14-test-gaps.md T26-T30, design docs/design/r14-w3b.md): what a user does to the window. Reflow and SIGWINCH on
+    # resize, the right-click menus, tabs by pointer in both layouts, focus away and back (with focus reporting), minimise / fullscreen under a stream
+    "resize_reflow_output", "context_menu_actions", "tab_pointer_use", "focus_cycle", "minimize_fullscreen",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -6425,3 +6428,4 @@ import cases_agent_latency  # noqa: E402,F401  (#1828: agent_latency_key, agent_
 import cases_win_handover  # noqa: E402,F401  (#1882/#1883/#1891: ps_read_host_secure, gitbash_precmd_secret; Windows secrets and interactive reads on ConPTY)
 import cases_precmd_secret  # noqa: E402,F401  (#1923: precmd_secret_honor_ps1, a bash precmd `read -s` with the app's prompt and with honor PS1 on)
 import cases_wrap_vtabs  # noqa: E402,F401  (#1976: ui_copy_wrapped_output / _drag, copy of soft-wrapped lines; #1990: ui_vertical_tabs_many / _panel_click)
+import cases_window_use  # noqa: E402,F401  (r14 wave 3, T26-T30: resize_reflow_output, context_menu_actions, tab_pointer_use, focus_cycle, minimize_fullscreen)
