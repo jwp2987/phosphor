@@ -1073,6 +1073,19 @@ def mac_key_to_frame_regression_is_judged_on_the_app_share_and_the_tail():
         assert rec["tail"]["baseline"] == {"p95": 9.32, "delta_ms": 0.08, "delta_pct": 0.9, "verdict": "pass"} and rec["tail"]["prev"]["verdict"] == "none", rec["tail"]
         assert any(n.startswith("NOT JUDGED: key to frame: median 7.28 vs baseline build +1.05 ms") for n in r.notes), r.notes
         assert any("no app-share figure" in n for n in rec["notes"]), rec["notes"]
+        # 5b. #2070: latency_key_log has no reference terminal by construction and was NOREF on every platform in every run. With the app's share
+        #     judged (usable, pass or fail) the row is judged by it; without the flag, and without a usable share, it is NOREF as before (never a pass)
+        assert r.noref and "no reference terminal measured" in r.noref[0], "lat_checks without share_judges is unchanged"
+        rj = cases.Result("latency_key_log", "terminal")
+        cases.lat_checks(rj, rec, "key to frame", share_judges=True)
+        assert not rj.noref and not rj.fails and any("JUDGED on the app's own share" in n and "1.68 ms" in n and "PASS" in n for n in rj.notes), (rj.noref, rj.notes)
+        for bad in (dict(rec, app_share=None, regress_basis="median"), dict(rec, app_share=dict(rec["app_share"], usable=False, why_not="n=3 < 20 presses")),
+                    dict(rec, app_share={k: v for k, v in rec["app_share"].items() if k != "budget_verdict"})):
+            rn = cases.Result("latency_key_log", "terminal")
+            cases.lat_checks(rn, bad, "key to frame", share_judges=True)
+            assert len(rn.noref) == 1 and "NEEDS: an app-share gate" in rn.noref[0], rn.noref
+        import inspect
+        assert "share_judges=True" in inspect.getsource(cases.c_lat_key) and "the 1 ms target" in inspect.getsource(cases.c_lat_key)
         # 6. a promoted baseline carries the share: an unchanged share passes; a grown one FAILs after its re-measure; a clean re-measure is a WARN;
         #    over the hard bound it FAILs whatever the comparison says
         new = dict(old, app_share={"what": "key_to_frame_less_display_wait", "p50": 1.6, "n": 60})
