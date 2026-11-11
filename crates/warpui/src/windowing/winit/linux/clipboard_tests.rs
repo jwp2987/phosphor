@@ -286,6 +286,56 @@ mod read_retry_tests {
     }
 }
 
+/// #2081: a write meant for the primary selection never lands on the normal clipboard. The only
+/// writer of the primary selection is a text selection, and whether a selection goes to the
+/// clipboard is the user's copy-on-select setting, written separately.
+mod primary_write_tests {
+    use super::super::{PrimaryWrite, primary_falls_back_from, primary_write_outcome};
+
+    #[test]
+    fn a_display_without_a_primary_selection_drops_the_write() {
+        // What arboard answers on a Wayland compositor without the primary-selection protocol.
+        let outcome = primary_write_outcome(Err(arboard::Error::ClipboardNotSupported), false);
+        assert!(
+            matches!(outcome, PrimaryWrite::Dropped),
+            "{outcome:?}: the selection must not replace what the user copied"
+        );
+    }
+
+    #[test]
+    fn a_working_primary_selection_is_written_and_other_errors_are_failures() {
+        assert!(matches!(
+            primary_write_outcome(Ok(()), false),
+            PrimaryWrite::Written
+        ));
+        assert!(matches!(
+            primary_write_outcome(Ok(()), true),
+            PrimaryWrite::Written
+        ));
+        // A primary selection that exists and fails is reported, never rerouted, with or without
+        // the kill switch.
+        for legacy in [false, true] {
+            assert!(matches!(
+                primary_write_outcome(Err(arboard::Error::ClipboardOccupied), legacy),
+                PrimaryWrite::Failed(arboard::Error::ClipboardOccupied)
+            ));
+        }
+    }
+
+    #[test]
+    fn the_kill_switch_restores_the_old_fallback_and_only_for_one() {
+        assert!(matches!(
+            primary_write_outcome(Err(arboard::Error::ClipboardNotSupported), true),
+            PrimaryWrite::FallBackToClipboard
+        ));
+        assert!(!primary_falls_back_from(None));
+        assert!(!primary_falls_back_from(Some("")));
+        assert!(!primary_falls_back_from(Some("0")));
+        assert!(primary_falls_back_from(Some("1")));
+        assert!(primary_falls_back_from(Some(" 1 ")));
+    }
+}
+
 mod bounded_wait_tests {
     use super::super::{
         ARBOARD_MANAGER_HANDOVER_WAIT, EXIT_HANDOFF_BUDGET, EXIT_PENDING_WRITE_WAIT,

@@ -111,6 +111,70 @@ fn targets_query_enabled() -> bool {
     std::env::var("PHOSPHOR_CLIPBOARD_TARGETS_QUERY").map_or(true, |v| v != "0")
 }
 
+/// Environment variable that, set to `1`, restores the pre-#2081 behaviour: a write meant for the
+/// primary selection goes to the normal clipboard on a display that has no primary selection.
+const PRIMARY_FALLBACK_ENV: &str = "PHOSPHOR_PRIMARY_FALLS_BACK_TO_CLIPBOARD";
+
+/// Whether the legacy fallback is on: only when the kill switch says `1`.
+fn primary_falls_back_to_clipboard() -> bool {
+    primary_falls_back_from(std::env::var(PRIMARY_FALLBACK_ENV).ok().as_deref())
+}
+
+/// [`primary_falls_back_to_clipboard`] with the variable's value passed in (tests).
+fn primary_falls_back_from(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim() == "1")
+}
+
+/// What becomes of a write that was meant for the primary selection.
+#[derive(Debug)]
+enum PrimaryWrite {
+    /// The primary selection took it.
+    Written,
+    /// The display has no primary selection and the write is dropped (#2081).
+    Dropped,
+    /// The display has no primary selection and the kill switch asks for the old behaviour: the
+    /// caller writes the normal clipboard instead.
+    FallBackToClipboard,
+    /// The primary selection exists and the write failed.
+    Failed(arboard::Error),
+}
+
+/// Decides a primary-selection write from its result.
+///
+/// The only writer of the primary selection is a text selection
+/// (`SelectionSettings::maybe_write_to_linux_selection_clipboard`). Whether a selection also goes
+/// to the normal clipboard is the user's `terminal.copy_on_select` setting, and that write is made
+/// separately by the same caller. So where the display has no primary selection (a Wayland
+/// compositor without the primary-selection protocol) there is nothing left for this write to do:
+/// putting it on the normal clipboard instead replaced what the user had copied with every
+/// selection, with copy on select off (#2081). Upstream at the pin falls back; this fork does
+/// not (`DECLINED.md`, IMPROVED).
+fn primary_write_outcome(
+    result: Result<(), arboard::Error>,
+    legacy_fallback: bool,
+) -> PrimaryWrite {
+    match result {
+        Ok(()) => PrimaryWrite::Written,
+        Err(arboard::Error::ClipboardNotSupported) if legacy_fallback => {
+            PrimaryWrite::FallBackToClipboard
+        }
+        Err(arboard::Error::ClipboardNotSupported) => PrimaryWrite::Dropped,
+        Err(err) => PrimaryWrite::Failed(err),
+    }
+}
+
+/// Says once per process that selections are not going to a primary selection, so the log of a
+/// display without one does not gain a line per selection.
+fn note_primary_write_dropped() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        log::info!(
+            "This display has no primary selection: selections are not written to it (and \
+             never to the clipboard in its place)."
+        );
+    });
+}
+
 /// Availability from a targets query: `Some` when the query answered (the clipboard is non-empty
 /// iff the owner offers text, an image, HTML or a file list), `None` when it failed and the caller
 /// should treat the availability as unknown.
@@ -462,16 +526,17 @@ impl Clipboard for LinuxClipboard {
     }
 
     fn write_to_primary_clipboard(&mut self, contents: ClipboardContent) {
-        match self.write_to_specific_clipboard(LinuxClipboardKind::Primary, &contents) {
-            Ok(_) => (),
-            Err(arboard::Error::ClipboardNotSupported) => {
+        let result = self.write_to_specific_clipboard(LinuxClipboardKind::Primary, &contents);
+        match primary_write_outcome(result, primary_falls_back_to_clipboard()) {
+            PrimaryWrite::Written => (),
+            PrimaryWrite::Dropped => note_primary_write_dropped(),
+            PrimaryWrite::FallBackToClipboard => {
                 log::info!(
                     "Primary clipboard is not supported, falling back to default clipboard."
                 );
-                // Try the default clipboard.
                 self.write(contents);
             }
-            Err(err) => {
+            PrimaryWrite::Failed(err) => {
                 if contents.html.is_some() {
                     log::warn!("Unable to set primary clipboard HTML: {err:?}");
                 } else {
@@ -547,8 +612,9 @@ impl LinuxClipboard {
 }
 
 impl LinuxClipboard {
-    /// One write to `target` (primary falls back to the clipboard where unsupported); `true` on
-    /// success.
+    /// One write to `target`; `true` on success. A primary write on a display without a primary
+    /// selection is dropped and counts as done (#2081: it never goes to the clipboard instead,
+    /// see [`primary_write_outcome`]).
     fn write_for_target(&mut self, contents: &ClipboardContent, target: ClipboardTarget) -> bool {
         match target {
             ClipboardTarget::Clipboard => self
@@ -556,12 +622,18 @@ impl LinuxClipboard {
                 .map_err(|err| log::warn!("Unable to set clipboard text: {err:?}"))
                 .is_ok(),
             ClipboardTarget::Primary => {
-                match self.write_to_specific_clipboard(LinuxClipboardKind::Primary, contents) {
-                    Ok(()) => true,
-                    Err(arboard::Error::ClipboardNotSupported) => self
+                let result =
+                    self.write_to_specific_clipboard(LinuxClipboardKind::Primary, contents);
+                match primary_write_outcome(result, primary_falls_back_to_clipboard()) {
+                    PrimaryWrite::Written => true,
+                    PrimaryWrite::Dropped => {
+                        note_primary_write_dropped();
+                        true
+                    }
+                    PrimaryWrite::FallBackToClipboard => self
                         .write_to_specific_clipboard(LinuxClipboardKind::Clipboard, contents)
                         .is_ok(),
-                    Err(err) => {
+                    PrimaryWrite::Failed(err) => {
                         log::warn!("Unable to set primary clipboard text: {err:?}");
                         false
                     }
