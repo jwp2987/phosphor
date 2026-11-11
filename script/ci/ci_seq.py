@@ -71,12 +71,22 @@ def lab_image_skipped(doc):
 
 def proving_lab_globs(path=None):
     """cases.PROVING_LAB, read from cases.py as a literal (this script imports no harness code)"""
-    import ast
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "realapp", "appci", "cases.py")
-    for node in ast.parse(open(path).read()).body:
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "PROVING_LAB" for t in node.targets):
-            return list(ast.literal_eval(node.value))
-    return []
+    return fold_tuple_assignments(open(path).read(), "PROVING_LAB")
+
+
+def fold_tuple_assignments(source, name):
+    """the value of module-level tuple `name` as Python would compute it from literals: `name = (...)` starts over, `name += (...)` appends. Round 15:
+    this used to return the FIRST assignment, and cases.py held two (a merge of two branches that each rewrote the tuple): the harness used the second,
+    the fix tier's lab job was given the first, and lab_raw_key_arrival was never played."""
+    import ast
+    out = []
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == name for t in node.targets):
+            out = list(ast.literal_eval(node.value))
+        elif isinstance(node, ast.AugAssign) and getattr(node.target, "id", "") == name and isinstance(node.op, ast.Add):
+            out += list(ast.literal_eval(node.value))
+    return out
 
 
 def lab_fix_vars(globs=None):
@@ -383,6 +393,9 @@ def self_test():
     lv = lab_fix_vars()
     for ok, what in (
         (bool(globs) and all(g.startswith("lab_") for g in globs), "PROVING_LAB names lab globs"),
+        (fold_tuple_assignments('X = ("a",)\nX = ("b", "c")\nX += ("d",)\nY = ("z",)\nX += ("e", "f")\n', "X") == ["b", "c", "d", "e", "f"] and fold_tuple_assignments("Y = 1\n", "X") == [],
+         "PROVING_LAB is read as Python computes it: the last plain assignment, then every += after it"),
+        (len(globs) == len(set(globs)) and "lab_raw_key_arrival.*" in globs and "lab_agent_nld_predict_ssh.*" in globs, "the fix-tier lab job gets every PROVING_LAB entry once (round 14 lost one to a doubled assignment)"),
         (lv["APPCI_CASES"] == ",".join(globs) and lv["APPCI_FAKE_MODEL"] == "1" and lv["APPCI_LAB_MATRIX"] == "quick", "the fix-tier lab job gets only the PROVING lab cases, the fake model and the quick matrix"),
         (re.search(r"^%s:" % LAB_FIX_JOB, yml, re.M) is not None and re.search(r"^%s-reuse:" % LAB_FIX_JOB, yml, re.M) is not None, "the lab job and its -reuse variant exist in .gitlab-ci.yml"),
         (LAB_FIX_JOB in APP_RESULT_DIR and LAB_FIX_JOB not in sum(APP.values(), []), "the lab job is judged like an app job but is not a platform app-test job (never played in candidate/release by APP)"),

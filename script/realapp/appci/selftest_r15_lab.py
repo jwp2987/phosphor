@@ -32,6 +32,67 @@ def _job(ci, name):
 
 
 @check
+def r15_proving_lab_is_one_list():
+    """Round 14 left TWO `PROVING_LAB = (...)` statements in cases.py (two branches each rewrote the tuple, the merge kept both). Python used the second,
+    ci_seq.py read the first: the harness's list had no lab_agent_nld_predict_ssh and the fix tier's lab job was never given lab_raw_key_arrival. Now: one
+    assignment, one `+=` line per later entry, and ci_seq reads exactly what Python computes."""
+    src = _read("script", "realapp", "appci", "cases.py")
+    assert len(re.findall(r"^PROVING_LAB = ", src, re.M)) == 1, "cases.py must hold ONE `PROVING_LAB = ` statement; append with `PROVING_LAB += (...)` lines"
+    assert len(cases.PROVING_LAB) == len(set(cases.PROVING_LAB)), sorted(g for g in cases.PROVING_LAB if cases.PROVING_LAB.count(g) > 1)
+    assert {"lab_raw_key_arrival.*", "lab_agent_nld_predict_ssh.*", "lab_agent_remote_*", "lab_ctrl_c_no_esc_i.*"} <= set(cases.PROVING_LAB)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("r15_ci_seq_reader", os.path.join(ROOT, "script", "ci", "ci_seq.py"))
+    seq_src = open(spec.origin, encoding="utf-8").read()
+    # ci_seq.py imports glab helpers at load; only its pure reader is wanted here
+    ns = {}
+    start = seq_src.index("def fold_tuple_assignments(")
+    exec(seq_src[start:seq_src.index("\n\n\n", start)], ns)
+    assert ns["fold_tuple_assignments"](src, "PROVING_LAB") == list(cases.PROVING_LAB), "ci_seq.py and the harness disagree about PROVING_LAB"
+    assert ns["fold_tuple_assignments"]('X = ("a",)\nX = ("b",)\nX += ("c",)\n', "X") == ["b", "c"]
+
+
+@check
+def r15_every_lab_family_is_in_a_tier():
+    """#2063: 18 lab families were registered and never played, because nothing said a family must be in a tier. Now every lab family (the name before the
+    first dot) has at least one arm the fix tier's lab job runs (PROVING_LAB under the quick matrix, or an arm named exactly), or it is in
+    cases.LAB_NOT_IN_FIX_TIER with the reason. Never both, and no reason for a family that does not exist."""
+    sel = L.matrix_selection("quick")
+    exact = {g for g in cases.PROVING_LAB if not any(ch in g for ch in "*?[")}
+    fams, played = {}, set()
+    for c in cases.CASES:
+        if not c.get("lab"):
+            continue
+        fam = c["name"].split(".")[0]
+        fams.setdefault(fam, []).append(c["name"])
+        if c["name"] in exact or (any(L.name_matches(g, c["name"]) for g in cases.PROVING_LAB) and L.arm_selected(c["arm"], sel)):
+            if not c["name"].startswith("lab_replay"):          # run.py never sweeps the replay in by a glob
+                played.add(fam)
+    names = {c["name"] for c in cases.CASES}
+    assert exact <= names, "PROVING_LAB names arms that are not registered: %s" % sorted(exact - names)
+    excused = set(cases.LAB_NOT_IN_FIX_TIER)
+    assert excused <= set(fams), "LAB_NOT_IN_FIX_TIER names families that are not registered: %s" % sorted(excused - set(fams))
+    assert not (excused & played), "in the fix tier AND excused from it: %s" % sorted(excused & played)
+    missing = sorted(set(fams) - played - excused)
+    assert not missing, "lab families no tier plays (add a `PROVING_LAB += (...)` line in cases.py, or a reason in LAB_NOT_IN_FIX_TIER): %s" % missing
+    for fam, why in cases.LAB_NOT_IN_FIX_TIER.items():
+        assert len(why) > 20, fam
+    # the families #2063 names (docs/design/r14-test-gaps.md 4.5, last row) are played, with a no-helper arm each where the family has one
+    for fam in ("lab_chips", "lab_path_detect", "lab_tab_remote_dir", "lab_file_tree_remote", "lab_diff_panel_remote", "lab_git_write_remote", "lab_codebase_index_remote",
+                "lab_skills_remote", "lab_read_files_remote", "lab_remote_edit", "lab_password_prompt", "lab_ssh_drop_reconnect", "lab_fam_fs_basic", "lab_fam_git_read",
+                "lab_fam_run_command", "lab_gh_chip_remote", "lab_diff_apply_remote", "lab_no_helper_chip", "lab_nu_agent_pager_env", "lab_raw_key_arrival",
+                "lab_nohelper_tab_hands_back", "lab_nohelper_unavailable", "lab_nohelper_listing_single_flight"):
+        assert fam in played, fam
+        arms = [c for c in cases.CASES if c["name"].split(".")[0] == fam and c["arm"]["helper"] == "nohelper"
+                and (c["name"] in exact or (any(L.name_matches(g, c["name"]) for g in cases.PROVING_LAB) and L.arm_selected(c["arm"], sel)))]
+        assert arms, "%s has no no-helper arm in the fix tier" % fam
+    # scenario users and network faults are outside the quick matrix: they are played because they are named exactly
+    assert {"lab_password_prompt.p_password.lan.nohelper", "lab_password_prompt.p_kbdint.lan.nohelper", "lab_ssh_drop_reconnect.bash.lan.nohelper.rst"} <= exact
+    assert "lab_replay" in cases.LAB_NOT_IN_FIX_TIER and "app-test-replay-linux" in cases.LAB_NOT_IN_FIX_TIER["lab_replay"]
+    doc = _read("docs", "testing.md")
+    assert "LAB_NOT_IN_FIX_TIER" in doc and "r15_every_lab_family_is_in_a_tier" in doc
+
+
+@check
 def r15_lab_helper_from_the_artifact():
     """#2062: a lab job on a machine with no helper cache (the Mac, the Windows VM) takes the `lab-helper` job's artifact, ./helper-artifacts/. The resolver
     uses it only as THIS checkout's helper, prefers an explicit APPCI_LAB_HELPER_BIN, falls back to the cache, and when the box could not build the helper it

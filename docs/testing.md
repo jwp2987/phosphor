@@ -5811,3 +5811,26 @@ Harness finding, not changed here (#2082): `app.py` sets `PHOSPHOR_APPCI_FIND_FI
 - `lab_helper.py artifact` prints the artifact's binary or exits 3 with the reason. Self-tests: `lab_helper.py --self-test` (the artifact accepted and
   refused five ways, the NEEDS record written, quoted and cleared, each missing tool named) and `r15_lab_helper_from_the_artifact` in
   `appci/selftest_r15_lab.py` (the resolver's order, the reason a helper arm gives, the CI wiring).
+
+### Every lab family is in a tier (#2063)
+
+- **`PROVING_LAB` was two statements.** Round 14 merged two branches that each rewrote the tuple; Python used the second, `ci_seq.py` read the first. The
+  harness's list had no `lab_agent_nld_predict_ssh`, and the fix tier's lab job was never given `lab_raw_key_arrival`. Now one assignment and one
+  `PROVING_LAB += (...)` line per later entry; `ci_seq.proving_lab_globs` folds them as Python does. Self-tests `r15_proving_lab_is_one_list` and two rows of
+  `ci_seq.py --self-test`.
+- **The families that had never produced a row** (`docs/design/r14-test-gaps.md` 4.5; 36 of the 46 registered families) are in `PROVING_LAB`, 28 of them, one a line: `lab_tab_remote_dir`,
+  `lab_path_detect`, `lab_chips`, `lab_no_helper_chip`, `lab_nu_agent_pager_env`, `lab_ssh_drop_reconnect`, `lab_fam_fs_basic`, `lab_fam_git_read`,
+  `lab_fam_run_command`, `lab_nohelper_*`, `lab_read_files_remote`, `lab_diff_apply_remote`, `lab_file_tree_remote`, `lab_diff_panel_remote`,
+  `lab_gh_chip_remote`, `lab_git_write_remote`, `lab_remote_edit`, `lab_skills_remote`, `lab_codebase_index_remote`, `lab_helper_*`, and, named exactly
+  because the quick matrix leaves scenario users and network faults out, `lab_password_prompt.p_password|p_kbdint.lan.nohelper`,
+  `lab_path_detect.p_exec|p_tinypath.lan.nohelper`, `lab_ssh_drop_reconnect.bash.lan.nohelper.rst|stall10`.
+- **Cost, counted from the registry, not measured:** at `APPCI_LAB_MATRIX=quick` the fix tier's lab job goes from 76 rows (the list `ci_seq.py` was
+  reading) to 331: 203 no-helper rows (44 before) and 128 helper rows (32 before), which end at once as UNVERIFIABLE with the `NEEDS:` line until the box
+  builds the helper. At the 30 s a row the only timed lab run averaged (an upper figure: most of its rows ran to their timeouts), the 159 new no-helper
+  rows add about 80 minutes. A no-helper-only play is `APPCI_LAB_MATRIX="shells=bash,zsh,fish,nu;lat=lan,150;helper=nohelper"`. Which tier carries them
+  is the tier plan's and the owner's.
+- **`cases.LAB_NOT_IN_FIX_TIER`** names the families that job does not play, with the reason: `lab_replay` (its own manual job,
+  `app-test-replay-linux`), and the seven `lab_helper_*` families that have only upload / upgrade / never arms (a CI dev build refuses every upload; owner
+  question, `r12-policy.md` 3 item 3). Self-test `r15_every_lab_family_is_in_a_tier`: a lab family is in `PROVING_LAB` or in that dict, never both, so a
+  new family cannot be registered and never played.
+- **`codebase_index_remote`** still SKIPs unless the job sets `APPCI_FAKE_EMBEDDINGS=1` (no tier does; reported, not changed).
