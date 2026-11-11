@@ -112,4 +112,14 @@ if (Test-Path $Py) {
   if (Test-Path (Join-Path $Run "report_meta.json")) { & $Py (Join-Path $AppciDir "run.py") --run $Run --report-only --backend windows --platform windows; $rrc = $LASTEXITCODE }
   else { & $Py (Join-Path $AppciDir "report.py") $Run "platform=windows" "backend=windows" "commit=$env:CI_COMMIT_SHORT_SHA"; $rrc = $LASTEXITCODE }
 } else { "no Python: no report could be generated" }
+# ---- artifacts (#2123): scrub, then run_slim\ (logs, sshd.log, shots as JPEG), HERE and not in the job's after_script. GitLab gives an after_script
+# 5 minutes in all; round 14's failing run used them up before the slim had started and kept no logs or screenshots. Reached on every path through the
+# try/catch/finally above (a failed install, a crashed harness, a failed restore); a job that is killed outright is covered by the after_script's
+# `appci_artifacts.py --fallback`. After the report, so run_slim has the final results.json. It cannot change the exit code below.
+if (Test-Path $Py) {
+  try {
+    $ErrorActionPreference = "Continue"
+    & $Py (Join-Path $PSScriptRoot "..\..\..\ci\appci_artifacts.py") $Out 2>&1 | ForEach-Object { "$_" }
+  } catch { "artifacts: step crashed: $($_.Exception.Message) (the after_script pass will try again)" }
+} else { "no Python: artifacts NOT scrubbed, no run_slim" }
 if ($rrc -ne 0 -or $script:Fail -gt 0 -or ($pyrc -ne 0)) { exit 1 } else { exit 0 }

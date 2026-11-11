@@ -69,7 +69,16 @@ teardown() {
   [ -n "${RT_TMP:-}" ] && rm -rf "$RT_TMP"
   true
 }
-trap teardown EXIT
+# #2123: the logs and screenshots are made ready for upload HERE (scrub, then run_slim/), after the teardown, on every exit path of this script
+# (the EXIT trap also runs after on_signal and after the `exit 2` paths), not in the job's after_script: GitLab gives an after_script 5 minutes in
+# all, and a run that failed then kept no logs or shots. In CI only (CI_JOB_ID); APPCI_ARTIFACTS=1 does it for a run by hand, =0 never. It cannot
+# change this script's exit status. The after_script keeps `appci_artifacts.py --fallback` as the net for a job that was killed before this ran.
+artifacts() {
+  case "${APPCI_ARTIFACTS:-${CI_JOB_ID:+1}}" in 1) ;; *) return 0;; esac
+  python3 "$HERE/../../ci/appci_artifacts.py" "$OUT" 2>&1 | sed 's/^/[session] /'
+  true
+}
+trap 'teardown; artifacts' EXIT
 # r18d8: GitLab's job timeout/cancel signals only this bash; python (run.py) used to keep running for 2 more minutes and its rows were
 # lost. On TERM/INT/HUP: signal run.py's process group (the exact pgid it was started with, below), give it time to flush results.json
 # and stop the app, then exit (the EXIT trap runs teardown over every recorded PID).

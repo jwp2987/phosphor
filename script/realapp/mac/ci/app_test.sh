@@ -37,7 +37,11 @@ cleanup() {
   left=$(ps -axo pid=,command= 2>/dev/null | grep -F "$OUT" | grep -v "grep -F" | grep -v "app_test.sh" | cut -c1-160)
   if [ -n "$left" ]; then echo "cleanup: leftover processes naming $OUT:"; echo "$left" | sed 's/^/cleanup:   /'; else echo "cleanup: leftover processes naming $OUT: none"; fi
   true; }
-trap cleanup EXIT
+# #2123: the logs and screenshots are made ready for upload HERE (scrub, then run_slim/), after the cleanup, on every exit path of this script (the
+# EXIT trap also runs after the TERM/INT/HUP trap and after fail3), not in the job's after_script, which GitLab stops after 5 minutes in all. It
+# cannot change this script's exit status. The after_script keeps `appci_artifacts.py --fallback` as the net for a job killed before this ran.
+artifacts() { [ "${APPCI_ARTIFACTS:-1}" = 0 ] || python3 "$HERE/../../../ci/appci_artifacts.py" "$OUT" 2>&1; true; }
+trap 'cleanup; artifacts' EXIT
 trap 'cleanup; exit 143' TERM INT HUP
 fail3() { echo "NEEDS OWNER: $*" | tee "$OUT/NEEDS_OWNER.txt"; 
   python3 - "$OUT" "$*" <<'PY'

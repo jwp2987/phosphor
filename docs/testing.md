@@ -616,7 +616,8 @@ Run lifecycle (r18d8, Linux CI; `job 17686762542` was killed at the 90 min timeo
   (`home`, `ctl`, `rctl`, `refctl`, `rhome`) removed, and a leftover-process audit (processes whose command line names the run dir). macOS
   adds `teardown: Terminal.app reference pid N quit ...` (refterm_mac) and `cleanup:` lines from `mac/ci/app_test.sh` (run.py/app/caffeinate/
   DMG, then the audit); `teardown.sh` (after_script) prints per-pid outcomes, survivors and other processes naming the out dir;
-  Windows `after_job.ps1` prints recorded pids stopped/gone/not-ours, leftover processes and removed scratch dirs.
+  Windows `after_job.ps1` prints recorded pids stopped/not-ours, ONE count line for the ones already gone (#2123), leftover processes and
+  removed scratch dirs.
 - **Windows app runs in a Job Object** (#1642). `WindowsApp.start` creates the app suspended (`CREATE_SUSPENDED`), assigns it to a job with
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (`winapi.job_*`, ctypes only), then resumes it, so conhost and any shell it spawns are members from
   birth. `stop()` records the members as `jobmember <pid> <creation FILETIME>` lines in `run\pids`, runs `taskkill /T`, then closes the job
@@ -1458,6 +1459,42 @@ on its run dir, which writes `run_slim/` (shots as JPEG q60 at most 1600 px via 
 results/summary/junit as is), and the artifacts are taken from `run_slim/`. When an upload still fails, play `collect-macos-run` /
 `collect-windows-run` (manual, `GIT_STRATEGY: none`, same resource group) on that runner BEFORE any other job checks out there: it
 re-slims the run left on disk and uploads it.
+
+**Where `run_slim/` is made (#2123, round 19).** Round 14's `app-test-windows` ran 7 h, failed, and uploaded no `run_slim` logs, no
+`sshd.log` and no screenshots. GitLab gives an `after_script` 5 minutes for all its steps together; `after_job.ps1` asked WMI once for
+each of the 1067 PIDs the run had recorded (1061 long gone) and the limit fell 5 min 30 s after the `after_script` began, with the scrub
+step just started and the slim not started at all. The same round's `app-test-linux-wayland` (job 17921510248) lost its `run_slim` too,
+for a second reason: its `after_script` spent 15 minutes inside `results_scrub.py --tree appci-out` and was stopped there (`failed to
+kill process ... likely process is dormant` is the runner reporting that stop). The scrub's `url with credentials` rule retried `\w+`
+from every character of a word run, so one long line of hex or base64 anywhere in the tree (40 kB: 3 s; a megabyte: hours) held it. Since then:
+
+- **The job script makes the artifacts ready, on every exit path it controls**: `script/ci/appci_artifacts.py OUT`
+  (`results_scrub.scrub_tree(OUT)`, then `slim_appci_run.slim(OUT/run)` with no time budget, so nothing is left out). Linux:
+  `wayland_session.sh`'s EXIT trap, after its teardown (also after a caught TERM/INT/HUP and the `exit 2` paths; in CI only, or with
+  `APPCI_ARTIFACTS=1` by hand). macOS: `mac/ci/app_test.sh`'s EXIT trap, after `cleanup`. Windows: `windows/ci/app_test.ps1`, after its
+  `try/catch/finally` and the final report. Only the job timeout applies there, and the step cannot change the job's exit code.
+- **The `after_script` is the net** for a job whose script never got there (cancelled, killed): its last step is
+  `appci_artifacts.py --fallback --root appci-out`. A finished pass that still matches the run is kept (`run_slim/SLIM_DONE.json`
+  records the file count, bytes and newest mtime of `logs/` and `shots/` it was made from) and only the files directly in `appci-out/`,
+  `OUT/` and `OUT/run/` are scrubbed again (`record_reuse.py` / `fetch_build.ps1 -Record` rewrite `results.json` and `summary.md` in the
+  `after_script`). Otherwise the pass is made there, bounded: the scrub covers what is uploaded (those files and `run/logs/`), and the
+  slim gets what is left of `--budget-s` (default 480 s): logs first, then the shots of non-passing cases, then the rest; shots it could
+  not reach are listed in `run_slim/shots/OMITTED.txt` and the stamp says `complete: false`. It adds to an existing `run_slim/` instead
+  of starting over, and every file is written under a `.part-` name and renamed.
+- **The scrub is linear**: the `url with credentials` rule takes its scheme from the start of a word only (same matches; 8 MB of hex
+  in about a second). `scrub_tree` names any file that takes over 5 s.
+- **`RUNNER_AFTER_SCRIPT_TIMEOUT`** is stated on the three parents (inherited by the lab, replay and reuse jobs): `15m` on `.appci_linux`
+  and `app-test-macos`; `app-test-windows` keeps the `"45m"` of #2114 (round 19 Windows, below) as headroom. The limit is not the cure:
+  the net's slim stops by itself after 8 min, and for a job whose script finished the net only re-scrubs a handful of files.
+- **`after_job.ps1` takes ONE process snapshot** and asks WMI again only for a recorded PID that snapshot holds (the kill rule is
+  unchanged: exact PID, creation time or out-dir path). The PIDs that are gone are one line (`N recorded process(es), M already gone
+  (S s)`), and the script ends with `after_job: done in S s`. Every `appci_artifacts.py` step prints its seconds too, so a trace that
+  runs out of time again says where.
+- Checks: `python3 script/ci/appci_artifacts.py --self-test`, and `appci/selftest_r19_artifacts.py` in `run.py --self-test` (the same
+  behaviour checks, plus: no app-test `after_script` holds the scrub or the slim, each ends with the net, the three job scripts call the
+  step, `after_job.ps1`'s snapshot precedes its loop). Worked, unproven until a Windows app-test run on the VM shows `run_slim` uploaded.
+- Not covered: a job GitLab kills at the JOB timeout may not get an `after_script` at all; `run.py`'s own deadline (`appci/deadline.py`)
+  is what ends a long run early enough for the job script to do this itself.
 
 ### 2.14 Coverage-gap cases (`appci/cases_coverage_b.py`, #1542-#1548, #1460, #1463)
 

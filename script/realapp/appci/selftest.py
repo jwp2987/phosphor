@@ -8976,6 +8976,8 @@ import selftest_r19_winmisc  # noqa: E402  (round 19, Windows rest after the rou
 CHECKS.extend(selftest_r19_winmisc.CHECKS)
 import selftest_r19_tabs  # noqa: E402  (round 19, #2108 / #2109 / #2110: the round 14 candidate's tab, Find, viewer and notification verdicts; own file)
 CHECKS.extend(selftest_r19_tabs.CHECKS)
+import selftest_r19_artifacts  # noqa: E402  (#2123: run_slim is made by the job script, the after_script net is bounded, after_job.ps1's one snapshot; own file)
+CHECKS.extend(selftest_r19_artifacts.CHECKS)
 
 
 def missing_required(required, passed):

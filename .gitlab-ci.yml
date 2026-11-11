@@ -1229,6 +1229,10 @@ usage-test-macos:
   timeout: 6h   # r18u23: app-test-linux-wayland ran both modes plus both soaks and was killed at 4h with no artifacts uploaded (404); run.py's deadline still stops it early
   variables:
     GIT_DEPTH: "1"
+    # #2123: GitLab's default after_script limit is 5 min for ALL its steps together. The logs and screenshots are made ready by the job script itself
+    # (script/ci/appci_artifacts.py, EXIT trap of wayland_session.sh); the after_script only has to do that work for a job that was killed first, and
+    # its slim stops by itself after 8 min (--budget-s default 480). Jobs that extend this one and name their own variables keep this one (merged).
+    RUNNER_AFTER_SCRIPT_TIMEOUT: 15m
   artifacts:
     name: appci-$CI_JOB_NAME
     # r18d8: always, so a job killed at the timeout or cancelled still uploads every finished row (results.json/summary.md/junit.xml are
@@ -1273,8 +1277,7 @@ app-test-linux-wayland:
     - exit $rc
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
-    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
-    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done   # r18u8: full shots hit 413 Payload Too Large
+    - python3 script/ci/appci_artifacts.py --fallback --root appci-out   # #2123: the net; the job script already made run_slim (#1516 scrub, r18u8 slim)
 
 # Private Xvfb (software GL), xdotool: the original X11 path. Round 15 (#2058): played in EVERY tier, the fix tier included (it used to leave with exit 77
 # when APPCI_TIER=smoke, and no X11 run existed after r18u28). Both session modes: wayland_session.sh's default, and ci_seq.py also passes
@@ -1290,8 +1293,7 @@ app-test-linux-x11:
     - script/realapp/linux/wayland_session.sh --mode x11 --dist dist --out "$CI_PROJECT_DIR/appci-out/x11"
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
-    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
-    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done   # r18u8: full shots hit 413 Payload Too Large
+    - python3 script/ci/appci_artifacts.py --fallback --root appci-out   # #2123: the net; the job script already made run_slim (#1516 scrub, r18u8 slim)
 
 # Mac runner. Needs a GUI (Aqua) session for gitrunner plus Accessibility + Screen Recording for the job's process
 # chain; the script probes that first and fails with exit 3 and the list of grants for the owner.
@@ -1306,6 +1308,7 @@ app-test-macos:
     # owner 2026-11-11: the ssh wrapper is pinned on macOS too, as on app-test-linux-wayland and app-test-windows (#2066), so ssh_connect_typing_wrapper
     # and ssh_nested_typeahead_wrapper run here instead of SKIP with NEEDS. The jobs that extend this one (the lab, the reuse variant) inherit it.
     APPCI_SSH_WRAPPER: "1"
+    RUNNER_AFTER_SCRIPT_TIMEOUT: 15m   # #2123: as .appci_linux (the default 5 min is for all after_script steps together)
   needs:
     - job: build-macos-arm64
       artifacts: false
@@ -1315,8 +1318,7 @@ app-test-macos:
     - script/realapp/mac/ci/app_test.sh dist "$CI_PROJECT_DIR/appci-out/macos"
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/macos"
-    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/results_scrub.py --tree appci-out   # #1516
-    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/slim_appci_run.py appci-out/macos/run   # r18u8: 413 Payload Too Large
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/appci_artifacts.py --fallback --root appci-out   # #2123: the net; app_test.sh already made run_slim (#1516 scrub, r18u8 slim)
   artifacts:
     name: appci-macos
     when: always
@@ -1347,6 +1349,9 @@ app-test-windows:
     # #2114 (round 14 candidate, job 17921510251): the runner gives after_script 5 minutes by default. After the 7-hour full tier, after_job.ps1 (1067
     # recorded pids) and the scrub of the whole run tree used them up ("after_script could not run to completion because the timeout was exceeded"),
     # slim_appci_run.py never ran, and the artifact had no run_slim/shots and no run_slim/logs: no screenshot and no app log of the run was kept.
+    # #2123: kept at 45m (headroom, not the cure). The root is handled apart from the limit: app_test.ps1 makes run_slim itself, after_job.ps1 takes one
+    # process snapshot instead of a WMI query per recorded PID, and the after_script's own pass (only for a job killed before app_test.ps1 got there)
+    # stops its slim after 8 min.
     RUNNER_AFTER_SCRIPT_TIMEOUT: "45m"
   when: manual
   allow_failure: true
@@ -1366,8 +1371,7 @@ app-test-windows:
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
   after_script:
     - .\script\realapp\windows\ci\after_job.ps1 -Out appci-out\windows
-    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\results_scrub.py --tree appci-out } else { Write-Host "results_scrub: VM python missing; artifacts NOT scrubbed" }'   # #1516
-    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\slim_appci_run.py appci-out\windows\run } else { Write-Host "slim: VM python missing; artifacts NOT slimmed" }'   # r18u8: 413 Payload Too Large
+    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\appci_artifacts.py --fallback --root appci-out } else { Write-Host "artifacts: VM python missing; artifacts NOT scrubbed, no run_slim" }'   # #2123: the net; app_test.ps1 already made run_slim (#1516 scrub, r18u8 slim)
   artifacts:
     name: appci-windows
     when: always
@@ -1478,8 +1482,7 @@ app-test-lab-linux:
     - script/realapp/linux/wayland_session.sh --mode wayland --dist dist --out "$CI_PROJECT_DIR/appci-out/wayland"
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland"
-    - python3 script/ci/results_scrub.py --tree appci-out
-    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done
+    - python3 script/ci/appci_artifacts.py --fallback --root appci-out   # #2123: the net; the job script already made run_slim (#1516 scrub, r18u8 slim)
 
 # SSHLAB_BOX and SSHLAB_TOKEN are protected project variables: GitLab injects them into jobs on protected refs (main, build/*, v*) automatically, so they are
 # NOT re-mapped here (re-mapping would put the token into the job's variable list/expansion). lab.py reads them from the environment through ci_env.get,
@@ -1595,8 +1598,7 @@ app-test-linux-wayland-reuse:
   after_script:
     - python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
-    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
-    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done   # r18u8: full shots hit 413 Payload Too Large
+    - python3 script/ci/appci_artifacts.py --fallback --root appci-out   # #2123: the net; the job script already made run_slim (#1516 scrub, r18u8 slim)
 
 app-test-linux-x11-reuse:
   extends: app-test-linux-x11
@@ -1606,8 +1608,7 @@ app-test-linux-x11-reuse:
   after_script:
     - python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
-    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
-    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done   # r18u8: full shots hit 413 Payload Too Large
+    - python3 script/ci/appci_artifacts.py --fallback --root appci-out   # #2123: the net; the job script already made run_slim (#1516 scrub, r18u8 slim)
 
 # the fix tier's PROVING lab cases on a reused Linux build (script/ci/ci_seq.py LAB_FIX_JOB; owner rule 2026-11-09)
 app-test-lab-linux-reuse:
@@ -1618,8 +1619,7 @@ app-test-lab-linux-reuse:
   after_script:
     - python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland"
-    - python3 script/ci/results_scrub.py --tree appci-out
-    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done
+    - python3 script/ci/appci_artifacts.py --fallback --root appci-out   # #2123: the net; the job script already made run_slim (#1516 scrub, r18u8 slim)
 
 app-test-macos-reuse:
   extends: app-test-macos
@@ -1630,8 +1630,7 @@ app-test-macos-reuse:
   after_script:
     - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/macos"
-    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/results_scrub.py --tree appci-out   # #1516
-    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/slim_appci_run.py appci-out/macos/run   # r18u8: 413 Payload Too Large
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/appci_artifacts.py --fallback --root appci-out   # #2123: the net; app_test.sh already made run_slim (#1516 scrub, r18u8 slim)
 
 app-test-windows-reuse:
   extends: app-test-windows
@@ -1645,8 +1644,7 @@ app-test-windows-reuse:
   after_script:
     - .\script\ci\fetch_build.ps1 -Record
     - .\script\realapp\windows\ci\after_job.ps1 -Out appci-out\windows
-    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\results_scrub.py --tree appci-out } else { Write-Host "results_scrub: VM python missing; artifacts NOT scrubbed" }'   # #1516
-    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\slim_appci_run.py appci-out\windows\run } else { Write-Host "slim: VM python missing; artifacts NOT slimmed" }'   # r18u8: 413 Payload Too Large
+    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\appci_artifacts.py --fallback --root appci-out } else { Write-Host "artifacts: VM python missing; artifacts NOT scrubbed, no run_slim" }'   # #2123: the net; app_test.ps1 already made run_slim (#1516 scrub, r18u8 slim)
 
 # ===========================================================================
 # Release pipeline (ported from .github/workflows/phosphor_release.yml).

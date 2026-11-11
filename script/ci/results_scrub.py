@@ -1,7 +1,7 @@
 # script/ci/results_scrub.py: privacy rules for the test-results/ archive, shared by collect_results.py (scrub on the way in) and
 # script/check_test_results (refuse on the way out). The owner's endpoints live only in machine-local config (ci.env, the realapp
 # config, the environment), never in the repo; scrub() masks their VALUES, find_leaks() reports anything that still looks like one.
-import os, re, socket, sys
+import os, re, socket, sys, time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "realapp", "appci"))
 try:
@@ -14,7 +14,11 @@ SECRET = [("gitlab token", re.compile(r"glpat-[A-Za-z0-9_-]{16,}")), ("github to
           ("api key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")), ("aws key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
           ("private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")), ("bearer token", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{24,}")),
           ("password assignment", re.compile(r"(?i)\b(?:password|passwd|secret|api[_-]?key|token)\s*[=:]\s*['\"]?[A-Za-z0-9/+_.-]{12,}")),
-          ("url with credentials", re.compile(r"\w+://[^/\s:@]+:[^/\s@]+@"))]
+          # #2123: the scheme is taken from the START of a word only. Without the lookbehind the engine tried `\w+` again from every character of a
+          # word run: quadratic, 3 s for one 40 kB line of hex or base64 and hours for a megabyte, which is what kept the Wayland job's whole-tree
+          # scrub busy until the runner stopped its after_script (round 14). The matches are the same: a match that began inside a word also
+          # matches from that word's start, and the leftmost match is the one substituted.
+          ("url with credentials", re.compile(r"(?<!\w)\w+://[^/\s:@]+:[^/\s@]+@"))]
 HOME_RX = re.compile(r"(?i)(/home/|/Users/|[A-Z]:\\Users\\)[^/\\\s\"']+")
 # `uname -a` and `id` output (#1516): kernel line carries the hostname, id carries the user name and every group.
 UNAME_RX = re.compile(r"(?m)^(Linux|Darwin|FreeBSD) +\S+( +\d[^\n]*)")
@@ -87,6 +91,26 @@ def find_leaks(text):
 TEXT_SKIP = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".zip", ".gz", ".bin", ".exe", ".dmg", ".deb", ".AppImage")
 
 
+def scrub_file(p, max_bytes=8 * 1024 * 1024):
+    """scrub one text file IN PLACE; True when it changed. Binary files (images, NUL bytes), links and files over max_bytes are left alone."""
+    if os.path.basename(p).endswith(TEXT_SKIP) or os.path.islink(p):
+        return False
+    try:
+        if os.path.getsize(p) > max_bytes:
+            return False
+        raw = open(p, "rb").read()
+        if b"\0" in raw:
+            return False
+        text = raw.decode("utf-8", errors="surrogateescape")
+        new = scrub(text)
+        if new != text:
+            open(p, "wb").write(new.encode("utf-8", errors="surrogateescape"))
+            return True
+    except OSError as e:
+        print("results_scrub: %s: %s" % (p, e), file=sys.stderr)
+    return False
+
+
 def scrub_tree(root, max_bytes=8 * 1024 * 1024):
     """scrub every text file under root IN PLACE (CI job artifacts, #1516: the committed archive was already scrubbed by
     collect_results, the 7-day job artifacts were not). Binary files (images, NUL bytes) and files over max_bytes are left alone;
@@ -94,23 +118,21 @@ def scrub_tree(root, max_bytes=8 * 1024 * 1024):
     changed = 0
     for dp, _, names in os.walk(root):
         for n in names:
-            p = os.path.join(dp, n)
-            if n.endswith(TEXT_SKIP) or os.path.islink(p):
-                continue
-            try:
-                if os.path.getsize(p) > max_bytes:
-                    continue
-                raw = open(p, "rb").read()
-                if b"\0" in raw:
-                    continue
-                text = raw.decode("utf-8", errors="surrogateescape")
-                new = scrub(text)
-                if new != text:
-                    open(p, "wb").write(new.encode("utf-8", errors="surrogateescape"))
-                    changed += 1
-            except OSError as e:
-                print("results_scrub: %s: %s" % (p, e), file=sys.stderr)
+            t = time.monotonic()
+            changed += scrub_file(os.path.join(dp, n), max_bytes)
+            if time.monotonic() - t > 5:        # #2123: a scrub that takes minutes names the file next time
+                print("results_scrub: %s took %.0f s" % (os.path.join(dp, n), time.monotonic() - t))
     return changed
+
+
+def scrub_files(d, max_bytes=8 * 1024 * 1024):
+    """scrub_tree without the descent: only the files directly in d (#2123: the after_script pass re-scrubs the small files a job uploads from
+    there, results.json / summary.md / reused_build.json, which record_reuse.py rewrites, without walking the whole tree again)"""
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return 0
+    return sum(scrub_file(os.path.join(d, n), max_bytes) for n in names if os.path.isfile(os.path.join(d, n)))
 
 
 if __name__ == "__main__":

@@ -14,14 +14,25 @@
 param([string]$Out = "appci-out\windows", [switch]$Check)
 $ErrorActionPreference = "Continue"
 if ($Check) { Write-Output "after_job: check ok"; exit 0 }
+$sw = [Diagnostics.Stopwatch]::StartNew()
 $outFull = (Resolve-Path $Out -ErrorAction SilentlyContinue).Path
 if ($outFull) {
+  # #2123: ONE process snapshot for all recorded PIDs. This loop used to ask WMI once per recorded line; round 14's 7 h run had recorded 1067 of them
+  # (1061 long gone), which took the whole 5 minutes GitLab gives an after_script, so the scrub and the slim behind it never ran and the failing run
+  # kept no logs or screenshots. A PID missing from the snapshot is gone (counted, one line in all); one that is in it is asked for again, by itself,
+  # right before it is judged, so what is killed is decided on the process as it is then, exactly as before. Each recorded line is judged once.
+  $snap = @{}
+  foreach ($q in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) { $snap["$($q.ProcessId)"] = $true }
+  if (-not $snap.Count) { Write-Output "after_job: the process snapshot is empty (WMI did not answer): asking for each recorded pid by itself" }
+  $seen = @{}; $gone = 0; $recorded = 0
   foreach ($f in @("$outFull\run\pids", "$outFull\pids")) {
     if (-not (Test-Path $f)) { continue }
     foreach ($l in Get-Content $f) {
       $w = $l -split '\s+'; if ($w.Count -lt 2 -or $w[1] -notmatch '^\d+$') { continue }
+      $key = ($w[0..([Math]::Min(2, $w.Count - 1))] -join ' '); if ($seen[$key]) { continue }; $seen[$key] = $true; $recorded++
+      if ($snap.Count -and -not $snap[$w[1].TrimStart('0')]) { $gone++; continue }
       $p = Get-CimInstance Win32_Process -Filter "ProcessId = $($w[1])" -ErrorAction SilentlyContinue
-      if (-not $p) { Write-Output "after_job: recorded $($w[0]) pid $($w[1]) already gone"; continue }
+      if (-not $p) { $gone++; continue }
       $where = "$($p.ExecutablePath) $($p.CommandLine)"
       # #1642: "jobmember <pid> <creation FILETIME>" lines are written by WindowsApp.stop from the app's Job Object (conhost, shells: command lines
       # that never name the out dir). The creation time, not the path, proves the PID is still the process the job held. Only PIDs recorded here.
@@ -33,6 +44,7 @@ if ($outFull) {
       } else { Write-Output "after_job: recorded $($w[0]) pid $($w[1]) is alive but not ours (PID reuse): left alone" }
     }
   }
+  Write-Output ("after_job: {0} recorded process(es), {1} already gone ({2:N1} s)" -f $recorded, $gone, $sw.Elapsed.TotalSeconds)
 }
 # fake ssh lab (docs/testing.md 2.15): stop the container named in run\lab.json by its exact id (the forced-command key stays in the job environment)
 if ($outFull -and (Test-Path "$outFull\run\lab.json")) {
@@ -71,4 +83,5 @@ if ($env:CI_JOB_ID) {
     } else { Write-Output "after_job: WINPUSH.lock left alone (not this job's: $($txt.Trim()))" }
   }
 }
+Write-Output ("after_job: done in {0:N1} s" -f $sw.Elapsed.TotalSeconds)
 exit 0
