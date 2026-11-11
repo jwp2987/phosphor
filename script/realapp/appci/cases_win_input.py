@@ -299,8 +299,9 @@ def _ssh_gitbash_managed(ctx, r):
         return
     r.metric("gitbash_managed_connect_s", round(secs, 2))
     time.sleep(1.0)
-    if ctx.where_now() != "remote":
-        r.check(False, "precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s)" % ctx.where_now())
+    where = ctx.where_now()      # ONE probe per verdict (round 14: the text came from a second probe and contradicted the first)
+    if where != "remote":
+        r.check(False, "precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s)" % where)
         ctx.reset()
         return
     hops = _wrapper_hops(ctx, off)
@@ -328,6 +329,20 @@ def bootstrap_delivery(log):
     return dict(in_command=any("hop=bootstrap_in_command" in ln and "wrote=0" in ln for ln in log.splitlines()),
                 max_write=max(writes) if writes else 0,
                 failed="Bootstrapping failed for shell" in log)
+
+
+@case("ssh_gitbash_failing_not_local_managed", order=62, gui=True)
+def c_ssh_gitbash_failing_not_local_managed(ctx, r):
+    """ssh_failing_not_local with the one-connection managed ssh switched ON in the Git Bash pane's shell (PHOSPHOR_MSYS_MANAGED_SSH=1, typed and
+    afterwards unset and proven unset by in_msys_managed_ssh). Round 14 ran this combination by accident (the switch was left on by the case
+    before) and the line typed behind the failing ssh was not in the local file when the case looked; whether the app lost it or the case
+    looked too early could not be told, the logs of that job were not uploaded. Here it is asked on purpose: the wrapper first asks the
+    hanging server for its banner, gets none, and must run the user's plain ssh; the keys typed meanwhile (the app holds them: its
+    `kh_hold_exit branch=held` is on the row) must reach ssh's terminal in typed order, and when ssh gives up the local shell runs the line
+    exactly once, after the failure (owner decision 2026-11-04, the same oracle as ssh_failing_not_local, not relaxed). The wait for "ssh
+    failed" covers both connections (cases.wait_ssh_gave_up)."""
+    _need_windows_pane(ctx, r, "gitbash")
+    R.in_msys_managed_ssh(ctx, lambda: cases.ssh_fail_body(ctx, r))
 
 
 @case("ssh_gitbash_bootstrap_in_command", order=62)
@@ -371,12 +386,13 @@ def _ssh_gitbash_bootstrap_in_command(ctx, r):
         r.metric("gitbash_in_command_client_bytes", got)
         r.check(got < 8192, "the test sshd received %d bytes from the client by the time the remote prompt was up (limit 8192; round 12: 78814): "
                 "something bootstrap-sized went through ssh's console" % got)
-    if ctx.where_now() == "remote":
+    where = ctx.where_now()
+    if where == "remote":
         _remote_line_once(ctx, r, "managed session, bootstrap in the command")
         if not R.leave(ctx):
             r.check(False, "not provably remote (probe ran in: %s), `exit` NOT typed" % ctx.left_unproven)
     else:
-        r.check(False, "the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s)" % ctx.where_now())
+        r.check(False, "the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s)" % where)
     ctx.reset()
 
 
@@ -425,11 +441,12 @@ def _ssh_gitbash_typeahead_managed(ctx, r):
         adopted += any("typeahead_front adopted=true" in ln for ln in hops)
         if i == 0:
             ctx.shot("gitbash_typeahead_managed_remote_prompt")
-        if ctx.where_now() == "remote":
+        where = ctx.where_now()
+        if where == "remote":
             if not R.leave(ctx):
                 r.check(False, "trial %d: `exit` did not bring the local prompt back" % (i + 1))
         else:
-            r.check(False, "trial %d: the pane is not provably remote after the connect (probe ran in: %s)" % (i + 1, ctx.where_now()))
+            r.check(False, "trial %d: the pane is not provably remote after the connect (probe ran in: %s)" % (i + 1, where))
             ctx.reset()
     r.note("typed-during-connect: in %d of %d trials keys were in the console before the session and were held at the front (typeahead_front "
            "adopted=true); in the others every key was typed after auth_done or consumed by the login" % (adopted, trials))
@@ -458,13 +475,13 @@ def c_ssh_gitbash_kill_switch(ctx, r):
                 r.check(_sync_stages(hops) == [], "%s: no one-connection stage: %r" % (what, _sync_stages(hops)))
                 r.check(any("verdict managed=false" in ln for ln in hops), "%s: the wrapper's verdict was the plain fallback (managed=false)" % what)
                 r.check(not any("verdict managed=true" in ln for ln in hops), "%s: the session must not be managed" % what)
-                if ctx.where_now() == "remote":
+                where = ctx.where_now()
+                if where == "remote":
                     _remote_line_once(ctx, r, "plain session, %s" % what)
                     if not R.leave(ctx):
                         r.check(False, "%s: not provably remote (probe ran in: %s), `exit` NOT typed" % (what, ctx.left_unproven))
                 else:
-                    r.check(False, "%s: the pane is not provably remote after `ssh fake` (probe ran in: %s)" % (what, ctx.where_now()))
+                    r.check(False, "%s: the pane is not provably remote after `ssh fake` (probe ran in: %s)" % (what, where))
             ctx.reset()
     finally:
-        ctx.be.type(R.msys_managed_ssh_lines(False), 12, enter=True)
-        time.sleep(0.5)
+        R.msys_managed_ssh_restore(ctx)      # msys_managed_ssh_lines(False) typed AND proven in the local shell (round 14)
