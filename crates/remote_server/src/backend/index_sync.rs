@@ -263,6 +263,11 @@ pub fn ranked_paths(hits: &[Hit]) -> Vec<String> {
         .collect()
 }
 
-#[cfg(test)]
+// These drive the contract harness's local `sh`, which exists on unix only.
+#[cfg(all(test, unix))]
 #[path = "index_sync_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "index_sync_pure_tests.rs"]
+mod pure_tests;

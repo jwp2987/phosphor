@@ -24,7 +24,10 @@ mod router;
 mod shell;
 mod shell_git_runner;
 
-#[cfg(test)]
+// The harness drives a local POSIX `sh` (and unix permissions, owners and symlinks) as the
+// stand-in for a remote host, so it exists on unix only. Tests that use its executors carry
+// the same gate.
+#[cfg(all(test, unix))]
 mod contract_tests;
 
 pub use executor::{

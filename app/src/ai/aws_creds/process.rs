@@ -13,45 +13,74 @@ use super::{Context, Creds, CredsError, imds::parse_json_credentials};
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Splits a command line the way the AWS CLI does (`shlex`, POSIX rules; on Windows backslashes are
-/// path separators, so only quotes group).
+/// Splits a command line the way the AWS CLI does: `shlex` (POSIX rules) on unix, the Windows C
+/// runtime's rules on Windows ([`split_windows_command`]).
 pub(crate) fn split_command(line: &str) -> Option<Vec<String>> {
     #[cfg(windows)]
     {
-        let mut parts = Vec::new();
-        let mut current = String::new();
-        let mut in_quotes = false;
-        let mut started = false;
-        for c in line.chars() {
-            match c {
-                '"' => {
-                    in_quotes = !in_quotes;
-                    started = true;
-                }
-                c if c.is_whitespace() && !in_quotes => {
-                    if started {
-                        parts.push(std::mem::take(&mut current));
-                        started = false;
-                    }
-                }
-                c => {
-                    current.push(c);
-                    started = true;
-                }
-            }
-        }
-        if in_quotes {
-            return None;
-        }
-        if started {
-            parts.push(current);
-        }
-        Some(parts)
+        split_windows_command(line)
     }
     #[cfg(not(windows))]
     {
         shlex::split(line)
     }
+}
+
+/// The AWS CLI's Windows split (botocore `_windows_shell_split`, the C runtime's argument
+/// rules). Only double quotes group, and `""` is an empty word. A single quote is an ordinary
+/// character. A backslash is an ordinary character (a path separator) unless a run of them
+/// stands before a double quote: 2n backslashes and a quote are n backslashes and a grouping
+/// quote, 2n+1 are n backslashes and a literal quote. `None` when a quote is left open.
+#[cfg(any(windows, test))]
+pub(crate) fn split_windows_command(line: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut started = false;
+    let mut backslashes = 0usize;
+    for c in line.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                current.extend(std::iter::repeat_n('\\', backslashes / 2));
+                let literal = backslashes % 2 == 1;
+                backslashes = 0;
+                started = true;
+                if literal {
+                    current.push('"');
+                } else {
+                    in_quotes = !in_quotes;
+                }
+            }
+            c => {
+                if backslashes > 0 {
+                    current.extend(std::iter::repeat_n('\\', backslashes));
+                    backslashes = 0;
+                    started = true;
+                }
+                if c.is_whitespace() && !in_quotes {
+                    if started {
+                        parts.push(std::mem::take(&mut current));
+                        started = false;
+                    }
+                } else {
+                    current.push(c);
+                    started = true;
+                }
+            }
+        }
+    }
+    if in_quotes {
+        return None;
+    }
+    if backslashes > 0 {
+        current.extend(std::iter::repeat_n('\\', backslashes));
+        started = true;
+    }
+    if started {
+        parts.push(current);
+    }
+    Some(parts)
 }
 
 pub(crate) async fn credentials(ctx: &Context, command_line: &str) -> Result<Creds, CredsError> {

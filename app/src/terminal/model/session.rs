@@ -345,6 +345,17 @@ impl Sessions {
         self
     }
 
+    /// [`Self::with_command_executor`] for a `Sessions` that is already built (a test terminal
+    /// view makes its own): the sessions it has and every one registered later run their
+    /// commands on `executor`.
+    #[cfg(test)]
+    pub fn set_command_executor_for_all_sessions(&mut self, executor: Arc<dyn CommandExecutor>) {
+        for session in self.sessions.values() {
+            session.set_command_executor(executor.clone());
+        }
+        self.executor_for_all_sessions = Some(executor);
+    }
+
     pub fn set_env_vars_for_session(
         &mut self,
         session_id: SessionId,

@@ -192,14 +192,28 @@ fn classifies_earlier_phosphor_git_spellings_as_remote() {
     }
 }
 
+/// The `file://` URL of `path` (`/opt/x`) as a config on this platform holds it. On Windows a
+/// file URL names a drive (`file:///C:/opt/x`); one without a drive is not a folder there, and
+/// the URL parser refuses it.
+fn file_url(path: &str) -> String {
+    if cfg!(windows) {
+        format!("file:///C:{path}")
+    } else {
+        format!("file://{path}")
+    }
+}
+
 #[test]
 fn classifies_bundle_folder_entries_at_any_install_location() {
     for spec in [
-        "file:///opt/phosphor/resources/bundled/opencode_plugin",
-        "file:///Applications/Phosphor.app/Contents/Resources/bundled/opencode_plugin/",
+        file_url("/opt/phosphor/resources/bundled/opencode_plugin"),
+        file_url("/Applications/Phosphor.app/Contents/Resources/bundled/opencode_plugin/"),
+        // A Windows install folder: a drive and an escaped space. (On unix this is the path
+        // `/C:/Program Files/...`, which ends in the bundle folder all the same.)
+        "file:///C:/Program%20Files/Phosphor/resources/bundled/opencode_plugin".to_owned(),
     ] {
         assert_eq!(
-            classify_plugin_entry(spec),
+            classify_plugin_entry(&spec),
             Some(PluginEntryKind::Phosphor),
             "{spec}"
         );
@@ -435,7 +449,7 @@ fn a_bundle_entry_from_another_install_location_is_moved_to_this_one() {
     let bundle = make_bundle(root.path());
     let spec = plugin_spec_for(&bundle).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let old = "file:///opt/old-phosphor/resources/bundled/opencode_plugin";
+    let old = file_url("/opt/old-phosphor/resources/bundled/opencode_plugin");
     write_config(
         dir.path(),
         "opencode.json",

@@ -7251,3 +7251,58 @@ round 13's logs.
   records`; `ssh_gitbash_managed`, `ssh_gitbash_bootstrap_in_command`, `ssh_gitbash_typeahead_managed`, `ssh_connect_typing_wrapper`,
   `ssh_nested_typeahead_wrapper`, `remote_tab_no_helper`, `remote_tab_enter_no_helper` are judged past their precondition (PASS, or a FAIL that
   names an app hop), with no `pane_not_local_after_*` row behind them.
+## Round 19: the unit and integration failures of round 14 (design `docs/design/r19-units.md`; #2111 #2112 #2120 #2121 #2122; nothing compiled or run when written)
+Verdicts and evidence per test are in the design note. What changed in the tests:
+### `remote_server`: the contract harness is unix only (#2121)
+`crates/remote_server/src/backend/contract_tests.rs` runs every backend assertion against a local POSIX `sh` (with unix modes, owners and
+symlinks) and is now declared `#[cfg(all(test, unix))]`: on Windows it did not compile, which took the whole `test-workspace-rest-windows` job
+down. Its users carry the same gate: `router_tests.rs` `git_reads_with_no_helper_are_served_by_the_shell_arm` and `index_sync_tests.rs` (every
+test there drives `scratch_home_executor`). The one index-sync test that runs no shell, `ranked_paths_keeps_best_first_and_drops_repeats`, moved
+to `index_sync_pure_tests.rs` and runs on every platform. A new test in this crate that starts `sh` goes behind `#[cfg(unix)]`; one that does not
+must not be put in a unix-only module.
+### `credential_process` splitting (#2112, and the test's own fault)
+`app/src/ai/aws_creds/process_tests.rs`: `splits_like_the_cli_for_quotes_and_plain_words` asked for POSIX single-quote grouping on every
+platform; on Windows the AWS CLI's split takes a single quote as a character, so that one expectation is now per platform (`'single quoted'` is
+one word on unix, two on Windows). New, on every platform: `the_windows_split_groups_by_double_quotes_only` checks `split_windows_command`
+(compiled for Windows and for tests): double quotes group, `""` is a word, backslashes are path separators except before a double quote (2n:
+n backslashes and a grouping quote; 2n+1: n and a literal quote), an open quote is refused.
+### pwsh: `$Error` on a machine with no node or git (#2111)
+`agent_shell_wrap_tests.rs` (`real_shells`): `pwsh_bootstrap_and_prompts_add_no_error_records` was right and found an app defect on the Windows
+runner (no `node`): the bootstrap's `Get-Command ... 2>$null` lookups record the failure in `$Error`. They now use `-ErrorAction Ignore`. That
+test still depends on the machine (it passes wherever both programs exist), so `pwsh_prompt_adds_no_error_records_when_node_and_git_are_missing`
+runs the real bootstrap, sets `$env:PATH` to an empty folder, runs the prompt twice and requires `errors=0` and no `ERR:` line: it fails on any
+machine with pwsh if a lookup of an optional program records an error again. Skipped (returns) only where pwsh is not installed, like its
+siblings.
+### Fixtures that followed the machine (Windows; #2121)
+- Agent fuzz rig (`app/src/ai/blocklist/agent_fuzz/rig.rs`, `give_the_session_a_shell_this_machine_has`): the test terminal's session says its
+  shell is zsh and the app runs the session's own commands (the git probe before a grep or a file glob) with `zsh -f -c`. With no zsh on the
+  machine each of them failed to start and I6 reported the app's ERROR line (35 tests on the Windows runner). On such a machine the rig gives the
+  session the app's local executor with the bash found on PATH (`Sessions::set_command_executor_for_all_sessions`, test only). With zsh installed
+  nothing changes. With neither shell the rig panics and says so. I6, the oracle and the allowed ERROR lines are unchanged.
+- `plugin_manager/codex_tests.rs`: config fixtures write the marketplace `source` as a TOML string (`toml_string`); a Windows folder between
+  plain quotes is not TOML and the registration under test was not there. `toml_string_keeps_a_windows_folder_readable` checks the helper on
+  every platform.
+- `plugin_manager/opencode_tests.rs`: `file://` fixtures are built per platform (`file_url`: `file:///C:/opt/...` on Windows, where a file URL
+  without a drive is refused by the URL parser), and `classifies_bundle_folder_entries_at_any_install_location` also checks a Windows install
+  URL (drive, escaped space) on every platform.
+- `plugin_manager/claude_tests.rs` `truncate_chars_cuts_by_characters_not_bytes`: no verdict for its Windows failure (bash printed nothing and
+  the test kept neither stderr nor the status). It now hands bash the plain form of the script's path (not the verbatim `\\?\C:\...` that
+  `canonicalize` gives) and puts the path, locale, exit status and stderr in every assertion message. Same expectations.
+- `terminal/view_test.rs` `an_ssh_window_survives_its_own_block_start_with_a_polluted_echo`: the block has no session in that fixture, so its
+  shell family was the machine's default; on Windows (PowerShell) an ssh block takes the subshell-banner arm by design and records no pending
+  ssh. The test sets a POSIX startup shell and asserts the family before it starts. No assertion changed. Not covered by a test: the same window
+  in a PowerShell session.
+- `crates/warp_tui/src/terminal_session_view_tests.rs` `shell_completion_source_warmup_loads_path_executables`: the wait for the load is a
+  give-up net of 45 s (was 5 s: one cold `pwsh` start on the Windows runner took longer twice, then 1.4 s). It still ends when the load does.
+### Integration driver: a named key sends no text (#2121)
+`crates/warpui_core/src/integration/step.rs` `with_keystrokes`: the key down of a key outside the driver's table carried the key's NAME as its
+text (`chars: "left"`, `"f2"`), which no platform sends. Since the pane key sink (#1411) a key down with printable text is a key that types, so
+`shift-left` reached vim as the word "left" and F2 was never translated: `test_escape_sequences_sent_to_focused_terminal` and
+`test_pass_control_sequences_to_long_running_block` failed 3 of 3 in round 14. `chars_for_keystroke` now gives the table's control characters,
+the character itself for a key that types one (`a`, `ctrl-i`, `space`), and nothing for every other named key. Unit tests
+`chars_for_keystroke_tests` (in `warpui_core`). `with_keystrokes_in_composing` is unchanged. A scenario that relied on a key name arriving as
+text would now see no text; none is known.
+### No verdict, nothing changed
+`integration-linux`: `test_ssh_with_shell_override`, `test_command_xray_hover`,
+`test_autosuggestions_are_hidden_when_opening_tab_completions` (#2122: the job keeps no artifacts and the INFO trace has no line for the pty
+writes, the hover or the Tab). `test_ssh_into_sh` is an APP defect (#2120) and stays red until that is worked.

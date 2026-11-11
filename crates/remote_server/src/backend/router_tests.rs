@@ -287,6 +287,9 @@ fn own_writes_reach_refresh_listeners_with_the_host() {
 /// #1872: with no helper the branch picker's and the PR dialog's reads go through the router to
 /// the shell arm (a real answer from a real repository), not to "unsupported" and not around the
 /// router.
+///
+/// Unix only: the shell arm here is the contract harness's local `sh`.
+#[cfg(unix)]
 #[tokio::test]
 async fn git_reads_with_no_helper_are_served_by_the_shell_arm() {
     use crate::backend::contract_tests::LocalShExecutor;

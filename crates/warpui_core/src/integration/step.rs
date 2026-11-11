@@ -413,19 +413,7 @@ impl TestStep {
             .iter()
             .map(|keystroke| Keystroke::parse(keystroke).expect("failed to parse keystroke"))
         {
-            // Match macOS by mapping control/special keys to their ASCII characters.
-            // This covers common characters, but is non-exhaustive (it's mainly
-            // missing arrow and function keys).
-            let chars = match (&keystroke, keystroke.key.as_str()) {
-                (Keystroke { ctrl: true, .. }, "c") => "\u{3}".to_string(),
-                (_, "enter") => "\r".to_string(),
-                (Keystroke { shift: true, .. }, "tab") => "\u{19}".to_string(),
-                (_, "tab") => "\t".to_string(),
-                (_, "backspace") => "\u{7f}".to_string(),
-                (_, "numpadenter") => "\u{3}".to_string(),
-                (_, "escape") => "\u{1b}".to_string(),
-                (keystroke, _) => keystroke.key.clone(),
-            };
+            let chars = chars_for_keystroke(&keystroke);
 
             self.events
                 .push_back(IntegrationTestEvent::WithEvent(Event::KeyDown {
@@ -1124,5 +1112,56 @@ fn record_overlay_event_for_event(event: &Event, step_data_map: &mut StepDataMap
     };
     if let Some(kind) = kind {
         record_overlay_kind(kind, step_data_map);
+    }
+}
+
+/// The text a platform sends with the key down of `keystroke`.
+///
+/// Control and special keys map to their ASCII characters, as on macOS. A key that types a
+/// character sends that character. Every other named key (arrows, function keys, `home`,
+/// `pageup`, ...) types nothing, and its key down carries no text: this used to be the key's
+/// NAME (`"left"`, `"f2"`), text no platform sends. Since the pane key sink (#1411) reads a key
+/// down with printable text as a key that types, such a key was taken for typing: `shift-left`
+/// in vim arrived as the word "left" and F2 never became its escape sequence.
+fn chars_for_keystroke(keystroke: &Keystroke) -> String {
+    match (keystroke, keystroke.key.as_str()) {
+        (Keystroke { ctrl: true, .. }, "c") => "\u{3}".to_string(),
+        (_, "enter") => "\r".to_string(),
+        (Keystroke { shift: true, .. }, "tab") => "\u{19}".to_string(),
+        (_, "tab") => "\t".to_string(),
+        (_, "backspace") => "\u{7f}".to_string(),
+        (_, "numpadenter") => "\u{3}".to_string(),
+        (_, "escape") => "\u{1b}".to_string(),
+        (_, key) if key.chars().count() == 1 => key.to_string(),
+        _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod chars_for_keystroke_tests {
+    use super::*;
+
+    fn chars(keystroke: &str) -> String {
+        chars_for_keystroke(&Keystroke::parse(keystroke).expect("parses"))
+    }
+
+    #[test]
+    fn a_named_key_that_types_nothing_carries_no_text() {
+        for key in ["left", "shift-left", "up", "f2", "home", "delete"] {
+            assert_eq!(chars(key), "", "{key}");
+        }
+    }
+
+    #[test]
+    fn keys_that_type_and_control_keys_keep_their_text() {
+        assert_eq!(chars("a"), "a");
+        assert_eq!(chars("ctrl-i"), "i");
+        assert_eq!(chars("ctrl-c"), "\u{3}");
+        assert_eq!(chars("enter"), "\r");
+        assert_eq!(chars("tab"), "\t");
+        assert_eq!(chars("shift-tab"), "\u{19}");
+        assert_eq!(chars("escape"), "\u{1b}");
+        assert_eq!(chars("backspace"), "\u{7f}");
+        assert_eq!(chars("space"), " ");
     }
 }

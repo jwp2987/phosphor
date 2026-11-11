@@ -1496,6 +1496,32 @@ mod real_shells {
         assert!(!out.contains("ERR:"), "{out}");
     }
 
+    /// #950 on a machine with no `node` and no `git` (round 14's Windows runner has no node):
+    /// the prompt's lookups of the two programs add nothing to `$Error`. PATH is an empty
+    /// folder here, so the check does not depend on what the test machine has installed.
+    #[test]
+    fn pwsh_prompt_adds_no_error_records_when_node_and_git_are_missing() {
+        let ps1 = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/bundled/bootstrap/pwsh.ps1"
+        );
+        let empty = tempfile::tempdir().unwrap();
+        let script = format!(
+            "$global:_warpSessionId = [uint64]123; $env:WARP_HONOR_PS1 = '0'\n\
+             . '{ps1}' *> $null\n\
+             $env:PATH = '{empty}'\n\
+             $Error.Clear()\n\
+             for ($i = 0; $i -lt 2; $i++) {{ $null = prompt 2>&1; \"no-tools-prompt-$i errors=$($Error.Count)\" }}\n\
+             $Error | Select-Object -First 3 | ForEach-Object {{ \"ERR: $_\" }}",
+            empty = empty.path().display()
+        );
+        let Some((out, _)) = run(ShellType::PowerShell, &script) else {
+            return;
+        };
+        assert!(out.contains("no-tools-prompt-1 errors=0"), "{out}");
+        assert!(!out.contains("ERR:"), "{out}");
+    }
+
     #[test]
     fn false_positives_stay_in_the_users_shell_and_cd_persists() {
         for shell in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {

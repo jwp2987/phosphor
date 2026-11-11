@@ -33004,6 +33004,11 @@ fn ssh_submit_is_recognised_in_its_started_block_by_the_hooks_report_not_the_ech
 /// when that ssh's own block starts with a polluted echo (the nested ssh of round 9b: its typed
 /// line was split between the kept-text banner and the inner shell). The block is taken as the
 /// ssh's: the window stays armed and the pending ssh is recorded from the submitted command.
+///
+/// The pending ssh is what a POSIX shell's ssh block records. The pane's block has no session
+/// here, so its shell family is the machine's default; on Windows that is PowerShell, where an
+/// ssh block is by design a subshell-banner candidate and records no pending ssh. The test names
+/// a POSIX startup shell so that it checks the same path on every machine, and says so.
 #[test]
 fn an_ssh_window_survives_its_own_block_start_with_a_polluted_echo() {
     App::test((), |mut app| async move {
@@ -33011,6 +33016,18 @@ fn an_ssh_window_survives_its_own_block_start_with_a_polluted_echo() {
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
+            use crate::terminal::session_settings::NewSessionShell;
+            SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
+                let posix = NewSessionShell::Executable("bash".to_owned());
+                let _ = settings
+                    .new_session_shell_override
+                    .set_value(Some(posix), ctx);
+            });
+            assert_eq!(
+                view.shell_family(ctx),
+                warp_util::path::ShellFamily::Posix,
+                "the block is a POSIX shell's"
+            );
             register_local_session_for_ssh_test(view, ctx);
             submit_command(view, "ssh fake", ctx);
             assert!(view.ssh_phase.armed());

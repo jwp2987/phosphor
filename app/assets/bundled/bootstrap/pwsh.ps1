@@ -175,7 +175,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # to satisfy PSUseCompatibleCommands across target platforms.
         function Warp-TryGet-NodeVersion {
             try {
-                $cmd = Microsoft.PowerShell.Core\Get-Command -CommandType Application node 2>$null
+                $cmd = Microsoft.PowerShell.Core\Get-Command -CommandType Application node -ErrorAction Ignore
                 if ($null -eq $cmd) { return '' }
                 $nv = '' | & $cmd.Source --version 2>$null
                 if ($null -ne $nv -and "$nv" -ne '') {
@@ -905,10 +905,12 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 # Whether node exists is cached per session, negative results included, and
                 # re-probed only when $env:PATH changes (a failed lookup scans all of PATH,
                 # ~30 ms per prompt on Windows, #1163).
+                # -ErrorAction Ignore, not '2>$null': a redirected lookup failure is still
+                # recorded in the user's $Error (#950, #2111; a machine with no node or no git).
                 $hasNodeCommand = $false
                 if ($nodeChipEnabled) {
                     if (-not $script:warpNodeProbeDone -or $script:warpNodeProbePath -ne $env:PATH) {
-                        $script:warpNodeProbeValue = [bool](Microsoft.PowerShell.Core\Get-Command -CommandType Application node 2>$null)
+                        $script:warpNodeProbeValue = [bool](Microsoft.PowerShell.Core\Get-Command -CommandType Application node -ErrorAction Ignore)
                         $script:warpNodeProbePath = $env:PATH
                         $script:warpNodeProbeDone = $true
                     }
@@ -967,7 +969,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 # git's presence is cached per $env:PATH like node's; the branch is read from
                 # .git/HEAD in-process, and git itself is only spawned for what that cannot answer.
                 if (-not $script:warpGitProbeDone -or $script:warpGitProbePath -ne $env:PATH) {
-                    $script:warpGitProbeValue = [bool](Microsoft.PowerShell.Core\Get-Command -CommandType Application git 2>$null)
+                    $script:warpGitProbeValue = [bool](Microsoft.PowerShell.Core\Get-Command -CommandType Application git -ErrorAction Ignore)
                     $script:warpGitProbePath = $env:PATH
                     $script:warpGitProbeDone = $true
                 }
