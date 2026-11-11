@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="96" failures="7" skipped="54">
+<testcase classname="terminal" name="lab_enter_start.bash.150.nohelper" time="93.50">
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.zsh.150.nohelper" time="94.10">
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.fish.150.nohelper" time="76.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no paired timing for fish (no timestamped history hook for this shell)"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.nu.150.nohelper" time="131.30">
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.bash.150.nohelper" time="100.00">
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.zsh.150.nohelper" time="98.70">
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.fish.150.nohelper" time="102.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no Enter -&gt; write times in the app log (0 Enter -&gt; write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.nu.150.nohelper" time="111.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no Enter -&gt; write times in the app log (0 Enter -&gt; write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.bash.lan.nohelper" time="28.20">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.bash.150.nohelper" time="40.30">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.zsh.lan.nohelper" time="29.00">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.zsh.150.nohelper" time="38.10">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.fish.lan.nohelper" time="36.80">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.fish.150.nohelper" time="50.50">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.nu.lan.nohelper" time="32.00">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.nu.150.nohelper" time="106.60">
+<failure message="[x2 gap 0 ms] effect file: expected ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't594hmy91tne'], got ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk']">[x2 gap 0 ms] effect file: expected ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't594hmy91tne'], got ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk']
+[x2 gap 0 ms] the shell received ['sleep 30sec'], expected exactly [sleep 30sec, the echo]
+[x2 gap 50 ms] effect file: expected ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't594hmy91tne', 't59563odquzj'], got ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk']
+[x2 gap 50 ms] the shell received [], expected exactly [sleep 30sec, the echo]
+[x2 gap 200 ms] effect file: expected ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't594hmy91tne', 't59563odquzj', 't5962k7g3ija'], got ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't5962k7g3ija']
+[x2 gap 200 ms] the shell received ['"t5962k7g3ija\\n" | save --append /work/u_nu/cc_t5900w5y.txt'], expected exactly [sleep 30sec, the echo]
+[x3 gap 0 ms] effect file: expected ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't594hmy91tne', 't59563odquzj', 't5962k7g3ija', 't597ig9nhd5o'], got ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't5962k7g3ija']
+[x3 gap 0 ms] the shell received ['sleep 30sec'], expected exactly [sleep 30sec, the echo]
+[x3 gap 50 ms] effect file: expected ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't594hmy91tne', 't59563odquzj', 't5962k7g3ija', 't597ig9nhd5o', 't598sfoxbgqr'], got ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't5962k7g3ija']
+[x3 gap 50 ms] the shell received [], expected exactly [sleep 30sec, the echo]
+[x3 gap 200 ms] effect file: expected ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't594hmy91tne', 't59563odquzj', 't5962k7g3ija', 't597ig9nhd5o', 't598sfoxbgqr', 't599l15uyr9z'], got ['t591r9m0pyng', 't592zpu8xcnk', 't5933gal8xmk', 't5962k7g3ija', 't599l15uyr9z']
+[x3 gap 200 ms] the shell received ['"t599l15uyr9z\\n" | save --append /work/u_nu/cc_t5900w5y.txt'], expected exactly [sleep 30sec, the echo]
+injector accounting: injector sent 734; app saw 734; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 711 unbound keydown/typed, 22 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.lan.nohelper" time="5.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.150.nohelper" time="10.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.lan.nohelper" time="5.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.150.nohelper" time="10.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.lan.nohelper" time="5.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.150.nohelper" time="9.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.lan.nohelper" time="5.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.150.nohelper" time="10.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no scripted app driver for capability agent_context yet (add one to DRIVERS in cases_lab_helper.py); the case is registered so the guard passes"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.bash.150.helper" time="1.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.zsh.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.fish.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_start.nu.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.bash.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.zsh.150.helper" time="1.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.fish.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_enter_no_network_wait.nu.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.bash.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.bash.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.zsh.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.zsh.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.fish.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.fish.150.helper" time="1.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.nu.lan.helper" time="1.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.nu.150.helper" time="1.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.bash.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.zsh.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.fish.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.lan.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_agent_context.nu.150.helper" time="0.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_start.bash.150.nohelper" time="93.10">
+</testcase>
+<testcase classname="agent" name="lab_enter_start.zsh.150.nohelper" time="94.30">
+</testcase>
+<testcase classname="agent" name="lab_enter_start.fish.150.nohelper" time="76.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no paired timing for fish (no timestamped history hook for this shell)"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_start.nu.150.nohelper" time="131.30">
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.bash.150.nohelper" time="100.10">
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.zsh.150.nohelper" time="98.90">
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.fish.150.nohelper" time="102.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no Enter -&gt; write times in the app log (0 Enter -&gt; write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.nu.150.nohelper" time="111.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no Enter -&gt; write times in the app log (0 Enter -&gt; write sample(s) at the delayed link, 8 needed): input-order logging is off, or the Enters took a path"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.bash.lan.nohelper" time="28.00">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.bash.lan.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.bash.150.nohelper" time="39.80">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.bash.150.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.zsh.lan.nohelper" time="28.50">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.zsh.lan.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.zsh.150.nohelper" time="37.80">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_lab_ctrl_c_no_esc_i.zsh.150.nohelper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.fish.lan.nohelper" time="36.30">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.fish.150.nohelper" time="50.20">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.nu.lan.nohelper" time="31.60">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.nu.150.nohelper" time="95.40">
+<failure message="[x2 gap 50 ms] effect file: expected ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne', 't59963odquzj'], got ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne']">[x2 gap 50 ms] effect file: expected ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne', 't59963odquzj'], got ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne']
+[x2 gap 50 ms] the shell received ['sleep 30sec'], expected exactly [sleep 30sec, the echo]
+[x2 gap 200 ms] effect file: expected ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne', 't59963odquzj', 't6002k7g3ija'], got ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne', 't6002k7g3ija']
+[x2 gap 200 ms] the shell received ['"t6002k7g3ija\\n" | save --append /work/u_nu/cc_t5940w5y.txt'], expected exactly [sleep 30sec, the echo]
+[x3 gap 0 ms] effect file: expected ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne', 't59963odquzj', 't6002k7g3ija', 't601ig9nhd5o'], got ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne', 't6002k7g3ija', 't601ig9nhd5o']
+[x3 gap 50 ms] effect file: expected ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne', 't59963odquzj', 't6002k7g3ija', 't601ig9nhd5o', 't602sfoxbgqr'], got ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne', 't6002k7g3ija', 't601ig9nhd5o', 't602sfoxbgqr']
+[x3 gap 200 ms] effect file: expected ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne', 't59963odquzj', 't6002k7g3ija', 't601ig9nhd5o', 't602sfoxbgqr', 't603l15uyr9z'], got ['t595r9m0pyng', 't596zpu8xcnk', 't5973gal8xmk', 't598hmy91tne', 't6002k7g3ija', 't601ig9nhd5o', 't602sfoxbgqr', 't603l15uyr9z']
+injector accounting: injector sent 734; app saw 734; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 711 unbound keydown/typed, 22 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_flow.bash.lan.nohelper" time="17.80">
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_flow.nu.lan.nohelper" time="193.10">
+<failure message="the agent turn did not finish: the model received 0 of 5 tool results">the agent turn did not finish: the model received 0 of 5 tool results
+the edited file on the host is ['alpha tkat610zwbsih', 'second line']
+no hop=backend_route line for file_context: the call never reached the router
+no hop=backend_route line for file_write: the call never reached the router
+no hop=backend_route line for ripgrep_search: the call never reached the router
+no hop=backend_route line for fs_basic: the call never reached the router
+the feature typed into the remote shell: ['Please carry out these steps in order: read /work/u_nu/agf_t610zwbsih/a.txt ;; grep tknt610zwbsih /work/u_nu/agf_t610zwbsih ;; glob *.txt /work/u_nu/agf_t610zwbsih ;; edit /work/u_nu/agf_t610zwbsih/a.txt :: alpha tkat610zwbsih :: alpha tket610zwbsih ;; run cat /work/u_nu/agf_t610zwbsih/a.txt | /usr/bin/tee -a /work/u_nu/ran_t610zwbsih.txt']
+the approved `cat` ran 0 times on the host (its effect file holds [], expected exactly one copy of the edited file ['alpha tket610zwbsih', 'second line'])
+codebase step not run: APPCI_FAKE_EMBEDDINGS=1 is off, so the host has no embeddings provider to index with
+injector accounting: injector sent 409; app saw 409; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 404 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_errors.bash.lan.nohelper" time="14.70">
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_errors.nu.lan.nohelper" time="160.90">
+<failure message="the agent turn did not finish: the model received 0 of 4 tool results">the agent turn did not finish: the model received 0 of 4 tool results
+no hop=backend_route line for file_context: the call never reached the router
+the feature typed into the remote shell: ['Please carry out these steps in order: read /work/u_nu/age_t617kq7zdo/nope_t617kq7zdo.txt ;; edit /work/u_nu/age_t617kq7zdo/a.txt :: not_in_file_t617kq7zdo :: whatever ;; grep zzt617kq7zdoqq /work/u_nu/age_t617kq7zdo ;; glob *.nothing_t617kq7zdo /work/u_nu/age_t617kq7zdo']
+injector accounting: injector sent 340; app saw 340; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 335 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_drop.bash.lan.nohelper" time="11.00">
+</testcase>
+<testcase classname="agent" name="lab_agent_remote_drop.nu.lan.nohelper" time="96.00">
+<failure message="no approval card for the run_shell_command within 90 s">no approval card for the run_shell_command within 90 s
+injector accounting: injector sent 150; app saw 150; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 146 unbound keydown/typed, 3 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_lab_agent_remote_drop.nu.lan.nohelper" time="0.00">
+<failure message="after lab_agent_remote_drop.nu.lan.nohelper the pane's shell was not the root shell (none; root pid 876486); the app is relaunched so later cases start clean">after lab_agent_remote_drop.nu.lan.nohelper the pane's shell was not the root shell (none; root pid 876486); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_conflict.bash.lan.nohelper" time="38.90">
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_conflict.nu.lan.nohelper" time="136.10">
+<failure message="lab_fam_agent_edit_conflict: no hop=backend_route family=file_write line: the edit was not written through the backend router">lab_fam_agent_edit_conflict: no hop=backend_route family=file_write line: the edit was not written through the backend router
+NO-REFERENCE: UNVERIFIABLE: no action card for the proposed edit within 60 s (no '[byop-diag] queue_actions' in the app log): the fake model's edit never reached the diff view, nothing to accept or reject
+NO-REFERENCE: UNVERIFIABLE: no action card for the proposed edit within 60 s (no '[byop-diag] queue_actions' in the app log): the fake model's edit never reached the diff view, nothing to accept or reject
+partial accept: the diff card has no per-hunk accept (Up/Down only move between hunks, code_diff_view.rs); accept applies every hunk, reject none: not testable, not claimed
+injector accounting: injector sent 554; app saw 554; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 549 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_delete_conflict.bash.lan.nohelper" time="22.40">
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_endings.bash.lan.nohelper" time="71.60">
+</testcase>
+<testcase classname="agent" name="lab_fam_agent_edit_touch_only.bash.lan.nohelper" time="20.40">
+</testcase>
+<testcase classname="agent" name="lab_enter_start.bash.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_start.zsh.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_start.fish.150.helper" time="0.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_start.nu.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.bash.150.helper" time="0.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.zsh.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.fish.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_enter_no_network_wait.nu.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.bash.lan.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.bash.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.zsh.lan.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.zsh.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.fish.lan.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.fish.150.helper" time="0.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.nu.lan.helper" time="0.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.nu.150.helper" time="0.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: helper arm: APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: no cached helper for key 1892fab93168839a16959f18 under"/>
+</testcase>
+</testsuite>

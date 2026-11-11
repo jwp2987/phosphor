@@ -1,0 +1,945 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="336" failures="29" skipped="177">
+<testcase classname="terminal" name="mode_proof" time="1.20">
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.10">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="98.80">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="89.60">
+<failure message="ft0: file has 29/30 lines, exact match False first diff: exp='t94_j0jblqxis0' got=None [first bad line 29: injector call #115 posted its ENTER at 14:01:29.964] -- the reference kept every line exactly in the same session (30/30 lines): Phosphor-side (#1482)">ft0: file has 29/30 lines, exact match False first diff: exp='t94_j0jblqxis0' got=None [first bad line 29: injector call #115 posted its ENTER at 14:01:29.964] -- the reference kept every line exactly in the same session (30/30 lines): Phosphor-side (#1482)
+injector accounting: injector sent 2277; app saw 2277; lost-before-app 0 (Enter: sent 60, app saw 60); of the app's: 2215 unbound keydown/typed, 2 taken by a key binding, 60 Enter by a binding
+pty writes: 260, of which carrying a CR (\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="5.50">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="22.50">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="329.40">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_flood_ab" time="0.00">
+<skipped message="not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="terminal" name="ps_ctrl_break" time="14.50">
+</testcase>
+<testcase classname="terminal" name="ps_ctrl_scrolllock_break" time="13.70">
+</testcase>
+<testcase classname="terminal" name="ps_fast_command_young_enter" time="10.50">
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe" time="0.00">
+<skipped message="not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_questions" time="0.00">
+<skipped message="not run in the PowerShell pane: bash --rcfile with read -p questions: the Git Bash pane (#1886: no tty probe on ConPTY, the judge uses screen facts)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_vim_typeahead" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_unsupported_tcsh" time="0.00">
+<skipped message="not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_prompt" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY pro"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_probe" time="0.00">
+<skipped message="not run on Windows: as subshell_ready_secret_after_prompt: a PROMPT_COMMAND read -s behind the sh probe needs the tty facts ConPTY does not have (#1905)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe_empty_ps1" time="0.00">
+<skipped message="not run on Windows: dash does not exist in a Windows pane; the sh probe path is POSIX (#1935)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="0.00">
+<skipped message="not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_exec_fish_rc" time="0.00">
+<skipped message="not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_docker_t_without_i" time="0.00">
+<skipped message="not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_zsh_newuser_install" time="0.00">
+<skipped message="not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="0.00">
+<skipped message="not run in the PowerShell pane: bash --rcfile with clear: the Git Bash pane (#1886: no tty probe on ConPTY, the judge uses screen facts)"/>
+</testcase>
+<testcase classname="terminal" name="gitbash_long_osc_reaches_app" time="0.00">
+<skipped message="not run in the PowerShell pane: an msys program printing a long escape sequence to the pane's console (#2007): bash syntax and the msys console layer, the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="57.30">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="12.70">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="8.90">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing_wrapper" time="0.00">
+<skipped message="not run in the PowerShell pane: bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, #1884); skips itself without it"/>
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead_wrapper" time="0.00">
+<skipped message="not run in the PowerShell pane: bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, #1884); skips itself without it"/>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="287.80">
+<skipped message="NO-REFERENCE (not a pass): app share of Enter-&gt;start: enter_begin -&gt; pty_write median 1.79 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="0.00">
+<skipped message="not run in the PowerShell pane: types into a running `cat &gt; /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="1.20">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint_ab" time="0.00">
+<skipped message="not run on Windows: #1848: the key frame at the end of the key press it A/Bs exists only in the macOS renderer (and kl3 is macOS only)"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_views_ab" time="369.90">
+</testcase>
+<testcase classname="terminal" name="routing_table" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="0.00">
+<skipped message="not run in the PowerShell pane: rec.log of the remote bash and `cd`/`pwd` there, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="0.00">
+<skipped message="not run in the PowerShell pane: rec.log of the remote bash for the completed `cd`, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_typeahead_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: keys typed during a one-connection managed ssh login stay managed (#1959): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_kill_switch" time="0.00">
+<skipped message="not run in the PowerShell pane: PHOSPHOR_MSYS_MANAGED_SSH=0 in the bash pane (#1933): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts the menu on screen after typing in the Git Bash pane (the as-you-type default under test)"/>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="0.00">
+<skipped message="not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="0.00">
+<skipped message="not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_output" time="0.00">
+<skipped message="not run in the PowerShell pane: #1976: `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (keyboard and clipboard only)"/>
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_drag" time="0.00">
+<skipped message="not run on Windows: #1976: no pointer synthesis in the Windows backend yet (the keyboard half, ui_copy_wrapped_output, runs in the Git Bash pane)"/>
+</testcase>
+<testcase classname="terminal" name="ctrl_c_no_esc_i_local" time="0.60">
+<skipped message="the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log"/>
+</testcase>
+<testcase classname="terminal" name="giveup_keys_reach_shell" time="13.00">
+</testcase>
+<testcase classname="terminal" name="ps_read_host_secure" time="11.20">
+</testcase>
+<testcase classname="terminal" name="gitbash_precmd_secret" time="0.00">
+<skipped message="not run in the PowerShell pane: bash precmd_functions with `read -s` after the prompt's Precmd, rec.log to prove the PIN was not run as a command (#1883): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="precmd_secret_honor_ps1" time="0.00">
+<skipped message="not run in the PowerShell pane: a bash precmd function's `read -s`, with the app's prompt and with honor PS1 on (relaunches the app with terminal.input.honor_ps1; #1923): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="5.90">
+</testcase>
+<testcase classname="terminal" name="zero_network_startup" time="0.00">
+<skipped message="not run on Windows: Wave N: traces the app with Linux strace; a Windows/macOS network trace is not built yet"/>
+</testcase>
+<testcase classname="terminal" name="keyring_unavailable_startup" time="0.00">
+<skipped message="not run on Windows: #1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)"/>
+</testcase>
+<testcase classname="terminal" name="claude_plugin_offline" time="0.00">
+<skipped message="not run on Windows: Wave N: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the plugin's hook scripts are bash+jq"/>
+</testcase>
+<testcase classname="terminal" name="agent_plugins_offline" time="0.00">
+<skipped message="not run on Windows: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the Codex and Gemini hook scripts are bash+jq and write to /dev/tty"/>
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_many" time="0.00">
+<skipped message="not run on Windows: #1990: not yet ported: switches the panel on by rewriting the settings file while the app runs (as ui_settings_live), and the Windows config path is not wired into cases_ui.setting"/>
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_panel_click" time="0.00">
+<skipped message="not run on Windows: #1990: no pointer synthesis in the Windows backend yet, and the settings rewrite of ui_vertical_tabs_many"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="0.00">
+<skipped message="not run on Windows: needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle) and the Linux profile layout"/>
+</testcase>
+<testcase classname="terminal" name="output_frames" time="17.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: visible streaming tab: the app log has no 'wakeup:' line (a build older than the #1979 measurement, or warpui::frame_cause logging is off)"/>
+</testcase>
+<testcase classname="terminal" name="cb_report_problem" time="0.00">
+<skipped message="not run on Windows: the Windows Downloads folder is a known folder, not under the scratch HOME, so the bundle does not land where the case looks (set PHOSPHOR_DIAG_BUNDLE_DIR in the app's environment "/>
+</testcase>
+<testcase classname="terminal@gitbash" name="mode_proof" time="1.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="cadence" time="6.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_loss_control" time="33.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="enter_loss_control" time="57.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="fast_typing" time="48.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="paste_instant_enter" time="9.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="tab_enter" time="18.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_d" time="266.10">
+<skipped message="NO-REFERENCE (not a pass): #1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_flood_ab" time="0.00">
+<skipped message="not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ps_ctrl_break" time="0.00">
+<skipped message="not run in the Git Bash pane: #1888: Ctrl+Break to a Python SIGBREAK receiver through the PowerShell pane's `&amp;` call; the Git Bash pane's msys signals differ"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ps_ctrl_scrolllock_break" time="0.00">
+<skipped message="not run in the Git Bash pane: #1906: Ctrl+ScrollLock (the other VK_CANCEL key) to the same SIGBREAK receiver; the Git Bash pane's msys signals differ"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ps_fast_command_young_enter" time="0.00">
+<skipped message="not run in the Git Bash pane: #1889: PowerShell's Add-Content lines and its ConPTY young-Enter window; the Git Bash pane has the prompt-hold gates instead"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_sh_probe" time="0.00">
+<skipped message="not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_rc_questions" time="17.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_vim_typeahead" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_unsupported_tcsh" time="0.00">
+<skipped message="not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_secret_after_prompt" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY pro"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_secret_after_probe" time="0.00">
+<skipped message="not run on Windows: as subshell_ready_secret_after_prompt: a PROMPT_COMMAND read -s behind the sh probe needs the tty facts ConPTY does not have (#1905)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_sh_probe_empty_ps1" time="0.00">
+<skipped message="not run on Windows: dash does not exist in a Windows pane; the sh probe path is POSIX (#1935)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_relay_shape" time="0.00">
+<skipped message="not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_exec_fish_rc" time="0.00">
+<skipped message="not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_docker_t_without_i" time="0.00">
+<skipped message="not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_zsh_newuser_install" time="0.00">
+<skipped message="not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_rc_clear" time="16.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="gitbash_long_osc_reaches_app" time="1.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_connect_typing" time="22.90">
+<failure message="ssh_connect_typing (gap 0.0 s): T181_sp56xu never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: fi | TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:31:37 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:31:37 conpty exec pid 8432 | 14:31:37 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=18 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=19 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=20 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=21 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=22 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=23 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=kh_iq_queue seq=9431 gate_open kind=ssh_connect key=2 token=52 barrier=#353 opened_by=ssh_connect_started closes_on=gate_relea | [DEBUG] input_order hop=kh_iq_hold seq=9431 queue=Q7_ssh_typeahead bytes=29 t=1794349897129.016 | [DEBUG] input_order hop=kh_holding_set seq=9431 holding=true t=1794349897129.041 | [DEBUG] input_order hop=kh_holding_set seq=9431 holding=false t=1794349904960.385; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">ssh_connect_typing (gap 0.0 s): T181_sp56xu never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: fi | TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:31:37 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:31:37 conpty exec pid 8432 | 14:31:37 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=18 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=19 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=20 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=21 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=22 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=23 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=kh_iq_queue seq=9431 gate_open kind=ssh_connect key=2 token=52 barrier=#353 opened_by=ssh_connect_started closes_on=gate_relea | [DEBUG] input_order hop=kh_iq_hold seq=9431 queue=Q7_ssh_typeahead bytes=29 t=1794349897129.016 | [DEBUG] input_order hop=kh_holding_set seq=9431 holding=true t=1794349897129.041 | [DEBUG] input_order hop=kh_holding_set seq=9431 holding=false t=1794349904960.385; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+remote shell received 0/1 typed-ahead commands exactly (missing 1)
+ssh_connect_typing gap 0.0 s trial 1: #1996: the ssh connect GAVE UP on its events (give_ups=1) and wrote the held keys to the pty at the give-up, not at the remote prompt (hop give_up_keys_to_pty: 2 key(s), 29 of 29 byte(s) written, 0 put in the input); held 25 key(s)/53 byte(s), hand-over finish@24,finish@29, finish delivered=tty_owner,give_up=ceiling,delivered=give_up_pty; the app saw every key of the line; remote got None
+ssh_connect_typing loss: 1 of 1 typed-ahead commands lost (observed 100.0 %); 95 % upper confidence bound 100.0 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials
+ssh trial verdicts: #1996=1
+injector accounting: injector sent 44; app saw 44; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 39 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_ssh_connect_typing" time="0.00">
+<failure message="after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_enter_then_immediate_command" time="22.00">
+<failure message="ssh_enter_then_immediate_command: T186_5bg1vv never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: fi | TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:32:26 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:32:26 conpty exec pid 12144 | 14:32:26 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=212 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794349946117.980 | [DEBUG] input_order hop=kh_hold_exit seq=212 branch=gate_open_live gate_armed=true table=1 t=1794349946117.996 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=213 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794349946119.216 | [DEBUG] input_order hop=kh_hold_exit seq=213 branch=gate_open_live gate_armed=true table=1 t=1794349946119.234 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_iq_queue seq=213 gate_open kind=ssh_connect key=2 token=4 barrier=#26 opened_by=ssh_connect_started closes_on=gate_released | [DEBUG] input_order hop=kh_iq_hold seq=213 queue=Q7_ssh_typeahead bytes=29 t=1794349946522.041 | [DEBUG] input_order hop=kh_holding_set seq=213 holding=true t=1794349946522.073 | [DEBUG] input_order hop=kh_holding_set seq=213 holding=false t=1794349957161.454; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">ssh_enter_then_immediate_command: T186_5bg1vv never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: fi | TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:32:26 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:32:26 conpty exec pid 12144 | 14:32:26 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=212 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794349946117.980 | [DEBUG] input_order hop=kh_hold_exit seq=212 branch=gate_open_live gate_armed=true table=1 t=1794349946117.996 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=213 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794349946119.216 | [DEBUG] input_order hop=kh_hold_exit seq=213 branch=gate_open_live gate_armed=true table=1 t=1794349946119.234 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_iq_queue seq=213 gate_open kind=ssh_connect key=2 token=4 barrier=#26 opened_by=ssh_connect_started closes_on=gate_released | [DEBUG] input_order hop=kh_iq_hold seq=213 queue=Q7_ssh_typeahead bytes=29 t=1794349946522.041 | [DEBUG] input_order hop=kh_holding_set seq=213 holding=true t=1794349946522.073 | [DEBUG] input_order hop=kh_holding_set seq=213 holding=false t=1794349957161.454; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+remote shell received 0/1 immediately-typed commands exactly: []
+ssh_enter_then_immediate_command trial 1: #1996: the ssh connect GAVE UP on its events (give_ups=1) and wrote the held keys to the pty at the give-up, not at the remote prompt (hop give_up_keys_to_pty: 2 key(s), 29 of 29 byte(s) written, 0 put in the input); held 19 key(s)/47 byte(s), hand-over finish@18,finish@29, finish delivered=tty_owner,give_up=ceiling,delivered=give_up_pty; the app saw every key of the line; remote got None
+ssh trial verdicts: #1996=1
+injector accounting: injector sent 44; app saw 44; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 39 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_ssh_enter_then_immediate_command" time="0.00">
+<failure message="after ssh_enter_then_immediate_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_enter_then_immediate_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_nested_typeahead" time="32.10">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T191_kr7tz8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: fi | TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:33:15 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:33:15 conpty exec pid 9508 | 14:33:15 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=221 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794349994771.726 | [DEBUG] input_order hop=kh_hold_exit seq=221 branch=gate_open_live gate_armed=true table=1 t=1794349994771.743 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=222 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794349994772.774 | [DEBUG] input_order hop=kh_hold_exit seq=222 branch=gate_open_live gate_armed=true table=1 t=1794349994772.789 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_iq_queue seq=222 gate_open kind=ssh_connect key=2 token=4 barrier=#30 opened_by=ssh_connect_started closes_on=gate_released | [DEBUG] input_order hop=kh_iq_hold seq=222 queue=Q7_ssh_typeahead bytes=38 t=1794349995018.429 | [DEBUG] input_order hop=kh_holding_set seq=222 holding=true t=1794349995018.444 | [DEBUG] input_order hop=kh_holding_set seq=222 holding=false t=1794350005694.095; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+ssh_nested_typeahead: #1996: the ssh connect GAVE UP on its events (give_ups=1) and wrote the held keys to the pty at the give-up, not at the remote prompt (hop give_up_keys_to_pty: 4 key(s), 38 of 38 byte(s) written, 0 put in the input); held 23 key(s)/60 byte(s), hand-over finish@22,finish@38, finish delivered=tty_owner,give_up=ceiling,delivered=give_up_pty; the app saw every key of the line; remote got None
+ssh trial verdicts: #1996=1
+injector accounting: injector sent 53; app saw 53; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 48 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_ssh_nested_typeahead" time="0.00">
+<failure message="after ssh_nested_typeahead the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_nested_typeahead the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_connect_typing_wrapper" time="0.60">
+<skipped message="set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_nested_typeahead_wrapper" time="0.50">
+<skipped message="set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_enter" time="183.60">
+<skipped message="NO-REFERENCE (not a pass): G1: Git Bash fork+exec costs 43.2 ms per process on this host (outside the app); every forking shell hook adds about that"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_key_log" time="12.10">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 0.72 ms (p95 1.09, n=60): within the 1 ms target"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_paint_ab" time="0.00">
+<skipped message="not run on Windows: #1848: the key frame at the end of the key press it A/Bs exists only in the macOS renderer (and kl3 is macOS only)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_key_views_ab" time="193.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="routing_table" time="58.60">
+<failure message="'make a PR' (ambiguous) expected shell, went to agent (surface PlainTerminal, rule model); shell received []">'make a PR' (ambiguous) expected shell, went to agent (surface PlainTerminal, rule model); shell received []
+injector accounting: injector sent 645; app saw 645; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 548 unbound keydown/typed, 70 taken by a key binding, 27 Enter by a binding
+pty writes: 15, of which carrying a CR (\r): 0; Enter(s) the input editor started: 27 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="agent_mode_switch" time="8.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="remote_tab_no_helper" time="61.30">
+<failure message="no remote shell prompt after `ssh fake`. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:41:57 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:41:57 conpty exec pid 10668 | 14:41:57 conpty first output after 0.02 s: 4 bytes (starts 1b5b3174) | 14:42:49 client input so far: 65541 bytes in 54622 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: none logged since the case started; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">no remote shell prompt after `ssh fake`. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:41:57 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:41:57 conpty exec pid 10668 | 14:41:57 conpty first output after 0.02 s: 4 bytes (starts 1b5b3174) | 14:42:49 client input so far: 65541 bytes in 54622 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: none logged since the case started; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+injector accounting: injector sent 13; app saw 13; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 8 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_remote_tab_no_helper" time="0.00">
+<failure message="after remote_tab_no_helper the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after remote_tab_no_helper the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="remote_tab_enter_no_helper" time="61.30">
+<failure message="no remote shell prompt after `ssh fake`. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:43:25 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:43:25 conpty exec pid 10732 | 14:43:25 conpty first output after 0.02 s: 4 bytes (starts 1b5b3174) | 14:44:16 client input so far: 65536 bytes in 56817 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: none logged since the case started; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">no remote shell prompt after `ssh fake`. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:43:25 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:43:25 conpty exec pid 10732 | 14:43:25 conpty first output after 0.02 s: 4 bytes (starts 1b5b3174) | 14:44:16 client input so far: 65536 bytes in 56817 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: none logged since the case started; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+injector accounting: injector sent 13; app saw 13; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 9 unbound keydown/typed, 3 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_remote_tab_enter_no_helper" time="0.00">
+<failure message="after remote_tab_enter_no_helper the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after remote_tab_enter_no_helper the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_gitbash_managed" time="17.00">
+<failure message="precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: remote)">precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: remote)
+injector accounting: injector sent 89; app saw 89; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 84 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_ssh_gitbash_managed" time="0.00">
+<failure message="after ssh_gitbash_managed the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_gitbash_managed the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_gitbash_typeahead_managed" time="298.00">
+<failure message="trial 1: the line typed during the connect never reached the remote shell. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:45:36 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:45:36 conpty exec pid 10596 | 14:45:36 conpty first output after 0.02 s: 4 bytes (starts 1b5b3174) | 14:46:25 client input so far: 65536 bytes in 60338 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=8 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=9 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=10 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=11 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=12 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=13 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=kh_iq_queue seq=201 gate_open kind=ssh_connect key=2 token=4 barrier=#22 opened_by=ssh_connect_started closes_on=gate_released | [DEBUG] input_order hop=kh_iq_hold seq=201 queue=Q7_ssh_typeahead bytes=17 t=1794350736423.146 | [DEBUG] input_order hop=kh_holding_set seq=201 holding=true t=1794350736423.161 | [DEBUG] input_order hop=kh_holding_set seq=201 holding=false t=1794350747040.354; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">trial 1: the line typed during the connect never reached the remote shell. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 14:45:36 exec pty arm app (a pseudo console of the app's own conpty.dll) | 14:45:36 conpty exec pid 10596 | 14:45:36 conpty first output after 0.02 s: 4 bytes (starts 1b5b3174) | 14:46:25 client input so far: 65536 bytes in 60338 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=8 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=9 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=10 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=11 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=12 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=13 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=kh_iq_queue seq=201 gate_open kind=ssh_connect key=2 token=4 barrier=#22 opened_by=ssh_connect_started closes_on=gate_released | [DEBUG] input_order hop=kh_iq_hold seq=201 queue=Q7_ssh_typeahead bytes=17 t=1794350736423.146 | [DEBUG] input_order hop=kh_holding_set seq=201 holding=true t=1794350736423.161 | [DEBUG] input_order hop=kh_holding_set seq=201 holding=false t=1794350747040.354; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+trial 1: the remote shell received [], want exactly ['echo T245_tf2wmk']
+trial 1: the pane is not provably remote after the connect (probe ran in: none)
+trial 2: the line typed during the connect never reached the remote shell. Test host: sshd.log: 14:46:25 client input so far: 65536 bytes in 60338 chunks, 65535 written to the pseudo console | 14:46:35 connect from ('127.0.0.1', 58250) | 14:46:35 serve err SSHException('Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host') | 14:47:11 client input so far: 131072 bytes in 119918 chunks, 131071 written to the pseudo console | 14:47:14 client input ended: 134882 bytes in 123378 chunks, 134882 written to the pseudo console (97.6 s first to last byte, 1382 bytes/s, ESC 5487, CR 0, LF 0, other control 0, non-ASCII 3; starts b'M\x1b[?62c if [[ ${bash_preexec_imported:-} == "def') | 14:47:14 connection closed: authenticated=False channels=1 | 14:47:14 conpty output ended: 71455 bytes sent to the client in total | 14:47:14 exec output carried 2 OSC 9278 sequence start(s); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=300 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794350834870.442 | [DEBUG] input_order hop=kh_hold_exit seq=300 branch=held held_bytes=0 table=1 t=1794350834870.447 | [DEBUG] input_order hop=kh_hold_entry seq=301 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794350834897.137 | [DEBUG] input_order hop=kh_hold_exit seq=301 branch=held held_bytes=0 table=1 t=1794350834897.153 | [DEBUG] input_order hop=kh_hold_entry seq=302 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794350834924.923 | [DEBUG] input_order hop=kh_hold_exit seq=302 branch=held held_bytes=0 table=1 t=1794350834924.933 | [DEBUG] input_order hop=kh_hold_entry seq=303 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794350834950.662 | [DEBUG] input_order hop=kh_hold_exit seq=303 branch=held held_bytes=0 table=1 t=1794350834950.681 | [DEBUG] input_order hop=kh_hold_entry seq=304 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794350834951.316 | [DEBUG] input_order hop=kh_hold_exit seq=304 branch=held held_bytes=0 table=1 t=1794350834951.321; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+trial 2: the remote shell received [], want exactly ['echo T248_2cxvl5']
+trial 2: one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)
+trial 2: the wrapper's verdict was managed=true
+trial 2: the pane is not provably remote after the connect (probe ran in: none)
+trial 3: the line typed during the connect never reached the remote shell. Test host: sshd.log: 14:46:35 serve err SSHException('Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host') | 14:47:11 client input so far: 131072 bytes in 119918 chunks, 131071 written to the pseudo console | 14:47:14 client input ended: 134882 bytes in 123378 chunks, 134882 written to the pseudo console (97.6 s first to last byte, 1382 bytes/s, ESC 5487, CR 0, LF 0, other control 0, non-ASCII 3; starts b'M\x1b[?62c if [[ ${bash_preexec_imported:-} == "def') | 14:47:14 connection closed: authenticated=False channels=1 | 14:47:14 conpty output ended: 71455 bytes sent to the client in total | 14:47:14 exec output carried 2 OSC 9278 sequence start(s) | 14:48:15 connect from ('127.0.0.1', 58258) | 14:48:15 serve err SSHException('Error reading SSH protocol banner[WinError 10053] An established connection was aborted by the software in your host machine'); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:49277; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=403 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794350933868.636 | [DEBUG] input_order hop=kh_hold_exit seq=403 branch=held held_bytes=0 table=1 t=1794350933868.647 | [DEBUG] input_order hop=kh_hold_entry seq=404 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794350933885.679 | [DEBUG] input_order hop=kh_hold_exit seq=404 branch=held held_bytes=0 table=1 t=1794350933885.702 | [DEBUG] input_order hop=kh_hold_entry seq=405 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794350933902.521 | [DEBUG] input_order hop=kh_hold_exit seq=405 branch=held held_bytes=0 table=1 t=1794350933902.710 | [DEBUG] input_order hop=kh_hold_entry seq=406 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794350933920.184 | [DEBUG] input_order hop=kh_hold_exit seq=406 branch=held held_bytes=0 table=1 t=1794350933920.207 | [DEBUG] input_order hop=kh_hold_entry seq=407 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794350933921.077 | [DEBUG] input_order hop=kh_hold_exit seq=407 branch=held held_bytes=0 table=1 t=1794350933921.092; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+trial 3: the remote shell received [], want exactly ['echo T251_aod2k6']
+trial 3: one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)
+trial 3: the wrapper's verdict was managed=true
+trial 3: the pane is not provably remote after the connect (probe ran in: none)
+typed-during-connect: in 1 of 3 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true); in the others every key was typed after auth_done or consumed by the login
+injector accounting: injector sent 316; app saw 316; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 309 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_ssh_gitbash_typeahead_managed" time="0.00">
+<failure message="after ssh_gitbash_typeahead_managed the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_gitbash_typeahead_managed the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_gitbash_kill_switch" time="7.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_completions_as_you_type_local" time="2.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: no OCR on this machine (tesseract): the completion menu is not checked"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_fish" time="0.60">
+<skipped message="package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_nu" time="0.60">
+<skipped message="package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_copy_wrapped_output" time="9.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_copy_wrapped_drag" time="0.00">
+<skipped message="not run on Windows: #1976: no pointer synthesis in the Windows backend yet (the keyboard half, ui_copy_wrapped_output, runs in the Git Bash pane)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_no_esc_i_local" time="0.60">
+<skipped message="the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="giveup_keys_reach_shell" time="12.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="ps_read_host_secure" time="0.00">
+<skipped message="not run in the Git Bash pane: #1882/#1891: Read-Host -AsSecureString is PowerShell; the Git Bash twin is gitbash_precmd_secret"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="gitbash_precmd_secret" time="10.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="precmd_secret_honor_ps1" time="50.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="md_viewer" time="5.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="zero_network_startup" time="0.00">
+<skipped message="not run on Windows: Wave N: traces the app with Linux strace; a Windows/macOS network trace is not built yet"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="keyring_unavailable_startup" time="0.00">
+<skipped message="not run on Windows: #1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="claude_plugin_offline" time="0.00">
+<skipped message="not run on Windows: Wave N: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the plugin's hook scripts are bash+jq"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="agent_plugins_offline" time="0.00">
+<skipped message="not run on Windows: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the Codex and Gemini hook scripts are bash+jq and write to /dev/tty"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_vertical_tabs_many" time="0.00">
+<skipped message="not run on Windows: #1990: not yet ported: switches the panel on by rewriting the settings file while the app runs (as ui_settings_live), and the Windows config path is not wired into cases_ui.setting"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_vertical_tabs_panel_click" time="0.00">
+<skipped message="not run on Windows: #1990: no pointer synthesis in the Windows backend yet, and the settings rewrite of ui_vertical_tabs_many"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="network_gate_switch" time="0.00">
+<skipped message="not run on Windows: needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle) and the Linux profile layout"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="output_frames" time="17.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: visible streaming tab: the app log has no 'wakeup:' line (a build older than the #1979 measurement, or warpui::frame_cause logging is off)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="cb_report_problem" time="0.00">
+<skipped message="not run on Windows: the Windows Downloads folder is a known folder, not under the scratch HOME, so the bundle does not land where the case looks (set PHOSPHOR_DIAG_BUNDLE_DIR in the app's environment "/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.20">
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="22.40">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="5.50">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="21.00">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="180.30">
+</testcase>
+<testcase classname="agent" name="ctrl_c_flood_ab" time="0.00">
+<skipped message="not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="agent" name="ps_ctrl_break" time="13.10">
+</testcase>
+<testcase classname="agent" name="ps_ctrl_scrolllock_break" time="12.80">
+</testcase>
+<testcase classname="agent" name="ps_fast_command_young_enter" time="10.30">
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe" time="0.00">
+<skipped message="not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_questions" time="0.00">
+<skipped message="not run in the PowerShell pane: bash --rcfile with read -p questions: the Git Bash pane (#1886: no tty probe on ConPTY, the judge uses screen facts)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_vim_typeahead" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_unsupported_tcsh" time="0.00">
+<skipped message="not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_prompt" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY pro"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_probe" time="0.00">
+<skipped message="not run on Windows: as subshell_ready_secret_after_prompt: a PROMPT_COMMAND read -s behind the sh probe needs the tty facts ConPTY does not have (#1905)"/>
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe_empty_ps1" time="0.00">
+<skipped message="not run on Windows: dash does not exist in a Windows pane; the sh probe path is POSIX (#1935)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_relay_shape" time="0.00">
+<skipped message="not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_exec_fish_rc" time="0.00">
+<skipped message="not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_docker_t_without_i" time="0.00">
+<skipped message="not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_zsh_newuser_install" time="0.00">
+<skipped message="not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="0.00">
+<skipped message="not run in the PowerShell pane: bash --rcfile with clear: the Git Bash pane (#1886: no tty probe on ConPTY, the judge uses screen facts)"/>
+</testcase>
+<testcase classname="agent" name="gitbash_long_osc_reaches_app" time="0.00">
+<skipped message="not run in the PowerShell pane: an msys program printing a long escape sequence to the pane's console (#2007): bash syntax and the msys console layer, the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="46.80">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="13.00">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="7.80">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing_wrapper" time="0.00">
+<skipped message="not run in the PowerShell pane: bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, #1884); skips itself without it"/>
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead_wrapper" time="0.00">
+<skipped message="not run in the PowerShell pane: bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, #1884); skips itself without it"/>
+</testcase>
+<testcase classname="agent" name="latency_paint_ab" time="0.00">
+<skipped message="not run on Windows: #1848: the key frame at the end of the key press it A/Bs exists only in the macOS renderer (and kl3 is macOS only)"/>
+</testcase>
+<testcase classname="agent" name="latency_key_views_ab" time="378.10">
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="0.00">
+<skipped message="not run in the PowerShell pane: uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)"/>
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="0.00">
+<skipped message="not run in the PowerShell pane: reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="routing_table" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="routing_typo_head" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log (#1980, agent mode only): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="agent_lrc_no_false_takeover" time="128.00">
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="0.00">
+<skipped message="not run in the PowerShell pane: rec.log of the remote bash and `cd`/`pwd` there, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="0.00">
+<skipped message="not run in the PowerShell pane: rec.log of the remote bash for the completed `cd`, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_typeahead_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: keys typed during a one-connection managed ssh login stay managed (#1959): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_kill_switch" time="0.00">
+<skipped message="not run in the PowerShell pane: PHOSPHOR_MSYS_MANAGED_SSH=0 in the bash pane (#1933): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_output" time="0.00">
+<skipped message="not run in the PowerShell pane: #1976: `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (keyboard and clipboard only)"/>
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_drag" time="0.00">
+<skipped message="not run on Windows: #1976: no pointer synthesis in the Windows backend yet (the keyboard half, ui_copy_wrapped_output, runs in the Git Bash pane)"/>
+</testcase>
+<testcase classname="agent" name="ctrl_c_no_esc_i_local" time="0.60">
+<skipped message="the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log"/>
+</testcase>
+<testcase classname="agent" name="giveup_keys_reach_shell" time="13.00">
+</testcase>
+<testcase classname="agent" name="precmd_secret_honor_ps1" time="0.00">
+<skipped message="not run in the PowerShell pane: a bash precmd function's `read -s`, with the app's prompt and with honor PS1 on (relaunches the app with terminal.input.honor_ps1; #1923): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="keyring_unavailable_startup" time="0.00">
+<skipped message="not run on Windows: #1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)"/>
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_many" time="0.00">
+<skipped message="not run on Windows: #1990: not yet ported: switches the panel on by rewriting the settings file while the app runs (as ui_settings_live), and the Windows config path is not wired into cases_ui.setting"/>
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_panel_click" time="0.00">
+<skipped message="not run on Windows: #1990: no pointer synthesis in the Windows backend yet, and the settings rewrite of ui_vertical_tabs_many"/>
+</testcase>
+<testcase classname="agent" name="output_frames" time="77.90">
+</testcase>
+<testcase classname="agent@gitbash" name="mode_proof" time="0.20">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="fast_typing" time="19.00">
+</testcase>
+<testcase classname="agent@gitbash" name="paste_instant_enter" time="8.50">
+</testcase>
+<testcase classname="agent@gitbash" name="tab_enter" time="17.10">
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_d" time="84.10">
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_flood_ab" time="0.00">
+<skipped message="not run on Windows: #1838: the blocked-frame gate it A/Bs exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ps_ctrl_break" time="0.00">
+<skipped message="not run in the Git Bash pane: #1888: Ctrl+Break to a Python SIGBREAK receiver through the PowerShell pane's `&amp;` call; the Git Bash pane's msys signals differ"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ps_ctrl_scrolllock_break" time="0.00">
+<skipped message="not run in the Git Bash pane: #1906: Ctrl+ScrollLock (the other VK_CANCEL key) to the same SIGBREAK receiver; the Git Bash pane's msys signals differ"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ps_fast_command_young_enter" time="0.00">
+<skipped message="not run in the Git Bash pane: #1889: PowerShell's Add-Content lines and its ConPTY young-Enter window; the Git Bash pane has the prompt-hold gates instead"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_sh_probe" time="0.00">
+<skipped message="not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_rc_questions" time="17.10">
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_vim_typeahead" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_unsupported_tcsh" time="0.00">
+<skipped message="not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_secret_after_prompt" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY pro"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_secret_after_probe" time="0.00">
+<skipped message="not run on Windows: as subshell_ready_secret_after_prompt: a PROMPT_COMMAND read -s behind the sh probe needs the tty facts ConPTY does not have (#1905)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_sh_probe_empty_ps1" time="0.00">
+<skipped message="not run on Windows: dash does not exist in a Windows pane; the sh probe path is POSIX (#1935)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_relay_shape" time="0.00">
+<skipped message="not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_exec_fish_rc" time="0.00">
+<skipped message="not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_docker_t_without_i" time="0.00">
+<skipped message="not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_zsh_newuser_install" time="0.00">
+<skipped message="not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_rc_clear" time="16.20">
+</testcase>
+<testcase classname="agent@gitbash" name="gitbash_long_osc_reaches_app" time="1.70">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_connect_typing" time="22.60">
+<failure message="ssh_connect_typing (gap 0.0 s): T66_if2py1 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: fi | TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:13:03 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:13:03 conpty exec pid 5752 | 15:13:03 conpty first output after 0.02 s: 4 bytes (starts 1b5b3174); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=19 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=20 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=21 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=22 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=23 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=24 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=kh_iq_queue seq=5012 gate_open kind=ssh_connect key=2 token=51 barrier=#336 opened_by=ssh_connect_started closes_on=gate_relea | [DEBUG] input_order hop=kh_iq_hold seq=5012 queue=Q7_ssh_typeahead bytes=28 t=1794352383090.439 | [DEBUG] input_order hop=kh_holding_set seq=5012 holding=true t=1794352383090.457 | [DEBUG] input_order hop=kh_holding_set seq=5012 holding=false t=1794352393725.496; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">ssh_connect_typing (gap 0.0 s): T66_if2py1 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: fi | TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:13:03 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:13:03 conpty exec pid 5752 | 15:13:03 conpty first output after 0.02 s: 4 bytes (starts 1b5b3174); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=19 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=20 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=21 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=22 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=23 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=24 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=kh_iq_queue seq=5012 gate_open kind=ssh_connect key=2 token=51 barrier=#336 opened_by=ssh_connect_started closes_on=gate_relea | [DEBUG] input_order hop=kh_iq_hold seq=5012 queue=Q7_ssh_typeahead bytes=28 t=1794352383090.439 | [DEBUG] input_order hop=kh_holding_set seq=5012 holding=true t=1794352383090.457 | [DEBUG] input_order hop=kh_holding_set seq=5012 holding=false t=1794352393725.496; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+remote shell received 0/1 typed-ahead commands exactly (missing 1)
+ssh_connect_typing gap 0.0 s trial 1: #1996: the ssh connect GAVE UP on its events (give_ups=1) and wrote the held keys to the pty at the give-up, not at the remote prompt (hop give_up_keys_to_pty: 2 key(s), 28 of 28 byte(s) written, 0 put in the input); held 26 key(s)/53 byte(s), hand-over finish@25,finish@28, finish delivered=tty_owner,give_up=ceiling,delivered=give_up_pty; the app saw every key of the line; remote got None
+ssh_connect_typing loss: 1 of 1 typed-ahead commands lost (observed 100.0 %); 95 % upper confidence bound 100.0 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials
+ssh trial verdicts: #1996=1
+injector accounting: injector sent 42; app saw 42; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 38 unbound keydown/typed, 3 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_ssh_connect_typing" time="0.00">
+<failure message="after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_enter_then_immediate_command" time="22.10">
+<failure message="ssh_enter_then_immediate_command: T71_0hsrpy never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: fi | TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:13:51 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:13:51 conpty exec pid 9376 | 15:13:51 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=206 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794352431423.656 | [DEBUG] input_order hop=kh_hold_exit seq=206 branch=gate_open_live gate_armed=true table=1 t=1794352431423.662 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=207 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794352431424.166 | [DEBUG] input_order hop=kh_hold_exit seq=207 branch=gate_open_live gate_armed=true table=1 t=1794352431424.172 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_iq_queue seq=207 gate_open kind=ssh_connect key=2 token=4 barrier=#27 opened_by=ssh_connect_started closes_on=gate_released | [DEBUG] input_order hop=kh_iq_hold seq=207 queue=Q7_ssh_typeahead bytes=28 t=1794352431789.266 | [DEBUG] input_order hop=kh_holding_set seq=207 holding=true t=1794352431789.322 | [DEBUG] input_order hop=kh_holding_set seq=207 holding=false t=1794352439392.890; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">ssh_enter_then_immediate_command: T71_0hsrpy never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: fi | TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:13:51 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:13:51 conpty exec pid 9376 | 15:13:51 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=206 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794352431423.656 | [DEBUG] input_order hop=kh_hold_exit seq=206 branch=gate_open_live gate_armed=true table=1 t=1794352431423.662 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=207 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794352431424.166 | [DEBUG] input_order hop=kh_hold_exit seq=207 branch=gate_open_live gate_armed=true table=1 t=1794352431424.172 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_iq_queue seq=207 gate_open kind=ssh_connect key=2 token=4 barrier=#27 opened_by=ssh_connect_started closes_on=gate_released | [DEBUG] input_order hop=kh_iq_hold seq=207 queue=Q7_ssh_typeahead bytes=28 t=1794352431789.266 | [DEBUG] input_order hop=kh_holding_set seq=207 holding=true t=1794352431789.322 | [DEBUG] input_order hop=kh_holding_set seq=207 holding=false t=1794352439392.890; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+remote shell received 0/1 immediately-typed commands exactly: []
+ssh_enter_then_immediate_command trial 1: #1996: the ssh connect GAVE UP on its events (give_ups=1) and wrote the held keys to the pty at the give-up, not at the remote prompt (hop give_up_keys_to_pty: 2 key(s), 28 of 28 byte(s) written, 0 put in the input); held 19 key(s)/46 byte(s), hand-over finish@18,finish@28, finish delivered=tty_owner,give_up=ceiling,delivered=give_up_pty; the app saw every key of the line; remote got None
+ssh trial verdicts: #1996=1
+injector accounting: injector sent 42; app saw 42; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 38 unbound keydown/typed, 3 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_ssh_enter_then_immediate_command" time="0.00">
+<failure message="after ssh_enter_then_immediate_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_enter_then_immediate_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_nested_typeahead" time="32.20">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T76_lsj8mr never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: fi | TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:14:40 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:14:40 conpty exec pid 460 | 15:14:40 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=215 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794352479778.121 | [DEBUG] input_order hop=kh_hold_exit seq=215 branch=gate_open_live gate_armed=true table=1 t=1794352479778.128 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_hold_entry seq=216 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794352479778.656 | [DEBUG] input_order hop=kh_hold_exit seq=216 branch=gate_open_live gate_armed=true table=1 t=1794352479778.662 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=kh_iq_queue seq=216 gate_open kind=ssh_connect key=2 token=4 barrier=#31 opened_by=ssh_connect_started closes_on=gate_released | [DEBUG] input_order hop=kh_iq_hold seq=216 queue=Q7_ssh_typeahead bytes=37 t=1794352480108.746 | [DEBUG] input_order hop=kh_holding_set seq=216 holding=true t=1794352480108.776 | [DEBUG] input_order hop=kh_holding_set seq=216 holding=false t=1794352490824.446; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+ssh_nested_typeahead: #1996: the ssh connect GAVE UP on its events (give_ups=1) and wrote the held keys to the pty at the give-up, not at the remote prompt (hop give_up_keys_to_pty: 4 key(s), 37 of 37 byte(s) written, 0 put in the input); held 24 key(s)/60 byte(s), hand-over finish@23,finish@37, finish delivered=tty_owner,give_up=ceiling,delivered=give_up_pty; the app saw every key of the line; remote got None
+ssh trial verdicts: #1996=1
+injector accounting: injector sent 51; app saw 51; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 47 unbound keydown/typed, 3 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_ssh_nested_typeahead" time="0.00">
+<failure message="after ssh_nested_typeahead the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_nested_typeahead the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_connect_typing_wrapper" time="0.50">
+<skipped message="set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_nested_typeahead_wrapper" time="0.50">
+<skipped message="set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="latency_paint_ab" time="0.00">
+<skipped message="not run on Windows: #1848: the key frame at the end of the key press it A/Bs exists only in the macOS renderer (and kl3 is macOS only)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="latency_key_views_ab" time="197.20">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_stream_cancel" time="19.00">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_input_exact" time="6.10">
+</testcase>
+<testcase classname="agent@gitbash" name="routing_table" time="58.30">
+</testcase>
+<testcase classname="agent@gitbash" name="routing_typo_head" time="6.60">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_mode_switch" time="8.50">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_lrc_no_false_takeover" time="136.20">
+</testcase>
+<testcase classname="agent@gitbash" name="remote_tab_no_helper" time="61.70">
+<failure message="no remote shell prompt after `ssh fake`. Test host: sshd.log: 15:14:40 conpty exec pid 460 | 15:14:40 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 15:15:10 connect from ('127.0.0.1', 62033) | 15:15:10 serve err SSHException('Error reading SSH protocol banner[WinError 10053] An established connection was aborted by the software in your host machine') | 15:15:10 client input ended: 31824 bytes in 24225 chunks, 31824 written to the pseudo console (29.9 s first to last byte, 1064 bytes/s, ESC 1283, CR 0, LF 0, other control 0, non-ASCII 0; starts b'M\x1b[?62c if [[ ${bash_preexec_imported:-} == &quot;def') | 15:15:10 connection closed: authenticated=False channels=1 | 15:15:10 conpty output ended: 18212 bytes sent to the client in total | 15:15:10 exec output carried 2 OSC 9278 sequence start(s); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_exit seq=1613 branch=gate_open_live gate_armed=false table=1 t=1794352977522.943 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_wri | [DEBUG] input_order hop=kh_hold_entry seq=1614 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794352977536.384 | [DEBUG] input_order hop=kh_hold_exit seq=1614 branch=gate_open_live gate_armed=false table=1 t=1794352977536.396 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_wri | [DEBUG] input_order hop=kh_hold_entry seq=1615 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794352977537.009 | [DEBUG] input_order hop=kh_hold_exit seq=1615 branch=gate_open_live gate_armed=false table=1 t=1794352977537.017 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_wri | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794352977575.724 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794352977575.738; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">no remote shell prompt after `ssh fake`. Test host: sshd.log: 15:14:40 conpty exec pid 460 | 15:14:40 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 15:15:10 connect from ('127.0.0.1', 62033) | 15:15:10 serve err SSHException('Error reading SSH protocol banner[WinError 10053] An established connection was aborted by the software in your host machine') | 15:15:10 client input ended: 31824 bytes in 24225 chunks, 31824 written to the pseudo console (29.9 s first to last byte, 1064 bytes/s, ESC 1283, CR 0, LF 0, other control 0, non-ASCII 0; starts b'M\x1b[?62c if [[ ${bash_preexec_imported:-} == "def') | 15:15:10 connection closed: authenticated=False channels=1 | 15:15:10 conpty output ended: 18212 bytes sent to the client in total | 15:15:10 exec output carried 2 OSC 9278 sequence start(s); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_exit seq=1613 branch=gate_open_live gate_armed=false table=1 t=1794352977522.943 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_wri | [DEBUG] input_order hop=kh_hold_entry seq=1614 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794352977536.384 | [DEBUG] input_order hop=kh_hold_exit seq=1614 branch=gate_open_live gate_armed=false table=1 t=1794352977536.396 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_wri | [DEBUG] input_order hop=kh_hold_entry seq=1615 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794352977537.009 | [DEBUG] input_order hop=kh_hold_exit seq=1615 branch=gate_open_live gate_armed=false table=1 t=1794352977537.017 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_wri | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794352977575.724 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794352977575.738; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+injector accounting: injector sent 12; app saw 12; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 10 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="remote_tab_enter_no_helper" time="61.60">
+<failure message="no remote shell prompt after `ssh fake`. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:24:03 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:24:03 conpty exec pid 9852 | 15:24:03 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 15:24:53 client input so far: 65536 bytes in 62468 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: none logged since the case started; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">no remote shell prompt after `ssh fake`. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:24:03 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:24:03 conpty exec pid 9852 | 15:24:03 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 15:24:53 client input so far: 65536 bytes in 62468 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: none logged since the case started; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+injector accounting: injector sent 12; app saw 12; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 8 unbound keydown/typed, 3 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_remote_tab_enter_no_helper" time="0.00">
+<failure message="after remote_tab_enter_no_helper the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after remote_tab_enter_no_helper the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_gitbash_managed" time="61.30">
+<failure message="no remote shell prompt after `ssh fake`. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:25:32 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:25:32 conpty exec pid 10432 | 15:25:32 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 15:26:22 client input so far: 65536 bytes in 62878 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: none logged since the case started; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">no remote shell prompt after `ssh fake`. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:25:32 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:25:32 conpty exec pid 10432 | 15:25:32 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 15:26:22 client input so far: 65536 bytes in 62878 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: none logged since the case started; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+injector accounting: injector sent 13; app saw 13; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 8 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_ssh_gitbash_managed" time="0.00">
+<failure message="after ssh_gitbash_managed the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_gitbash_managed the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_gitbash_typeahead_managed" time="298.00">
+<failure message="trial 1: the line typed during the connect never reached the remote shell. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:26:59 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:26:59 conpty exec pid 11860 | 15:26:59 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 15:27:52 client input so far: 65536 bytes in 61543 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=7 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=8 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=9 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=10 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=11 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=12 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=kh_iq_queue seq=198 gate_open kind=ssh_connect key=2 token=4 barrier=#21 opened_by=ssh_connect_started closes_on=gate_released | [DEBUG] input_order hop=kh_iq_hold seq=198 queue=Q7_ssh_typeahead bytes=17 t=1794353219897.477 | [DEBUG] input_order hop=kh_holding_set seq=198 holding=true t=1794353219897.492 | [DEBUG] input_order hop=kh_holding_set seq=198 holding=false t=1794353230641.071; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">trial 1: the line typed during the connect never reached the remote shell. Test host: sshd.log: TMPPREFIX=$HOME/.zshtmp- WARP_SSH_RCFILES=${ZDOTDIR:-$HOME} ZDOTDIR=$WARP_TMP_DIR exec -l zsh -g  |  ;; | esac |  pty | 15:26:59 exec pty arm app (a pseudo console of the app's own conpty.dll) | 15:26:59 conpty exec pid 11860 | 15:26:59 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 15:27:52 client input so far: 65536 bytes in 61543 chunks, 65535 written to the pseudo console; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=7 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=8 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=9 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=10 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=11 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=12 evidence=None command_interactive=true enters_writt | [DEBUG] input_order hop=kh_iq_queue seq=198 gate_open kind=ssh_connect key=2 token=4 barrier=#21 opened_by=ssh_connect_started closes_on=gate_released | [DEBUG] input_order hop=kh_iq_hold seq=198 queue=Q7_ssh_typeahead bytes=17 t=1794353219897.477 | [DEBUG] input_order hop=kh_holding_set seq=198 holding=true t=1794353219897.492 | [DEBUG] input_order hop=kh_holding_set seq=198 holding=false t=1794353230641.071; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+trial 1: the remote shell received [], want exactly ['echo T130_qoihl0']
+trial 1: the pane is not provably remote after the connect (probe ran in: none)
+trial 2: the line typed during the connect never reached the remote shell. Test host: sshd.log: 15:26:59 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 15:27:52 client input so far: 65536 bytes in 61543 chunks, 65535 written to the pseudo console | 15:27:59 connect from ('127.0.0.1', 62806) | 15:27:59 serve err SSHException('Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host') | 15:28:37 client input ended: 124868 bytes in 115691 chunks, 124868 written to the pseudo console (97.7 s first to last byte, 1279 bytes/s, ESC 5067, CR 0, LF 0, other control 0, non-ASCII 3; starts b'M\x1b[?62c if [[ ${bash_preexec_imported:-} == "def') | 15:28:37 connection closed: authenticated=False channels=1 | 15:28:37 conpty output ended: 71426 bytes sent to the client in total | 15:28:37 exec output carried 2 OSC 9278 sequence start(s); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=297 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794353318233.298 | [DEBUG] input_order hop=kh_hold_exit seq=297 branch=held held_bytes=0 table=1 t=1794353318233.309 | [DEBUG] input_order hop=kh_hold_entry seq=298 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794353318249.916 | [DEBUG] input_order hop=kh_hold_exit seq=298 branch=held held_bytes=0 table=1 t=1794353318249.928 | [DEBUG] input_order hop=kh_hold_entry seq=299 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794353318260.124 | [DEBUG] input_order hop=kh_hold_exit seq=299 branch=held held_bytes=0 table=1 t=1794353318260.129 | [DEBUG] input_order hop=kh_hold_entry seq=300 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794353318273.115 | [DEBUG] input_order hop=kh_hold_exit seq=300 branch=held held_bytes=0 table=1 t=1794353318273.120 | [DEBUG] input_order hop=kh_hold_entry seq=301 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794353318273.450 | [DEBUG] input_order hop=kh_hold_exit seq=301 branch=held held_bytes=0 table=1 t=1794353318273.455; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+trial 2: the remote shell received [], want exactly ['echo T133_g8rgnq']
+trial 2: one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)
+trial 2: the wrapper's verdict was managed=true
+trial 2: the pane is not provably remote after the connect (probe ran in: none)
+trial 3: the line typed during the connect never reached the remote shell. Test host: sshd.log: 15:27:59 connect from ('127.0.0.1', 62806) | 15:27:59 serve err SSHException('Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host') | 15:28:37 client input ended: 124868 bytes in 115691 chunks, 124868 written to the pseudo console (97.7 s first to last byte, 1279 bytes/s, ESC 5067, CR 0, LF 0, other control 0, non-ASCII 3; starts b'M\x1b[?62c if [[ ${bash_preexec_imported:-} == "def') | 15:28:37 connection closed: authenticated=False channels=1 | 15:28:37 conpty output ended: 71426 bytes sent to the client in total | 15:28:37 exec output carried 2 OSC 9278 sequence start(s) | 15:29:38 connect from ('127.0.0.1', 62813) | 15:29:38 serve err SSHException('Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host'); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:60321; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=400 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794353417274.342 | [DEBUG] input_order hop=kh_hold_exit seq=400 branch=held held_bytes=0 table=1 t=1794353417274.354 | [DEBUG] input_order hop=kh_hold_entry seq=401 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794353417298.472 | [DEBUG] input_order hop=kh_hold_exit seq=401 branch=held held_bytes=0 table=1 t=1794353417298.488 | [DEBUG] input_order hop=kh_hold_entry seq=402 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794353417322.452 | [DEBUG] input_order hop=kh_hold_exit seq=402 branch=held held_bytes=0 table=1 t=1794353417322.478 | [DEBUG] input_order hop=kh_hold_entry seq=403 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794353417355.555 | [DEBUG] input_order hop=kh_hold_exit seq=403 branch=held held_bytes=0 table=1 t=1794353417355.564 | [DEBUG] input_order hop=kh_hold_entry seq=404 holding=false held_bytes=0 gate_armed=false pending_session=true table=1 t=1794353417356.120 | [DEBUG] input_order hop=kh_hold_exit seq=404 branch=held held_bytes=0 table=1 t=1794353417356.131; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+trial 3: the remote shell received [], want exactly ['echo T136_7fenl6']
+trial 3: one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)
+trial 3: the wrapper's verdict was managed=true
+trial 3: the pane is not provably remote after the connect (probe ran in: none)
+typed-during-connect: in 1 of 3 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true); in the others every key was typed after auth_done or consumed by the login
+injector accounting: injector sent 315; app saw 315; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 309 unbound keydown/typed, 5 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_ssh_gitbash_typeahead_managed" time="0.00">
+<failure message="after ssh_gitbash_typeahead_managed the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_gitbash_typeahead_managed the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_gitbash_kill_switch" time="7.70">
+</testcase>
+<testcase classname="agent@gitbash" name="ui_copy_wrapped_output" time="9.50">
+</testcase>
+<testcase classname="agent@gitbash" name="ui_copy_wrapped_drag" time="0.00">
+<skipped message="not run on Windows: #1976: no pointer synthesis in the Windows backend yet (the keyboard half, ui_copy_wrapped_output, runs in the Git Bash pane)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_no_esc_i_local" time="0.60">
+<skipped message="the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log"/>
+</testcase>
+<testcase classname="agent@gitbash" name="giveup_keys_reach_shell" time="12.50">
+</testcase>
+<testcase classname="agent@gitbash" name="precmd_secret_honor_ps1" time="48.80">
+</testcase>
+<testcase classname="agent@gitbash" name="keyring_unavailable_startup" time="0.00">
+<skipped message="not run on Windows: #1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ui_vertical_tabs_many" time="0.00">
+<skipped message="not run on Windows: #1990: not yet ported: switches the panel on by rewriting the settings file while the app runs (as ui_settings_live), and the Windows config path is not wired into cases_ui.setting"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ui_vertical_tabs_panel_click" time="0.00">
+<skipped message="not run on Windows: #1990: no pointer synthesis in the Windows backend yet, and the settings rewrite of ui_vertical_tabs_many"/>
+</testcase>
+<testcase classname="agent@gitbash" name="output_frames" time="68.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: hidden streaming tabs: only 12 wakeups of hidden views in 6 s with 4 tabs meant to stream: the hidden streams were not running"/>
+</testcase>
+<testcase classname="agent@fake" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_password" time="25.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_accept" time="0.00">
+<skipped message="not run on Windows: #1835: the file path typed to the scripted model and read back is POSIX-form; the fake-model pass is Git Bash only"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_reject" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_conflict" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_touch_only" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_endings" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_429" time="16.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_500" time="27.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_disconnect" time="12.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_down" time="34.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_slow_cancel" time="13.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_queued_rows" time="32.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_key" time="0.00">
+<skipped message="not run in the PowerShell pane: its terminal-editor reference types into a POSIX shell line editor and the case needs the scripted fake model: runs in the Git Bash pane (#1828)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_vim" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_stream" time="0.60">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_queued" time="0.60">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_blocked" time="0.60">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_answer" time="11.40">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_cut" time="6.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_nodone" time="31.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_trunc" time="5.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_empty" time="4.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_slow" time="17.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_ctrl_c" time="7.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_steer" time="8.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_after_command" time="16.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_steer_at_end" time="11.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_enter" time="0.00">
+<skipped message="not run in the PowerShell pane: its terminal-editor reference submits a POSIX `true # tok` line: runs in the Git Bash pane (#1828)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_ssh" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_stream" time="97.50">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_queued" time="103.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_blocked" time="98.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_steer_fast" time="0.00">
+<skipped message="not run in the PowerShell pane: uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (#1828)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_less" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_noninteractive_no_takeover" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@fake" name="network_gate_notice" time="0.00">
+<skipped message="not run on Windows: needs the Linux pointer + OCR path and a relaunch on a rewritten settings file"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_deny_allow" time="0.00">
+<skipped message="not run on Windows: Linux-only: pointer + OCR for the toast and live edits of the Linux profile's settings.toml"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_off_live" time="0.00">
+<skipped message="not run on Windows: Linux-only: live edits of the Linux profile's settings.toml"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_mcp_faults" time="0.00">
+<skipped message="not run on Windows: #1834: the fake MCP servers are configured through the HOME-relative ~/.warp/.mcp.json, which the Windows profile does not use in this harness"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_key_never_leaves" time="0.00">
+<skipped message="not run on Windows: Linux-only: live edits of the Linux profile's settings.toml and the fake model's request headers"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_multitab_streaming" time="0.00">
+<skipped message="not run on Windows: #1833: needs the rc-hook received-command proof and the pty-echo frame pairing, neither verified for a Windows pane; Linux and macOS run it"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_interactive_password" time="0.00">
+<skipped message="not run in the Git Bash pane: #1882: the hand-over on ConPTY is the PowerShell bootstrap's Read-Host marker; bash `read -s` in a Git Bash pane announces nothing (no termios), so the POSIX form of the "/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_edit_accept" time="0.00">
+<skipped message="not run on Windows: #1835: the file path typed to the scripted model and read back is POSIX-form; the fake-model pass is Git Bash only"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_edit_reject" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_edit_conflict" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_edit_touch_only" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_edit_endings" time="0.00">
+<skipped message="not run on Windows: #1835: same as agent_edit_accept"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_429" time="15.40">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_500" time="27.10">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_disconnect" time="13.20">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_down" time="35.00">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_slow_cancel" time="13.60">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_fault_queued_rows" time="32.10">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_latency_key" time="54.70">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_interactive_vim" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_quit_stream" time="0.60">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_quit_queued" time="0.70">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_quit_blocked" time="0.60">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: windows)"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_answer" time="12.00">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_cut" time="5.90">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_nodone" time="32.00">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_trunc" time="5.30">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_empty" time="5.30">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_slow" time="18.00">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_ctrl_c" time="8.10">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_steer" time="8.80">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_after_command" time="17.50">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_question_steer_at_end" time="11.90">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_latency_enter" time="233.90">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_interactive_ssh" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_kill_stream" time="55.90">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_kill_queued" time="59.00">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_restart_kill_blocked" time="56.10">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_steer_fast" time="26.20">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_interactive_less" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_noninteractive_no_takeover" time="0.00">
+<skipped message="not run on Windows: #1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="network_gate_notice" time="0.00">
+<skipped message="not run on Windows: needs the Linux pointer + OCR path and a relaunch on a rewritten settings file"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_gate_deny_allow" time="0.00">
+<skipped message="not run on Windows: Linux-only: pointer + OCR for the toast and live edits of the Linux profile's settings.toml"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_gate_off_live" time="0.00">
+<skipped message="not run on Windows: Linux-only: live edits of the Linux profile's settings.toml"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_mcp_faults" time="0.00">
+<skipped message="not run on Windows: #1834: the fake MCP servers are configured through the HOME-relative ~/.warp/.mcp.json, which the Windows profile does not use in this harness"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_gate_key_never_leaves" time="0.00">
+<skipped message="not run on Windows: Linux-only: live edits of the Linux profile's settings.toml and the fake model's request headers"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_multitab_streaming" time="0.00">
+<skipped message="not run on Windows: #1833: needs the rc-hook received-command proof and the pty-echo frame pairing, neither verified for a Windows pane; Linux and macOS run it"/>
+</testcase>
+<testcase classname="-" name="restore" time="0.00">
+</testcase>
+</testsuite>

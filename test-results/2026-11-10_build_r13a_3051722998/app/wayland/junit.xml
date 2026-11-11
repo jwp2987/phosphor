@@ -1,0 +1,369 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="162" failures="0" skipped="42">
+<testcase classname="terminal" name="mode_proof" time="1.60">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.30">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="90.40">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="64.50">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="57.60">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.50">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="20.10">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="436.00">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_flood_ab" time="0.70">
+<skipped message="the blocked-frame gate (#1838) exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="terminal" name="ps_ctrl_break" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ps_ctrl_scrolllock_break" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ps_fast_command_young_enter" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe" time="26.70">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_questions" time="14.70">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_vim_typeahead" time="18.40">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_unsupported_tcsh" time="1.70">
+<skipped message="tcsh is not installed"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_prompt" time="15.70">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_probe" time="15.80">
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe_empty_ps1" time="31.80">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="1.70">
+<skipped message="no passwordless sudo on this runner (sudo -n true failed)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_exec_fish_rc" time="16.10">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_docker_t_without_i" time="1.70">
+<skipped message="docker with a local alpine image is not available (never pulled by the harness)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_zsh_newuser_install" time="16.20">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="13.70">
+</testcase>
+<testcase classname="terminal" name="gitbash_long_osc_reaches_app" time="0.80">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="41.50">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="10.70">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="6.30">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing_wrapper" time="0.80">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead_wrapper" time="0.80">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="164.10">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="15.30">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 0.67 ms (p95 0.73, n=60): within the 1 ms target"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.80">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint_ab" time="0.80">
+<skipped message="the key frame drawn at the end of the key press (#1848) exists only in the macOS renderer, and kl3 (ScreenCaptureKit) is macOS only; Linux measures its own (#1843) inside agent_latency_key (arm keynow"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_views_ab" time="260.00">
+</testcase>
+<testcase classname="terminal" name="routing_table" time="56.50">
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="10.30">
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="6.40">
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="7.40">
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_typeahead_managed" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_kill_switch" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="3.10">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="29.90">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="52.70">
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_output" time="10.80">
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_drag" time="12.50">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_no_esc_i_local" time="24.10">
+</testcase>
+<testcase classname="terminal" name="giveup_keys_reach_shell" time="15.60">
+</testcase>
+<testcase classname="terminal" name="ps_read_host_secure" time="0.70">
+<skipped message="PowerShell pane only (Read-Host -AsSecureString; the Git Bash pane's bash `read -s` announces nothing on ConPTY, see gitbash_precmd_secret)"/>
+</testcase>
+<testcase classname="terminal" name="gitbash_precmd_secret" time="0.70">
+<skipped message="Git Bash pane only (bash precmd_functions; ConPTY prompt hold)"/>
+</testcase>
+<testcase classname="terminal" name="precmd_secret_honor_ps1" time="59.50">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="6.50">
+</testcase>
+<testcase classname="terminal" name="zero_network_startup" time="177.40">
+</testcase>
+<testcase classname="terminal" name="keyring_unavailable_startup" time="55.40">
+</testcase>
+<testcase classname="terminal" name="claude_plugin_offline" time="6.60">
+</testcase>
+<testcase classname="terminal" name="agent_plugins_offline" time="13.20">
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_many" time="103.50">
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_panel_click" time="41.60">
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="66.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the denial notice (toast naming the purpose and host), its 'Allow this origin' link and the log row's 'Allow' button need a request the gate refuses, wh"/>
+</testcase>
+<testcase classname="terminal" name="depth_check_off_before_output_frames" time="0.00">
+<skipped message="root shell pid not recorded after relaunch_by_case: the PID probe got no answer; the depth check is off until the next relaunch"/>
+</testcase>
+<testcase classname="terminal" name="output_frames" time="26.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: visible streaming tab: the app log has no 'wakeup:' line (a build older than the #1979 measurement, or warpui::frame_cause logging is off)"/>
+</testcase>
+<testcase classname="terminal" name="cb_report_problem" time="4.60">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.60">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.30">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.10">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="6.30">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="19.10">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="435.30">
+</testcase>
+<testcase classname="agent" name="ctrl_c_flood_ab" time="0.60">
+<skipped message="the blocked-frame gate (#1838) exists only in the macOS renderer"/>
+</testcase>
+<testcase classname="agent" name="ps_ctrl_break" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ps_ctrl_scrolllock_break" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ps_fast_command_young_enter" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe" time="26.30">
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_questions" time="14.70">
+</testcase>
+<testcase classname="agent" name="subshell_ready_vim_typeahead" time="18.40">
+</testcase>
+<testcase classname="agent" name="subshell_ready_unsupported_tcsh" time="1.70">
+<skipped message="tcsh is not installed"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_prompt" time="15.70">
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_probe" time="15.70">
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe_empty_ps1" time="31.90">
+</testcase>
+<testcase classname="agent" name="subshell_ready_relay_shape" time="1.70">
+<skipped message="no passwordless sudo on this runner (sudo -n true failed)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_exec_fish_rc" time="16.20">
+</testcase>
+<testcase classname="agent" name="subshell_ready_docker_t_without_i" time="1.70">
+<skipped message="docker with a local alpine image is not available (never pulled by the harness)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_zsh_newuser_install" time="16.20">
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="13.70">
+</testcase>
+<testcase classname="agent" name="gitbash_long_osc_reaches_app" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="40.20">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="10.70">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="5.70">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing_wrapper" time="0.80">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead_wrapper" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="164.40">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="15.50">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 0.63 ms (p95 0.71, n=60): within the 1 ms target"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.80">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="latency_paint_ab" time="0.80">
+<skipped message="the key frame drawn at the end of the key press (#1848) exists only in the macOS renderer, and kl3 (ScreenCaptureKit) is macOS only; Linux measures its own (#1843) inside agent_latency_key (arm keynow"/>
+</testcase>
+<testcase classname="agent" name="latency_key_views_ab" time="260.00">
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="33.70">
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="7.10">
+</testcase>
+<testcase classname="agent" name="routing_table" time="60.60">
+</testcase>
+<testcase classname="agent" name="routing_typo_head" time="6.90">
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="10.10">
+</testcase>
+<testcase classname="agent" name="agent_lrc_no_false_takeover" time="171.90">
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="6.60">
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="7.50">
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_managed" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_typeahead_managed" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_kill_switch" time="0.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="30.50">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="52.50">
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_output" time="10.30">
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_drag" time="12.60">
+</testcase>
+<testcase classname="agent" name="ctrl_c_no_esc_i_local" time="24.20">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_ctrl_c_no_esc_i_local" time="0.00">
+</testcase>
+<testcase classname="agent" name="giveup_keys_reach_shell" time="15.50">
+</testcase>
+<testcase classname="agent" name="precmd_secret_honor_ps1" time="59.40">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="6.50">
+</testcase>
+<testcase classname="agent" name="keyring_unavailable_startup" time="54.10">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_keyring_unavailable_startup" time="0.00">
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_many" time="108.60">
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_panel_click" time="27.70">
+<skipped message="NO-REFERENCE (not a pass): vertical tabs: on in the profile's settings (the owner's layout)"/>
+</testcase>
+<testcase classname="agent" name="output_frames" time="74.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_password" time="25.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_accept" time="16.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_reject" time="73.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_conflict" time="25.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_touch_only" time="18.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_endings" time="85.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_429" time="16.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_500" time="27.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_disconnect" time="14.30">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_down" time="28.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_slow_cancel" time="13.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_queued_rows" time="33.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_key" time="199.30">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_vim" time="25.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_stream" time="71.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_queued" time="77.40">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_blocked" time="76.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_answer" time="13.30">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_cut" time="6.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_nodone" time="31.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_trunc" time="5.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_empty" time="5.40">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_slow" time="17.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_ctrl_c" time="8.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_steer" time="8.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_after_command" time="15.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_steer_at_end" time="11.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_enter" time="258.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_ssh" time="69.80">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_stream" time="69.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_queued" time="74.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_blocked" time="74.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_steer_fast" time="27.30">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_less" time="26.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_noninteractive_no_takeover" time="29.90">
+</testcase>
+<testcase classname="agent@fake" name="network_gate_notice" time="28.40">
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_deny_allow" time="132.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: pointer Allow: the page or its Allow button was not found by OCR (shots/agdn_ptr_allow.png)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_off_live" time="66.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_mcp_faults" time="45.90">
+<skipped message="precondition: the healthy control server's tool was not offered to the model or the call never returned (servers seen: []; starts (0, 0)): the app did not load ~/.warp/.mcp.json, so no fault could be "/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_key_never_leaves" time="49.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_multitab_streaming" time="147.30">
+</testcase>
+</testsuite>
