@@ -6397,7 +6397,8 @@ def inspect_source(fn):
 def always_skip_cases_say_what_they_need():
     """#2066 / #2067 (owner 2026-11-10): the cases that SKIP on every machine stay registered, and each skip says exactly what machine change or harness
     capability would make it run (`NEEDS:`), so the row cannot be read as coverage or as "not applicable"."""
-    need = {"cases_subshell_ready.py": ["sudoers entry", "`alpine` image pulled once"], "cases_coverage_a.py": ["sudoers entry"],
+    # round 15 (T47): the sudoers text moved to priv_boundary.sudo_needs(), which both sudo cases put in their skip; the words are pinned there
+    need = {"cases_subshell_ready.py": ["PB.sudo_needs()", "`alpine` image pulled once"], "cases_coverage_a.py": ["PB.sudo_needs()"], "priv_boundary.py": ["sudoers entry", "NOPASSWD"],
             "cases_ui.py": ["package dragon-drop", "a client that owns the drag"], "cases_shells.py": ["APPCI_WIN_SHELLS=powershell,gitbash,pwsh7,cmd", "PowerShell 7 installed"],
             "cases_caseintl.py": ["ibus or fcitx5", "NEEDS_OWNER"], "cases_coverage_b.py": ["APPCI_PREV_FIXTURE", "#1546"], "cases_win_input.py": ["NEEDS: APPCI_SSH_WRAPPER=1"]}
     for f, words in need.items():
@@ -8301,6 +8302,8 @@ import selftest_registered  # noqa: E402  (#2086: every check function of the se
 CHECKS.extend(selftest_registered.CHECKS)
 import selftest_w4win  # noqa: E402  (round 15 wave 4, #2060: the Windows pointer and window size)
 CHECKS.extend(selftest_w4win.CHECKS)
+import selftest_r15_w5c  # noqa: E402  (round 15 wave 5c: #2071 scripted recycle answer, T47 privilege-boundary preconditions, T49 process sampling, T48 gpu_real_render)
+CHECKS.extend(selftest_r15_w5c.CHECKS)
 
 
 def main():

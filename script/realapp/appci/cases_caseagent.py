@@ -924,6 +924,34 @@ def snippet_lines(tok, n):
     return ["echo RCY%s_%02d" % (tok, i) for i in range(1, n + 1)]
 
 
+RECYCLE_NEEDS_FAKE = ("NEEDS: the scripted fake model as this pass's provider (the fix tier's agent@fake pass, or a run started with APPCI_FAKE_MODEL=1). "
+                      "agent_code_recycle is never judged on a real model's wording (#2071): its answer is fake_model.snippet_reply, the same text in every run")
+
+
+def recycle_fake(environ=None, active=None):
+    """#2071: the running scripted model when this pass's provider is the fake (APPCI_FAKE_MODEL_ACTIVE=1 and a FakeModel is up), else None.
+    `environ` / `active` are for the self-test; a case passes neither."""
+    import fake_model
+    environ = os.environ if environ is None else environ
+    active = fake_model.FakeModel.ACTIVE if active is None else active
+    return active if environ.get("APPCI_FAKE_MODEL_ACTIVE") == "1" and active else None
+
+
+RECYCLE_TOKEN_LETTERS = "ABCDEFHKMNPRTUVWXY"      # no I / L / O / Q / S / Z / G / J: letters OCR confuses with digits or each other
+
+
+def recycle_token(rng, n=4):
+    """pure given the rng: the token of one run's snippets, LETTERS only. Until round 15 it was ctx.tok(4).upper() (`T12_ABCD`): visible_snippets() looks
+    for `rcy<tok><nn>` in the screen text with everything but letters and digits removed, where the token's own underscore can never be, so with an OCR
+    engine the case read "none of the snippets is on screen" on every run and SKIPPED as "model nondeterminism" whatever the model had written (#2071)."""
+    return "".join(rng.choice(RECYCLE_TOKEN_LETTERS) for _ in range(n))
+
+
+def recycle_filler_prompt(tok, i):
+    """pure: one filler turn. Plain prose that ends in its own tag: the fake model answers `OK FILL<tok><i>` (its fallback: the last word), one short line"""
+    return "Please answer this filler turn FILL%s%d" % (tok, i)
+
+
 def visible_snippets(ctx, tag, tok):
     """the snippet indices whose token OCR reads on screen (None without an OCR engine)"""
     t = ctx.ocr(tag)
@@ -933,38 +961,54 @@ def visible_snippets(ctx, tag, tok):
     return sorted({int(m.group(1)) for m in re.finditer(r"rcy%s(\d\d)" % tok.lower(), sq)})
 
 
-@case("agent_code_recycle", order=50, gui=True)
+@case("agent_code_recycle", modes=("agent",), order=50, gui=True)
 def c_agent_code_recycle(ctx, r):
-    """#1267, both modes: one answer with APPCI_RECYCLE_SNIPPETS (12) fenced code blocks, each one line `echo RCY<tok>_NN`, then
-    APPCI_RECYCLE_FILLERS (9) one-word answers push it more than 6 rich-content entries away, so its code-block editors are recycled (the app's
-    'editor_memory agent_code_recycled' line). Block navigation (APPCI_KEY_BLOCK_UP: ctrl+up, mac cmd+up = SelectBlockAbove) goes back to it until
-    it is rebuilt ('agent_code_rebuilt'). Checked: the recycle and the rebuild happen; the snippets visible on screen (OCR) and the screenshot do
-    not change across the rebuild (height / scroll stable; the hash is a metric, the OCR set the verdict); copying the selected answer
-    (APPCI_KEY_COPY: ctrl+shift+c, mac cmd+c) gives every snippet line exactly. Needs the CI model: the answer comes from it (there is no fake-model
-    path in the app, as for md_viewer_ai_answer), so a model that does not produce the snippets is a SKIP. The per-snippet Run / Copy buttons need a
-    mouse the harness does not drive: they are covered by the unit tests' plain-path reasoning only (block_tests.rs code_editor_recycling)."""
+    """#1267, driven by the scripted fake model (#2071): one answer with APPCI_RECYCLE_SNIPPETS (12) fenced code blocks, each one line
+    `echo RCY<tok>_NN` (fake_model.snippet_reply: the same text in every run), then APPCI_RECYCLE_FILLERS (9) one-line answers push it more than 6
+    rich-content entries away, so its code-block editors are recycled (the app's 'editor_memory agent_code_recycled' line). Block navigation
+    (APPCI_KEY_BLOCK_UP: ctrl+up, mac cmd+up = SelectBlockAbove) goes back to it until it is rebuilt ('agent_code_rebuilt'). Checked: the model was
+    sent the prompt (fake.fresh) and the answer's snippets are on screen (OCR) before anything else is judged; the recycle and the rebuild happen;
+    the snippets visible on screen and the screenshot do not change across the rebuild (height / scroll stable; the hash is a metric, the OCR set the
+    verdict); copying the selected answer (APPCI_KEY_COPY: ctrl+shift+c, mac cmd+c) gives every snippet line exactly.
+    Until round 15 the answer came from the CI model and the case SKIPPED, was NOREF or failed on every platform on that model's wording (F10 of
+    docs/design/r14-test-gaps.md); it now SKIPS with NEEDS: when the pass's provider is not the fake, and nothing in it depends on wording.
+    Agent mode only: the scripted model has an agent pass only (run.py's agent@fake), and every PROVING_FAKE case is agent-only (selftest); the
+    recycling itself is the block list's and has no mode. The per-snippet Run / Copy buttons need a mouse the harness does not drive here: they are
+    covered by the unit tests' plain-path reasoning only (block_tests.rs code_editor_recycling)."""
+    import fake_model
+    fake = recycle_fake()
+    if fake is None:
+        r.skip(RECYCLE_NEEDS_FAKE)
     need_provider(ctx, r)
     mac = ctx.be.name == "mac"
     up = os.environ.get("APPCI_KEY_BLOCK_UP", "cmd+up" if mac else "ctrl+up")
     copy = os.environ.get("APPCI_KEY_COPY", "cmd+c" if mac else "ctrl+shift+c")
     n = int(os.environ.get("APPCI_RECYCLE_SNIPPETS", "12"))
     fillers = int(os.environ.get("APPCI_RECYCLE_FILLERS", "9"))
-    tok = ctx.tok(4).upper()
+    n = min(n, fake_model.SNIP_MAX)
+    tok = recycle_token(ctx.rng)
     want = snippet_lines(tok, n)
     mark = ctx.cmd_mark()
     off = ctx.log_size()
     try:
-        prompt = ("Reply with exactly %d fenced bash code blocks and no other text. Code block number N contains only the single line "
-                  "echo RCY%s_NN where NN is N written with two digits, from 01 to %02d." % (n, tok, n))
+        prompt = fake_model.snippet_prompt(tok, n)
+        sent0 = fake.fresh_with(prompt)
         type_fast(ctx, prompt)
-        if not wait_marker(ctx, off, "[byop] opening stream", timeout=60):
-            r.skip("the snippet prompt opened no model request in 60 s (routed elsewhere in %s mode, or no provider)" % ctx.mode)
-        if not settled(ctx, "rcy_answer", timeout=180):
-            r.skip("the snippet answer did not finish within 180 s")
+        # The answer is scripted, so nothing below is the model's to get wrong: a prompt that never reached the model, or an answer that is not on
+        # screen, is a finding about the app or the harness, never a SKIP.
+        asked = ctx.until(lambda: fake.fresh_with(prompt) > sent0, 60, step=0.25)
+        r.metric("snippet_prompt_requests", fake.fresh_with(prompt) - sent0)
+        if not r.check(bool(asked), "the snippet prompt %r reached the scripted model 0 times in 60 s (the agent input did not send it: routed to the shell, "
+                                    "or the view is not the agent view; app log has %d '[byop] opening stream' line(s) since the prompt)" % (
+                                        prompt, count_in_log(ctx, off, "[byop] opening stream"))):
+            return
+        if not r.check(settled(ctx, "rcy_answer", timeout=180), "the scripted snippet answer (%d short code blocks, sent in one reply) was still changing the screen after 180 s" % n):
+            return
         first = visible_snippets(ctx, "rcy_answer_ocr", tok)
         r.metric("snippets_visible_after_answer", first)
-        if first is not None and not first:
-            r.skip("the model's answer shows none of the RCY%s_NN snippets (model nondeterminism): nothing to recycle" % tok)
+        if first is not None and not r.check(bool(first), "the scripted answer was sent (%d code blocks `echo RCY%s_NN`) and none of them is on screen (OCR read no "
+                                                         "rcy%s<nn>): the answer was not rendered, or the view is not showing its end" % (n, tok, tok.lower())):
+            return
         # r18u22 (Windows agent pass, PowerShell pane): 9 one-word answers were not enough. The app recycles a block more than 6 rich-content entries from the
         # NEAREST VISIBLE one (view.rs AI_CODE_RECYCLE_DISTANCE), and in that agent view several short filler answers were on screen at once, so the snippet
         # answer stayed within 6 of a visible one: correctly kept. The very next layout that changed the visible set (the case's own Escape, 11 s later) logged
@@ -975,10 +1019,11 @@ def c_agent_code_recycle(ctx, r):
         while used < max_fillers:
             if used >= fillers and any(e[0] == "recycled" for e in recycle_events(ctx.log_since(off))):
                 break
-            reqs = count_in_log(ctx, off, "[byop] opening stream")
-            type_fast(ctx, "Reply with just the word FILL%s%d and nothing else." % (tok, used))
-            if not wait_marker(ctx, off, "[byop] opening stream", n=reqs + 1, timeout=60):
-                r.skip("filler %d opened no model request in 60 s" % used)
+            filler = recycle_filler_prompt(tok, used)
+            type_fast(ctx, filler)
+            if not r.check(bool(ctx.until(lambda: fake.fresh_with(filler) >= 1, 60, step=0.25)),
+                           "filler %d (%r) reached the scripted model 0 times in 60 s: the conversation stopped taking prompts after the snippet answer" % (used, filler)):
+                return
             settled(ctx, "rcy_fill", timeout=120)
             used += 1
         r.metric("fillers_used", used)
@@ -1050,8 +1095,9 @@ def c_agent_code_recycle(ctx, r):
         missing = [w for w in want if w not in lines]
         r.metric("copy_missing", missing)
         if len(missing) == len(want):
-            r.unverifiable("the copy key (%s) put none of the snippets on the clipboard: the snippet answer was not the selected block, or the model "
-                           "wrote other snippets (clipboard %d bytes); copy across the rebuild is NOT verified" % (copy, len(clip)))
+            r.unverifiable("the copy key (%s) put none of the snippets on the clipboard: the snippet answer was not the selected block when the key was sent "
+                           "(clipboard %d bytes; the answer's text is scripted, so this is the selection, not the wording); copy across the rebuild is NOT "
+                           "verified" % (copy, len(clip)))
         else:
             r.check(not missing, "copying the rebuilt answer lost or changed snippet lines: missing %s" % missing)
         r.check(not [c for c in ctx.cmds_since(mark) if "RCY" + tok in c], "snippet text reached the shell")

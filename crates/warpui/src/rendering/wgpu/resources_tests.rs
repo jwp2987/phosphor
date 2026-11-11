@@ -237,3 +237,73 @@ fn test_frame_latency_override_accepts_only_1_to_3() {
     assert_eq!(frame_latency_override(Some("9")), None);
     assert_eq!(frame_latency_override(Some("x")), None);
 }
+
+fn summary_test_adapter(
+    name: &str,
+    device_type: wgpu::DeviceType,
+    backend: wgpu::Backend,
+) -> wgpu::AdapterInfo {
+    wgpu::AdapterInfo {
+        name: name.to_owned(),
+        vendor: 0,
+        device: 0,
+        device_type,
+        driver: String::new(),
+        driver_info: String::new(),
+        backend,
+        device_pci_bus_id: "00:02.0".to_owned(),
+        subgroup_min_size: wgpu::MINIMUM_SUBGROUP_MIN_SIZE,
+        subgroup_max_size: wgpu::MAXIMUM_SUBGROUP_MAX_SIZE,
+        transient_saves_memory: false,
+    }
+}
+
+fn summary_test_config(present_mode: PresentMode) -> SurfaceConfiguration {
+    SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        width: SURFACE_SIZE_FOR_TESTING,
+        height: SURFACE_SIZE_FOR_TESTING,
+        present_mode,
+        desired_maximum_frame_latency: 2,
+        alpha_mode: CompositeAlphaMode::PostMultiplied,
+        view_formats: vec![],
+    }
+}
+
+/// The app test `gpu_real_render` (script/realapp/appci/cases_r15_w5c.py, `SURFACE_RE`) reads this
+/// line to learn which adapter a window draws on and whether it is a software rasteriser. Its
+/// wording is that test's contract: change both together.
+#[test]
+fn surface_config_summary_names_the_adapter_and_flags_a_software_renderer() {
+    let gpu = summary_test_adapter(
+        "Intel(R) UHD Graphics 630 (CFL GT2)",
+        wgpu::DeviceType::IntegratedGpu,
+        wgpu::Backend::Vulkan,
+    );
+    assert_eq!(
+        surface_config_summary(
+            &gpu,
+            &summary_test_config(PresentMode::Fifo),
+            &[PresentMode::Fifo]
+        ),
+        "Surface configured: backend=Vulkan adapter=\"Intel(R) UHD Graphics 630 (CFL GT2)\" \
+         present_mode=Fifo frame_latency=2 alpha_mode=PostMultiplied software_renderer=false"
+    );
+
+    let software = summary_test_adapter(
+        "llvmpipe (LLVM 20.1.2, 256 bits)",
+        wgpu::DeviceType::Cpu,
+        wgpu::Backend::Gl,
+    );
+    assert_eq!(
+        surface_config_summary(
+            &software,
+            &summary_test_config(PresentMode::AutoNoVsync),
+            &[PresentMode::Fifo, PresentMode::Mailbox]
+        ),
+        "Surface configured: backend=Gl adapter=\"llvmpipe (LLVM 20.1.2, 256 bits)\" \
+         present_mode=Mailbox (via AutoNoVsync, supported: [Fifo, Mailbox]) frame_latency=2 \
+         alpha_mode=PostMultiplied software_renderer=true"
+    );
+}

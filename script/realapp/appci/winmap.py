@@ -213,6 +213,14 @@ NOT_WINDOWS["freeze_and_wake"] = ("T36: specified for Linux and macOS; the freez
 # round 15 (cases_r15_defects.py), as statements of their own so sibling branches' additions to the tables above merge cleanly
 GITBASH_ONLY["scroll_keys_foreground"] = "#2080: the foreground program is a POSIX raw reader started from a bash script (bytes_reader.sh), with a bash job printing next to it: runs in the Git Bash pane"
 NOT_WINDOWS["primary_absent_clipboard_kept"] = "#2081: the PRIMARY selection (and a display without one) is an X11 / Wayland concept; Windows has one clipboard"
+# Round 15 wave 5c (docs/design/r15-w5c.md), as statements of their own so a merge with another branch's additions to the tables above stays line-wise.
+# T49: the soak no longer samples /proc (procsample.py: the app's Win32 job plus GetProcessTimes / GetProcessMemoryInfo, or one Get-Process): it runs
+# in both panes (append_cmd / pane_shell lines, `1..300000` or `seq` for the flood, the close key the tab cases already use).
+NOT_WINDOWS.pop("soak", None)
+BOTH.add("soak")
+# T48: the comparison is the machine's DRM render node against Mesa's software rasteriser, both chosen through Linux environment variables.
+NOT_WINDOWS["gpu_real_render"] = ("T48: Linux only by design: it compares the app on the machine's DRM render node (/dev/dri) with a forced Mesa software launch; "
+                                  "the Windows VM has no GPU and renders on WARP (no machine change short of a GPU passthrough makes it run here)")
 
 
 # #1534: the startup_shell_override passes (APPCI_WIN_SHELLS="pwsh7,cmd", never in the default list: cmd.exe and pwsh 7 are not installed on every VM).

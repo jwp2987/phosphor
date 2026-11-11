@@ -13,6 +13,7 @@ import functools, os, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases  # noqa: E402
+import priv_boundary as PB  # noqa: E402  (T47: what the sudo relay and the docker case need from the machine, and the exact NEEDS: text)
 from cases import case  # noqa: E402
 
 BANNER_S = 1.6     # the Phosphorize banner comes 1 s after the subshell command starts; the step-1 case waits this long too
@@ -426,36 +427,63 @@ def empty_ps1_typed_before_setup(ctx, r):
         time.sleep(0.3)
 
 
+def relay_command(target):
+    """pure: the line typed for the relay case. Root on a machine whose CI user is root-capable: `sudo -s`, as the case was written. A test user
+    (APPCI_SUDO_USER): `sudo -n -H -u <user> -s`: -n so a withdrawn sudoers entry fails at once instead of asking for a password the harness cannot
+    type, -H so the shell starts in that user's own home with that user's rc files (HOME kept at the scratch home would make it read the harness's
+    bashrc and fail to write its logs). Both shapes match the app's built-in sudo subshell regex (warpify/settings.rs), so the banner is offered."""
+    return "sudo -s" if target["root"] and not target["explicit"] else "sudo -n -H -u %s -s" % target["user"]
+
+
 @case("subshell_ready_relay_shape", order=22)
 @guarded
 def c_ready_relay_shape(ctx, r):
     """the relay shape (rows 9/10, R4): `sudo -s` with use_pty stays the foreground leader, so only the first new prompt behind it
-    (with the local tty raw) says the shell is ready. Needs a passwordless sudo on the runner; skips otherwise."""
+    (with the local tty raw) says the shell is ready. Needs a user the pane may become with no password (priv_boundary.sudo_target: the test user
+    named by APPCI_SUDO_USER, else root through `sudo -n true`); skips otherwise with the machine change.
+    The proof that the line ran BEHIND sudo is `id -u` in the file: the target's uid, which is never the CI user's (a line that ran in the pane's own
+    bash, because sudo never started, writes the CI user's uid and fails here). T47, round 15: the effect file is named by its absolute path in a
+    directory both users can write; the case used `~/w/...`, which is the target's own home wherever sudo resets HOME (env_reset, sudo's default)."""
     need_posix(ctx, r)
-    if not shutil.which("sudo") or subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
-        r.skip("no passwordless sudo on this runner (`sudo -n true` failed). NEEDS: a sudoers entry on this test machine that lets the CI user run sudo without a password, "
-               "with `Defaults use_pty` in effect (owner: machine change; the harness never edits sudoers). Has never run on any machine")
-    f = "lab_relay.txt"
-    ctx.rm(f)
-    off = ctx.log_size()
-    ctx.be.type("sudo -s", 12, enter=True)
-    time.sleep(BANNER_S)
-    ctx.be.key("ctrl+i")
-    r.check(ctx.until(lambda: first_index(hops(ctx, off), "subshell_setup_ready_write") is not None, 10), "the setup was written behind sudo")
-    time.sleep(1.5)
-    tok = ctx.tok(6)
-    ctx.be.type("sh -c 'id -u; echo %s' >> ~/w/%s" % (tok, f), 12, enter=True)
-    r.check(ctx.until(lambda: tok in ctx.lines(f), 10), "the typed line ran in the root shell: %r" % ctx.lines(f))
-    hs = hops(ctx, off)
-    judged = [ln for h, ln in hs if h == "subshell_ready_judged"]
-    r.check(any("kind=Relay" in ln for ln in judged) or any("leader=Shell" in ln for ln in judged),
-            "the samples named sudo a relay (use_pty) or the root shell a shell leader: %r" % judged[-1:])
-    l = ctx.lines(f)
-    r.check(l[:2] == ["0", tok], "the line ran as root, once: %r" % l)
-    leave_inner(ctx, r, "relay_or_fish")
-    back = "back_" + ctx.tok(4)
-    ctx.be.type(ctx.append_cmd("bash", back, f), 12, enter=True)
-    r.check(ctx.until(lambda: back in ctx.lines(f), 8), "the pane's bash runs the next command")
+    t = PB.sudo_target()
+    if not t["ok"]:
+        r.skip("no passwordless sudo on this runner (%s). %s. The relay shape itself needs `Defaults use_pty` in effect (the default since sudo 1.9.14). "
+               "Has never run on any machine" % (t["why"], PB.sudo_needs()))
+    d, cleanup = PB.shared_dir(ctx.W, t["uid"], "relay")
+    f = os.path.join(d, "lab_relay.txt")
+    try:
+        os.remove(f)
+    except OSError:
+        pass
+    try:
+        off = ctx.log_size()
+        cmd = relay_command(t)
+        r.metric("relay_command", cmd)
+        ctx.be.type(cmd, 12, enter=True)
+        time.sleep(BANNER_S)
+        ctx.be.key("ctrl+i")
+        r.check(ctx.until(lambda: first_index(hops(ctx, off), "subshell_setup_ready_write") is not None, 10), "the setup was written behind sudo")
+        time.sleep(1.5)
+        tok = ctx.tok(6)
+        ctx.be.type("sh -c 'id -u; echo %s' >> %s" % (tok, f), 12, enter=True)
+        r.check(ctx.until(lambda: tok in PB.read_lines(f), 10), "the typed line ran in the %s shell: %r" % (t["user"], PB.read_lines(f)))
+        hs = hops(ctx, off)
+        judged = [ln for h, ln in hs if h == "subshell_ready_judged"]
+        r.check(any("kind=Relay" in ln for ln in judged) or any("leader=Shell" in ln for ln in judged),
+                "the samples named sudo a relay (use_pty) or the %s shell a shell leader: %r" % (t["user"], judged[-1:]))
+        l = PB.read_lines(f)
+        r.check(l[:2] == [str(t["uid"]), tok], "the line ran as %s (uid %d, not the CI user's %d), once: %r" % (t["user"], t["uid"], os.geteuid(), l))
+        # The shell behind sudo answers the harness's probes in ITS home, not the scratch home, so the PID probe of leave_inner() finds nothing there:
+        # the shell count under the app (taken by guarded() before the case) proves a shell is in front, and only then is `exit` typed. leave_inner()
+        # then proves the pane's ROOT shell by its PID.
+        ctx.exit_nested(getattr(ctx, "sub_base", None), r, "relay")
+        leave_inner(ctx, r, "relay_or_fish")
+        back, fb = "back_" + ctx.tok(4), "lab_relay_back.txt"
+        ctx.rm(fb)
+        ctx.be.type(ctx.append_cmd("bash", back, fb), 12, enter=True)
+        r.check(ctx.until(lambda: back in ctx.lines(fb), 8), "the pane's bash runs the next command")
+    finally:
+        cleanup()
 
 
 @case("subshell_ready_exec_fish_rc", order=22)
@@ -496,9 +524,10 @@ def c_ready_docker_t_without_i(ctx, r):
     the parent shell, so nothing may be written (the judge waits: RelayCooked). The line typed meanwhile runs in the PARENT bash
     exactly once after docker exits. Needs a usable docker with the alpine image already present (never pulled); skips otherwise."""
     need_posix(ctx, r)
-    if not shutil.which("docker") or subprocess.run(["docker", "image", "inspect", "alpine"], capture_output=True).returncode != 0:
-        r.skip("docker with a local alpine image is not available (`docker image inspect alpine` failed). NEEDS: docker usable by the CI user on this test machine and the "
-               "`alpine` image pulled once by hand (owner: machine change; the harness never pulls an image). Has never run on any machine")
+    ok, why = PB.docker_ready()
+    if not ok:
+        r.skip("docker with a local alpine image is not available: %s (owner: machine change; all three are needed: docker usable by the CI user on this test "
+               "machine, its daemon running, and the `alpine` image pulled once by hand; the harness never pulls an image). Has never run on any machine" % why)
     f = "lab_docker.txt"
     ctx.rm(f)
     off = ctx.log_size()
