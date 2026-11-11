@@ -102,8 +102,10 @@ __pa_rec() {
   local c; c=${history[$((HISTCMD-1))]};   # raw history text: `fc -l` prints a ZWJ / unprintable as the TEXT \\u200d (r18e4)
   [[ -n $c ]] || c=$(fc -ln -1 2>/dev/null)
   c=${c#"${c%%%%[![:space:]]*}"}; c=${c//$'\n'/\\n}
-  if [[ $HISTCMD != $__pa_n || -n $__pa_ran ]]; then __pa_n=$HISTCMD; print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$c" >> "$PA_CTL/rec.log"; fi
+  if [[ -n $__pa_pre ]]; then __pa_n=$HISTCMD   # #2162: preexec already logged this line itself (below); the history path is only the guard
+  elif [[ $HISTCMD != $__pa_n || -n $__pa_ran ]]; then __pa_n=$HISTCMD; print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$c" >> "$PA_CTL/rec.log"; fi
   __pa_ran=
+  __pa_pre=
   print -r -- "P"$'\t'"$EPOCHREALTIME" >> "$PA_CTL/prompt.log"
 }
 precmd_functions+=(__pa_rec)
@@ -122,8 +124,17 @@ precmd_functions+=(__pa_rec)
 # They ride in $__pa_px ("px ah p0"), so the stamp line the cases type is unchanged, byte for byte: a longer line would add to what Phosphor
 # writes and the line editor ingests at Enter, inside the measured interval. The stamp file then reads `stamp px ah p0 lf`.
 __pa_px=; __pa_lf=; __pa_ah=; __pa_p0=
-__pa_pxh() { __pa_px="$EPOCHREALTIME ${__pa_ah:-0} ${__pa_p0:-0}"; __pa_ah=; __pa_p0=; __pa_ran=1 }
+# #2162: the line is logged from preexec itself ($1 is the line the shell is about to run), not only from the next precmd's history lookup, so a
+# session whose history/precmd path misses it still records it. __pa_pre makes the precmd path skip a line preexec already logged (no double C line).
+__pa_pxh() {
+  __pa_px="$EPOCHREALTIME ${__pa_ah:-0} ${__pa_p0:-0}"; __pa_ah=; __pa_p0=; __pa_ran=1
+  local l=$1; l=${l#"${l%%%%[![:space:]]*}"}; l=${l//$'\n'/\\n}
+  if [[ -n $l ]]; then __pa_pre=1; print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$l" >> "$PA_CTL/rec.log"; fi
+}
 preexec_functions+=(__pa_pxh)
+# #2162: an app bootstrap that rebuilds preexec_functions can drop the hook above; precmd puts it back (and names the loss in $PA_CTL/hook.log)
+__pa_pxdef() { if (( ! ${preexec_functions[(I)__pa_pxh]} )); then preexec_functions+=(__pa_pxh); print -r -- "$EPOCHREALTIME preexec_functions lost __pa_pxh: $preexec_functions" >> "$PA_CTL/hook.log"; fi }
+precmd_functions+=(__pa_pxdef)
 __pa_lfw() { __pa_lf=$EPOCHREALTIME }
 zle -N zle-line-finish __pa_lfw 2>/dev/null
 __pa_ahw() { __pa_ah=$EPOCHREALTIME }

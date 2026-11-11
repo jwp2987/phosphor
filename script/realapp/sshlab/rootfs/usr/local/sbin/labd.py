@@ -470,8 +470,18 @@ if [ -n "$fn" ]; then "$fn" "$cmd" "$cur" "${COMP_WORDS[COMP_CWORD-1]}"; printf 
     "fish": ["fish", "-c", 'complete -C "$argv[1]"'],
     "pwsh": ["pwsh", "-NoProfile", "-Command", '$l = $env:LAB_LINE; (TabExpansion2 -inputScript $l -cursorColumn $l.Length).CompletionMatches | ForEach-Object { $_.CompletionText }'],
     "nu": ["nu", "--ide-complete"],
-    "zsh": ["zsh", "-fc", r'''zmodload zsh/zpty; zpty z zsh -fi; zpty -w z "autoload -U compinit; compinit -u; bindkey '^I' complete-word; PS1='> '"; sleep 1
-zpty -r z -t >/dev/null 2>&1; zpty -w -n z "$1"$'\t'; sleep 1; zpty -r z out; print -r -- "$out"; zpty -d z''', "_"],
+    # #2161: the zsh driver sets a terminal size and a prompt marker (LABP, spelled so the echoed setup line does not contain it), reads until that marker
+    # (it used to sleep and read once, with no size), and Tabs TWICE: the first Tab inserts a common prefix, the second lists (noautomenu, so it lists
+    # again instead of cycling). The list is drawn without a prompt marker after it, so a Ctrl-C ends the line and the next marker is the sync point.
+    # Output: first-Tab screen, NUL, second-Tab screen; split_candidates takes the list from whichever has one.
+    "zsh": ["zsh", "-fc", r'''zmodload zsh/zpty; export TERM=xterm COLUMNS=200 LINES=50
+zpty z zsh -fi
+zpty -w z "stty columns 200 rows 50 2>/dev/null; COLUMNS=200; LISTMAX=1000; PS1=\$'LAB\\x50> '; unsetopt automenu listambiguous; autoload -U compinit; compinit -u; bindkey '^I' complete-word"
+zpty -r -m z junk '*LABP> ' || { zpty -d z; exit 3; }
+zpty -w -n z "$1"$'\t'; sleep 0.6; o1=; zpty -r -t z o1
+zpty -w -n z $'\t'; sleep 0.6; o2=; zpty -r -t z o2
+zpty -w -n z $'\x03'; zpty -r -m z junk '*LABP> ' || { zpty -d z; exit 4; }
+print -rn -- "$o1"$'\0'"$o2"; zpty -d z''', "_"],
 }
 
 
@@ -479,12 +489,49 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r")
 
 
 def split_candidates(key, stdout, line):
-    """one candidate per entry. bash/pwsh/nu print one per line; fish adds a TAB description; zsh returns the raw zpty screen text: strip ANSI, split on
-    whitespace, drop the prompt and the words of the typed line itself"""
+    """one candidate per entry. bash/pwsh print one per line; fish adds a TAB description; zsh returns the raw zpty screens (first Tab NUL second Tab): the
+    candidates are the list drawn by the Tab (the screen text before the cursor-up that follows it), split on whitespace;
+    nu prints the --ide-complete JSON (parse_nu_complete)"""
     if key == "zsh":
-        typed = set(line.split()) | {">"}
-        return [t for t in ANSI_RE.sub(" ", stdout).split() if t not in typed]
+        for part in reversed(stdout.split("\0")) if "\0" in stdout else [stdout]:
+            if "\x1b[A" not in part:
+                continue          # no list was drawn on this screen (the cursor goes back up over a drawn list)
+            lst = ANSI_RE.sub(" ", part.split("\x1b[A", 1)[0]).replace("\r", " ")
+            return lst.split()
+        return []
+    if key == "nu":
+        return parse_nu_complete(stdout)
     return [l.split("\t")[0].rstrip() for l in stdout.splitlines() if l.strip()]
+
+
+def parse_nu_complete(stdout):
+    """#2161: `nu --ide-complete` prints JSON, not one candidate per line: a list (or {"completions": [...]}) of objects with a "value" (older builds
+    print plain strings). Anything that is not JSON falls back to one candidate per non-empty line."""
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        return [l.strip() for l in stdout.splitlines() if l.strip()]
+    if isinstance(data, dict):
+        data = data.get("completions", data.get("items", []))
+    out = []
+    for it in data if isinstance(data, list) else []:
+        v = it.get("value", it.get("text")) if isinstance(it, dict) else it
+        if isinstance(v, str) and v:
+            out.append(v)
+    return out
+
+
+def run_completer(key, line, cwd, user=None):
+    """run the shell's own completion driver for `line` in `cwd` (as `user` when given); returns the CompletedProcess. The selftest calls it with
+    user=None and a scratch directory, so the lab-side check and the offline check run the SAME driver."""
+    argv = list(COMPLETERS[key]) + ([line] if key not in ("nu", "pwsh") else [])
+    if key == "nu":
+        argv = ["nu", "--ide-complete", str(len(line)), "-c", line]
+    env = dict(os.environ, LAB_LINE=line) if key == "pwsh" else None
+    if env and user:
+        argv = ["runuser", "-u", user, "--preserve-environment", "--"] + argv
+        return sh(argv, cwd=cwd, timeout=20, env=env)
+    return sh(argv, user=user, cwd=cwd, timeout=20, env=env)
 
 
 def complete(req):
@@ -494,18 +541,9 @@ def complete(req):
     if not row:
         raise ValueError("unknown user")
     key = "bash" if row.shell == "rbash" else row.shell
-    argv = list(COMPLETERS.get(key) or [])
-    if not argv:
+    if not COMPLETERS.get(key):
         return dict(shell=row.shell, candidates=None, note="no completion driver for %s" % row.shell)
-    argv = argv + ([line] if key not in ("nu", "pwsh") else [])
-    if key == "nu":
-        argv = ["nu", "--ide-complete", str(len(line)), "-c", line]
-    env = dict(os.environ, LAB_LINE=line) if key == "pwsh" else None
-    if env:
-        argv = ["runuser", "-u", user, "--preserve-environment", "--"] + argv
-        p = sh(argv, cwd="%s/%s" % (WORK_ROOT, user), timeout=20, env=env)
-    else:
-        p = sh(argv, user=user, cwd="%s/%s" % (WORK_ROOT, user), timeout=20)
+    p = run_completer(key, line, "%s/%s" % (WORK_ROOT, user), user=user)
     out = split_candidates(key, p.stdout, line)
     return dict(shell=row.shell, candidates=out, raw=p.stdout[-4000:], rc=p.returncode, stderr=p.stderr[-500:])
 
