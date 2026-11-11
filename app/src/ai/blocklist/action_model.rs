@@ -1856,7 +1856,9 @@ impl BlocklistAIActionModel {
         if !dropped.is_empty() {
             // A count only, never an action's arguments.
             log::info!(
-                "hop=agent_late_preprocess_result dropped={} recorded={}                  conversation={conversation_id:?}: the batch was dropped while it was still                  preprocessing and its calls were settled then (#2104)",
+                "hop=agent_late_preprocess_result dropped={} recorded={} \
+                 conversation={conversation_id:?}: the batch was dropped while it was still \
+                 preprocessing and its calls were settled then (#2104)",
                 dropped.len(),
                 owed.len()
             );
