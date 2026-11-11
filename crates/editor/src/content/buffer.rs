@@ -1760,7 +1760,10 @@ impl Buffer {
         let mut text_style_override = None;
         let prev_selection_range = self.to_rendered_selection_set(selection_model.clone(), ctx);
 
-        log::debug!("Applying {action:?}");
+        log::debug!(
+            "{}",
+            applying_edit_action_line(&action, warpui::input_order::TextShown::sample())
+        );
         let undo_action_type = if range.start == range.end {
             action.undo_action_type()
         } else {
@@ -6144,6 +6147,15 @@ mod load_stage_format_tests {
             "editor_memory load_stage stage=layout_tasks rss_kb=100 ws_kb=100 private_kb=90 t=1234"
         );
     }
+}
+
+/// The debug line of a buffer edit (#2100): the action's dump holds the inserted text, so it
+/// follows the input-order text rule (the variant's name and a length by default).
+fn applying_edit_action_line<T: fmt::Debug + ?Sized>(
+    action: &T,
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!("Applying {}", shown.debug(action))
 }
 
 #[cfg(test)]

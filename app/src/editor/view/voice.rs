@@ -505,7 +505,13 @@ impl EditorView {
         self.stop_transcribing_voice_input(ctx);
         match result {
             Ok(transcribe_response) => {
-                log::debug!("Transcribed voice input: {transcribe_response:?}");
+                log::debug!(
+                    "{}",
+                    transcribed_voice_input_line(
+                        &transcribe_response,
+                        warpui::input_order::TextShown::sample()
+                    )
+                );
                 self.user_insert(&transcribe_response, ctx);
             }
             Err(e) => match e {
@@ -631,3 +637,16 @@ impl EditorView {
         .finish()
     }
 }
+
+/// The debug line for dictated text (#2100): it is what the user said, about to be inserted
+/// like typed text, so it follows the input-order text rule (its length by default).
+fn transcribed_voice_input_line(
+    transcription: &str,
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!("Transcribed voice input: {}", shown.text(transcription))
+}
+
+#[cfg(test)]
+#[path = "voice_tests.rs"]
+mod tests;

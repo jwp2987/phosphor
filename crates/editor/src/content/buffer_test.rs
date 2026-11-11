@@ -14425,3 +14425,30 @@ fn test_unindent_panic_simpler_case() {
         });
     });
 }
+
+/// #2100: the edit line holds the inserted text only with the text opt-in and never during a
+/// secret read; the variant's name stays.
+#[test]
+fn the_applying_edit_action_line_withholds_the_inserted_text() {
+    use warpui::input_order::{TextShown, assert_line_withholds};
+
+    let action = super::BufferEditAction::Insert {
+        text: "hunter2pw",
+        style: Default::default(),
+        override_text_style: None,
+    };
+    let line = |shown| super::applying_edit_action_line(&action, shown);
+    let hidden = line(TextShown::fixed(false, false));
+    assert!(
+        hidden.starts_with("Applying Insert<") && hidden.ends_with(" chars>"),
+        "{hidden}"
+    );
+    assert_line_withholds(line, &["hunter2pw"]);
+    assert_eq!(
+        super::applying_edit_action_line(
+            &super::BufferEditAction::Backspace,
+            TextShown::fixed(false, false)
+        ),
+        "Applying Backspace"
+    );
+}

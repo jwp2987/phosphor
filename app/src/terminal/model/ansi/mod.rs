@@ -774,7 +774,7 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
 
             Err(e) => safe_error!(
                 safe: ("Error when deserializing escape sequence data"),
-                full: ("Error when deserializing escape sequence data: {:?}", e)
+                full: ("{}", log_lines::hook_error("Error when deserializing escape sequence data", &e, warpui::input_order::TextShown::sample()))
             ),
         }
     }
@@ -826,7 +826,7 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
             Ok(decoded_data) => {
                 safe_debug!(
                     safe: ("Decoded payload"),
-                    full: ("Decoded payload string: {:?}", std::str::from_utf8(&decoded_data))
+                    full: ("{}", log_lines::payload("Decoded payload string", &std::str::from_utf8(&decoded_data), warpui::input_order::TextShown::sample()))
                 );
 
                 let hook = parse_decoded_hook(&decoded_data);
@@ -837,7 +837,7 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
             }
             Err(e) => safe_error!(
                 safe: ("Error when decoding payload"),
-                full: ("Error when decoding payload: {:?}", e)
+                full: ("{}", log_lines::hook_error("Error when decoding payload", &e, warpui::input_order::TextShown::sample()))
             ),
         }
     }
@@ -864,7 +864,7 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
                 };
                 safe_debug!(
                     safe: ("Decoded payload"),
-                    full: ("Decoded payload string: {:?}", serde_json::to_string(&hook))
+                    full: ("{}", log_lines::payload("Decoded payload string", &serde_json::to_string(&hook), warpui::input_order::TextShown::sample()))
                 );
                 self.handle_decoded_hook(Ok(hook));
             }
@@ -1004,7 +1004,7 @@ where
                 let dcs_data_str = String::from_utf8_lossy(&self.state.dcs_data.data);
                 safe_debug!(
                     safe: ("Received DCS string"),
-                    full: ("Received DCS string with JSON payload: {:?}", dcs_data_str)
+                    full: ("{}", log_lines::payload("Received DCS string with JSON payload", &dcs_data_str, warpui::input_order::TextShown::sample()))
                 );
                 let decoded_data = hex::decode(&*dcs_data_str);
                 self.handle_decoded_data(decoded_data);
@@ -1376,7 +1376,7 @@ where
                         };
                         safe_debug!(
                             safe: ("Received Phosphor OSC string for shell hook"),
-                            full: ("Received Phosphor OSC string for shell hook with JSON payload: {:?}", data_str)
+                            full: ("{}", log_lines::payload("Received Phosphor OSC string for shell hook with JSON payload", &data_str, warpui::input_order::TextShown::sample()))
                         );
                         let decoded_data = hex::decode(&*data_str);
                         self.handle_decoded_data(decoded_data);
@@ -1392,7 +1392,7 @@ where
                         };
                         safe_debug!(
                             safe: ("Received Phosphor OSC string for shell hook"),
-                            full: ("Received Phosphor OSC string for shell hook with JSON payload: {:?}", data_str)
+                            full: ("{}", log_lines::payload("Received Phosphor OSC string for shell hook with JSON payload", &data_str, warpui::input_order::TextShown::sample()))
                         );
                         let hook = serde_json::from_str::<DProtoHook>(&data_str);
                         self.handle_unencoded_hook(hook)
@@ -2122,6 +2122,25 @@ pub(super) fn osc_777_body(rest: &[&[u8]]) -> String {
         bytes.extend_from_slice(part);
     }
     String::from_utf8_lossy(&bytes).trim().to_owned()
+}
+
+/// The Dev / Local lines (`full:` arms of the safe-log macros) that hold a shell hook's payload
+/// (#2100). A hook carries the command line, the working directory and, as the input report,
+/// what was typed while a command ran; a decode error can quote the piece it stopped at. Each
+/// follows the input-order text rule: lengths by default, the text only with
+/// `WARP_INPUT_ORDER_LOG_TEXT=1`, never while a secret is being read.
+mod log_lines {
+    use std::fmt::Debug;
+
+    use warpui::input_order::TextShown;
+
+    pub(super) fn payload<T: Debug + ?Sized>(what: &str, payload: &T, shown: TextShown) -> String {
+        format!("{what}: {}", shown.debug(payload))
+    }
+
+    pub(super) fn hook_error<T: Debug + ?Sized>(what: &str, error: &T, shown: TextShown) -> String {
+        format!("{what}: {}", shown.debug(error))
+    }
 }
 
 #[cfg(test)]

@@ -269,7 +269,13 @@ impl Buffer {
                 anchor_updates.push(anchor_update);
             }
             let update_range = result.updated_range;
-            log::trace!("=> Reverse action: {reverse_action_type:?}");
+            log::trace!(
+                "{}",
+                log_lines::reverse_action(
+                    &reverse_action_type,
+                    warpui::input_order::TextShown::sample()
+                )
+            );
 
             // Compute post-edit byte length and end point from the correct intermediate
             // buffer state (after this edit, before subsequent edits).
@@ -447,9 +453,19 @@ impl Buffer {
         &mut self,
         action: CoreEditorAction,
     ) -> CoreEditorActionResult {
-        log::trace!("Applying {:?}", action.action);
+        log::trace!(
+            "{}",
+            log_lines::applying(&action.action, warpui::input_order::TextShown::sample())
+        );
         log::trace!("=> Edit range: {:?}", action.range);
-        log::trace!("=> Initial buffer: [{}]", self.debug());
+        log::trace!(
+            "{}",
+            log_lines::buffer_dump(
+                "Initial",
+                &self.debug(),
+                warpui::input_order::TextShown::sample()
+            )
+        );
         let result = match action.action {
             CoreEditorActionType::Insert {
                 text,
@@ -470,7 +486,14 @@ impl Buffer {
             CoreEditorActionType::UnstyleLink => self.unstyle_link(action.range),
             CoreEditorActionType::EnsurePlainTextMarker => self.ensure_plain_text(action.range),
         };
-        log::trace!("=> Updated buffer: [{}]", self.debug());
+        log::trace!(
+            "{}",
+            log_lines::buffer_dump(
+                "Updated",
+                &self.debug(),
+                warpui::input_order::TextShown::sample()
+            )
+        );
         log::trace!("=> Update range: {:?}", result.updated_range);
         result
     }
@@ -1667,6 +1690,29 @@ fn maybe_push_new_block_marker(
         new_content.push(BufferText::BlockMarker {
             marker_type: block_style,
         });
+    }
+}
+
+/// The trace lines of a core edit that hold the editor's text (#2100): the action applied (an
+/// insert carries the inserted text), its reverse (the replaced text) and the buffer before and
+/// after. Each follows the input-order text rule: lengths by default, the text only with
+/// `WARP_INPUT_ORDER_LOG_TEXT=1`, never while a secret is being read.
+mod log_lines {
+    use std::fmt::Debug;
+
+    use warpui::input_order::TextShown;
+
+    pub(super) fn reverse_action<T: Debug + ?Sized>(action: &T, shown: TextShown) -> String {
+        format!("=> Reverse action: {}", shown.debug(action))
+    }
+
+    pub(super) fn applying<T: Debug + ?Sized>(action: &T, shown: TextShown) -> String {
+        format!("Applying {}", shown.debug(action))
+    }
+
+    /// `which` is `Initial` or `Updated`.
+    pub(super) fn buffer_dump(which: &str, dump: &str, shown: TextShown) -> String {
+        format!("=> {which} buffer: [{}]", shown.display(dump))
     }
 }
 

@@ -102,7 +102,12 @@ async fn byop_generate_input_suggestions(
             if let Some(prefix) = request.prefix.as_deref() {
                 if !cmd.starts_with(prefix) {
                     log::debug!(
-                        "[byop next_command] response `{cmd}` does not start with prefix `{prefix}`; dropping"
+                        "{}",
+                        log_lines::byop_prefix_mismatch(
+                            &cmd,
+                            prefix,
+                            warpui::input_order::TextShown::sample()
+                        )
                     );
                     return Ok(GenerateAIInputSuggestionsResponseV2::default());
                 }
@@ -136,8 +141,13 @@ const ARG_GENERATOR_VALIDATION_TIMEOUT: Duration = Duration::from_secs(25);
 #[cfg(feature = "local_fs")]
 fn generator_validation_gave_up(arg: &str, command: &str) -> bool {
     log::warn!(
-        "Generator validation for arg `{arg}` in command `{command}` gave up after \
-         {ARG_GENERATOR_VALIDATION_TIMEOUT:?}; not treating the arg as valid"
+        "{}",
+        log_lines::generator_validation_gave_up(
+            arg,
+            command,
+            ARG_GENERATOR_VALIDATION_TIMEOUT,
+            warpui::input_order::TextShown::sample()
+        )
     );
     false
 }
@@ -605,8 +615,20 @@ impl NextCommandModel {
                         let most_likely_next_commands =
                             history_next_command_counts.k_most_common_ordered(5);
                         for (most_likely_next_command, count) in &most_likely_next_commands {
-                            if !is_command_valid(most_likely_next_command, completion_context.as_ref(), session_env_vars.as_ref()).await {
-                                log::debug!("Discarding most likely next command from rich history that failed validation: `{most_likely_next_command}`");
+                            if !is_command_valid(
+                                most_likely_next_command,
+                                completion_context.as_ref(),
+                                session_env_vars.as_ref(),
+                            )
+                            .await
+                            {
+                                log::debug!(
+                                    "{}",
+                                    log_lines::discarded_history_command(
+                                        most_likely_next_command,
+                                        warpui::input_order::TextShown::sample()
+                                    )
+                                );
                                 total_history_count -= *count;
                                 continue;
                             }
@@ -667,7 +689,13 @@ impl NextCommandModel {
                     // For zero-state next command suggestions, return the result immediately.
                     let Some(prefix) = prefix else {
                         return (
-                            byop_generate_input_suggestions(byop_cfg.clone(), &request, user_rules.clone(), next_command_prompt_override.clone()).await,
+                            byop_generate_input_suggestions(
+                                byop_cfg.clone(),
+                                &request,
+                                user_rules.clone(),
+                                next_command_prompt_override.clone(),
+                            )
+                            .await,
                             request,
                             true,
                             start_ts_ms,
@@ -680,17 +708,27 @@ impl NextCommandModel {
                     // At this point we know we're generating a partial suggestion with a prefix.
                     // First, return the most recent command with a matching prefix run in the same pwd
                     // (if exists, otherwise just most recent command anywhere with matching prefix).
-                    for reverse_chronological_command in reverse_chronological_potential_autosuggestions.unwrap_or_default() {
-                        if is_command_valid(&reverse_chronological_command.command, completion_context.as_ref(), session_env_vars.as_ref()).await {
+                    for reverse_chronological_command in
+                        reverse_chronological_potential_autosuggestions.unwrap_or_default()
+                    {
+                        if is_command_valid(
+                            &reverse_chronological_command.command,
+                            completion_context.as_ref(),
+                            session_env_vars.as_ref(),
+                        )
+                        .await
+                        {
                             return (
                                 Ok(GenerateAIInputSuggestionsResponseV2 {
                                     commands: vec![reverse_chronological_command.command.clone()],
-                                ai_queries: vec![],
-                                most_likely_action: reverse_chronological_command.command.clone(),
-                            }),
-                            request,
-                            false,
-                            start_ts_ms,
+                                    ai_queries: vec![],
+                                    most_likely_action: reverse_chronological_command
+                                        .command
+                                        .clone(),
+                                }),
+                                request,
+                                false,
+                                start_ts_ms,
                                 history_based_autosuggestion_state,
                                 false,
                                 next_command_context,
@@ -729,15 +767,21 @@ impl NextCommandModel {
                         });
 
                         if let Some(autosuggestion) = autosuggestion {
-                            if is_command_valid(&autosuggestion, Some(&completion_context), session_env_vars.as_ref()).await {
+                            if is_command_valid(
+                                &autosuggestion,
+                                Some(&completion_context),
+                                session_env_vars.as_ref(),
+                            )
+                            .await
+                            {
                                 return (
                                     Ok(GenerateAIInputSuggestionsResponseV2 {
                                         commands: vec![autosuggestion.clone()],
-                                    ai_queries: vec![],
-                                    most_likely_action: autosuggestion,
-                                }),
-                                request,
-                                false,
+                                        ai_queries: vec![],
+                                        most_likely_action: autosuggestion,
+                                    }),
+                                    request,
+                                    false,
                                     start_ts_ms,
                                     history_based_autosuggestion_state,
                                     false,
@@ -748,7 +792,13 @@ impl NextCommandModel {
                     };
 
                     // Only if we have no commands from history and no completions, use the LLM to generate a partial suggestion.
-                    let response = byop_generate_input_suggestions(byop_cfg, &request, user_rules, next_command_prompt_override).await;
+                    let response = byop_generate_input_suggestions(
+                        byop_cfg,
+                        &request,
+                        user_rules,
+                        next_command_prompt_override,
+                    )
+                    .await;
                     (
                         response,
                         request,
@@ -800,9 +850,12 @@ impl NextCommandModel {
                         // This is not expected to happen because the server applies its own filtering,
                         // but check just in case.
                         log::warn!(
-                            "Next command suggestion `{}` does not start with prefix `{}`.",
-                            response.most_likely_action,
-                            prefix
+                            "{}",
+                            log_lines::suggestion_prefix_mismatch(
+                                &response.most_likely_action,
+                                prefix,
+                                warpui::input_order::TextShown::sample()
+                            )
                         );
                         return;
                     }
@@ -968,7 +1021,7 @@ async fn is_arg_valid(
                 return true;
             }
             // If we didn't pass validation for any of the possible arg types, this arg is invalid.
-            log::debug!("arg `{}` in command `{}` failed validation", arg.value().as_str(), full_command);
+            log::debug!("{}", log_lines::arg_failed_validation(arg.value().as_str(), full_command, warpui::input_order::TextShown::sample()));
             false
         } else {
             true
@@ -1006,9 +1059,12 @@ pub async fn is_command_valid(
     // 2. Our parsing logic has some bugs that need to be investigated (INT-816)
     if classified_command.error.is_some() {
         log::debug!(
-            "Assuming command `{}` is valid because it failed to parse: {:?}",
-            expanded_command_line,
-            classified_command.error.unwrap()
+            "{}",
+            log_lines::assumed_valid_on_parse_error(
+                &expanded_command_line,
+                &classified_command.error.unwrap(),
+                warpui::input_order::TextShown::sample()
+            )
         );
         return true;
     }
@@ -1271,6 +1327,79 @@ impl SimilarHistoryContextCache {
             contexts: contexts.clone(),
         });
         contexts
+    }
+}
+
+/// The log lines of this file that name a command, an argument or the prefix typed so far
+/// (#2100). Each follows the input-order text rule: lengths by default, the text only with
+/// `WARP_INPUT_ORDER_LOG_TEXT=1`, never while a secret is being read.
+#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+mod log_lines {
+    use std::fmt::Debug;
+    use std::time::Duration;
+
+    use warpui::input_order::TextShown;
+
+    pub(super) fn byop_prefix_mismatch(response: &str, prefix: &str, shown: TextShown) -> String {
+        format!(
+            "[byop next_command] response {} does not start with prefix {}; dropping",
+            shown.text(response),
+            shown.text(prefix)
+        )
+    }
+
+    pub(super) fn generator_validation_gave_up(
+        arg: &str,
+        command: &str,
+        after: Duration,
+        shown: TextShown,
+    ) -> String {
+        format!(
+            "Generator validation for arg {} in command {} gave up after {after:?}; not \
+             treating the arg as valid",
+            shown.text(arg),
+            shown.text(command)
+        )
+    }
+
+    pub(super) fn discarded_history_command(command: &str, shown: TextShown) -> String {
+        format!(
+            "Discarding most likely next command from rich history that failed validation: {}",
+            shown.text(command)
+        )
+    }
+
+    pub(super) fn suggestion_prefix_mismatch(
+        suggestion: &str,
+        prefix: &str,
+        shown: TextShown,
+    ) -> String {
+        format!(
+            "Next command suggestion {} does not start with prefix {}.",
+            shown.text(suggestion),
+            shown.text(prefix)
+        )
+    }
+
+    pub(super) fn arg_failed_validation(arg: &str, command: &str, shown: TextShown) -> String {
+        format!(
+            "arg {} in command {} failed validation",
+            shown.text(arg),
+            shown.text(command)
+        )
+    }
+
+    /// The parse error is dumped under the same rule: it can quote the token it stopped at.
+    pub(super) fn assumed_valid_on_parse_error(
+        command: &str,
+        error: &dyn Debug,
+        shown: TextShown,
+    ) -> String {
+        format!(
+            "Assuming command {} is valid because it failed to parse: {}",
+            shown.text(command),
+            shown.debug(error)
+        )
     }
 }
 

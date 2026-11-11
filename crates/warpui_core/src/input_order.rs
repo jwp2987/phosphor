@@ -261,6 +261,157 @@ fn describe_bytes_escaped_with(bytes: &[u8], shown: bool) -> String {
     }
 }
 
+/// What one log line may show of the user's text, decided once for the line (#2100). The describe
+/// functions above are for the input-order hops; a line OUTSIDE this target (a typed action's
+/// dump, a find query, a dictated sentence, the shell's hook JSON) builds its text with a
+/// `TextShown` so that it follows the same rule: the length by default, the text only with
+/// `WARP_INPUT_ORDER_LOG_TEXT=1`, and never while a secret is being read.
+///
+/// A line builder takes one as its last argument, so a unit test can build the line under each
+/// policy ([`TextShown::fixed`], [`assert_line_withholds`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextShown(bool);
+
+impl TextShown {
+    /// The answer for a line written now: the tester's opt-in, and no secret being read.
+    pub fn sample() -> Self {
+        Self(TextPolicy::from_env().shows_text(secret_active_logged))
+    }
+
+    /// The answer under a given state (secret guard on), for a unit test of a line builder.
+    pub fn fixed(text_opted_in: bool, secret_active: bool) -> Self {
+        let policy = TextPolicy {
+            text: text_opted_in,
+            key_bytes: false,
+            secret_guard: true,
+        };
+        Self(policy.shows_text(|| secret_active))
+    }
+
+    /// Whether the line shows text at all.
+    pub fn shows(self) -> bool {
+        self.0
+    }
+
+    /// `text` quoted, or `<N chars>`.
+    pub fn text(self, text: &str) -> String {
+        describe_text_with(text, self.0)
+    }
+
+    /// `Some("text")` / `Some(<N chars>)` / `None`: the shape `{:?}` gave an optional string.
+    pub fn opt_text(self, text: Option<&str>) -> String {
+        match text {
+            Some(text) => format!("Some({})", self.text(text)),
+            None => "None".to_string(),
+        }
+    }
+
+    /// A `Debug` dump whose payload can be user text: the dump itself, or the name it starts
+    /// with (a type or variant: `Insert`, `SearchConfig`) and the length of the rest.
+    pub fn debug<T: std::fmt::Debug + ?Sized>(self, value: &T) -> String {
+        describe_debug_with(&format!("{value:?}"), self.0)
+    }
+
+    /// A `Display` text that can quote user text (a regex error prints the pattern): the text
+    /// itself, unquoted, or `<N chars>`.
+    pub fn display<T: std::fmt::Display + ?Sized>(self, value: &T) -> String {
+        let text = value.to_string();
+        if self.0 && text.len() <= MAX_LOGGED_TEXT_BYTES {
+            text
+        } else {
+            describe_text_with(&text, false)
+        }
+    }
+}
+
+/// The name a `Debug` dump starts with, when it is one: `Insert` of `Insert { text: "x" }`,
+/// `Find` of `Find("x")`, the whole of a unit variant. Empty for anything else (a quoted string,
+/// a list, a hand-written `Debug` that prints text first), so that no text passes as a name: the
+/// name must start with an ASCII capital, hold only identifier characters and `::`, and be
+/// followed by the end, `(`, ` {` or `{`.
+fn debug_dump_name(dump: &str) -> &str {
+    let end = dump
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+        .unwrap_or(dump.len());
+    let (name, rest) = dump.split_at(end);
+    let is_name = name.starts_with(|c: char| c.is_ascii_uppercase())
+        && (rest.is_empty()
+            || rest.starts_with('(')
+            || rest.starts_with(" {")
+            || rest.starts_with('{'));
+    if is_name { name } else { "" }
+}
+
+fn describe_debug_with(dump: &str, shown: bool) -> String {
+    if shown && dump.len() <= MAX_LOGGED_TEXT_BYTES {
+        return dump.to_string();
+    }
+    let name = debug_dump_name(dump);
+    let rest = dump.len() - name.len();
+    if rest == 0 {
+        name.to_string()
+    } else {
+        // Counted in chars like every other withheld text.
+        let chars = dump[name.len()..].chars().count();
+        format!("{name}<{chars} chars>")
+    }
+}
+
+/// [`TextShown::opt_text`] for a line written now.
+pub fn describe_opt_text(text: Option<&str>) -> String {
+    TextShown::sample().opt_text(text)
+}
+
+/// [`TextShown::debug`] for a line written now.
+pub fn describe_debug<T: std::fmt::Debug + ?Sized>(value: &T) -> String {
+    TextShown::sample().debug(value)
+}
+
+/// [`TextShown::display`] for a line written now.
+pub fn describe_display<T: std::fmt::Display + ?Sized>(value: &T) -> String {
+    TextShown::sample().display(value)
+}
+
+/// The unit test of a log line that can carry user text (#2100): `line` is built under each
+/// policy and must hold none of `texts` by default, none while a secret is read (with the text
+/// opt-in on or off), and all of them with the opt-in and no secret, which proves the texts were
+/// in the line's inputs at all. Panics with the line otherwise.
+#[doc(hidden)]
+pub fn assert_line_withholds(line: impl Fn(TextShown) -> String, texts: &[&str]) {
+    assert!(!texts.is_empty(), "no text to look for");
+    for (what, text_opted_in, secret_active) in [
+        ("by default", false, false),
+        ("during a secret read with the text opt-in", true, true),
+        ("during a secret read", false, true),
+    ] {
+        let built = line(TextShown::fixed(text_opted_in, secret_active));
+        for text in texts {
+            assert!(
+                !built.contains(text),
+                "the line holds {text:?} {what}: {built}"
+            );
+        }
+    }
+    let shown = line(TextShown::fixed(true, false));
+    for text in texts {
+        assert!(
+            shown.contains(text),
+            "the line does not hold {text:?} with the text opt-in and no secret read, so the \
+             checks above prove nothing: {shown}"
+        );
+    }
+}
+
+/// The three lines of a typed action's dispatch (#2100): the action's type, and its `Debug` dump
+/// under the text rule (a search, tab-name or free-text action carries what the user typed).
+pub(crate) fn describe_typed_action<T: std::fmt::Debug + ?Sized>(
+    type_name: &str,
+    action: &T,
+    shown: TextShown,
+) -> String {
+    format!("{type_name}::{}", shown.debug(action))
+}
+
 /// A shell-ready signal the typeahead hand-off acts on (#1490), stamped so every pty write can say
 /// how long after each one it happened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -942,6 +1093,82 @@ mod tests {
             line.starts_with("input_order hop=secret_text_withheld active=true t="),
             "{line}"
         );
+    }
+
+    /// #2100: a dump keeps the name it starts with and gives the rest by its length; nothing
+    /// that is not a type or variant name passes as one.
+    #[test]
+    fn a_debug_dump_is_its_name_and_a_length_unless_text_is_shown() {
+        #[derive(Debug)]
+        enum Action {
+            Insert { text: String },
+            Find(String),
+            Close,
+        }
+        let hidden = TextShown::fixed(false, false);
+        let insert = Action::Insert {
+            text: "hunter2".to_string(),
+        };
+        assert_eq!(hidden.debug(&insert), "Insert<20 chars>");
+        assert_eq!(
+            hidden.debug(&Action::Find("hunter2".to_string())),
+            "Find<11 chars>"
+        );
+        assert_eq!(hidden.debug(&Action::Close), "Close");
+        // Not names: a string, a list, text printed raw by a hand-written `Debug`.
+        assert_eq!(hidden.debug("hunter2"), "<9 chars>");
+        assert_eq!(hidden.debug(&vec!["hunter2"]), "<11 chars>");
+        assert_eq!(
+            describe_debug_with("Hunter2 is my password", false),
+            "<22 chars>"
+        );
+        assert_eq!(describe_debug_with("ls -la", false), "<6 chars>");
+        // The residue: a hand-written `Debug` that prints raw text shaped like a variant.
+        assert_eq!(describe_debug_with("Open(x) now", false), "Open<7 chars>");
+        let shown = TextShown::fixed(true, false);
+        assert_eq!(shown.debug(&insert), "Insert { text: \"hunter2\" }");
+        assert_line_withholds(|shown| shown.debug(&insert), &["hunter2"]);
+    }
+
+    /// #2100: the optional and `Display` forms follow the same rule.
+    #[test]
+    fn optional_and_display_text_follow_the_text_rule() {
+        let hidden = TextShown::fixed(true, true);
+        assert_eq!(hidden.opt_text(Some("hunter2")), "Some(<7 chars>)");
+        assert_eq!(hidden.opt_text(None), "None");
+        assert_eq!(hidden.display("bad (hunter2"), "<12 chars>");
+        let shown = TextShown::fixed(true, false);
+        assert_eq!(shown.opt_text(Some("Continue? ")), "Some(\"Continue? \")");
+        assert_eq!(shown.display("bad (hunter2"), "bad (hunter2");
+        assert!(!TextShown::fixed(false, false).shows());
+        assert!(!hidden.shows() && shown.shows());
+        assert_line_withholds(|shown| shown.opt_text(Some("hunter2")), &["hunter2"]);
+        assert_line_withholds(|shown| shown.display("hunter2"), &["hunter2"]);
+    }
+
+    /// #2100: the typed-action lines name the action's type and withhold its payload.
+    #[test]
+    fn the_typed_action_lines_withhold_the_payload() {
+        #[derive(Debug)]
+        enum SearchAction {
+            QueryChanged(String),
+        }
+        let action = SearchAction::QueryChanged("hunter2pw".to_string());
+        let line = |shown| {
+            format!(
+                "dispatching typed action: {}",
+                describe_typed_action("app::SearchAction", &action, shown)
+            )
+        };
+        assert_eq!(
+            line(TextShown::fixed(false, false)),
+            "dispatching typed action: app::SearchAction::QueryChanged<13 chars>"
+        );
+        assert_eq!(
+            line(TextShown::fixed(true, false)),
+            "dispatching typed action: app::SearchAction::QueryChanged(\"hunter2pw\")"
+        );
+        assert_line_withholds(line, &["hunter2pw"]);
     }
 
     #[test]

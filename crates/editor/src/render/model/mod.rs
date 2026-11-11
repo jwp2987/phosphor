@@ -96,6 +96,15 @@ pub mod saved_positions;
 pub mod table_offset_map;
 pub mod viewport;
 
+/// The trace line of a pending edit's laid-out blocks (#2100): their dump holds the edited
+/// text, so it follows the input-order text rule (a length by default).
+fn incoming_block_replacements_line<T: std::fmt::Debug + ?Sized>(
+    laid_out: &T,
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!("Incoming block replacements {}", shown.debug(laid_out))
+}
+
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;
@@ -3384,8 +3393,11 @@ impl RenderState {
         );
 
         log::trace!(
-            "Incoming block replacements {:?}",
-            &pending_edit.laid_out_line
+            "{}",
+            incoming_block_replacements_line(
+                &pending_edit.laid_out_line,
+                warpui::input_order::TextShown::sample()
+            )
         );
 
         let hidden_range_clone = hidden_ranges.clone();

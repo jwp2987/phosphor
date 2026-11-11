@@ -646,3 +646,33 @@ impl PartialEq<(Match, String)> for ExpectedMatch<'_> {
             && self.match_text == other_text
     }
 }
+
+/// #2100: the search engine's trace lines hold the typed query and the editor's text only with
+/// the text opt-in and never during a secret read.
+#[test]
+fn the_search_trace_lines_withhold_the_query_and_the_text() {
+    use warpui::input_order::{TextShown, assert_line_withholds};
+
+    let config = SearchConfig::new("hunter2pw");
+    let compiling = |shown| super::compiling_line(&config, shown);
+    let hidden = compiling(TextShown::fixed(false, false));
+    assert!(
+        hidden.starts_with("Compiling SearchConfig<") && hidden.ends_with(" chars>"),
+        "{hidden}"
+    );
+    assert_line_withholds(compiling, &["hunter2pw"]);
+
+    #[derive(Debug)]
+    enum Item {
+        Text { _fragment: &'static str },
+    }
+    let item = Item::Text {
+        _fragment: "hunter2pw",
+    };
+    let advancing = |shown| super::advancing_line(&item, &7, shown);
+    assert_eq!(
+        advancing(TextShown::fixed(false, false)),
+        "Advancing state machine by Text<27 chars> @ 7"
+    );
+    assert_line_withholds(advancing, &["hunter2pw"]);
+}

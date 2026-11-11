@@ -1874,18 +1874,23 @@ impl AppContext {
         action: &dyn Action,
         log_level: log::Level,
     ) -> bool {
-        log::log!(
-            log_level,
-            "dispatching typed action: {}::{action:?}",
-            action.type_name()
-        );
+        // #2100: a typed action's dump can hold what the user typed (a search query, a tab
+        // name); its payload follows the input-order text rule.
+        let describe_action = || {
+            crate::input_order::describe_typed_action(
+                action.type_name(),
+                action,
+                crate::input_order::TextShown::sample(),
+            )
+        };
+        log::log!(log_level, "dispatching typed action: {}", describe_action());
 
         let slow_start = Instant::now();
         let action_type: ActionType = action.into();
         // If there are no handlers registered for the given action, then we can return early
         // without needing to look at the responder chain at all, since no views will handle it
         let Some(mut handlers) = self.typed_actions.remove(&action_type) else {
-            log::warn!("Dispatched action has no handlers: {:?}", &action);
+            log::warn!("Dispatched action has no handlers: {}", describe_action());
             return false;
         };
 
@@ -1954,7 +1959,10 @@ impl AppContext {
         self.typed_actions.insert(action_type, handlers);
 
         if !handled {
-            log::debug!("Action {action:?} was dispatched, but no view handled it");
+            log::debug!(
+                "Action {} was dispatched, but no view handled it",
+                describe_action()
+            );
         }
 
         self.flush_effects();

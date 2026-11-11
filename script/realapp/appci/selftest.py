@@ -4037,6 +4037,13 @@ def agent_lrc_takeover_log_parse():
     notice = ("x [INFO] prompt-shaped line Some(\"Continue? [y/N] \") unchanged for 3s, tty read unknown; "
               "showing a take-over notice (the command stays with the agent)\n")
     assert ca.LRC_NOTICE in notice and ca.lrc_takeover_verdict(notice) == (False, False, 0), ca.lrc_takeover_verdict(notice)
+    # #2100: the cursor line in these three lines follows the input-order text rule: `Some(<N chars>)` without WARP_INPUT_ORDER_LOG_TEXT=1 and during a secret
+    # read (interaction_mode.rs log_lines). The needles are outside the text, so every verdict is the same on the count form.
+    import re
+    counted = lambda text: re.sub(r'Some\("[^"]*"\)', "Some(<16 chars>)", text)      # noqa: E731
+    assert "<16 chars>" in counted(log) and ca.lrc_takeover_verdict(counted(log)) == (True, False, 1), ca.lrc_takeover_verdict(counted(log))
+    assert ca.lrc_takeover_verdict(counted(kept)) == (False, True, 0) and ca.lrc_takeover_verdict(counted(unknown)) == (False, True, 0)
+    assert ca.LRC_NOTICE in counted(notice) and ca.lrc_takeover_verdict(counted(notice)) == (False, False, 0)
     # #1882 (owner decision: Windows gets the #1796 notice path and the PowerShell Read-Host marker): the case runs in both Windows panes now, with PowerShell
     # commands in the PowerShell pane; it was NOT_WINDOWS because ConPTY has no termios, which only removes the hand-over-on-proof, not the notice
     assert "agent_lrc_no_false_takeover" in winmap.BOTH and "agent_lrc_no_false_takeover" not in winmap.NOT_WINDOWS

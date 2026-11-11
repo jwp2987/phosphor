@@ -391,3 +391,71 @@ fn input_matched_typeahead_is_not_a_delivered_report() {
     assert_eq!(typeahead_events(&events_rx), vec![true]);
     assert_eq!(block_list.early_output().reports_delivered(), 1);
 }
+
+/// #2100: every typeahead line of this file holds the typed text only with the text opt-in and
+/// never during a secret read.
+mod log_lines_withhold_text {
+    use warpui::input_order::{TextShown, assert_line_withholds};
+
+    use super::super::log_lines;
+
+    const TYPED: &str = "mysql -phunter2pw";
+
+    #[test]
+    fn the_matched_char_line() {
+        assert_eq!(
+            log_lines::matched_char('Z', TextShown::fixed(false, false)),
+            "Matched <1 chars> as typeahead"
+        );
+        assert_eq!(
+            log_lines::matched_char('Z', TextShown::fixed(true, true)),
+            "Matched <1 chars> as typeahead"
+        );
+        assert_eq!(
+            log_lines::matched_char('Z', TextShown::fixed(true, false)),
+            "Matched \"Z\" as typeahead"
+        );
+    }
+
+    #[test]
+    fn the_typeahead_event_lines() {
+        for kind in ["input-matched", "shell-reported"] {
+            let line = |shown| log_lines::typeahead_event(kind, TYPED, shown);
+            assert_eq!(
+                line(TextShown::fixed(false, false)),
+                format!("Sending {kind} typeahead event for <17 chars>")
+            );
+            assert_line_withholds(line, &["hunter2pw", "mysql"]);
+        }
+    }
+
+    #[test]
+    fn the_clearing_line() {
+        let line = |shown| log_lines::clearing(TYPED, shown);
+        assert_eq!(
+            line(TextShown::fixed(false, false)),
+            "Clearing accumulated typeahead: <17 chars>"
+        );
+        assert_line_withholds(line, &["hunter2pw", "mysql"]);
+    }
+
+    #[test]
+    fn the_shell_input_buffer_line() {
+        let line = |shown| log_lines::shell_input_buffer(TYPED, shown);
+        assert_eq!(
+            line(TextShown::fixed(false, false)),
+            "Received shell input buffer for typeahead: <17 chars>"
+        );
+        assert_line_withholds(line, &["hunter2pw", "mysql"]);
+    }
+
+    #[test]
+    fn the_command_grid_line() {
+        let line = |shown| log_lines::command_grid(TYPED, shown);
+        assert_eq!(
+            line(TextShown::fixed(false, false)),
+            "Initializing command grid from matched typeahead: <17 chars>"
+        );
+        assert_line_withholds(line, &["hunter2pw", "mysql"]);
+    }
+}

@@ -20,6 +20,48 @@ use super::selection::ScrollDelta;
 use super::session::SessionInfo;
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 
+/// The lines of this file that hold typeahead: keys typed while a command ran, as the shell
+/// echoed or reported them (#2100). They are written in Dev / Local builds (the `full:` arms of
+/// `safe_debug!`) and on the Integration channel; each follows the input-order text rule:
+/// lengths by default, the text only with `WARP_INPUT_ORDER_LOG_TEXT=1`, never while a secret is
+/// being read.
+mod log_lines {
+    use warpui::input_order::TextShown;
+
+    pub(super) fn matched_char(ch: char, shown: TextShown) -> String {
+        format!(
+            "Matched {} as typeahead",
+            shown.text(ch.encode_utf8(&mut [0; 4]))
+        )
+    }
+
+    /// `kind` is `input-matched` or `shell-reported`.
+    pub(super) fn typeahead_event(kind: &str, typeahead: &str, shown: TextShown) -> String {
+        format!(
+            "Sending {kind} typeahead event for {}",
+            shown.text(typeahead)
+        )
+    }
+
+    pub(super) fn clearing(typeahead: &str, shown: TextShown) -> String {
+        format!("Clearing accumulated typeahead: {}", shown.text(typeahead))
+    }
+
+    pub(super) fn shell_input_buffer(typeahead: &str, shown: TextShown) -> String {
+        format!(
+            "Received shell input buffer for typeahead: {}",
+            shown.text(typeahead)
+        )
+    }
+
+    pub(super) fn command_grid(command: &str, shown: TextShown) -> String {
+        format!(
+            "Initializing command grid from matched typeahead: {}",
+            shown.text(command)
+        )
+    }
+}
+
 #[cfg(test)]
 #[path = "early_output_tests.rs"]
 mod tests;
@@ -197,15 +239,19 @@ impl EarlyOutput {
             self.typeahead.push(ch);
             safe_debug!(
                 safe: ("Matched PTY output as typeahead"),
-                full: ("Matched {ch:?} as typeahead")
+                full: ("{}", log_lines::matched_char(ch, warpui::input_order::TextShown::sample()))
             );
 
             if warp_core::channel::ChannelState::channel()
                 == warp_core::channel::Channel::Integration
             {
                 log::info!(
-                    "Sending input-matched typeahead event for {:?}",
-                    self.typeahead
+                    "{}",
+                    log_lines::typeahead_event(
+                        "input-matched",
+                        &self.typeahead,
+                        warpui::input_order::TextShown::sample()
+                    )
                 );
             }
 
@@ -273,7 +319,7 @@ impl EarlyOutput {
         // On precmd, clear accumulated typeahead for the previous command.
         safe_debug!(
             safe: ("Clearing accumulated typeahead"),
-            full: ("Clearing accumulated typeahead: {:?}", self.typeahead)
+            full: ("{}", log_lines::clearing(&self.typeahead, warpui::input_order::TextShown::sample()))
         );
         self.typeahead.clear();
         self.typeahead_chars_inserted = 0.into();
@@ -454,8 +500,12 @@ impl ansi::Handler for EarlyOutputHandler<'_> {
                 == warp_core::channel::Channel::Integration
             {
                 log::info!(
-                    "Sending shell-reported typeahead event for {:?}",
-                    me.typeahead
+                    "{}",
+                    log_lines::typeahead_event(
+                        "shell-reported",
+                        &me.typeahead,
+                        warpui::input_order::TextShown::sample()
+                    )
                 );
             }
             me.reports_delivered = me.reports_delivered.saturating_add(1);
@@ -463,7 +513,7 @@ impl ansi::Handler for EarlyOutputHandler<'_> {
                 .send_terminal_event(TerminalEvent::Typeahead { shell_report: true });
             safe_debug!(
                 safe: ("Received shell input buffer for typeahead"),
-                full: ("Received shell input buffer for typeahead: {:?}", me.typeahead)
+                full: ("{}", log_lines::shell_input_buffer(&me.typeahead, warpui::input_order::TextShown::sample()))
             );
         }
     }
@@ -484,7 +534,7 @@ impl ansi::Handler for EarlyOutputHandler<'_> {
                 let command = mem::take(&mut self.inner().typeahead);
                 safe_debug!(
                     safe: ("Initializing command grid from matched typeahead"),
-                    full: ("Initializing command grid from matched typeahead: {command:?}")
+                    full: ("{}", log_lines::command_grid(&command, warpui::input_order::TextShown::sample()))
                 );
                 self.block_list.active_block_mut().init_command(command);
                 self.block_list.update_active_block_height();

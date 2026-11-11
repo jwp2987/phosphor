@@ -188,3 +188,15 @@ fn query_find_matches_reference_not_in_query_is_unchanged() {
         vec![(0, 6..12)]
     );
 }
+
+/// #2100: the invalid-regex warning holds the typed query only with the text opt-in and never
+/// during a secret read.
+#[test]
+fn the_invalid_regex_line_withholds_the_query() {
+    let line = |shown| super::invalid_find_regex_line("(hunter2pw", shown);
+    assert_eq!(
+        line(warpui::input_order::TextShown::fixed(false, false)),
+        "Attempted to run find on AI block with invalid regex: <10 chars>"
+    );
+    warpui::input_order::assert_line_withholds(line, &["hunter2pw"]);
+}
