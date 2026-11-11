@@ -624,6 +624,16 @@ def self_test_r15(yml, src):
         (fold_tuple_assignments('PROVING_LAB = ("a.*",)\nPROVING_LAB = PROVING_LAB + ("d.*",)\n', "PROVING_LAB") == ["a.*"], "a non-literal PROVING_LAB line is skipped, not fatal"),
         ({"lab_agent_nld_predict_ssh.*", "lab_raw_key_arrival.*"} <= set(proving_lab_globs()), "both round 14 lab globs are played in the fix tier"),
         ("def play_wait" in src and "status created" in src, "a planned job that is absent or stuck in `created` is reported, not waited for"),
+        # round 19 (#2122): the integration jobs keep what a failure is judged from, and say which scenarios skipped themselves
+        (all(re.search(r'^    WARP_INTEGRATION_EVIDENCE_DIR: "\$CI_PROJECT_DIR/integ-evidence"$', job_block(j), re.M)
+             and re.search(r"^  after_script:\n    - python3 script/ci/integ_evidence\.py finish ", job_block(j), re.M)
+             and re.search(r"^  artifacts:\n(?:    .*\n)*?    when: always\n(?:    .*\n)*?    expire_in: \d+ days\n    paths:\n      - integ-evidence/$", job_block(j), re.M)
+             for j in ("integration-linux", "integration-linux-pwsh")),
+         "#2122: both integration jobs set the evidence directory, bound and summarise it in after_script (it runs when the suite failed) and keep it as an artifact, always, with an expiry"),
+        ("script/ci/integ_evidence.py --self-test" in job_block("guards") and "script/ci/collect_results.py --self-test" in job_block("guards"),
+         "#2122: the guards job runs the evidence step's and the collector's self-tests"),
+        (all(n.startswith("integration-linux") for n in BOX_EXTRA[:4]) and not [n for n in list(PLAT_SUFFIX.values()) if re.search(r"^integration-%s" % n, yml, re.M)],
+         "#2122: the integration suite exists on the Linux box only; a macOS or Windows integration job added later must get the same evidence block (this row then fails)"),
     ]
     bad = 0
     for ok, what in rows:

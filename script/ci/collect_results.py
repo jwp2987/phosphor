@@ -91,6 +91,9 @@ def all_jobs(pid):
 
 # ---- unit (nextest) traces ----------------------------------------------------------------------------------------------------
 SUMMARY = re.compile(r"Summary \[\s*([\d.]+)s\]\s+(\d+) tests? run:\s*(.*)")
+# #2122: an integration scenario whose own predicate said no exits 0, which nextest counts as passed. The job's last step (script/ci/integ_evidence.py)
+# prints one line per such scenario; they are taken out of "passed" here and listed with what they need (a skip that is not listed reads as coverage).
+SELF_SKIP = re.compile(r"^\s*INTEG-SKIP\s+(\S+)\s+NEEDS:\s*(.*)$")
 STATUS = re.compile(r"^\s*(FAIL|TIMEOUT|SIGSEGV|SIGABRT|SIGKILL|SIGBUS|SIGILL|ABORT|LEAK|EXEC-FAIL|FLAKY)\s+(?:\d+/\d+\s+)?\[\s*([\d.]+)s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+(\S.*)$")
 
 
@@ -98,7 +101,12 @@ def parse_unit(lines):
     d = {"summary_line": None, "duration_s": None, "run": None, "passed": 0, "failed": 0, "timed_out": 0, "skipped": 0, "slow": 0, "flaky": 0,
          "failures": [], "regressions": [], "notes": []}
     seen = {}
+    self_skips = {}
     for l in lines:
+        m = SELF_SKIP.match(l)
+        if m:
+            self_skips.setdefault(m.group(1), m.group(2).strip()[:300] or "no reason given")
+            continue
         m = SUMMARY.search(l)
         if m:
             d["summary_line"], d["duration_s"], d["run"] = l.strip(), float(m.group(1)), int(m.group(2))
@@ -121,6 +129,12 @@ def parse_unit(lines):
             d["notes"].append(l.strip()[:200])
     d["failures"] = sorted(seen.values(), key=lambda x: (x["crate"], x["test"]))
     d["regressions"] = sorted(set(d["regressions"]))
+    if self_skips:
+        d["skips"] = [{"surface": "integration", "scenario": n, "reason": r} for n, r in sorted(self_skips.items())]
+        if d["run"] is not None:                             # nextest's own line stays in summary_line; the counts say what ran
+            n = min(len(self_skips), d["passed"])
+            d["passed"], d["run"], d["skipped"] = d["passed"] - n, d["run"] - n, d["skipped"] + n
+            d["notes"].append("%d scenario(s) skipped themselves (exit 0, counted as passed by nextest): counted here as skipped, each listed with what it needs" % n)
     if d["run"] is None:                                     # compile error / early abort: keep the cause
         d["errors"] = [l.strip()[:200] for l in lines if re.match(r"\s*(error(\[E\d+\])?:|ERROR)", l)][:8]
     return d
@@ -697,6 +711,21 @@ def self_test():
     rows.append(((u["run"], u["passed"], u["failed"], u["skipped"]) == (3, 2, 1, 1) and u["surfaces"] == {"gui": 2, "tui": 2} and not u["notes"], "usage suite: rows counted, summary agrees"))
     rows.append((u["failures"] == [{"kind": "FAIL", "crate": "usage-gui", "test": "ssh_login", "seconds": 30.5, "detail": "assertion failed: prompt seen"}], "a failed scenario is a named failure (NEW / FIXED work on it)"))
     rows.append((u["skips"] == [{"surface": "tui", "scenario": "usage_tui_open", "reason": "needs --include-byop"}], "every skipped scenario is kept with its reason"))
+    integ = parse_unit([
+        "        PASS [   1.664s] (12/86) integration::integration shell_integration_tests::test_legacy_ssh_into_bash",
+        "  TRY 3 FAIL [  22.493s] (30/86) integration::integration shell_integration_tests::test_ssh_with_shell_override",
+        "     Summary [ 159.871s] 86 tests run: 84 passed, 2 failed, 232 skipped",
+        "INTEG-SKIP test_legacy_ssh_into_bash NEEDS: FeatureFlag::SSHTmuxWrapper off",
+        "INTEG-SKIP test_ssh_into_ash NEEDS: the local sshd fixture with remote shell `ash`: the remote shell `ash` is not installed",
+        "INTEG-SKIP test_ssh_into_ash NEEDS: said twice",
+    ])
+    rows.append(((integ["run"], integ["passed"], integ["failed"], integ["skipped"]) == (84, 82, 2, 234) and [x["scenario"] for x in integ["skips"]] == ["test_legacy_ssh_into_bash", "test_ssh_into_ash"]
+                 and integ["skips"][1]["reason"].startswith("the local sshd fixture") and "86 tests run: 84 passed" in integ["summary_line"],
+                 "#2122: an integration scenario that skipped itself is taken out of passed and listed with what it needs; nextest's own line is kept"))
+    md = render_readme({"ref": "build/x", "commit": "0" * 40, "pipeline": 1, "jobs": {}, "unit": {"integration-linux: [1]": integ}, "app": {}}, [])
+    rows.append(("## integration-linux: [1] skipped scenarios (2; not coverage)" in md and "`integration test_legacy_ssh_into_bash`: FeatureFlag::SSHTmuxWrapper off" in md,
+                 "#2122: the README lists the integration scenarios that did not run"))
+    rows.append(("skips" not in parse_unit(["     Summary [ 1.0s] 3 tests run: 3 passed, 0 skipped"]), "a suite with no self-skip has no skips entry"))
     cut = parse_usage(usage[:3])
     rows.append((cut["run"] == 2 and cut["failed"] == 1 and any("did not finish" in n for n in cut["notes"]), "no summary line: the rows seen are counted and the note says the suite did not finish"))
     lied = parse_usage(usage[:2] + ['{"summary":{"total":4,"passed":4,"failed":0,"skipped":0}}'])

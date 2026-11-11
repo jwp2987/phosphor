@@ -124,6 +124,9 @@ guards:
     - python3 script/realapp/appci/selftest.py --require every_check_function_is_registered_2086,r15_proving_lab_is_one_list
     # the tier driver's own self-test (pure: reads this file and cases.py, no network): the fix-tier lab job gets every PROVING_LAB entry once
     - python3 script/ci/ci_seq.py --self-test
+    # #2122: the integration jobs' evidence step (bounds, the skip lines) and the collector's parsers; both pure.
+    - python3 script/ci/integ_evidence.py --self-test
+    - python3 script/ci/collect_results.py --self-test
     # #1495: the release gate's offline fixtures (pass, failed job, wrong sha / tier, KNOWN, NOREF, missing platform).
     - python3 script/ci/test_check_release_gate.py
     # Large deletions. There are no pull requests here, so the base is the
@@ -776,8 +779,17 @@ integration-linux:
   # The ssh scenarios connect to a local unprivileged sshd on 127.0.0.1 that each scenario starts
   # and stops itself (#1506, docs/testing.md 2.2). With this set a missing/broken sshd FAILS them
   # instead of skipping, so they cannot silently stop running.
+  #
+  # Evidence (#2122, docs/testing.md "Round 19: what an integration run keeps"). With WARP_INTEGRATION_EVIDENCE_DIR set the test shim copies each
+  # scenario's output into its own log there and runs it with the `warp::input_order` debug target (every injected event, pty write, menu and hover
+  # state, by length and name, never typed text); the log of a scenario that passed is removed at once, the log of one that failed is the artifact.
+  # The trace still shows a failed scenario's INFO log, without the debug lines. WARP_INTEGRATION_EVIDENCE_LOG=off (a pipeline variable) keeps the
+  # logs but turns the debug target off. after_script bounds the directory and prints one `INTEG-SKIP <scenario> NEEDS: <reason>` line for every
+  # scenario that skipped itself: nextest prints PASS for those (exit 0), the collector takes them out of "passed".
   variables:
     PHOSPHOR_REQUIRE_SSH_FIXTURE: "1"
+    WARP_INTEGRATION_EVIDENCE_DIR: "$CI_PROJECT_DIR/integ-evidence"
+    WARP_INTEGRATION_TEST_ARTIFACTS_DIR: "$CI_PROJECT_DIR/integ-evidence/artifacts"
   parallel:
     matrix:
       - SHARD: ["1", "2", "3"]
@@ -786,7 +798,17 @@ integration-linux:
     - 'test -x /usr/sbin/sshd || command -v sshd >/dev/null || { echo "ERROR sshd (openssh-server) is missing on this runner: the ssh integration scenarios need it (#1506)" >&2; exit 1; }'
     - command -v ssh-keygen >/dev/null || { echo "ERROR ssh-keygen is missing on this runner" >&2; exit 1; }
     - 'echo "nproc: $(nproc)"; free -h; df -h /home'
+    - rm -rf "$WARP_INTEGRATION_EVIDENCE_DIR" && mkdir -p "$WARP_INTEGRATION_EVIDENCE_DIR"
     - xvfb-run -a -s "-screen 0 1280x1024x24" ./script/agent-cargo "$PHOSPHOR_CARGO_LABEL" nextest run -p integration --profile ci --partition "count:${SHARD}/3"
+  after_script:
+    - python3 script/ci/integ_evidence.py finish "$WARP_INTEGRATION_EVIDENCE_DIR"
+    - python3 script/ci/results_scrub.py --tree integ-evidence   # #1516: job artifacts are scrubbed like the committed results
+  artifacts:
+    name: "integ-evidence-${SHARD}"
+    when: always
+    expire_in: 7 days
+    paths:
+      - integ-evidence/
 
 # The two scenarios gated on PowerShell (#796). They resolve the shell from the
 # runner's own default, so PHOSPHOR_TEST_SHELL pins pwsh. pwsh is installed into the
@@ -799,6 +821,9 @@ integration-linux-pwsh:
   allow_failure: true
   variables:
     PHOSPHOR_TEST_SHELL: pwsh
+    # #2122: as in integration-linux.
+    WARP_INTEGRATION_EVIDENCE_DIR: "$CI_PROJECT_DIR/integ-evidence"
+    WARP_INTEGRATION_TEST_ARTIFACTS_DIR: "$CI_PROJECT_DIR/integ-evidence/artifacts"
   script:
     - command -v xvfb-run >/dev/null || { echo "ERROR xvfb-run is missing on this runner" >&2; exit 1; }
     - |
@@ -812,7 +837,17 @@ integration-linux-pwsh:
         ln -sf "$HOME/.local/opt/pwsh/pwsh" "$HOME/.local/bin/pwsh"
       fi
     - pwsh -Version
+    - rm -rf "$WARP_INTEGRATION_EVIDENCE_DIR" && mkdir -p "$WARP_INTEGRATION_EVIDENCE_DIR"
     - xvfb-run -a -s "-screen 0 1280x1024x24" ./script/agent-cargo "$PHOSPHOR_CARGO_LABEL" nextest run -p integration --profile ci -E 'test(test_input_reporting_powershell) or test(test_pwsh_vi_edit_mode_does_not_corrupt_commands)'
+  after_script:
+    - python3 script/ci/integ_evidence.py finish "$WARP_INTEGRATION_EVIDENCE_DIR"
+    - python3 script/ci/results_scrub.py --tree integ-evidence   # #1516: job artifacts are scrubbed like the committed results
+  artifacts:
+    name: integ-evidence-pwsh
+    when: always
+    expire_in: 7 days
+    paths:
+      - integ-evidence/
 
 # ---------------------------------------------------------------------------
 # Dev-tooling suites (docs/dev-tooling.md). All MANUAL and non-blocking: nothing here runs

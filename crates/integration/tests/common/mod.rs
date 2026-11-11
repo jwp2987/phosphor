@@ -2,6 +2,21 @@ use std::env;
 use std::process::Stdio;
 use warpui::integration::RERUN_EXIT_CODE;
 
+pub mod evidence;
+use evidence::ScenarioLog;
+
+/// #2122: what a scenario that did not pass leaves in the trace about its kept log.
+fn report_kept_log(name: &str, log: Option<ScenarioLog>, passed: bool) {
+    let Some(log) = log else {
+        return;
+    };
+    if passed {
+        log.discard();
+    } else {
+        eprintln!("INTEG-EVIDENCE {name} log kept: {}", log.path().display());
+    }
+}
+
 #[cfg(not(windows))]
 use command::blocking::Command;
 
@@ -42,15 +57,37 @@ pub fn run_integration_test(name: &str) -> Result<(), String> {
                 // Propagate XAUTHORITY so we can run headless tests using xvfb.
                 || k == "XAUTHORITY"
         });
-        keep_going = match Command::new(env!("CARGO_BIN_EXE_integration"))
+        // #2122: with an evidence directory the scenario's output is copied into its own log
+        // (kept when it fails) and passed on, minus `[DEBUG]` lines; without one it inherits
+        // stdout / stderr exactly as before.
+        let log = ScenarioLog::create(name, run_num);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_integration"));
+        command
             .arg(name)
             .env_clear()
             .envs(inherited_envs)
-            .env("WARP_INTEGRATION", "1")
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()
-        {
+            .env("WARP_INTEGRATION", "1");
+        if let (Some(_), Some(filter)) = (log.as_ref(), evidence::evidence_rust_log_from_env()) {
+            command.env("RUST_LOG", filter);
+        }
+        let status = match log.as_ref() {
+            Some(log) => command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .and_then(|child| log.follow(child)),
+            None => command
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status(),
+        };
+        report_kept_log(
+            name,
+            log,
+            status.as_ref().is_ok_and(|status| status.success()),
+        );
+        keep_going = match status {
             Ok(status) => match status.code() {
                 Some(0) => {
                     println!("Test exited with success.");
@@ -154,16 +191,35 @@ pub fn run_integration_test(name: &str) -> Result<(), String> {
                 || k.eq_ignore_ascii_case("NUMBER_OF_PROCESSORS")
                 || k.eq_ignore_ascii_case("SYSTEMDRIVE")
         });
-        keep_going = match std::process::Command::new(env!("CARGO_BIN_EXE_integration"))
+        // #2122: as on unix (see above).
+        let log = ScenarioLog::create(name, run_num);
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_integration"));
+        command
             .arg(name)
             .env_clear()
             .envs(inherited_envs)
             .env("WARP_INTEGRATION", "1")
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .stdin(Stdio::null())
-            .status()
-        {
+            .stdin(Stdio::null());
+        if let (Some(_), Some(filter)) = (log.as_ref(), evidence::evidence_rust_log_from_env()) {
+            command.env("RUST_LOG", filter);
+        }
+        let status = match log.as_ref() {
+            Some(log) => command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .and_then(|child| log.follow(child)),
+            None => command
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status(),
+        };
+        report_kept_log(
+            name,
+            log,
+            status.as_ref().is_ok_and(|status| status.success()),
+        );
+        keep_going = match status {
             Ok(status) => match status.code() {
                 Some(0) => {
                     println!("Test exited with success.");

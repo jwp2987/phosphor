@@ -13,28 +13,11 @@ pub struct ActionEntry {
     description: String,
 }
 
-/// Returns a concise, human-readable description of an event for the action log.
+/// Returns a concise description of an event for the action log. Typed text is given by its
+/// length, never its characters (#2040): since #2122 this log is a CI artifact of a failed
+/// scenario.
 pub fn event_description(event: &Event) -> String {
-    match event {
-        Event::KeyDown { chars, .. } => format!("KeyDown '{chars}'"),
-        Event::TypedCharacters { chars } => format!("TypedCharacters '{chars}'"),
-        Event::LeftMouseDown { .. } => "LeftMouseDown".to_string(),
-        Event::LeftMouseUp { .. } => "LeftMouseUp".to_string(),
-        Event::LeftMouseDragged { .. } => "LeftMouseDragged".to_string(),
-        Event::RightMouseDown { .. } => "RightMouseDown".to_string(),
-        Event::MiddleMouseDown { .. } => "MiddleMouseDown".to_string(),
-        Event::MouseMoved { .. } => "MouseMoved".to_string(),
-        Event::ScrollWheel { .. } => "ScrollWheel".to_string(),
-        Event::ModifierStateChanged { .. } => "ModifierStateChanged".to_string(),
-        Event::ModifierKeyChanged { .. } => "ModifierKeyChanged".to_string(),
-        Event::DragAndDropFiles { .. } => "DragAndDropFiles".to_string(),
-        Event::DragFiles { .. } => "DragFiles".to_string(),
-        Event::DragFileExit => "DragFileExit".to_string(),
-        Event::SetMarkedText { .. } => "SetMarkedText".to_string(),
-        Event::ClearMarkedText => "ClearMarkedText".to_string(),
-        Event::ForwardMouseDown { .. } => "ForwardMouseDown".to_string(),
-        Event::BackMouseDown { .. } => "BackMouseDown".to_string(),
-    }
+    super::evidence::describe_event(event)
 }
 
 /// Accumulates timestamped test events during an integration test run.

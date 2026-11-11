@@ -141,7 +141,8 @@ Hard rules:
   passphrase (no prompt: used by the bootstrap and typeahead scenarios, so keys typed during the connect are real
   typeahead) and one with a passphrase (the stand-in for the old password prompt: `Enter passphrase for key`).
   The remote user and host are this machine's (`whoami`, `hostname`). Without `sshd` / `ssh-keygen` / the remote
-  shell the scenario SKIPS with the reason on stderr; `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` (set by the
+  shell the scenario SKIPS and says `INTEG-SKIP <scenario> NEEDS: ...` (counted as a skip, never as a pass: "Round 19:
+  what an integration run keeps"); `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` (set by the
   `integration-linux` job) turns a missing or broken sshd into a failure (a missing remote shell, e.g. `ash`, still
   skips). The tmux-wrapper variants (`test_tmux_ssh_into_*`) need tmux on the remote
   and a package install and are not listed in `integration_tests!`; `test_ssh_into_fish` stays off (fish is not a
@@ -285,8 +286,8 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 | `test-linux` | test | manual (auto on tags only, owner 2026-11-02 #1503: pushes to `main` do not auto-run suites; `AUTO_DERIVE` derives the filter from the pushed diff with `ci_seq.py --derive-env` when set) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui`, plus `-E $TEST_FILTER` when that variable is set (fix tier; job log filtered by `script/ci/filter_test_log.py`, full log is artifact `nextest-linux.log`; a filtered run skips the stale-known-failure rule, and FAILS when one of its `test(/.../)` terms selected no test that ran: `script/ci/check_filter_terms.py`, #1504) |
 | `test-warpui-core` | test | manual (auto on tags only, #1503) | `check_test_failures -p warpui_core --features tui` (honours `$TEST_FILTER`) |
 | `test-workspace-rest` | test | manual (auto on tags) | the 40 other packages in one invocation (honours `$TEST_FILTER`); output filtered by `script/ci/filter_test_log.py`, full log kept as artifact `nextest-rest.log` |
-| `integration-linux` | test | manual, allow_failure (gating in the candidate/release tier verdict, owner 2026-11-09) | `crates/integration` under xvfb, 3 shards, `--profile ci`; sets `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` and checks `sshd` / `ssh-keygen` first (the ssh scenarios use a local sshd, 2.2) |
-| `integration-linux-pwsh` | test | manual | the two pwsh scenarios with `PHOSPHOR_TEST_SHELL=pwsh` |
+| `integration-linux` | test | manual, allow_failure (gating in the candidate/release tier verdict, owner 2026-11-09) | `crates/integration` under xvfb, 3 shards, `--profile ci`; sets `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` and checks `sshd` / `ssh-keygen` first (the ssh scenarios use a local sshd, 2.2). Since #2122: artifact `integ-evidence/` (the full log of every scenario that did not pass, the skip markers, `SUMMARY.txt`; `when: always`, 7 days), bounded and summarised by `script/ci/integ_evidence.py finish` in `after_script` |
+| `integration-linux-pwsh` | test | manual | the two pwsh scenarios with `PHOSPHOR_TEST_SHELL=pwsh`; the same `integ-evidence/` artifact |
 | `usage-test-linux` / `usage-test-macos` | test | manual | `script/usage-test --surface both` (Linux, xvfb) / `--surface tui` (Mac has no WindowServer for the daemon) |
 | `licenses`, `advisories` | test | on box | `script/ci/cargo_deny licenses|advisories` (cargo-deny pinned, installed only when missing; a failed advisory-DB fetch falls back to a cached DB under 7 days old, with a WARNING) = `cargo deny check licenses sources`, `check advisories`; `retry: max 2` on script/runner-system failure (network-dependent: ci_seq reports a fetch outage as NETWORK-FAIL, separate from code failures; a real `error[...]` finding stays FAIL) |
 | `check-macos`, `check-windows` | test | manual | cargo check of OS-only paths (`script/windows/bundle.ps1 -CHECK_ONLY`) |
@@ -7302,7 +7303,63 @@ text (`chars: "left"`, `"f2"`), which no platform sends. Since the pane key sink
 the character itself for a key that types one (`a`, `ctrl-i`, `space`), and nothing for every other named key. Unit tests
 `chars_for_keystroke_tests` (in `warpui_core`). `with_keystrokes_in_composing` is unchanged. A scenario that relied on a key name arriving as
 text would now see no text; none is known.
-### No verdict, nothing changed
+### No verdict in r19-units; judged in the next section
 `integration-linux`: `test_ssh_with_shell_override`, `test_command_xray_hover`,
-`test_autosuggestions_are_hidden_when_opening_tab_completions` (#2122: the job keeps no artifacts and the INFO trace has no line for the pty
+`test_autosuggestions_are_hidden_when_opening_tab_completions` (#2122: the job kept no artifacts and the INFO trace had no line for the pty
 writes, the hover or the Tab). `test_ssh_into_sh` is an APP defect (#2120) and stays red until that is worked.
+
+## Round 19: what an integration run keeps (design `docs/design/r19-integev.md`; #2122, filed #2127 #2128 #2129; nothing compiled or run when written)
+### The evidence directory
+`integration-linux` and `integration-linux-pwsh` set `WARP_INTEGRATION_EVIDENCE_DIR=$CI_PROJECT_DIR/integ-evidence` (and the driver's own
+`WARP_INTEGRATION_TEST_ARTIFACTS_DIR` under it) and keep the directory as a job artifact (`when: always`, 7 days). There is no macOS or Windows
+integration job; `ci_seq.py --self-test` has a row that fails when one is added without the same block.
+
+| path | what | written by |
+|---|---|---|
+| `logs/<scenario>.<attempt>.log` | everything one start of a scenario printed: the INFO log plus the `warp::input_order` debug target. `<attempt>` is `try<N>` (nextest's `NEXTEST_ATTEMPT`) or `pid<N>`; `.rerun<N>` for the driver's own re-runs (exit 127). Kept only when that start did not exit 0 | the test shim, `crates/integration/tests/common/evidence.rs` |
+| `skips/<scenario>.skip` | `INTEG-SKIP <scenario> NEEDS: <reason>` | the driver, `crates/warpui_core/src/integration/evidence.rs` |
+| `artifacts/<scenario>/<time>/recording.log` | the action log (steps, injected events, assertions, with offsets). Written at the end of a scenario and, new, when a step fails. Removed for scenarios with no kept log | the driver |
+| `SUMMARY.txt`, `DROPPED.txt` | what `finish` printed; files removed for size | `script/ci/integ_evidence.py` |
+
+The shim copies the scenario's stdout and stderr into the log line by line as they arrive (a scenario killed by nextest's timeout leaves
+what it printed), and passes every line that is not a `[DEBUG]` line on to its own output, so the job trace of a failed scenario reads as
+before. A scenario that passes has its log removed at once. The shim starts the scenario with `RUST_LOG=warp::input_order=debug` unless the
+caller set `RUST_LOG` itself; `WARP_INTEGRATION_EVIDENCE_LOG` replaces the filter, and `off` / `0` / empty turns it off (logs are still kept,
+at INFO). Without `WARP_INTEGRATION_EVIDENCE_DIR` (a local run, `precheck`) none of this happens: inherited output, no filter, no file.
+After the scenario process has exited the shim waits at most 3 s for its output to close, then goes on and says so (`INTEG-EVIDENCE the
+scenario exited but something still holds its output open`): a process the scenario left behind inherits the pipe.
+
+`after_script`: `python3 script/ci/integ_evidence.py finish "$WARP_INTEGRATION_EVIDENCE_DIR"`, then `results_scrub.py --tree integ-evidence`
+(#1516). `finish` never fails the job. Bounds: a file over 7 MiB keeps its first MiB and its end with a line saying how many bytes were cut;
+over 150 MiB in all the largest files are removed first and named in `DROPPED.txt` and the trace. `--self-test` (pure, run by the `guards`
+job, with `collect_results.py --self-test`).
+### Lines to read in a kept log
+| line | level | says |
+|---|---|---|
+| `integ_event seq=N step="..." kind=KeyDown key=tab ... handled=true` | INFO | every event the driver injected, in order, with the saved position a click or hover was aimed at (`position_id=`) and whether the app handled it. Typed text by length only (`chars_len=`); a key that types one character is `key=<char>` |
+| `integ_failure_state step="..." terminal[0]: bootstrapped= read_only= pending_ssh= helper_question= menu=[...] xray= editor="..." block_command="..." block_output="..."` | ERROR | once, when a step fails: what the app showed (`app/src/integration_testing/evidence.rs`). Shows text: it is the scenario's own, typed into a scratch home. Block text is the last 1200 characters, the line the last 6000 |
+| `input_order hop=suggestions_mode from=[closed] to=[completions trigger=Keybinding candidates=2]` | DEBUG | every menu open and close; for the completion menu what opened it (`Keybinding` = Tab, `AsYouType`) and how many candidates. Never the candidates |
+| `input_order hop=xray_hover arm x= y= hid=` / `ask` / `no_ask past_text=` and `hop=xray set` / `cleared` | DEBUG | the hover x-ray: a pointer rest starts counting, the editor asks the input view for the x-ray, the x-ray is up or gone. `ask` with no `set` after it: the input view refused (AI input, a menu visible, no session context) or the completer had no description |
+| `input_order hop=pty_write_bytes ...`, `input_order keydown key=...`, `input_order typed_characters text=<N chars>` and the rest of the target | DEBUG | existed; recorded by the run since #2122. Lengths, classes and names (text only with the opt-ins of `input_order.rs`, which the job does not set) |
+| `remote helper: asking the user about <host>; the bootstrap of session ... is held until the question is answered` | INFO | the remote shell will not bootstrap until a person answers (see #2127 for the give-up timer that keeps running meanwhile) |
+
+The driver's older `Dispatching event ...` line is unchanged. `recording.log` now gives typed text by its length too (`event_description`).
+### A scenario that skips itself
+A scenario whose `set_should_run_test` predicate says no still exits 0 and nextest still prints PASS: nextest has no "skipped at run time"
+result, and the usage suite depends on the binary's exit codes. It is no longer counted as a pass:
+- the driver prints `INTEG-SKIP <scenario> NEEDS: <reason>` and writes `skips/<scenario>.skip`;
+- `integ_evidence.py finish` prints one such line per scenario at the end of the job, a count (`skipped_themselves=N`) and "they are skips, not passes";
+- `collect_results.py` (`parse_unit`) takes them out of `passed` and `run`, adds them to `skipped`, lists each with its reason under
+  "`<job>` skipped scenarios (N; not coverage)" in the round's README, and notes that nextest counted them as passed. nextest's own summary
+  line is kept as `summary_line`.
+
+A predicate names its reason with `warpui::integration::skip_because("...")` (records it, returns `false`) or `needs(condition, "...")`.
+Write the reason as what the scenario NEEDS. Named so far: the ssh fixture (which program or shell is missing), "a POSIX local shell" for
+the ssh scenarios, `skip_if_powershell_core_2303` (15 scenarios), the tmux ssh wrapper flag (#2128). A predicate that names none gets "its
+set_should_run_test predicate said no (platform, shell or feature gate; no reason given)": about 30 predicates still do; give a new one a
+reason. On a machine without the evidence directory the line is printed but nextest hides the output of a passing test, so only CI counts.
+Unit tests added: `warpui_core` `integration::evidence::tests` (six: lengths not text, named keys, the event line, the skip line, first
+reason wins, the bounded failure-state line); `crates/integration` `common::evidence::tests` (four, in the integration test binary, no
+display needed: which lines stay out of the trace, the log name per start, the log filter, the copy itself); `app`
+`integration_testing::evidence::tests` (the tail). Python: `integ_evidence.py --self-test` (9 rows), `collect_results.py --self-test` (3 new
+rows), `ci_seq.py --self-test` (3 new rows on the job blocks).

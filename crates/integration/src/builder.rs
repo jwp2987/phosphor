@@ -194,6 +194,9 @@ impl Builder {
             }
         });
 
+        // #2122: a failed step writes what the app showed into the scenario's log.
+        let inner = inner.with_failure_dump(warp::integration_testing::evidence::failure_state);
+
         let driver = inner.build(test_name, create_temp_dir_for_test);
 
         // As part of initializing the test driver, $HOME gets set to a unique

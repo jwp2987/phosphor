@@ -10,12 +10,16 @@ use std::{
 mod action_log;
 mod artifacts;
 mod driver;
+pub mod evidence;
 pub mod overlay;
 mod step;
 pub mod video_recorder;
 pub use action_log::ActionLog;
 pub use artifacts::ARTIFACTS_DIR_ENV_VAR;
-pub use driver::{Builder, RERUN_EXIT_CODE, RUNTIME_TAG_FAILURE_REASON, SetupFn, TestDriver};
+pub use driver::{
+    Builder, FailureDumpFn, RERUN_EXIT_CODE, RUNTIME_TAG_FAILURE_REASON, SetupFn, TestDriver,
+};
+pub use evidence::{EVIDENCE_DIR_ENV_VAR, needs, skip_because};
 pub use overlay::OverlayLog;
 pub use step::{
     AssertionCallback, AssertionOutcome, AssertionWithDataCallback, IntegrationTestEvent,
