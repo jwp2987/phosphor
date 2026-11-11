@@ -19,7 +19,7 @@ FreshApp "info,warp::input_order=debug" 15
 . C:\Users\@WINUSER@\r18ba\lat.ps1
 $h=PhoWin
 $o="$R\out\lat_r18ba_I.csv"; Remove-Item $o -ea 0
-function SizeRun($tag,$w,$hh,$x,$y,$n){ [void][W]::MoveWindow($h,24,24,$w,$hh,$true); Start-Sleep 2; Focus; [M]::Click(24+200,24+$hh-60); Start-Sleep 1; LatInit 700 130; LatRun "r18ba|$tag" $x $y "zqxjkvwpyz" $n $o "^a{BACKSPACE}" 20 }
+function SizeRun($tag,$w,$hh,$x,$y,$n){ [void][W]::MoveWindow($h,24,24,$w,$hh,$true); Start-Sleep 2; Focus; [M]::Click(24+200,24+$hh-60); Start-Sleep 1; LatInit 700 130; LatRun "r18ba|$tag" $x $y "zqxjkvwpyz" $n $o "{END}{BACKSPACE 30}" 20 }
 foreach($rep in 1..2){
   SizeRun "big1232x712_r$rep" 1232 712 0 520 30
   SizeRun "small700x420_r$rep" 700 420 0 330 30

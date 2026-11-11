@@ -30,6 +30,39 @@ impl EditorView {
     }
 }
 
+/// #2080 (round 16): Shift+Home / Shift+End select in every editor, except that an EMPTY terminal
+/// input leaves them to the terminal view's scrollback keys. With the prompt half switched off
+/// nothing is left to anybody.
+#[test]
+fn shift_home_end_select_except_in_an_empty_terminal_input() {
+    let ctx_with = |keys: &[&'static str]| {
+        let mut context = warpui::keymap::Context::default();
+        for key in keys {
+            context.set.insert(*key);
+        }
+        context
+    };
+    let input = flags::TERMINAL_INPUT_PAGE_KEYS_HANDLED_BY_INPUT;
+    let empty = EDITOR_BUFFER_EMPTY_CONTEXT_KEY;
+
+    let predicate = shift_home_end_selects_predicate(true);
+    // The terminal input with text: selects, as before.
+    assert!(predicate.eval(&ctx_with(&["EditorView", input])));
+    // The terminal input, empty: not taken (the terminal view scrolls).
+    assert!(!predicate.eval(&ctx_with(&["EditorView", input, empty])));
+    // Any other editor, empty or not: selects, as before.
+    assert!(predicate.eval(&ctx_with(&["EditorView", empty])));
+    assert!(predicate.eval(&ctx_with(&["EditorView"])));
+    // An input method composing never had the keys.
+    assert!(!predicate.eval(&ctx_with(&["EditorView", "IMEOpen"])));
+
+    // Kill switch (`PHOSPHOR_SCROLLBACK_KEYS_AT_PROMPT=0` or `PHOSPHOR_SCROLLBACK_KEYS=0`).
+    let predicate = shift_home_end_selects_predicate(false);
+    assert!(predicate.eval(&ctx_with(&["EditorView", input, empty])));
+    assert!(predicate.eval(&ctx_with(&["EditorView", input])));
+    assert!(!predicate.eval(&ctx_with(&["EditorView", "IMEOpen"])));
+}
+
 fn initialize_app(app: &mut App) {
     initialize_settings_for_tests(app);
 

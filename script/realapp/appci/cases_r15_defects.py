@@ -6,6 +6,9 @@
 #                                 receives NOTHING; where the pane has an OCR engine the view moved up and held its place while output arrived, and
 #                                 Shift+End brought the newest lines back. One typed character then reaches the program. Second half: the same
 #                                 program in the alternate screen receives Shift+PageUp and Shift+Home as bytes and the app logs no scrollback key.
+#                                 Round 16 (owner decision 2026-11-11: the shifted keys also scroll at a prompt), first half of the case: at
+#                                 the PROMPT, with an empty input, each of the four shifted keys logs its hop; with text in the input
+#                                 Shift+Home selects it instead (no hop; the line typed over the selection is the one the shell receives).
 #                                 Wayland / X11 / macOS / the Windows Git Bash pane (the PowerShell pane has no POSIX raw reader).
 #   primary_absent_clipboard_kept #2081. On a display with NO primary selection: copy on select off, a drag over two words leaves CLIPBOARD holding
 #                                 its sentinel; control with copy on select on: CLIPBOARD holds the selection (the drag selects, the setting is
@@ -75,6 +78,24 @@ def sfg_scroll_verdict(want, n, hops, got):
     return None
 
 
+def sfg_prompt_verdict(want, n, hops):
+    """pure: failure text or None for a shifted key pressed at a PROMPT with an empty input: the app logged exactly `n` `hop=scrollback_key
+    key=<want>` lines for it (round 16; before it the keys did nothing at a prompt and the app logged none)"""
+    if hops != [want] * n:
+        return "the app logged %r for it, expected %d x %r (`hop=scrollback_key`): the key did not scroll at the prompt" % (hops, n, want)
+    return None
+
+
+def sfg_select_verdict(hops, got, want):
+    """pure: failure text or None for Shift+Home pressed in an input that HOLDS TEXT: it selects to the line start (the editor's key, as always),
+    so the app logs no scrollback key and the text typed next REPLACES the selection: the shell receives exactly `want`"""
+    if hops:
+        return "the app scrolled the scrollback (%r) although the input held text: Shift+Home must select there" % hops
+    if got != [want]:
+        return "the shell received %r, expected exactly %r (the typed line replaces the selected one)" % (got[:2], want)
+    return None
+
+
 def sfg_program_verdict(prefix, hops, got, exact=None):
     """pure: failure text or None for a key that belongs to the running program: it received bytes starting with `prefix` (exactly `exact` when
     given) and the app logged no scrollback key"""
@@ -113,6 +134,40 @@ def _sfg_press(ctx, rf, off, spec, n=1, want_bytes=0, want_hops=0):
     return b"".join(U._reader_chunks(ctx, rf))[b0:], scrollback_hops(ctx.log_since(off))[h0:]
 
 
+def _sfg_prompt_press(ctx, off, spec, n=1):
+    """press `spec` n times at the prompt -> the scrollback hops the app logged for it (a give-up net, then a settle)"""
+    h0 = len(scrollback_hops(ctx.log_since(off)))
+    ctx.be.keys([spec] * n, delay_ms=60)
+    ctx.until(lambda: len(scrollback_hops(ctx.log_since(off))) - h0 >= n, 4)
+    time.sleep(0.5)
+    return scrollback_hops(ctx.log_since(off))[h0:]
+
+
+def _sfg_prompt_half(ctx, r, off, key, rows):
+    """round 16: the shifted keys at a PROMPT. Empty input: all four scroll (one hop each). Input with text: Shift+Home selects, and the line typed
+    over the selection is what the shell receives."""
+    for label, name, want, n in (("Shift+PageUp x2", "pageup", "page_up", 2), ("Shift+Home", "home", "top", 1), ("Shift+PageDown", "pagedown", "page_down", 1),
+                                 ("Shift+End", "end", "bottom", 1)):
+        hops = _sfg_prompt_press(ctx, off, key(name, True), n)
+        err = sfg_prompt_verdict(want, n, hops)
+        rows.append(dict(key="prompt " + label, hops=hops))
+        r.check(err is None, "%s at a prompt with an empty input: %s (#%d)" % (label, err, ISSUE_SCROLL_KEYS))
+    ctx.shot("sfg_p_prompt_keys")
+    # text in the input: Shift+Home is the editor's (select to the line start)
+    tok = ctx.tok(5).lower()
+    replaced, want = "echo sfgold%s" % tok, "echo sfgnew%s" % tok
+    m = ctx.cmd_mark()
+    W1.typed(ctx, replaced, enter=False)
+    hops = _sfg_prompt_press(ctx, off, key("home", True), 0)
+    W1.typed(ctx, want)
+    ctx.until(lambda: len(ctx.cmds_since(m)) >= 1, 6)
+    got = ctx.cmds_since(m)
+    err = sfg_select_verdict(hops, got, want)
+    rows.append(dict(key="prompt Shift+Home with text", hops=hops, got=got[:2]))
+    r.check(err is None, "Shift+Home at a prompt with text in the input: %s" % err)
+    ctx.reset()
+
+
 def _sfg_start(ctx, r, arm, rf):
     """run the script's `arm` in the foreground and wait for the reader -> True when it listens"""
     ctx.rm(rf, rf + ".ready")
@@ -132,8 +187,9 @@ def _sfg_end(ctx):
 
 @case("scroll_keys_foreground", order=67, gui=True)
 def c_scroll_keys_foreground(ctx, r):
-    """#2080: while a command runs in the foreground the plain PageUp is the program's and Shift+PageUp / Shift+PageDown / Shift+Home / Shift+End
-    scroll the scrollback; a full-screen program keeps the shifted keys too. The program is a raw reader that logs every byte the pty hands it,
+    """#2080: at a prompt (round 16) and while a command runs in the foreground Shift+PageUp / Shift+PageDown / Shift+Home / Shift+End scroll the
+    scrollback; under the command the plain PageUp is the program's; a full-screen program keeps the shifted keys too. At the prompt an input
+    that holds text keeps Shift+Home (it selects). The program is a raw reader that logs every byte the pty hands it,
     with a job printing ten lines a second next to it. Verdicts: the reader's bytes (a scroll key gives none, a program key gives its sequence),
     the app's `hop=scrollback_key` lines (exactly one per scroll key, none for a program key), and where the pane has an OCR engine the view
     itself (scrolled up and held under new output; the newest lines back after Shift+End)."""
@@ -168,6 +224,7 @@ def c_scroll_keys_foreground(ctx, r):
     try:
         W1.typed(ctx, "cat %s" % src)
         time.sleep(1.5)
+        _sfg_prompt_half(ctx, r, off, key, rows)
         if not _sfg_start(ctx, r, "main", rf):
             return
         if not r.check(bool(ctx.until(lambda: printed() >= 5, 15)), "the job printed %d line(s) within 15 s: there is no output to scroll back through" % printed()):

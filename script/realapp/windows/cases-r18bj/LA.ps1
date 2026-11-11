@@ -19,7 +19,7 @@ foreach($mode in 'agent','term'){
   $c0=$pp.TotalProcessorTime.TotalMilliseconds; $t0=Get-Date; Start-Sleep 20; $pp.Refresh(); $c1=$pp.TotalProcessorTime.TotalMilliseconds
   "$mode idle: wall 20 s cpu_ms=$([math]::Round($c1-$c0)) => $([math]::Round(($c1-$c0)/200,2)) % of one core; idle window UTC $($t0.ToUniversalTime().ToString('HH:mm:ss'))-$($t0.AddSeconds(20).ToUniversalTime().ToString('HH:mm:ss'))"
   "$mode idle mem ws=$([int]($pp.WorkingSet64/1MB))MB"
-  LatRun "$L|$mode-key" 274 560 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+  LatRun "$L|$mode-key" 274 560 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
   Shot "LA_${mode}_typed"
   # Enter -> command start from the main input
   $f="$R\out\start_LA_$mode.txt"; Remove-Item $f -ea 0

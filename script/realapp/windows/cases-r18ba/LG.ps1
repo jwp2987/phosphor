@@ -29,16 +29,16 @@ Shot G_resized
 . C:\Users\@WINUSER@\r18ba\lat.ps1; LatInit 700 200
 Focus; [M]::Click(300,660); Start-Sleep 1
 $o="$R\out\lat_r18ba_G.csv"; Remove-Item $o -ea 0
-LatRun "r18ba|ps-afterresize-key" 0 520 "zqxjkvwpyz" 20 $o "^a{BACKSPACE}" 20
+LatRun "r18ba|ps-afterresize-key" 0 520 "zqxjkvwpyz" 20 $o "{END}{BACKSPACE 30}" 20
 # --- (3) copy then paste immediately (#1307)
 Set-Clipboard "OLDTEXT-STALE"
 Keys "NEWTEXT123"; Start-Sleep -Milliseconds 400
-Keys "^a"; Start-Sleep -Milliseconds 200
+Keys "^+a"; Start-Sleep -Milliseconds 200   # select all: Ctrl-Shift-A since v0.1.18 (#2079; Ctrl-A is the start of the line)
 Keys "^+c^+v"
 Start-Sleep -Milliseconds 800
 Shot G_copypaste
 "clipboard after copy+paste: " + (Get-Clipboard -Raw)
-Keys "^a{BACKSPACE}"; Start-Sleep -Milliseconds 300
+Keys "{END}{BACKSPACE 30}"; Start-Sleep -Milliseconds 300
 # --- (4) paste while another process holds the clipboard (#1305/#1306)
 Set-Clipboard "HELDPASTE"
 $hp = Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','C:\Users\@WINUSER@\r18ba\hold.ps1','-Seconds','5' -PassThru -RedirectStandardOutput "$R\out\hold_out.txt" -WindowStyle Hidden
@@ -54,7 +54,7 @@ Wait-Process -Id $hp.Id -Timeout 12 -ea 0
 Start-Sleep 2
 Shot G_held_after
 "hold out: " + ((Get-Content "$R\out\hold_out.txt") -join ' | ')
-Keys "^a{BACKSPACE}"; Start-Sleep -Milliseconds 300
+Keys "{END}{BACKSPACE 30}"; Start-Sleep -Milliseconds 300
 # --- right-click menu with text clipboard
 Set-Clipboard "rc-text"
 $sw=[Diagnostics.Stopwatch]::StartNew(); Click 600 300 $true; Start-Sleep -Milliseconds 600; Shot G_rclick; Keys "{ESC}"

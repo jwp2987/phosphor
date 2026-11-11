@@ -72,6 +72,24 @@ def r15_scroll_keys_pure_parts():
     assert "written to the pty" in X.sfg_scroll_verdict("page_up", 1, ["page_up"], b"\x1b[5~"), "scrolled AND written is still a key the program got"
     assert "did not reach the scrollback binding" in X.sfg_scroll_verdict("page_up", 1, [], b""), "a key that did nothing at all"
     assert X.sfg_scroll_verdict("page_up", 3, ["page_up"] * 2, b"") and X.sfg_scroll_verdict("top", 1, ["bottom"], b"")
+    # round 16: the keys at a prompt. Empty input: one hop per press; a build without the prompt half logs none and fails here
+    assert X.sfg_prompt_verdict("page_up", 2, ["page_up"] * 2) is None and X.sfg_prompt_verdict("top", 1, ["top"]) is None
+    assert "did not scroll at the prompt" in X.sfg_prompt_verdict("top", 1, []), "round 15's app: Shift+Home selected in the (empty) input"
+    assert X.sfg_prompt_verdict("page_up", 2, ["page_up"]) and X.sfg_prompt_verdict("bottom", 1, ["top"])
+    # an input with text keeps Shift+Home: no hop, and the typed line replaces the selected one
+    assert X.sfg_select_verdict([], ["echo new"], "echo new") is None
+    assert "must select there" in X.sfg_select_verdict(["top"], ["echo new"], "echo new"), "the key was taken from an input that had text"
+    assert "expected exactly" in X.sfg_select_verdict([], ["echo oldecho new"], "echo new"), "nothing was selected: the typed text was appended"
+    assert "expected exactly" in X.sfg_select_verdict([], [], "echo new")
+    assert '"PHOSPHOR_SCROLLBACK_KEYS_AT_PROMPT"' in rs and "pub(super) fn scrollback_key_bindings(at_prompt: bool) -> Vec<EditableBinding>" in rs
+    assert all(('"terminal:scrollback_%s"' % n) in rs for n in ("page_up", "page_down", "top", "bottom")), "the four editable binding names"
+    assert "block_list & (!id!(\"LongRunningCommand\") | !id!(\"EditorFocused\"))" in rs, "at a prompt, or under a command with the terminal focused"
+    ed = _src("app", "src", "editor", "view", "mod.rs")
+    assert 'pub const EDITOR_BUFFER_EMPTY_CONTEXT_KEY: &str = "EditorView_BufferEmpty";' in ed and "shift_home_end_selects_predicate(scrollback_keys_at_prompt)" in ed
+    assert "app.register_editable_bindings(scrollback_keys::scrollback_key_bindings(" in _src("app", "src", "terminal", "view", "init.rs")
+    import inspect
+    s = inspect.getsource(X.c_scroll_keys_foreground)
+    assert s.index("_sfg_prompt_half(ctx, r, off, key, rows)") < s.index('_sfg_start(ctx, r, "main", rf)'), "the prompt half runs before the foreground program starts"
     # a key that is the program's
     assert X.sfg_program_verdict(b"\x1b[5", [], b"\x1b[5~", exact=b"\x1b[5~") is None and X.sfg_program_verdict(b"\x1b[5", [], b"\x1b[5;2~") is None
     assert "instead of leaving the key" in X.sfg_program_verdict(b"\x1b[5", ["page_up"], b""), "a full-screen program lost its Shift+PageUp to the scrollback"
@@ -168,7 +186,8 @@ def r15_primary_absent_verdict_and_source():
 @check
 def r15_alt_word_keys_source_2079():
     """#2079: the three editors take their Linux / Windows word-motion defaults from one place, Alt-Backspace is bound off macOS, the Meta forms
-    stay as fixed bindings, and the kill switch exists (the case meta_and_word_keys expects the keys to work)"""
+    stay as fixed bindings, and the kill switch exists (the case meta_and_word_keys expects the keys to work). Round 16: Ctrl-A / Ctrl-E / Ctrl-Y
+    are readline's off macOS and select-all is Ctrl-Shift-A, from one place, with a kill switch"""
     b = _src("app", "src", "util", "bindings.rs")
     assert '"PHOSPHOR_ALT_WORD_KEYS"' in b and '= "alt-f";' in b and '= "alt-b";' in b and '= "alt-backspace";' in b
     ed = _src("app", "src", "editor", "view", "mod.rs")
@@ -178,7 +197,18 @@ def r15_alt_word_keys_source_2079():
     for rel in (("app", "src", "code", "editor", "view", "actions.rs"), ("app", "src", "notebooks", "editor", "view.rs")):
         t = _src(*rel)
         assert ".with_linux_or_windows_key_binding(word_forward_key)" in t and "META_MOVE_BACKWARD_ONE_WORD_KEYSTROKE" in t, rel
+    # round 16 (#2079 decision): the readline keys
+    assert '"PHOSPHOR_READLINE_INPUT_KEYS"' in b and '= "ctrl-shift-A";' in b and "!is_mac && on_unless_zero(value)" in b
+    assert "let readline_keys = readline_input_keys_enabled();" in ed and ".with_mac_key_binding(MOVE_TO_LINE_START_KEYSTROKE)," in ed
+    assert "            MOVE_TO_LINE_START_KEYSTROKE,\n        )," in ed and "            MOVE_TO_LINE_END_KEYSTROKE,\n        )," in ed
+    assert 'delete_all_left.with_linux_or_windows_key_binding("ctrl-y")' in ed and '"ctrl-y",\n            EditorAction::Yank,' in ed
+    assert "is_linux() && !readline_keys" in ed, "the emacs-bindings banner key is not registered with readline's Ctrl-E"
+    assert "!crate::util::bindings::readline_input_keys_enabled()" in _src("app", "src", "terminal", "view.rs")
+    for rel in (("app", "src", "editor", "view", "mod.rs"), ("app", "src", "code", "editor", "view", "actions.rs"), ("app", "src", "notebooks", "editor", "view.rs")):
+        assert "with_select_all_default(" in _src(*rel), rel
     import cases_daily_b as D
+    for family in ("mac", "other"):
+        assert all(x["default"] is None for x in D.prompt_steps("k7m", family, False)), "no step accepts an app default any more"
     for family in ("mac", "other"):
         steps = {s["name"]: s for s in D.prompt_steps("k7m", family, False)}
         assert steps["alt_b"]["issue"] is None and steps["alt_f"]["issue"] is None and "alt_backspace" in steps

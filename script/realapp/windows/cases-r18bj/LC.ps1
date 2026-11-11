@@ -21,7 +21,7 @@ function IsPho { [TC]::GetForegroundWindow().ToInt64() -eq $global:CH }
 [void](Fg $global:CH)
 Keys "cls{ENTER}"; Start-Sleep 1; Shot "LC_console"
 "=== conhost key->paint"
-LatRun "$L|conhost-ps-key" 0 30 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|conhost-ps-key" 0 30 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 "=== echo hi"
 for($k=0;$k -lt 30;$k++){ Keys "cls{ENTER}"; Start-Sleep -Milliseconds 600; $res=[LT]::Burst(0,30,'echo hi',10,$true); Add-Content $o "$L|conhost-ps-echo-hi,$k,$res"; Start-Sleep -Milliseconds 1500 }
 "=== start stamps"

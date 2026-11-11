@@ -8,6 +8,8 @@
 #   keybinding_rebind       T45, all five panes. keybindings.yaml is read at launch. Control: the default new-tab chord opens a tab, the test chord
 #                           does not, Ctrl-R opens command search. Arm A (new tab on the test chord): it opens a tab, the default chord does not.
 #                           Arm B (command search moved, new tab on Ctrl-R): Ctrl-R opens a tab and no command search; the moved chord opens it.
+#                           Arm C (round 16, #1988: new tab on Ctrl-R, command search NOT moved): the user's line wins, Ctrl-R opens a tab and no
+#                           command search. Control and arm C (not macOS without Option as Meta): Alt-R opens the history search (#1988 B).
 #                           The file is byte-identical after each launch.
 #   editor_daily            T50, Linux, Windows (both panes), macOS. Find and replace by keyboard (#2088): one Enter replaces exactly one match, the
 #                           replace-all key the rest, bytes exact, near-miss words untouched. Close with unsaved edits asks; Escape keeps the edits,
@@ -52,6 +54,16 @@ CMD_SEARCH_ACTION = "workspace:show_command_search"        # app/src/terminal/in
 REBOUND = ("ctrl-shift-f8", "ctrl+shift+F8")               # (keybindings.yaml trigger, injector key spec)
 MOVED = ("ctrl-shift-f9", "ctrl+shift+F9")
 CTRL_R = ("ctrl-r", "ctrl+r")
+ALT_R = "alt+r"                                            # #1988 B: the default key of input:search_command_history (meta-r on macOS)
+ISSUE_CTRL_R = 1988
+
+
+def alt_r_playable(backend_name, alt_acts_as_meta):
+    """pure: -> None when Alt-R can be judged here, else why not. Off macOS the Alt key itself is the binding (alt-r), unless the profile turns the
+    left Alt into Meta, where the fixed key is meta-r only on macOS. On macOS the binding is meta-r: Option-R with Option set to act as Meta."""
+    if backend_name == "mac":
+        return None if alt_acts_as_meta else "macOS: Option-R types a character by design unless Option is set to act as Meta (terminal.input.extra_meta_keys)"
+    return "this profile sets the left Alt key to act as Meta: the key arrives as meta-r, and the Linux / Windows default is alt-r" if alt_acts_as_meta else None
 SEARCH_VIEW = "CommandSearchView"                          # app/src/search/command_search/view.rs ui_name
 
 
@@ -134,7 +146,9 @@ def c_keybinding_rebind(ctx, r):
     """T45: a change in keybindings.yaml takes effect at the next launch. Control on the profile as it is: the default new-tab chord opens a tab, the
     test chord (ctrl-shift-F8) opens none, Ctrl-R opens command search. Arm A, `workspace:new_tab: ctrl-shift-f8`: the test chord opens a tab, the
     default chord opens none. Arm B, `workspace:show_command_search: ctrl-shift-f9` and `workspace:new_tab: ctrl-r`: Ctrl-R opens a tab and no
-    command search (a line typed next runs in the shell), ctrl-shift-F9 opens command search. The file is the same bytes after each launch, and the
+    command search (a line typed next runs in the shell), ctrl-shift-F9 opens command search. Arm C (#1988, round 16), `workspace:new_tab: ctrl-r`
+    alone: the user's line wins over the built-in default, Ctrl-R opens a tab and no command search. Control and arm C: Alt-R opens the history
+    search (#1988 B; not on macOS without Option as Meta). The file is the same bytes after each launch, and the
     user's own file (if any) is put back at the end. Tab counts come from the app's `hop=tab_activate`, the prompt log where the pane has one."""
     R.need_relaunch_app(ctx, "keybinding_rebind")
     if ctx.pane == "cmd":
@@ -167,6 +181,30 @@ def c_keybinding_rebind(ctx, r):
         time.sleep(0.5)
         ctx.reset()
         r.metric("control_ctrl_r_opens_search", search_seen)
+        # ---- control (#1988 B): Alt-R opens the history search, the same view filtered to history
+        import cases_daily_b as D          # late: cases.py imports that module before this one, but keep this file importable on its own
+        alt_why = alt_r_playable(ctx.be.name, D.alt_is_meta(D._settings_text(ctx)))
+
+        def alt_r_opens_search(tag):
+            if alt_why:
+                r.note("%s: Alt-R not played: %s" % (tag, alt_why))
+                return
+            off = ctx.log_size()
+            ctx.be.guard()
+            ctx.be.key(ALT_R)
+            time.sleep(1.2)
+            seen = view_rendered(ctx.log_since(off), SEARCH_VIEW)
+            ctx.shot("kbr_%s_alt_r" % tag)
+            ctx.be.key("Escape")
+            time.sleep(0.5)
+            ctx.reset()
+            r.metric("%s_alt_r_opens_search" % tag, seen)
+            if search_seen is True:
+                r.check(seen is True, "%s: Alt-R did not open the history search (no frame rendered %s; #%d option B)" % (tag, SEARCH_VIEW, ISSUE_CTRL_R))
+            else:
+                r.unverifiable("%s: the control's Ctrl-R showed no %s frame in the app log, so 'Alt-R opens the history search' is NOT judged" % (tag, SEARCH_VIEW))
+
+        alt_r_opens_search("control")
         # ---- arm A: new tab on the test chord
         text_a = keybindings_yaml([(NEW_TAB_ACTION, REBOUND[0])])
         relaunched = True
@@ -198,6 +236,17 @@ def c_keybinding_rebind(ctx, r):
             r.unverifiable("the control's Ctrl-R showed no %s frame in the app log (frame lines off, or the view has another name): 'the moved chord opens "
                            "command search' is NOT judged; the tab arms were" % SEARCH_VIEW)
         _same_bytes(r, path, text_b, "arm B")
+        # ---- arm C (#1988, owner decision 2026-11-11): new tab on Ctrl-R, command search NOT moved. The user's line wins over the built-in default,
+        # although command search belongs to the focused input. Until round 16 this arm was "not played: an owner question".
+        text_c = keybindings_yaml([(NEW_TAB_ACTION, CTRL_R[0])])
+        if not _launch_with(ctx, r, path, text_c, "kbr_c"):
+            return
+        ok, log = k.press(CTRL_R[1], 1, "arm C: Ctrl-R bound to new tab in keybindings.yaml, command search left on its default (#%d)" % ISSUE_CTRL_R)
+        seen = view_rendered(log, SEARCH_VIEW)
+        r.check(seen is not True, "arm C: Ctrl-R opened command search although keybindings.yaml gives Ctrl-R to new tab (#%d: the user's binding wins)" % ISSUE_CTRL_R)
+        search_closed_probe(ctx, r, "c_ctrl_r")
+        alt_r_opens_search("arm_c")        # command search is still reachable: its history half on Alt-R
+        _same_bytes(r, path, text_c, "arm C")
         r.metric("steps_judged", k.judged)
     finally:
         if relaunched:                 # the app runs on the case's file: stop it, put the user's file back (or none), start clean

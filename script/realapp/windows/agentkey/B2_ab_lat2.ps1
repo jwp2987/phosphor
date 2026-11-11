@@ -17,10 +17,10 @@ foreach($round in 1,2){
     FreshApp "info,warp::input_order=debug,warpui::frame_cause=debug,warpui::gpu_done=debug" 14
     Rect
     [M]::Click(300,660); Start-Sleep 1
-    LatRun "$L|r$round|ps-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+    LatRun "$L|r$round|ps-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
     [M]::Click(313,42); Start-Sleep 1; [M]::Click(330,159); Start-Sleep 5; Focus
     [M]::Click(300,660); Start-Sleep 1
-    LatRun "$L|r$round|agent-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+    LatRun "$L|r$round|agent-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
     Shot "B_ab_${L}_r${round}_agent"
     SaveLog "B_ab_${L}_r${round}_app"
   }

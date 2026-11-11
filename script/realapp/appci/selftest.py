@@ -7969,8 +7969,10 @@ def r14_w1b_pure_parts():
             steps = D.prompt_steps("k7m", family, meta)
             names = names or [s["name"] for s in steps]
             assert [s["name"] for s in steps] == names and len(names) == 16, "both platforms run the same keys"
+            # #2079 decision (round 16): Ctrl-A / Ctrl-E / Ctrl-Y are readline's on every platform, so no step accepts an app default any more
+            assert all(st["default"] is None and st["readline"] is not None for st in steps), family
+            assert {s["name"]: s for s in steps}["ctrl_y"]["ops"][2] == ("k", "ctrl+k", 1), "Ctrl-Y is tested as a yank of a Ctrl-K kill on every platform"
             for st in steps:
-                assert st["readline"] is not None or st["default"] is not None, st["name"]
                 last = st["seed"].split()[-1] if st["seed"] else ""
                 under_test = [op[1] for op in st["ops"] if op[0] == "k" and op[1] != "Left"]
                 assert under_test, st["name"]
@@ -7982,9 +7984,6 @@ def r14_w1b_pure_parts():
                 for how in ("noop", "letter"):           # the key under test doing nothing, or typing its letter, is never accepted
                     for spec in set(under_test):
                         bad = play(st["ops"], "readline", last, mac, broken=(spec, how))
-                        if st["name"] == "ctrl_e" and not mac and how == "noop":
-                            assert D.classify_key_line(bad, st["readline"], st["default"]) == "app_default"      # "does not move" IS the documented default there
-                            continue
                         assert D.classify_key_line(bad, st["readline"], st["default"]) == "fail", (family, st["name"], spec, how, bad)
                 assert D.classify_key_line(None, st["readline"], st["default"]) == "fail"
                 if mac:                                  # every key spec is one the macOS injector can post

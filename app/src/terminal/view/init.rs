@@ -689,18 +689,32 @@ pub fn init(app: &mut AppContext) {
         ),
     ]);
 
+    // #1988 option B: off macOS the history search is on Alt-R (the default of the editable
+    // `input:search_command_history`). An Alt key set to act as Meta arrives as `meta-r`, which
+    // is the editable default on macOS only, so off macOS that keystroke gets a fixed binding of
+    // the same action in the same place (the input), as `meta-.` has next to Alt-. (#1989).
+    if !OperatingSystem::get().is_mac() && bindings::alt_r_history_search_enabled() {
+        app.register_fixed_bindings([FixedBinding::new(
+            bindings::MAC_HISTORY_SEARCH_KEYSTROKE,
+            crate::workspace::WorkspaceAction::ShowCommandSearch(
+                crate::workspace::CommandSearchOptions {
+                    filter: Some(crate::search::QueryFilter::History),
+                    init_content: Default::default(),
+                },
+            ),
+            id!("Input") & !id!("VoltronActive"),
+        )]);
+    }
+
     // #2080: under a running command the plain Page Up / Page Down / Home / End are the
-    // program's, so the shifted ones scroll the scrollback, as in other terminals. Not in the
-    // alternate screen and not while the input editor has focus (see `scrollback_keys`).
-    // `PHOSPHOR_SCROLLBACK_KEYS=0` leaves them unregistered: the keys go to the program again.
+    // program's, so the shifted ones scroll the scrollback, as in other terminals; since round
+    // 16 also at a prompt, and as editable bindings. Not in the alternate screen (see
+    // `scrollback_keys`). `PHOSPHOR_SCROLLBACK_KEYS=0` leaves them unregistered: the keys go to
+    // the program again. `PHOSPHOR_SCROLLBACK_KEYS_AT_PROMPT=0` keeps them to a running command.
     if scrollback_keys::scrollback_keys_env_enabled() {
-        app.register_fixed_bindings(scrollback_keys::ScrollbackKey::ALL.map(|key| {
-            FixedBinding::new(
-                key.keystroke(),
-                TerminalAction::ScrollbackKey(key),
-                scrollback_keys::scrollback_key_predicate(),
-            )
-        }));
+        app.register_editable_bindings(scrollback_keys::scrollback_key_bindings(
+            scrollback_keys::at_prompt_enabled(),
+        ));
     }
 
     app.register_editable_bindings([EditableBinding::new(

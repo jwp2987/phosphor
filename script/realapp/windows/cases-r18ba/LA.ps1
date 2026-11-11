@@ -13,19 +13,19 @@ function StampRuns($tag,$n,$x,$y,$mk){ $f="C:\Users\@WINUSER@\r18ba\out\start_$t
 FreshApp
 [M]::Click(300,660); Start-Sleep 1
 # --- PS terminal
-LatRun "$L|ps-term-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|ps-term-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 EchoRuns 'ps-term' 15 0 520
 StampRuns 'ps-term' 12 0 520 { param($f) "[IO.File]::AppendAllText('$f',[string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())+[char]10)" }
 Shot "A_ps_term"
 # --- Agent tab
 [M]::Click(313,42); Start-Sleep 1; [M]::Click(330,159); Start-Sleep 5; Focus; Shot "A_agent_tab0"
 [M]::Click(300,660); Start-Sleep 1
-LatRun "$L|agent-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|agent-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 Shot "A_agent_tab"
 # --- Git Bash tab
 [M]::Click(313,42); Start-Sleep 1; [M]::Click(337,125); Start-Sleep 14; Focus; [M]::Click(300,660); Start-Sleep 1
 Shot "A_gb0"
-LatRun "$L|gb-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|gb-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 EchoRuns 'gb' 15 0 520
 StampRuns 'gb' 12 0 520 { param($f) 'echo $(date +%s%3N) >> /c/Users/@WINUSER@/r18ba/out/start_gb.txt' }
 Shot "A_gb"

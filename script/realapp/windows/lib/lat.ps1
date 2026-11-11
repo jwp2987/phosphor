@@ -51,7 +51,7 @@ public class LT {
 "@
 function LatInit($w,$h){ [LT]::Setup($w,$h) }
 # run n samples typing chars from $chars (cycled), file out; clears via $clear scriptblock every $clearEvery
-function LatRun($label,$x,$y,$chars,$n,$out,$clearKeys="^a{BACKSPACE}",$clearEvery=25,$gap=100,$settle=150,$base=500){
+function LatRun($label,$x,$y,$chars,$n,$out,$clearKeys="{END}{BACKSPACE 30}",$clearEvery=25,$gap=100,$settle=150,$base=500){
   $i=0
   for($k=0;$k -lt $n;$k++){
     if(-not (IsPho)){ "ABORT not foreground at $k"; break }

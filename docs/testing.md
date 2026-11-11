@@ -2520,6 +2520,8 @@ Notes that decide how a row is read:
   accepted only where `app/src/editor/view/mod.rs` documents a different Linux / Windows default on purpose: Ctrl-A selects all (the
   line becomes `echo`), Ctrl-E does not move the cursor (Linux shows the one-time "emacs bindings" banner), Ctrl-Y deletes to the line
   start. Whether those should be readline by default is an owner question; the case names them in a note and does not fail on them.
+  **Since round 16 (the #2079 decision of 2026-11-11) no step accepts `app_default`:** Ctrl-A, Ctrl-E and Ctrl-Y must give the readline
+  line on Linux and Windows too, and Ctrl-Y is tested there as on macOS (a Ctrl-K kill yanked back). See "Round 16: keys" below.
   **Alt-B, Alt-F and Alt-Backspace are expected to PASS on Linux and Windows since round 15** (#2079: they were bound to Meta only,
   the same class as #1989; now the Alt key's defaults, kill switch `PHOSPHOR_ALT_WORD_KEYS=0`). Until round 15 the first two were
   expected to fail and the failure text named the issue; a failure now is a regression. Alt-Backspace is a step of its own since then. On macOS the Alt keys run only when the profile sets Option as Meta (`terminal.input.extra_meta_keys`),
@@ -6129,7 +6131,7 @@ Source: `docs/design/r14-test-gaps.md` 7.1 (T41, T42, T45, T50) and gap G8. Thre
 **The plugin cases off Linux.** macOS: `sandbox-exec -p '(version 1)(allow default)(deny network*)'` in place of `unshare -rn`. On every platform the prefix is now proven first (`prefix_blocks_network`: a connect to a loopback listener made inside it must fail, and the same connect without it must succeed). The bundled plugin folders are also looked for in `Contents/Resources` of a macOS bundle (`bundle_roots`); the note in the result says which folder was used. The macOS launcher now logs the `CLI agent event received` line. Windows: SKIP. The Claude and Gemini plugins ship bash hooks only; the Codex plugin's PowerShell hooks need a console capture and a per-process network block (an elevated firewall rule), neither built.
 **Still Linux only, with the reason in the skip text:** `agent_gate_deny_allow`, `network_gate_notice` (pointer and OCR: T32 on macOS, T31 on Windows), `agent_gate_off_live`, `agent_gate_key_never_leaves` (not ported: the strace oracle and the Linux close key), `keyring_unavailable_startup` (the Secret Service; macOS has `keychain_startup_macos`, Windows has no keyring service by design).
 **`keychain_startup_macos`.** The app runs with a private `HOME`. The case first proves that the Security framework follows that `HOME`: a keychain created by `security create-keychain` with a relative name must land under it (it is deleted again). If it lands in the runner user's real home the case SKIPs with `NEEDS:`; it never changes the runner user's own default keychain, and it compares the runner's `default-keychain` and `list-keychains` before and after (a difference fails the case and is put back). Arms: `none` (played only when the private `HOME` has no default keychain), `unlocked` (a test keychain, default, unlocked), `locked`. Unlock prompts are windows of the `SecurityAgent` process, counted and cancelled through System Events (`watch_prompts`); without Accessibility permission for `osascript` the locked arm is not played and the case is NOREF with `NEEDS:`. Bound: `APPCI_KEYCHAIN_FIRST_FRAME_MAX_MS` (2000). The `finally` block stops the app (a pending prompt goes with it), deletes the test keychain and relaunches.
-**`keybinding_rebind`.** `keybindings.yaml` (in `cases_robust.app_config_dir`) is read at launch only, so each arm is a relaunch; the user's file is put back and the app relaunched at the end. Test chords are `ctrl-shift-F8` and `ctrl-shift-F9` (every letter chord is a default; the self-test scans the Rust sources for a default on either). The macOS backend got the F-key codes. Tab counts: `hop=tab_activate` at a last-tab key; where the pane has a prompt log, also one more prompt. Command search: a frame that rendered `CommandSearchView` (`warpui::frame_cause`); the control's Ctrl-R must show it, else that half is NOREF. Not played: a user file that puts a second action on Ctrl-R without moving command search (the focused input answers first; whether the user's line should win is an owner question).
+**`keybinding_rebind`.** `keybindings.yaml` (in `cases_robust.app_config_dir`) is read at launch only, so each arm is a relaunch; the user's file is put back and the app relaunched at the end. Test chords are `ctrl-shift-F8` and `ctrl-shift-F9` (every letter chord is a default; the self-test scans the Rust sources for a default on either). The macOS backend got the F-key codes. Tab counts: `hop=tab_activate` at a last-tab key; where the pane has a prompt log, also one more prompt. Command search: a frame that rendered `CommandSearchView` (`warpui::frame_cause`); the control's Ctrl-R must show it, else that half is NOREF. Until round 16 not played: a user file that puts a second action on Ctrl-R without moving command search (the focused input answered first). The owner decided it on 2026-11-11 (#1988: the user's line wins) and it is arm C now; see "Round 16: keys" below.
 **`editor_daily`.** Keys: find `ctrl+shift+f` (`cmd+f`), the replace row `ctrl+alt+r` (`cmd+alt+r`), replace all `ctrl+alt+Return` (`cmd+alt+Return`), save, and the close key. Fields are emptied with End and BackSpaces before typing, so a remembered query cannot add to the text.
 - *Find and replace.* The file has four matches of a per-run query, multi-byte text before the first, and two near-miss words. `replaced_once` accepts any ONE match replaced and nothing else changed; then replace-all must give `original.replace(query, replacement)` byte for byte. A build without #2088's bindings leaves the file unchanged and fails here with that text.
 - *Close question* (not macOS: native dialog, NOREF there). `Displaying unsaved changes warning for pane` after the close key; Escape, then a save has the edit; close and Enter, then the file is the saved text or that plus the new edit (the metric says which).
@@ -6140,3 +6142,62 @@ Source: `docs/design/r14-test-gaps.md` 7.1 (T41, T42, T45, T50) and gap G8. Thre
 **Launcher changes.** `editor_disk=debug` on Linux, macOS and Windows; `warp::pane_group=info` on Windows (the close-question line; `tab_lifecycle_keys` reads the same line and could not see it under the `warn` base); the CLI-agent event target on macOS.
 Self-tests (`script/realapp/appci/selftest_r15_w5a.py`, run by `run.py --self-test` and `selftest.py`): `r15_w5a_registry_and_windows_classification`, `r15_nettrace_parsers`, `r15_nettrace_control_and_poller` (where `lsof` exists the control runs for real), `r15_offline_prefix_is_proven`, `r15_live_settings_paths`, `r15_keybinding_rebind_parts`, `r15_editor_daily_parts`, `r15_keychain_startup_parts`.
 Run: `python3 script/realapp/appci/run.py --cases keychain_startup_macos,keybinding_rebind,editor_daily,zero_network_startup,network_gate_switch,claude_plugin_offline,agent_plugins_offline`.
+
+## Round 16: keys (design `docs/design/r10-r16-keys2.md`; #1988 #2079 #2080; owner decisions of 2026-11-11; nothing compiled, no app run when written)
+
+Four behaviour changes, each with a kill switch read at app start. Worked, unproven.
+
+| issue | change | kill switch | unit tests | app case |
+|---|---|---|---|---|
+| #1988 | A binding the user bound to Ctrl-R (`keybindings.yaml`, or the settings page) wins over command search wherever that binding applies, also at the prompt. Command search is the one built-in binding marked as yielding (`util/bindings.rs` `BINDINGS_YIELDING_TO_USER_BINDINGS`); macOS: its menu item gives up the key equivalent while a user binding claims it | `PHOSPHOR_USER_BINDING_WINS=0` | `warpui_core` `keymap/matcher_test.rs`: `user_bound_binding_outranks_a_yielding_default_of_a_deeper_view`, `user_bound_binding_outranks_a_yielding_default_of_the_same_view`; `util/bindings_tests.rs` `test_command_search_yields_to_a_user_binding` | `keybinding_rebind` arm C (new) |
+| #1988 B | Alt-R (Linux, Windows) / Option-R as Meta (macOS) opens the history search, `input:search_command_history`; in the input only, so a program in front still gets `ESC r` | `PHOSPHOR_ALT_R_HISTORY_SEARCH=0` (ships unbound) | `util/bindings_tests.rs`: `test_history_search_default_keystroke_per_platform_and_kill_switch`, `test_history_search_binding_default_and_no_collision` | `keybinding_rebind` control and arm C (new steps); `ui_readline_keys` (unchanged: Alt-R with a program in front is `1b72`) |
+| #2079 | Off macOS, in the text editor (the input and the app's single-line fields): Ctrl-A start of line, Ctrl-E end of line, Ctrl-Y yank; select-all is Ctrl-Shift-A (all three editors' `editor_view:select_all`; a file or a notebook keeps its fixed Ctrl-A select-all); `editor_view:delete_all_left` ships without a key in the text editor; the Linux "emacs bindings" banner is not offered. macOS unchanged | `PHOSPHOR_READLINE_INPUT_KEYS=0` | `util/bindings_tests.rs`: `test_readline_input_keys_kill_switch_and_platforms`, `test_readline_input_keys_default_bindings_per_platform` | `meta_and_word_keys` (expectation changed, below) |
+| #2080 | Shift+PageUp / PageDown / Home / End also scroll at a prompt, and are editable bindings (`terminal:scrollback_page_up`, `_page_down`, `_top`, `_bottom`). Shift+Home / Shift+End: only while the terminal input is empty; with text they select, as before. The alternate screen keeps the keys | `PHOSPHOR_SCROLLBACK_KEYS_AT_PROMPT=0` (a running command only, as in round 15); `PHOSPHOR_SCROLLBACK_KEYS=0` (none registered) | `terminal/view/scrollback_keys_tests.rs` (`the_keys_are_live_at_a_prompt`, the alternate screen in both settings, the names, the switch); `editor/view/mod_test.rs` `shift_home_end_select_except_in_an_empty_terminal_input`; `util/bindings_tests.rs` `test_scrollback_keys_are_editable_bindings` | `scroll_keys_foreground` (new first half, below) |
+
+**Changed expectations (each because an owner decision changed the behaviour; none is weaker).**
+
+- `meta_and_word_keys`: the Ctrl-A, Ctrl-E and Ctrl-Y steps accepted the app's IDE default on Linux and Windows as `app_default`. They
+  must give the readline line now; a Ctrl-A that selects all, a Ctrl-E that does not move and a Ctrl-Y that deletes to the line start
+  are failures. The Ctrl-Y step off macOS is the macOS one (Ctrl-K kills, Ctrl-Y yanks it back at the cursor). The self-test
+  `r14_w1b_pure_parts` now asserts that no step carries a default and that a Ctrl-E that does nothing fails on every platform.
+- `util/bindings_tests.rs`: round 14 pinned `alt-r` / `meta-r` as unbound while #1988 was open. That pin is replaced by
+  `test_history_search_binding_default_and_no_collision` (the history search is the only claimant).
+- `terminal/view/scrollback_keys_tests.rs`: "the prompt keeps the keys" is now the kill-switch arm
+  (`without_the_prompt_half_...`); with the default the prompt has them.
+
+**`keybinding_rebind`, new steps.** Control: Alt-R must render `CommandSearchView` (judged only when the control's Ctrl-R showed that
+view; else NOREF). Arm C, a third relaunch with `"workspace:new_tab": ctrl-r` alone: Ctrl-R opens one tab, no frame renders
+`CommandSearchView`, a line typed next runs in the shell, and Alt-R still opens the search. Alt-R is not played on macOS without
+Option as Meta, nor on Linux / Windows with the left Alt set to act as Meta (`alt_r_playable`; a note says so). About 40 s more per mode.
+
+**`scroll_keys_foreground`, new first half (at the prompt, after the 300-line `cat`, before the foreground program).** Empty input:
+Shift+PageUp twice, Shift+Home, Shift+PageDown, Shift+End must each log their `hop=scrollback_key` line(s), exactly. Then with
+`echo sfgold<tok>` typed and not entered: Shift+Home must log NO hop, and `echo sfgnew<tok>` typed next with Enter must be the one line
+the shell receives (the selection was replaced). A build without the prompt half fails the first four with "did not scroll at the
+prompt". Not covered at the prompt: the view's position by OCR (the foreground half reads it), and the PowerShell pane (the case SKIPs
+there as before). About 10 s more.
+
+Self-tests: `r15_scroll_keys_pure_parts` (the two new verdicts with the input a defect produces, the Rust names and predicate text),
+`r15_alt_word_keys_source_2079` (the readline defaults come from one place, the banner key and the banner are gated),
+`r15_keybinding_rebind_parts` (arm C's file, the order of the arms, `alt_r_playable`, the kill-switch names), `r14_w1b_pure_parts`.
+
+**Harness code that emptied a text field with Ctrl-A + Backspace** would leave the text in place off macOS now (Ctrl-A is the start of
+the line). It is changed to End + more Backspaces than the field can hold, which means the same on every build and platform, so the
+same harness still drives the released build:
+
+- appci: `cases_ui.py` (the command palette's filter in `ui_palette`), `cases_r14_w1a.py` `clear_field` (the Find query in `find_basic`;
+  `select_all_key` is gone). `cases_r15_w5a.clear_field` already did this.
+- Windows scripts: the default `$clearKeys` of `LatRun` (`script/keylat/windows/lat.ps1`, `script/realapp/windows/lib/lat.ps1`) and
+  every call that passed `"^a{BACKSPACE}"` (`agentkey/`, `cases-r18ba/`, `cases-r18bj/`) now send `"{END}{BACKSPACE 30}"` (the callers
+  clear at most every 25 keys); `cases-r18ba/LG.ps1` selects all with `^+a`.
+- `script/realapp/linux/bin/handoff.sh`, `handoff2.sh`: select all is `ctrl+shift+a`.
+- Integration step `clear_settings_search` (`app/src/integration_testing/settings/step.rs`): `ctrl-shift-A` off macOS.
+
+`LG.ps1`, the two `handoff` scripts and the integration step use the new select-all key and are therefore right for builds from this
+round on only; the End + Backspace changes are build-independent.
+
+What the next run should show: `meta_and_word_keys` with every prompt key `readline` on Linux and both Windows panes (Ctrl-A, Ctrl-E,
+Ctrl-Y included) and no "emacs bindings" banner in its screenshot; `keybinding_rebind` passing arm C and both Alt-R steps;
+`scroll_keys_foreground` passing its prompt half in both modes; `ui_palette` and `find_basic` unchanged.
+
+Run: `python3 script/realapp/appci/run.py --cases meta_and_word_keys,keybinding_rebind,scroll_keys_foreground,ui_readline_keys`.

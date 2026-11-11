@@ -12,19 +12,19 @@ function StampRuns($tag,$n,$x,$y,$mk){ $f="C:\Users\@WINUSER@\r18ba\out\start_B$
   if(Test-Path $f){ Add-Content $o ("$L|$tag-start-stamps," + ((Get-Content $f) -join ';')) } }
 FreshApp "info,warp::input_order=debug" 60
 [M]::Click(300,660); Start-Sleep 1
-LatRun "$L|ps1-key" 0 520 "zqxjkvwpyz" 30 $o "^a{BACKSPACE}" 20
+LatRun "$L|ps1-key" 0 520 "zqxjkvwpyz" 30 $o "{END}{BACKSPACE 30}" 20
 EchoRuns 'ps1' 12 0 520
 StampRuns 'ps1' 12 0 520 { param($f) "[IO.File]::AppendAllText('$f',[string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())+[char]10)" }
 Shot "B_ps1"
 [M]::Click(313,42); Start-Sleep 1; [M]::Click(337,125); Start-Sleep 14; Focus; [M]::Click(300,660); Start-Sleep 1
 Shot "B_gb0"
-LatRun "$L|gb-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|gb-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 EchoRuns 'gb' 15 0 520
 StampRuns 'gb' 12 0 520 { param($f) 'echo $(date +%s%3N) >> /c/Users/@WINUSER@/r18ba/out/start_Bgb.txt' }
 Shot "B_gb"
 Keys "^+t"; Start-Sleep 8; Focus; [M]::Click(300,660); Start-Sleep 1
 Shot "B_ps3_0"
-LatRun "$L|ps3-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|ps3-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 Shot "B_ps3"
 SaveLog "B_app"
 "done " + (Get-Content $o).Count

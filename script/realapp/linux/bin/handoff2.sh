@@ -13,7 +13,7 @@ W=$(xdotool search --name "." | while read w; do xwininfo -id $w 2>/dev/null | g
 xdotool windowsize $W 1600 1000; xdotool windowmove $W 0 0; xdotool windowfocus $W; sleep 1
 xdotool key Escape; sleep 1
 xdotool mousemove 900 924 click 1; sleep .5
-t "HANDOFF-$L"; xdotool key --delay 0 ctrl+a ctrl+shift+c; sleep .5
+t "HANDOFF-$L"; xdotool key --delay 0 ctrl+shift+a ctrl+shift+c; sleep .5
 echo "before quit: $($R/venv/bin/python $REALAPP/bin/xget.py UTF8_STRING 2>/dev/null)"
 P=$(pgrep -f 'linux-r18bi/dist/x/squashfs-root/opt/phosphor/phosphor-oss$' | head -1)
 T0=$(date +%s.%N)
