@@ -5692,3 +5692,65 @@ the typed prefix; a Find with no match), pins the registry rows and the app text
 of its controls.
 Run one: `python3 script/realapp/appci/run.py --cases history_survives_restart` (add `APPCI_FAKE_MODEL=1` for
 `agent_hidden_tab_attention`).
+## Round 14 wave 3: what a user does to the window (design `docs/design/r14-w3b.md`; `r14-test-gaps.md` T26-T30; nothing compiled or run when written)
+Five app cases in `appci/cases_window_use.py`, all in `cases.PROVING` (fix tier; graduation is the owner's), both modes, typing at 10-25 ms per
+key with an instant Enter, the exact received line checked from `rec.log` and effect files. No fake model. Self-test:
+`r14_window_use_cases_pure_parts` (every judge passes the right result and fails a wrong one; the app's line shapes are pinned against the Rust
+source; no case skips after its first check). One trace-only app line was added for T26: `input_order hop=grid_resize rows=<n> cols=<n>
+pane=<id>` (`app/src/terminal/view/grid_resize_hop.rs`, logged in `TerminalView::resize_internal` when rows or columns change; unit test
+`detail_names_rows_then_cols_then_pane`; no behaviour reads it).
+| case | platforms | est. minutes per pass (both modes, not measured) | Windows |
+| `resize_reflow_output` | Wayland, X11, macOS | 2.5 (table: 4) | `NOT_WINDOWS`: no resize call (T33) |
+| `context_menu_actions` | Wayland, X11 | 1.5 (table: 3) | `NOT_WINDOWS`: no pointer (T31) |
+| `tab_pointer_use` | Wayland, X11 | 3 (table: 3) | `NOT_WINDOWS`: no pointer (T31) |
+| `focus_cycle` | Wayland, X11, macOS, Windows (both panes) | 1.5 (table: 3) | `BOTH`; typing half only |
+| `minimize_fullscreen` | Wayland, X11, macOS | 3 (table: 3; 30 s of it is the hidden window, `APPCI_MINIMIZE_S`) | `NOT_WINDOWS`: no window-state call (T33) |
+- `resize_reflow_output` (G34). The window is driven per backend (`Window`): sway commands addressed by the app's pid, `xdotool windowsize`, System
+  Events on macOS. (1) `ui_copy_wrapped_output`'s fixture is printed and its block output copied (block-up, copy-output; the clipboard holds a
+  sentinel first); the window is made narrower, then wider, and each time the copy must be byte-identical to the first. A resize counts only when
+  it provably took: a new `hop=grid_resize` line, else a changed screenshot; otherwise that size is UNVERIFIABLE. (2) `bash wu_stream.sh <tag> 700
+  0.02` (a SIGWINCH trap that appends `stty size`) prints 700 numbered lines while 60 resizes are sent in 10 s (macOS: as many as System Events
+  manages in 11 s; the count is the metric `rapid_resizes`): the copied output holds all 700 lines in order (`judge_stream_copy` names the first lost,
+  doubled or out-of-order line), the trap ran at least once, and a `stty size` typed afterwards equals the latest `hop=grid_resize` (a last resize
+  that never reached the pty, or reached it out of order, fails here). (3) `vim -u NONE -N` is open while the window is resized; `:call
+  writefile([&lines.' '.&columns], ...)` must report the pty's size (vim missing: UNVERIFIABLE). (4) The original size returns (`stty size` equal to
+  the first reading, and to the grid). Controls: the first copy is judged against the printed lines before any resize; a log with no
+  `hop=grid_resize` makes the grid comparison UNVERIFIABLE, never a pass. `APPCI_RR_LINES` changes the line count (minimum 200).
+- `context_menu_actions` (G35, F13). Linux pointer backends. Every pointer position is the app's own `appci_find` line (#1789): the printed token,
+  a probe typed into the input, and the menu entries `Copy output`, `Copy command`, `Paste` (the reader here takes tokens with a space;
+  `cases_ui.FIND_RE` does not). A menu entry must be drawn after the right click; an older sighting is never used. Right click on the block, `Copy
+  output`: the clipboard is exactly the output token (the typed command does not contain it). `Copy command`: exactly the command line. Right click
+  in the input, `Paste`: the app's `hop=enter_begin` at the next Enter holds exactly the clipboard text; in a terminal session `rec.log` and the
+  effect file hold it too (in an agent conversation a line the app sends to the agent is noted and stopped). SKIP: no pointer tool (macOS), the
+  profile's `terminal.input.right_click_behavior` is paste, or the window position cannot be read. UNVERIFIABLE: no `appci_find` line for the
+  token or the probe (an app without the hook). On Wayland without the virtual pointer holder a missing pointer effect is NOREF, as in
+  `ui_mouse_select_copy`. No OCR anywhere in this case (self-test).
+- `tab_pointer_use` (G36). Linux pointer backends. Four tabs, each in its own directory named by a token registered with the find hook before any
+  title holds it; each tab runs `echo <token> $$ >> ...` (the tab's shell pid). The strip's spot of each title is the topmost sighting on one row,
+  left to right in tab order (horizontal bar), or the leftmost, top to bottom (vertical panel); `pick_tab_spots` refuses anything else, and OCR is
+  the fallback for a title the hook never reported. In the layout the profile shows: click on the third tab (its own `pwd`), the second tab dragged
+  onto the third (tab number keys 2 and 3 answer from each other's directory), middle click on the last tab (its shell pid is gone within 15 s, the
+  app's tab count drops by one, no other tab's shell died). Then `appearance.vertical_tabs.enabled` is flipped in the settings file (the screen must
+  change) and the same three actions run on the three tabs left; the file's bytes are written back. A failed step ends the round (the order is no
+  longer certain) and the other layout is then not played. UNVERIFIABLE: titles not locatable in a layout, or a settings form `toml_text` cannot
+  edit.
+- `focus_cycle` (G37). The reference terminal of the platform (`cases.ref_terminal`: foot / xterm, Terminal.app, conhost / Windows Terminal) takes
+  the focus; three lines are typed there (its own effect file must hold them, else "away" is UNVERIFIABLE). The focus returns and one line is typed
+  with no settle: its effect file and the pane's `rec.log` (PSReadLine history in the PowerShell pane) hold exactly that line and none of the
+  reference's, and `key_event_audit` over the app log of the away window counts 0 keys. POSIX only: `printf '\033[?1004h'; python3 bytes_reader.py
+  ...` runs in the pane, the focus goes away and back once, a `k` is typed: the reader received exactly `1b5b4f 1b5b49 6b 03`
+  (`judge_focus_bytes`: one focus-out, one focus-in, in that order, then the key; any other byte is a key typed into the other window). On Windows
+  the focus-reporting half is noted as not run (ConPTY turns focus changes into console records; `bytes_reader.py` needs termios; the Windows
+  reference has no switch-back), so a Windows PASS is the typing half only. SKIP: no reference terminal (the reason is the launcher's).
+- `minimize_fullscreen` (G38). A stream (`wu_stream.sh`, one line per 50 ms) runs 5 s shown (the control), then the window is hidden for 30 s:
+  Wayland by switching sway's workspace away (sway has no minimise; the window is not shown and gets no frame callbacks), X11 by `xdotool
+  windowminimize`, or `windowunmap` when the display has no window manager, macOS by `AXMinimized`. The row's `hide` metric says which. After the
+  return: with `hop=frame_drawn` in the log the first frame is within `APPCI_RESTORE_FRAME_MAX_MS` (2000) of the show call (macOS: a frame line
+  within 3 s); the largest main-thread item (`hop=ui_item`) of the next 3 s is within the larger of the 16 ms warn bound and 3x the control's
+  largest item (the control keeps a software renderer's ordinary frames from failing it); the copied output holds every line; `stty size` is
+  unchanged; a typed burst is exact. Fullscreen: F11 on Linux (the app's `root_view:toggle_fullscreen`; the sway window is made floating and
+  smaller first, a borderless tiled window already covers the output), `AXFullScreen` on macOS (the guard refuses cmd-ctrl-f). `stty size` must
+  grow, typing is exact, and after the second toggle the size is the one before. UNVERIFIABLE: the window could not be hidden; an X display with
+  no window manager where F11 changed nothing (the job's Xvfb: the request needs a manager); a log with no frame line.
+What the first run must show: a `hop=grid_resize` line in the app log of every resize; `appci_find` lines for the menu entries; which halves
+come back UNVERIFIABLE on X11 (no window manager) and whether tab titles are locatable in the horizontal bar. None of these cases has run.

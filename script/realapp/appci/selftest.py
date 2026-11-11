@@ -7927,6 +7927,132 @@ def r14_w2b_state_cases():
     for n in names:
         assert ("`%s`" % n) in doc, "docs/testing.md does not describe %s" % n
     assert "r14_w2b_state_cases" in doc and "hop=vtab_row_status" in doc and "hop=osc52_clipboard" in doc
+def r14_window_use_cases_pure_parts():
+    """r14 wave 3 (T26-T30, cases_window_use.py): every judge passes the right result and FAILS a wrong one, the parsers read the app's own line shapes
+    (pinned against the Rust source), the cases are registered in PROVING with a Windows classification, and docs/testing.md names them."""
+    import inspect
+    import cases_window_use as W
+    import cases_wrap_vtabs as V
+    root = os.path.join(HERE, "..", "..", "..")
+    # T26: `stty size`, the grid hop, the stream's copied output, the resize plans
+    assert W.parse_stty("24 80") == (24, 80) and W.parse_stty(" 50 132 \n") == (50, 132) and W.parse_stty("") is None and W.parse_stty("stty: not a tty") is None
+    log = ("12:00 [DEBUG] input_order hop=grid_resize rows=24 cols=80 pane=7 t=1.0\n"
+           "12:00 [DEBUG] input_order hop=tab_activate index=1 count=2 t=2.0\n"
+           "12:01 [DEBUG] input_order hop=grid_resize rows=40 cols=132 pane=7 t=3.0\n")
+    assert W.grid_hops(log) == [(24, 80), (40, 132)] and W.grid_hops("hop=grid_resize rows=x cols=1") == []
+    hop_rs = open(os.path.join(root, "app", "src", "terminal", "view", "grid_resize_hop.rs"), encoding="utf-8").read()
+    assert 'format!("rows={rows} cols={cols} pane={pane}")' in hop_rs and 'log_hop("grid_resize", ||' in hop_rs, "the hop's shape changed: GRID_HOP_RE reads rows= cols="
+    view_rs = open(os.path.join(root, "app", "src", "terminal", "view.rs"), encoding="utf-8").read()
+    assert "grid_resize_hop::log(" in view_rs and "mod grid_resize_hop;" in view_rs
+    good = "\n".join(W.stream_lines("rrabc", 5)) + "\n"
+    assert W.judge_stream_copy(good, "rrabc", 5) is None and W.judge_stream_copy(good.rstrip("\n"), "rrabc", 5) is None
+    lost = W.judge_stream_copy("rrabc line 1\nrrabc line 2\nrrabc line 4\nrrabc line 5\n", "rrabc", 5)
+    assert lost and "1 LOST, the first is line 3" in lost and "4 of 5 lines" in lost, lost
+    twice = W.judge_stream_copy("rrabc line 1\nrrabc line 2\nrrabc line 2\nrrabc line 3\nrrabc line 4\nrrabc line 5", "rrabc", 5)
+    assert twice and "twice, the first is line 2" in twice, twice
+    swapped = W.judge_stream_copy("rrabc line 1\nrrabc line 3\nrrabc line 2\nrrabc line 4\nrrabc line 5", "rrabc", 5)
+    assert swapped and "out of order: line 2 comes after line 3" in swapped, swapped
+    junk = W.judge_stream_copy("rrabc line 1\nrrabc li\nne 2\nrrabc line 3\nrrabc line 4\nrrabc line 5", "rrabc", 5)
+    assert junk and "did not print" in junk and "LOST, the first is line 2" in junk, junk
+    assert W.judge_stream_copy("", "rrabc", 5) and W.judge_stream_copy(V.SENTINEL, "rrabc", 5), "an empty or untouched clipboard is never a pass"
+    assert W.judge_stream_copy(good + "rrabc line 6\n", "rrabc", 5), "a line too many is not the printed output"
+    for orig in ((1600, 1000), (900, 600), (1280, 800), (1000, 620)):
+        z = W.plan_sizes(*orig)
+        every = [z["narrow"], z["wide"]] + z["rapid"] + [z["rapid_end"], z["vim"]]
+        assert all(abs(w - orig[0]) >= 60 for w, _h in every), (orig, every)
+        assert z["narrow"][0] < z["wide"][0] and len(set(z["rapid"])) == 3 and z["rapid_end"] not in z["rapid"]
+        plan = W.resize_plan(60, z["rapid"], z["rapid_end"])
+        assert len(plan) == 60 and plan[-1] == z["rapid_end"] and all(a != b for a, b in zip(plan, plan[1:])), plan[-4:]
+    assert "trap 'stty size >> \"wu_$tag.winch\"' WINCH" in W.STREAM_PROG and 'echo "$tag line $i"' in W.STREAM_PROG and W.STREAM_PROG.rstrip().endswith(': > "wu_$tag.done"')
+    body = inspect.getsource(W._stream_under_resizes) + inspect.getsource(W.c_resize_reflow_output) + inspect.getsource(W._reflow_wrapped)
+    for needle in ("judge_stream_copy(got, tag, n)", "grid_matches(ctx, r, off, now", "len(winch) >= 1", "got == base", "end == size0", "resize_plan(60,"):
+        assert needle in body, needle
+    # T27: the app's position line with a phrase, the right-click setting
+    find_rs = open(os.path.join(root, "crates", "warpui_core", "src", "appci_find.rs"), encoding="utf-8").read()
+    assert '"appci_find token={token} x0={:.1} y0={:.1} x1={:.1} y1={:.1}"' in find_rs and ".map(str::trim)" in find_rs, "the find hook's line or its token parsing changed"
+    flog = ("x warpui::appci_find appci_find token=Copy output x0=100.0 y0=200.0 x1=180.0 y1=216.0\n"
+            "x appci_find token=Copy command x0=100.0 y0=176.0 x1=190.0 y1=192.0\n"
+            "x appci_find token=Paste x0=10.5 y0=20.5 x1=50.5 y1=36.5\n"
+            "x appci_find token=Copy output x0=300.0 y0=400.0 x1=380.0 y1=416.0\n")
+    rows = W.find_rows(flog, "Copy output", origin=(10, 20))
+    assert rows == [("Copy output", 150, 228, 110, 190, 220, 236), ("Copy output", 350, 428, 310, 390, 420, 436)], rows
+    assert W.find_rows(flog, "Copy") == [] and len(W.find_rows(flog, "Paste")) == 1 and W.find_rows(flog, "Copy command")[0][1:3] == (145, 184)
+    assert W.right_click_pastes('[terminal.input]\nright_click_behavior = "paste"\n') and not W.right_click_pastes('[terminal.input]\nright_click_behavior = "context_menu"\n')
+    assert not W.right_click_pastes("[terminal.input]\nhonor_ps1 = true\n") and not W.right_click_pastes("")
+    sel = open(os.path.join(root, "app", "src", "settings", "select.rs"), encoding="utf-8").read()
+    assert 'toml_path: "terminal.input.right_click_behavior"' in sel
+    ftl = open(os.path.join(root, "app", "i18n", "en", "warp.ftl"), encoding="utf-8").read()
+    for label in ("menu-block-copy-output = Copy output", "menu-block-copy-command = Copy command", "menu-input-paste = Paste"):
+        assert label in ftl, "the menu entry the case clicks was renamed: %s" % label
+    body = inspect.getsource(W.c_context_menu_actions) + inspect.getsource(W._menu_pick) + inspect.getsource(W._input_menu_paste)
+    assert "ctx.be.clip_set(V.SENTINEL)" in body and 'got.rstrip("\\n") == want' in body and "wait_hook(ctx, label, seen)" in body and "U.words(" not in body and "ocr(" not in body
+    # T28: the strip's spots, the order after a drag, the drag itself
+    spots, desc = W.pick_tab_spots({2: [(400, 300), (310, 18)], 3: [(520, 20), (90, 500)], 4: [(730, 19)]}, vertical=False)
+    assert spots == {2: (310, 18), 3: (520, 20), 4: (730, 19)}, (spots, desc)
+    assert W.pick_tab_spots({2: [(310, 18)], 3: [(90, 500)], 4: [(730, 19)]}, vertical=False)[0] is None, "a title not in the bar is never guessed"
+    assert W.pick_tab_spots({2: [(520, 18)], 3: [(310, 20)], 4: [(730, 19)]}, vertical=False)[0] is None, "titles out of tab order are not the bar"
+    spots, _d = W.pick_tab_spots({2: [(60, 120), (700, 400)], 3: [(62, 160)], 4: [(900, 30), (61, 200)]}, vertical=True)
+    assert spots == {2: (60, 120), 3: (62, 160), 4: (61, 200)}, spots
+    assert W.pick_tab_spots({2: [(60, 120)], 3: [(260, 121)], 4: [(460, 122)]}, vertical=True)[0] is None, "a horizontal bar is not a panel"
+    none, why = W.pick_tab_spots({2: [(60, 120)], 3: []}, vertical=True)
+    assert none is None and "tab(s) [3]" in why, why
+    assert W.order_after_drag([0, 1, 2, 3]) == [0, 2, 1, 3] and W.order_after_drag([0, 2, 1]) == [0, 1, 2]
+    assert W.drag_points((310, 18), (520, 20), False) == (310, 18, 532, 18) and W.drag_points((60, 120), (62, 160), True) == (60, 120, 60, 172)
+    assert W.pid_alive(os.getpid()) and not W.pid_alive(2 ** 22 + 12345)
+    body = inspect.getsource(W._tab_round) + inspect.getsource(W.c_tab_pointer_use)
+    for needle in ("not pid_alive(pids[victim])", "V.tab_answer(", "order_after_drag(order)", "m.click(slot[len(order) - 1][0], slot[len(order) - 1][1], 2)", "lay.restore()"):
+        assert needle in body, needle
+    assert body.index("U.register_find(ctx, *toks)") < body.index("open_tabs_tp(ctx, r, toks)"), "the tokens are registered before a title holds them"
+    # T29: the focus reports
+    ok = b"\x1b[O\x1b[Ik\x03"
+    assert W.judge_focus_bytes(ok) is None and W.judge_focus_bytes(ok[:-1]) is None
+    assert "no focus report reached" in W.judge_focus_bytes(b"k\x03")
+    assert "2 focus-out and 1 focus-in" in W.judge_focus_bytes(b"\x1b[O\x1b[O\x1b[Ik\x03")
+    assert "before focus-out" in W.judge_focus_bytes(b"\x1b[I\x1b[Ok\x03")
+    assert "typed into the other window" in W.judge_focus_bytes(b"\x1b[Oecho\x1b[Ik\x03")
+    assert "lost or changed" in W.judge_focus_bytes(b"\x1b[O\x1b[I\x03") and "lost or changed" in W.judge_focus_bytes(b"\x1b[O\x1b[Ij\x03")
+    assert "before a focus report" in W.judge_focus_bytes(b"\x1b[Ok\x1b[I\x03")
+    ansi = open(os.path.join(root, "app", "src", "terminal", "view.rs"), encoding="utf-8").read()
+    assert "self.write_to_pty(EscCodes::FOCUS_IN, ctx);" in ansi and "self.write_to_pty(EscCodes::FOCUS_OUT, ctx);" in ansi
+    body = inspect.getsource(W.c_focus_cycle) + inspect.getsource(W._focus_reporting)
+    for needle in ('keys["count"] == 0', "ctx.lines(f_back) == [tok]", "mine == [line]", "not leaked", "judge_focus_bytes(got)", "\\\\033[?1004h"):
+        assert needle in body, needle
+    assert "time.sleep" not in body[body.index('ref.switch("phosphor")'):body.index("ctx.be.type(line,")], "the first line after the return is typed with no settle"
+    # T30: the first frame and the main-thread bound
+    t0 = 1000.0
+    flog = ("a input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=1.0 t=999900.0\n"
+            "a input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=1.0 t=1000250.5\n"
+            "a input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=1.0 t=1000300.0\n")
+    assert W.first_frame_after(flog, t0) == (250.5, 3, True)
+    assert W.first_frame_after('frame 12: updated=["TerminalView"]\n', t0) == (None, 1, False) and W.first_frame_after("nothing\n", t0) == (None, 0, False)
+    loop_rs = open(os.path.join(root, "crates", "warpui", "src", "windowing", "winit", "event_loop", "mod.rs"), encoding="utf-8").read()
+    assert 'log_hop("frame_drawn", ||' in loop_rs and '"total_ms={:.1} acquire_ms={:.1} present_ms={:.1}"' in loop_rs
+    assert W.judge_restore_ui(0.0, 12.0) == (True, 16.0) and W.judge_restore_ui(0.0, 16.1)[0] is False
+    assert W.judge_restore_ui(20.0, 59.0) == (True, 60.0) and W.judge_restore_ui(20.0, 61.0) == (False, 60.0), "3x the control, never unbounded"
+    body = inspect.getsource(W._hide_under_stream) + inspect.getsource(W._fullscreen_twice) + inspect.getsource(W.c_minimize_fullscreen)
+    for needle in ("judge_stream_copy(got, tag, n)", "ms <= limit", "judge_restore_ui(ctl_max, res_max)", "now == size0", "back == before", "full != before", "not win.has_wm()"):
+        assert needle in body, needle
+    # a Skip after a failed check would hide the failure (run.py turns the row into a skip): the cases skip only before their first check
+    for fn in (W.c_resize_reflow_output, W.c_context_menu_actions, W.c_tab_pointer_use, W.c_focus_cycle, W.c_minimize_fullscreen):
+        src = inspect.getsource(fn)
+        first_check = min(i for i in (src.find("r.check("), src.find("first_tab_in_front("), len(src)) if i >= 0)
+        assert "r.skip(" not in src[first_check:], fn.__name__
+    for fn in (W._reflow_wrapped, W._stream_under_resizes, W._vim_during_resize, W._menu_pick, W._input_menu_paste, W._tab_round, W._focus_reporting,
+               W._hide_under_stream, W._fullscreen_twice, W.apply_size, W.grid_matches):
+        assert "r.skip(" not in inspect.getsource(fn), fn.__name__
+    # registry, Windows classification, docs
+    reg = {c["name"]: c for c in cases.CASES}
+    names = ("resize_reflow_output", "context_menu_actions", "tab_pointer_use", "focus_cycle", "minimize_fullscreen")
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    for n in names:
+        assert n in reg and n in cases.PROVING and n not in cases.SMOKE and reg[n]["modes"] == ("terminal", "agent") and reg[n]["gui"], n
+        assert ("`%s`" % n) in doc, "docs/testing.md does not name %s" % n
+    assert "hop=grid_resize" in doc and "cases_window_use.py" in doc
+    for n in names:
+        if n == "focus_cycle":
+            assert winmap.skip_reason(n, "powershell") is None and winmap.skip_reason(n, "gitbash") is None
+        else:
+            assert n in winmap.NOT_WINDOWS and "r14-test-gaps T3" in winmap.skip_reason(n, "gitbash"), n
 
 
 def main():
