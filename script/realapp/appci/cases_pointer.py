@@ -314,6 +314,51 @@ def ctrl_c_copy_errors(clip, dragged, sentinel, ticks_before, ticks_after, strea
     return errs
 
 
+IDLE_COPY_SWITCH = "PHOSPHOR_WIN_CTRL_C_COPY_CLEARS_IDLE"     # =0 in the app's environment: the copy keeps the selection at an idle prompt, as before #2131
+
+
+def idle_ctrl_c_copy_errors(first, again, selected, sentinel):
+    """Windows, a Ctrl-C pressed at an IDLE prompt with the text `selected` selected in the block list (#2131, owner decision 2026-11-11) ->
+    [what is wrong], [] when it did what was decided: the key COPIES the selection (`first`: the clipboard after it) and DROPS it, as Windows
+    Terminal does (`again`: the clipboard after the copy key pressed next, on a fresh sentinel; with the selection still up that is the same text
+    again. With it dropped the copy key gives nothing, or a selected block, never the selected text alone)."""
+    errs = []
+    if first == sentinel:
+        errs.append("nothing was copied (the clipboard kept its sentinel): the key was not the copy")
+    elif first.strip() != selected:
+        errs.append("the clipboard holds %r, expected the selected text %r" % (first[:60], selected))
+    if again != sentinel and again.strip() == selected:
+        errs.append("the selection was still up after the Ctrl-C copy (the copy key pressed next gave %r again): the copy must drop it (#2131; a build "
+                    "before that change, or %s=0)" % (selected, IDLE_COPY_SWITCH))
+    return errs
+
+
+def idle_ctrl_c_arm(ctx, r, copied, word):
+    """selection_modes, Windows only (#2131): right after the double click's copy proved `word` is selected (`copied`), with the prompt idle:
+    Ctrl-C copies the word and drops the selection; the copy key pressed next must not give the word again. In the agent view an idle Ctrl-C can
+    be the view's own exit key (terminal/view.rs handle_ctrl_c_input_event runs before the copy): when it did not copy there, that is recorded
+    and not judged."""
+    if not U.is_windows(ctx) or copied.strip() != word:
+        return
+    ctx.be.clip_set(SENTINEL)
+    ctx.be.key("ctrl+c")
+    time.sleep(0.6)
+    first = clip_now(ctx)
+    ctx.be.clip_set(SENTINEL)
+    ctx.be.key(U.K(ctx, "copy"))
+    time.sleep(0.5)
+    again = clip_now(ctx)
+    ctx.shot("sm_idle_ctrl_c")
+    r.metric("idle_ctrl_c_copy", dict(copied=first != SENTINEL, selection_dropped=not (again != SENTINEL and again.strip() == word)))
+    if ctx.mode == "agent" and first == SENTINEL:
+        r.note("Windows, agent view: Ctrl-C at an idle prompt with a word selected did not copy (the agent view takes an idle Ctrl-C first); "
+               "'the copy drops the selection' (#2131) was NOT judged in this pass")
+        time.sleep(1.6)                                    # past the agent view's exit-confirmation window before any later Ctrl-C
+        return
+    for err in idle_ctrl_c_copy_errors(first, again, word, SENTINEL):
+        r.check(False, "Windows, Ctrl-C at an idle prompt with %r selected: %s" % (word, err))
+
+
 def stream_script(line, tick_file, ticks=200):
     """a POSIX sh script: prints `line`, then rewrites ONE line (carriage return, no new row) ten times a second and records the tick number, so
     output streams while nothing on screen moves"""
@@ -730,7 +775,9 @@ def c_selection_modes(ctx, r):
     """T22. Three blocks of four words each. Double click = that word; triple click = that line; a drag from a word of block 1 to a word of
     block 2 = the rest of line 1 ... the start of line 2; a plain click on block 1 then copy-output = line 1 (control), Shift+click on block 3
     then copy-output = the three lines (the app's Shift+click is the block range); a drag over two words of a running program's first line while
-    its last line is rewritten ten times a second = those words. The clipboard is set to a sentinel before every copy."""
+    its last line is rewritten ten times a second = those words. The clipboard is set to a sentinel before every copy. Windows: after the double
+    click, Ctrl-C at the idle prompt copies the word and drops the selection (#2131); with the program running, the first Ctrl-C copies and the
+    second ends it (#2117)."""
     # Linux; Windows since r15 wave 4 (#2060: SendInput, positions from the find hook only); macOS since #2061 (mptr; selection_modes is in
     # MAC_POINTER_CASES). Not through linux_pointer_or_skip: that one SKIPs on Windows, where this case is ported.
     m = U.mouse_or_skip(ctx, r, mac=True)
@@ -754,6 +801,7 @@ def c_selection_modes(ctx, r):
         got = copy_after(ctx, lambda: m.click(found[w][1], found[w][2], 1, 2), tag="sm_double")
         err = None if got.strip() == w else "clipboard %r" % got[:60]
         ptr_check(ctx, r, got, err, "double click on %r + copy: %s, expected exactly the word" % (w, err))
+        idle_ctrl_c_arm(ctx, r, got, w)                        # Windows (#2131): an idle Ctrl-C copies the word and drops the selection
         WV.back_to_input(ctx, r)
         # triple click: the line
         w = words[6]

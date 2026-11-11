@@ -3525,17 +3525,24 @@ The fork now records whether the left press began inside the block list
 `pane_resize_maximize` (round 14). Reverse only with another rule that keeps the next key out of a
 pane the user did not click. Design: `docs/design/r10-r19-copy.md`.
 <!-- markers: keep:left_mouse_up_is_foreign keep:foreign_left_mouse_up_is_ignored_by_an_unfocused_pane_only -->
-## Windows: a Ctrl-C that copied a selection while a command runs drops the selection (#2117) — IMPROVED
+## Windows: a Ctrl-C that copied a selection drops the selection (#2117, #2131) — IMPROVED
+
 On Windows a Ctrl-C with text selected in the block list copies and is not sent as an interrupt
 (upstream design, kept). The copy was followed by
 `clear_selections_when_shell_mode_without_focusing_input`, which does nothing while
 `FeatureFlag::AgentView` is enabled (identical at the pin), so the selection stayed and every later
 Ctrl-C copied again: no Ctrl-C reached the running program until the user clicked the selection
-away. With a command in front the copy now drops the text selection
-(`ctrl_c_copy_drops_text_selection`), so the next Ctrl-C is the interrupt. At an idle prompt the
-selection is treated as before (an owner question in #2117). Found by the app case
-`selection_modes` in the Git Bash pane (round 14). Design: `docs/design/r10-r19-copy.md`.
-<!-- markers: keep:ctrl_c_copy_drops_text_selection keep:ctrl_c_copy_drops_the_text_selection_only_with_a_command_in_front -->
+away. With a command in front the copy drops the text selection
+(`ctrl_c_copy_drops_text_selection`, #2117), so the next Ctrl-C is the interrupt. Found by the app
+case `selection_modes` in the Git Bash pane (round 14). Design: `docs/design/r10-r19-copy.md`.
+
+Owner decision 2026-11-11 (#2131, the question #2117 left open): the copy drops the text selection
+at an idle prompt too, as Windows Terminal does. A text selection that was copied with Ctrl-C is
+therefore no longer attached to the next agent query (selected blocks are treated as before). Off:
+`PHOSPHOR_WIN_CTRL_C_COPY_CLEARS_IDLE=0` (the idle selection is kept again; the command-in-front
+rule of #2117 has no switch). A re-pin must not put the kept selection back. Design:
+`docs/design/r10-r19-decide-app.md`.
+<!-- markers: keep:ctrl_c_copy_drops_text_selection keep:ctrl_c_copy_drops_the_text_selection_with_a_command_in_front keep:ctrl_c_copy_drops_the_text_selection_at_an_idle_prompt -->
 
 ## Linux / Windows: Ctrl+Left / Ctrl+Right with a program in front are xterm's CSI 1;5D / CSI 1;5C (#2130) — IMPROVED 2026-11-11
 

@@ -8971,8 +8971,11 @@ def r19_copy_window_pointer_faults():
     assert 'r.check(ended, "Ctrl-C did not end the streaming program' in src
     win_arm = view[view.index("    #[cfg(windows)]\n    fn ctrl_c_internal("):]
     win_arm = win_arm[:win_arm.index("self.ctrl_c_to_active_block(")]
-    assert "if has_block_list_selection {\n            self.copy(ctx);\n            if ctrl_c_copy_drops_text_selection(is_long_running) {" in win_arm
+    # #2131: the copy drops the selection at an idle prompt too (the helper takes the kill switch), and the idle clear of before still runs
+    assert ("if has_block_list_selection {\n            self.copy(ctx);\n            if ctrl_c_copy_drops_text_selection(\n                is_long_running,\n"
+            "                ctrl_c_copy_clears_idle_selection_enabled(),\n            ) {") in win_arm
     assert "self.clear_selected_text(ctx);" in win_arm
+    assert "if !is_long_running {" in win_arm and "self.clear_selections_when_shell_mode_without_focusing_input(ctx);" in win_arm
     # R3 (#2119): a release over an unfocused pane whose press began elsewhere is ignored by that pane's block list
     assert "fn left_mouse_up_is_foreign(press_began_here: bool, pane_is_focused: bool) -> bool {\n    !press_began_here && !pane_is_focused\n}" in ble
     up = ble[ble.index("    fn mouse_up(\n"):]
