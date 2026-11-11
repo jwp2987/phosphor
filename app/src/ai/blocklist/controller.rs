@@ -2473,12 +2473,6 @@ impl BlocklistAIController {
         seq
     }
 
-    /// Test-only (agent fuzzer): the action model this controller drives.
-    #[cfg(test)]
-    pub(crate) fn action_model_for_test(&self) -> ModelHandle<BlocklistAIActionModel> {
-        self.action_model.clone()
-    }
-
     #[cfg(test)]
     pub(crate) fn stage_attachments_for_test(
         &mut self,

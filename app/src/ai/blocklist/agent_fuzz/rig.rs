@@ -159,7 +159,9 @@ pub fn setup(app: &mut App, scenario: &Scenario, safe_allowlist: bool) -> Rig {
     let seam = fake_stream_seam::install(&model_id, move |request| script_player.answer(request));
 
     let controller = terminal.read(app, |view, _| view.ai_controller().clone());
-    let action_model = controller.read(app, |controller, _| controller.action_model_for_test());
+    let action_model = controller.read(app, |controller, _| {
+        controller.action_model_for_test().clone()
+    });
     let conversation_id = BlocklistAIHistoryModel::handle(app).update(app, |history, ctx| {
         history.start_new_conversation(terminal_id, false, false, ctx)
     });
