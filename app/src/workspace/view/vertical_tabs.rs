@@ -3511,6 +3511,59 @@ fn render_passive_terminal_diff_stats_badge(
     )
 }
 
+/// The status name a terminal pane's row draws as its icon badge: the conversation status of
+/// an agent row (`ConversationStatus::hop_state_name`), `none` for an agent row with no status
+/// badge, `no_agent` for a plain terminal row.
+fn row_status_name(variant: Option<&IconWithStatusVariant>) -> &'static str {
+    let status = match variant {
+        Some(IconWithStatusVariant::OzAgent { status, .. })
+        | Some(IconWithStatusVariant::CLIAgent { status, .. }) => status,
+        _ => return "no_agent",
+    };
+    match status {
+        Some(status) => status.hop_state_name(),
+        None => "none",
+    }
+}
+
+/// The detail of one `hop=vtab_row_status` line: the terminal view the row belongs to and the
+/// status name its badge shows. Ids and state names only.
+fn row_status_hop_detail(view_id: EntityId, status: &str) -> String {
+    format!("view={view_id} status={status}")
+}
+
+thread_local! {
+    /// The status name last logged per terminal view by `log_row_status_hop`. Only written
+    /// while input-order logging is on.
+    static ROW_STATUS_LOGGED: RefCell<HashMap<EntityId, &'static str>> =
+        RefCell::new(HashMap::new());
+}
+
+/// True when `status` differs from what `logged` holds for `view_id`; records it either way.
+fn row_status_changed(
+    logged: &mut HashMap<EntityId, &'static str>,
+    view_id: EntityId,
+    status: &'static str,
+) -> bool {
+    logged.insert(view_id, status) != Some(status)
+}
+
+/// `hop=vtab_row_status view=<id> status=<name>`: what the vertical tabs panel draws as the
+/// status badge of a terminal row, logged when it changes for that view. Trace only (nothing
+/// reads it back); the real-app case `agent_hidden_tab_attention` uses it to see that the row
+/// of a hidden tab shows an agent that waits for the user. Costs one `enabled()` check when
+/// input-order logging is off.
+fn log_row_status_hop(view_id: EntityId, status: &'static str) {
+    if !warpui::input_order::enabled() {
+        return;
+    }
+    let changed = ROW_STATUS_LOGGED
+        .with(|logged| row_status_changed(&mut logged.borrow_mut(), view_id, status));
+    if changed {
+        warpui::input_order::log_hop("vtab_row_status", || row_status_hop_detail(view_id, status));
+    }
+}
+
 fn resolve_icon_with_status_variant(
     typed: &TypedPane<'_>,
     title: &str,
@@ -3560,7 +3613,9 @@ fn resolve_icon_with_status_variant(
                 has_selected_conversation: has_conversation,
             };
 
-            agent_icon_variant_from_terminal_inputs(&inputs).unwrap_or(
+            let variant = agent_icon_variant_from_terminal_inputs(&inputs);
+            log_row_status_hop(terminal_view.id(), row_status_name(variant.as_ref()));
+            variant.unwrap_or(
                 // Plain terminal: use foreground color per design spec
                 IconWithStatusVariant::Neutral {
                     icon: WarpIcon::Terminal,

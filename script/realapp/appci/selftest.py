@@ -7206,6 +7206,112 @@ def gitbash_bootstrap_in_command_2051():
     assert ("`%s`" % n) in doc and "gitbash_bootstrap_in_command_2051" in doc and "PHOSPHOR_MSYS_SSH_BOOTSTRAP=typed" in doc
 
 
+@check
+def r14_w2b_state_cases():
+    """round 14 wave 2b (T16-T20, cases_r14_state.py): the pure parts each verdict hangs on, with the input a defect would produce, the registry rows,
+    and the app texts the cases read (a rename there must fail here)"""
+    import base64, inspect
+    import cases_r14_state as S
+    L = lambda *rows: "\n".join("12:00:00 [DEBUG] input_order hop=vtab_row_status view=%s status=%s t=1" % x for x in rows)      # noqa: E731
+    # ---- T16: the row status. Before the question nothing waits; while hidden exactly one view does
+    before, hidden = L((7, "no_agent"), (9, "in_progress")), L((9, "blocked"))
+    assert S.row_statuses(hidden) == [("9", "blocked")] and S.waiting_views(before) == []
+    assert S.attention_verdict(before, hidden) == ("9", [])
+    v, probs = S.attention_verdict(before, L((9, "in_progress"), (7, "success")))          # the row never shows it: the defect the case is for
+    assert v is None and len(probs) == 1 and "no panel row shows the waiting state" in probs[0] and "in_progress" in probs[0]
+    v, probs = S.attention_verdict(before, "")                                               # no hop at all (panel not drawn, older build)
+    assert v is None and "no hop=vtab_row_status line at all" in probs[0]
+    v, probs = S.attention_verdict(before, L((9, "blocked"), (7, "blocked")))               # a hop that says blocked for every row
+    assert v is None and "2 panel rows" in probs[0]
+    v, probs = S.attention_verdict(L((9, "blocked")), hidden)                                # blocked before the question arrived
+    assert v == "9" and "BEFORE the question arrived" in probs[0]
+    assert S.row_last(L((9, "blocked"), (7, "success"), (9, "in_progress"), (9, "success")), "9") == "success" and S.row_last(hidden, "7") is None
+    # ---- T17: the settings file as flat keys
+    t0 = '# c\nroot = 1\n\n[appearance.text]\nfont_size = 13.0\n\n[appearance.vertical_tabs]\nenabled = false\n\n[agents.warp_agent]\nproviders = [\n  { id = "a", name = "x = y" },\n]\nlast = "k"\n'
+    f0 = S.toml_flat(t0)
+    assert f0 == {"root": "1", "appearance.text.font_size": "13.0", "appearance.vertical_tabs.enabled": "false",
+                  "agents.warp_agent.providers": '[{id="a",name="x=y"},]', "agents.warp_agent.last": '"k"'}, f0
+    t1 = t0.replace("font_size = 13.0", "font_size = 14.0").replace("enabled = false", "enabled = true").replace('[\n  { id = "a", name = "x = y" },\n]', '[ { id = "a", name = "x = y" }, ]')
+    f1 = S.toml_flat(t1)
+    assert S.changed_keys(f0, f1) == [S.FONT_KEY, S.VT_KEY] and S.settings_delta_problems(f0, f1, "true") == []      # a re-indented value is the same value
+    f2 = dict(f1, **{"terminal.osc52_write_notice_shown": "true"})
+    assert any("terminal.osc52_write_notice_shown" in p for p in S.settings_delta_problems(f0, f2, "true"))           # another key changed: named
+    assert any("expected true" in p for p in S.settings_delta_problems(f0, dict(f1, **{S.VT_KEY: "false"}), "true"))  # the toggle was not written
+    assert any("one step up" in p for p in S.settings_delta_problems(f0, dict(f1, **{S.FONT_KEY: "15.0"}), "true"))
+    assert any("not written" in p for p in S.settings_delta_problems({S.VT_KEY: "false"}, {S.VT_KEY: "true"}, "true"))
+    assert S.settings_delta_problems({S.VT_KEY: "false"}, {S.VT_KEY: "true", S.FONT_KEY: "14.0"}, "true") == []      # no font key before: any number counts
+    assert S.stty_size(["40 132"]) == (40, 132) and S.stty_size([]) is None and S.stty_size(["stty: not a tty"]) is None and S.num("x") is None and S.num("13.0") == 13.0
+    # ---- T18: OSC 52
+    assert S.osc52_expect(None) == (True, False, "write_only") and S.osc52_expect('osc52_clipboard_access = "deny"') == (False, False, "deny")
+    assert S.osc52_expect('osc52_clipboard_access = "read_write"') == (True, True, "read_write")
+    assert S.osc52_write_line("abc") == "printf '\\033]52;c;YWJj\\a'" and S.OSC52_QUERY_LINE == "printf '\\033]52;c;?\\a'"
+    hl = "x input_order hop=osc52_clipboard op=write access=write_only allowed=true t=1\nx input_order hop=osc52_clipboard op=read access=write_only allowed=false t=2"
+    assert S.osc52_hops(hl) == [("write", "write_only", True), ("read", "write_only", False)] and S.osc52_hops("OSC 52 clipboard read blocked") == []
+    row = lambda b: "1.0 %s" % b.hex()      # noqa: E731
+    ok = S.judge_reader([row(b"\x1b[0n")], "sec1")
+    assert ok["dsr"] and not ok["osc52"] and not ok["leak"]
+    leak = S.judge_reader([row(b"\x1b]52;c;" + base64.b64encode(b"sec1")), row(b"\x07\x1b[0n")], "sec1")      # the reply, split over two reads
+    assert leak["dsr"] and leak["osc52"] and leak["leak"]
+    deaf = S.judge_reader([], "sec1")                                                                              # nothing came back: the control fails, not a pass
+    assert not deaf["dsr"] and not deaf["osc52"] and S.judge_reader(["garbage", "1.0 zz"], "s")["raw"] == b""
+    rd = open(os.path.join(HERE, "osc52_reader.py"), encoding="utf-8").read()
+    assert 'QUERY = b"\\x1b]52;c;?\\x07"' in rd and 'DSR = b"\\x1b[5n"' in rd and 'DSR_REPLY = b"\\x1b[0n"' in rd and '".done"' in rd
+    # ---- T19: history
+    assert S.hist_line("bash", "hsab1", "tok", "h.txt") == ("echo hsab1tok >> h.txt", "echo hsab1")
+    assert S.hist_line("pwsh", "hsab1", "tok", "h.txt") == ("Add-Content h.txt hsab1tok", "Add-Content h.txt hsab1")
+    assert S.hist_line("cmd", "hsab1", "tok", "h.txt") == ("echo hsab1tok>>h.txt", "echo hsab1")
+    w = "echo hsab1tok >> h.txt"
+    assert S.recall_problem([w], w) is None and "nothing" in S.recall_problem([], w) and "2 times" in S.recall_problem([w, w], w)
+    assert "other lines" in S.recall_problem([w, "ls"], w) and "expected exactly" in S.recall_problem(["echo hsab1"], w)      # Enter ran the typed prefix, not the recalled line
+    assert S.effect_twice(["a", "b", "c", "c", "a", "b"]) and not S.effect_twice(["a", "b", "c", "c", "a"]) and not S.effect_twice(["a", "b", "c", "c", "c", "a"])
+    assert S.count_in(["x hsp1 y", "z"], "hsp1") == 1
+    # ---- T20: Find
+    fl = "a input_order hop=find_scroll result=no_match pending=true t=1\nb input_order hop=find_scroll result=scroll block=3 moved=true t=2"
+    assert S.find_result(S.find_hops(fl)) == "scroll" and S.find_result(S.find_hops(fl.split("\n")[0])) == "no_match" and S.find_result(S.find_hops("nothing")) == "none"
+    assert S.find_result(S.find_hops("x hop=find_scroll result=scroll rich_content moved=false t=1")) == "scroll"
+    a, b = S.split_token("ABCDEFGHIJKLMN")
+    assert a + b == "ABCDEFGHIJKLMN" and a and b and "ABCDEFGHIJKLMN" not in "printf '%%s%%s\\n' %s %s" % (a, b)
+    # ---- registry: PROVING, never SMOKE; the fake pass for T16 only; modes; Windows rows
+    reg = {c["name"]: c for c in cases.CASES}
+    names = ("agent_hidden_tab_attention", "settings_ui_toggle_persists", "osc52_write_read", "history_survives_restart", "restore_shows_history")
+    for n in names:
+        assert n in reg and n in cases.PROVING and n not in cases.SMOKE and reg[n]["gui"], n
+    assert reg["agent_hidden_tab_attention"]["modes"] == ("agent",) and "agent_hidden_tab_attention" in cases.PROVING_FAKE
+    for n in names[1:]:
+        assert reg[n]["modes"] == ("terminal", "agent") and n not in cases.PROVING_FAKE, n
+    assert {"agent_hidden_tab_attention", "history_survives_restart"} <= winmap.BOTH and "settings_ui_toggle_persists" in winmap.NOT_WINDOWS
+    for n in ("osc52_write_read", "restore_shows_history"):
+        assert winmap.skip_reason(n, "gitbash") is None and "Git Bash pane" in winmap.skip_reason(n, "powershell")
+    # ---- the app texts the cases read
+    root = os.path.join(HERE, "..", "..", "..")
+    src = lambda *p: open(os.path.join(root, "app", "src", *p), encoding="utf-8").read()      # noqa: E731
+    vt = src("workspace", "view", "vertical_tabs.rs")
+    assert 'log_hop("vtab_row_status", ||' in vt and 'format!("view={view_id} status={status}")' in vt
+    assert 'ConversationStatus::Blocked { .. } => "blocked"' in src("ai", "agent", "conversation.rs")
+    assert 'format!("op={op} access={access} allowed={allowed}")' in src("terminal", "settings.rs")
+    tv = src("terminal", "view.rs")
+    assert tv.count('log_hop("osc52_clipboard", ||') == 2 and "access.hop_detail(true)" in tv and "access.hop_detail(false)" in tv
+    assert 'log_hop("find_scroll", ||' in tv and "result=no_match" in tv
+    ftl = open(os.path.join(root, "app", "i18n", "en", "warp.ftl"), encoding="utf-8").read()
+    for needle in ("toggle-suffix-vertical-tabs = vertical tab layout", "keybinding-desc-workspace-increase-font-size = Increase font size",
+                   "keybinding-desc-workspace-decrease-font-size = Decrease font size"):
+        assert needle in ftl, needle
+    # ---- the cases keep their controls (a later edit that drops one fails here)
+    for fn, needles in ((S.c_agent_hidden_tab_attention, ("attention_verdict(before, hidden)", "AQ.ask_open_ids(log)", "AQ.answer_card(", 'inject("ask_slow"')),
+                        (S.c_settings_ui_toggle_persists, ("settings_delta_problems(flat0, flat_w, want_vt)", "fh.write(w2)", "s4 == s2", "seen_edit", "R.start_app(")),
+                        (S.c_osc52_write_read, ('j["dsr"]', "not j[\"osc52\"]", "osc52_write_arm(ctx, r, \"over ssh\"", "ssh_required")),
+                        (S.history_round, ("R.hard_kill(", "R.stop_for_restart(", "recall(ctx, r,", "effect_twice(ran)")),
+                        (S.c_restore_shows_history, ("find_in_pane(ctx, never, 3)", "RE-RUN", "R.set_restore(ctx, True)", "R.fresh_app(")),
+                        (S.osc52_write_arm, ("ctx.be.clip_set(SENTINEL)", "clip == tok"))):
+        body = inspect.getsource(fn)
+        for needle in needles:
+            assert needle in body, (fn.__name__, needle)
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    for n in names:
+        assert ("`%s`" % n) in doc, "docs/testing.md does not describe %s" % n
+    assert "r14_w2b_state_cases" in doc and "hop=vtab_row_status" in doc and "hop=osc52_clipboard" in doc
+
+
 def main():
     failed = 0
     for f in CHECKS:

@@ -19264,6 +19264,7 @@ impl TerminalView {
             }
             ModelEvent::ClipboardStore(_, contents) => {
                 let access = *TerminalSettings::as_ref(ctx).osc52_clipboard_access;
+                warpui::input_order::log_hop("osc52_clipboard", || access.hop_detail(true));
                 if access.allows_write() {
                     ctx.clipboard()
                         .write(ClipboardContent::plain_text(contents.to_owned()));
@@ -19287,6 +19288,7 @@ impl TerminalView {
             }
             ModelEvent::ClipboardLoad(_, format) => {
                 let access = *TerminalSettings::as_ref(ctx).osc52_clipboard_access;
+                warpui::input_order::log_hop("osc52_clipboard", || access.hop_detail(false));
                 if access.allows_read() {
                     // Read off the UI thread (#1380); the answer is written when it arrives. An
                     // unreadable clipboard answers empty, as before, so the program never hangs.
