@@ -106,6 +106,12 @@ def r16_requires_matching_and_mismatching_profile():
             assert cases.requires(ctx, r, session_mode=CS.PASS_MODE, restore_session=False, vim_mode=False, vertical_tabs=False, copy_on_select=True,
                                   ssh_extension_install="never_install", keybindings_file="absent", font_size=CS.APP_DEFAULT, startup_shell=CS.ABSENT) is True
             assert cases.requires_declared(ctx, r, "fast_typing")["session_mode"] == CS.PASS_MODE and not r.noref and not r.fails
+            # r16-declare: a lab arm is checked by its family's declaration, and its helper arm's install mode is NOT part of the check (the lab
+            # harness writes it after this point): an `upload` arm passes on a profile that still says never_install
+            for arm in ("lab_tab_remote_dir.bash.lan.nohelper", "lab_helper_install.bash.lan.upload"):
+                if mode in next(c["modes"] for c in cases.CASES if c["name"] == arm):
+                    got = cases.requires_declared(ctx, r, arm)
+                    assert got["ssh_warpification"] is True and "ssh_extension_install" not in got and not r.noref
         # mismatch: the case needs the horizontal tab bar, the profile (after a live rewrite) has the panel
         T.edit_file(_settings(ctx), "appearance.vertical_tabs", "enabled", "true")
         e = _raises(lambda: cases.requires(ctx, r, vertical_tabs=False, vim_mode=False), cases.SettingsMismatch)
@@ -118,6 +124,15 @@ def r16_requires_matching_and_mismatching_profile():
         r.check(False, "earlier failure")
         assert run.skip_status(r, e) == "fail" and r.fails == ["earlier failure"]
         assert cases.requires(ctx, r, vertical_tabs=True)  # and the live value satisfies a case that needs it
+        # r16-declare: a full-tier case and a lab arm are UNVERIFIABLE on a mismatch like any other (they were not checked at all before)
+        T.edit_file(_settings(ctx), "terminal.input", "right_click_behavior", '"paste"')
+        e = _raises(lambda: cases.requires_declared(types.SimpleNamespace(prof=ctx.prof, app=None, win=False, mode="terminal"), r, "ui_right_click_paste"), cases.SettingsMismatch)
+        assert "right_click=paste, case needs context_menu" in str(e), str(e)
+        T.edit_file(_settings(ctx), "agents.warp_agent.active_ai", "natural_language_autosuggestions_in_ssh_enabled", "true")
+        e = _raises(lambda: cases.requires_declared(ctx, r, "lab_agent_nld_predict_ssh.bash.lan.nohelper"), cases.SettingsMismatch)
+        assert str(e) == "SETTINGS: nld_predict_in_ssh=true, case needs false", str(e)
+        T.edit_file(_settings(ctx), "terminal.input", "right_click_behavior", '"context_menu"')
+        T.edit_file(_settings(ctx), "agents.warp_agent.active_ai", "natural_language_autosuggestions_in_ssh_enabled", "false")
         # two settings off: both named, sorted, one line
         T.edit_file(_settings(ctx), "terminal", "copy_on_select", "false")
         e = _raises(lambda: cases.requires(ctx, r, vertical_tabs=False, copy_on_select=True, session_mode="agent"), cases.SettingsMismatch)
@@ -221,27 +236,68 @@ def r16_effective_settings_path_per_platform():
 
 
 @check
-def r16_every_fix_tier_case_declares_its_settings():
-    """every case of SMOKE and PROVING declares what it needs (case_settings.CASE_SETTINGS) or is listed as settings-independent with a reason; no
-    declaration names a case that does not exist or a setting that is not defined; every declared need can be evaluated; run.py checks the
-    declaration before the case function; docs/testing.md carries the generated tables"""
-    names = list(cases.SMOKE) + list(cases.PROVING)
+def r16_every_case_declares_its_settings():
+    """every REGISTERED case (fix tier, full tier, every lab arm) declares what it needs (case_settings.CASE_SETTINGS), is listed as
+    settings-independent with a reason, or (a lab arm) matches exactly ONE family glob of case_settings.FAMILIES; no declaration names a case that
+    does not exist, no glob matches nothing, no setting is undefined; every declared need can be evaluated and holds on a bare profile's text
+    for the modes the case runs in; no lab family needs a setting the lab harness itself rewrites per arm; run.py checks the declaration before
+    the case function; docs/testing.md carries the generated tables"""
+    import fnmatch
+    fix = list(cases.SMOKE) + list(cases.PROVING)
     reg = {c["name"]: c for c in cases.CASES}
-    assert len(names) == len(set(names))
-    missing = [n for n in names if n not in CS.CASE_SETTINGS and n not in CS.INDEPENDENT]
-    assert not missing, "fix-tier cases with no settings declaration (add them to case_settings.py: decl(...) or independent(...)): %s" % missing
+    names = [c["name"] for c in cases.CASES]
+    assert len(fix) == len(set(fix)) and len(names) == len(reg) and len(names) > len(fix) + 100          # the registry, not only the fix tier
+    missing = [n for n in names if not CS.declared(n)]
+    assert not missing, ("registered cases with no settings declaration (add them to case_settings.py: decl(...), independent(...), or for a lab "
+                         "family lab(\"lab_<family>.*\", ...)): %s" % missing)
     assert not set(CS.CASE_SETTINGS) & set(CS.INDEPENDENT)
     stale = [n for n in list(CS.CASE_SETTINGS) + list(CS.INDEPENDENT) if n not in reg]
     assert not stale, "case_settings.py names cases that are not registered: %s" % stale
     for n, why in CS.INDEPENDENT.items():
         assert len(why) > 40, "%s: 'settings-independent' needs its reason" % n
-    for n, d in CS.CASE_SETTINGS.items():
+    # the lab: one registered case per arm, one declaration per family
+    lab_names = [n for n in names if reg[n].get("lab")]
+    assert len(lab_names) > 300 and all(n.startswith("lab_") for n in lab_names)
+    for n in names:
+        globs, exact = CS.family_globs(n), (n in CS.CASE_SETTINGS or n in CS.INDEPENDENT)
+        assert len(globs) + exact == 1, "%s: declared %d times (exact: %s, family globs: %s); a case has exactly one declaration" % (n, len(globs) + exact, exact, globs)
+        assert bool(globs) == bool(reg[n].get("lab")), "%s: a family glob declares lab arms only, and a lab arm is declared by its family (%s)" % (n, globs)
+    dead = [g for g, _ in CS.FAMILIES if not any(fnmatch.fnmatchcase(n, g) for n in names)]
+    assert not dead, "case_settings.py family globs that match no registered case: %s" % dead
+    assert {n.split(".")[0] for n in lab_names} == {g.split(".")[0] for g, _ in CS.FAMILIES}, "one glob per lab family, `lab_<family>.*`"
+    for g in cases.PROVING_LAB:                              # what the fix tier (and the Mac / Windows lab jobs) play is declared
+        hit = [n for n in lab_names if fnmatch.fnmatchcase(n, g)]
+        assert hit and all(CS.declaration(n) for n in hit), g
+    for g, d in CS.FAMILIES:
+        # cases_lab.lab_prepare rewrites these per helper arm AFTER run.py's check: a need would be judged against the PREVIOUS arm's value
+        assert not set(d["needs"]) & set(CS.LAB_SETS), "%s: a lab family cannot need %s (the lab harness writes it per arm)" % (g, sorted(set(d["needs"]) & set(CS.LAB_SETS)))
+        assert set(CS.LAB_SETS) <= set(d["sets"]), g
+    lab_src = open(os.path.join(HERE, "cases_lab.py"), encoding="utf-8").read()
+    assert "CR.set_ext_mode(ctx, HELPER_ARM_MODE[arm[\"helper\"]])" in lab_src and "set_denied_hosts(ctx," in lab_src        # what LAB_SETS describes
+    decls = [(n, d) for n, d in CS.CASE_SETTINGS.items()] + list(CS.FAMILIES)
+    for n, d in decls:
         for k in list(d["needs"]) + list(d["sets"]) + list(d["reads"]):
             assert k in CS.SETTINGS, "%s: %r is not a setting of case_settings.SETTINGS" % (n, k)
+    for n in names:
+        d = CS.declaration(n)
+        if d is None:
+            assert n in CS.INDEPENDENT
+            continue
         for mode in reg[n]["modes"]:
             wants = dict(CS.baseline(mode))
             wants.update(d["needs"])
             CS.mismatches("", wants, mode)                 # raises on a value the setting cannot be compared with
+            # every need is one a bare pass profile meets (app defaults + what the harness forces): a declaration that cannot hold there would make
+            # the case UNVERIFIABLE on every machine. Only the keys the harness forces are written here.
+            bare = '[general]\ndefault_session_mode = "%s"\nrestore_session = false\n[warpify.ssh]\nssh_extension_install_mode = "never_install"\n' % mode
+            if mode == "agent":
+                bare += "[agents.warp_agent.input]\nai_auto_detection_enabled = true\nnld_in_terminal_enabled = true\n"
+            bad = CS.mismatches(bare, wants, mode)
+            assert not bad, "%s (%s pass): its declared needs do not hold on a bare pass profile: %s" % (n, mode, CS.message(bad))
+    # the declaration run.py checks for a lab arm is its family's; an unknown name and a settings-independent case are not checked
+    arm = next(n for n in lab_names if n.startswith("lab_tab_remote_dir."))
+    assert CS.declaration(arm) is dict(CS.FAMILIES)["lab_tab_remote_dir.*"] and CS.declaration(arm)["needs"]["ssh_warpification"] is True
+    assert CS.declaration("no_such_case") is None and CS.declaration("first_run_defaults") is None and not CS.declared("lab_no_such_family.bash.lan.nohelper")
     for n in CS.HARNESS_FORCED:
         assert CS.SETTINGS[n]["forced"], n
     assert [n for n, d in CS.SETTINGS.items() if d["forced"]] == [n for n in CS.SETTINGS if n in CS.HARNESS_FORCED]
@@ -265,9 +321,13 @@ def r16_every_fix_tier_case_declares_its_settings():
     assert i < j and "be.guard()" in run_src[i:j], "run.py must check the declared settings before the case's first key"
     doc = open(os.path.join(ROOT, "docs", "testing.md"), encoding="utf-8").read()
     assert "### 3.1b Test settings model" in doc
-    assert CS.table_markdown(names) in doc, ("docs/testing.md: the per-case settings table is not the one case_settings.py generates; regenerate it with "
-                                             "`python3 script/realapp/appci/case_settings.py` and replace the block between the two markers")
-    assert CS.settings_markdown() in doc, "docs/testing.md: the settings table is stale; regenerate it with `python3 script/realapp/appci/case_settings.py --settings`"
+    order = CS.table_order(names, fix)
+    assert [n for n, _ in order][:len(fix)] == fix and len(order) == len(names) - len(lab_names) and {t for _, t in order} == {"fix", "full"}
+    table = CS.table_markdown(order)
+    assert table.count("\n| `lab_") == len(CS.FAMILIES) and "| `lab_tab_remote_dir.*` | lab |" in table and "| `fast_typing` | fix |" in table
+    assert table in doc, ("docs/testing.md: the per-case settings table is not the one case_settings.py generates; regenerate it with "
+                                             "`python3 script/realapp/appci/case_settings.py --write`")
+    assert CS.settings_markdown() in doc, "docs/testing.md: the settings table is stale; regenerate it with `python3 script/realapp/appci/case_settings.py --write`"
     for n in CS.HARNESS_FORCED:
         assert "| %s |" % n in doc
 
