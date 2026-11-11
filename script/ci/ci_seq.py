@@ -87,7 +87,9 @@ def proving_lab_globs_of(src):
     import ast
     out = []
     for node in ast.parse(src).body:
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "PROVING_LAB" for t in node.targets):
+        assigns = isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "PROVING_LAB" for t in node.targets)
+        extends = isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add) and getattr(node.target, "id", "") == "PROVING_LAB"
+        if assigns or extends:          # `PROVING_LAB += ("lab_x.*",)` (round 15 branches add their globs this way) counts too
             try:
                 out += [g for g in ast.literal_eval(node.value) if g not in out]
             except ValueError:
