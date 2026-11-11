@@ -76,3 +76,59 @@ Corpus: `i4_repeat_id_emitted_late_same_call`, `i4_repeat_id_emitted_late_other_
 `i4_repeat_id_adjacent_then_later_calls`; `dup_call_ids` unchanged.
 
 Not a pin divergence: the BYOP stream is this fork's code, no DECLINED.md row.
+
+## 2. #1995: a completion result notifies `Input` only when render-read state changed
+
+### Cause (named in `docs/design/r14-echoframe.md` section 5 from the round 12 logs)
+
+`Input::handle_completion_suggestions_results` (`app/src/terminal/input.rs`) ended in an
+unconditional `ctx.notify()` (cause `handle_completion_suggestions_results_3`). With
+completions as you type it runs for every typed character whose result answers the current
+buffer. When the menu is closed and stays closed, `set_mode(Closed)` returns early, nothing
+else is notified and `Input` is re-rendered alone beside the editor: 16 % (macOS) to 31 %
+(Wayland) of terminal-mode key frames.
+
+### Fix (owner decision 2026-11-11: yes, change input.rs)
+
+What the handler can change that `render` or its children read:
+
+| outcome | changes | notify |
+|---|---|---|
+| result for another buffer | nothing (early return, as before) | no |
+| no result / no suggestions, menu closed, not stale, as you type | nothing | **no (new)** |
+| no result / no suggestions, a menu up | the menu closes | yes |
+| no result / no suggestions, stale flag set | the flag (accept gating) | yes |
+| no result / no suggestions, answers a Tab | maybe nothing | yes, kept (once per Tab) |
+| suggestions (open, insert, insert prefix + open, no action) | menu, buffer, prepared completions | yes, as before |
+
+`completion_result_needs_render(answers_a_tab, menu_was_up, menu_was_stale, skip_redundant)` is
+the decision; `handle_completion_suggestions_results` now returns whether it notified (its one
+caller ignores it; the tests read it). Kill switch
+`PHOSPHOR_SKIP_REDUNDANT_COMPLETION_NOTIFY=0` (read once).
+
+`completion_menu_stale` is not read by `render` today (it gates Tab/Enter/click accepts), but
+the task names it and a set flag implies a menu that was up, so it is kept as a reason.
+
+### Rejected
+
+* **Drop the final notify altogether and rely on `ModeChanged` (`new_10`).** The open branch
+  also sets the prepared completions and can clear the editor ghost; nothing proves by
+  reading that every such path emits a mode change (an open menu refilled with an equal mode
+  does not).
+* **Skip the notify for an answered Tab too.** Not per-key, so nothing is gained, and a Tab is
+  where a missed frame would be seen.
+* **Observe the notify through the window invalidation in the test.** A notify is an effect
+  flushed at the end of the outermost update, where the unit-test window builds its scene and
+  consumes the invalidation; the return value is exact.
+
+### Risk
+
+A view state this reading missed that only this notify drew. The cases kept (menu up, stale,
+Tab, any suggestions) are every branch that writes state; the skipped case writes nothing
+(`set_mode` on an equal mode returns before any write). Kill switch if a run shows otherwise.
+
+### Proof a run should give
+
+`latency_key_log`: `input_notify_causes` no longer led by
+`Input:handle_completion_suggestions_results_3`; `hop=key_frame_build views=1` for a character
+typed into a non-empty buffer in terminal mode.

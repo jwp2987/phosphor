@@ -2722,6 +2722,150 @@ fn test_stale_as_you_type_menu_hidden_on_keystroke_then_refreshed() {
     });
 }
 
+// #1995 (owner decision 2026-11-11): a completion result re-renders `Input` only when it changed
+// something `render` reads. With completions as you type a result with nothing to show comes back
+// for nearly every typed character; while no menu is up it must not notify `Input`.
+#[test]
+fn test_completion_result_that_changes_nothing_does_not_notify_input() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        InputSettings::handle(&app).update(&mut app, |input_settings, ctx| {
+            let _ = input_settings
+                .completions_open_while_typing
+                .set_value(true, ctx);
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("open-file ", ctx);
+            // Whatever the insert itself opened or marked is not this test's subject.
+            input.close_input_suggestions(/*should_focus_input=*/ false, ctx);
+            input.completion_menu_stale = false;
+        });
+
+        // No menu, no stale flag: no result and an empty result change nothing.
+        let (no_result, empty_result) = input.update(&mut app, |input, ctx| {
+            assert!(input.suggestions_mode_model.as_ref(ctx).is_closed());
+            let no_result = input.handle_completion_suggestions_results(
+                None,
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+            let empty_result = input.handle_completion_suggestions_results(
+                build_suggestion_results(vec![], (10, 10), MatchStrategy::CaseInsensitive),
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+            (no_result, empty_result)
+        });
+        assert!(
+            !no_result,
+            "no result with no menu up must not notify Input"
+        );
+        assert!(
+            !empty_result,
+            "an empty result with no menu up must not notify Input"
+        );
+        input.read(&app, |input, ctx| {
+            assert!(input.suggestions_mode_model.as_ref(ctx).is_closed());
+            assert!(!input.completion_menu_stale);
+        });
+
+        // A result for another buffer is dropped as before, without a notify.
+        let outdated = input.update(&mut app, |input, ctx| {
+            let snapshot = editor_model_snapshot(input, ctx);
+            input.user_insert("x", ctx);
+            input.close_input_suggestions(/*should_focus_input=*/ false, ctx);
+            input.completion_menu_stale = false;
+            input.handle_completion_suggestions_results(
+                None,
+                CompletionsTrigger::AsYouType,
+                snapshot,
+                ctx,
+            )
+        });
+        assert!(!outdated);
+
+        // Control 1: the same empty answer to a Tab still notifies.
+        let tab = input.update(&mut app, |input, ctx| {
+            input.handle_completion_suggestions_results(
+                None,
+                CompletionsTrigger::Keybinding,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            )
+        });
+        assert!(tab, "an answered Tab notifies as before");
+
+        // Control 2: a set stale flag is cleared, and that notifies.
+        let stale = input.update(&mut app, |input, ctx| {
+            input.completion_menu_stale = true;
+            input.handle_completion_suggestions_results(
+                None,
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            )
+        });
+        assert!(stale, "clearing the stale flag notifies");
+        input.read(&app, |input, _| assert!(!input.completion_menu_stale));
+
+        // Control 3: results open the menu (notify), and an empty result then closes it (notify).
+        let opened = input.update(&mut app, |input, ctx| {
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    vec![argument_suggestion("x.txt"), argument_suggestion("xy.txt")],
+                    (10, 11),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            )
+        });
+        assert!(opened, "a result with suggestions notifies");
+        input.read(&app, |input, ctx| {
+            assert!(matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+        });
+        let closed = input.update(&mut app, |input, ctx| {
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(vec![], (10, 11), MatchStrategy::CaseInsensitive),
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            )
+        });
+        assert!(closed, "closing a menu that is up notifies");
+        input.read(&app, |input, ctx| {
+            assert!(input.suggestions_mode_model.as_ref(ctx).is_closed());
+        });
+    });
+}
+
+#[test]
+fn test_completion_result_needs_render_table() {
+    // (answers a Tab, menu was up, menu was stale) with the skip on.
+    assert!(!completion_result_needs_render(false, false, false, true));
+    assert!(completion_result_needs_render(true, false, false, true));
+    assert!(completion_result_needs_render(false, true, false, true));
+    assert!(completion_result_needs_render(false, false, true, true));
+    // Kill switch (`PHOSPHOR_SKIP_REDUNDANT_COMPLETION_NOTIFY=0`): always, as before.
+    assert!(completion_result_needs_render(false, false, false, false));
+}
+
 // #1452: an Enter that arrives right behind the last typed character, before that edit has been
 // handled (the editor reports an insert one effect hop after the model's own), finds an
 // as-you-type menu that still answers the PREVIOUS text and `completion_menu_stale` unset.

@@ -398,6 +398,35 @@ macro_rules! notify_cause {
     }};
 }
 
+/// `PHOSPHOR_SKIP_REDUNDANT_COMPLETION_NOTIFY=0` restores a re-render of `Input` for every
+/// completion result that answers the current buffer (#1995).
+fn skip_redundant_completion_notify_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !std::env::var("PHOSPHOR_SKIP_REDUNDANT_COMPLETION_NOTIFY").is_ok_and(|value| value == "0")
+    })
+}
+
+/// Whether a completion result with nothing to show (no result, or no suggestions) needs
+/// `Input` re-rendered (#1995, owner decision 2026-11-11). With completions as you type such a
+/// result comes back for nearly every typed character; while no menu is up it changes nothing
+/// `render` reads, yet it re-rendered `Input` beside the editor in 16-31 % of key frames.
+///
+/// * a menu that is up closes: render (the mode change notifies `Input` too, cause `new_10`);
+/// * the stale flag (#1355) was set and is now cleared: render;
+/// * the result answers a Tab: render, as before (once per Tab, not per key);
+/// * otherwise the menu was closed and stays closed: nothing to draw.
+///
+/// A result that has suggestions always renders: it opens or refills the menu.
+fn completion_result_needs_render(
+    answers_a_tab: bool,
+    menu_was_up: bool,
+    menu_was_stale: bool,
+    skip_redundant: bool,
+) -> bool {
+    answers_a_tab || menu_was_up || menu_was_stale || !skip_redundant
+}
+
 /// Drop target data for dropping content on the [`Input`].
 #[derive(Debug, Clone)]
 pub struct InputDropTargetData {
@@ -13638,13 +13667,16 @@ impl Input {
         point.ok()
     }
 
+    /// Applies a completion result to the menu. Returns whether it asked for a re-render of
+    /// `Input` (`ctx.notify()`), which it does only when the result changed something `render`
+    /// reads (#1995): see [`completion_result_needs_render`].
     fn handle_completion_suggestions_results(
         &mut self,
         results: Option<SuggestionResults>,
         completions_trigger: CompletionsTrigger,
         editor_snapshot_when_completer_was_ran: EditorSnapshot,
         ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> bool {
         let current_editor_model = self
             .editor
             .read(ctx, |editor, ctx| editor.snapshot_model(ctx));
@@ -13658,10 +13690,20 @@ impl Input {
             || current_editor_model.selections()
                 != editor_snapshot_when_completer_was_ran.selections()
         {
-            return;
+            return false;
         }
         // These results answer the current buffer: they replace (or close) any stale menu.
-        self.completion_menu_stale = false;
+        let menu_was_stale = std::mem::take(&mut self.completion_menu_stale);
+        // What a result with nothing to show can change: a menu that is up (it closes) and the
+        // stale flag. With neither, and no Tab waiting to be answered, nothing `render` reads
+        // moved and `Input` is not re-rendered (#1995).
+        let menu_was_up = !self.suggestions_mode_model.as_ref(ctx).is_closed();
+        let nothing_to_show_needs_render = completion_result_needs_render(
+            completions_trigger == CompletionsTrigger::Keybinding,
+            menu_was_up,
+            menu_was_stale,
+            skip_redundant_completion_notify_enabled(),
+        );
 
         match results {
             None => {
@@ -13670,11 +13712,17 @@ impl Input {
                 self.suggestions_mode_model.update(ctx, |m, ctx| {
                     m.set_mode(InputSuggestionsMode::Closed, ctx);
                 });
+                if !nothing_to_show_needs_render {
+                    return false;
+                }
             }
             Some(results) if results.suggestions.is_empty() => {
                 self.suggestions_mode_model.update(ctx, |m, ctx| {
                     m.set_mode(InputSuggestionsMode::Closed, ctx);
                 });
+                if !nothing_to_show_needs_render {
+                    return false;
+                }
             }
             Some(results) => {
                 let query = results.replacement_span.slice(&buffer_text);
@@ -13696,7 +13744,7 @@ impl Input {
                             model.set_mode(InputSuggestionsMode::Closed, ctx);
                         });
                         notify_cause!(ctx, "handle_completion_suggestions_results");
-                        return;
+                        return true;
                     }
                     ExplicitTabCompletion::InsertSingle {
                         suggestion,
@@ -13710,7 +13758,7 @@ impl Input {
                             ctx,
                         );
                         notify_cause!(ctx, "handle_completion_suggestions_results_2");
-                        return;
+                        return true;
                     }
                     ExplicitTabCompletion::InsertCommonPrefixAndOpen {
                         common_prefix,
@@ -13801,6 +13849,7 @@ impl Input {
             }
         }
         notify_cause!(ctx, "handle_completion_suggestions_results_3");
+        true
     }
 
     /// Replace the replacement with the common completion prefix. Note that completion prefix

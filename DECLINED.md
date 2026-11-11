@@ -2495,6 +2495,18 @@ upstream's behavior is actually a defect rather than a preference.
   the model provider, which on a remote session is traffic and context the user did not ask for.
   <!-- markers: keep:allowed_for_session keep:NaturalLanguageAutosuggestionsInSshEnabled -->
 
+- **A completion result that changes nothing does not re-render the input** (`#1995`,
+  2026-11-11, owner decision, `app/src/terminal/input.rs`
+  `handle_completion_suggestions_results`, `completion_result_needs_render`). **Upstream:** the
+  handler ends in an unconditional `ctx.notify()`
+  (`42effe840:app/src/terminal/input.rs:12682`), so with completions as you type every result
+  that answers the current buffer re-renders `Input`, menu or no menu (measured here: `Input`
+  beside the editor in 16-31 % of terminal-mode key frames, 0.98 ms against 0.65 ms frame
+  build). **We do:** a result with nothing to show notifies only when a menu was up, the stale
+  flag was set, or it answers a Tab; a result with suggestions notifies as before.
+  `PHOSPHOR_SKIP_REDUNDANT_COMPLETION_NOTIFY=0` restores the unconditional notify.
+  <!-- markers: keep:completion_result_needs_render keep:skip_redundant_completion_notify_enabled -->
+
 ## Not done: evicting closed panes' AI conversations from memory (#843)
 
 Closing a pane drops the AI history model's per-view maps (live and cleared ids, active
