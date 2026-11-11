@@ -129,15 +129,26 @@ Rejected: `wgpu::Device::destroy()` (later calls on a destroyed device raise val
 through the uncaptured-error handler, which is not the lost-device path); setting the renderer's
 `device_lost` flag (it is read only when a buffer is created or grows, so a frame may not see it).
 
-Case: a third arm in `gpu_real_render` (Linux): relaunch with the variable, draw the pattern,
-screenshot, create the file, type one key (the frame that hits the loss), then judge: the hook
-line and `Recreating the renderer` in the log, a new `Surface configured:` line, `hop=frame_drawn`
-lines after it, the app alive, and the same screen within the picture tolerance.
+Case: its own case, `gpu_lost_device_recovers` (Linux, `cases_r15_w5c.py`), not a third arm of
+`gpu_real_render`: that case SKIPs where the session has no hardware adapter, and the rebuild is
+the app's own code on any adapter, so the oracle would have been lost on the Xvfb job for no reason.
+Relaunch with the variable (the launch log must show `TEST HOOK armed`, else UNVERIFIABLE), draw
+the pattern, screenshot, create the file, type one key only if no redraw took the file within
+1.5 s, then judge: the hook line exactly once and the file gone, `Recreating the renderer` after it,
+a new `Surface configured:` line, `hop=frame_drawn` lines after that, the app alive, no panic, and
+the same screen within the picture tolerance (with the control pair of `gpu_real_render`).
+`gpu_real_render` rows say where the third oracle is judged instead of `NOT RUN:`.
 
-Found by reading, NOT changed (new issue filed, see the report): a counted failure that rebuilds
-the renderer has `retry_after: None`, so nothing asks for another redraw; the frame that hit the
-loss is drawn only at the next event. The case measures it (frames drawn before the next input)
-and reports it as a note, not a verdict.
+Found by reading, NOT changed, filed as #2101: a counted failure that rebuilds the renderer has
+`retry_after: None`, so nothing asks for another redraw; the frame that hit the loss is drawn only
+at the next event. The case measures it (`frames_after_rebuild_before_input`) and reports it as a
+note, not a verdict. Re-arming a redraw there is a behaviour change on the draw path that could not
+be proven safe by reading alone (a rebuild that keeps failing would reach the three-failure exit in
+three frames instead of three events), so it is left for a decision with the case's numbers.
+
+Risk: the hook is one `Option` test per redraw when unarmed. Armed, it deletes one file whose name
+is fixed. Whether the box's Wayland session lets the rebuilt renderer present again is exactly what
+the case will show.
 
 ## 4. #2096: the blink test's "must not notify"
 
@@ -163,3 +174,14 @@ instead of failing.
 Cost, for the owner to weigh (not decided here): every pipeline's `guards` job, which every other
 job waits for, takes up to about 3.5 minutes longer when fish, zsh and strace are on the box. What
 the box has was not checked from here.
+
+## 6. Found on the way
+
+- #2101 (filed, not worked): see section 3.
+- #2102 (filed, not worked): `script/test_local_counted_bootstrap` fails for bash at the base
+  commit too (its "no here-document left" check matches a string that #2051 put inside the ssh
+  wrapper). `script/precheck`'s shell-tests step is red on a machine with bash until it is
+  repaired. TEST fault as far as read.
+- The appci self-test writes under the system temp directory unless `TMPDIR` is set (one of this
+  round's runs did, before `TMPDIR` was exported; nothing was left behind that could be told
+  apart from other runs' files).
