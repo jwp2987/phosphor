@@ -7206,6 +7206,10 @@ def gitbash_bootstrap_in_command_2051():
     assert ("`%s`" % n) in doc and "gitbash_bootstrap_in_command_2051" in doc and "PHOSPHOR_MSYS_SSH_BOOTSTRAP=typed" in doc
 
 
+import selftest_pointer  # noqa: E402  (round 14 wave 3a: cases_pointer.py; its checks live in their own file)
+CHECKS.extend(selftest_pointer.CHECKS)
+
+
 def main():
     failed = 0
     for f in CHECKS:
