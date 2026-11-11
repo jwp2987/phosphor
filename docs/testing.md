@@ -8117,3 +8117,10 @@ verdicts, and `late_build_outcome` against a fake status sequence (pending, pend
   `r22_daemon_pattern_does_not_match_its_own_wrapper`, `r22_daemon_cases_kill_first_and_compare_pids`, `r22_helper_takeover_state_reads_the_app_log`,
   `r22_takeover_wait_is_event_driven_and_never_widens_limits`, `r22_channel_evidence_has_per_channel_timestamps`,
   `r22_chips_read_by_find_token_and_the_chip_value_line`.
+
+## Round 23: #2125, the typed-ahead Enter of a managed Windows ssh session
+
+- New Rust unit test `ssh_single_typeahead_enter_is_cr_like_a_plain_session` (`app/src/terminal/view_test.rs`): the keys the one-connection LocalCommand reads
+  back (`ssh_single_decode_typeahead`) turn a lone LF into CR (the console's `icrnl` ran before the LocalCommand's raw read), keep CR LF, escape sequences and
+  non-hex input as before. Not run on the laptop; no harness or case changed. The Windows run is the proof: the typed-ahead Enter of
+  `ssh_gitbash_managed` should show CR, as a plain session does.

@@ -22501,6 +22501,24 @@ fn one_connection_ssh_plain_verdict_after_the_ssh_hook_is_ignored() {
     })
 }
 
+/// #2125: an Enter typed during the one-connection login reaches the LocalCommand as LF (the
+/// console's `icrnl` ran first); the managed session must send the remote the CR a plain
+/// session sends.
+#[test]
+fn ssh_single_typeahead_enter_is_cr_like_a_plain_session() {
+    // "ls" + LF
+    assert_eq!(ssh_single_decode_typeahead("6c730a"), b"ls\r");
+    // a CR LF pair is one Enter and stays as the hold splits it
+    assert_eq!(ssh_single_decode_typeahead("6c730d0a"), b"ls\r\n");
+    // CR untouched; several lines; nothing at all; escape sequences untouched
+    assert_eq!(ssh_single_decode_typeahead("0d0a0a"), b"\r\n\r");
+    assert_eq!(ssh_single_decode_typeahead("610d"), b"a\r");
+    assert_eq!(ssh_single_decode_typeahead(""), b"");
+    assert_eq!(ssh_single_decode_typeahead("1b5b41"), b"\x1b[A");
+    // not hex: nothing, as before
+    assert_eq!(ssh_single_decode_typeahead("zz"), b"");
+}
+
 /// #2051: the rule behind the two tests above, row by row. A plain verdict applies to a managed
 /// window only when the one-connection sync made it managed and the remote announced nothing.
 #[test]
