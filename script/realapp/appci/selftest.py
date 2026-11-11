@@ -1084,7 +1084,10 @@ def mac_key_to_frame_regression_is_judged_on_the_app_share_and_the_tail():
                     dict(rec, app_share={k: v for k, v in rec["app_share"].items() if k != "budget_verdict"})):
             rn = cases.Result("latency_key_log", "terminal")
             cases.lat_checks(rn, bad, "key to frame", share_judges=True)
-            assert len(rn.noref) == 1 and "NEEDS: an app-share gate" in rn.noref[0], rn.noref
+            # (owner 2026-11-11: the gate for Linux / Windows is decided, key -> pty write; the old text asked for that decision. A missing or thin figure
+            #  is still NOREF and now names the figure and the reason.)
+            assert len(rn.noref) == 1 and "key_to_frame_less_display_wait) is not usable (" in rn.noref[0] and "not a pass" in rn.noref[0], rn.noref
+        assert "n=3 < 20 presses" in rn.noref[0] or "no figure" in rn.noref[0], rn.noref
         import inspect
         assert "share_judges=True" in inspect.getsource(cases.c_lat_key) and "the 1 ms target" in inspect.getsource(cases.c_lat_key)
         # 6. a promoted baseline carries the share: an unchanged share passes; a grown one FAILs after its re-measure; a clean re-measure is a WARN;
@@ -1117,6 +1120,87 @@ def mac_key_to_frame_regression_is_judged_on_the_app_share_and_the_tail():
         assert rec["regress_basis"] == "median" and "tail" not in rec and "app_share" not in rec, rec
     finally:
         cases.plat, lat.load_baseline = orig_p, orig_b
+        for k, v in env.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+
+@check
+def key_log_is_judged_on_the_key_to_pty_write_share_off_macos():
+    """owner 2026-11-11 (#2070, #1176): latency_key_log on Linux and Windows is JUDGED on the app's key -> pty write share (median against 1 ms) instead
+    of NOREF. A passing share judges the row (no NOREF, no failure); a failing one FAILs it; a missing or thin figure stays NOREF with the reason;
+    the regression basis stays the key -> frame median; macOS keeps its own gate (#2037) and is not touched."""
+    import inspect, statistics
+    import lat
+    st = lambda r_: "fail" if r_.fails else "noref" if r_.noref else "pass"      # a failed check wins over NOREF (run.py)
+    rid = "terminal/latency_key_log/key_to_frame"
+    kd = lambda t: "input_order keydown key=m ctrl=false alt=false shift=false cmd=false t=%.3f seq=1" % t
+    log = lambda share: "\n".join("%s\ninput_order pty_write bytes=1 t=%.3f\ninput_order frame layout=true t=%.3f" % (kd(1000.0 * i), 1000.0 * i + share + 0.01 * (i % 3), 1000.0 * i + 6.0)
+                                  for i in range(1, 61))
+    frames = [5.0 + 0.1 * (i % 7) for i in range(60)]
+    orig_p, orig_b, orig_prev = cases.plat, lat.load_baseline, lat.load_prev
+    env = {k: os.environ.pop(k, None) for k in ("APPCI_KEY_PTY_SHARE_MAX_MS", "APPCI_MIN_SAMPLES", "APPCI_PREV_RESULTS")}
+
+    def run(kw, expected=60, base=None, again=None):
+        lat.load_baseline = lambda platform: ("ok", {rid: base} if base else {})
+        rec = lat.evaluate(rid, frames, None, 2.0, "overhead", cases.plat(), remeasure=lambda: again or frames, app_share=None)
+        sh = cases.key_pty_share_gate(rec, kw, expected)
+        r = cases.Result("latency_key_log", "terminal")
+        cases.lat_checks(r, rec, "key to frame", share_judges=True)
+        return rec, sh, r
+    try:
+        lat.load_prev = lambda: {}
+        for platform in ("linux-wayland", "linux", "windows"):
+            cases.plat = lambda p_=platform: p_
+            # 1. a passing share (the r12a range): judged, no NOREF, no failure; the record keeps the median as the regression basis
+            kw = cases.key_write_pairs(log(0.45))
+            assert len(kw) == 60 and abs(statistics.median(kw) - 0.46) < 1e-6, kw[:4]
+            rec, sh, r = run(kw)
+            assert sh == dict(what="key_to_pty_write", p50=0.46, n=60, budget_ms=1.0, gate_only=True, usable=True, budget_verdict="pass"), sh
+            assert rec["app_share"] is sh and rec["regress_basis"] == "median" and rec["verdict"] == "no-reference", rec
+            assert not r.noref and not r.fails and st(r) == "pass", (r.noref, r.fails, st(r))
+            assert any("JUDGED on the app's own share (key_to_pty_write): 0.46 ms against its 1.0 ms budget (n=60): PASS" in n for n in r.notes), r.notes
+            # 2. a failing share: FAIL (and no NOREF row hiding it); the record's verdict is fail
+            rec, sh, r = run(cases.key_write_pairs(log(1.30)))
+            assert sh["budget_verdict"] == "fail" and sh["p50"] == 1.31 and rec["verdict"] == "fail" and not r.noref and st(r) == "fail", (sh, r.noref, st(r))
+            assert any("the app's own share (key_to_pty_write) 1.31 ms exceeds its 1.0 ms budget (n=60)" in f for f in r.fails), r.fails
+            # exactly on the target passes; just over fails; the bound is the env's
+            assert run([1.0] * 60)[1]["budget_verdict"] == "pass" and run([1.001] * 60)[1]["budget_verdict"] == "fail"
+            os.environ["APPCI_KEY_PTY_SHARE_MAX_MS"] = "1.5"
+            assert run(cases.key_write_pairs(log(1.30)))[2].fails == [] and not run(cases.key_write_pairs(log(1.30)))[2].noref == "pass"
+            os.environ.pop("APPCI_KEY_PTY_SHARE_MAX_MS")
+            # 3. no figure: NOREF with the reason, never a pass
+            rec, sh, r = run([])
+            assert sh["usable"] is False and "budget_verdict" not in sh and st(r) == "noref" and len(r.noref) == 1 and not r.fails, (sh, r.noref, r.fails)
+            assert "(key_to_pty_write) is not usable (no figure: no keydown -> `input_order pty_write` pair" in r.noref[0] and "not a pass" in r.noref[0], r.noref
+            # 4. a thin figure under the target is not a pass (NOREF, reason given); a thin figure over it is still a FAIL
+            rec, sh, r = run([0.4] * 12)
+            assert st(r) == "noref" and "n=12 < 30 presses" in r.noref[0], r.noref
+            rec, sh, r = run([0.4] * 40)
+            assert st(r) == "noref" and "only 40 of 60 presses" in r.noref[0], r.noref
+            rec, sh, r = run([1.4] * 12)
+            assert st(r) == "fail" and any("exceeds its 1.0 ms budget (n=12)" in f for f in r.fails), (st(r), r.fails)
+            # 5. the regression gate is the key -> frame median, as before: a slower median than the baseline's FAILs with a passing share
+            rec, sh, r = run(cases.key_write_pairs(log(0.45)), base={"n": 60, "p50": 3.0, "p95": 4.0})
+            assert rec["regress_basis"] == "median" and rec["baseline_verdict"] == "fail" and any(f.startswith("REGRESSION key to frame: median ") for f in r.fails), (rec, r.fails)
+            # 5b. a regression WARN (clean re-measure) makes the record's verdict `warn`: a missing share is still NOREF, a failing one still a FAIL,
+            #     and a passing one judges the row (the WARN is a note)
+            slow = {"n": 60, "p50": 3.0, "p95": 4.0}
+            rec, sh, r = run([], base=slow, again=[2.9] * 60)
+            assert rec["verdict"] == "warn" and rec["budget_verdict"] == "no-reference" and st(r) == "noref" and "is not usable (no figure" in r.noref[0], (rec["verdict"], r.noref)
+            rec, sh, r = run(cases.key_write_pairs(log(0.45)), base=slow, again=[2.9] * 60)
+            assert rec["verdict"] == "warn" and st(r) == "pass" and any("JUDGED on the app's own share" in n for n in r.notes) and any(n.startswith("WARN key to frame: median") for n in r.notes), r.notes
+            rec, sh, r = run(cases.key_write_pairs(log(1.30)), base=slow, again=[2.9] * 60)
+            assert rec["verdict"] == "fail" and st(r) == "fail" and not r.noref, (rec["verdict"], r.noref)
+        # 6. macOS is left alone: no key -> pty gate there, with or without its own figure
+        cases.plat = lambda: "macos"
+        rec, sh, r = run(cases.key_write_pairs(log(1.30)))
+        assert sh is None and "app_share" not in rec and st(r) == "noref" and "key_to_frame_less_display_wait) is not usable" in r.noref[0], (sh, r.noref)
+        src = inspect.getsource(cases.c_lat_key)
+        assert src.index("key_pty_share_gate(rec, kw, n)") < src.index('lat_checks(r, rec, "key to frame", share_judges=True)'), "the gate runs before the verdicts are read"
+    finally:
+        cases.plat, lat.load_baseline, lat.load_prev = orig_p, orig_b, orig_prev
         for k, v in env.items():
             os.environ.pop(k, None)
             if v is not None:
@@ -6527,7 +6611,7 @@ def ssh_wrapper_cases_have_a_job_that_pins_them():
     import re
     import cases_win_input as wi
     yml = open(os.path.join(HERE, "..", "..", "..", ".gitlab-ci.yml"), encoding="utf-8").read()
-    for job in ("app-test-linux-wayland", "app-test-windows"):
+    for job in ("app-test-linux-wayland", "app-test-macos", "app-test-windows"):      # macOS since round 16 (owner 2026-11-11)
         m = re.search(r"^%s:\n(.*?)(?=^\S)" % re.escape(job), yml, re.S | re.M)
         assert m and re.search(r'^  variables:\n(?:    .*\n)*?    APPCI_SSH_WRAPPER: "1"', m.group(1), re.M), "%s no longer sets APPCI_SSH_WRAPPER=1: the *_wrapper cases would SKIP in every run again" % job
     good = "x hop=ssh_wrapper announced reclaimed=false holding=true held_bytes=3\ny hop=ssh_wrapper verdict managed=true tty_owned_deferred=false remote_plain=false\n"
@@ -8422,19 +8506,40 @@ import selftest_r15_lab  # noqa: E402  (round 15 lab: the helper artifact, the l
 CHECKS.extend(selftest_r15_lab.CHECKS)
 import selftest_r15_w5a  # noqa: E402  (round 15 wave 5 part A: cases_r15_w5a.py, nettrace.py; its checks live in their own file)
 CHECKS.extend(selftest_r15_w5a.CHECKS)
+import selftest_r16_harness  # noqa: E402  (round 16 harness decisions, owner 2026-11-11: sudo arms, the macOS close key, lab job variables, MOVE-AFTER-ONE-RUN, guards)
+CHECKS.extend(selftest_r16_harness.CHECKS)
 
 
-def main():
-    failed = 0
+def missing_required(required, passed):
+    """pure: the `--require` names that were not among the checks that ran AND passed"""
+    return [n for n in required if n not in passed]
+
+
+def main(argv=None):
+    """`--require a,b`: besides running every check, fail unless the named ones ran and passed. The guards job names the two checks whose absence
+    nothing else would notice (#2086, #2089 / #2090): a selftest_*.py file is registered by two lines at this file's tail, and a merge that drops
+    them leaves a smaller self-test that still says "0 failed"."""
+    argv = sys.argv[1:] if argv is None else argv
+    required = []
+    for i, a in enumerate(argv):
+        if a == "--require" and i + 1 < len(argv):
+            required += [n for n in argv[i + 1].split(",") if n]
+        elif a.startswith("--require="):
+            required += [n for n in a.split("=", 1)[1].split(",") if n]
+    failed, passed = 0, set()
     for f in CHECKS:
         try:
             f()
+            passed.add(f.__name__)
             print("ok   %s" % f.__name__)
         except Exception as e:
             failed += 1
             print("FAIL %s: %s: %s" % (f.__name__, type(e).__name__, e))
     print("selftest: %d checks, %d failed" % (len(CHECKS), failed))
-    return 1 if failed else 0
+    absent = missing_required(required, passed)
+    for n in absent:
+        print("FAIL --require %s: that check did not run and pass (not registered any more? see the import lines at the end of selftest.py)" % n)
+    return 1 if failed or absent else 0
 
 
 if __name__ == "__main__":

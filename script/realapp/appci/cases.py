@@ -182,6 +182,19 @@ PROVING_LAB += ("lab_helper_*",)
 PROVING_LAB += ("lab_password_prompt.p_password.lan.nohelper", "lab_password_prompt.p_kbdint.lan.nohelper")
 PROVING_LAB += ("lab_path_detect.p_exec.lan.nohelper", "lab_path_detect.p_tinypath.lan.nohelper")
 PROVING_LAB += ("lab_ssh_drop_reconnect.bash.lan.nohelper.rst", "lab_ssh_drop_reconnect.bash.lan.nohelper.stall10")
+# MOVE-AFTER-ONE-RUN (owner 2026-11-11: "never-played lab families: one fix-tier run then move to candidate"). The #2063 entries above (the block from
+# lab_tab_remote_dir.* to the six exact arms) stay in PROVING_LAB for ONE fix-tier run of app-test-lab-linux, so each has a first row. AFTER that run
+# the coordinator moves the entries named in LAB_MOVE_AFTER_ONE_RUN out of the fix tier: delete their `PROVING_LAB += (...)` lines above, give each
+# family a line in LAB_NOT_IN_FIX_TIER below ("played by the candidate tier: app-test-lab-linux, lab_* under ci_seq.LAB_CANDIDATE_MATRIX"; the candidate
+# matrix already selects every one of them, scenario users and faults included), and delete this tuple with its self-test
+# (selftest_r16_harness.r16_never_played_lab_families_wait_one_run). Not moved now. A family that FAILED in that run is a finding to triage first, and
+# by the standing rule (nothing leaves the fix tier before it has passed, no graduation without asking) the owner is asked which ones go.
+LAB_MOVE_AFTER_ONE_RUN = (
+    "lab_tab_remote_dir.*", "lab_path_detect.*", "lab_chips.*", "lab_no_helper_chip.*", "lab_nu_agent_pager_env.*", "lab_ssh_drop_reconnect.*", "lab_fam_fs_basic.*",
+    "lab_fam_git_read.*", "lab_fam_run_command.*", "lab_nohelper_*", "lab_read_files_remote.*", "lab_diff_apply_remote.*", "lab_file_tree_remote.*",
+    "lab_diff_panel_remote.*", "lab_gh_chip_remote.*", "lab_git_write_remote.*", "lab_remote_edit.*", "lab_skills_remote.*", "lab_codebase_index_remote.*", "lab_helper_*",
+    "lab_password_prompt.p_password.lan.nohelper", "lab_password_prompt.p_kbdint.lan.nohelper", "lab_path_detect.p_exec.lan.nohelper", "lab_path_detect.p_tinypath.lan.nohelper",
+    "lab_ssh_drop_reconnect.bash.lan.nohelper.rst", "lab_ssh_drop_reconnect.bash.lan.nohelper.stall10")
 # round 15 wave 4 core (#2075; r14-test-gaps T34, T36; cases_w4core.py): the grid snapshot hook's case on every platform, the app frozen for 60 s and
 # woken with an ssh session and a streaming agent turn open (the fake-model pass; its lab arm with the link stalled is in PROVING_LAB)
 PROVING += ("grid_snapshot_render", "freeze_and_wake")
@@ -380,7 +393,9 @@ def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share
         elif rec.get("insufficient"):
             why = "insufficient evidence (%s)" % "; ".join(rec["insufficient"])
         r.no_reference("%s: %s: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)" % (label, why))
-    if rec["verdict"] == "no-reference":
+    # Off macOS (key_pty_share_gate) the question "did anything judge the time itself" is asked of the BUDGET verdict: a regression WARN makes the
+    # record's verdict `warn`, and the row would then pass with no reference and no usable share. macOS keeps its rule as it was (#2037).
+    if rec["verdict"] == "no-reference" or (share_judges and not plat().startswith("macos") and rec.get("budget_verdict") == "no-reference"):
         sh_ = rec.get("app_share") or {}
         if share_judges and sh_.get("usable") and sh_.get("budget_verdict") in ("pass", "fail"):
             # #2070: a measurement with no reference terminal BY CONSTRUCTION (latency_key_log: nothing else is measured the same way) was NOREF on
@@ -389,10 +404,13 @@ def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share
             r.note("%s: no reference terminal exists for this measurement, so the overhead budget was not judged; JUDGED on the app's own share (%s): %.2f ms against its "
                    "%.1f ms budget (n=%s): %s" % (label, sh_.get("what"), sh_["p50"], sh_["budget_ms"], sh_.get("n"), sh_["budget_verdict"].upper()))
         elif share_judges:
-            r.no_reference("%s: no reference terminal exists for this measurement and no usable app-share figure was logged on this platform (%s), so nothing judged the "
-                           "time itself; absolute numbers are recorded as metrics. NEEDS: an app-share gate for this platform (owner decision, #2070: the key -> pty "
-                           "write share is measured everywhere and has a 1 ms target that is recorded, not judged)" % (
-                               label, sh_.get("why_not") or "the wait for the display pass is logged on macOS only"))
+            # owner 2026-11-11: the share that judges is key -> frame less the display wait on macOS (#2037) and key -> pty write on Linux and Windows
+            # (1 ms, #1176; key_pty_share_gate). A figure that is missing or too thin judges nothing: NOREF with the reason, never a pass.
+            r.no_reference("%s: no reference terminal exists for this measurement and the app's own share (%s) is not usable (%s), so nothing judged the time itself "
+                           "(not a pass); absolute numbers are recorded as metrics" % (
+                               label, sh_.get("what") or (KEY_FRAME_OWN if plat().startswith("macos") else KEY_PTY_SHARE),
+                               sh_.get("why_not") or ("no figure: no `input_order hop=key_frame_sched` line for >= 90 % of the key -> frame pairs" if plat().startswith("macos")
+                                                      else "no figure: no keydown -> `input_order pty_write` pair in the measurement window")))
         else:
             r.no_reference("%s: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)" % label)
     for n_ in rec.get("notes", []):
@@ -4725,6 +4743,32 @@ def key_frame_regress_basis(share, again):
     return dict(share, budget_ms=float(os.environ.get("APPCI_KEY_APP_SHARE_MAX_MS", os.environ.get("APPCI_KEY_BUDGET_MS", "2"))), remeasure=remeasure)
 
 
+KEY_PTY_SHARE = "key_to_pty_write"
+
+
+def key_pty_share_gate(rec, kw, expected):
+    """owner 2026-11-11 (#2070, #1176): off macOS, latency_key_log is JUDGED on the app's own key -> pty write share (key_write_pairs: keydown to the
+    event loop's `input_order pty_write` line), median against APPCI_KEY_PTY_SHARE_MAX_MS (default 1 ms, the #1176 target; r12a medians 0.33-0.69 ms).
+    It was NOREF on Linux and Windows in every run: no reference terminal exists for key -> frame by construction and those platforms log no display-wait
+    split. The figure goes into rec['app_share'] as a GATE ONLY: rec['regress_basis'] is not touched, so the prev / baseline regression verdicts stay on
+    the key -> frame median exactly as before. Over the budget = FAIL whatever n is; a pass needs the evidence any pass needs (lat.app_share_usable:
+    n >= APPCI_MIN_SAMPLES and >= 90 % of the keys asked for), otherwise the figure is not usable and lat_checks reports NOREF with the reason.
+    macOS keeps its own gate (#2037, key_frame_regress_basis) and is left alone, with or without a figure. kw: [ms], warm-up dropped. -> the share, or None."""
+    if plat().startswith("macos"):
+        return None
+    p50 = round(statistics.median(kw), 3) if kw else None
+    sh = dict(what=KEY_PTY_SHARE, p50=p50, n=len(kw), budget_ms=float(os.environ.get("APPCI_KEY_PTY_SHARE_MAX_MS", "1")), gate_only=True)
+    sh["usable"], why_not = lat.app_share_usable(sh, expected)
+    if not sh["usable"]:
+        sh["why_not"] = "no figure: no keydown -> `input_order pty_write` pair in the measurement window" if p50 is None else why_not
+    if p50 is not None:
+        sh["budget_verdict"] = "fail" if p50 > sh["budget_ms"] else "pass"
+        if sh["budget_verdict"] == "fail":
+            rec["verdict"] = lat.worst(rec["verdict"], "fail")
+    rec["app_share"] = sh
+    return sh
+
+
 def key_frame_tail_checks(r, rec, label, again):
     """#2037: with the app's share as the regression basis the wait for the display pass is out of the judged figure, so the upper end of the whole
     key -> frame time is judged here: its p95 (one refresh interval plus the app's work; 9.16-9.44 ms over 26 Mac measurements while the median moved
@@ -4798,8 +4842,9 @@ def c_lat_key(ctx, r):
         r.note("#2037 key to frame without the wait for the display pass (the app's own share): median %.2f ms (p95 %.2f, n=%d); the wait itself: median %.2f ms (max %.2f)" % (
             share["p50"], r.metrics["key_to_frame_own_ms"]["p95"], share["n"], r.metrics["key_frame_display_wait_ms"]["p50"], r.metrics["key_frame_display_wait_ms"]["max"]))
     # #1176 (owner 2026-11-03: measure first, then decide): the app's own key -> pty write(2) share, whose target is <= 1 ms median at idle
-    # (keys here are 80-180 ms apart), and the main-thread items >= 4 ms and model-lock holds >= 2 ms during the same typing. Informational:
-    # metrics and a note, never a check, until the owner sets the verdict from a real-GPU run.
+    # (keys here are 80-180 ms apart), and the main-thread items >= 4 ms and model-lock holds >= 2 ms during the same typing. The share is the
+    # judging gate of this case on Linux and Windows (owner 2026-11-11: key_pty_share_gate below, over the 1 ms target = FAIL); on macOS it stays a
+    # metric and a note (the #2037 own-share gate judges there). The item and lock audits stay informational.
     txt = getattr(run_keys, "txt", "")
     kw = key_write_pairs(txt)[warm:]
     r.metric("key_to_pty_write_ms", stats(kw))
@@ -4836,13 +4881,15 @@ def c_lat_key(ctx, r):
                 % (len(ds), ctx.log_path, n, ", ".join("%s=%d" % kv for kv in sorted(cnt.items())), why))
         return
     # Phosphor-side clock only (keydown -> first frame after the echo); there is no paint read-back for a reference terminal through
-    # Wayland / ScreenCaptureKit at this resolution, so the 2 ms overhead budget cannot be judged: verdict 'no-reference'.
+    # Wayland / ScreenCaptureKit at this resolution, so the 2 ms overhead budget cannot be judged: the record's verdict is 'no-reference' and the
+    # row is judged by the app's own share (lat_checks share_judges): macOS #2037 below, Linux / Windows key -> pty write (key_pty_share_gate).
     # Regression basis (#2037, docs/design/r12-mackey.md): on macOS the app's own share of key -> frame, with a hard bound at the own-work budget, and
     # the p95 of the whole against the older builds' p95 (key_frame_tail_checks). Elsewhere, and without the figure, the median gate as before.
     rec = lat.evaluate("%s/latency_key_log/key_to_frame" % ctx.label, ds, None, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
                        remeasure=lambda: run_keys(n + warm)[0], notes=["Phosphor-side keydown to first frame; no same-method reference exists"],
                        app_share=key_frame_regress_basis(share, lambda: (run_keys(n + warm), run_keys.shares)[1]))
     r.metrics.setdefault("lat", {})["key_to_frame"] = rec
+    key_pty_share_gate(rec, kw, n)       # Linux / Windows: the key -> pty write share judges (1 ms); macOS: untouched (#2037)
     lat_checks(r, rec, "key to frame", share_judges=True)
     key_frame_tail_checks(r, rec, "key to frame", lambda: run_keys(n + warm)[0])
     # UI work (#1548): the app's `hop=ui_item` line (input_order::log_ui_item_if_over_budget, main thread, an event/action/frame at or over the 4 ms

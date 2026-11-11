@@ -389,6 +389,20 @@ def su_plan(target, euid, environ, have_su, platform, pw):
     return dict(run=True, cmd=su if euid == 0 else "sudo -n " + su, user=user, uid=uid, why="")
 
 
+def priv_arms_verdict(ran, passed, not_run, needs):
+    """pure: the rule of sudo_su_real_shell (owner 2026-11-11: "notes OK but at least one arm must run and pass"). ran: the arms that started; passed:
+    those of them with no failed check; not_run: "<arm>: <reason>" texts; needs: the machine change (PB.sudo_needs(), starts with `NEEDS: `).
+    -> ("skip", text) when no arm ran: the text STARTS with the NEEDS: change, so the row and the tier list it as a machine change and nothing reads
+       it as coverage (never a pass); ("fail", text) when arms ran and none passed; ("pass", None) when at least one arm ran and passed. An arm that
+       ran and failed has its own failed checks on the row, so a pass here does not hide it."""
+    if not ran:
+        return "skip", ("%s. No privilege boundary could run here: passwordless sudo and root-for-su are both absent (%s); the su half also needs the runner to be root or "
+                        "passwordless ROOT sudo, the ksu half a Kerberos realm. Has never run on any machine" % (needs, "; ".join(not_run[:2])))
+    if not [a for a in passed if a in ran]:
+        return "fail", "no privilege-boundary arm passed: %s ran and every one of them failed (not run: %s)" % (", ".join(ran), "; ".join(not_run) or "none")
+    return "pass", None
+
+
 @case("sudo_su_real_shell", modes=("terminal",), order=65, gui=True)
 def c_sudo_su(ctx, r):
     """The real privilege boundary the nested-bash stand-in of remote_session_* only imitates (#1536). Three arms, each needing something of the
@@ -397,31 +411,33 @@ def c_sudo_su(ctx, r):
       su    root runs su (the runner is root, or root through passwordless sudo: `sudo -n su ...`);
       ksu   a Kerberos realm and a target principal, which are the owner's site: never run by the harness.
     Proof of the boundary is `id -u` typed INTO the inner shell (the target's uid, never the CI user's and never the prompt), then exact lines, then
-    `exit` and the pane's own uid again. The verdict is the arms that RAN (metric `boundaries_run`); an arm the machine cannot run is listed as
-    `NOT RUN:` with its reason and in `boundaries_not_run`, and the case SKIPS with the machine change when none can.
-    Round 15: until now every arm that could not run made the row NOREF, and ksu can never run, so the case could not PASS on any machine."""
+    `exit` and the pane's own uid again. An arm the machine cannot run is listed as `NOT RUN:` with its reason and in `boundaries_not_run`.
+    The verdict (priv_arms_verdict; owner 2026-11-11): the case PASSES only if at least one arm actually ran and passed (metrics `boundaries_run`,
+    `boundaries_passed`); no arm run = SKIP whose text starts with the `NEEDS:` machine change, never a pass.
+    Round 15: until then every arm that could not run made the row NOREF, and ksu can never run, so the case could not PASS on any machine."""
     if ctx.win or os.name == "nt":
         r.skip("sudo/su/ksu do not exist in a Windows pane")
-    ran, not_run = [], []
-    t = PB.sudo_target()
-    if t["ok"]:
-        d, cleanup = PB.shared_dir(ctx.W, t["uid"], "sudo")
+    ran, passed, not_run = [], [], []
+
+    def arm(name, user, cmd, n, uid):
+        d, cleanup = PB.shared_dir(ctx.W, uid, name)
+        tag, before = "%s:%s" % (name, user), len(r.fails)
         try:
-            ran.append("sudo:%s" % t["user"])
-            nested_root_lines(ctx, r, "sudo", sudo_shell_command(t), ctx.count(8), t["uid"], d)
+            ran.append(tag)
+            # the inner `id -u` is the proof the boundary was crossed: an arm whose shell never started has not passed, whatever else matched
+            if nested_root_lines(ctx, r, name, cmd, n, uid, d) and len(r.fails) == before:
+                passed.append(tag)
         finally:
             cleanup()
+    t = PB.sudo_target()
+    if t["ok"]:
+        arm("sudo", t["user"], sudo_shell_command(t), ctx.count(8), t["uid"])
     else:
         not_run.append("sudo: %s" % t["why"])
     import pwd
     plan = su_plan(t, os.geteuid(), os.environ, bool(shutil.which("su") and shutil.which("id")), sys.platform, lambda u: (pwd.getpwnam(u).pw_uid,))
     if plan["run"]:
-        d, cleanup = PB.shared_dir(ctx.W, plan["uid"], "su")
-        try:
-            ran.append("su:%s" % plan["user"])
-            nested_root_lines(ctx, r, "su", plan["cmd"], ctx.count(6), plan["uid"], d)
-        finally:
-            cleanup()
+        arm("su", plan["user"], plan["cmd"], ctx.count(6), plan["uid"])
     else:
         not_run.append("su: %s" % plan["why"])
     if shutil.which("ksu") and subprocess.run(["klist", "-s"], capture_output=True).returncode == 0:
@@ -429,12 +445,14 @@ def c_sudo_su(ctx, r):
     else:
         not_run.append("ksu: not installed or no Kerberos ticket (package krb5-user + kinit); the realm is the owner's site, never the harness's")
     r.metric("boundaries_run", ran)
+    r.metric("boundaries_passed", passed)
     r.metric("boundaries_not_run", [x.split(":", 1)[0] for x in not_run])
     for x in not_run:
         r.note("NOT RUN: " + x)
-    if not ran:
-        r.skip("no privilege boundary could run here: passwordless sudo and root-for-su are both absent (%s). %s; the su half also needs the runner to be root or "
-               "passwordless ROOT sudo, the ksu half a Kerberos realm. Has never run on any machine" % ("; ".join(not_run[:2]), PB.sudo_needs()))
+    verdict, text = priv_arms_verdict(ran, passed, not_run, PB.sudo_needs())
+    if verdict == "skip":
+        r.skip(text)
+    r.check(verdict != "fail", text)
 
 
 # ------------------------------------------------------------------ #1535 ssh drop + reconnect
