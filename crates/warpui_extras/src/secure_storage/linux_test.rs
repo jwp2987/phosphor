@@ -1011,6 +1011,7 @@ fn a_malformed_keyring_secret_is_not_replaced() {
 /// that reads.
 #[test]
 fn an_unreadable_fallback_is_recorded_for_the_notice_and_a_missing_one_is_not() {
+    use super::super::SecureStorage as _;
     let _guard = super::availability::test_guard();
     super::availability::reset_for_test();
     super::super::unreadable::reset_for_test();
@@ -1063,6 +1064,7 @@ fn an_unreadable_fallback_is_recorded_for_the_notice_and_a_missing_one_is_not() 
 /// is recorded like one that does not decrypt. Skipped for root, which opens anything.
 #[test]
 fn a_fallback_file_that_cannot_be_opened_is_not_reported_as_missing() {
+    use super::super::SecureStorage as _;
     use std::os::unix::fs::PermissionsExt as _;
     let _guard = super::availability::test_guard();
     super::availability::reset_for_test();
