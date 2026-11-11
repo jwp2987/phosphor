@@ -104,13 +104,15 @@ pub struct RenderedRequest {
 }
 
 // ---------------------------------------------------------------------------
-// The ssh gate shared by nld_predict (#1982), prompt_suggestions and next_command (#2094)
+// The ssh gate shared by nld_predict (#1982), prompt_suggestions and next_command (#2094),
+// and the passive code diff (#2097, `blocklist/passive_suggestions/legacy.rs`)
 // ---------------------------------------------------------------------------
 
 /// Whether an active-AI request may be built for a session (#1982, #2094). Each of these
 /// requests carries what the user typed or ran (the input buffer; a finished command and a
-/// summary of its output; recent commands) to the model provider without the user asking, so in
-/// an ssh session it is built only when the user allowed that for the feature.
+/// summary of its output; recent commands; for a passive code diff, #2097, the files a prompt
+/// suggestion named) to the model provider without the user asking, so in an ssh session it is
+/// built only when the user allowed that for the feature.
 /// `in_ssh_session` is `None` when the session is not known; that is treated like an ssh
 /// session, so not knowing never sends.
 pub(crate) fn allowed_for_session(in_ssh_session: Option<bool>, allowed_in_ssh: bool) -> bool {

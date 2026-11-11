@@ -2512,6 +2512,18 @@ upstream's behavior is actually a defect rather than a preference.
   and are unchanged.
   <!-- markers: keep:resolve_for_session keep:IntelligentAutosuggestionsInSshEnabled keep:PromptSuggestionsInSshEnabled -->
 
+- **No passive code diff request from an ssh session unless the user turns it on** (`#2097`,
+  2026-11-11, owner decision, `app/src/ai/blocklist/passive_suggestions/legacy.rs`
+  `maybe_generate_passive_code_diff`, `app/src/ai/agent_providers/active_ai/mod.rs`
+  `allowed_for_session`, `app/src/settings/ai.rs`). **Upstream:** a prompt suggestion that names
+  files starts a code diff request (the files' contents and the finished block) in any session
+  that is not a warpified remote one, a plain bootstrapped `ssh` included. **We do:** in an ssh
+  session (and when the session is not known) the files are not read and the request is not
+  built unless `agents.warp_agent.active_ai.code_suggestions_in_ssh_enabled` is true (default
+  false; a switch under Suggested Code Banners on the AI settings page). The prompt suggestion
+  itself still shows (as it does when the diff fails for any other reason).
+  <!-- markers: keep:CodeSuggestionsInSshEnabled keep:is_code_suggestions_in_ssh_enabled -->
+
 - **A completion result that changes nothing does not re-render the input** (`#1995`,
   2026-11-11, owner decision, `app/src/terminal/input.rs`
   `handle_completion_suggestions_results`, `completion_result_needs_render`). **Upstream:** the
@@ -3373,6 +3385,12 @@ run).
   button and every other save are the same action, and the pin has no banner at all for a file changed by another
   program (#2087), so the save overwrites. Here every save through the editor asks first while the banner shows; only
   the banner's own Overwrite button writes at once. Off: `PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0`.
+- **Enter on that question is Cancel, never Overwrite** (owner decision 2026-11-11, `docs/design/r10-r16-smallapp.md`
+  section 1). The in-app dialog gives Enter to its first button everywhere else; this question comes up with Cancel
+  selected (`AlertDialogWithCallbacks::with_enter_button`, `OverwriteAnswer::enter_button`), so Enter and Escape both
+  write nothing and drop nothing. Overwrite is a click, or Tab then Enter. Off:
+  `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0`.
+  <!-- markers: keep:with_enter_button keep:enter_is_cancel_never_overwrite -->
 
 A re-pin diff that folds `unsaved_code_changes` back under the setting, or points the banner button back at
 `SaveFile`, is drift to reject. Tests: `app/src/quit_warning/mod_tests.rs`, `app/src/workspace/native_modal_tests.rs`,

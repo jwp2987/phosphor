@@ -137,7 +137,8 @@ use super::find_references_view::{FindReferencesView, FindReferencesViewEvent};
 use super::language_server_extension::ProcessedDiagnostic;
 use super::lsp_telemetry::LspTelemetryEvent;
 use super::save_conflict::{
-    OverwriteAnswer, save_ask_trace, save_conflict_ask_enabled, save_must_ask,
+    OverwriteAnswer, overwrite_enter_cancels_enabled, save_ask_trace, save_conflict_ask_enabled,
+    save_must_ask,
 };
 use crate::code::editor::model::HoverableLink;
 use crate::settings::CodeSettings;
@@ -1853,6 +1854,13 @@ impl LocalCodeEditorView {
             |_: &mut AppContext| {},
         )
         .without_disable();
+        // Owner decision 2026-11-11: Enter is Cancel, never Overwrite. The question comes up with
+        // Cancel selected; Overwrite is a click, or Tab then Enter. (The kill switch gives `None`:
+        // no selection, Enter is the first button as before.)
+        let dialog = match OverwriteAnswer::enter_button(overwrite_enter_cancels_enabled()) {
+            Some(index) => dialog.with_enter_button(index),
+            None => dialog,
+        };
 
         // The in-app dialog on every platform (not the macOS system alert the close question
         // uses): it does not block the app while it is up. A workspace that is being updated

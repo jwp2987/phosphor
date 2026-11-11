@@ -5,6 +5,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use super::static_prompt_suggestions::static_suggested_query;
 use crate::ai::agent::PassiveSuggestionTrigger;
 use crate::ai::agent::{AIAgentExchangeId, CancellationReason};
+use crate::ai::agent_providers::active_ai::{allowed_for_session, is_ssh_session};
 use crate::ai::blocklist::controller::{
     BlocklistAIController, BlocklistAIControllerEvent, response_stream::ResponseStreamId,
 };
@@ -381,6 +382,27 @@ impl PassiveSuggestionsModel {
         let Some(files) = query.coding_query_context.clone() else {
             return;
         };
+
+        // #2097: the request below carries the contents of those files and the finished block
+        // to the model provider without the user asking. In an ssh session (or one that is not
+        // known) it is built only when the user turned `code_suggestions_in_ssh_enabled` on.
+        // The files are not read either. Same rule as #2094 and #1982.
+        let in_ssh_session = self
+            .active_session
+            .as_ref(ctx)
+            .session(ctx)
+            .map(|session| is_ssh_session(&session));
+        let allowed_in_ssh = AISettings::as_ref(ctx).is_code_suggestions_in_ssh_enabled();
+        if !allowed_for_session(in_ssh_session, allowed_in_ssh) {
+            log::debug!(
+                "[active_ai] passive_code_diff not requested: ssh session (or unknown) and \
+                 code_suggestions_in_ssh_enabled is off"
+            );
+            ctx.emit(PassiveSuggestionsEvent::PassiveCodeDiffFailed {
+                reason: PromptSuggestionFallbackReason::SSHRemoteSession,
+            });
+            return;
+        }
 
         let current_working_directory = self
             .active_session

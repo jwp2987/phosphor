@@ -16,7 +16,8 @@
 #                           general.show_warning_before_quitting says (#2092); Escape keeps the edits, Enter closes (not on macOS: the question
 #                           is a native dialog the harness cannot answer). A file changed on disk: a clean buffer is reloaded; a buffer with
 #                           unsaved edits is flagged (#2087) and the disk is left alone; a save while flagged ASKS (#2092): nothing is written
-#                           until the answer, Escape (Cancel) keeps disk and edits, Enter (Overwrite) writes the editor's text.
+#                           until the answer, Escape (Cancel) keeps disk and edits, Enter ALONE is Cancel too (owner decision 2026-11-11:
+#                           disk untouched), Tab then Enter (Overwrite) writes the editor's text.
 # Same rules as cases.py: the EXACT bytes, typing at 10-25 ms per key, a case that cannot run SKIPS with the capability that is missing ("NEEDS: ..."),
 # and a verdict that rests on evidence that is absent is NOREF, never a pass.
 import os, re, subprocess, sys, time
@@ -363,6 +364,31 @@ def save_ask_verdict(events, disk_untouched):
     return "nothing", "the save neither asked (no editor_save_ask line) nor wrote the file: the save key did not reach the editor, or this build logs no editor_save_ask line"
 
 
+SAVE_ASK_ANSWERS = ("overwrite", "reload", "cancel")
+
+
+def enter_alone_verdict(events, disk_untouched):
+    """pure: what Enter ALONE did on the overwrite question, from the trace since the key and whether the disk still holds the other program's
+    text a moment later -> ('cancelled' | 'overwrote' | 'reloaded' | 'no_answer', text). Only 'cancelled' is the decided behaviour (owner decision
+    2026-11-11: Enter is Cancel, never Overwrite). A changed disk is 'overwrote' whatever the trace says."""
+    if not disk_untouched or "overwrite" in events:
+        return "overwrote", ("Enter alone on the overwrite question wrote the file (answers since the key: %r). Owner decision 2026-11-11: Enter is Cancel, never "
+                             "Overwrite (PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0, or a build before the change)" % (events,))
+    if "reload" in events:
+        return "reloaded", "Enter alone on the overwrite question answered Reload: the unsaved edits were dropped (expected Cancel)"
+    if "cancel" in events:
+        return "cancelled", "Enter alone cancelled and wrote nothing"
+    return "no_answer", "Enter alone on the overwrite question gave no `editor_save_ask outcome=` answer within the wait (answers seen: %r): the key did not reach the question" % (events,)
+
+
+def press_overwrite(ctx):
+    """answer the overwrite question with Overwrite by keyboard: the question comes up with Cancel selected (Enter alone cancels), one Tab moves
+    the selection on to Overwrite, Enter presses it. On a build before that change (or with PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0) Tab does
+    nothing in the question and Enter is Overwrite, so the same two keys overwrite there too."""
+    ctx.be.key("Tab")
+    ctx.be.key("Return")
+
+
 def clear_field(ctx, n):
     """empty the single-line field that has the keyboard, whatever it holds and whether or not it is selected: End, then more BackSpaces than it
     can have characters (a BackSpace in an empty field does nothing)"""
@@ -425,9 +451,10 @@ def close_editor(ctx, r, tag, clean):
             if not clean:
                 off = ctx.log_size()
                 ctx.be.key(k["save"])
-                # #2092: a save on the conflict banner asks (the in-app dialog, on macOS too). The file is the case's own: Enter = Overwrite.
+                # #2092: a save on the conflict banner asks (the in-app dialog, on macOS too). The file is the case's own: Overwrite (Tab, Enter;
+                # Enter alone is Cancel).
                 if ctx.until(lambda: "asked" in save_ask_events(ctx.log_since(off)), 1.5):
-                    ctx.be.key("Return")
+                    press_overwrite(ctx)
                 time.sleep(0.8)
             C.editor_close(ctx, r)
             time.sleep(1.0)
@@ -555,6 +582,11 @@ def _wait_save_ask(ctx, off, want, secs):
     return save_ask_events(ctx.log_since(off))
 
 
+def _wait_save_answer(ctx, off, secs):
+    ctx.until(lambda: set(SAVE_ASK_ANSWERS) & set(save_ask_events(ctx.log_since(off))), secs, step=0.2)
+    return save_ask_events(ctx.log_since(off))
+
+
 def _arm_external(ctx, r, d):
     k = ekeys(ctx)
     path = os.path.join(d, "external_%s.txt" % ctx.mode)
@@ -634,7 +666,8 @@ def _arm_external(ctx, r, d):
                        % ("answered cancel" if "cancel" in ev else "no `editor_save_ask outcome=cancel` line within 4 s (answers seen: %r)" % (ev,), R.disk(path)[:70], ext2[:70])):
             clean = R.disk(path) == want
             return
-        # a second save asks again (the edits are still there, the keyboard is back in the editor); Enter = Overwrite
+        # a second save asks again (the edits are still there, the keyboard is back in the editor). Enter ALONE = Cancel (owner decision
+        # 2026-11-11: never Overwrite): the disk keeps the other program's text
         off = ctx.log_size()
         ctx.be.guard()
         ctx.be.key(k["save"])
@@ -644,7 +677,29 @@ def _arm_external(ctx, r, d):
                        "back to the editor, or the banner state was lost" % (ev, "untouched" if R.disk(path) == ext2 else "CHANGED: %r" % R.disk(path)[:70])):
             clean, ask_up = R.disk(path) == want, R.disk(path) == ext2
             return
+        off = ctx.log_size()
         ctx.be.key("Return")
+        ev = _wait_save_answer(ctx, off, 4)
+        ask_up = not (set(SAVE_ASK_ANSWERS) & set(ev))
+        time.sleep(1.0)                                        # an overwrite has landed by now
+        after_enter = R.disk(path)
+        state, why = enter_alone_verdict(ev, after_enter == ext2)
+        r.metric("save_ask_enter_alone", state)
+        ctx.shot("edd_save_ask_enter")
+        if not r.check(state == "cancelled", "%s. Disk: %r, expected the other program's text untouched %r" % (why, after_enter[:70], ext2[:70])):
+            clean = after_enter == want
+            return
+        # a third save asks again; Overwrite is chosen explicitly: Tab (from Cancel the selection wraps to Overwrite), then Enter
+        off = ctx.log_size()
+        ctx.be.guard()
+        ctx.be.key(k["save"])
+        ask_up = True
+        ev = _wait_save_ask(ctx, off, "asked", 5)
+        if not r.check("asked" in ev and R.disk(path) == ext2, "after Enter (Cancel) a third save did not ask again (lines since the key: %r; disk %s): the keyboard did "
+                       "not go back to the editor, or the banner state was lost" % (ev, "untouched" if R.disk(path) == ext2 else "CHANGED: %r" % R.disk(path)[:70])):
+            clean, ask_up = R.disk(path) == want, R.disk(path) == ext2
+            return
+        press_overwrite(ctx)
         ctx.until(lambda: R.disk(path) != ext2, 6)
         time.sleep(0.3)
         ev = save_ask_events(ctx.log_since(off))
@@ -652,7 +707,8 @@ def _arm_external(ctx, r, d):
         end = R.disk(path)
         clean = end == want
         r.metric("save_ask_overwrite", "wrote" if end == want else ("kept" if end == ext2 else "other"))
-        r.check("overwrite" in ev and end == want, "Enter (Overwrite) on the overwrite question: answers %r; disk %r, expected the editor's text %r" % (ev, end[:70], want[:70]))
+        r.check("overwrite" in ev and end == want, "Tab then Enter (Overwrite) on the overwrite question: answers %r; disk %r, expected the editor's text %r%s"
+                % (ev, end[:70], want[:70], " (answered cancel: Tab did not move the selection to Overwrite)" if "cancel" in ev else ""))
     finally:
         if ask_up:
             try:
@@ -672,8 +728,9 @@ def c_editor_daily(ctx, r):
     general.show_warning_before_quitting says (#2092). Not played on macOS (native dialog). (3) A file changed on disk: with no unsaved edits the
     editor reloads it (an edit typed and saved afterwards lands on the NEW content); with unsaved edits the change is flagged (`editor_disk
     outcome=conflict ... flagged=true`, #2087) and the app does not write the file on its own; a save in that state asks (`editor_save_ask
-    outcome=asked`, #2092) and writes nothing, Escape cancels (disk untouched), a second save asks again and Enter overwrites with the editor's
-    text. Nothing may reach the shell."""
+    outcome=asked`, #2092) and writes nothing, Escape cancels (disk untouched), a second save asks again and Enter ALONE cancels too (owner
+    decision 2026-11-11: disk untouched), a third save asks again and Tab then Enter overwrites with the editor's text. Nothing may reach the
+    shell."""
     if ctx.app is None or not hasattr(ctx.app, "start"):
         r.skip("needs the app (not the sim backend)")
     mac = ctx.be.name == "mac"

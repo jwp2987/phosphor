@@ -1646,3 +1646,15 @@ fn next_command_and_prompt_suggestions_in_ssh_default_off() {
     );
     assert!(*PromptSuggestionsInSshEnabled::new(Some(true)).value());
 }
+
+/// #2097 (owner decision 2026-11-11): passive code diffs follow the #2094 rule. The request
+/// carries file contents and the finished block to the model provider, so in ssh sessions it is
+/// off unless the user turns it on. Written without a compiler; run on the build box.
+#[test]
+fn passive_code_diffs_in_ssh_default_off() {
+    assert!(
+        !*CodeSuggestionsInSshEnabled::new(None).value(),
+        "an unset code_suggestions_in_ssh_enabled is false"
+    );
+    assert!(*CodeSuggestionsInSshEnabled::new(Some(true)).value());
+}

@@ -43,3 +43,32 @@ fn every_active_ai_request_shares_the_ssh_rule() {
         );
     }
 }
+
+/// #2097: a passive code diff (file contents and the finished block, started by a prompt
+/// suggestion, nobody asked) is gated by the same decision with its own setting,
+/// `code_suggestions_in_ssh_enabled`. `maybe_generate_passive_code_diff` passes
+/// `active_session.session(ctx).map(is_ssh_session)`: a pane with no session is `None`.
+#[test]
+fn a_passive_code_diff_is_not_requested_in_an_ssh_session_unless_allowed() {
+    let code_suggestions_in_ssh_enabled = false;
+    assert!(allowed_for_session(
+        Some(false),
+        code_suggestions_in_ssh_enabled
+    ));
+    assert!(!allowed_for_session(
+        Some(true),
+        code_suggestions_in_ssh_enabled
+    ));
+    assert!(
+        !allowed_for_session(None, code_suggestions_in_ssh_enabled),
+        "not knowing the session must not read and send files"
+    );
+
+    let code_suggestions_in_ssh_enabled = true;
+    for session in [Some(false), Some(true), None] {
+        assert!(allowed_for_session(
+            session,
+            code_suggestions_in_ssh_enabled
+        ));
+    }
+}

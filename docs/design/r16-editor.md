@@ -45,6 +45,8 @@ code-review save and an auto-accepted agent diff all wrote the buffer over the o
 write: it schedules the question and returns `ImmediateSaveError::AwaitingOverwriteAnswer` (not a failure; no toast, no
 error log). The question is the in-app dialog with three buttons in this order: Overwrite, Reload, Cancel. Enter is the
 first button, Escape the last, so Escape always loses nothing. No "don't ask again".
+(Changed the same day by a second owner decision: Enter is Cancel, never Overwrite; Overwrite is a click or Tab then
+Enter. See `docs/design/r10-r16-smallapp.md` section 1.)
 
 - Overwrite: the save that was asked for (format-on-save included).
 - Reload: the banner's "Discard this version" (same function, local and remote).

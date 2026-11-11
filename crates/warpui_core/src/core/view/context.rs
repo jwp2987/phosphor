@@ -752,6 +752,7 @@ impl<'a, T: Entity> ViewContext<'a, T> {
     ) {
         let weak_handle = self.handle();
         let can_disable = view_alert.can_disable;
+        let enter_button = view_alert.enter_button;
         let mut app_alert = AlertDialogWithCallbacks::for_app(
             view_alert.message_text,
             view_alert.info_text,
@@ -778,6 +779,7 @@ impl<'a, T: Entity> ViewContext<'a, T> {
             },
         );
         app_alert.can_disable = can_disable;
+        app_alert.enter_button = enter_button;
         self.app.show_native_platform_modal(app_alert);
     }
 

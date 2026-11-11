@@ -289,6 +289,7 @@ you configure yourself.
 | `agents.warp_agent.active_ai.agent_mode_query_suggestions_enabled` | boolean | `true` | Prompt suggestions in agent mode. (The key name is legacy — the feature was renamed, the key was not, so existing files keep working.) |
 | `agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled` | boolean | `false` | Whether the model is also asked for a prompt suggestion while the pane is in an ssh session (or one the app cannot identify). Each request sends the finished command and a summary of its output to the model provider, so in ssh sessions it is off unless turned on (#2094). Not synced. |
 | `agents.warp_agent.active_ai.code_suggestions_enabled` | boolean | `true` | AI code suggestions. |
+| `agents.warp_agent.active_ai.code_suggestions_in_ssh_enabled` | boolean | `false` | Whether the model is also asked for a suggested code diff while the pane is in an ssh session (or one the app cannot identify). Each request sends the contents of the files a prompt suggestion named, and the finished command with its output, to the model provider, so in ssh sessions it is off unless turned on (#2097). Not synced. |
 | `agents.warp_agent.active_ai.natural_language_autosuggestions_enabled` | boolean | `true` | Ghosted-text autosuggestions while typing an AI prompt. Schema-gated on the `PredictAMQueries` flag. |
 | `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` | boolean | `false` | Whether those autosuggestions are also requested while the pane is in an ssh session. Each request sends the text of the input to the model provider at a typing pause, so in ssh sessions it is off unless turned on (#1982). Not synced. Same flag. |
 | `agents.warp_agent.active_ai.git_operations_autogen_enabled` | boolean | `true` | Whether commit messages and PR titles/bodies are auto-generated in the code-review dialogs. |
@@ -563,8 +564,11 @@ Two questions have no setting that switches them off:
 - **Saving over a file that changed on disk.** When another program changed a file while the editor had unsaved
   edits, a banner says so. A save in that state (`ctrl-S` / `cmd-S`, or "Save" on a close question) asks:
   **Overwrite** writes the editor's text over what is on disk, **Reload** drops the unsaved edits and loads what is on
-  disk, **Cancel** does neither. Enter is Overwrite, Escape is Cancel. The banner's own **Overwrite** button writes at
-  once. (`PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0` puts back the save that overwrote without asking.)
+  disk, **Cancel** does neither. The question comes up with **Cancel** selected: Enter is Cancel and so is Escape, so
+  a key typed into a question that just appeared loses nothing. To overwrite, click **Overwrite** or press Tab (the
+  selection moves from Cancel to Overwrite) and then Enter; Shift-Tab moves the other way, to Reload. The banner's own
+  **Overwrite** button writes at once. (`PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0` puts back the save that overwrote
+  without asking; `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0` puts Enter back on Overwrite.)
 
 ### Internal state (no TOML key)
 

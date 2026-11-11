@@ -2039,6 +2039,20 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled",
         description: "Controls whether prompt suggestions are also requested from the model in ssh sessions; false (default) sends nothing to the model for them from an ssh session.",
     }
+    // #2097 (owner decision 2026-11-11, the #2094 rule for one more feature): a passive code
+    // diff request carries the files a prompt suggestion named, and the finished block, to the
+    // model provider without the user asking. In an ssh session that is off unless the user
+    // turns this on (default false). Not synced. Read through
+    // `is_code_suggestions_in_ssh_enabled()`.
+    code_suggestions_in_ssh_enabled_internal: CodeSuggestionsInSshEnabled {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.warp_agent.active_ai.code_suggestions_in_ssh_enabled",
+        description: "Controls whether suggested code diffs are also requested from the model in ssh sessions; false (default) sends nothing to the model for them from an ssh session.",
+    }
     // This field should not be referenced directly to lookup git operations AI autogen
     // enablement -- use the `is_git_operations_autogen_enabled()` getter.
     git_operations_autogen_enabled_internal: GitOperationsAutogenEnabled {
@@ -3067,6 +3081,13 @@ impl AISettings {
     /// ssh session (#2094). Only meaningful when [`Self::is_prompt_suggestions_enabled`] is true.
     pub fn is_prompt_suggestions_in_ssh_enabled(&self) -> bool {
         *self.prompt_suggestions_in_ssh_enabled_internal
+    }
+
+    /// Whether a passive code diff (a suggested code banner) may also be requested from the
+    /// model while the pane is in an ssh session (#2097). Only meaningful when
+    /// [`Self::is_code_suggestions_enabled`] is true.
+    pub fn is_code_suggestions_in_ssh_enabled(&self) -> bool {
+        *self.code_suggestions_in_ssh_enabled_internal
     }
 
     pub fn is_voice_input_enabled(&self, app: &warpui::AppContext) -> bool {
