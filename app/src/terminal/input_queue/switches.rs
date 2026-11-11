@@ -1,4 +1,5 @@
-//! Kill switches of the round 14 queue reconciliation (`docs/design/r14-queueres.md`).
+//! Kill switches of the round 14 queue reconciliation (`docs/design/r14-queueres.md`) and of the
+//! owner decisions that followed it in round 17 (`docs/design/r10-r17-queue3.md`).
 //!
 //! Each fix of that round changes what happens to a key on a path that was wrong before; each can
 //! be turned off alone, by an environment variable read once per process. Unset (or anything but
@@ -9,6 +10,9 @@
 //! | `PHOSPHOR_QUEUE_KEEP_SYNCED_ORIGIN` | #1900: synced input queued behind an Enter's gate, held for an ssh connect, or re-offered by a follow-up, is an ordinary keyboard entry again (it can take over an agent-run command at delivery) |
 //! | `PHOSPHOR_SSH_DROP_ACCOUNTS_ENTRIES` | #1998: an Enter, pty bytes, a control key, a sequence or an editor key behind a dropped ssh hold is skipped without a log line on the hand-back and local-shell paths |
 //! | `PHOSPHOR_YOUNG_HOLD_READER_LOOK` | #2047: a held young Enter is never given to a reader ahead of the line editor; its 10 s net writes it as the shell's line |
+//! | `PHOSPHOR_BARE_ENTER_HOLDS_LINES` | #1999: lines typed behind a bare deferred Enter held for an unready shell are written to the pty at once, and the bare Enter later |
+//! | `PHOSPHOR_KEEP_DEFERRED_ENTER_KEYS_WITH_LINE` | #2000: a deferred Enter kept unrun on an event path releases the keys typed behind it (complete lines go to the pty while its own line stays in the input) |
+//! | `PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF` | #1991: a subshell setup line written to a line editor is judged by the echo filter again (the R9 flush on "nothing echoed", R7 blind, the filter armed) |
 
 use std::sync::OnceLock;
 
@@ -18,6 +22,14 @@ pub const KEEP_SYNCED_ORIGIN_ENV: &str = "PHOSPHOR_QUEUE_KEEP_SYNCED_ORIGIN";
 pub const SSH_DROP_ACCOUNTS_ENTRIES_ENV: &str = "PHOSPHOR_SSH_DROP_ACCOUNTS_ENTRIES";
 /// #2047.
 pub const YOUNG_HOLD_READER_LOOK_ENV: &str = "PHOSPHOR_YOUNG_HOLD_READER_LOOK";
+
+/// #1999.
+pub const BARE_ENTER_HOLDS_LINES_ENV: &str = "PHOSPHOR_BARE_ENTER_HOLDS_LINES";
+/// #2000.
+pub const KEEP_DEFERRED_ENTER_KEYS_WITH_LINE_ENV: &str =
+    "PHOSPHOR_KEEP_DEFERRED_ENTER_KEYS_WITH_LINE";
+/// #1991.
+pub const SUBSHELL_LINE_EDITOR_PROOF_ENV: &str = "PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF";
 
 /// Whether a kill switch with this value leaves its fix on: everything but `0`, `off`, `false`
 /// and `no` (any case, surrounding blanks ignored) does, an unset variable included.
@@ -34,7 +46,7 @@ fn read_switch(name: &'static str, cell: &'static OnceLock<bool>) -> bool {
     *cell.get_or_init(|| {
         let on = switch_is_on(std::env::var(name).ok().as_deref());
         if !on {
-            log::info!("{name} is off: the round 14 queue fix it guards is disabled");
+            log::info!("{name} is off: the input queue fix it guards is disabled");
         }
         on
     })
@@ -56,6 +68,26 @@ pub fn ssh_drop_accounts_entries() -> bool {
 pub fn young_hold_reader_look() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     read_switch(YOUNG_HOLD_READER_LOOK_ENV, &ON)
+}
+
+/// #1999: an Enter held for an unready shell holds the lines typed behind it whatever its own
+/// line is, a bare Enter included.
+pub fn bare_enter_holds_lines() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    read_switch(BARE_ENTER_HOLDS_LINES_ENV, &ON)
+}
+
+/// #2000: a deferred Enter kept unrun on an event path keeps the keys typed behind it with its
+/// line.
+pub fn keep_deferred_enter_keys_with_line() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    read_switch(KEEP_DEFERRED_ENTER_KEYS_WITH_LINE_ENV, &ON)
+}
+
+/// #1991: a subshell setup line written to a line editor is judged without the echo filter.
+pub fn subshell_line_editor_proof() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    read_switch(SUBSHELL_LINE_EDITOR_PROOF_ENV, &ON)
 }
 
 #[cfg(test)]

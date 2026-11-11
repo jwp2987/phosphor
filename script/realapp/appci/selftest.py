@@ -8597,6 +8597,44 @@ def missing_required(required, passed):
     return [n for n in required if n not in passed]
 
 
+@check
+def r17_subshell_line_editor_proof_verdict_1991():
+    """#1991: the verdict of subshell_line_editor_proof with the log each outcome produces: a healthy line-editor write passes; a build
+    without the field, a write that was not a line-editor write, a look judged by the echo filter, an unsupported verdict, a flush and a
+    give-up each fail with their own reason. The case is registered in PROVING, declared, and classified for Windows."""
+    import cases_subshell_ready as sr
+    import case_settings as CS
+    write = "t hop=subshell_setup_ready_write trigger=banner shell=Some(Bash) relay=false line_editor=1 bytes_passed=0 age_ms=3"
+    judged = ("t hop=subshell_written_judged source=output verdict=Keep kind=LineReader tail=None echo_ended=false fresh_prompts=0 "
+              "progress=true queue_empty=Some(true) relay=false line_editor=1 proof=grid")
+    ok, why = sr.line_editor_proof_verdict("\n".join([write, judged, judged]))
+    assert ok and "2 look(s) judged by the grid" in why, why
+    assert sr.line_editor_proof_verdict(write)[0], "a setup that finished before any look still passes on its write"
+    bad = {
+        "no setup was written": judged,
+        "older than #1991": write.replace(" line_editor=1", ""),
+        "not written as a line-editor write": write.replace("line_editor=1", "line_editor=0"),
+        "judged by the echo filter": write + "\n" + judged.replace("proof=grid", "proof=echo"),
+        "taken for an unsupported shell": write + "\n" + judged.replace("verdict=Keep", "verdict=Unsupported"),
+        "an unsupported shell": write + "\n" + judged.replace("verdict=Keep", "verdict=UnsupportedSuspect"),
+        "flushed during a healthy setup": write + "\nt hop=subshell_setup_cancelled why=Question dest=Editor chunks=1 bytes=4 flush=true queue_empty=Some(false)",
+        "the tty input was flushed": write + "\nt hop=subshell_line_editor_flush why=Question queue_bytes=Some(120) write_bytes=120 flush=1 flushed=1",
+        "given up by its net": write + "\nt hop=subshell_setup_given_up why=quiet_net gen=1 chunks=0 bytes=0",
+    }
+    for want, log in bad.items():
+        ok, why = sr.line_editor_proof_verdict(log)
+        assert not ok and want in why, (want, why)
+    # a line-editor flush that was considered and refused (the line was being read) is not a flush
+    refused = write + "\nt hop=subshell_line_editor_flush why=Question queue_bytes=Some(60) write_bytes=120 flush=0 flushed=0"
+    assert sr.line_editor_proof_verdict(refused)[0]
+    assert "subshell_line_editor_proof" in cases.PROVING and "subshell_line_editor_proof" not in cases.SMOKE
+    assert CS.declared("subshell_line_editor_proof"), "the case declares its settings (docs/testing.md 3.1b)"
+    assert "subshell_line_editor_proof" in winmap.NOT_WINDOWS, "needs the tty probe: classified as not for a Windows pane, with the reason"
+    src = open(os.path.join(HERE, "..", "..", "..", "app", "src", "terminal", "view.rs")).read()
+    for field in ("line_editor={} proof={}", "subshell_line_editor_flush", "relay={relay} line_editor={}"):
+        assert field in src, "view.rs no longer logs %r: the case reads it" % field
+
+
 def main(argv=None):
     """`--require a,b`: besides running every check, fail unless the named ones ran and passed. The guards job names the two checks whose absence
     nothing else would notice (#2086, #2089 / #2090): a selftest_*.py file is registered by two lines at this file's tail, and a merge that drops

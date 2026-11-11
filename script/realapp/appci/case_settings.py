@@ -384,7 +384,7 @@ decl("remote_tab_enter_no_helper remote_tab_no_helper ssh_password_prompt", need
 decl("remote_session_legacy", needs=_merge(INPUT, SSH), sets=("ssh_extension_install",))
 decl("subshell_sh_probe subshell_ready_rc_questions subshell_ready_vim_typeahead subshell_ready_unsupported_tcsh subshell_ready_secret_after_prompt "
      "subshell_ready_relay_shape subshell_ready_exec_fish_rc subshell_ready_docker_t_without_i subshell_ready_zsh_newuser_install subshell_ready_rc_clear "
-     "subshell_ready_secret_after_probe subshell_sh_probe_empty_ps1", needs=_merge(INPUT, PROMPT), reads=("subshell_commands",),
+     "subshell_ready_secret_after_probe subshell_sh_probe_empty_ps1 subshell_line_editor_proof", needs=_merge(INPUT, PROMPT), reads=("subshell_commands",),
      note="the subshell banner needs the commands the harness adds to the seed's list (forced in every pass)")
 decl("routing_typo_head", needs=_merge(INPUT, dict(autodetect=True)))
 decl("routing_plain_installed_head", needs=_merge(INPUT, KEYS, dict(autodetect=True, nld_in_terminal=True)),

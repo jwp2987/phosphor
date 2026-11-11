@@ -85,6 +85,8 @@ PROVING = (
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
     # subshell setup review r8 (#1905 first line, #1935): the secret read right after the probe answered; a dash with an empty PS1
     "subshell_ready_secret_after_probe", "subshell_sh_probe_empty_ps1",
+    # #1991: a setup line written to a shell's line editor (bash readline, zsh zle) is judged by the grid and the tty's byte count, not the echo filter
+    "subshell_line_editor_proof",
     # owner decision 2026-11-09 (reversing #1661): a hold that gives up writes its keys to the pty; nothing typed after an Enter is dropped or bounced
     "giveup_keys_reach_shell",
     # #1979: frames and view re-renders caused by pty output (shown tab streaming, hidden tabs streaming), counted from the app's frame_cause log

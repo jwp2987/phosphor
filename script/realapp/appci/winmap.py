@@ -165,6 +165,7 @@ NOT_WINDOWS = {
     "subshell_ready_relay_shape": "sudo -s with use_pty does not exist on Windows (#1679 step 3); by design, no machine change makes it run here",
     "subshell_ready_secret_after_probe": "as subshell_ready_secret_after_prompt: a PROMPT_COMMAND read -s behind the sh probe needs the tty facts ConPTY does not have (#1905)",
     "subshell_sh_probe_empty_ps1": "dash does not exist in a Windows pane; the sh probe path is POSIX (#1935)",
+    "subshell_line_editor_proof": "the line-editor write is recorded from the tty probe (termios + /proc), which a ConPTY pane does not have (#1991)",
     "subshell_ready_exec_fish_rc": "fish exec'd from a bash rc on a real pty (#1679 step 3)",
     "subshell_ready_docker_t_without_i": "docker -t without -i against a Linux pty (#1679 step 3); by design, no machine change makes it run here",
     "subshell_ready_zsh_newuser_install": "zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)",

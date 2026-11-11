@@ -993,6 +993,10 @@ pub fn held_keys_destination(
 ///
 /// The echo stays a veto when it DID match (the shell is taking our line: cutting the rest would
 /// leave it half a line).
+///
+/// #1991: this is the rule for a write whose reader was NOT a line editor (an editor-less cooked
+/// shell, a relay, a pane with no tty probe). A write that went to a line editor is decided by
+/// [`cancel_flushes_unread_line_editor_write`] instead.
 pub fn cancel_flushes_unread_setup(
     why: WrittenCancel,
     queue_empty: Option<bool>,
@@ -1003,6 +1007,140 @@ pub fn cancel_flushes_unread_setup(
         && user_bytes_since_write == 0
         && queue_empty == Some(false)
         && !echo_started
+}
+
+/// #1991: a setup line written while the shell's LINE EDITOR read the tty (the look that decided
+/// the write said `SubshellTtyKind::LineReader`), and where the pane stood then. readline and zle
+/// take the ` ^K ^U` prefix as editing keys and draw the line their own way, so the cooked tty's
+/// echo the filter expects (`LINE_CLEAR_ECHO`) never arrives: for such a write the echo proves
+/// nothing, in either direction. What is left to judge it by is here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineEditorWrite {
+    /// The line as written, without the ` ^K ^U` prefix and its Enter. In memory only; never
+    /// logged.
+    pub line: String,
+    /// The cursor's row and column when the line went out: the editor draws the line from there.
+    pub row: usize,
+    pub col: usize,
+    /// The pane's width in columns at the write.
+    pub columns: usize,
+}
+
+impl LineEditorWrite {
+    /// The first row a prompt drawn AFTER the editor accepted the line can be on: the rows the
+    /// editor's own drawing of the line can reach from the cursor, then the line feed of
+    /// accept-line. The drawing reaches `(col + chars + 1) / columns` rows below the write's
+    /// row: a line that ends exactly at the margin has the cursor wrapped onto the next row, and
+    /// one column of slack covers an editor that draws a character past the line's end (the
+    /// cursor, zle's margin handling). `None` when the width is not known.
+    pub fn first_row_after_accept(&self) -> Option<usize> {
+        if self.columns == 0 {
+            return None;
+        }
+        let drawn_rows = (self.col + self.line.chars().count() + 1) / self.columns;
+        Some(self.row + drawn_rows + 1)
+    }
+}
+
+/// #1991: whether the cursor's row shows (a piece of) the setup line the editor is drawing: the
+/// row ends with a start of the line (the prompt's row: `$ ` and then the line), or the row's
+/// whole text occurs in the line (a row of a line that wrapped, however the editor wrapped it).
+/// An empty row shows nothing either way and is never proof, so it counts as showing it.
+///
+/// Accepted, on the safe side (no proof, the quiet net ends the attempt as before #1991): a
+/// prompt whose whole text occurs in the setup line (`$`), or that ends in the line's first
+/// character.
+pub fn row_shows_written_line(row: &str, line: &str) -> bool {
+    let line = line.trim();
+    let shown = row.trim();
+    if shown.is_empty() || line.is_empty() {
+        return true;
+    }
+    line.contains(shown)
+        || line
+            .char_indices()
+            .map(|(i, c)| &line[..i + c.len_utf8()])
+            .any(|start| shown.ends_with(start))
+}
+
+/// #1991, R7 for a write that went to a line editor: whether this look shows that the shell TOOK
+/// the line, i.e. the editor accepted it (its line feed) and a prompt was drawn after it. Read
+/// from the grid, never from the echo filter. All of:
+/// - a shell-shaped unterminated tail at the cursor;
+/// - the pane is as wide as at the write (a resize reflows the rows the rule counts);
+/// - the cursor's row is at or below [`LineEditorWrite::first_row_after_accept`]: the editor's
+///   own drawing of the line cannot have put the cursor there, only a line feed after it can;
+/// - the row does not continue the row above it (a soft wrap is one logical line, still the
+///   editor's);
+/// - the row does not show the written line ([`row_shows_written_line`]).
+///
+/// Two independent locks (the position and the text), because either alone has a hole: an editor
+/// that redraws the line lower than it started (a prompt that grew), and a prompt drawn where
+/// the line was (a `clear` in the line itself). A look that passes is what "our echo ended, then
+/// a fresh prompt" is for a cooked tty; [`judge_written`] decides the rest as before (a marker of
+/// this attempt is progress and wins; the local confirmation is still the empty queue).
+pub fn line_editor_took_the_line(
+    write: &LineEditorWrite,
+    columns_now: usize,
+    row: usize,
+    tail: Tail,
+    row_text: &str,
+    row_continues: bool,
+) -> bool {
+    tail == Tail::ShellPrompt
+        && columns_now == write.columns
+        && write
+            .first_row_after_accept()
+            .is_some_and(|first| row >= first)
+        && !row_continues
+        && !row_shows_written_line(row_text, &write.line)
+}
+
+/// #1991, R9 for a write that went to a line editor: whether a cancel flushes the slave input
+/// queue. The echo is no proof there (see [`LineEditorWrite`]), so "nothing echoed" no longer
+/// means "nothing read": under readline or zle it is true for the whole attempt, also while the
+/// editor is in the middle of taking a long line, and a flush then cut the rest of the line and
+/// left half a setup line in the editor's buffer.
+///
+/// The proof is the byte count: flush only when the queue holds EXACTLY the bytes of the latest
+/// setup write (`write_bytes`: the prefix, the line and its Enter). Bytes written at a raw tty
+/// that nobody read are all still there (and still count in full if the tty turned canonical
+/// since). Fewer: the editor is taking the line, or part of the write has not reached the tty:
+/// never cut it. More: something else waits there too (typed before the setup was armed): never
+/// discarded. No count (`None`: no probe on this platform, the ioctl failed): nothing is proven.
+///
+/// Unchanged from #1940: never for a Secret cancel, never once a user byte went to the pty since
+/// the write. This keeps the flush R9 exists for: setup bytes that sit wholly unread when the
+/// shell asks a question are kept out of its answer.
+pub fn cancel_flushes_unread_line_editor_write(
+    why: WrittenCancel,
+    queue_bytes: Option<usize>,
+    write_bytes: usize,
+    user_bytes_since_write: usize,
+) -> bool {
+    why != WrittenCancel::Secret
+        && user_bytes_since_write == 0
+        && write_bytes > 0
+        && queue_bytes == Some(write_bytes)
+}
+
+/// #1991: whether the facts of a cancel are such that the byte count is worth sampling at all
+/// (one more ioctl pair, under the model lock): everything in
+/// [`cancel_flushes_unread_line_editor_write`] but the count itself.
+pub fn line_editor_flush_needs_the_count(
+    why: WrittenCancel,
+    write_bytes: usize,
+    user_bytes_since_write: usize,
+) -> bool {
+    why != WrittenCancel::Secret && user_bytes_since_write == 0 && write_bytes > 0
+}
+
+/// #1991: whether a setup line is judged as a write to a line editor: the look that decided the
+/// write said the shell's line editor reads (`kind`), and the kill switch
+/// `PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF` is on (`proof_enabled`; off: every write is judged by
+/// the echo filter, as before).
+pub fn is_line_editor_write(kind: SubshellTtyKind, proof_enabled: bool) -> bool {
+    proof_enabled && kind == SubshellTtyKind::LineReader
 }
 
 #[cfg(test)]

@@ -1045,6 +1045,64 @@ pub fn slave_input_queue_empty(fd: RawFd) -> Option<bool> {
     }
 }
 
+/// #1991: how many bytes wait unread in the SLAVE's input queue, for the R9 flush of a setup line
+/// that was written to a line editor: only a queue that still holds exactly the bytes of that
+/// write is provably unread (`subshell_ready::cancel_flushes_unread_line_editor_write`). Sampled
+/// at a cancel only, never per look. `None` when the platform or the ioctl cannot tell.
+///
+/// The same sources as [`slave_input_queue_empty`]: on Linux a slave peer, a zero-timeout `poll`
+/// (it flushes the line discipline's pending work), `FIONREAD`, close; on macOS `FIONREAD` on the
+/// master (to be verified on the Mac box, as there). On a raw tty the count is every unread byte.
+/// On a canonical one `n_tty` counts complete lines only, and input that was pending when the tty
+/// turned canonical counts as one complete line, so bytes written raw and never read are still
+/// counted in full after the switch.
+pub fn slave_input_queue_bytes(fd: RawFd) -> Option<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        let peer = open_slave_peer(fd)?;
+        let answer = (|| {
+            let mut pollfd = libc::pollfd {
+                fd: peer,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one valid `pollfd`, a zero timeout; `poll` only writes `revents`.
+            let polled = unsafe { libc::poll(&mut pollfd, 1, 0) };
+            if polled < 0 || pollfd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                return None;
+            }
+            let mut pending: libc::c_int = 0;
+            // SAFETY: `FIONREAD` writes one `int` through the pointer, which points at `pending`.
+            let result =
+                unsafe { libc::ioctl(peer, libc::FIONREAD, &mut pending as *mut libc::c_int) };
+            if result == 0 {
+                usize::try_from(pending).ok()
+            } else {
+                None
+            }
+        })();
+        // SAFETY: `peer` is an fd this function opened and nothing else holds.
+        unsafe { libc::close(peer) };
+        answer
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut pending: libc::c_int = 0;
+        // SAFETY: `FIONREAD` writes one `int` through the pointer, which points at `pending`.
+        let result = unsafe { libc::ioctl(fd, libc::FIONREAD, &mut pending as *mut libc::c_int) };
+        if result == 0 {
+            usize::try_from(pending).ok()
+        } else {
+            None
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = fd;
+        None
+    }
+}
+
 /// Discards the slave's unread input (review R9): a setup cancelled while its bytes provably sit
 /// unread in the tty (`slave_input_queue_empty` said `Some(false)` and the shell echoed nothing of
 /// them) must not have them read later by whatever reads next -- a `Password:` prompt, the user's

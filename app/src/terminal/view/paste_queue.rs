@@ -322,6 +322,37 @@ pub(super) fn signal_bytes(kind: SignalKind) -> &'static [u8] {
 // give-up-net: leak net of a deferred Enter's gate: the deferral is given up and the held keys stay with the unrun line in the editor (a bare Enter and its keys go to the pty) (owner decision 2026-11-09)
 const HANDOFF_GATE_LEAK_NET: Duration = Duration::from_secs(60);
 
+/// #1997 / #2000: whether the keys of a `Deferred::TakeGateKeys` are first offered to an Enter
+/// gate of the input that still holds its line (`hand_deferred_gate_lines_to_waiting_enter`): a
+/// release and a keep-with-line both are (behind a waiting Enter is always the typed order); a
+/// timer's give-up never is (it places the keys itself).
+pub(super) fn gate_keys_may_follow_a_waiting_enter(then: GateKeysThen) -> bool {
+    !matches!(then, GateKeysThen::GiveUp(_))
+}
+
+/// #2000: whether the keys taken for a [`GateKeysThen::KeepWithLine`] stay with the unrun line
+/// in the editor. Not with an empty line (a bare Enter: nothing to keep them with, they are
+/// released as before the decision) and not while the tty reads a secret (#1957: they go to
+/// that reader, never into the editor as visible text).
+pub(super) fn kept_enter_keys_stay_with_line(line_empty: bool, tty_reads_secret: bool) -> bool {
+    !line_empty && !tty_reads_secret
+}
+
+/// #2000: what an event that ends a deferred Enter WITHOUT running it does with the keys held
+/// behind that Enter. `keep_with_line` is the kill switch
+/// `PHOSPHOR_KEEP_DEFERRED_ENTER_KEYS_WITH_LINE` (off: released as before, complete lines to the
+/// pty).
+pub(super) fn unrun_deferred_enter_keys_then(
+    keep_with_line: bool,
+    why: &'static str,
+) -> GateKeysThen {
+    if keep_with_line {
+        GateKeysThen::KeepWithLine(why)
+    } else {
+        GateKeysThen::Release
+    }
+}
+
 /// The spec of the `HandoffReport` gate named `id`.
 fn handoff_report_spec(id: u64) -> GateSpec {
     GateSpec::new(GateKind::HandoffReport, id).with_cap(Some(HANDOFF_GATE_LEAK_NET))
@@ -1742,7 +1773,7 @@ impl TerminalView {
             queue.defer(Deferred::TakeGateKeys { gate_id, then });
             return;
         }
-        if then == GateKeysThen::Release {
+        if gate_keys_may_follow_a_waiting_enter(then) {
             match self.hand_deferred_gate_lines_to_waiting_enter(gate_id, ctx) {
                 Some(true) => return,
                 Some(false) => {}
@@ -1772,8 +1803,13 @@ impl TerminalView {
     ///
     /// Only when an Enter is among the held keys. An unfinished line keeps its own path in
     /// [`Self::release_held_keys`] (queued behind the same gate as text, or written to a secret
-    /// read, #1957), and so does everything typed behind a BARE deferred Enter (an empty line
-    /// has no command to overtake, S2 / #826 N1).
+    /// read, #1957).
+    ///
+    /// #1999 (owner decision 2026-11-11): the same holds behind a BARE deferred Enter that is
+    /// now held for the unready shell. It has no command to overtake, but it is a key the shell
+    /// has not been given: written at once, the lines reached the shell before the Enter they
+    /// were typed after (S2 / #826 N1 did that). They wait behind its gate and follow it, at
+    /// readiness or at its net. `Input::enter_gate_holding_a_line` decides which gates qualify.
     ///
     /// `Some(true)`: handed over, the caller takes nothing. `Some(false)`: not this case, the
     /// caller takes the keys as before. `None`: the queue could not be locked (nothing changed).
@@ -1845,6 +1881,9 @@ impl TerminalView {
     /// typed order. A release to the pty turns them into one chunk per key entry (the key
     /// boundaries kept, ConPTY #1189). A give-up WRITES them to the pty in typed order (owner
     /// decision 2026-11-09, reversing #1661): nothing is discarded, nothing becomes editor text.
+    /// #2000: an event that kept the deferred Enter unrun keeps them with its line
+    /// ([`GateKeysThen::KeepWithLine`]); where they go is decided HERE, with the editor as it is
+    /// when the keys are taken (a deferred take runs later than the event that asked for it).
     fn finish_taken_gate_keys(
         &mut self,
         taken: Vec<InputEntry>,
@@ -1858,6 +1897,18 @@ impl TerminalView {
                 self.release_held_keys(held, in_mailbox_flush, ctx)
             }
             GateKeysThen::GiveUp(why) => self.give_up_deferred_enter_keys(taken, why, ctx),
+            GateKeysThen::KeepWithLine(why) => {
+                let line_empty = self.input.as_ref(ctx).buffer_text(ctx).is_empty();
+                // #1957, as in `release_held_keys`: while the tty reads a secret the held keys
+                // may be the start of a password; as editor text they would be shown.
+                let secret_read = !line_empty && self.model.lock().tty_reading_secret();
+                if kept_enter_keys_stay_with_line(line_empty, secret_read) {
+                    self.keep_unrun_deferred_enter_keys_with_line(taken, why, ctx);
+                } else {
+                    let held = self.pty_bytes_of_taken_entries(taken, ctx);
+                    self.release_held_keys(held, in_mailbox_flush, ctx)
+                }
+            }
         }
     }
 
@@ -3223,7 +3274,7 @@ impl TerminalView {
             Deferred::ApplyYoungHoldEnds => self.drain_young_hold_ends(ctx),
             Deferred::TakeGateKeys { gate_id, then } => {
                 // #1997: lines typed behind an Enter whose own line now waits stay behind it.
-                if then == GateKeysThen::Release {
+                if gate_keys_may_follow_a_waiting_enter(then) {
                     match self.hand_deferred_gate_lines_to_waiting_enter(gate_id, ctx) {
                         Some(true) => return Ok(()),
                         Some(false) => {}

@@ -1133,6 +1133,11 @@ fn on_shell_determined<S: TerminalSurface>(
                     super::terminal_attributes::flush_slave_input(fd)
                 })),
             );
+            // #1991: the byte count that says whether a setup line written to a line editor
+            // still sits wholly unread (the only state in which a cancel may flush it).
+            model.set_subshell_tty_input_bytes_probe(Arc::new(move || {
+                super::terminal_attributes::slave_input_queue_bytes(fd)
+            }));
             // #1937: the comm a shell's pid has when the shell reports it, so an `exec zsh` in
             // that shell (same pid, another comm) is not read as the parent at its prompt.
             model.set_process_comm_probe(Arc::new(super::terminal_attributes::process_comm));

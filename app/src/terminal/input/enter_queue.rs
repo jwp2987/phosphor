@@ -578,12 +578,18 @@ impl Input {
     /// #1997: the Enter gate this input has open on the queue while the LINE of its Enter is
     /// still waiting with it: an Enter held for an unready shell (its requested line, #1435), or
     /// one that waits for its verdict or completion or for its route to settle (the buffer).
-    /// `None` with no gate on the queue, for an empty line (a bare Enter has no line to overtake),
-    /// and for the multi-line dialog's gate (the dialog asks about a later Enter; keys typed
-    /// before it opened must not be discarded with its answer).
+    /// `None` with no gate on the queue, and for the multi-line dialog's gate (the dialog asks
+    /// about a later Enter; keys typed before it opened must not be discarded with its answer).
+    ///
+    /// #1999 (owner decision 2026-11-11: typed order is kept behind a BARE Enter too): an Enter
+    /// held for an unready shell holds what was typed behind it whatever its own line is. The
+    /// bare Enter is a key the shell has not been given yet; lines written ahead of it reached
+    /// the shell before the Enter they were typed after. A gate that waits for a verdict, a
+    /// completion or its route with an EMPTY buffer still answers `None`: that Enter already
+    /// submitted its line, it is not a bare Enter ([`enter_gate_holds_lines_typed_behind`]).
     ///
     /// The terminal view asks before it releases the keys held behind a deferred Enter whose
-    /// submit wrote no command: lines typed after a line that waits here go behind this gate,
+    /// submit wrote no command: lines typed after an Enter that waits here go behind this gate,
     /// never to the pty ahead of it (owner decision 2026-11-09, keep them together).
     pub(crate) fn enter_gate_holding_a_line(&self, ctx: &AppContext) -> Option<(GateKind, u64)> {
         let gate = self.enter_gate.filter(|gate| !gate.held_for_dialog)?;
@@ -594,11 +600,16 @@ impl Input {
             .pending_command_text
             .as_deref()
             .filter(|_| gate.held_unready);
-        let has_line = match requested {
-            Some(line) => !line.is_empty(),
-            None => !self.editor.as_ref(ctx).buffer_text(ctx).is_empty(),
+        let line_empty = match requested {
+            Some(line) => line.is_empty(),
+            None => self.editor.as_ref(ctx).buffer_text(ctx).is_empty(),
         };
-        has_line.then_some((gate.kind, gate.key))
+        enter_gate_holds_lines_typed_behind(
+            gate.held_unready,
+            line_empty,
+            crate::terminal::input_queue::switches::bare_enter_holds_lines(),
+        )
+        .then_some((gate.kind, gate.key))
     }
 
     /// #1652: an Enter that asked the multi-line submit dialog gates the queue until the answer.
@@ -1695,3 +1706,27 @@ pub(crate) fn dialog_typeahead_discarded_toast(keys: usize) -> String {
         format!("{keys} keys typed while the confirmation was open were discarded")
     }
 }
+
+/// #1997 / #1999: whether an open Enter gate takes the complete lines typed behind a deferred
+/// Enter whose submit wrote no command (they are handed to it in place and follow it), instead
+/// of letting them be written to the pty at once.
+///
+/// * A gate whose line is not empty always does (#1997: a later line never runs before the line
+///   typed before it).
+/// * `held_unready` with an empty line is a BARE Enter held for a shell that could not take it
+///   yet. It does too (#1999, owner decision 2026-11-11), unless the kill switch
+///   `PHOSPHOR_BARE_ENTER_HOLDS_LINES` is off (`bare_enter_holds`): then the lines are written at
+///   once and the bare Enter later, as before.
+/// * Any other gate with an empty line (a verdict, completion or route wait whose buffer was
+///   already taken by its submit) does not.
+pub(crate) fn enter_gate_holds_lines_typed_behind(
+    held_unready: bool,
+    line_empty: bool,
+    bare_enter_holds: bool,
+) -> bool {
+    !line_empty || (held_unready && bare_enter_holds)
+}
+
+#[cfg(test)]
+#[path = "enter_queue_tests.rs"]
+mod tests;

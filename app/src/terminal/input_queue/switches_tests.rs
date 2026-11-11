@@ -32,4 +32,16 @@ fn the_switch_names_are_stable() {
         YOUNG_HOLD_READER_LOOK_ENV,
         "PHOSPHOR_YOUNG_HOLD_READER_LOOK"
     );
+    assert_eq!(
+        BARE_ENTER_HOLDS_LINES_ENV,
+        "PHOSPHOR_BARE_ENTER_HOLDS_LINES"
+    );
+    assert_eq!(
+        KEEP_DEFERRED_ENTER_KEYS_WITH_LINE_ENV,
+        "PHOSPHOR_KEEP_DEFERRED_ENTER_KEYS_WITH_LINE"
+    );
+    assert_eq!(
+        SUBSHELL_LINE_EDITOR_PROOF_ENV,
+        "PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF"
+    );
 }
