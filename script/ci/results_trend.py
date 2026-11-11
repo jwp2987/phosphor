@@ -9,6 +9,10 @@ WHAT IT ANSWERS (owner, 2026-11-10): "are we getting closer?" Three numbers per 
 Plus the DANGER classes (lost/reordered keys, a secret in the wrong place, a wrong command run), which must be zero FAIL
 whatever else is open, and the unit-test failures of the newest run.
 
+NOT COVERAGE (owner, 2026-11-10: "tests that can never fail are false coverage"): the PROVING cases (appci/cases.py) that
+have a row but were never judged pass/fail, in ANY committed run: on no platform at all, and per platform. They are
+listed by name with the newest reason, so a registered case that only ever SKIPs or is NOREF never reads as tested.
+
 Comparisons use only (case, mode) pairs judged pass/fail in BOTH runs: the raw pass rate misled us once (the suite grew 3x
 between two runs and the rate fell although nothing regressed).
 
@@ -27,6 +31,82 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # command executed, a secret leaking). Matched against the case name.
 DANGER = re.compile(r"key_loss|enter_loss|fast_typing|cadence|giveup_keys|secret|password|keys_follow|typeahead|ordering|"
                     r"out_of_order|no_keys_lost|paste_exact|big_paste|exact", re.I)
+
+
+def proving_names(path=None):
+    """the PROVING tuple of appci/cases.py, read from the source (no import: the harness modules are not needed to draw a trend)"""
+    import ast
+    path = path or os.path.join(ROOT, "script", "realapp", "appci", "cases.py")
+    try:
+        tree = ast.parse(open(path, encoding="utf-8").read())
+    except (OSError, SyntaxError):
+        return []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "PROVING" for t in node.targets):
+            try:
+                return [n for n in ast.literal_eval(node.value) if isinstance(n, str)]
+            except ValueError:
+                return []
+    return []
+
+
+def never_judged(runs, names):
+    """-> (nowhere, per_plat, no_row). `runs` = every loaded run, oldest first.
+    nowhere:  {case: {platform: (status, detail)}} PROVING cases with rows but no pass/fail row in any run on any platform (newest row per platform);
+    per_plat: {platform: {case: (status, detail)}} judged somewhere, never on this platform (newest row there);
+    no_row:   [case] PROVING cases with no row in any run."""
+    judged, newest = set(), {}
+    for r in runs:
+        for (plat, name, _mode), (st, det) in r["cases"].items():
+            if name not in names:
+                continue
+            if st in ("pass", "fail"):
+                judged.add((plat, name))
+            newest[(plat, name)] = (st, det)
+    seen = {n for _p, n in newest}
+    judged_names = {n for _p, n in judged}
+    nowhere, per_plat = {}, {}
+    for (plat, name), row in sorted(newest.items()):
+        if name not in judged_names:
+            nowhere.setdefault(name, {})[plat] = row
+        elif (plat, name) not in judged:
+            per_plat.setdefault(plat, {})[name] = row
+    return nowhere, per_plat, sorted(n for n in names if n not in seen)
+
+
+def reason(detail):
+    """the first entry of a row's detail (the skip / no-reference reason; the entries after it are the per-case accounting notes)"""
+    try:
+        v = json.loads(detail)
+    except ValueError:
+        return detail
+    return str(v[0]) if isinstance(v, list) and v else detail if isinstance(v, str) or not isinstance(v, list) else ""
+
+
+def render_never_judged(all_runs, names):
+    if not names:
+        return []
+    nowhere, per_plat, no_row = never_judged(all_runs, set(names))
+    out = ["## PROVING cases never judged (NOT coverage)", "",
+           "Registered in `cases.PROVING` and played by the fix tier, but never PASS or FAIL in any of the %d committed run(s) read. A case here has" % len(all_runs),
+           "tested nothing yet, whatever the run's pass count says. Reason = the newest row's.", ""]
+    out.append("**Never judged on any platform (%d):**" % len(nowhere))
+    out.append("")
+    for name in sorted(nowhere):
+        out.append("- `%s`" % name)
+        for plat, (st, det) in sorted(nowhere[name].items()):
+            out.append("  - %s: %s: %s" % (plat, st.upper(), short(reason(det), 260) or "(no reason recorded)"))
+    if not nowhere:
+        out.append("- none")
+    out.append("")
+    for plat in sorted(per_plat):
+        out.append("**Judged elsewhere, never on %s (%d):** " % (plat, len(per_plat[plat])) + ", ".join(
+            "`%s` (%s)" % (n, st.upper()) for n, (st, _d) in sorted(per_plat[plat].items())))
+        out.append("")
+    if no_row:
+        out.append("**No row in any committed run (%d):** " % len(no_row) + ", ".join("`%s`" % n for n in no_row))
+        out.append("")
+    return out
 
 
 def _text(v):
@@ -114,7 +194,8 @@ def short(detail, n=150):
     return (t[:n] + "...") if len(t) > n else t
 
 
-def render(runs, last):
+def render(runs, last, proving=None):
+    all_runs = runs
     runs = runs[-last:] if last else runs
     out = ["# Test trend", "",
            "Generated by `script/ci/results_trend.py`; never edit by hand. Source: `test-results/*/manifest.json` (committed runs only).",
@@ -171,7 +252,8 @@ def render(runs, last):
     out += ["## Danger classes (must be zero FAIL)", "",
             "Cases whose name matches lost/reordered keys, secrets, typeahead or exactness. Newest run `%s`:" % latest["name"], ""]
     out += ["- **%s** `%s` (%s): %s" % (k[0], k[1], k[2], short(v[1], 110)) for k, v in dang] or ["- none failing"]
-    out += ["", "## Unit tests (newest run)", ""]
+    out += [""] + render_never_judged(all_runs, proving or [])
+    out += ["## Unit tests (newest run)", ""]
     uf = [(j, n) for j, (cnt, names) in latest["unit"].items() for n in names]
     out += ["- `%s`: `%s`" % x for x in uf] or ["- no unit failures recorded"]
     return "\n".join(out) + "\n"
@@ -205,6 +287,25 @@ def self_test():
     assert "[DANGER]" in md and "key_loss_control" in md and "`mod::t`" in md and "Regressions in `" in md, md
     assert "new" in md and "failing 1 run(s) in a row" in md
     assert render([], 3).strip().endswith("No runs found.")
+    # PROVING cases that were never judged are listed by name with the reason; one judged on another platform is listed for the platform that never did
+    def mk2(name, created, plats):
+        d = tempfile.mkdtemp(prefix="trend_")
+        app = {p: {"cases": [{"name": n, "mode": m, "status": s, "detail": det} for (n, m, s, det) in rows]} for p, rows in plats.items()}
+        json.dump({"commit": "abc123456", "created_at": created, "app": app, "unit": {}}, open(os.path.join(d, "manifest.json"), "w"))
+        return d
+    r1 = mk2("p1", "2026-11-01", {"macos": [("always_skip", "terminal", "skip", "NEEDS: passwordless sudo"), ("mac_only", "terminal", "pass", ""), ("was_judged", "agent", "fail", "x")],
+                                  "wayland": [("always_skip", "terminal", "noref", "no reference"), ("mac_only", "terminal", "skip", "macOS only")]})
+    r2 = mk2("p2", "2026-11-02", {"macos": [("always_skip", "terminal", "skip", "NEEDS: passwordless sudo, newest"), ("was_judged", "agent", "skip", "later skipped")]})
+    pr = load_runs([r1, r2])
+    nowhere, per_plat, no_row = never_judged(pr, {"always_skip", "mac_only", "was_judged", "never_ran"})
+    assert sorted(nowhere) == ["always_skip"] and nowhere["always_skip"]["macos"] == ("skip", "NEEDS: passwordless sudo, newest") and nowhere["always_skip"]["wayland"][0] == "noref", nowhere
+    assert per_plat == {"wayland": {"mac_only": ("skip", "macOS only")}} and no_row == ["never_ran"], (per_plat, no_row)
+    md2 = render(pr, 1, proving=["always_skip", "mac_only", "was_judged", "never_ran"])       # the list reads EVERY run, not only the newest N shown
+    assert "## PROVING cases never judged (NOT coverage)" in md2 and "- `always_skip`" in md2 and "macos: SKIP: NEEDS: passwordless sudo, newest" in md2, md2
+    assert "never on wayland (1):** `mac_only` (SKIP)" in md2 and "No row in any committed run (1):** `never_ran`" in md2 and "`was_judged`" not in md2.split("NOT coverage")[1], md2
+    assert reason(json.dumps(["the reason", "injector accounting: x"])) == "the reason" and reason("plain") == "plain" and reason("[]") == ""
+    assert "never judged" not in render(pr, 1) and "mcp_basic" in proving_names() and "agent_mcp_faults" in proving_names()
+    assert proving_names(os.path.join(tempfile.mkdtemp(prefix="trend_"), "missing.py")) == []
     print("results_trend self-test ok")
 
 
@@ -219,7 +320,7 @@ def main():
     if a.self_test:
         return self_test()
     dirs = sorted(glob.glob(os.path.join(ROOT, "test-results", "*", ""))) + a.extra
-    md = render(load_runs(dirs), a.last)
+    md = render(load_runs(dirs), a.last, proving=proving_names())
     if a.stdout:
         sys.stdout.write(md)
     else:

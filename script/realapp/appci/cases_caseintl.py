@@ -397,7 +397,9 @@ class Switcher:
 
 def mac_only(ctx):
     if ctx.be.name != "mac":
-        raise cases.Skip("macOS input methods: needs the mac backend (this is %s)" % ctx.be.name)
+        raise cases.Skip("macOS input methods: needs the mac backend (this is %s). NEEDS: on Linux an input-method daemon (ibus or fcitx5 with the Japanese / Pinyin engines) in "
+                         "the job session plus a harness arm that selects it (owner: packages; harness: not built, r14-test-gaps T39); on Windows an IME arm likewise. "
+                         "On macOS the case exists and waits for the owner to enable the input sources (NEEDS_OWNER)" % ctx.be.name)
 
 
 ABC = [lambda i: i == "com.apple.keylayout.ABC", lambda i: i == "com.apple.keylayout.US"]

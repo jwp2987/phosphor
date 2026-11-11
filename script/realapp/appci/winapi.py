@@ -252,6 +252,34 @@ def precise_time():
     return (((ft.dwHighDateTime << 32) | ft.dwLowDateTime) - 116444736000000000) / 1e7
 
 
+def profile_dir(environ=None):
+    """The user's profile folder as the app under test resolves its home: Rust's dirs::home_dir() is SHGetKnownFolderPath(FOLDERID_Profile) on Windows
+    and never reads HOME (the Git Bash pane's scratch HOME does not move it). cases_agent_mcp.py puts the app's global MCP config under it (#2065).
+    Falls back to %USERPROFILE% (the same folder for an ordinary account) when the call is unavailable, which is also the answer off Windows (self-test)."""
+    environ = os.environ if environ is None else environ
+    if os.name == "nt":
+        try:
+            class GUID(ctypes.Structure):
+                _fields_ = [("d1", wt.DWORD), ("d2", wt.WORD), ("d3", wt.WORD), ("d4", ctypes.c_ubyte * 8)]
+            folder = GUID(0x5E6C858F, 0x0E22, 0x4760, (ctypes.c_ubyte * 8)(0x9A, 0xFE, 0xEA, 0x33, 0x17, 0xB6, 0x71, 0x73))      # FOLDERID_Profile
+            shell32, ole32 = ctypes.WinDLL("shell32"), ctypes.WinDLL("ole32")
+            shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wt.DWORD, wt.HANDLE, ctypes.POINTER(ctypes.c_void_p)]
+            shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+            ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+            ole32.CoTaskMemFree.restype = None
+            out = ctypes.c_void_p()
+            if shell32.SHGetKnownFolderPath(ctypes.byref(folder), 0, None, ctypes.byref(out)) == 0 and out.value:
+                try:
+                    path = ctypes.wstring_at(out.value)
+                finally:
+                    ole32.CoTaskMemFree(out)
+                if path:
+                    return path
+        except Exception:  # noqa: BLE001  (no shell32 / an odd session: the environment's answer below)
+            pass
+    return environ.get("USERPROFILE") or os.path.expanduser("~")
+
+
 def git_bash():
     """path of Git for Windows' bash.exe (never System32\\bash.exe, which is WSL), or None"""
     cands = []

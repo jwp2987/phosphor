@@ -32,7 +32,9 @@ def c_startup_shell_pane(ctx, r):
     cmd / pwsh7 passes."""
     variant = getattr(ctx, "variant", None)
     if variant not in IDENT:
-        r.skip("runs only in a startup_shell_override pass (APPCI_WIN_SHELLS=pwsh7,cmd)")
+        r.skip("runs only in a startup_shell_override pass, and no tier plays one. NEEDS: a Windows run with APPCI_WIN_SHELLS=powershell,gitbash,pwsh7,cmd (a job variable "
+               "no tier sets: owner decision), with PowerShell 7 installed on the Windows VM for the pwsh7 pass (owner: machine change; cmd.exe is always there). "
+               "Linux and macOS have no such pass. Has never run on any machine")
     ident, _want, longcmd = IDENT[variant]
     ctx.rm("who.txt")
     ctx.be.type(ident, 12, enter=True)

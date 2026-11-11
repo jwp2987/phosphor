@@ -1073,6 +1073,19 @@ def mac_key_to_frame_regression_is_judged_on_the_app_share_and_the_tail():
         assert rec["tail"]["baseline"] == {"p95": 9.32, "delta_ms": 0.08, "delta_pct": 0.9, "verdict": "pass"} and rec["tail"]["prev"]["verdict"] == "none", rec["tail"]
         assert any(n.startswith("NOT JUDGED: key to frame: median 7.28 vs baseline build +1.05 ms") for n in r.notes), r.notes
         assert any("no app-share figure" in n for n in rec["notes"]), rec["notes"]
+        # 5b. #2070: latency_key_log has no reference terminal by construction and was NOREF on every platform in every run. With the app's share
+        #     judged (usable, pass or fail) the row is judged by it; without the flag, and without a usable share, it is NOREF as before (never a pass)
+        assert r.noref and "no reference terminal measured" in r.noref[0], "lat_checks without share_judges is unchanged"
+        rj = cases.Result("latency_key_log", "terminal")
+        cases.lat_checks(rj, rec, "key to frame", share_judges=True)
+        assert not rj.noref and not rj.fails and any("JUDGED on the app's own share" in n and "1.68 ms" in n and "PASS" in n for n in rj.notes), (rj.noref, rj.notes)
+        for bad in (dict(rec, app_share=None, regress_basis="median"), dict(rec, app_share=dict(rec["app_share"], usable=False, why_not="n=3 < 20 presses")),
+                    dict(rec, app_share={k: v for k, v in rec["app_share"].items() if k != "budget_verdict"})):
+            rn = cases.Result("latency_key_log", "terminal")
+            cases.lat_checks(rn, bad, "key to frame", share_judges=True)
+            assert len(rn.noref) == 1 and "NEEDS: an app-share gate" in rn.noref[0], rn.noref
+        import inspect
+        assert "share_judges=True" in inspect.getsource(cases.c_lat_key) and "the 1 ms target" in inspect.getsource(cases.c_lat_key)
         # 6. a promoted baseline carries the share: an unchanged share passes; a grown one FAILs after its re-measure; a clean re-measure is a WARN;
         #    over the hard bound it FAILs whatever the comparison says
         new = dict(old, app_share={"what": "key_to_frame_less_display_wait", "p50": 1.6, "n": 60})
@@ -3608,7 +3621,15 @@ def app_find_hook_harness_side_1789():
     without xdotool output"""
     import cases_ui as UI
     src = open(os.path.join(HERE, "app.py")).read()
-    assert src.count("warpui::appci_find=info") >= 2, "RUST_LOG must enable the hook's log target for the launched app"
+    assert src.count("warpui::appci_find=info") >= 3, "RUST_LOG must enable the hook's log target for the launched app on Linux, macOS and Windows"
+    # #2069: the Linux launcher arms the hook (it never did until round 14, so every Linux position was OCR and ui_right_click_paste never placed its pointer)
+    import app as A
+    assert "warpui::appci_find=info" in A.INNER and 'export PHOSPHOR_APPCI_FIND_FILE="%(home)s/appci_find.txt"' in A.INNER
+    assert 'os.path.join(ctx.prof.home, "appci_find.txt")' in open(os.path.join(HERE, "cases_ui.py")).read(), "register_find writes the file the launcher names"
+    import cases_coverage_a as CA_
+    assert '"MOUSEREADY mrdy" + sys.argv[2]' in CA_.MOUSE_PROG and "* 5" in CA_.MOUSE_PROG
+    msrc = open(os.path.join(HERE, "cases_coverage_a.py")).read()
+    assert "hit[2] + 60" not in msrc and "pos = (hit[1], hit[2])" in msrc, "the mouse-report click goes ON the program's rows, not below them"
     tmp = tempfile.mkdtemp()
     try:
         log = os.path.join(tmp, "app.log")
@@ -3638,6 +3659,12 @@ def app_find_hook_harness_side_1789():
             finally:
                 UI.words = orig_words
             assert w is None and len(notes) == 1 and "find hook" in notes[0], notes
+            os.environ["APPCI_NO_FIND_HOOK"] = "1"
+            try:
+                assert UI._hook_word(c, "tokx") is None, "the kill switch puts every position back on OCR"
+            finally:
+                del os.environ["APPCI_NO_FIND_HOOK"]
+            assert UI._hook_word(c, "tokx") is not None
         finally:
             UI.x11_window_origin = orig
         Be.name = "mac"
@@ -4233,6 +4260,16 @@ def r18u23_paste_backlog_and_bash_agent_command_count():
     assert ca.approved_command_writes(log, "APPROVEMEX1") == 1
     assert ca.approved_command_writes(log + log, "APPROVEMEX1") == 2
     assert ca.approved_command_writes(log, "REJECTMEX1") == 0 and ca.approved_command_writes("", "A") == 0
+    # #2069: a ConPTY short write logs the wrapper in two pieces; the token split across them is still ONE write of the command, and twice is still two
+    split = ('x hop=pty_write_bytes class=UserCommand wrote=20 of_job=40 bytes="{ echo APPROV" t=1.0\n'
+             'x hop=pty_write_reply bytes=4\n'
+             'x hop=pty_write_bytes class=UserCommand wrote=20 of_job=40 bytes="EMEX1 >> ap_ok.txt; }\\n" t=1.0\n')
+    assert ca.approved_command_writes(split, "APPROVEMEX1") == 1 and ca.approved_command_writes(split + split, "APPROVEMEX1") == 2
+    assert ca.approved_once_verdict(split, "APPROVEMEX1", [])[0]
+    assert ca.token_write_classes(log, "APPROVEMEX1") == {"UserCommand": 1, "UserKey": 1}
+    other = 'x hop=pty_write_bytes class=Agent wrote=9 of_job=9 bytes="echo APPROVEMEX1" t=1\nx hop=pty_write_bytes class=SetupChunked wrote=9 of_job=9 bytes=<setup 9 bytes> t=1\n'
+    ok, _how, detail = ca.approved_once_verdict(other, "APPROVEMEX1", ["APPROVEMEX1"])
+    assert not ok and "'Agent': 1" in detail and "<not shown>" in detail, detail          # still a failure; the message now says where the token went
     # Linux-style log: no pty_write_bytes hop at all; the effect file decides
     linux = 'x [DEBUG] input_order hop=enter_begin deferred=false t=1\n'
     assert not ca.pty_write_hop_logged(linux) and ca.pty_write_hop_logged(log)
@@ -4646,8 +4683,19 @@ def lab_helper_coverage_guard():
     finally:
         H.COVERS.update(saved)
         H.EXTERNAL_COVERS.update(saved_ext)
-    skips = [c for c in cases.CASES if c.get("lab") and c["arm"]["case"].startswith("fam_") and c["arm"]["helper"] == "helper"]
-    assert skips and {c["arm"]["case"] for c in skips} >= {"fam_" + k for k in info["helper"]}
+    # #2068: a generic family case exists only where it has a driver; every other capability is covered by a declared case that IS registered
+    fams = {c["arm"]["case"] for c in cases.CASES if c.get("lab") and c["arm"]["case"].startswith("fam_") and not c["arm"]["case"].startswith("fam_agent_")}
+    assert fams == {"fam_" + k for k in H.DRIVERS}, "generic family cases without a driver judge nothing: %s" % sorted(fams - {"fam_" + k for k in H.DRIVERS})
+    assert not [c["name"] for c in cases.CASES if c["name"].startswith(("lab_fam_agent_context", "lab_fam_file_write_expect", "lab_fam_file_delete_expect"))]
+    assert "no scripted app driver" not in open(os.path.join(HERE, "cases_lab_helper.py"), encoding="utf-8").read()
+    assert H.unregistered_externals() == [], "coverage declared for a case that is not registered: %s" % H.unregistered_externals()
+    assert H.unregistered_externals(["lab_skills_remote.bash.lan.nohelper"]) and ("agent_context", "lab_skills_remote") not in H.unregistered_externals(["lab_skills_remote.bash.lan.nohelper"])
+    for cap in set(info["helper"]) | (set(info["families"].values()) - H.NO_SHELL_ARM_EVER):
+        assert cap in H.DRIVERS or (H.EXTERNAL_COVERS.get(cap, {}).get("helper") and H.EXTERNAL_COVERS[cap].get("nohelper")), "%s: neither a driver nor a declared real case on both arms" % cap
+    assert H.EXTERNAL_COVERS["ripgrep_search"]["nohelper"] == "lab_agent_remote_flow" and "ripgrep_search" in inspect_source(cases_agent_remote_flow())
+    import fnmatch
+    played = [c["name"] for c in cases.CASES if fnmatch.fnmatch(c["name"], "lab_fam_agent_*")]
+    assert played and all(n.startswith(("lab_fam_agent_edit_", "lab_fam_agent_delete_")) for n in played), "PROVING_LAB's lab_fam_agent_* plays only the agent edit cases"
     import lab as L
     assert L.matrix_selection("quick")["shells"] == {"bash", "zsh", "fish", "nu"}
 
@@ -6327,6 +6375,174 @@ def agent_mcp_pure_pieces():
     assert not MC.flaky_verdict(["LAUNCH-1:a", "error", "error"])[0] and not MC.flaky_verdict([])[0] and not MC.flaky_verdict(["error"])[0]
     names = [c["name"] for c in cases.CASES]
     assert "agent_mcp_faults" in names and "agent_multitab_streaming" in names
+
+
+def cases_agent_remote_flow():
+    import cases_agent_remote
+    return cases_agent_remote.c_agent_remote_flow
+
+
+def inspect_source(fn):
+    import inspect
+    return inspect.getsource(fn)
+
+
+@check
+def always_skip_cases_say_what_they_need():
+    """#2066 / #2067 (owner 2026-11-10): the cases that SKIP on every machine stay registered, and each skip says exactly what machine change or harness
+    capability would make it run (`NEEDS:`), so the row cannot be read as coverage or as "not applicable"."""
+    need = {"cases_subshell_ready.py": ["sudoers entry", "`alpine` image pulled once"], "cases_coverage_a.py": ["sudoers entry"],
+            "cases_ui.py": ["package dragon-drop", "a client that owns the drag"], "cases_shells.py": ["APPCI_WIN_SHELLS=powershell,gitbash,pwsh7,cmd", "PowerShell 7 installed"],
+            "cases_caseintl.py": ["ibus or fcitx5", "NEEDS_OWNER"], "cases_coverage_b.py": ["APPCI_PREV_FIXTURE", "#1546"], "cases_win_input.py": ["NEEDS: APPCI_SSH_WRAPPER=1"]}
+    for f, words in need.items():
+        src = open(os.path.join(HERE, f), encoding="utf-8").read()
+        assert "NEEDS:" in src, f
+        for w in words:
+            assert w in src, "%s: the skip no longer names %r" % (f, w)
+    for n in ("subshell_ready_relay_shape", "subshell_ready_docker_t_without_i", "sudo_su_real_shell", "ui_drag_drop_file", "startup_shell_pane", "upgrade_over_previous",
+              "intl_ime_japanese", "intl_ime_pinyin", "ssh_connect_typing_wrapper", "ssh_nested_typeahead_wrapper"):
+        assert any(c["name"] == n for c in cases.CASES), "%s must stay registered (owner: do not remove always-SKIP cases)" % n
+    for n in ("ui_drag_drop_file", "intl_ime_japanese", "intl_ime_pinyin"):
+        assert "NEEDS:" in winmap.NOT_WINDOWS[n], n
+    for n in ("subshell_ready_relay_shape", "subshell_ready_docker_t_without_i", "sudo_su_real_shell"):
+        assert "by design" in winmap.NOT_WINDOWS[n], n
+
+
+@check
+def ssh_wrapper_cases_have_a_job_that_pins_them():
+    """#2066: the two *_wrapper ssh cases were SKIP everywhere: no job set APPCI_SSH_WRAPPER=1, and they refused every pane but Windows Git Bash. The CI
+    jobs that carry them set the variable (read from .gitlab-ci.yml, so removing it fails here), the cases run on Linux and in the Git Bash pane with the
+    pin and skip with the exact need without it, and the three log checks hold or fail on the app's hops."""
+    import re
+    import cases_win_input as wi
+    yml = open(os.path.join(HERE, "..", "..", "..", ".gitlab-ci.yml"), encoding="utf-8").read()
+    for job in ("app-test-linux-wayland", "app-test-windows"):
+        m = re.search(r"^%s:\n(.*?)(?=^\S)" % re.escape(job), yml, re.S | re.M)
+        assert m and re.search(r'^  variables:\n(?:    .*\n)*?    APPCI_SSH_WRAPPER: "1"', m.group(1), re.M), "%s no longer sets APPCI_SSH_WRAPPER=1: the *_wrapper cases would SKIP in every run again" % job
+    good = "x hop=ssh_wrapper announced reclaimed=false holding=true held_bytes=3\ny hop=ssh_wrapper verdict managed=true tty_owned_deferred=false remote_plain=false\n"
+
+    class Skipped(Exception):
+        pass
+
+    class R:
+        def __init__(self):
+            self.fails = []
+
+        def skip(self, why):
+            raise Skipped(why)
+
+        def check(self, ok, msg):
+            if not ok:
+                self.fails.append(msg)
+            return ok
+
+    def run(win, pane, pin, log):
+        ctx = types.SimpleNamespace(win=win, pane=pane, log_size=lambda: 0, log_since=lambda off: log, be=types.SimpleNamespace(type=lambda *a, **k: None))
+        saved, ran, r = os.environ.get("APPCI_SSH_WRAPPER"), [], R()
+        os.environ["APPCI_SSH_WRAPPER"] = "1" if pin else ""
+        real_sleep, wi.R.time.sleep = wi.R.time.sleep, lambda s: None
+        try:
+            wi._wrapper_variant(ctx, r, lambda c, rr: ran.append(1))
+            return ran, r.fails
+        except Skipped as e:
+            return "skip", str(e)
+        finally:
+            wi.R.time.sleep = real_sleep
+            if saved is None:
+                del os.environ["APPCI_SSH_WRAPPER"]
+            else:
+                os.environ["APPCI_SSH_WRAPPER"] = saved
+    assert run(False, None, True, good) == ([1], []), "Linux pane with the pin: the case body runs and the hops satisfy it"
+    assert run(True, "gitbash", True, good) == ([1], [])
+    how, why = run(False, None, False, good)
+    assert how == "skip" and "NEEDS: APPCI_SSH_WRAPPER=1" in why and "app-test-linux-wayland" in why, why
+    assert run(True, "powershell", True, good)[0] == "skip"
+    ran, fails = run(False, None, True, "y hop=ssh_wrapper verdict managed=false tty_owned_deferred=false remote_plain=false\nz hop=ssh_wrapper verdict_ignored managed=true state=Off session_differs=false\n")
+    assert ran == [1] and len(fails) == 3 and "verdicts seen" in fails[0] and "managed=false" in fails[0], fails
+    assert len(run(False, None, True, "")[1]) == 2, "no hop at all fails the verdict and the announcement checks"
+
+
+@check
+def mcp_config_is_where_the_app_reads_it():
+    """#2065: agent_mcp_faults was SKIP on every platform in every run because the harness wrote `~/.warp/.mcp.json` and the app under test (Channel::Oss)
+    reads `<home>/.phosphor/.mcp.json`. The directory name is pinned against the app's source, so a renamed directory fails here and not as a silent skip;
+    the Windows home is the profile folder (not HOME); a leftover of a killed run is told apart from a user's own file; both cases are in the fake pass."""
+    import re
+    import cases_agent_mcp as MC, winapi
+    root = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+    paths = open(os.path.join(root, "crates", "warp_core", "src", "paths.rs"), encoding="utf-8").read()
+    m = re.search(r'Channel::Oss => "([^"]+)"\.to_owned\(\)', paths)
+    assert m and m.group(1) == MC.APP_CONFIG_DIR, "paths.rs names the Oss config directory %r, the harness writes the MCP config under %r" % (m and m.group(1), MC.APP_CONFIG_DIR)
+    assert 'warp_home_config_dir().map(|warp_config_dir| warp_config_dir.join(".mcp.json"))' in paths, "the app's MCP config file name moved"
+    assert "Channel::Oss" in open(os.path.join(root, "app", "src", "bin", "phosphor_oss.rs"), encoding="utf-8").read()
+    assert MC.mcp_config_path("/h") == os.path.join("/h", ".phosphor", ".mcp.json")
+
+    class Ctx:
+        def __init__(self, win):
+            self.win, self.prof = win, type("P", (), {"home": "/scratch/home"})()
+    assert MC.app_home(Ctx(False)) == "/scratch/home"
+    if os.name != "nt":            # off Windows profile_dir is the environment's answer; on Windows it is the known folder (cannot be faked here)
+        assert winapi.profile_dir({"USERPROFILE": "C:\\Users\\ci"}) == "C:\\Users\\ci"
+        saved = os.environ.get("USERPROFILE")
+        os.environ["USERPROFILE"] = "C:\\Users\\ci"
+        try:
+            assert MC.app_home(Ctx(True)) == "C:\\Users\\ci", "on Windows the config goes under the profile folder, never under the pane's scratch HOME"
+        finally:
+            if saved is None:
+                del os.environ["USERPROFILE"]
+            else:
+                os.environ["USERPROFILE"] = saved
+    one = MC.mcp_config("py", "fakemcp.py", "/s", servers=[("fxok", "ok")])
+    assert list(json.loads(one)["mcpServers"]) == ["fxok"]
+    assert MC.harness_owned(one) and MC.harness_owned(MC.mcp_config("py", "f", "/s"))
+    assert not MC.harness_owned('{"mcpServers": {"github": {"command": "x"}}}') and not MC.harness_owned('{"mcpServers": {"fxok": {}, "mine": {}}}')
+    assert not MC.harness_owned('{"mcpServers": {}}') and not MC.harness_owned("not json") and not MC.harness_owned("[]") and not MC.harness_owned("")
+    log = "INFO started\nWARN Failed to spawn MCP server fxok: no such file\nDEBUG input_order keydown\nINFO file_based_mcp parsed 1 server"
+    assert MC.mcp_log_lines(log) == ["WARN Failed to spawn MCP server fxok: no such file", "INFO file_based_mcp parsed 1 server"], MC.mcp_log_lines(log)
+    for n in ("mcp_basic", "agent_mcp_faults"):
+        assert n in cases.PROVING and n in cases.PROVING_FAKE, n
+        assert winmap.skip_reason(n, "gitbash") is None and "Git Bash" in winmap.skip_reason(n, "powershell"), n
+        assert [c["modes"] for c in cases.CASES if c["name"] == n] == [("agent",)], n
+    src = open(os.path.join(HERE, "cases_agent_mcp.py"), encoding="utf-8").read()
+    assert '".warp"' not in src and "r.skip(\"precondition" not in src, "the control is a check: no skip on an unloaded config, no write to ~/.warp"
+
+    # the control's steps are checks: a server that never starts FAILS with the evidence in the message
+    class R:
+        def __init__(self):
+            self.fails, self.notes, self.metrics = [], [], {}
+
+        def check(self, ok, msg):
+            if not ok:
+                self.fails.append(msg)
+            return ok
+
+        def note(self, msg):
+            self.notes.append(msg)
+
+        def metric(self, k, v):
+            self.metrics[k] = v
+
+    class C2:
+        W, win = tempfile.mkdtemp(prefix="mcpst_"), False
+        prof = type("P", (), {"home": tempfile.mkdtemp(prefix="mcph_")})()
+
+        def until(self, pred, timeout, step=0.2):
+            return pred()
+
+        def log_size(self):
+            return 0
+
+        def log_since(self, off):
+            return "WARN MCP server fxok failed to start"
+
+        def shot(self, tag):
+            return None
+    c2, r2 = C2(), R()
+    sess = MC.McpSession(c2, r2, "t", [("fxok", "ok")])
+    assert sess.cfg == os.path.join(c2.prof.home, ".phosphor", ".mcp.json")
+    assert MC.control_call(c2, r2, None, sess, "basic") is False
+    assert len(r2.fails) == 1 and "never started the healthy MCP server" in r2.fails[0] and "config <app home>/.phosphor/.mcp.json MISSING" in r2.fails[0] \
+        and "MCP server fxok failed to start" in r2.fails[0], r2.fails
 
 
 @check

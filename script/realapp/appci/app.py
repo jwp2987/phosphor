@@ -7,8 +7,12 @@ if [ "$APPCI_APP_DISPLAY" = x11 ]; then unset WAYLAND_DISPLAY; fi
 if [ "$APPCI_APP_DISPLAY" = wayland ] && [ -z "$APPCI_KEEP_DISPLAY" ]; then unset DISPLAY; fi
 export HOME="%(home)s" XDG_CONFIG_HOME="%(home)s/.config" XDG_STATE_HOME="%(home)s/.local/state" XDG_DATA_HOME="%(home)s/.local/share"
 export SHELL=/bin/bash ZDOTDIR="%(home)s"
-export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug,warp::terminal::cli_agent_sessions::event=info
+export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug,warp::terminal::cli_agent_sessions::event=info
 export WARP_INPUT_ORDER_LOG_TEXT=1
+# #1789 / #2069: the app's find hook. Until round 14 only the Windows launcher set these two (where there is no pointer), so on Linux, the only platform
+# with pointer cases, the hook never logged a position: r12a, every hook-asking case, "app find hook gave no position ... located by OCR instead", and
+# ui_right_click_paste has never got past "the probe was not found on screen by OCR". cases_ui.register_find appends tokens to this file.
+export PHOSPHOR_APPCI_FIND_FILE="%(home)s/appci_find.txt"
 mkdir -p "$XDG_STATE_HOME" "$XDG_DATA_HOME"
 if [ -z "$APPCI_NO_KEYRING" ]; then
   # A fresh HOME has no default collection and gnome-keyring cannot create one without a prompt, so the "unlocked" keyring was never usable

@@ -36,6 +36,8 @@ PROVING = (
     "agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover",
     "agent_interactive_ssh_takeover",        # #1972: the user's take-over after the notice (a remote read cannot be proven locally)
     "agent_latency_key", "agent_latency_enter", "agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming",
+    # #2065: the healthy MCP server alone (started, offered, called, result returned); agent_mcp_faults had never been judged (it wrote the config where no build reads it)
+    "mcp_basic",
     # network gate (#1830): the provider key never leaves, deny / allow, gate off live, notice toast, settings page by keyboard
     "agent_gate_deny_allow", "agent_gate_off_live", "agent_gate_key_never_leaves", "network_gate_notice", "network_gate_switch",
     # agent fault injection and restarts
@@ -117,7 +119,7 @@ PROVING = (
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
 PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_interactive_", "agent_noninteractive_", "agent_latency_", "agent_fault_", "agent_restart_",
-                                                         "agent_gate_", "agent_question_")) or n in ("agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming", "network_gate_notice",
+                                                         "agent_gate_", "agent_question_")) or n in ("agent_steer_fast", "agent_mcp_faults", "mcp_basic", "agent_multitab_streaming", "network_gate_notice",
                                                                                                       "agent_model_switch", "agent_anthropic_wire", "agent_autorun_permissions", "agent_conversation_resume", "agent_block_context",
                                                                                                     "agent_hidden_tab_attention"))
 # The PROVING lab cases (cases_lab*.py, the fake ssh lab). Globs, as --cases takes them. The fix tier plays app-test-lab-linux with these
@@ -234,7 +236,7 @@ MACOS_ENTER_APP_SHARE_MAX_MS = 2.0      # the app's OWN share (enter_begin -> pt
 MACOS_ENTER_GROSS_OVERHEAD_MS = 40.0    # twice the steady macOS overhead (+20 ms, r18u28 and r18u30)
 
 
-def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share_ms=None, median_ms=None):
+def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share_ms=None, median_ms=None, share_judges=False):
     """known_key: an ACCEPTED_FOR_RELEASE key; while it is accepted (and the platform is one it names) an over-budget OVERHEAD verdict is KNOWN (numbers printed), never a FAIL.
     turn a latency record's verdicts into case failures (FAIL); WARN stays a note; no-reference makes the case status 'noref' (not a pass, #1499)"""
     conhost_ref = str(rec.get("reference_name") or "").lower().startswith("conhost") and rec["budget_kind"] == "overhead"
@@ -305,7 +307,20 @@ def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share
             why = "insufficient evidence (%s)" % "; ".join(rec["insufficient"])
         r.no_reference("%s: %s: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)" % (label, why))
     if rec["verdict"] == "no-reference":
-        r.no_reference("%s: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)" % label)
+        sh_ = rec.get("app_share") or {}
+        if share_judges and sh_.get("usable") and sh_.get("budget_verdict") in ("pass", "fail"):
+            # #2070: a measurement with no reference terminal BY CONSTRUCTION (latency_key_log: nothing else is measured the same way) was NOREF on
+            # every platform in every run, whatever its own gates said. Where the app's own share was measured well enough to be the regression
+            # basis, its hard budget judged above (over = FAIL), so the row is judged by that gate and the missing reference is a note.
+            r.note("%s: no reference terminal exists for this measurement, so the overhead budget was not judged; JUDGED on the app's own share (%s): %.2f ms against its "
+                   "%.1f ms budget (n=%s): %s" % (label, sh_.get("what"), sh_["p50"], sh_["budget_ms"], sh_.get("n"), sh_["budget_verdict"].upper()))
+        elif share_judges:
+            r.no_reference("%s: no reference terminal exists for this measurement and no usable app-share figure was logged on this platform (%s), so nothing judged the "
+                           "time itself; absolute numbers are recorded as metrics. NEEDS: an app-share gate for this platform (owner decision, #2070: the key -> pty "
+                           "write share is measured everywhere and has a 1 ms target that is recorded, not judged)" % (
+                               label, sh_.get("why_not") or "the wait for the display pass is logged on macOS only"))
+        else:
+            r.no_reference("%s: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)" % label)
     for n_ in rec.get("notes", []):
         r.note("%s: %s" % (label, n_))
 
@@ -4707,7 +4722,7 @@ def c_lat_key(ctx, r):
                        remeasure=lambda: run_keys(n + warm)[0], notes=["Phosphor-side keydown to first frame; no same-method reference exists"],
                        app_share=key_frame_regress_basis(share, lambda: (run_keys(n + warm), run_keys.shares)[1]))
     r.metrics.setdefault("lat", {})["key_to_frame"] = rec
-    lat_checks(r, rec, "key to frame")
+    lat_checks(r, rec, "key to frame", share_judges=True)
     key_frame_tail_checks(r, rec, "key to frame", lambda: run_keys(n + warm)[0])
     # UI work (#1548): the app's `hop=ui_item` line (input_order::log_ui_item_if_over_budget, main thread, an event/action/frame at or over the 4 ms
     # budget) is the real ≤4 ms line; the older slow-operation log (#1146) only emits >= 8 ms and stays as a second source. Judged over the typed keys of
