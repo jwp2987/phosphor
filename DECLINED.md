@@ -716,9 +716,12 @@ upstream's behavior is actually a defect rather than a preference.
     (before, both had no status and showed as cancelled). The model is still told, by the
     next request's preflight, that those calls were interrupted, and the restored reply
     says so on screen (owner decision 2026-11-11, `docs/design/r18-closenote.md`): "Results
-    from before this tab was closed were not sent to the agent. Tell it what happened if it
-    matters." That line is drawn by the reply's block only; it is in no request, no copy /
-    export text and not in the conversation. Kill switch
+    from before this was closed were not sent to the agent. Tell it what happened if it
+    matters." The line is shown only when at least one of the reply's discarded results is
+    not a cancellation (the call succeeded or failed): when every one is a cancelled call,
+    card (cancelled) and model (interrupted) already agree and there is no line. It is drawn
+    by the reply's block only; it is in no request, no copy / export text and not in the
+    conversation. Kill switch
     `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` erases the results as before (and then there is no
     line).
     Since #2104 the stop also cancels, then and there, the calls of a batch that was still

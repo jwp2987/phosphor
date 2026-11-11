@@ -9,7 +9,18 @@ After a pane close and its undo, the card of a call can say it ran (the close ke
 told on the next request that the reply's calls were interrupted (#848: a discarded result is never sent). The restored
 reply now says so:
 
-> Results from before this tab was closed were not sent to the agent. Tell it what happened if it matters.
+> Results from before this was closed were not sent to the agent. Tell it what happened if it matters.
+
+Owner decisions of 2026-11-11 on the first version (branch `fix/r18-closenote2`, nothing compiled or run):
+
+1. **Narrowed.** The note shows only when at least one of the reply's results kept by the close is not a cancellation
+   (the call finished: it succeeded or failed). A reply whose discarded results are all cancelled calls (including the
+   ones the close's own stop or #2104's stop-settling cancelled) has no note: card (cancelled) and model (interrupted)
+   already agree. "Cancelled" is the result type's own notion, `AIAgentActionResultType::is_cancelled`
+   (`crates/ai/src/agent/action_result/mod.rs`): cancelled before it ran, or a requested command interrupted with exit
+   130. No string matching.
+2. **Wording.** "this was closed", not "this tab was closed": the same line fits a tab and a split pane.
+3. **Lifetime** stays as history (below, unchanged).
 
 It is for the screen only: never part of a request, of copy / export, or of the conversation.
 
@@ -28,9 +39,10 @@ It is for the screen only: never part of a request, of copy / export, or of the 
 ## Chosen fix
 
 1. No new state. The note is derived: a reply shows it exactly when one of its calls has a result in
-   `results_discarded_by_close` that is not also a sent or pending result
-   (`BlocklistAIActionModel::results_withheld_by_close_note`, `is_result_withheld_by_close`). That is the condition
-   "the close logged `results>=1 kept_status=1` for this reply": the map gets an entry only on that path. With the kill
+   `results_discarded_by_close` that is not a cancellation (`is_cancelled()` is false) and is not also a sent or
+   pending result (`BlocklistAIActionModel::results_withheld_by_close_note`, `is_result_withheld_by_close`). The map
+   gets an entry only on the path where the close logs `results>=1 kept_status=1`; that log line still counts cancelled
+   results, so it is necessary for the note and no longer sufficient. With the kill
    switch off the map stays empty, so there is no note. Nothing to set at the close, clear at the undo or keep in step.
 2. `render` adds it as the last line of the reply (after the stop row), so in a restored pane it is the line right
    above the input. `results_withheld_by_close_note(props, app)` asks the action model one cheap question first
@@ -68,22 +80,23 @@ have no status and there is no note). It does not go away when the next prompt i
 - An output message or an input of a "note" kind in the conversation: it would be in the history, in export, and one
   mapping away from a request, which is the one thing the decision forbids.
 - A banner on the pane or the input: not "with that reply", and it needs dismissal state.
-- Only when a discarded result is not a cancellation (see "Open question").
+- (First version only) counting every discarded result, cancelled ones included: the owner narrowed it, see "Decision".
 
-## Open question for the owner (not decided here)
+## Decided by the owner (was the open question)
 
-The brief's condition is "at least one finished result was discarded" (`results>=1 kept_status=1`), and a result the
-close's own stop cancelled counts (the suspended `FinishedAction` branch discards those too). So a pane closed while its
-only call was still waiting or running shows the note after the undo, although that call's card says cancelled and the
-model is told interrupted: screen and model agree there. The note is still true in that case, but it is noise. Narrowing
-it to "a discarded result that is not a cancellation" is a one-line change in `is_result_withheld_by_close`; the app case
-would then need its command to have run (it does).
+The first version showed the note for any discarded result, so a pane closed while its only call was still waiting or
+running showed it after the undo although card and model agreed. The owner narrowed it (item 1 under "Decision") and
+picked wording that names neither tab nor pane (item 2). The app case `agent_close_undo_call_status` closes on a command
+that ran to the end (action status `done`, exit 0, not interrupted), so it still expects the note; the question the
+close cancels would not bring it by itself.
 
-The wording says "this tab"; a split pane closed and restored shows the same words.
+One consequence to know: a command the user or the close interrupted (exit 130, `interrupted`) counts as cancelled by
+`is_cancelled`, even if it printed output before that. Its card shows it as cancelled, so the rule holds as stated.
 
 ## Risk
 
-Low. One read-only derivation in `render`, behind an `is_empty` check; no new state, no timer, no key path, no request
+Low. One read-only derivation in `render`, behind an `is_empty` check (the check is on the whole map, so a pane whose
+close kept only cancelled results reads its replies' call ids each frame and finds nothing: a few map lookups); no new state, no timer, no key path, no request
 path. Redraw: the block must be redrawn after the close for the line to appear, exactly as for the kept status on its
 cards (r18-retire); a restored pane is laid out again. Not compiled.
 

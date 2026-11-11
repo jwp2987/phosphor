@@ -6756,12 +6756,13 @@ def agent_close_undo_pieces_2103():
     # the note of the restored reply (owner decision 2026-11-11): read off the screen with a control, never a pass without the screen text
     assert CU.judge_note(None)[0] == "unverifiable"
     screen = "Please run scripted command CUAB12 then ask me a question Q5\n  Ran printf\n"
-    assert CU.judge_note(screen + "Results from before this tab was closed were not\nsent to the agent. Tell it what happened if it matters.\n")[0] == "shown"
-    assert CU.judge_note(screen + "Results frorn before this tab was closed were not sent to the agemt. Tell it what happened")[0] == "shown", "OCR confusions"
+    assert CU.judge_note(screen + "Results from before this was closed were not\nsent to the agent. Tell it what happened if it matters.\n")[0] == "shown"
+    assert CU.judge_note(screen + "Results frorn before this was closed were not sent to the agemt. Tell it what happened")[0] == "shown", "OCR confusions"
     verdict, why = CU.judge_note(screen)
     assert verdict == "missing" and CU.NOTE in why, "the control was read and the note was not: a failure"
     assert CU.judge_note("@@ ~~ ||")[0] == "unverifiable", "neither the control nor the note was read: the screen text is unreadable, never a pass"
     assert CU.NOTE_NEEDLE in CU.NOTE and CU.PROMPT_HEAD not in CU.NOTE
+    assert CU.NOTE == "Results from before this was closed were not sent to the agent. Tell it what happened if it matters.", "owner wording 2026-11-11 (no 'tab': a split pane shows the same line)"
     assert CU.requests_with_note(reqs) == 0
     assert CU.requests_with_note(reqs + [{"messages": [{"role": "user", "content": [{"type": "text", "text": "x " + CU.NOTE}]}]}]) == 1
     assert CU.requests_with_note([{"system": "Results ... were not sent\nto the agent."}]) == 1, "a line break inside the note does not hide it"

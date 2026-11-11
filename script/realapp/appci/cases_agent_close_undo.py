@@ -14,8 +14,10 @@
 #                                    * no `hop=agent_turn_stuck` line (#1967 / #2103: the restored reply's calls are not read as lost) and no
 #                                      unexpected ERROR line from the prompt of the two calls to the end;
 #                                    * the note (owner decision 2026-11-11, docs/design/r18-closenote.md): after the undo the restored reply says
-#                                      "Results from before this tab was closed were not sent to the agent. Tell it what happened if it matters."
-#                                      Read off the screenshot by OCR, with a control (the prompt the case typed, in the same conversation): the
+#                                      "Results from before this was closed were not sent to the agent. Tell it what happened if it matters."
+#                                      The app shows it only when a discarded result is NOT a cancellation (owner rule 2026-11-11);
+#                                      this case stages one: its command RAN to the end (action status `done`) before the close. The
+#                                      question cancelled by the close would not bring the note by itself. Read off the screenshot by OCR, with a control (the prompt the case typed, in the same conversation): the
 #                                      control read and the note not = a failure; no OCR engine, or the control not read either = UNVERIFIABLE,
 #                                      never a pass. Judged only when the close logged kept_status=1 (with the kill switch off there is no note,
 #                                      and that run already fails on the discard line). And the note is SCREEN ONLY: its words are in no message
@@ -43,7 +45,7 @@ STUCK = "hop=agent_turn_stuck"                                                  
 SHELL_KIND = "run_shell_command"
 # action_model.rs RESULTS_WITHHELD_BY_CLOSE_NOTE (pinned against the source by the self-test). The needle is the part no other text on screen or in a
 # request has; OCR is matched with cases_caseagent.fuzzy_has (line wraps and single-glyph confusions tolerated).
-NOTE = "Results from before this tab was closed were not sent to the agent. Tell it what happened if it matters."
+NOTE = "Results from before this was closed were not sent to the agent. Tell it what happened if it matters."
 NOTE_NEEDLE = "were not sent to the agent"
 PROMPT_HEAD = "Please run scripted command"          # the control for the OCR: the case typed it into the same conversation, it is on the same screen
 OUT_HEAD = "QX7"
@@ -86,7 +88,8 @@ def other_messages_with(reqs, token):
 
 
 def command_ran_and_question_waits(text):
-    """the state the case needs before the close: the command's action is done and the question card is answerable"""
+    """the state the case needs before the close: the command's action is done and the question card is answerable. `done` is a command that RAN
+    to the end (not a cancelled one): the note is shown only for such a result, so the case must not close before it"""
     ran = any(kind == SHELL_KIND and st == "done" for _a, kind, st in AR.action_hops(text))
     return ran and AQ.verdict(text) == "answerable"
 

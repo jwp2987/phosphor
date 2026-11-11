@@ -4227,8 +4227,8 @@ fn everything_sent_recorded_or_exported(
 }
 
 /// #2103, the note of a restored pane (owner decision 2026-11-11): the reply whose finished
-/// results a close discarded says "Results from before this tab was closed were not sent to
-/// the agent. ..." on screen. It is SCREEN ONLY: on the paths the test above checks for the
+/// results a close discarded says "Results from before this was closed were not sent to the
+/// agent. ..." on screen. It is SCREEN ONLY: on the paths the test above checks for the
 /// discarded result (every request, every exchange, every task message) and in the copy /
 /// export text, the note's words never appear, before the next prompt or after it. The note
 /// itself stays with its reply as history across those prompts.

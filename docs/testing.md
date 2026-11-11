@@ -7147,12 +7147,15 @@ that discards something: `hop=agent_close_discard conversation=<id> results=<n> 
   screenshot `close_undo_restored` is kept for a person. Self-test `agent_close_undo_pieces_2103`.
   Run: `python3 script/realapp/appci/run.py --cases agent_close_undo_call_status`.
 - **The note of a restored pane** (owner decision 2026-11-11, design `docs/design/r18-closenote.md`; nothing compiled or run when written).
-  A reply whose finished results a close discarded and kept for status says, as its last line, "Results from before this tab was closed were
-  not sent to the agent. Tell it what happened if it matters." (`action_model.rs` `RESULTS_WITHHELD_BY_CLOSE_NOTE`). Screen only.
+  A reply of which a close discarded (and kept for status) at least one result that is NOT a cancellation says, as its last line, "Results
+  from before this was closed were not sent to the agent. Tell it what happened if it matters." (`action_model.rs`
+  `RESULTS_WITHHELD_BY_CLOSE_NOTE`). Screen only. Narrowed and reworded by the owner on 2026-11-11 (`fix/r18-closenote2`): a reply whose
+  discarded results are all cancelled calls has no note (card and model agree), and the words name neither a tab nor a pane.
   - Unit, `block/view_impl/output_tests.rs` `discarded_by_close_tests::the_reply_of_a_restored_pane_notes_that_its_results_were_not_sent`:
     the decision the block draws from, with the pane's real action model and a real close-discard. No note before the close (control); the
-    note for a reply holding a discarded call (one that ran, one that was cancelled, both: one note); none for another reply or an empty one;
-    none in the kill switch's arm (`keep_status = false`). It pins the wording. It does not paint the line.
+    note for a reply holding a discarded call that finished (one that ran, one that FAILED, one that ran + one cancelled: one note); NO note
+    for a reply whose only discarded call was cancelled (this expectation was "note" before the owner's rule of 2026-11-11; control: that
+    result is still kept for its card); none for another reply or an empty one; none in the kill switch's arm (`keep_status = false`). It pins the wording. It does not paint the line.
   - Unit, `controller_tests.rs` `the_note_of_a_restored_pane_is_in_no_request_and_no_export`: the same close, undo and two prompts as
     `a_result_a_pane_close_discarded_is_in_no_later_request`, read as text on the same paths (every in-flight stream's parameters, every
     exchange's inputs, every task message) plus `export_to_markdown` (copy, export, the conversation attachment): the note's words are in
@@ -7161,7 +7164,8 @@ that discards something: `hop=agent_close_discard conversation=<id> results=<n> 
   - App case `agent_close_undo_call_status`, two more oracles. After the undo the note is read off the screenshot `close_undo_restored` by
     OCR (`cases_caseagent.fuzzy_has`), with the prompt the case typed as the control on the same screenshot: the control read and the note not
     is a FAILURE; no OCR engine, or neither read, is UNVERIFIABLE, never a pass (metric `close_note_shown` 1 / 0 / -1). Judged only when the
-    close logged `kept_status=1`. And the note's words are in no string of any request the fake model receives after the close
+    close logged `kept_status=1`. The case still expects the note under the narrowed rule: the command it closes on RAN to the end (action
+    status `done`), so one discarded result is not a cancellation. And the note's words are in no string of any request the fake model receives after the close
     (`requests_with_note`, line breaks tolerated). The self-test pins the case's text against the app's constant.
   - What the next run should show: both unit tests pass; the app case PASSES with `close_note_shown = 1` on a machine with an OCR engine
     (Linux box: tesseract; macOS: Apple Vision), UNVERIFIABLE on a machine with none (the Windows VM, unless a tesseract is on its PATH), with its other oracles judged.

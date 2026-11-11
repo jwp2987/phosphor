@@ -1276,8 +1276,8 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
     output_items.finish()
 }
 
-/// #2103 (owner decision 2026-11-11): the note under a reply some of whose finished results a
-/// pane close discarded, or `None`. After the undo the card of such a call can say it ran while
+/// #2103 (owner decision 2026-11-11): the note under a reply of which a pane close discarded a
+/// result that is not a cancellation (a call that succeeded or failed), or `None`. After the undo the card of such a call can say it ran while
 /// the model is told the reply's calls were interrupted (#848); the note says so, in words.
 /// The decision is the action model's (`results_withheld_by_close_note`): this only hands it
 /// the calls of this block's reply.

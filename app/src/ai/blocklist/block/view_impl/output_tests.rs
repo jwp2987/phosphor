@@ -547,13 +547,18 @@ mod discarded_by_close_tests {
     }
 
     /// #2103, the note (owner decision 2026-11-11): what the block of a reply decides on when
-    /// it draws "Results from before this tab was closed were not sent to the agent. ..."
-    /// under the reply. With the pane's real action model and a real close-discard:
+    /// it draws "Results from before this was closed were not sent to the agent. ..." under
+    /// the reply. With the pane's real action model and a real close-discard:
     ///
     /// * before the close: no note (a finished, unsent result is still going to be sent);
-    /// * after the close and its undo: the reply that holds a discarded call has the note,
-    ///   whichever of its calls was discarded (one that ran, one that was cancelled), once
-    ///   for the reply however many there were;
+    /// * after the close and its undo: a reply has the note when at least one of its
+    ///   discarded results is NOT a cancellation, that is, the call finished: it succeeded
+    ///   (`ran`) or it failed (`failed`). Once for the reply however many there were, and
+    ///   also when another of its calls was cancelled (one ran + one cancelled: note);
+    /// * a reply whose only discarded result is a cancelled one: NO note. This expectation
+    ///   changed with the owner's rule of 2026-11-11 (it was "note" in the first version of
+    ///   this test): the card says cancelled and the model is told interrupted, so they
+    ///   already agree and the line would be noise. The result is still kept for its card;
     /// * a reply with none of those calls, and an empty reply: no note;
     /// * the kill switch's arm (the close erases, `keep_status = false`): no note.
     ///
@@ -565,7 +570,7 @@ mod discarded_by_close_tests {
 
         assert_eq!(
             RESULTS_WITHHELD_BY_CLOSE_NOTE,
-            "Results from before this tab was closed were not sent to the agent. Tell it what \
+            "Results from before this was closed were not sent to the agent. Tell it what \
              happened if it matters.",
             "the note's wording (the app case agent_close_undo_call_status reads it off the \
              screen, and its self-test pins this line)"
@@ -596,6 +601,7 @@ mod discarded_by_close_tests {
 
             let ran = AIAgentActionId::from("ran-before-close".to_owned());
             let stopped = AIAgentActionId::from("stopped-before-close".to_owned());
+            let failed = AIAgentActionId::from("failed-before-close".to_owned());
             let other_reply = AIAgentActionId::from("call-of-another-reply".to_owned());
             let erased = AIAgentActionId::from("erased-by-the-kill-switch".to_owned());
             let success = || GrepResult::Success {
@@ -610,6 +616,14 @@ mod discarded_by_close_tests {
                     conversation_id,
                     grep_result(&stopped, &task_id, GrepResult::Cancelled),
                 );
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(
+                        &failed,
+                        &task_id,
+                        GrepResult::Error("no such directory".to_owned()),
+                    ),
+                );
             });
             let note = |app: &App, ids: &[&AIAgentActionId]| {
                 action_model.read(app, |action_model, _| {
@@ -621,7 +635,7 @@ mod discarded_by_close_tests {
                 !action_model.read(&app, |model, _| model.has_results_withheld_by_close()),
                 "control: before the close nothing is withheld"
             );
-            assert_eq!(note(&app, &[&ran, &stopped]), None);
+            assert_eq!(note(&app, &[&ran, &stopped, &failed]), None);
 
             // The close and its undo, as the pane drives its controller.
             controller.update(&mut app, |controller, ctx| {
@@ -632,9 +646,33 @@ mod discarded_by_close_tests {
 
             let shown = Some(RESULTS_WITHHELD_BY_CLOSE_NOTE);
             assert!(action_model.read(&app, |model, _| model.has_results_withheld_by_close()));
-            assert_eq!(note(&app, &[&ran, &stopped]), shown);
+            assert_eq!(
+                note(&app, &[&ran, &stopped]),
+                shown,
+                "one call ran and one was cancelled: the card of the one that ran says so and \
+                 the model was not told"
+            );
             assert_eq!(note(&app, &[&ran]), shown);
-            assert_eq!(note(&app, &[&stopped]), shown);
+            assert_eq!(
+                note(&app, &[&failed]),
+                shown,
+                "a call that failed finished too: its card shows the failure and the model \
+                 was not told"
+            );
+            assert_eq!(note(&app, &[&stopped, &failed]), shown);
+            assert!(
+                action_model.read(&app, |model, _| model
+                    .is_result_discarded_by_close(&stopped)),
+                "control: the cancelled result was discarded and kept for its card, so the \
+                 next assertion is about the rule and not about a result that is not there"
+            );
+            assert_eq!(
+                note(&app, &[&stopped]),
+                None,
+                "every discarded result of this reply is a cancellation: card (cancelled) and \
+                 model (interrupted) agree, no note (owner rule 2026-11-11)"
+            );
+            assert_eq!(note(&app, &[&other_reply, &stopped]), None);
             assert_eq!(note(&app, &[&other_reply, &ran]), shown);
             assert_eq!(
                 note(&app, &[&other_reply]),
