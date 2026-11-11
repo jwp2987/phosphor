@@ -197,6 +197,17 @@ class Session:
 
 
 RAW_SEQS = []
+# #2099: what InitShell said the shell's pid is, and the pid of the pwsh this script started.
+RAW_PIDS = []
+SHELL_PIDS = []
+
+
+def machine_user_and_host():
+    """What pwsh reports as [Environment]::UserName and [System.Net.Dns]::GetHostName() here."""
+    import pwd
+    import socket
+
+    return pwd.getpwuid(os.getuid()).pw_name, socket.gethostname()
 
 
 def normalise(events, tmp):
@@ -225,6 +236,18 @@ def normalise(events, tmp):
                     if key in value:
                         value[key] = "<%s %s>" % (key, "set" if value[key] else "empty")
                 value["keywords"] = value.get("keywords", "")[:20]
+            if e[1] == "InitShell" and isinstance(value, dict):
+                # #2099: the pid differs on every run (compared separately in main(): it is the
+                # pid of the pwsh this script started), so it is taken out here like `seq` below.
+                # The user and the host differ per machine: a value that IS this machine's
+                # becomes a placeholder, any other value stays as it is and fails the comparison.
+                if "pid" in value:
+                    RAW_PIDS.append(value.pop("pid"))
+                user, host = machine_user_and_host()
+                if value.get("user") == user:
+                    value["user"] = "<this user>"
+                if value.get("hostname") == host:
+                    value["hostname"] = "<this host>"
             # #1353: the per-session sequence number depends on how many prompts came before
             # (it is compared separately in main(): present and strictly increasing), so it is
             # taken out here and the golden stays valid for scripts that predate it.
@@ -291,6 +314,7 @@ def record():
     try:
         table = scenarios(tmp)
         s = Session(home, tmp)
+        SHELL_PIDS.append(s.pid)
         try:
             boot_events = s.wait_for(
                 lambda ev: any(e[:2] == ["hook", "InitShell"] for e in ev), "InitShell"
@@ -352,6 +376,12 @@ def main():
             "Precmd/Preexec seq present and strictly increasing (%d hooks)" % len(RAW_SEQS),
             "seqs: %s" % RAW_SEQS[:40],
         )
+    # #2099 (#1679): InitShell carries the shell's own pid.
+    check(
+        RAW_PIDS == SHELL_PIDS and len(RAW_PIDS) == 1 and isinstance(RAW_PIDS[0], int),
+        "InitShell pid is the pid of the pwsh that was started",
+        "InitShell said %s, started %s" % (RAW_PIDS, SHELL_PIDS),
+    )
     print("FAILED: %s" % ", ".join(failures) if failures else "all hook sequences identical")
     return 1 if failures else 0
 

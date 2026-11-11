@@ -4,10 +4,10 @@
    "hook",
    "InitShell",
    {
-    "hostname": "winters-83td",
+    "hostname": "<this host>",
     "session_id": 12345678901234,
     "shell": "pwsh",
-    "user": "winters"
+    "user": "<this user>"
    }
   ]
  ],

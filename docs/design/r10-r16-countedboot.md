@@ -76,3 +76,18 @@ expectation changed.
 One shell line, under `WARP_IN_MSYS2` and the off-by-default `PHOSPHOR_MSYS_MANAGED_SSH=1`.
 Not run on Windows/msys or on bash 3.2. What is sent grows by two bytes (the added lines are
 comments, which are not sent).
+
+## Second finding while running the other script tests: `test_pwsh_hook_equivalence` (#2099)
+
+Fails wherever pwsh is installed: `InitShell` has `pid` since 8ff4fc89b (#1679, on purpose), the
+golden (`script/testdata/pwsh_hooks_golden.json`) predates it. Reading the golden showed a second
+fault: it held the recording machine's host name and user name, so the script could pass on that
+one machine and account only. It is in the `precheck` list but skips without pwsh, so no gate
+showed either.
+
+Verdict: TEST fault, no app change. Fix, in the way the script already treats `seq` (#1353):
+`pid` is taken out before the comparison and checked on its own (it must be the pid of the pwsh
+the script started: stricter than a golden value could be); `user` / `hostname` become
+placeholders only when they are this machine's values, anything else stays and fails. The two
+golden values were replaced by the placeholders by hand; nothing was re-recorded, so no other
+expectation moved.
