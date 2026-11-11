@@ -139,12 +139,17 @@ NOT_PLAYABLE = "not playable"
 LAB_HELPER_TOOL_RX = re.compile(r"lab_helper: ERROR (?:(\S+) is missing for this user|the (\S+) rust target is not installed)")
 
 
-def lab_tier_vars(plat, tier="candidate", globs=None):
+PLAT_LAB_ALL = False        # --lab-all-families (#2063, r23): the Mac and Windows lab jobs play every lab family (their own `lab_*`), not the PROVING_LAB globs
+
+
+def lab_tier_vars(plat, tier="candidate", globs=None, all_families=None):
     """the play-time variables of a candidate / release lab job on platform plat (the fix tier's are lab_fix_vars). Linux: every family (the job's own
     `lab_*` under LAB_CANDIDATE_MATRIX). macOS / Windows: the quick matrix, and in LAB_PLAT_PROVING_ONLY_TIERS only the PROVING_LAB globs (`globs`, read
     from cases.py when None). With no glob at all APPCI_CASES is NOT passed: an empty play-time value would replace the job's `lab_*` with nothing."""
     v = {"APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": LAB_CANDIDATE_MATRIX if plat == LINUX else LAB_PLAT_MATRIX}
-    if plat != LINUX and tier in LAB_PLAT_PROVING_ONLY_TIERS:
+    if all_families is None:
+        all_families = PLAT_LAB_ALL
+    if plat != LINUX and tier in LAB_PLAT_PROVING_ONLY_TIERS and not all_families:
         globs = proving_lab_globs() if globs is None else globs
         if globs:
             v["APPCI_CASES"] = ",".join(globs)
@@ -878,6 +883,8 @@ def self_test_r15(yml, src):
         ("APPCI_CASES" not in lab_tier_vars(LINUX, "candidate", g) and "APPCI_CASES" not in lab_tier_vars(LINUX, "release", g)
          and "APPCI_CASES" not in lab_tier_vars(MAC, "fix", g) and "APPCI_CASES" not in lab_tier_vars(WIN, "full", g),
          "the Linux lab job keeps the job's own lab_* in both tiers (every family); a tier the constant does not name passes no APPCI_CASES"),
+        (all("APPCI_CASES" not in lab_tier_vars(p, t, g, True) and lab_tier_vars(p, t, g, True)["APPCI_LAB_MATRIX"] == "quick" for p in (MAC, WIN) for t in ("candidate", "release"))
+         and "APPCI_CASES" in lab_tier_vars(MAC, "candidate", g, False), "--lab-all-families: Mac and Windows keep the job's own lab_* (every family) in candidate and release"),
         ("APPCI_CASES" not in lab_tier_vars(MAC, "candidate", ()), "no PROVING_LAB glob: APPCI_CASES is not passed empty (the job's lab_* stays)"),
         ("lvars = lab_tier_vars(p, tier)" in src, "the driver passes its tier to the Mac / Windows lab variables"),
         (all(re.search(r'^    APPCI_FAKE_EMBEDDINGS: "1"', job_block(j), re.M) for j in LAB_APP.values()) and re.search(r'^    APPCI_FAKE_EMBEDDINGS: "0"', job_block(REPLAY_JOB), re.M)
@@ -1237,6 +1244,9 @@ def main():
     ap.add_argument("--skip", nargs="*", default=[])
     ap.add_argument("--reuse-job", action="append", default=[], metavar="PLATFORM=JOB_ID",
                     help="harness-only rounds: test this earlier build job of PLATFORM even though the app changed since (recorded as reused)")
+    ap.add_argument("--lab-all-families", action="store_true",
+                    help="candidate / release: the Mac and Windows lab jobs play every lab family (the job's own lab_*, quick matrix, helper arms from lab-helper's "
+                         "artifact) instead of only the PROVING_LAB globs (#2063)")
     ap.add_argument("--no-reuse", action="store_true", help="fix tier: always build, never reuse an earlier app-identical build")
     ap.add_argument("--collect", action="store_true", help="at the end run script/ci/collect_results.py for this pipeline (writes test-results/; you commit it)")
     ap.add_argument("--self-test", action="store_true", help="run the table-driven checks of the TEST_FILTER derivation and exit")
@@ -1248,6 +1258,8 @@ def main():
                     help="a job still 'running' after X times its own .gitlab-ci.yml timeout is reported RUNNING-DEADLINE and the run continues (default 2)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (filter, suites, platforms) and exit")
     a = ap.parse_args()
+    global PLAT_LAB_ALL
+    PLAT_LAB_ALL = bool(a.lab_all_families)
     if a.self_test:
         return self_test()
     if a.derive_env:

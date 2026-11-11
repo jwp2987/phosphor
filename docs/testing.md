@@ -6620,6 +6620,14 @@ families), `r15_helper_arm_without_a_helper_file_skips_with_needs`, and `r15_tie
 **Not changed (owner decisions).** The release gate's job list (`ci_seq.release_gate_jobs`, `ci_seq.APP`, `check_release_gate.py`): the lab jobs, the
 replay and `lab-helper` are played and judged by the release tier's verdict but a tag does not require them. Which matrix the Mac and Windows lab jobs play.
 Whether the fix tier keeps the x11 pass after its first clean run.
+**Round 23 (#2063, #2042, #2062): the Mac and Windows lab with every family.** `ci_seq.py --tier candidate|release --lab-all-families` makes
+`app-test-lab-macos` / `-windows` play the job's own `lab_*` (every lab family, quick matrix, scripted model) instead of only the `PROVING_LAB` globs;
+without the flag the owner's 2026-11-11 rule stands (PROVING_LAB only). A targeted run reaches the same jobs with the `macos-lab` / `windows-lab` keys of
+the cases file (names `lab_*`); `lab-helper` and `sshlab-image` are played first whenever any lab job is in the plan. The helper bundle is named after the
+helper binary's ELF machine (`cases_lab.helper_arch`), never the runner's CPU, so an arm64 Mac stages `linux-x86_64` for the x86_64 lab host. The Mac and
+Windows jobs take the helper as `lab-helper`'s artifact with `APPCI_APP_PINNED_DIGESTS=0`: the `nohelper`, `helper` and `never`-free arms are judged, the
+`upload` / `upgrade` arms stay UNVERIFIABLE by design on a dev build. Worked, unproven: self-tests only (`ci_seq.py --self-test`, `run.py --self-test`);
+the first Mac and Windows lab play, and the system dialog that blocked the Mac in round 15, are still to be seen.
 Harness finding, not changed here (#2082): `app.py` sets `PHOSPHOR_APPCI_FIND_FILE` only in the Windows launcher, so the find hook (#1789) has never been on in a Linux or macOS run and every Linux pointer case has placed the pointer by OCR (r12a rows carry "app find hook gave no position"). The statement above in 2.8 that `app.py` sets it holds for Windows only. **Since closed:** the Linux launcher arms it since round 14 (`e9018de13`, #2069) and the macOS launcher since round 15 (`app.find_hook_env`), so the statement in 2.8 now holds on all three platforms; see the round 15 section at the end.
 ## Round 15: the defects the round 14 cases found (`appci/cases_r15_defects.py`; design `docs/design/r15-defects.md`; #2079 #2080 #2081 #2082; nothing compiled, no app run when written)
 Four issues filed while the round 14 cases were written. Three are app changes, each with a kill switch and unit tests; one is the
