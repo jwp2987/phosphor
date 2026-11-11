@@ -5,7 +5,7 @@
 # UNVERIFIABLE (never a pass). `nohelper` (no remote helper on the server) is the default and always the first arm; `helper` pre-installs the binary named by
 # APPCI_LAB_HELPER_BIN (a built phosphor-remote; the lab blocks outbound network, so nothing could be downloaded anyway) with never_install; when that
 # variable is not set the binary is this checkout's entry in the machine-local helper cache (script/ci/lab_helper.py, filled by the manual `lab-helper` job:
-# resolve_helper_bin), and the arm is UNVERIFIABLE with the reason when there is neither. The Wave H arms (#1804) use the same binary as the bundle the app uploads: `upload` (nothing on the server, always_install), `upgrade` (older
+# resolve_helper_bin), and the arm SKIPs with `NEEDS: ...` (helper_missing_reason; round 15, #2063) when there is neither. The Wave H arms (#1804) use the same binary as the bundle the app uploads: `upload` (nothing on the server, always_install), `upgrade` (older
 # versions pre-seeded), `never` (per-host policy never: nothing may be uploaded, the session still works). Scenario user p_noscp refuses scp/sftp.
 #
 # [hook] marks a check that rests on an app log line the Wave 0 code adds. The patterns below are the agreed names; until the app logs them the check is
@@ -105,6 +105,18 @@ def resolve_helper_bin(env=None):
     return os.path.join(entry, cache.BIN), None
 
 
+# round 15 (#2063; the machine change is #2062): what a helper arm says when there is no helper file for this checkout. The box builds it (the `lab-helper`
+# job, script/ci/lab_helper.py: zig + cargo-zigbuild + the musl rust target, none of which the job installs); the macOS and Windows lab jobs take that
+# job's artifact (helper-artifacts/, APPCI_LAB_HELPER_BIN in .gitlab-ci.yml). ci_seq.py plays lab-helper first in the candidate and release tiers.
+HELPER_NEEDS = ("NEEDS: a built lab helper for this checkout: zig, cargo-zigbuild and the x86_64-unknown-linux-musl rust target for the runner user on the Linux box "
+                "(owner, machine change, #2062), then the `lab-helper` job played on this ref (the macOS and Windows lab jobs take its artifact)")
+
+
+def helper_missing_reason(helper_arm, why):
+    """the SKIP text of a helper arm that has no helper file: the arm, what was looked for (resolve_helper_bin's reason), and the machine change"""
+    return "%s arm: no helper file (%s). %s" % (helper_arm, why, HELPER_NEEDS)
+
+
 # Arms in which the APP uploads (or must refuse to upload) the helper. A bundled build with no pinned helper digest refuses EVERY upload by design
 # (setup::decide_helper_digest, INSTALL_REFUSED_NO_PINNED_DIGEST), which is what CI's dev builds are (.gitlab-ci.yml, "Build jobs"): there an `upload` /
 # `upgrade` arm can only fail and a `never` arm can only pass, whatever the app does. The job says so with APPCI_APP_PINNED_DIGESTS=0 and these arms are then
@@ -171,7 +183,8 @@ def set_denied_hosts(ctx, hosts):
 
 
 def lab_prepare(ctx, r, arm):
-    """True when the arm may run. Skips (no lab / wrong image), or marks the arm UNVERIFIABLE and returns False (helper binary missing, RTT gate mismatch)."""
+    """True when the arm may run. Skips (no lab / wrong image / no helper file: NEEDS), or marks the arm UNVERIFIABLE and returns False (a helper file that is
+    not a helper, a build that refuses uploads, RTT gate mismatch)."""
     lab = getattr(ctx, "lab", None)
     if lab is None:
         r.skip(getattr(ctx, "lab_why", None) or "no fake ssh lab for this pass (APPCI_LAB, docs/testing.md 2.15)")
@@ -189,8 +202,9 @@ def lab_prepare(ctx, r, arm):
             return False
         helper_bin, why = resolve_helper_bin()
         if not helper_bin:
-            r.unverifiable("%s arm: %s" % (arm["helper"], why))
-            return False
+            # round 15 (#2063, #2062): no helper file is a missing machine capability, not missing evidence: a SKIP that names the change (it was a NOREF
+            # row, 40 a run, whose text did not say what to do). The runner's cleanup undoes the swap above (cases_lab._runner).
+            r.skip(helper_missing_reason(arm["helper"], why))
         line = helper_version_line(helper_bin)
         if line is None:
             r.unverifiable("%s arm: `%s --version` did not print `phosphor-remote <version> protocol <n>`; APPCI_LAB_HELPER_BIN must be a built phosphor-remote" % (arm["helper"], helper_bin))
