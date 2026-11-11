@@ -89,7 +89,19 @@ fn fatal_errors_still_count_and_recreate() {
     let decision = state.on_frame_error(&Error::DeviceLost);
     assert!(decision.counts_toward_exit);
     assert!(decision.recreate_renderer);
-    assert_eq!(decision.retry_after, None);
+    // The rebuilt renderer must redraw the frame that hit the loss (#2101).
+    assert_eq!(decision.retry_after, Some(Duration::from_millis(16)));
+}
+
+#[test]
+fn fatal_errors_back_off_their_redraw_retries() {
+    let mut state = DrawRetryState::default();
+    state.on_frame_error(&Error::DeviceLost);
+    let decision = state.on_frame_error(&Error::DeviceLost);
+    assert_eq!(decision.retry_after, Some(Duration::from_millis(32)));
+    state.on_frame_drawn();
+    let decision = state.on_frame_error(&Error::DeviceLost);
+    assert_eq!(decision.retry_after, Some(Duration::from_millis(16)));
 }
 
 #[test]
@@ -237,6 +249,6 @@ fn the_error_the_test_hook_reports_rebuilds_the_renderer() {
     let decision = state.on_frame_error(&Error::DeviceLost);
     assert!(decision.recreate_renderer);
     assert!(decision.counts_toward_exit);
-    assert_eq!(decision.retry_after, None);
+    assert_eq!(decision.retry_after, Some(Duration::from_millis(16)));
     state.on_frame_drawn();
 }
