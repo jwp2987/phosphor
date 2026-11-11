@@ -115,6 +115,10 @@ PROVING = (
     # round 14 wave 3a (docs/design/r14-test-gaps.md 7.1, T21 to T25): pointer and pane cases. Linux pointer for the first four (macOS and Windows SKIP
     # naming the missing pointer tool); pane_resize_maximize also runs on macOS by keyboard
     "link_and_path_click", "selection_modes", "primary_and_middle_click", "wheel_scroll", "pane_resize_maximize",
+    # round 15 wave 5c (docs/design/r15-w5c.md; r14-test-gaps T48, T49, F10). #2071: agent_code_recycle now runs on the scripted model (PROVING_FAKE below)
+    # and has never been judged. T48: gpu_real_render, the app on the machine's render node against a forced software launch (Linux). T49: soak, 10
+    # minutes in the fix tier on macOS and Windows where it is proving (process sampling without /proc); the Linux soak stays full-tier only and SKIPS here
+    "agent_code_recycle", "gpu_real_render", "soak",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -122,6 +126,7 @@ PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_i
                                                          "agent_gate_", "agent_question_")) or n in ("agent_steer_fast", "agent_mcp_faults", "mcp_basic", "agent_multitab_streaming", "network_gate_notice",
                                                                                                       "agent_model_switch", "agent_anthropic_wire", "agent_autorun_permissions", "agent_conversation_resume", "agent_block_context",
                                                                                                     "agent_hidden_tab_attention"))
+PROVING_FAKE += ("agent_code_recycle",)      # #2071 (round 15 wave 5c): its answer is fake_model.snippet_reply, never a real model's wording
 # The PROVING lab cases (cases_lab*.py, the fake ssh lab). Globs, as --cases takes them. The fix tier plays app-test-lab-linux with these
 # (script/ci/ci_seq.py LAB_FIX_CASES), Linux only, APPCI_FAKE_MODEL=1, APPCI_LAB_MATRIX=quick.
 # #1970 / #1983 (round 10): the slow-link and Ctrl-C lab cases had existed since 2026-11-08 but no tier ever played them. lab_enter_no_network_wait is new;
@@ -6477,3 +6482,4 @@ import cases_agent_w2  # noqa: E402,F401  (round 14 wave 2, T11-T15: agent_model
 import cases_r14_state  # noqa: E402,F401  (round 14 wave 2b, T16-T20: agent_hidden_tab_attention, settings_ui_toggle_persists, osc52_write_read, history_survives_restart, restore_shows_history)
 import cases_window_use  # noqa: E402,F401  (r14 wave 3, T26-T30: resize_reflow_output, context_menu_actions, tab_pointer_use, focus_cycle, minimize_fullscreen)
 import cases_pointer  # noqa: E402,F401  (r14 wave 3a: link_and_path_click, selection_modes, primary_and_middle_click, wheel_scroll, pane_resize_maximize)
+import cases_r15_w5c  # noqa: E402,F401  (round 15 wave 5c, T48: gpu_real_render; T47 / T49 / #2071 changed cases that already existed)

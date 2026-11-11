@@ -280,7 +280,7 @@ def main():
     def case_limit(name):
         if name.startswith("lab_replay"):         # the real-use replay runs APPCI_REPLAY_MINUTES (15) plus its setup and drain
             return max(case_timeout, float(os.environ.get("APPCI_REPLAY_MINUTES", "15")) * 60 * 1.6 + 900)
-        return max(case_timeout, float(os.environ.get("APPCI_SOAK_MIN", "60")) * 60 + 600) if name == "soak" else case_timeout
+        return max(case_timeout, cases.cases_robust.soak_minutes() * 60 + 600) if name == "soak" else case_timeout      # 60 min; 10 in the fix tier (T49)
 
     for mode, pane, fake in passes:
         # per-mode fresh profile + app: settings differ (default_session_mode). Windows: once per pane shell too (label = terminal | terminal@gitbash)

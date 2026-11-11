@@ -22,6 +22,7 @@ import cases_robust as R  # noqa: E402
 import cases_caseremote as CR  # noqa: E402
 import cases_caseagent as CA  # noqa: E402
 import cases_ui as UI  # noqa: E402
+import priv_boundary as PB  # noqa: E402  (T47: who the pane may become without a password, and the exact NEEDS: text)
 from cases import case  # noqa: E402
 
 
@@ -320,24 +321,30 @@ def c_alt_mouse(ctx, r):
 
 
 # ------------------------------------------------------------------ #1536 sudo / su / ksu
-def nested_root_lines(ctx, r, label, start_cmd, n, wanted_uid):
-    """type start_cmd, prove the inner shell by `id -u` into a file, type n exact lines into it, exit, and prove the local shell is back"""
+def nested_root_lines(ctx, r, label, start_cmd, n, wanted_uid, d=None):
+    """type start_cmd, prove the inner shell by `id -u` into a file, type n exact lines into it, exit, and prove the local shell is back.
+    `d`: the directory of the inner shell's effect file, one BOTH users can write (priv_boundary.shared_dir); the pane's work dir when None.
+    Returns True when the inner shell was the wanted user."""
     f = "ca_%s.txt" % label
-    ctx.rm(f)
-    abs_f = os.path.join(ctx.W, f)
+    abs_f = os.path.join(d or ctx.W, f)
+    try:
+        os.remove(abs_f)
+    except OSError:
+        pass
     base = ctx.shell_count()
     ctx.be.type(start_cmd, ctx.rng.randint(10, 25), enter=True)
     time.sleep(2.5)
     ctx.shot("%s_inner" % label)
     ctx.be.type("id -u >> %s" % abs_f, ctx.rng.randint(10, 25), enter=True)
-    ctx.until(lambda: ctx.lines(f), 10)
-    first = ctx.lines(f)
-    r.check(first == [str(wanted_uid)], "%s: the inner shell is not the expected user: `id -u` gave %r, expected %r" % (label, first, wanted_uid))
+    ctx.until(lambda: PB.read_lines(abs_f), 10)
+    first = PB.read_lines(abs_f)
+    inner = r.check(first == [str(wanted_uid)], "%s: the inner shell is not the expected user: `id -u` gave %r, expected %r (the CI user is %d: that uid here means "
+                                                "`%s` never started a shell and the line ran in the pane's own)" % (label, first, wanted_uid, os.geteuid(), start_cmd))
     toks = [ctx.tok(8).lower() for _ in range(n)]
     for t in toks:
         ctx.be.type("echo %s >> %s" % (t, abs_f), ctx.rng.randint(10, 25), enter=True)
-    ctx.until(lambda: len(ctx.lines(f)) >= n + 1, 15)
-    exact_lines(r, "%s: lines typed into the privileged shell" % label, [str(wanted_uid)] + toks, ctx.lines(f))
+    ctx.until(lambda: len(PB.read_lines(abs_f)) >= n + 1, 15)
+    exact_lines(r, "%s: lines typed into the privileged shell" % label, [str(wanted_uid)] + toks, PB.read_lines(abs_f))
     ctx.exit_nested(base, r, label, timeout=15)          # the privileged shell answers probes in ROOT's home ('nowhere'); the shell count proves it (audit #2)
     ctx.shot("%s_exited" % label)
     uid = str(os.geteuid())
@@ -347,40 +354,87 @@ def nested_root_lines(ctx, r, label, start_cmd, n, wanted_uid):
     ctx.until(lambda: ctx.lines(f2), 8)
     exact_lines(r, "%s: after exit the LOCAL shell is back (own uid)" % label, [uid], ctx.lines(f2))
     local_cmd_exact(ctx, r, label + "_after")
+    return inner
+
+
+def sudo_shell_command(target):
+    """pure: the sudo arm's line: a bash with a clean environment as the target user (root as the case was written; a test user through -u), with
+    that user's HOME, no rc files and no profile: the only thing between the keys and the inner bash is sudo."""
+    return "sudo %s env -i HOME=%s PATH=\"$PATH\" bash --noprofile --norc -i" % (target["flags"], target["home"])
+
+
+def su_plan(target, euid, environ, have_su, platform, pw):
+    """pure given pw: the su arm -> dict(run, cmd, user, uid, why). su asks no password only when ROOT runs it, so the arm needs the runner to be root
+    (`su ...`) or root through passwordless sudo (`sudo -n su ...`: su is still the program that starts the shell and holds the tty in front of it).
+    The user is APPCI_SU_USER, else `nobody` on Linux (given a shell with -s; BSD su has no -s and macOS's nobody has no shell, so macOS needs
+    APPCI_SU_USER). A sudo target that is only a test user cannot run su without a password: not run, with the reason."""
+    no = dict(run=False, cmd=None, user=None, uid=None)
+    if not have_su:
+        return dict(no, why="su is not installed")
+    rooted = euid == 0 or (target["ok"] and target["root"])
+    if not rooted:
+        return dict(no, why="su asks for a password unless root runs it: needs the runner to be root or passwordless ROOT sudo (euid %d; sudo target: %s)" % (
+            euid, target["user"] if target["ok"] else "none"))
+    mac = platform == "darwin"
+    user = (environ.get(PB.SU_USER_ENV) or "").strip() or (None if mac else "nobody")
+    if not user:
+        return dict(no, why="macOS su has no -s and its `nobody` has no shell: set %s to a user with a login shell" % PB.SU_USER_ENV)
+    try:
+        uid = pw(user)[0]
+    except KeyError:
+        return dict(no, why="su: no user %r on this machine" % user)
+    if uid == euid:
+        return dict(no, why="su: %r is the runner's own user (uid %d): no boundary to cross" % (user, uid))
+    su = ("su %s" % user) if (mac or environ.get(PB.SU_USER_ENV)) else ("su -s /bin/bash %s" % user)
+    return dict(run=True, cmd=su if euid == 0 else "sudo -n " + su, user=user, uid=uid, why="")
 
 
 @case("sudo_su_real_shell", modes=("terminal",), order=65, gui=True)
 def c_sudo_su(ctx, r):
-    """The real privilege boundary the nested-bash stand-in of remote_session_* only imitates (#1536). sudo: needs passwordless sudo (`sudo -n true`);
-    su: needs the runner to be root (su then needs no password); ksu: needs a Kerberos ticket. Each part that cannot run is UNVERIFIABLE with the reason,
-    and the case SKIPS when none can. Proof of the boundary is `id -u` typed INTO the inner shell, never the prompt."""
+    """The real privilege boundary the nested-bash stand-in of remote_session_* only imitates (#1536). Three arms, each needing something of the
+    machine (priv_boundary.py; T47):
+      sudo  a user the pane may become with no password: the test user named by APPCI_SUDO_USER (`sudo -n -u <user>`), else root (`sudo -n true`);
+      su    root runs su (the runner is root, or root through passwordless sudo: `sudo -n su ...`);
+      ksu   a Kerberos realm and a target principal, which are the owner's site: never run by the harness.
+    Proof of the boundary is `id -u` typed INTO the inner shell (the target's uid, never the CI user's and never the prompt), then exact lines, then
+    `exit` and the pane's own uid again. The verdict is the arms that RAN (metric `boundaries_run`); an arm the machine cannot run is listed as
+    `NOT RUN:` with its reason and in `boundaries_not_run`, and the case SKIPS with the machine change when none can.
+    Round 15: until now every arm that could not run made the row NOREF, and ksu can never run, so the case could not PASS on any machine."""
     if ctx.win or os.name == "nt":
         r.skip("sudo/su/ksu do not exist in a Windows pane")
-    ran = 0
-    if shutil.which("sudo") and subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0:
-        ran += 1
-        nested_root_lines(ctx, r, "sudo", "sudo -n env -i HOME=/root PATH=\"$PATH\" bash --noprofile --norc -i", ctx.count(8), 0)
-    else:
-        r.unverifiable("sudo: `sudo -n true` fails on this machine (no passwordless sudo, or sudo missing): the sudo boundary did not run")
-    if os.geteuid() == 0 and shutil.which("su") and shutil.which("id"):
-        ran += 1
-        who = "nobody"
+    ran, not_run = [], []
+    t = PB.sudo_target()
+    if t["ok"]:
+        d, cleanup = PB.shared_dir(ctx.W, t["uid"], "sudo")
         try:
-            import pwd
-            uid = pwd.getpwnam(who).pw_uid
-            os.chmod(ctx.W, 0o777)
-            nested_root_lines(ctx, r, "su", "su -s /bin/bash %s" % who, ctx.count(6), uid)
-        except KeyError:
-            r.unverifiable("su: no user %r on this machine" % who)
+            ran.append("sudo:%s" % t["user"])
+            nested_root_lines(ctx, r, "sudo", sudo_shell_command(t), ctx.count(8), t["uid"], d)
+        finally:
+            cleanup()
     else:
-        r.unverifiable("su: needs the runner to be root so that su asks no password (euid %d)" % os.geteuid())
+        not_run.append("sudo: %s" % t["why"])
+    import pwd
+    plan = su_plan(t, os.geteuid(), os.environ, bool(shutil.which("su") and shutil.which("id")), sys.platform, lambda u: (pwd.getpwnam(u).pw_uid,))
+    if plan["run"]:
+        d, cleanup = PB.shared_dir(ctx.W, plan["uid"], "su")
+        try:
+            ran.append("su:%s" % plan["user"])
+            nested_root_lines(ctx, r, "su", plan["cmd"], ctx.count(6), plan["uid"], d)
+        finally:
+            cleanup()
+    else:
+        not_run.append("su: %s" % plan["why"])
     if shutil.which("ksu") and subprocess.run(["klist", "-s"], capture_output=True).returncode == 0:
-        r.unverifiable("ksu: present with a valid ticket, but the target principal is site-specific; run it by hand (owner's realm)")
+        not_run.append("ksu: present with a valid ticket, but the target principal is site-specific; run it by hand (owner's realm)")
     else:
-        r.unverifiable("ksu: not installed or no Kerberos ticket (package krb5-user + kinit)")
+        not_run.append("ksu: not installed or no Kerberos ticket (package krb5-user + kinit); the realm is the owner's site, never the harness's")
+    r.metric("boundaries_run", ran)
+    r.metric("boundaries_not_run", [x.split(":", 1)[0] for x in not_run])
+    for x in not_run:
+        r.note("NOT RUN: " + x)
     if not ran:
-        r.skip("no privilege boundary could run here: passwordless sudo and root-for-su are both absent. NEEDS: a sudoers entry on this test machine that lets the CI user "
-               "run sudo without a password (owner: machine change); the su half also needs the runner to be root, the ksu half a Kerberos realm. Has never run on any machine")
+        r.skip("no privilege boundary could run here: passwordless sudo and root-for-su are both absent (%s). %s; the su half also needs the runner to be root or "
+               "passwordless ROOT sudo, the ksu half a Kerberos realm. Has never run on any machine" % ("; ".join(not_run[:2]), PB.sudo_needs()))
 
 
 # ------------------------------------------------------------------ #1535 ssh drop + reconnect

@@ -415,11 +415,15 @@ def fmt_lat(m):
 
 
 def soak_verdict(m):
+    """one entry per platform with a soak row: that platform's worst status (fail, then noref, pass, skip). Round 15 (T49): the fix tier soaks macOS
+    and Windows while Linux skips, and the first row found used to be the whole answer, so a Linux skip would have hidden the two that ran."""
+    rank = {"fail": 3, "noref": 2, "pass": 1, "skip": 0}
+    out = []
     for i in m.get("app", {}).values():
-        for c in i["cases"]:
-            if "soak" in c["name"]:
-                return "%s (%s)" % (c["status"], i["meta"].get("platform", ""))
-    return "n/a"
+        st = [c["status"] for c in i["cases"] if "soak" in c["name"]]
+        if st:
+            out.append("%s (%s)" % (max(st, key=lambda x: rank.get(x, 0)), i["meta"].get("platform", "")))
+    return ", ".join(out) or "n/a"
 
 
 def compile_state(m):

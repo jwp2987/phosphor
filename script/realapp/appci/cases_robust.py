@@ -13,6 +13,7 @@ import os, re, shutil, statistics, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases  # noqa: E402  (cases.py imports this module as its last line, so everything below is already defined)
 import toml_text as T  # noqa: E402
+import procsample as PS  # noqa: E402  (T49: memory and CPU of the app's processes on Linux, macOS and Windows)
 from cases import case, stats, plat  # noqa: E402
 
 NEWTAB = os.environ.get("APPCI_KEY_NEWTAB", "ctrl+shift+t")
@@ -851,38 +852,96 @@ def c_editor_paste(ctx, r):
 
 
 # ------------------------------------------------------------------ soak
-def proc_set(ctx):
-    """pids of the app: every process running the same executable as the app (the main process and its terminal-server helper)"""
-    pid = ctx.app.pid()
+# Process sampling is procsample.py (round 15, T49): /proc on Linux (the figures the soak has always used), `ps` over the job's bundle on macOS,
+# the app's Win32 job plus GetProcessTimes / GetProcessMemoryInfo (or one Get-Process) on Windows.
+SOAK_FIX_MIN = 10            # the fix tier's soak length: the proving run on macOS and Windows (owner 2026-11-11: release tier after proving at 10 minutes)
+SOAK_MIN_PLAUSIBLE_MB = 20   # a first reading under this is not this app (the sampler read the wrong process, or nothing): the control of the sampler
+
+
+def soak_minutes(env=None):
+    """pure: APPCI_SOAK_MIN when set, else SOAK_FIX_MIN in the fix tier (APPCI_TIER=smoke) and 60 in every other tier"""
+    env = os.environ if env is None else env
+    v = env.get("APPCI_SOAK_MIN", "")
+    if v:
+        return float(v)
+    return float(SOAK_FIX_MIN if env.get("APPCI_TIER") == "smoke" else 60)
+
+
+SOAK_FIX_WINDOWS = (("terminal", "powershell"), ("agent", "gitbash"))     # the Windows fix tier's two soak passes: each mode once, each pane once
+
+
+def soak_tier_skip(tier, platform, mode=None, pane=None):
+    """pure: the reason the soak does not run in this tier / platform / pass, or None. The fix tier plays it only where it is PROVING: macOS and
+    Windows (r14-test-gaps T49). The Linux soak has run in the full tier since round 18 and stays there (60 minutes, twice, is not a fix-tier case).
+    On Windows the fix tier has four passes (two modes x two panes): the soak runs in two of them, so each mode and each pane is soaked once."""
+    if tier != "smoke":
+        return None
+    if not (platform.startswith("macos") or platform.startswith("windows")):
+        return ("the fix tier plays the soak only on macOS and Windows, where it is proving at %d minutes (T49); the Linux soak is full-tier only "
+                "(60 minutes per mode)" % SOAK_FIX_MIN)
+    if platform.startswith("windows") and (mode, pane or "powershell") not in SOAK_FIX_WINDOWS:
+        return ("the Windows fix tier soaks each mode and each pane once (%s); this pass (%s, %s pane) is not one of the two. The full tier soaks all four" % (
+            ", ".join("%s in the %s pane" % mp for mp in SOAK_FIX_WINDOWS), mode, pane or "powershell"))
+    return None
+
+
+def soak_line(ctx, tok, absolute=False):
+    """the line that appends `tok` to soak.txt in the pane's shell (bash `echo >>`, PowerShell Add-Content). absolute=True names the file by its full
+    path: a NEW tab does not start in the work dir on every platform (macOS, Windows), and a token written elsewhere would read as a lost key."""
+    return ctx.append_cmd(ctx.pane_shell(), tok, fwd(os.path.join(ctx.W, "soak.txt")) if absolute else "soak.txt")
+
+
+def soak_flood_line(shell):
+    """pure: 300 000 lines of output in the pane's shell"""
+    return "1..300000" if shell == "pwsh" else "seq 1 300000"
+
+
+def pid_alive(pid):
+    """POSIX only: signal 0 probes a pid. On Windows os.kill(pid, 0) is TerminateProcess, so this refuses instead of killing something."""
+    if os.name == "nt":
+        raise NotImplementedError("pid_alive is POSIX only")
     try:
-        exe = os.readlink("/proc/%d/exe" % pid)
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
     except OSError:
-        return [pid] if pid else []
-    out = []
-    for p in os.listdir("/proc"):
-        if p.isdigit():
-            try:
-                if os.readlink("/proc/%s/exe" % p) == exe:
-                    out.append(int(p))
-            except OSError:
-                pass
-    return out
+        return True
 
 
-def sample(ctx):
-    """(rss_kib, cpu_ticks) summed over the app's processes (Linux); the platform's single-process figure elsewhere"""
-    if ctx.be.name == "mac":
-        t, k = ctx.app.cpu_ticks()
-        return k, t
-    rss = ticks = 0
-    for p in proc_set(ctx):
-        try:
-            f = open("/proc/%d/stat" % p).read().rsplit(")", 1)[1].split()
-            ticks += int(f[11]) + int(f[12])
-            rss += int(open("/proc/%d/statm" % p).read().split()[1]) * os.sysconf("SC_PAGE_SIZE") // 1024
-        except OSError:
-            pass
-    return rss, ticks
+def soak_close_tab(ctx, r, m):
+    """Close the throw-away tab. With a close key: the key, as on Linux and Windows (the next minute's sentinel proves the keys are back in the main
+    tab). Without one (macOS: every Cmd+W chord is refused by the frontmost-app guard): the tab's shell wrote its pid, Ctrl-D ends it, and the pid
+    going away is the proof; if it stays, the command palette's 'Close Current Session' (cases.editor_close) is tried. Returns None when the tab
+    is closed (or the platform has the key), else what was tried: a tab that stays open would be counted by the memory rule as growth."""
+    if CLOSE_PANE:
+        ctx.be.key(CLOSE_PANE)
+        time.sleep(0.8)
+        return None
+    pf = "soak_tabpid.txt"
+    ctx.rm(pf)
+    ctx.be.type("echo $$ > %s" % fwd(os.path.join(ctx.W, pf)), 12, enter=True)
+    got = ctx.until(lambda: [l for l in ctx.lines(pf) if l.strip().isdigit()], 8)
+    pid = int(got[0].strip()) if got else None
+    ctx.be.key("ctrl+d")
+    if pid and ctx.until(lambda: not pid_alive(pid), 5, step=0.1):
+        time.sleep(0.8)
+        return None
+    how = cases.editor_close(ctx, r)
+    if pid and how and ctx.until(lambda: not pid_alive(pid), 6, step=0.1):
+        time.sleep(0.8)
+        return None
+    return "minute %d: the throw-away tab's shell (pid %s) is still alive after Ctrl-D%s" % (m, pid if pid else "unknown: it never wrote its pid", " and %s" % how if how else "")
+
+
+def idle_cpu(ctx, secs=30):
+    """CPU percent of one core over `secs` of no input, summed over the app's processes; None when the processes could not be sampled"""
+    time.sleep(2)
+    a = PS.sample(ctx)
+    t = time.time()
+    time.sleep(secs)
+    b = PS.sample(ctx)
+    return PS.cpu_pct(a, b, time.time() - t)
 
 
 def growth_verdict(rss_mb):
@@ -904,15 +963,6 @@ def growth_verdict(rss_mb):
     if mono and g > lim:
         return "fail", "RSS grew monotonically %.0f -> %.0f MB (+%.0f MB > %.0f MB) over %d windows: %s" % (w[0], w[-1], g, lim, len(w), [round(x) for x in w])
     return "pass", "window medians %s MB, monotonic=%s, growth %+.0f MB (limit %.0f MB)" % ([round(x) for x in w], mono, g, lim)
-
-
-def idle_cpu(ctx, secs=30):
-    time.sleep(2)
-    _, a = sample(ctx)
-    t = time.time()
-    time.sleep(secs)
-    _, b = sample(ctx)
-    return (b - a) / os.sysconf("SC_CLK_TCK") / (time.time() - t) * 100
 
 
 SOAK_ALERT = re.compile(r"panic|SIGSEGV|SIGBUS|crash|terminal.?server[^\n]*(exit|died|restart|respawn|lost)|Session abandoned", re.I)
@@ -941,32 +991,50 @@ def soak_diff(exp, got):
 
 @case("soak", order=89, gui=True)
 def c_soak(ctx, r):
-    """FULL TIER ONLY. ~APPCI_SOAK_MIN (60) minutes of mixed use: every minute typed commands (10-25 ms/key), an instant-Enter paste, a
-    tab opened/used/closed, every 5th minute a 300k-line flood, every 10th (agent mode with a CI Ollama only) an agent prompt in a throw-away
-    tab. Every minute the RSS and CPU of the app's processes are sampled; the effect file proves every typed command arrived exactly.
-    Verdicts: RSS growth rule (growth_verdict docstring), idle CPU at the end <= max(5 %, start + 3 points), all commands exact.
+    """~soak_minutes() of mixed use (60; 10 in the fix tier, where it runs on macOS and Windows only while it is proving there, T49): every minute
+    typed commands (10-25 ms/key), an instant-Enter paste, a tab opened/used/closed, every 5th minute a 300k-line flood, every 10th (agent mode with a
+    provider only) an agent prompt in a throw-away tab. Every minute the memory and CPU of the app's processes are sampled (procsample.py: /proc on
+    Linux, `ps` over the job's bundle on macOS, the app's job and the Win32 process counters on Windows, private bytes there); the effect file
+    proves every typed command arrived exactly.
+    Verdicts: memory growth rule (growth_verdict docstring), idle CPU at the end <= max(5 %, start + 3 points), all commands exact, and the sampler
+    itself (a first reading that is not plausibly this app, or more than 3 minutes with no reading, FAILS: the memory verdict would rest on nothing).
     #1780: every minute also records the app's process set (a helper that respawns shows as a pid change and a memory drop), scans that minute's app-log
     lines for panics/crashes (soak_alerts.log), waits for the throw-away tab's shell prompt before typing (a missing token then names its cause), and the
     final report names the MISSING commands instead of a position count that one lost command turns into 295/660."""
-    if os.environ.get("APPCI_TIER") == "smoke":
-        raise cases.Skip("soak is full-tier only")
+    why = soak_tier_skip(os.environ.get("APPCI_TIER", ""), plat(), ctx.mode, getattr(ctx, "pane", None))
+    if why:
+        raise cases.Skip(why)
     if ctx.app is None or not hasattr(ctx.app, "pid"):
         raise cases.Skip("needs the real app (not the sim backend)")
-    if not CLOSE_PANE:
-        raise cases.Skip(NO_CLOSE_WHY)
-    mins = float(os.environ.get("APPCI_SOAK_MIN", "60"))
-    now = NOW(ctx)
+    if not CLOSE_PANE and (ctx.win or os.name == "nt"):
+        raise cases.Skip(NO_CLOSE_WHY)      # without a close key the tab is ended through its shell's pid (soak_close_tab): a POSIX pid, macOS in practice
+    linux = not ctx.win and ctx.be.name != "mac"
+    sh = ctx.pane_shell()
+    mins = soak_minutes()
+    # The growth rule needs 3 windows of 5 samples after a warm-up of 3: 18 samples. A run shorter than 18 minutes (the 10-minute proving run) takes a
+    # second memory sample at each minute boundary, after the idle wait, so the rule still gives a verdict; its thresholds are the 60-minute ones
+    # (150 MB or 25 %), which a healthy app does not reach in 10 minutes either. A 60-minute run is sampled once a minute, as it always was.
+    dense = mins < 18
+    r.metric("soak_samples_per_minute", 2 if dense else 1)
     ctx.rm("soak.txt")
     ctx.reset()
+    s0 = PS.sample(ctx)
+    r.metric("soak_sampler", s0["how"] if s0 else None)
+    main = ctx.app.pid()
+    if not r.check(bool(s0) and s0["rss_kib"] >= SOAK_MIN_PLAUSIBLE_MB * 1024 and main in s0["pids"],
+                   "soak: the sampler's first reading is not this app: %s (expected the app's main pid %s among the pids and at least %d MB): no memory or CPU "
+                   "verdict is possible" % ({k: s0[k] for k in ("pids", "rss_kib", "how")} if s0 else "nothing could be read", main, SOAK_MIN_PLAUSIBLE_MB)):
+        return
     cpu0 = idle_cpu(ctx, 20)
+    if not r.check(cpu0 is not None, "soak: the app's processes could not be sampled twice 20 s apart at the start (sampler %s)" % s0["how"]):
+        return
     r.metric("idle_cpu_start_pct", round(cpu0, 2))
     rss_s, cpu_s, exp = [], [], []
     csv = open(os.path.join(ctx.run, "soak_samples.csv"), "w")
     csv.write("minute,rss_mb,cpu_pct\n")
-    last_t, last_ticks = time.time(), sample(ctx)[1]
-    tclk = os.sysconf("SC_CLK_TCK")
-    pids0 = sorted(proc_set(ctx))
-    pid_changes, lost_tab, alerts = [], [], []
+    last_t, last = time.time(), PS.sample(ctx)
+    pids0 = sorted(last["pids"]) if last else sorted(s0["pids"])
+    pid_changes, lost_tab, alerts, misses = [], [], [], []
     alert_log = os.path.join(ctx.run, "soak_alerts.log")
     m = 0
     t_start = time.time()
@@ -981,11 +1049,11 @@ def c_soak(ctx, r):
         for i in range(8):                              # typed commands, exact
             tok = "s%d_%d_%s" % (m, i, ctx.tok(4).lower())
             exp.append(tok)
-            ctx.be.type("echo %s >> soak.txt" % tok, ctx.rng.randint(10, 25), enter=True)
+            ctx.be.type(soak_line(ctx, tok), ctx.rng.randint(10, 25), enter=True)
             time.sleep(0.2)
         tok = "p%d_%s" % (m, ctx.tok(4).lower())            # instant-Enter paste
         exp.append(tok)
-        ctx.be.clip_set("echo %s >> soak.txt" % tok)
+        ctx.be.clip_set(soak_line(ctx, tok))
         ctx.be.paste(enter=True)
         time.sleep(1.0)
         ctx.be.guard()
@@ -994,56 +1062,79 @@ def c_soak(ctx, r):
         time.sleep(0.8)
         # #1780: say whether the new tab's shell was up when the command was typed. Typing goes ahead either way (a key typed into a starting shell must
         # still arrive), but a missing token is then attributable: "no prompt in 10 s" is a slow tab start, "prompt was up" is a lost key.
-        prompt_up = bool(ctx.until(lambda: ctx.prof.prompts() > prompts0, 10, step=0.1))
+        # A pane with no rc hook (Windows PowerShell) has no prompt log: a fixed settle, and the attribution says so.
+        if ctx.prof.local_prompts:
+            prompt_up = bool(ctx.until(lambda: ctx.prof.prompts() > prompts0, 10, step=0.1))
+        else:
+            time.sleep(3.0)
+            prompt_up = None
         tok = "t%d_%s" % (m, ctx.tok(4).lower())
         exp.append(tok)
-        ctx.be.type("echo %s >> soak.txt" % tok, 12, enter=True)
+        ctx.be.type(soak_line(ctx, tok, absolute=not linux), 12, enter=True)
         if not ctx.until(lambda: tok in ctx.lines("soak.txt"), 8):
             lost_tab.append((m, tok, prompt_up))
             ctx.shot("soak_min%d_tab_token_missing" % m)
             r.note("soak minute %d: the throw-away tab's command %s did not reach soak.txt in 8 s (the tab's shell had %s when it was typed)" % (
-                m, tok, "shown a prompt" if prompt_up else "NOT shown a prompt within 10 s of the new-tab key"))
+                m, tok, "no prompt log in this pane (3 s settle)" if prompt_up is None else "shown a prompt" if prompt_up else "NOT shown a prompt within 10 s of the new-tab key"))
         if m % 10 == 0 and ctx.mode == "agent" and ctx.ollama:
             ctx.be.type("reply with just the word ok", 15, enter=True)      # agent prompt, in this throw-away tab only
             time.sleep(25)
             ctx.be.key("Escape")
-        ctx.be.key(CLOSE_PANE)
-        time.sleep(0.8)
+        left_open = soak_close_tab(ctx, r, m)
+        if left_open:
+            ctx.shot("soak_min%d_tab_not_closed" % m)
+            r.check(False, "soak %s: tabs would pile up and read as memory growth, so the soak stops here. NEEDS: a close chord the macOS backend may send "
+                           "(r14-test-gaps T32; APPCI_KEY_CLOSE)" % left_open)
+            break
         if m % 5 == 0:
             ctx.be.guard()
-            ctx.be.type("seq 1 300000", 12, enter=True)
+            ctx.be.type(soak_flood_line(sh), 12, enter=True)
             time.sleep(8)
         tok = "z%d_%s" % (m, ctx.tok(4).lower())          # sentinel back in the main tab: keys still go where they should
         exp.append(tok)
-        ctx.be.type("echo %s >> soak.txt" % tok, 12, enter=True)
-        if not ctx.until(lambda: tok in ctx.lines("soak.txt"), 30):
+        ctx.be.type(soak_line(ctx, tok), 12, enter=True)
+        if not ctx.until(lambda: tok in ctx.lines("soak.txt"), 90 if ctx.win else 30):      # Windows: 300k lines through ConPTY (and msys `seq`) drain slower
             ctx.shot("soak_min%d_stuck" % m)
             r.check(False, "soak minute %d: sentinel %s never reached the shell (a dialog or a stuck tab ate the keys)" % (m, tok))
             break
-        # sample at the end of the activity, then idle to the minute boundary
-        pids = sorted(proc_set(ctx))
-        if pids != pids0:
-            pid_changes.append((m, pids0, pids))
-            r.note("soak minute %d: the app's process set changed %s -> %s (a helper restarted or exited: that is what a sudden RSS drop is)" % (m, pids0, pids))
-            pids0 = pids
         hits = [l for l in ctx.log_since(log_off).splitlines() if SOAK_ALERT.search(l)]
         if hits:
             alerts.append((m, len(hits)))
             with open(alert_log, "a") as af:
                 af.write("== minute %d: %d line(s)\n%s\n" % (m, len(hits), "\n".join(hits[:40])))
-        rss, ticks = sample(ctx)
+        # sample at the end of the activity, then idle to the minute boundary
+        cur = PS.sample(ctx)
         t = time.time()
-        cpu = (ticks - last_ticks) / tclk / (t - last_t) * 100
-        last_t, last_ticks = t, ticks
-        rss_s.append(rss / 1024.0)
-        cpu_s.append(cpu)
-        csv.write("%d,%.1f,%.1f\n" % (m, rss / 1024.0, cpu))
-        csv.flush()
+        if cur is None:
+            misses.append(m)
+            r.note("soak minute %d: the app's processes could not be sampled (no memory or CPU figure for this minute)" % m)
+        else:
+            pids = sorted(cur["pids"])
+            if pids != pids0:
+                pid_changes.append((m, pids0, pids))
+                r.note("soak minute %d: the app's process set changed %s -> %s (a helper restarted or exited: that is what a sudden RSS drop is)" % (m, pids0, pids))
+                pids0 = pids
+            cpu = PS.cpu_pct(last, cur, t - last_t)
+            last_t, last = t, cur
+            rss_s.append(cur["rss_kib"] / 1024.0)
+            if cpu is not None:
+                cpu_s.append(cpu)
+            csv.write("%d,%.1f,%s\n" % (m, cur["rss_kib"] / 1024.0, "%.1f" % cpu if cpu is not None else ""))
+            csv.flush()
         time.sleep(max(0.0, 60 - (time.time() - t_min)))
+        if dense:
+            idle = PS.sample(ctx)
+            if idle is not None:
+                rss_s.append(idle["rss_kib"] / 1024.0)
+                csv.write("%.1f,%.1f,\n" % (m + 0.5, idle["rss_kib"] / 1024.0))
+                csv.flush()
     csv.close()
     r.metric("soak_minutes", m)
+    r.metric("soak_minutes_planned", mins)
     r.metric("rss_mb_first_last_max", [round(rss_s[0], 1), round(rss_s[-1], 1), round(max(rss_s), 1)] if rss_s else None)
     r.metric("cpu_pct_p50_p95_max", [round(statistics.median(cpu_s), 1), round(cases.pct(cpu_s, 0.95), 1), round(max(cpu_s), 1)] if cpu_s else None)
+    r.metric("soak_sample_misses", misses)
+    r.check(len(misses) <= 3, "soak: no reading of the app's processes in %d minutes (%s): the memory and CPU verdicts below rest on too little" % (len(misses), misses[:10]))
     ctx.reset()
     got = ctx.lines("soak.txt")
     d = soak_diff(exp, got)
@@ -1059,13 +1150,15 @@ def c_soak(ctx, r):
     if v == "fail":
         r.check(False, "soak: " + text)
     elif v == "short":
-        r.note("soak: " + text)
+        # too few samples for the rule (a run cut short, or APPCI_SOAK_MIN under 9): said plainly, never read as "no growth"
+        r.note("soak: " + text + (". Not judged for growth: only the %s MB cap applied (max %.0f MB)" % (os.environ.get("APPCI_SOAK_RSS_MAX_MB", "4096"), max(rss_s)) if rss_s else ""))
     else:
         r.note("soak: " + text)
     cpu1 = idle_cpu(ctx, 30)
-    r.metric("idle_cpu_end_pct", round(cpu1, 2))
-    lim = max(float(os.environ.get("APPCI_SOAK_IDLE_CPU_PCT", "5")), cpu0 + 3)
-    r.check(cpu1 <= lim, "soak: idle CPU %.1f %% at the end exceeds max(%s %%, start %.1f %% + 3) = %.1f %%" % (cpu1, os.environ.get("APPCI_SOAK_IDLE_CPU_PCT", "5"), cpu0, lim))
+    if r.check(cpu1 is not None, "soak: the app's processes could not be sampled for the idle CPU at the end"):
+        r.metric("idle_cpu_end_pct", round(cpu1, 2))
+        lim = max(float(os.environ.get("APPCI_SOAK_IDLE_CPU_PCT", "5")), cpu0 + 3)
+        r.check(cpu1 <= lim, "soak: idle CPU %.1f %% at the end exceeds max(%s %%, start %.1f %% + 3) = %.1f %%" % (cpu1, os.environ.get("APPCI_SOAK_IDLE_CPU_PCT", "5"), cpu0, lim))
     ctx.shot("soak_end")
 
 

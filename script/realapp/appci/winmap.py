@@ -202,6 +202,15 @@ NOT_WINDOWS = {
     "minimize_fullscreen": "r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33)",
 }
 
+# Round 15 wave 5c (docs/design/r15-w5c.md), as statements of their own so a merge with another branch's additions to the tables above stays line-wise.
+# T49: the soak no longer samples /proc (procsample.py: the app's Win32 job plus GetProcessTimes / GetProcessMemoryInfo, or one Get-Process): it runs
+# in both panes (append_cmd / pane_shell lines, `1..300000` or `seq` for the flood, the close key the tab cases already use).
+NOT_WINDOWS.pop("soak", None)
+BOTH.add("soak")
+# T48: the comparison is the machine's DRM render node against Mesa's software rasteriser, both chosen through Linux environment variables.
+NOT_WINDOWS["gpu_real_render"] = ("T48: Linux only by design: it compares the app on the machine's DRM render node (/dev/dri) with a forced Mesa software launch; "
+                                  "the Windows VM has no GPU and renders on WARP (no machine change short of a GPU passthrough makes it run here)")
+
 
 # #1534: the startup_shell_override passes (APPCI_WIN_SHELLS="pwsh7,cmd", never in the default list: cmd.exe and pwsh 7 are not installed on every VM).
 # The pane's shell is chosen through the app's `session.startup_shell_override` (a custom shell path, profile.Profile.gitbash_toml), not by the harness. Only the

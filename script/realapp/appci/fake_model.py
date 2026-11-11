@@ -28,9 +28,12 @@
 #   * "Please run scripted command <KEY>" (round 14, agent_autorun_permissions) -> one run_shell_command call with SCRIPTED_COMMANDS[KEY], a command the
 #     case registered beforehand. The prompt the case TYPES is plain prose: a command with `;`, `|` or `$(...)` typed into the input could be routed to
 #     the shell by its syntax and run there, which would read as "ran with no card". An unknown key -> the text "NO-SCRIPTED-COMMAND <KEY>";
+#   * "Please write code snippets <TOK> count <N>" (#2071, agent_code_recycle) -> the text of N fenced bash code blocks, block i holding the single line
+#     `echo RCY<TOK>_<ii>` (snippet_reply): the answer whose code-block editors the app recycles and rebuilds, word for word the same in every run;
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
 # Trigger order in reply_for (no trigger shadows another): plan, tool-result "Done.", stream long reply, follow up check, call mcp tool, show this image,
-# run a slow command then ask me a question, ask me a question, run scripted command, run / read / create / delete / edit exactly, STREAMLONG (sticky), SLOW, fallback.
+# run a slow command then ask me a question, ask me a question, run scripted command, write code snippets, run / read / create / delete / edit exactly,
+# STREAMLONG (sticky), SLOW, fallback.
 # Every trigger and every fault `match` reads the text the USER typed (prompt_text): never the app's <environment_context> message, and never the
 # <attached_context> block the app puts in front of the prompt (the blocks run since the last query, with their output; #2045).
 # Fault injection (#1831, cases_agent_resilience.py): fake.inject(kind, times=1, match=None, **kw) arms a fault that the next `times` /api/chat requests
@@ -82,6 +85,8 @@ ASKCMD_RE = re.compile(r"run a slow command then ask me a question(?:\s+(\w+))?"
 ASKQ_RE = re.compile(r"ask me a question(?:\s+(\w+))?")
 SCRIPT_RE = re.compile(r"run scripted command (\w+)")
 SCRIPTED_COMMANDS = {}       # KEY -> shell command, registered by a case before it types "Please run scripted command KEY"
+SNIP_RE = re.compile(r"write code snippets (\w+) count (\d+)")      # #2071: the agent_code_recycle answer (snippet_prompt / snippet_reply)
+SNIP_MAX = 40                # more blocks than any case asks for; a larger count is answered as SNIP_MAX (the reply stays a bounded size)
 MARK_RE = re.compile(r"\[(\w+):(\d{4}|END)\]")
 STREAM_CHUNKS, STREAM_GAP_S = 240, 0.05
 
@@ -131,6 +136,22 @@ def check_verdict(c):
     if c["foreign"]:
         bad.append("foreign " + ",".join(c["foreign"]))
     return ";".join(bad) or "ok"
+
+
+def snippet_lines(tok, n):
+    """pure: the N one-line snippets of the scripted code answer (#2071), `echo RCY<tok>_01` ... `echo RCY<tok>_<nn>`"""
+    return ["echo RCY%s_%02d" % (tok, i) for i in range(1, n + 1)]
+
+
+def snippet_prompt(tok, n):
+    """pure: the prompt a case TYPES to get snippet_reply(tok, n). Plain prose with no shell syntax: the input must route it to the model in every mode"""
+    return "Please write code snippets %s count %d" % (tok, n)
+
+
+def snippet_reply(tok, n):
+    """pure: the scripted answer: n fenced bash code blocks and no other text, block i holding only snippet_lines(tok, n)[i-1]. Blocks are separated by a
+    blank line, as a model writes them, so the markdown parser makes n code blocks (n editors) and not one"""
+    return "\n\n".join("```bash\n%s\n```" % l for l in snippet_lines(tok, min(n, SNIP_MAX)))
 
 
 def mcp_function(tools, server, tool):
@@ -412,6 +433,9 @@ def reply_for(messages, tools=None):
         if cmd is None:
             return {"text": "NO-SCRIPTED-COMMAND %s" % m.group(1), "tool": None}
         return {"text": "", "tool": {"name": "run_shell_command", "arguments": {"command": cmd, "is_read_only": False, "uses_pager": False, "is_risky": False}}}
+    m = SNIP_RE.search(text)
+    if m:                                      # #2071: the code-block answer of agent_code_recycle, the same text in every run
+        return {"text": snippet_reply(m.group(1), int(m.group(2))), "tool": None, "snippets": (m.group(1), min(int(m.group(2)), SNIP_MAX))}
     m = ASK_RE.search(text)
     if m:
         return {"text": "", "tool": {"name": "run_shell_command", "arguments": {"command": m.group(1), "is_read_only": False, "uses_pager": False, "is_risky": False}}}
