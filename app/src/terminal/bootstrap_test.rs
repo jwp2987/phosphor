@@ -5013,6 +5013,14 @@ printf '%s\n' "$BANNER" >&2
 /// begin markers, no here-document of `bash.sh`), an `ssh` that cannot be started with the
 /// command as an argument (measured with `ssh -V <command>`, once per shell), a command over
 /// 100,000 bytes.
+///
+/// The plain logins of the command print the message of the day first, as sshd would have for a
+/// login without a command (`$HOME/.hushlogin` switches it off). The "remote" here is the machine
+/// the test runs on, so the test never assumes that machine has no MotD file (round 14: the CI
+/// host has one, the machine the test was written on has none; `docs/design/r10-r18-bootsub.md`).
+/// Each plain login is run twice: with `.hushlogin` in the remote HOME (the exact output, the same
+/// on every machine) and without (the same output with this machine's MotD, which may be empty,
+/// between the hook and the login shell).
 #[test]
 #[cfg(unix)]
 fn msys_ssh_wrapper_sends_the_bootstrap_in_the_remote_command() {
@@ -5350,7 +5358,12 @@ exit 0
         )
         .unwrap();
         let real_bash = real_bash.trim();
-        let run_far = |shell: &str, mode: &[u8]| -> String {
+        // Two remote homes: `far` (no `.hushlogin`: a plain login prints this machine's MotD)
+        // and `far/hushed` (with it: no MotD on any machine).
+        let hushed_home = far.join("hushed");
+        std::fs::create_dir_all(&hushed_home).unwrap();
+        std::fs::write(hushed_home.join(".hushlogin"), "").unwrap();
+        let run_far_in = |home: &std::path::Path, shell: &str, mode: &[u8]| -> String {
             use std::io::Write as _;
             let mut child = Command::new(real_bash)
                 .args(["-c", remote])
@@ -5362,7 +5375,7 @@ exit 0
                         std::env::var("PATH").unwrap_or_default()
                     ),
                 )
-                .env("HOME", &far)
+                .env("HOME", home)
                 .env("SHELL", shell)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -5378,6 +5391,49 @@ exit 0
             );
             String::from_utf8_lossy(&output.stdout).into_owned()
         };
+        let run_far = |shell: &str, mode: &[u8]| run_far_in(far.as_path(), shell, mode);
+        // What a plain login of the command prints before its login shell on THIS machine: the
+        // first readable file of the command's own list, in its order (empty with none).
+        let host_motd = || -> String {
+            [
+                "/etc/motd",
+                "/run/motd",
+                "/run/motd.dynamic",
+                "/usr/lib/motd",
+                "/usr/lib/motd.dynamic",
+            ]
+            .iter()
+            .find_map(|path| std::fs::File::open(path).ok().map(|_| path))
+            .and_then(|path| std::fs::read(path).ok())
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default()
+        };
+        // A plain login: exact with `.hushlogin`; without it the MotD of this machine sits
+        // between `before` (a hook, or nothing) and the login shell's line, and nothing else
+        // does. The MotD is read before and after the run and the run repeated when a login on
+        // this machine rewrote it meanwhile (`/run/motd.dynamic`).
+        let assert_plain_login =
+            |shell: &str, mode: &[u8], before: &str, login: &str, what: &str| {
+                assert_eq!(
+                    run_far_in(hushed_home.as_path(), shell, mode),
+                    format!("{before}{login}"),
+                    "{name}: {what} (.hushlogin: no MotD)"
+                );
+                let mut tries = 0;
+                let (motd, printed) = loop {
+                    let motd = host_motd();
+                    let printed = run_far(shell, mode);
+                    tries += 1;
+                    if motd == host_motd() || tries == 5 {
+                        break (motd, printed);
+                    }
+                };
+                assert_eq!(
+                    printed,
+                    format!("{before}{motd}{login}"),
+                    "{name}: {what} (this machine's MotD first, as sshd prints it at a login)"
+                );
+            };
         let hex_of = |text: &str| hex::encode(text);
         let plain_print = format!("OSCd;{}END", hex_of(plain_hook));
         let ssh_print = format!("OSCd;{}END", hex_of(ssh_hook));
@@ -5411,21 +5467,27 @@ exit 0
         );
 
         // A login shell that is not bash: the plain verdict and a login shell, nothing else.
-        assert_eq!(
-            run_far(far.join("zsh").to_str().unwrap(), b"M"),
-            format!("{plain_print}LOGIN zsh -l\n"),
-            "{name}: zsh login"
+        assert_plain_login(
+            far.join("zsh").to_str().unwrap(),
+            b"M",
+            plain_print.as_str(),
+            "LOGIN zsh -l\n",
+            "zsh login",
         );
         // Mode byte P, or none at all (#1933): a plain login without a word, whatever the shell.
-        assert_eq!(
-            run_far(far.join("loginbash").to_str().unwrap(), b"P"),
+        assert_plain_login(
+            far.join("loginbash").to_str().unwrap(),
+            b"P",
+            "",
             "LOGIN loginbash -l\n",
-            "{name}: mode byte P"
+            "mode byte P",
         );
-        assert_eq!(
-            run_far(far.join("zsh").to_str().unwrap(), b""),
+        assert_plain_login(
+            far.join("zsh").to_str().unwrap(),
+            b"",
+            "",
             "LOGIN zsh -l\n",
-            "{name}: no mode byte"
+            "no mode byte",
         );
         std::fs::remove_dir_all(&dir).ok();
     }
