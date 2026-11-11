@@ -692,6 +692,50 @@ def completion_stage(ctx, r, limit):
     ctx.reset()
 
 
+def throwaway_tab_step(own_pid, front_pid, switched):
+    """pure (round 21, #2146): what to do before the close key, from the pid of the pass's own shell (read before the tab was opened) and the pid of
+    the shell in front now -> 'close' (the shell in front is another one: the throw-away tab), 'switch' (the pass's own tab is in front: go to the
+    next tab and ask again), 'refuse' (still the pass's own shell after a switch, or no shell answered: the close key would close the wrong
+    thing), 'unproven' (this pane has no PID probe: as before, with a note).
+    Round 15 Wayland: with two tabs, next-tab from the new tab puts the ORIGINAL tab in front, and the close key then closed the pass's own tab.
+    The pass went on in the throw-away tab; the depth check after the next case typed `exit` there (pane_not_local_after_meta_and_word_keys)."""
+    if own_pid is None:
+        return "unproven"
+    if front_pid is not None and front_pid != own_pid:
+        return "close"
+    if front_pid == own_pid and not switched:
+        return "switch"
+    return "refuse"
+
+
+def close_throwaway_tab(ctx, r, own_pid, nexttab):
+    """close the tab this case opened, and only that one: the shell in front is proven NOT to be the pass's own before the close key, and proven to
+    BE the pass's own after it. -> 'closed' | 'unproven' | 'refused'"""
+    if throwaway_tab_step(own_pid, None, False) == "unproven":
+        R.close_tab_best_effort(ctx, r)
+        r.note("no PID probe in this pane: which tab the close key closed was not proven")
+        return "unproven"
+    switched = False
+    front = ctx.shell_pid()
+    step = throwaway_tab_step(own_pid, front, switched)
+    if step == "switch":
+        ctx.be.key(nexttab)                # two tabs: next-tab from the pass's own tab is the throw-away one
+        time.sleep(0.8)
+        switched = True
+        front = ctx.shell_pid()
+        step = throwaway_tab_step(own_pid, front, switched)
+    if step != "close":
+        r.check(False, "the throw-away tab could not be put in front (shell pid in front %s, the pass's own shell %s): the close key was NOT sent, the "
+                       "tab is left open" % (front, own_pid))
+        return "refused"
+    R.close_tab_best_effort(ctx, r)
+    time.sleep(1.0)
+    back = ctx.shell_pid()
+    r.check(back == own_pid, "after the close key on the throw-away tab the shell in front has pid %s, expected the pass's own shell %s (the tab did "
+                             "not close, or another tab came to the front)" % (back, own_pid))
+    return "closed"
+
+
 @case("cb_ui_action_latency", modes=("terminal",), order=93, gui=True)
 def c_ui_action_latency(ctx, r):
     """#1548: new tab, tab switch and the Tab completion menu are observed from screenshots (each costs 50-300 ms of its own, so the numbers are an
@@ -707,6 +751,8 @@ def c_ui_action_latency(ctx, r):
         completion_stage(ctx, r, limit)
     else:
         r.note("Tab completion timing: POSIX-shell panes only (the PowerShell/cmd completers differ); skipped here")
+    own_pid = ctx.shell_pid()              # the pass's own shell, before any tab is opened (None: this pane has no PID probe)
+    time.sleep(0.4)
     before = ctx.shot("cb_ui_new_before")
     off_new = ctx.log_size()
     ctx.be.key(newtab)
@@ -729,8 +775,9 @@ def c_ui_action_latency(ctx, r):
         r.note("tab switch: no changed frame in 6 s (two identical shell tabs look alike); see shots/cb_ui_switch_*.png")
     else:
         r.check(s2 <= limit, "tab switch: first changed frame after %.2f s (bound %.1f s)" % (s2, limit))
-    # close the throw-away tab; the original keeps the exact-typing proof
-    R.close_tab_best_effort(ctx, r)
+    # close the throw-away tab; the original keeps the exact-typing proof. Round 21 (#2146): WHICH tab is in front is proven first. With two
+    # tabs the next-tab key above put the pass's own tab in front, and until round 21 the close key then closed that one.
+    r.metric("throwaway_tab_close", close_throwaway_tab(ctx, r, own_pid, nexttab))
     time.sleep(1.0)
     ctx.reset()
     U.exact_burst(ctx, r, "cb_ui_after", 4)

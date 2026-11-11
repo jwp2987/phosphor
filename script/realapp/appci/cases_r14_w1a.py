@@ -284,6 +284,49 @@ SKP_CODE = "acdefhkmnprtuwxy"          # 16 glyphs tesseract does not confuse (a
 SKP_LINES = 500
 SKP_STREAM_LINES = 900                 # ten a second: longer than the case; the case stops the job itself
 SKP_KEPT_MIN = 0.5                     # share of the numbered lines on screen before the wait that must still be there after it
+SKP_TOP_KEY_AGENT = "shift+Home"       # terminal:scrollback_top (app/src/terminal/view/scrollback_keys.rs; at a prompt since round 16, #2080)
+ISSUE_AGENT_BG_OUTPUT = 2145           # the agent view does not draw what a background job prints after the prompt is back (owner question)
+
+
+def skp_stream_state(mode, printed, read_on_screen):
+    """pure (round 21, #2146): is the background job's output drawn where the case looks for it? printed = lines the job has written, read_on_screen =
+    how many of them OCR read at the bottom of the pane -> 'drawn' | 'agent_hidden' | 'missing' | 'too_early'.
+    'agent_hidden': the agent view draws only blocks its conversation produced, and output printed between a prompt and the next command is a
+    background block of no conversation (Block::should_hide_block), so the job's lines are on no screen there (#2145). 'missing': a terminal
+    session that does not show them is a failure of the case's control. 'too_early': fewer than 5 lines printed, nothing can be said."""
+    if read_on_screen:
+        return "drawn"
+    if printed < 5:
+        return "too_early"
+    return "agent_hidden" if mode == "agent" else "missing"
+
+
+def skp_top_keys(mode, block_up):
+    """pure (round 21, #2146): the keys that scroll to the top of the scrollback at a prompt.
+    terminal: block-up then Home (a selected block gives the terminal the keys; Home alone moves the cursor in the input).
+    agent: Shift+Home. In the agent view a block selected by keyboard is context for the next prompt and the keyboard STAYS in the input
+    (terminal/view.rs select_most_recent_blocks; transcript navigation never focuses the terminal), so Home after block-up is the input editor's
+    (round 15 Wayland app log: `key=home ... EditorAction`, a `TerminalAction` in terminal mode). Shift+Home is the scrollback key at a prompt
+    in both modes while the input is empty (#2080, round 16)."""
+    return [SKP_TOP_KEY_AGENT] if mode == "agent" else [block_up, "Home"]
+
+
+def skp_after_key_verdict(state, tail_on_screen, numbered, total):
+    """pure (round 21): did one typed key bring the newest output back? state = skp_stream_state(); tail_on_screen = how many of the job's last lines
+    are on screen; numbered = the numbered lines read on screen; total = how many numbered lines exist -> ('pass' | 'fail' | 'noref', text).
+    Drawn output: one of the job's last lines must be on screen, as before round 21. Agent view that does not draw it (#2145): the end of what
+    that view shows is the end of the numbered lines, so those must be back; that the job's newest lines show is not judged, and says so."""
+    if state != "agent_hidden":
+        if tail_on_screen:
+            return "pass", ""
+        return "fail", "after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom"
+    if not numbered or numbered[-1] < total - 15:
+        return "fail", ("after one typed key the end of the numbered lines is not on screen (read %s of %d): the key did not bring the view back to the "
+                        "end of what the agent view shows" % (("%d..%d" % (numbered[0], numbered[-1])) if numbered else "none", total))
+    return "noref", ("the agent view does not draw the output of a background job (#%d, owner question): 'the view holds while new output is DRAWN' and "
+                     "'the newest output is on screen after a key' are NOT judged in this mode. Judged and passed here: PageUp moved the view, it "
+                     "stayed for 3 s, %s reached the top, it stayed for 3 s, one key brought the end of the numbered lines back"
+                     % (ISSUE_AGENT_BG_OUTPUT, SKP_TOP_KEY_AGENT))
 
 
 def skp_word(tag, i):
@@ -355,7 +398,10 @@ def c_scroll_keys_position(ctx, r):
     lines a second (in the foreground PageUp belongs to the program, #2080); PageUp three times, 3 s of new output: the same numbered lines are still
     on screen and none of the new ones are. Then block-up and Home (top of the scrollback), 3 s more: the screen has not changed. Then one typed key:
     the job's last line is on screen, and the command that key starts reaches the shell exactly. Screen facts are OCR (every line carries a word
-    in glyphs OCR does not confuse); a pane with no OCR engine skips."""
+    in glyphs OCR does not confuse); a pane with no OCR engine skips.
+    Round 21 (#2146): a control reads whether the job's lines are drawn at all (skp_stream_state). The agent pass scrolls to the top with
+    Shift+Home (skp_top_keys). Where the agent view does not draw the job's output (#2145) the two facts that need drawn output are not judged
+    and the row is NO-REFERENCE with that reason; everything else is judged (skp_after_key_verdict)."""
     if ctx.win:
         r.skip("Windows: the case reads the scroll position from the screen and the Windows runner has no OCR engine; the app logs no scroll-position hop yet")
     if ctx.ocr("skp_probe") is None:
@@ -387,6 +433,19 @@ def c_scroll_keys_position(ctx, r):
         typed(ctx, job)
         if not r.check(bool(ctx.until(lambda: stream_no() >= 3, 12)), "the background job printed nothing within 12 s (%d line(s)): there is no output to hold the view against" % stream_no()):
             return
+        # control (round 21): are the job's lines drawn? The view is at the bottom, so in a terminal session the newest of them are on screen.
+        ctx.until(lambda: stream_no() >= 8, 6)
+        time.sleep(0.3)
+        drawn_now = skp_visible(ctx.ocr("skp_0_stream"), stag, SKP_STREAM_LINES)
+        stream_state = skp_stream_state(ctx.mode, stream_no(), len(drawn_now))
+        r.metric("skp_stream_drawn", dict(state=stream_state, printed=stream_no(), read_on_screen=len(drawn_now)))
+        if stream_state == "agent_hidden":
+            r.note("control: the job printed %d lines and none is on screen at the bottom of the agent view (shots/*skp_0_stream.png): the agent view "
+                   "does not draw a background job's output (#%d)" % (stream_no(), ISSUE_AGENT_BG_OUTPUT))
+        elif not r.check(stream_state == "drawn", "control: the background job printed %d line(s) and none is on screen at the bottom of a terminal "
+                         "session (shots/*skp_0_stream.png): the output is not drawn (or OCR read none of its words), so nothing below could be judged"
+                         % stream_no()):
+            return
         # --- PageUp x3 at the prompt, then 3 s of new output
         ctx.be.keys([key_name(ctx, "pageup")] * 3, delay_ms=60)
         time.sleep(0.8)
@@ -406,14 +465,18 @@ def c_scroll_keys_position(ctx, r):
             r.unverifiable("after PageUp: %s" % why)
         else:
             r.check(verdict == "pass", "after PageUp, 3 s of new output: %s (shots/*skp_2_pageup_held.png)" % why)
-        # --- top of the scrollback: select the newest block (the terminal has the keys then), Home
-        ctx.be.keys([WV.KX(ctx, "block_up"), "Home"], delay_ms=120)
+        # --- top of the scrollback: terminal: select the newest block (the terminal has the keys then), Home; agent: Shift+Home (skp_top_keys)
+        top_keys = skp_top_keys(ctx.mode, WV.KX(ctx, "block_up"))
+        off_top = ctx.log_size() if ctx.log_path else None
+        ctx.be.keys(top_keys, delay_ms=120)
         time.sleep(0.8)
         t3 = ctx.ocr("skp_3_top")
         v3, n3 = skp_visible(t3, tag, SKP_LINES), stream_no()
         went_up = t3 is not None and (not v3 or not v2 or v3[0] < v2[0])
-        r.check(went_up, "block-up then Home did not move the view above where PageUp left it (numbered lines on screen %s, before %s; shots/*skp_3_top.png)" % (
-            ("%d..%d" % (v3[0], v3[-1])) if v3 else "none", ("%d..%d" % (v2[0], v2[-1])) if v2 else "none"))
+        top_hop = (" The app logged %s `hop=scrollback_key key=top` line for the key." % ("a" if "hop=scrollback_key key=top" in ctx.log_since(off_top) else "NO")
+                   if (off_top is not None and ctx.mode == "agent") else "")
+        r.check(went_up, "%s did not move the view above where PageUp left it (numbered lines on screen %s, before %s; shots/*skp_3_top.png).%s" % (
+            " then ".join(top_keys), ("%d..%d" % (v3[0], v3[-1])) if v3 else "none", ("%d..%d" % (v2[0], v2[-1])) if v2 else "none", top_hop))
         time.sleep(3.0)
         grew_top = stream_no() - n3
         t4 = ctx.ocr("skp_4_top_held")
@@ -440,8 +503,14 @@ def c_scroll_keys_position(ctx, r):
         t5 = ctx.ocr("skp_5_after_key")
         on_screen = [w for w in tail if w and w in (t5 or "").lower()]
         r.metric("skp_tail_lines_on_screen_after_key", len(on_screen))
-        r.check(bool(on_screen), "after one typed key none of the job's last %d lines is on screen: the key did not bring the view back to the bottom "
-                "(shots/*skp_5_after_key.png)" % len(tail))
+        verdict, why = skp_after_key_verdict(stream_state, len(on_screen), skp_visible(t5, tag, SKP_LINES), SKP_LINES)
+        if verdict == "noref":
+            if not r.fails:                           # a failed check above already says more than "not judged"
+                r.no_reference(why)
+            else:
+                r.note(why)
+        else:
+            r.check(verdict == "pass", "%s (the job's last %d lines were looked for; shots/*skp_5_after_key.png)" % (why, len(tail)))
         typed(ctx, last[1:])
         ctx.until(lambda: ctx.lines(eff), 8)
         got = rec.wait(3, 5)
