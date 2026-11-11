@@ -14,7 +14,8 @@
 #                                        notification; answering it with the focus back sends no second one.
 #   drag_drop_file                       T38 (X11, then Wayland). A file whose name has a space is dragged from a real drag source (dragsrc.py, GTK; or
 #                                        dragon-drop) onto the terminal after `ls -d ` was typed: the shell receives ONE argument equal to the path and
-#                                        `ls` prints it. Wayland is expected to fail until #2085 (no drop target on the native Wayland backend).
+#                                        `ls` prints it. Wayland: the native backend's drop target (#2085, vendored winit, kill switch PHOSPHOR_WAYLAND_DND=0)
+#                                        is judged like X11, and the source must also be told the drop succeeded.
 #   ime_compose                          T39. Pinyin through a real input method (Linux: fcitx5 or ibus in the app's session; Windows: Microsoft Pinyin
 #                                        selected for the Phosphor window, keys by SendInput virtual keys): nothing reaches a raw reader before the
 #                                        commit, the committed text is exact there and in the input editor. macOS: intl_ime_japanese / intl_ime_pinyin.
@@ -219,7 +220,15 @@ WIN_DRAG_NEEDS = ("NEEDS: a harness capability that is not built: an OLE drag so
                   "Windows pointer synthesis (mouse SendInput, r14-test-gaps T31)")
 MAC_DRAG_NEEDS = ("NEEDS: a harness capability that is not built: a pasteboard drag source for macOS (NSDraggingSource in a helper app) and a macOS "
                   "pointer tool (r14-test-gaps T32)")
-WAYLAND_DROP_ISSUE = "#2085"
+WAYLAND_DROP_ISSUE = "#2085"            # the native Wayland drop target (vendored winit, wayland/dnd); before it a Wayland drop could not work
+WAYLAND_DROP_KILL_SWITCH = "PHOSPHOR_WAYLAND_DND"
+WL_DND_HOP_RE = re.compile(r"wayland_dnd hop=(\w+)((?: \w+=[\w.]+)*)")                              # lib/winit/src/platform_impl/linux/wayland/dnd/mod.rs
+
+
+def wl_dnd_hops(text):
+    """the app's own account of a Wayland drag, in order (the vendored winit's drop target logs counts, never a path):
+    ['enter accepted=true reading=true', 'data bytes=41 usable=true', 'drop waiting_for_data=false', 'finish accepted=true finished=true']"""
+    return [m.group(1) + m.group(2) for m in WL_DND_HOP_RE.finditer(text or "")]
 
 
 def gdk_backend(app_display):
@@ -1028,7 +1037,8 @@ def source_rect(ctx, proc, kind, at, ready):
 def c_drag_drop_file(ctx, r):
     """T38 (F2 made real, H8; #2075): `ls -d ` is typed, then a file whose name has a space is dragged from a drag source client onto the terminal
     and ` > file` + Enter is typed: the shell receives one line whose words are `ls -d`, the path as ONE argument, `> file`, and the file holds the
-    path. The source's own events tell a drag that never began (harness) from one the app did not accept. Wayland: fails until #2085."""
+    path. The source's own events tell a drag that never began (harness) from one the app did not accept. Wayland (#2085, the drop target in the
+    vendored winit) is judged like X11, and there the source must also not be told that the drop failed (the offer is finished, not cancelled)."""
     if ctx.win:
         r.skip("Windows: " + WIN_DRAG_NEEDS)
     if U.mac(ctx):
@@ -1060,6 +1070,7 @@ def c_drag_drop_file(ctx, r):
     ctx.rm(out)
     tx, ty = rect[0] + rect[2] // 2, rect[1] + rect[3] // 2
     src, mark, events = None, ctx.cmd_mark(), []
+    log_off = ctx.log_size()
     try:
         ctx.be.type("ls -d ", ctx.rng.randint(10, 25))
         m.move(tx, ty)                        # the app uses its last pointer position for the drop: no motion reaches it while the source holds the grab
@@ -1103,10 +1114,21 @@ def c_drag_drop_file(ctx, r):
     ctx.until(lambda: len(ctx.cmds_since(mark)) >= 1, 8)
     ctx.until(lambda: ctx.lines(out), 5)
     got = ctx.cmds_since(mark)
-    known = " (Wayland: %s, the native backend has no drop target)" % WAYLAND_DROP_ISSUE if wl else ""
+    known = ""
+    if wl:
+        try:
+            hops = wl_dnd_hops(ctx.log_since(log_off))
+        except Exception:
+            hops = []
+        r.metric("wayland_dnd_hops", hops)
+        known = " (Wayland: the drop target of %s in the vendored winit; %s=0 turns it off; the app's wayland_dnd hops for this drag: %r)" % (
+            WAYLAND_DROP_ISSUE, WAYLAND_DROP_KILL_SWITCH, hops)
     if kind.startswith("dragsrc"):
         r.check("data" in events, "the app did not take the dropped file: the drag began on the source and ended without the target asking for the "
                                   "data (source events %r)%s" % (events, known))
+        if wl:
+            r.check("failed" not in events, "the drag source was told the drop FAILED (source events %r): the app took the data and then did not finish "
+                                            "the offer (wl_data_offer.finish needs the copy action the compositor selected)%s" % (events, known))
     err = drop_line_verdict(got, path, out)
     r.check(err is None, "after `ls -d `, the drop and ` > %s`: %s%s" % (out, err, known))
     r.check(ctx.lines(out) == [path], "`ls -d` of the dropped path printed %r, expected [%r]%s" % (ctx.lines(out), path, known))
