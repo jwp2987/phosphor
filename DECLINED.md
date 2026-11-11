@@ -3291,3 +3291,22 @@ session itself. The agent-mode arms with a nu login shell (`lab_agent_remote_{fl
 UNVERIFIABLE (status `noref`, never a pass) when the app log of their connect shows the plain session
 (`cases_lab.plain_session_limit`, selftest `lab_plain_session_limit_2019`); a bash / zsh / dash / ash / pwsh arm is
 judged in full whatever the log says, and so is a fish / nu arm that gets a managed session.
+
+## Code editor: unsaved edits always ask; a save over a file changed on disk asks — IMPROVED 2026-11-11 (#2092, #2087)
+
+Owner decisions of 2026-11-11. Design: `docs/design/r16-editor.md`. Worked, unproven when written (nothing compiled or
+run).
+
+- **Unsaved editor edits ask on quit and on every close, whatever `general.show_warning_before_quitting` says.** At the
+  pin (`app/src/quit_warning/mod.rs` `should_display_warning`) that one setting gates the running-command warning AND
+  the unsaved-edits question, so a user who switched off the first lost editor text without a word. Here the setting
+  covers running commands and shared sessions only. The dialog that names unsaved edits has no "Don't show again"
+  checkbox (it would toggle a setting that no longer stops the question). Off: `PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK=0`.
+- **A save while the disk-conflict banner shows asks Overwrite / Reload / Cancel.** At the pin the banner's Overwrite
+  button and every other save are the same action, and the pin has no banner at all for a file changed by another
+  program (#2087), so the save overwrites. Here every save through the editor asks first while the banner shows; only
+  the banner's own Overwrite button writes at once. Off: `PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0`.
+
+A re-pin diff that folds `unsaved_code_changes` back under the setting, or points the banner button back at
+`SaveFile`, is drift to reject. Tests: `app/src/quit_warning/mod_tests.rs`, `app/src/workspace/native_modal_tests.rs`,
+`app/src/code/save_conflict_tests.rs`; appci `editor_daily`.

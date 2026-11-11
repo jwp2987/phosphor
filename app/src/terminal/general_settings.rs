@@ -17,7 +17,7 @@ define_settings_group!(GeneralSettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "general.show_warning_before_quitting",
-        description: "Whether to show a warning dialog before quitting Phosphor.",
+        description: "Whether to show a warning dialog before quitting Phosphor or closing a window, tab or pane that has a running command. Unsaved code editor edits always ask, whatever this is set to.",
     },
     quit_on_last_window_closed: QuitOnLastWindowClosed {
         type: bool,

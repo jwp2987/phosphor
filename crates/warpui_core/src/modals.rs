@@ -10,6 +10,9 @@ pub struct AlertDialog {
     pub info_text: String,
     /// Each item is a button, and the String is the text for the button.
     pub buttons: Vec<String>,
+    /// Whether the dialog offers "don't ask again". `false` for a question no setting switches
+    /// off (#2092: losing unsaved editor edits).
+    pub show_suppression_button: bool,
 }
 
 impl AlertDialog {
@@ -22,6 +25,7 @@ impl AlertDialog {
             message_text: message_text.into(),
             info_text: info_text.into(),
             buttons: buttons.iter().map(|s| String::from(*s)).collect(),
+            show_suppression_button: true,
         }
     }
 }
@@ -39,6 +43,17 @@ pub struct AlertDialogWithCallbacks<F> {
     /// Callback to run if the user clicks the "don't ask again" checkbox. This should prevent that
     /// type of modal in the future.
     pub on_disable: F,
+    /// Whether the dialog offers the "don't ask again" checkbox at all. When `false` the checkbox
+    /// is not shown and `on_disable` is never run (#2092: a question no setting switches off).
+    pub can_disable: bool,
+}
+
+impl<F> AlertDialogWithCallbacks<F> {
+    /// The dialog offers no "don't ask again" checkbox and never runs `on_disable`.
+    pub fn without_disable(mut self) -> Self {
+        self.can_disable = false;
+        self
+    }
 }
 
 /// Wraps the button text with its click handler.
@@ -88,6 +103,7 @@ impl AlertDialogWithCallbacks<AppModalCallback> {
             info_text: info_text.into(),
             button_data,
             on_disable: Box::new(on_disable),
+            can_disable: true,
         }
     }
 }
@@ -124,6 +140,7 @@ impl<V: View> AlertDialogWithCallbacks<ViewModalCallback<V>> {
             info_text: info_text.into(),
             button_data,
             on_disable: Box::new(on_disable),
+            can_disable: true,
         }
     }
 }

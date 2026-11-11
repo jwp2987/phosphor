@@ -136,9 +136,15 @@ use super::editor::{
 use super::find_references_view::{FindReferencesView, FindReferencesViewEvent};
 use super::language_server_extension::ProcessedDiagnostic;
 use super::lsp_telemetry::LspTelemetryEvent;
+use super::save_conflict::{
+    OverwriteAnswer, save_ask_trace, save_conflict_ask_enabled, save_must_ask,
+};
 use crate::code::editor::model::HoverableLink;
 use crate::settings::CodeSettings;
+use crate::workspace::Workspace;
+use warp_core::channel::{Channel, ChannelState};
 use warp_core::send_telemetry_from_ctx;
+use warpui::modals::{AlertDialogWithCallbacks, ModalButton};
 
 type SaveCallback =
     Box<dyn FnOnce(SaveOutcome, &mut ViewContext<LocalCodeEditorView>) + Send + Sync + 'static>;
@@ -178,6 +184,10 @@ pub enum LocalCodeEditorEvent {
     DiscardUnsavedChanges {
         path: PathBuf,
     },
+    /// A save that asked "the file changed on disk; overwrite it?" ended without a write: the
+    /// answer was Reload or Cancel, or the question could not be shown (#2092). Whoever waits on
+    /// that save (see `ImmediateSaveError::AwaitingOverwriteAnswer`) treats it as cancelled.
+    SaveCanceled,
     GotoDefinition {
         path: PathBuf,
         line: usize,
@@ -239,6 +249,10 @@ struct SelectionAsContextTooltip {
 pub enum LocalCodeEditorAction {
     InsertSelectedTextToInput,
     SaveFile,
+    /// The conflict banner's "Overwrite" button: the user's explicit answer, so this save writes
+    /// without asking again (#2092). Every other save goes through `SaveFile` / `save_local`,
+    /// which asks while the banner shows.
+    OverwriteFile,
     DiscardUnsavedChanges,
     NavigateToTarget(FileLocation),
     GotoDefinition,
@@ -337,6 +351,10 @@ pub struct LocalCodeEditorView {
     /// local `ContentVersion` to compare against, so this flag -- not
     /// `base_content_version` -- is what drives their conflict banner.
     has_remote_conflict: bool,
+    /// A save found the conflict banner up and the "overwrite?" question is about to be shown
+    /// (it is shown one step later, see `ask_before_overwrite`). More saves in that step do not
+    /// stack a second question (#2092).
+    overwrite_ask_scheduled: bool,
     conflict_banner_mouse_states: ConflictResolutionBannerMouseStates,
     /// Default directory to use for save dialogs when creating new files
     default_directory: Option<PathBuf>,
@@ -555,6 +573,7 @@ impl LocalCodeEditorView {
             was_edited: false,
             base_content_version: None,
             has_remote_conflict: false,
+            overwrite_ask_scheduled: false,
             conflict_banner_mouse_states: Default::default(),
             default_directory: None,
             lsp_server: None,
@@ -1736,14 +1755,169 @@ impl LocalCodeEditorView {
     /// Save the file to the local file system.
     /// This will only return an error immediately if there is a failure in the sync part of the call.
     /// Other errors could be returned asynchronously via the FileModelEvent::FailedToSave event.
+    ///
+    /// #2092: while the conflict banner shows (the file changed on disk under this buffer) the
+    /// save does not write. It asks "Overwrite / Reload / Cancel" and returns
+    /// [`ImmediateSaveError::AwaitingOverwriteAnswer`]; see that variant for how the end of it
+    /// is reported.
     pub fn save_local(&mut self, ctx: &mut ViewContext<Self>) -> Result<(), ImmediateSaveError> {
         let Some(file_id) = self.file_id() else {
             return Err(ImmediateSaveError::NoFileId);
         };
 
+        if self.save_must_ask_before_overwrite(ctx) {
+            self.ask_before_overwrite(ctx);
+            return Err(ImmediateSaveError::AwaitingOverwriteAnswer);
+        }
+
         // Always attempt to format before saving if LSP is available
         self.format_and_save(file_id, ctx);
         Ok(())
+    }
+
+    /// Whether a save right now has to ask before it writes (#2092): the conflict banner is up,
+    /// the kill switch `PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0` is not set, and somebody can answer
+    /// (the integration-test channel skips this question like the close and quit questions).
+    fn save_must_ask_before_overwrite(&self, app: &AppContext) -> bool {
+        save_must_ask(
+            self.has_version_conflicts(app),
+            save_conflict_ask_enabled(),
+            ChannelState::channel() != Channel::Integration,
+        )
+    }
+
+    /// Writes the buffer without asking: the user already answered "Overwrite" (the question's
+    /// button or the banner's).
+    fn save_without_asking(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(file_id) = self.file_id() {
+            self.format_and_save(file_id, ctx);
+        }
+    }
+
+    /// Puts up the "overwrite the file changed on disk?" question, one step later.
+    ///
+    /// Later, not now, because a save can be asked for from inside the in-app dialog itself
+    /// ("Save" on a tab's close question): that dialog is being updated at this point and clears
+    /// itself when its button handler returns, so a question shown from here would be a circular
+    /// view update or be wiped at once.
+    fn ask_before_overwrite(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.overwrite_ask_scheduled {
+            return;
+        }
+        self.overwrite_ask_scheduled = true;
+        ctx.spawn(async {}, |me, _, ctx| {
+            me.overwrite_ask_scheduled = false;
+            me.show_overwrite_ask(ctx);
+        });
+    }
+
+    fn show_overwrite_ask(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.save_must_ask_before_overwrite(ctx) {
+            // The conflict was settled in between (a reload landed, another view saved): there
+            // is nothing left to ask about, so this is the plain save the user asked for.
+            self.save_without_asking(ctx);
+            return;
+        }
+
+        let weak_self = ctx.handle();
+        let buttons = OverwriteAnswer::BUTTONS
+            .iter()
+            .map(|&answer| {
+                let weak_self = weak_self.clone();
+                let title: String = match answer {
+                    OverwriteAnswer::Overwrite => crate::t!("code-overwrite"),
+                    OverwriteAnswer::Reload => "Reload".to_string(),
+                    OverwriteAnswer::Cancel => crate::t!("common-cancel"),
+                };
+                ModalButton::for_app(title, move |app: &mut AppContext| {
+                    if let Some(view) = weak_self.upgrade(app) {
+                        view.update(app, |me, ctx| me.answer_overwrite_ask(answer, ctx));
+                    }
+                })
+            })
+            .collect();
+        let file_name = self
+            .file_path()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "This file".to_string());
+        // No "don't ask again": no setting switches this question off.
+        let dialog = AlertDialogWithCallbacks::for_app(
+            "Overwrite the file changed on disk?",
+            format!(
+                "{file_name} was changed on disk after it was opened here. Overwrite replaces \
+                 what is on disk with the text in this editor. Reload drops the unsaved edits in \
+                 this editor and loads what is on disk."
+            ),
+            buttons,
+            |_: &mut AppContext| {},
+        )
+        .without_disable();
+
+        // The in-app dialog on every platform (not the macOS system alert the close question
+        // uses): it does not block the app while it is up. A workspace that is being updated
+        // right now, or one whose dialog is already taken, cannot show it; then nothing is
+        // written and the banner stays, which loses nothing.
+        let window_id = ctx.window_id();
+        let shown = ctx
+            .views_of_type::<Workspace>(window_id)
+            .and_then(|workspaces| workspaces.first().cloned())
+            .and_then(|workspace| {
+                workspace
+                    .try_update(ctx, |workspace, ctx| {
+                        workspace.show_native_modal_if_free(dialog, ctx)
+                    })
+                    .ok()
+            })
+            .unwrap_or(false);
+
+        if shown {
+            log::debug!(target: "editor_disk", "{}", save_ask_trace("asked"));
+        } else {
+            log::warn!(
+                "The file changed on disk and the overwrite question could not be shown; the \
+                 file was NOT saved. Use the banner's Overwrite or Discard."
+            );
+            log::debug!(target: "editor_disk", "{}", save_ask_trace("not_shown"));
+            ctx.emit(LocalCodeEditorEvent::SaveCanceled);
+        }
+    }
+
+    fn answer_overwrite_ask(&mut self, answer: OverwriteAnswer, ctx: &mut ViewContext<Self>) {
+        log::debug!(target: "editor_disk", "{}", save_ask_trace(answer.trace_name()));
+        match answer {
+            OverwriteAnswer::Overwrite => self.save_without_asking(ctx),
+            OverwriteAnswer::Reload => self.discard_unsaved_changes(ctx),
+            OverwriteAnswer::Cancel => {}
+        }
+        if answer.ends_the_save_without_writing() {
+            ctx.emit(LocalCodeEditorEvent::SaveCanceled);
+        }
+        // The dialog had the keyboard; hand it back to the editor the question was about.
+        ctx.focus_self();
+        ctx.notify();
+    }
+
+    /// The banner's "Discard this version" and the question's "Reload": drop this buffer's
+    /// unsaved edits and take what the disk (or the remote host) holds.
+    fn discard_unsaved_changes(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(path) = self.file_path().map(Path::to_path_buf) {
+            self.base_content_version = Some(self.editor().as_ref(ctx).version(ctx));
+            ctx.emit(LocalCodeEditorEvent::DiscardUnsavedChanges { path });
+        } else if self.has_remote_conflict {
+            // Remote file: there is no local path to re-read, so re-open
+            // the buffer from the server to get the latest on-disk
+            // content. The resulting BufferLoaded clears
+            // has_remote_conflict and updates base_content_version. If
+            // the re-open fails, the flag stays set and the banner
+            // remains visible so the user can retry.
+            #[cfg(feature = "local_tty")]
+            if let Some(file_id) = self.file_id() {
+                GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.reopen_remote_buffer(file_id, ctx);
+                });
+            }
+        }
     }
 
     /// Open a save dialog to save the file with a new name, optionally with a completion callback.
@@ -2219,6 +2393,10 @@ impl DiffViewer for LocalCodeEditorView {
         ctx.spawn(self.file_loaded.wait(), move |me, _, ctx| {
             me.accept_diff(ctx);
             if let Err(err) = me.save_local(ctx) {
+                if matches!(err, ImmediateSaveError::AwaitingOverwriteAnswer) {
+                    // #2092: the file changed on disk; the user is being asked. Not an error.
+                    return;
+                }
                 log::error!("{err:?}");
                 if let ImmediateSaveError::FailedToSave(err) = err {
                     ctx.emit(LocalCodeEditorEvent::FailedToSave {
@@ -2382,24 +2560,12 @@ impl TypedActionView for LocalCodeEditorView {
                     });
                 };
             }
+            LocalCodeEditorAction::OverwriteFile => {
+                log::debug!(target: "editor_disk", "{}", save_ask_trace("banner_overwrite"));
+                self.save_without_asking(ctx);
+            }
             LocalCodeEditorAction::DiscardUnsavedChanges => {
-                if let Some(path) = self.file_path().map(Path::to_path_buf) {
-                    self.base_content_version = Some(self.editor().as_ref(ctx).version(ctx));
-                    ctx.emit(LocalCodeEditorEvent::DiscardUnsavedChanges { path });
-                } else if self.has_remote_conflict {
-                    // Remote file: there is no local path to re-read, so re-open
-                    // the buffer from the server to get the latest on-disk
-                    // content. The resulting BufferLoaded clears
-                    // has_remote_conflict and updates base_content_version. If
-                    // the re-open fails, the flag stays set and the banner
-                    // remains visible so the user can retry.
-                    #[cfg(feature = "local_tty")]
-                    if let Some(file_id) = self.file_id() {
-                        GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
-                            model.reopen_remote_buffer(file_id, ctx);
-                        });
-                    }
-                }
+                self.discard_unsaved_changes(ctx);
             }
             LocalCodeEditorAction::NavigateToTarget(location) => {
                 let Some(source_server_id) = self.lsp_server.as_ref().map(|s| s.as_ref(ctx).id())
@@ -2520,7 +2686,8 @@ pub fn render_unsaved_changes_banner(
                     })
                     .build()
                     .on_click(move |ctx, _, _| {
-                        ctx.dispatch_typed_action(LocalCodeEditorAction::SaveFile)
+                        // The explicit answer: writes without asking again (#2092).
+                        ctx.dispatch_typed_action(LocalCodeEditorAction::OverwriteFile)
                     })
                     .finish(),
             )

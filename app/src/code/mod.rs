@@ -19,6 +19,7 @@ pub mod language_server_shutdown_manager;
 pub mod local_code_editor;
 pub mod lsp_logs;
 pub mod lsp_telemetry;
+mod save_conflict;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImmediateSaveError {
@@ -28,6 +29,12 @@ pub enum ImmediateSaveError {
     FailedToSave(#[from] FileSaveError),
     #[error("There is no file tab currently selected")]
     NoActiveFileTab,
+    /// Not a failure (#2092): the file changed on disk under this buffer, so the save asked
+    /// "overwrite?" instead of writing. Nothing was written yet. The editor reports the end of
+    /// it later: `LocalCodeEditorEvent::FileSaved` / `FailedToSave` after "Overwrite",
+    /// `LocalCodeEditorEvent::SaveCanceled` after "Reload" or "Cancel".
+    #[error("the file changed on disk; waiting for the answer to the overwrite question")]
+    AwaitingOverwriteAnswer,
 }
 
 /// Trait to determine whether we should show the comment editor based on state held

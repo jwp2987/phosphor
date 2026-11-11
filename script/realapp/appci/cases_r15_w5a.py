@@ -10,9 +10,11 @@
 #                           Arm B (command search moved, new tab on Ctrl-R): Ctrl-R opens a tab and no command search; the moved chord opens it.
 #                           The file is byte-identical after each launch.
 #   editor_daily            T50, Linux, Windows (both panes), macOS. Find and replace by keyboard (#2088): one Enter replaces exactly one match, the
-#                           replace-all key the rest, bytes exact, near-miss words untouched. Close with unsaved edits asks; Escape keeps the edits,
-#                           Enter closes (not on macOS: the question is a native dialog the harness cannot answer). A file changed on disk: a clean
-#                           buffer is reloaded; a buffer with unsaved edits is flagged (#2087) and the disk is left alone.
+#                           replace-all key the rest, bytes exact, near-miss words untouched. Close with unsaved edits asks, whatever
+#                           general.show_warning_before_quitting says (#2092); Escape keeps the edits, Enter closes (not on macOS: the question
+#                           is a native dialog the harness cannot answer). A file changed on disk: a clean buffer is reloaded; a buffer with
+#                           unsaved edits is flagged (#2087) and the disk is left alone; a save while flagged ASKS (#2092): nothing is written
+#                           until the answer, Escape (Cancel) keeps disk and edits, Enter (Overwrite) writes the editor's text.
 # Same rules as cases.py: the EXACT bytes, typing at 10-25 ms per key, a case that cannot run SKIPS with the capability that is missing ("NEEDS: ..."),
 # and a verdict that rests on evidence that is absent is NOREF, never a pass.
 import os, re, subprocess, sys, time
@@ -240,6 +242,7 @@ def _same_bytes(r, path, text, label):
 # ================================================================ T50 editor_daily
 CLOSE_WARNING_LINE = "Displaying unsaved changes warning for pane"      # app/src/pane_group/mod.rs close_pane_with_confirmation (log::info!)
 DISK_TRACE = re.compile(r"editor_disk outcome=(\w+) external=(true|false)(?: flagged=(true|false))?")     # app/src/code/global_buffer_model.rs disk_event_trace
+SAVE_ASK_TRACE = re.compile(r"editor_save_ask outcome=(\w+)")                                             # app/src/code/save_conflict.rs save_ask_trace (#2092)
 NO_CLOSE_QUESTION_MAC = ("macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the "
                          "frontmost-app guard refuses) and a way to answer the native dialog (r14-test-gaps T32)")
 
@@ -289,6 +292,26 @@ def external_verdict(events, waited_s):
     if any(o == "conflict" for o, _e, _f in ext):
         return "not_flagged", "the app refused the disk's text and flagged nothing (flagged=false: the kill switch, or a build before #2087's fix)"
     return "no_trace", "no editor_disk line for the change within %.0f s (a build without the trace, or the file watcher did not report it)" % waited_s
+
+
+def save_ask_events(text):
+    """pure: the outcomes, in order, of the editor_save_ask trace lines of an app-log excerpt (asked | overwrite | reload | cancel | not_shown |
+    banner_overwrite)"""
+    return SAVE_ASK_TRACE.findall(text)
+
+
+def save_ask_verdict(events, disk_untouched):
+    """pure: what ONE save pressed while the conflict banner shows did, from the trace since the key and whether the disk still holds the other
+    program's text a moment later -> ('asked' | 'overwrote' | 'not_shown' | 'nothing', text). Only 'asked' is the decided behaviour (#2092): the
+    question is up and nothing was written."""
+    if not disk_untouched:
+        return "overwrote", ("the save wrote the file %s (#2092: it must ask first; PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0, or a build before the change)"
+                             % ("after an answer nobody gave (%s)" % ",".join(events) if events else "without asking"))
+    if "asked" in events:
+        return "asked", "the save asked and wrote nothing"
+    if "not_shown" in events:
+        return "not_shown", "the app could not put the overwrite question on screen (editor_save_ask outcome=not_shown); nothing was written, and nothing told the user why"
+    return "nothing", "the save neither asked (no editor_save_ask line) nor wrote the file: the save key did not reach the editor, or this build logs no editor_save_ask line"
 
 
 def clear_field(ctx, n):
@@ -351,7 +374,11 @@ def close_editor(ctx, r, tag, clean):
         ctx.be.guard()
         if ctx.be.name == "mac":
             if not clean:
+                off = ctx.log_size()
                 ctx.be.key(k["save"])
+                # #2092: a save on the conflict banner asks (the in-app dialog, on macOS too). The file is the case's own: Enter = Overwrite.
+                if ctx.until(lambda: "asked" in save_ask_events(ctx.log_since(off)), 1.5):
+                    ctx.be.key("Return")
                 time.sleep(0.8)
             C.editor_close(ctx, r)
             time.sleep(1.0)
@@ -433,12 +460,12 @@ def _arm_close_question(ctx, r, d):
             time.sleep(1.0)
             what = "unchanged: the edits were dropped without a question" if R.disk(path) == R.EDIT_ORIG else "changed: saved without a question"
             closed = True                                      # whatever happened, the pane is not in a known state: only the shell probe below
-            if CA.setting_bool(ctx, "show_warning_before_quitting") is False:
-                # app/src/quit_warning/mod.rs should_display_warning: that one setting also switches off the question for unsaved editor changes
-                r.unverifiable("general.show_warning_before_quitting is false in this profile, which also switches off the question for unsaved editor changes: "
-                               "the close-question arm is NOT judged (the file on disk is %s)" % what)
-                return
-            r.check(False, "the close key on an editor with unsaved edits did not ask (no %r line within 4 s). The file on disk is %s" % (CLOSE_WARNING_LINE, what))
+            # #2092 (owner decision 2026-11-11): unsaved editor edits ask whatever general.show_warning_before_quitting says
+            # (app/src/quit_warning/mod.rs should_display_warning_for). Until round 16 a profile with the setting off was "not judged" here.
+            off_note = (" general.show_warning_before_quitting is false in this profile; that setting no longer covers unsaved editor edits (#2092), so this "
+                        "is a build before that change or one run with PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK=0."
+                        if CA.setting_bool(ctx, "show_warning_before_quitting") is False else "")
+            r.check(False, "the close key on an editor with unsaved edits did not ask (no %r line within 4 s). The file on disk is %s.%s" % (CLOSE_WARNING_LINE, what, off_note))
             return
         r.check(R.disk(path) == R.EDIT_ORIG, "while the close question is up the file on disk already changed")
         ctx.be.key("Escape")                                   # keep editing
@@ -474,6 +501,11 @@ def _wait_disk_event(ctx, off, pred, secs):
     return disk_events(ctx.log_since(off))
 
 
+def _wait_save_ask(ctx, off, want, secs):
+    ctx.until(lambda: want in save_ask_events(ctx.log_since(off)), secs, step=0.2)
+    return save_ask_events(ctx.log_since(off))
+
+
 def _arm_external(ctx, r, d):
     k = ekeys(ctx)
     path = os.path.join(d, "external_%s.txt" % ctx.mode)
@@ -482,6 +514,7 @@ def _arm_external(ctx, r, d):
     if not open_editor(ctx, r, path, "external"):
         return
     clean = True
+    ask_up = False                                             # the overwrite question may be on screen: Escape (Cancel) before anything else
     try:
         # (a) no unsaved edits: the change is loaded
         ext1 = "EXTERNAL_%s\n" % ctx.tok(6) + R.EDIT_ORIG
@@ -526,17 +559,58 @@ def _arm_external(ctx, r, d):
             r.check(state == "flagged", "a file changed on disk while the editor had unsaved edits: %s (#2087). The next save would replace the other program's change" % why)
         if state != "flagged" or not untouched:
             return
-        # the banner's Overwrite is also what Ctrl-S does while it shows: recorded, not judged (the user was told)
+        # (c) #2092 (owner decision 2026-11-11): a save while the banner shows ASKS (Overwrite / Reload / Cancel) and writes nothing until the
+        # answer. Until round 16 this save was the banner's Overwrite and was recorded, not judged.
+        want = t4 + base                                       # the editor's text
+        off = ctx.log_size()
+        ctx.be.guard()
         ctx.be.key(k["save"])
-        ctx.until(lambda: R.disk(path) != ext2, 4)
+        ask_up = True
+        ev = _wait_save_ask(ctx, off, "asked", 5)
+        time.sleep(1.0)                                        # a silent overwrite has landed by now
+        during = R.disk(path)
+        state, why = save_ask_verdict(ev, during == ext2)
+        r.metric("save_while_flagged", state)
+        ctx.shot("edd_save_ask")
+        if not r.check(state == "asked", "a save while the conflict banner shows: %s. Disk: %r" % (why, during[:70])):
+            clean, ask_up = during == want, state != "overwrote"
+            return
+        # Escape = Cancel: nothing written, the edits and the banner stay
+        off = ctx.log_size()
+        ctx.be.key("Escape")
+        ev = _wait_save_ask(ctx, off, "cancel", 4)
+        ask_up = "cancel" not in ev
+        time.sleep(0.8)
+        if not r.check("cancel" in ev and R.disk(path) == ext2, "Escape on the overwrite question: %s; disk %r, expected the other program's text untouched %r"
+                       % ("answered cancel" if "cancel" in ev else "no `editor_save_ask outcome=cancel` line within 4 s (answers seen: %r)" % (ev,), R.disk(path)[:70], ext2[:70])):
+            clean = R.disk(path) == want
+            return
+        # a second save asks again (the edits are still there, the keyboard is back in the editor); Enter = Overwrite
+        off = ctx.log_size()
+        ctx.be.guard()
+        ctx.be.key(k["save"])
+        ask_up = True
+        ev = _wait_save_ask(ctx, off, "asked", 5)
+        if not r.check("asked" in ev and R.disk(path) == ext2, "after Cancel a second save did not ask again (lines since the key: %r; disk %s): the keyboard did not go "
+                       "back to the editor, or the banner state was lost" % (ev, "untouched" if R.disk(path) == ext2 else "CHANGED: %r" % R.disk(path)[:70])):
+            clean, ask_up = R.disk(path) == want, R.disk(path) == ext2
+            return
+        ctx.be.key("Return")
+        ctx.until(lambda: R.disk(path) != ext2, 6)
         time.sleep(0.3)
+        ev = save_ask_events(ctx.log_since(off))
+        ask_up = not ({"overwrite", "reload", "cancel"} & set(ev))
         end = R.disk(path)
-        outcome = "overwrote" if end == t4 + base else ("kept" if end == ext2 else "other")
-        clean = outcome == "overwrote"
-        r.metric("save_while_flagged", outcome)
-        r.check(outcome != "other", "a save while the conflict banner shows wrote neither the editor's text nor left the other program's: %r" % end[:80])
-        r.note("a save while the conflict banner shows: %s (the banner's 'Overwrite' is the same action; not judged)" % outcome)
+        clean = end == want
+        r.metric("save_ask_overwrite", "wrote" if end == want else ("kept" if end == ext2 else "other"))
+        r.check("overwrite" in ev and end == want, "Enter (Overwrite) on the overwrite question: answers %r; disk %r, expected the editor's text %r" % (ev, end[:70], want[:70]))
     finally:
+        if ask_up:
+            try:
+                ctx.be.key("Escape")                           # Cancel loses nothing; with no question up Escape does nothing in the editor
+                time.sleep(0.5)
+            except Exception as e:
+                r.note("external: Escape for a question that may be up raised %r" % e)
         close_editor(ctx, r, "external", clean=clean)
 
 
@@ -545,10 +619,12 @@ def c_editor_daily(ctx, r):
     """T50: what a user does in the code editor beyond edit and save. (1) Find and replace by keyboard: the find key, the query, the replace-row key
     (#2088), the replacement, Enter: exactly ONE match is replaced; again with the replace-all key: every match, bytes exact, the near-miss words and
     the multi-byte text untouched. (2) Close with unsaved edits: the close key asks; Escape keeps the edits (a save then has them); the close key and
-    Enter closes, and the file is the saved text or the saved text plus the new edit, nothing else. Not played on macOS (native dialog). (3) A file
-    changed on disk: with no unsaved edits the editor reloads it (an edit typed and saved afterwards lands on the NEW content); with unsaved edits
-    the change is flagged (`editor_disk outcome=conflict ... flagged=true`, #2087) and the app does not write the file on its own. Nothing may
-    reach the shell."""
+    Enter closes, and the file is the saved text or the saved text plus the new edit, nothing else; the question comes whatever
+    general.show_warning_before_quitting says (#2092). Not played on macOS (native dialog). (3) A file changed on disk: with no unsaved edits the
+    editor reloads it (an edit typed and saved afterwards lands on the NEW content); with unsaved edits the change is flagged (`editor_disk
+    outcome=conflict ... flagged=true`, #2087) and the app does not write the file on its own; a save in that state asks (`editor_save_ask
+    outcome=asked`, #2092) and writes nothing, Escape cancels (disk untouched), a second save asks again and Enter overwrites with the editor's
+    text. Nothing may reach the shell."""
     if ctx.app is None or not hasattr(ctx.app, "start"):
         r.skip("needs the app (not the sim backend)")
     mac = ctx.be.name == "mac"

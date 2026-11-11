@@ -247,7 +247,7 @@ def r15_keybinding_rebind_parts():
 
 @check
 def r15_editor_daily_parts():
-    """T50: the fixture, the one-match verdict, the trace reader, the keys, and the app strings the case reads (#2087, #2088)"""
+    """T50: the fixture, the one-match verdict, the trace readers, the save-ask verdict, the keys, and the app strings the case reads (#2087, #2088, #2092)"""
     q, rep = "qabc1234", "Rep_X_longer_than_the_query"
     text, n = W.replace_fixture(q)
     assert text.count(q) == n == 4 and "qabc123 is shorter" in text and "qab c1234 has a space" in text and "日本" in text and text.endswith("last %s\n" % q)
@@ -271,6 +271,32 @@ def r15_editor_daily_parts():
     assert W.external_verdict([("conflict", True, False)], 10)[0] == "not_flagged"
     assert W.external_verdict([("conflict", False, False)], 10)[0] == "no_trace", "the echo of the editor's own save is not the other program's change"
     assert W.external_verdict([("reloaded", True, False)], 10)[0] == "reloaded" and W.external_verdict([], 10)[0] == "no_trace"
+    # #2092: the save-ask trace and the verdict of one save pressed while the banner shows
+    ask_log = ("a editor_save_ask outcome=asked\nb editor_disk outcome=conflict external=true flagged=true\nc editor_save_ask outcome=cancel\n"
+               "d editor_save_ask outcome=asked\ne editor_save_ask outcome=overwrite\nf editor_save_ask outcome=not_shown\ng editor_save_ask outcome=banner_overwrite\n")
+    assert W.save_ask_events(ask_log) == ["asked", "cancel", "asked", "overwrite", "not_shown", "banner_overwrite"]
+    assert W.save_ask_events("editor_disk outcome=conflict external=true flagged=true\n") == [] == W.disk_events("x editor_save_ask outcome=asked\n")
+    assert W.save_ask_verdict(["asked"], True)[0] == "asked"
+    assert W.save_ask_verdict([], False)[0] == "overwrote" and "without asking" in W.save_ask_verdict([], False)[1], "the behaviour before #2092 fails"
+    assert W.save_ask_verdict(["asked"], False)[0] == "overwrote", "asked but the disk changed before any answer: still a silent write"
+    assert W.save_ask_verdict(["asked", "overwrite"], False)[0] == "overwrote", "an answer nobody gave"
+    assert W.save_ask_verdict(["not_shown"], True)[0] == "not_shown" and W.save_ask_verdict([], True)[0] == "nothing"
+    sc = _src("app", "src", "code", "save_conflict.rs")
+    assert 'format!("editor_save_ask outcome={outcome}")' in sc and "PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK" in sc
+    for word in ('"overwrite"', '"reload"', '"cancel"'):
+        assert word in sc, word
+    lce = _src("app", "src", "code", "local_code_editor.rs")
+    for word in ('save_ask_trace("asked")', 'save_ask_trace("not_shown")', 'save_ask_trace("banner_overwrite")', 'target: "editor_disk"'):
+        assert word in lce, word
+    assert "LocalCodeEditorAction::OverwriteFile" in lce, "the banner's Overwrite is its own action: it must not ask again"
+    qw = _src("app", "src", "quit_warning", "mod.rs")
+    assert "PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK" in qw and "fn should_display_warning_for(" in qw
+    s = inspect.getsource(W._arm_close_question)
+    assert "r.unverifiable(" not in s and "PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK" in s, "#2092: a profile with the quit warning off no longer excuses a missing close question"
+    s = inspect.getsource(W._arm_external)
+    assert s.index('_wait_save_ask(ctx, off, "asked", 5)') < s.index('ctx.be.key("Escape")') < s.index('ctx.be.key("Return")'), "ask, Cancel, ask again, Overwrite"
+    assert 'state == "asked"' in s and '"overwrite" in ev and end == want' in s and "R.disk(path) == ext2" in s
+    assert '"asked" in save_ask_events' in inspect.getsource(W.close_editor), "macOS: a save before the close answers the overwrite question"
     # the app's side of those strings
     gbm = _src("app", "src", "code", "global_buffer_model.rs")
     assert 'format!("editor_disk outcome={outcome} external={external} flagged={flagged}")' in gbm and 'target: "editor_disk"' in gbm

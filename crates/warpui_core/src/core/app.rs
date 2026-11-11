@@ -1079,15 +1079,24 @@ impl AppContext {
             .into_iter()
             .map(|button| (button.title, button.on_click))
             .unzip();
+        let can_disable = alert_data.can_disable;
         let dialog = AlertDialog {
             message_text: alert_data.message_text,
             info_text: alert_data.info_text,
             buttons: button_titles,
+            show_suppression_button: can_disable,
         };
 
+        // A dialog that cannot be switched off never runs its disable callback, whatever the
+        // platform reports about a checkbox it was told not to show (#2092).
+        let disable_callback: AppModalCallback = if can_disable {
+            alert_data.on_disable
+        } else {
+            Box::new(|_: &mut AppContext| {})
+        };
         let response_data = PlatformModalResponseData {
             button_callbacks,
-            disable_callback: alert_data.on_disable,
+            disable_callback,
         };
         self.platform_modal_data_map.insert(id, response_data);
         self.platform_delegate

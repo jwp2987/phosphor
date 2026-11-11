@@ -751,7 +751,8 @@ impl<'a, T: Entity> ViewContext<'a, T> {
         view_alert: AlertDialogWithCallbacks<ViewModalCallback<T>>,
     ) {
         let weak_handle = self.handle();
-        let app_alert = AlertDialogWithCallbacks::for_app(
+        let can_disable = view_alert.can_disable;
+        let mut app_alert = AlertDialogWithCallbacks::for_app(
             view_alert.message_text,
             view_alert.info_text,
             view_alert
@@ -776,6 +777,7 @@ impl<'a, T: Entity> ViewContext<'a, T> {
                 }
             },
         );
+        app_alert.can_disable = can_disable;
         self.app.show_native_platform_modal(app_alert);
     }
 
