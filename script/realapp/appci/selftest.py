@@ -4078,7 +4078,7 @@ def g11_enter_rediag_1606():
 def g11_startup_shell_passes():
     """#1534: the cmd / pwsh7 passes: settings TOML names the shell, the family drives the helpers, the case list and effect syntax are right"""
     import cases_shells
-    assert winmap.VARIANT_FAMILY == {"pwsh7": "powershell", "cmd": "cmd"}
+    assert {k: winmap.VARIANT_FAMILY[k] for k in ("pwsh7", "cmd")} == {"pwsh7": "powershell", "cmd": "cmd"}      # r15 adds "wsl" (selftest_r15_w5b.r15_pane_shell_passes)
     for v, names in winmap.VARIANT_CASES.items():
         assert "startup_shell_pane" in names and "mode_proof" in names, v
         reg = {c["name"] for c in cases.CASES}
@@ -6399,7 +6399,8 @@ def always_skip_cases_say_what_they_need():
     capability would make it run (`NEEDS:`), so the row cannot be read as coverage or as "not applicable"."""
     # round 15 (T47): the sudoers text moved to priv_boundary.sudo_needs(), which both sudo cases put in their skip; the words are pinned there
     need = {"cases_subshell_ready.py": ["PB.sudo_needs()", "`alpine` image pulled once"], "cases_coverage_a.py": ["PB.sudo_needs()"], "priv_boundary.py": ["sudoers entry", "NOPASSWD"],
-            "cases_ui.py": ["package dragon-drop", "a client that owns the drag"], "cases_shells.py": ["APPCI_WIN_SHELLS=powershell,gitbash,pwsh7,cmd", "PowerShell 7 installed"],
+            "cases_ui.py": ["package dragon-drop", "a client that owns the drag"],
+            # cases_shells.py left this table in round 15 (w5b): its "no tier plays it" text moved to the pane-shell pass row, asserted there
             "cases_caseintl.py": ["ibus or fcitx5", "NEEDS_OWNER"], "cases_coverage_b.py": ["APPCI_PREV_FIXTURE", "#1546"], "cases_win_input.py": ["NEEDS: APPCI_SSH_WRAPPER=1"]}
     for f, words in need.items():
         src = open(os.path.join(HERE, f), encoding="utf-8").read()
@@ -6411,6 +6412,9 @@ def always_skip_cases_say_what_they_need():
         assert any(c["name"] == n for c in cases.CASES), "%s must stay registered (owner: do not remove always-SKIP cases)" % n
     for n in ("ui_drag_drop_file", "intl_ime_japanese", "intl_ime_pinyin"):
         assert "NEEDS:" in winmap.NOT_WINDOWS[n], n
+    # r15 (T46): startup_shell_pane is no longer always-SKIP: the app-test-windows job plays its passes. What a pass needs when its shell is not on the
+    # machine moved from the case's skip text to the pass's own row (winmap.VARIANT_NEEDS; selftest_r15_w5b.r15_pane_shell_passes reads the job variable)
+    assert "PowerShell 7" in winmap.VARIANT_NEEDS["pwsh7"] and all(t.startswith("NEEDS: ") for t in winmap.VARIANT_NEEDS.values())
     for n in ("subshell_ready_relay_shape", "subshell_ready_docker_t_without_i", "sudo_su_real_shell"):
         assert "by design" in winmap.NOT_WINDOWS[n], n
 
@@ -7725,8 +7729,10 @@ def r14_w1a_wave1_cases_pure_parts_and_registry():
     assert "one line more" in w.hist_diagnose(want, want + [want[5]], want[:3])                                              # a doubled line
     assert "line 5" in w.hist_diagnose(want, want[:4] + [want[1]] + want[5:], want[:3])                                      # the edit was lost
     body = inspect.getsource(w.c_history_up_recall)
-    for needle in ('["Up", "Up", "Return"]', '["Up"] + ["BackSpace"] * plan["backspaces"]', '["Up", "Down"]', "got == want", "got.count(want[1]) == 2", "r.unverifiable("):
+    # round 15 (w5b, T46): step (c)'s keys moved to hist_clear_keys(shell) so the cmd.exe pass can use Escape; the call is pinned here and the keys below
+    for needle in ('["Up", "Up", "Return"]', '["Up"] + ["BackSpace"] * plan["backspaces"]', "hist_clear_keys(", "got == want", "got.count(want[1]) == 2", "r.unverifiable("):
         assert needle in body, needle
+    assert w.hist_clear_keys("bash") == ["Up", "Down"] and w.hist_clear_keys("powershell") == ["Up", "Down"] and w.hist_clear_keys("cmd") == ["Up", "Escape"]
 
     # --- T2: line words survive OCR-style text; the hold verdict fails on a snap, on no output, and is noref when nothing was read
     assert len(set(w.SKP_CODE)) == 16 and set(w.SKP_CODE) <= set(cases_ui.OCR_SAFE)
@@ -8306,6 +8312,8 @@ import selftest_r15_w5c  # noqa: E402  (round 15 wave 5c: #2071 scripted recycle
 CHECKS.extend(selftest_r15_w5c.CHECKS)
 import selftest_desk  # noqa: E402  (round 15 wave 4: cases_desk.py, notify_recorder.py, dragsrc.py; its checks live in their own file)
 CHECKS.extend(selftest_desk.CHECKS)
+import selftest_r15_w5b  # noqa: E402  (round 15 wave 5 part B: cases_install.py, prev_artifact.py, wininstall.py, the pane-shell passes)
+CHECKS.extend(selftest_r15_w5b.CHECKS)
 
 
 def main():

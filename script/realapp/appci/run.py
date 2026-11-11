@@ -308,10 +308,16 @@ def main():
         prof.variant = variant
         if variant:
             import winapi
-            exe = winapi.pwsh7() if variant == "pwsh7" else winapi.cmd_exe()
+            # r15 (T46): a pass none of whose cases is selected (an explicit --cases list, the lab job) starts no app at all
+            vnames = [c["name"] for c in psel if c["name"] in winmap.variant_cases(variant) and mode in c["modes"]]
+            if not vnames:
+                print("[appci] pass %s: none of its cases is selected, not started" % label, flush=True)
+                continue
+            exe = {"pwsh7": winapi.pwsh7, "cmd": winapi.cmd_exe, "wsl": winapi.wsl_distro}[variant]()
             if not exe:
                 emit(dict(name="startup_shell_pass", mode=label, status="skip", seconds=0, metrics={}, shots=[],
-                          detail=["%s is not installed on this machine: the startup_shell_override pass for it cannot run (install it by hand; the harness installs nothing)" % ("PowerShell 7 (pwsh.exe)" if variant == "pwsh7" else "cmd.exe")]))
+                          detail=["%s is not installed on this machine: the %s pass cannot run (the harness installs nothing). %s. Not run: %s" % (
+                              {"pwsh7": "PowerShell 7 (pwsh.exe)", "cmd": "cmd.exe", "wsl": "a WSL distribution"}[variant], variant, winmap.VARIANT_NEEDS[variant], ", ".join(vnames))]))
                 continue
         ssh_info = None
         ssh_why = None       # why the ssh cases skip when there is no usable ssh test host
@@ -407,6 +413,15 @@ def main():
                     continue
                 if win:
                     ctx.log_path = os.environ.get("APPCI_APP_LOG") or app.find_log() or ""      # now that the app has written one
+                if variant:
+                    # r15 (T46, #2084): did the app start the shell this pass is about? Read from the app's own job object, before any key is typed:
+                    # a pane that fell back to the default shell would get cmd.exe / bash lines and the pass would end in "keys not delivered".
+                    vbad = variant_pane_problem(variant, app)
+                    if vbad:
+                        emit(dict(name="startup_shell_pass", mode=label, status="fail", seconds=0, metrics={}, shots=[ctx.shot("startup_shell_pass_%s" % variant) or ""],
+                                  detail=[vbad + ". No case of this pass was run: %s" % ", ".join(vnames)]))
+                        exit_fail = True
+                        continue
                 settle_first_run(ctx)      # the first-run overlay: the pane's view_mode hop, then a short margin (mode_proof sends Escape)
                 if a.backend == "mac":
                     d = be.system_dialog(ocr=True)       # BEFORE the first key: a Local Network / TCC prompt would take it
@@ -478,7 +493,7 @@ def main():
                     bad = record_root_pid(ctx, app, "relaunch_by_case")
                     if bad:
                         emit(dict(name="depth_check_off_before_" + c["name"], mode=label, status="skip", seconds=0, detail=[bad], metrics={}, shots=[]))
-                depth_check = (not sim) and cases.wants_depth_check(c["name"], cases.PROVING) and not (win and pane == "cmd") and ctx.root_app_pid == pid_start
+                depth_check = (not sim) and cases.wants_depth_check(c["name"], cases.PROVING) and not (win and pane in ("cmd", "wsl")) and ctx.root_app_pid == pid_start
                 # r18d8: soak runs APPCI_SOAK_MIN (60) minutes, longer than the 1500 s default: it hit CaseTimeout at 25 min. It gets its own length + 10 min.
                 disarm = arm_case_timeout(case_limit(c["name"]))
                 try:
@@ -1024,8 +1039,8 @@ def record_root_pid(ctx, app, why):
     except Exception:
         ctx.root_app_pid = None
     ctx.root_pid = None
-    if ctx.win and ctx.pane == "cmd":
-        return None                      # no PID probe in cmd.exe: the depth check never runs there
+    if ctx.win and ctx.pane in ("cmd", "wsl"):
+        return None                      # no PID probe in cmd.exe (nor one the harness can read in a WSL pane): the depth check never runs there
     try:
         ctx.be.guard()
     except RuntimeError as e:
@@ -1091,12 +1106,31 @@ def set_ps_pane_state(ctx, be):
         fn = ("; " + ctx.prof.ps_ssh_function()) if (ctx.ssh and ctx.prof.ps_ssh_function()) else ""
         if ctx.pane == "cmd":       # cmd.exe: `cd /d` (also changes drive), no function for ssh (the ssh.cmd wrapper in <home>\\bin is found as `ssh`)
             be.type('cd /d "%s" && echo %s>>cwd_%s.txt' % (wd, tok, tok), 8, enter=True)
+        elif ctx.pane == "wsl":     # r15 (T46): the same directory as the distribution sees it (/mnt/<drive>/...)
+            import winapi
+            be.type("cd '%s' && echo %s >> cwd_%s.txt" % (winapi.wsl_path(wd), tok, tok), 8, enter=True)
         else:
             be.type("Set-Location -LiteralPath '%s'%s; Add-Content cwd_%s.txt %s" % (wd, fn, tok, tok), 8, enter=True)
         if ctx.until(lambda: tok in ctx.lines("cwd_%s.txt" % tok), 10 + 5 * attempt):
             time.sleep(0.8)
             return None
     return "the PowerShell pane could not be put in the case dir (Set-Location typed 3 times, the relative marker file never appeared in %s): every PowerShell effect file would land elsewhere" % ctx.W
+
+
+def variant_pane_problem(variant, app):
+    """r15 (T46): None when the app runs the shell of the pass `variant`, else why not (winmap.variant_shell_problem over the image names of the
+    processes in the app's job object). No job object (creation failed) or an unreadable one: None, the pass runs and startup_shell_pane judges."""
+    job = getattr(app, "job", None)
+    if not job:
+        return None
+    try:
+        import winapi
+        me = app.pid()
+        names = [winapi.proc_name(p) for p in winapi.job_pids(job) if p != me]
+    except Exception as e:
+        print("[appci] could not list the app's processes for the %s pass: %r" % (variant, e), flush=True)
+        return None
+    return winmap.variant_shell_problem(variant, names)
 
 
 def prove_keys(ctx, be, pane, label):
@@ -1121,13 +1155,15 @@ def prove_keys(ctx, be, pane, label):
             be.key("Escape" if pane == "cmd" else "ctrl+u")
             if pane == "cmd":       # cmd.exe: no single quotes, no space before `>>`
                 be.type('echo %s>>"%s"' % (tok, fp), 8, enter=True)
+            elif pane == "wsl":     # r15 (T46): the absolute path as the distribution sees it
+                be.type("echo %s >> '%s'" % (tok, winapi.wsl_path(fp)), 8, enter=True)
             else:
                 be.type(("Add-Content -LiteralPath '%s' %s" if pane == "powershell" else "echo %s >> '%s'") % ((fp, tok) if pane == "powershell" else (tok, fp)), 8, enter=True)
         except Exception as e:
             log.append("%s threw: %s" % (method, e))
             continue
         if ctx.until(lambda: tok in ctx.lines(os.path.basename(f)), 8):
-            if pane in ("powershell", "cmd"):
+            if pane in ("powershell", "cmd", "wsl"):
                 bad = set_ps_pane_state(ctx, be)
                 if bad:
                     return bad

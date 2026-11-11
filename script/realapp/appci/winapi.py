@@ -586,3 +586,44 @@ class Pointer:
                 self.button(b, False)
             except Exception:
                 self.held.discard(b)
+def parse_wsl_list(raw):
+    """pure: distribution names from the bytes `wsl.exe --list --quiet` prints (UTF-16LE, sometimes with NULs left after a lossy decode, one name per
+    line; the default distribution is first). Lines that are not a plain name (the "no installed distributions" text, usage text) give []."""
+    if not raw:
+        return []
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-16-le") if raw.count(b"\0") * 3 >= len(raw) else raw.decode("utf-8", "replace")
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", "replace")
+    else:
+        text = raw
+    names = [l.strip().lstrip("\ufeff") for l in text.replace("\0", "").splitlines()]
+    names = [n for n in names if n]
+    import re
+    return names if names and all(re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", n) for n in names) else []
+
+
+def wsl_distro():
+    """name of the default WSL distribution (the first `wsl.exe --list --quiet` prints), or None: no wsl.exe, no distribution, or the command failed.
+    Nothing is installed or started by this call beyond wsl.exe's own listing."""
+    import shutil, subprocess
+    exe = shutil.which("wsl.exe") or os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "wsl.exe")
+    if not os.path.isfile(exe):
+        return None
+    try:
+        p = subprocess.run([exe, "--list", "--quiet"], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode != 0:
+        return None
+    names = parse_wsl_list(p.stdout)
+    return names[0] if names else None
+
+
+def wsl_path(path):
+    """pure: the /mnt/<drive>/... form of a Windows path, as a WSL shell sees the same file (C:\\a\\b or C:/a/b -> /mnt/c/a/b); other text unchanged"""
+    p = path.replace("\\", "/")
+    if len(p) >= 2 and p[1] == ":" and p[0].isalpha():
+        return "/mnt/%s%s" % (p[0].lower(), p[2:] if p[2:].startswith("/") else "/" + p[2:])
+    return p

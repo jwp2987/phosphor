@@ -188,6 +188,15 @@ def quit_app(ctx, r, bound, label):
     return res
 
 
+def use_app(ctx, app):
+    """make `app` the app the case drives: ctx.app AND the backend's frontmost-window guard. A case that launches another build on the profile (the
+    previous release, an installed copy) used to swap ctx.app only; the guard kept asking the stopped build for its pid and refused every key on
+    macOS and Windows ("Phosphor PID unknown"), which nobody saw because those cases had never run there (r15, T44)."""
+    ctx.app = app
+    if getattr(ctx.be, "pid_fn", None) is not None and app is not None and hasattr(app, "pid"):
+        ctx.be.pid_fn = app.pid
+
+
 def start_app(ctx, r, label, restored_min=1, timeout=90):
     """(re)launch the app on the same profile; returns (new prompts, ok). Waits until the prompt count stops growing. Windows: the main window,
     then the prompt (Git Bash pane) or a fixed settle (PowerShell pane: no rc hook), then the key proof and pane state again (run.py's `reprove`),
@@ -202,6 +211,8 @@ def start_app(ctx, r, label, restored_min=1, timeout=90):
             r.check(False, "%s: no window / shell after the relaunch within %d s (alive %s)" % (label, timeout, ctx.app.alive()))
             return 0, False
         time.sleep(4)
+        if not os.environ.get("APPCI_APP_LOG") and hasattr(ctx.app, "find_log"):      # r15: the relaunched instance writes a new log file (run.py re-resolves it per case only)
+            ctx.log_path = ctx.app.find_log() or ctx.log_path
         ctx.be.guard()
         bad = ctx.reprove() if getattr(ctx, "reprove", None) else None
         if bad:

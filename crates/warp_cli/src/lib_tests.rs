@@ -977,3 +977,101 @@ fn agent_run_share_is_refused_with_a_clear_error() {
 fn agent_run_without_share_is_not_refused() {
     assert_eq!(parse_agent_run(&[]).share.unsupported_error(), None);
 }
+
+// #2083: `phosphor <path>` opens the file. An EXISTING path in the `[URLS]` positional becomes a
+// file URL; anything else is parsed as a URL exactly as before.
+#[test]
+fn existing_absolute_path_becomes_a_file_url() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let file = dir.path().join("notes with space.txt");
+    std::fs::write(&file, "x").expect("write");
+    let value = file.to_str().expect("utf-8 path");
+
+    let url = url_or_existing_path(value, true, None).expect("an existing path is accepted");
+    assert_eq!(url.scheme(), "file");
+    assert_eq!(url.to_file_path().expect("file url"), file);
+
+    // A directory too (the app opens a session there).
+    let dir_value = dir.path().to_str().expect("utf-8 path");
+    let url =
+        url_or_existing_path(dir_value, true, None).expect("an existing directory is accepted");
+    assert_eq!(url.scheme(), "file");
+}
+
+#[test]
+fn existing_relative_path_is_taken_against_the_current_directory() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(dir.path().join("notes.txt"), "x").expect("write");
+
+    let url = url_or_existing_path("notes.txt", true, Some(dir.path()))
+        .expect("an existing relative path is accepted");
+    assert_eq!(
+        url.to_file_path().expect("file url"),
+        dir.path().join("notes.txt")
+    );
+    // Without a current directory a relative path cannot be resolved: the old error stays.
+    assert!(url_or_existing_path("notes.txt", true, None).is_err());
+}
+
+#[test]
+fn a_value_that_is_no_existing_path_keeps_the_url_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // A mistyped subcommand must not become a file to open.
+    let err = url_or_existing_path("whoamii", true, Some(dir.path())).expect_err("not a path");
+    assert_eq!(err, "relative URL without a base");
+    let missing = dir.path().join("missing.txt");
+    // A missing absolute path is whatever `Url::parse` makes of it, as before the change: an
+    // error on Unix, a one-letter-scheme URL on Windows (which the app refuses).
+    let missing = missing.to_str().expect("utf-8 path");
+    assert_eq!(
+        url_or_existing_path(missing, true, None).ok(),
+        Url::parse(missing).ok()
+    );
+    assert!(url_or_existing_path("", true, Some(dir.path())).is_err());
+}
+
+#[test]
+fn urls_parse_as_before_and_never_as_paths() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for value in [
+        "file:///tmp/a%20b.txt",
+        "phosphor://action/new_window?path=/tmp",
+        "https://example.invalid/x",
+    ] {
+        let url = url_or_existing_path(value, true, Some(dir.path())).expect("a URL parses");
+        assert_eq!(url, Url::parse(value).expect("a URL"));
+    }
+}
+
+#[test]
+fn kill_switch_restores_the_strict_url_parsing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(dir.path().join("notes.txt"), "x").expect("write");
+    let strict = url_or_existing_path("notes.txt", false, Some(dir.path()));
+    assert_eq!(strict.expect_err("strict"), "relative URL without a base");
+    // An absolute path under the switch is whatever `Url::parse` makes of it, as before the
+    // change: an error on Unix, a one-letter-scheme URL on Windows.
+    let file = dir.path().join("notes.txt");
+    let value = file.to_str().expect("utf-8 path");
+    assert_eq!(
+        url_or_existing_path(value, false, None).ok(),
+        Url::parse(value).ok()
+    );
+}
+
+#[test]
+fn the_positional_accepts_an_existing_path_through_clap() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "x").expect("write");
+    let value = file.to_str().expect("utf-8 path");
+    // Only when the kill switch is not set in the test environment (it is read by the parser).
+    if std::env::var(CLI_PATH_ARGS_ENV).as_deref() == Ok("0") {
+        return;
+    }
+    let args = Args::try_parse_from(["phosphor", value]).expect("an existing path parses");
+    assert_eq!(args.args.urls.len(), 1);
+    assert_eq!(args.args.urls[0].to_file_path().expect("file url"), file);
+    // A value that is neither an existing path nor a URL is still refused.
+    assert!(Args::try_parse_from(["phosphor", "definitely-not-a-file-or-url"]).is_err());
+}

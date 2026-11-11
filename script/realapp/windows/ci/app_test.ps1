@@ -81,6 +81,7 @@ try {
   $pyver
   if ($pyok -ne 0) { Emit "preflight" "-" "fail" "the private Python cannot import paramiko and Pillow: $($pyver -join ' ')"; throw "python modules" }
   $env:APPCI_WIN_BAK = $Bak
+  $env:APPCI_DIST = $Dist   # r15 (T43 installer_smoke): the installer, for the case that runs it silently into the job directory itself
   $env:PYTHONUNBUFFERED = "1"
   $env:PYTHONUTF8 = "1"   # r18e4: open()/print default to cp1252 here; a U+FFFD in a case log crashed save_case_log and its crash handler, ending the run after the PowerShell pane
   $ErrorActionPreference = "Continue"       # native stderr text is output, not an error; the exit code is what counts

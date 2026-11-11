@@ -130,6 +130,9 @@ PS_ONLY = {
     "agent_basics_powershell": "#2072 (T6): the PowerShell pane's twin of agent_input_exact and agent_mode_switch (PSReadLine history instead of rec.log); the Git Bash pane runs those two",
     "ps_read_host_secure": "#1882/#1891: Read-Host -AsSecureString is PowerShell; the Git Bash twin is gitbash_precmd_secret",
 }
+# r15 wave 5 part B (#2076, #1546): neither depends on the pane's shell and each installs or runs another build on the VM, so once per run is enough
+PS_ONLY["installer_smoke"] = "T43: the installer does not depend on the pane's shell: runs once, in the PowerShell pane (the app's default shell)"
+PS_ONLY["upgrade_from_previous_release"] = "T44: the upgrade does not depend on the pane's shell: runs once, in the PowerShell pane (the app's default shell)"
 # not on Windows at all, with the reason
 NOT_WINDOWS = {
     # round 14 wave 3a (T21 to T25). The Windows pointer exists since r15 wave 4 (SendInput, T31: selection_modes moved to GITBASH_ONLY); the cases
@@ -240,6 +243,45 @@ VARIANT_CASES = {
     "pwsh7": ("mode_proof", "startup_shell_pane", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d"),
     "cmd": ("mode_proof", "startup_shell_pane"),
 }
+
+# r15 (r14-test-gaps T46, #2076): the passes are played by the app-test-windows job (its APPCI_WIN_SHELLS names pwsh7, cmd and wsl). Each pass also runs
+# T1 (history_up_recall) and T5 (routing_table_powershell; it judges the PowerShell family and says what a cmd.exe / WSL pane lacks). A third pass, "wsl",
+# starts the default WSL distribution through session.new_session_shell_override = { wsl = "<name>" }; where no distribution is installed the pass is one
+# SKIP row with the machine change it needs (owner).
+VARIANT_FAMILY["wsl"] = "wsl"
+VARIANT_CASES["pwsh7"] += ("history_up_recall", "routing_table_powershell")
+VARIANT_CASES["cmd"] += ("history_up_recall", "routing_table_powershell")
+VARIANT_CASES["wsl"] = ("mode_proof", "startup_shell_pane", "history_up_recall", "routing_table_powershell")
+# What a pass needs on the machine when its shell is missing (run.py puts it in the pass's SKIP row).
+VARIANT_NEEDS = {
+    "pwsh7": "NEEDS: PowerShell 7 (pwsh.exe on PATH or under Program Files\\PowerShell\\7) installed on the Windows VM (owner: machine change)",
+    "cmd": "NEEDS: cmd.exe (%ComSpec%); it is part of Windows, so its absence means a broken environment for the job",
+    "wsl": "NEEDS: the Windows Subsystem for Linux with one distribution installed and started once for the runner's user on the Windows VM "
+           "(owner: machine change; `wsl --install -d <distribution>` needs admin rights, virtualisation in the VM and a reboot)",
+}
+# Per pass: (image names of which at least one must run under the app, image names that must NOT run under it). The app falls back to its default
+# shell when it cannot start the shell the setting names (#2084: cmd.exe is not a shell type it knows), and the harness would then type cmd.exe lines
+# into a PowerShell pane and report "keys not delivered". run.py reads the app's job object and reports the real cause in the pass's own row.
+VARIANT_PROCESS = {
+    "pwsh7": (("pwsh.exe",), ()),
+    "cmd": (("cmd.exe",), ("powershell.exe", "pwsh.exe")),
+    "wsl": (("wsl.exe", "wslhost.exe"), ("powershell.exe", "pwsh.exe")),
+}
+
+
+def variant_shell_problem(variant, names):
+    """pure: None when the processes running under the app (`names`, lower-case image names) fit the pass `variant`, else one sentence saying which
+    shell the app started instead. An empty list means the job object could not be read: no verdict (None). A wanted image under the app is
+    accepted even next to a default shell (the app may run one for its own work); startup_shell_pane's identity line stays the proof of the pane."""
+    names = [n.lower() for n in names if n]
+    want, never = VARIANT_PROCESS[variant]
+    if not names or any(n in want for n in names):
+        return None
+    other = sorted(set(n for n in names if n in never))
+    if other:
+        return "the app did not start %s for this pass: %s runs under it instead (the app fell back to its default shell; the setting that names the shell was not honoured)" % (
+            want[0], ", ".join(other))
+    return "the app did not start %s for this pass: none of %s runs under it (processes under the app: %s)" % (want[0], "/".join(want), ", ".join(sorted(set(names)))[:200])
 
 
 def variant_cases(variant):
