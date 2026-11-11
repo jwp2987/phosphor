@@ -7219,3 +7219,12 @@ platform; on Windows the AWS CLI's split takes a single quote as a character, so
 one word on unix, two on Windows). New, on every platform: `the_windows_split_groups_by_double_quotes_only` checks `split_windows_command`
 (compiled for Windows and for tests): double quotes group, `""` is a word, backslashes are path separators except before a double quote (2n:
 n backslashes and a grouping quote; 2n+1: n and a literal quote), an open quote is refused.
+
+### pwsh: `$Error` on a machine with no node or git (#2111)
+
+`agent_shell_wrap_tests.rs` (`real_shells`): `pwsh_bootstrap_and_prompts_add_no_error_records` was right and found an app defect on the Windows
+runner (no `node`): the bootstrap's `Get-Command ... 2>$null` lookups record the failure in `$Error`. They now use `-ErrorAction Ignore`. That
+test still depends on the machine (it passes wherever both programs exist), so `pwsh_prompt_adds_no_error_records_when_node_and_git_are_missing`
+runs the real bootstrap, sets `$env:PATH` to an empty folder, runs the prompt twice and requires `errors=0` and no `ERR:` line: it fails on any
+machine with pwsh if a lookup of an optional program records an error again. Skipped (returns) only where pwsh is not installed, like its
+siblings.
