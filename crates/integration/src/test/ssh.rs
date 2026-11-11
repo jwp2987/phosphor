@@ -27,14 +27,41 @@ use warp::{
         model::bootstrap::BootstrapStage,
         session_settings::{StartupShell, StartupShellOverride},
         shell::ShellType,
+        warpify::settings::{SshExtensionInstallMode, SshExtensionInstallModeSetting},
     },
 };
 use warpui::{
     async_assert, async_assert_eq,
-    integration::{AssertionCallback, AssertionOutcome, TestStep},
+    integration::{AssertionCallback, AssertionOutcome, TestStep, needs, skip_because},
 };
 
 use super::new_builder;
+
+/// What a scenario gated on `!FeatureFlag::SSHTmuxWrapper.is_enabled()` needs (#2122, #2128). The gate
+/// is upstream's: there the flag chose the tmux wrapper over the legacy one. In this fork the
+/// flag is on in every default build (`ssh_tmux_wrapper` is a default cargo feature of the app;
+/// it also gates tmux control-mode handling) while the legacy wrapper is the one that runs, so
+/// these scenarios skip in every run until the gate is changed. Said in the skip line instead
+/// of being counted as a pass.
+const TMUX_WRAPPER_FLAG_ON: &str = "FeatureFlag::SSHTmuxWrapper off, and it is on in every \
+    default build of this fork (cargo feature ssh_tmux_wrapper): this scenario never runs \
+    until its gate is changed";
+
+/// PowerShell has no ssh wrapper (CORE-2333).
+const POSIX_LOCAL_SHELL: &str = "a POSIX local shell (PowerShell has no ssh wrapper)";
+
+/// The ssh scenarios answer the "install the remote helper?" question in advance (#2122): with
+/// the default (`always_ask`) the app shows the question and holds the remote bootstrap until a
+/// person answers, which no scenario here does, so the remote shell never bootstraps. No helper
+/// is the primary remote design, and the real-app harness sets the same value for the same
+/// reason (docs/testing.md, `ssh_extension_install`).
+fn without_helper_question() -> HashMap<String, String> {
+    HashMap::from([(
+        SshExtensionInstallModeSetting::storage_key().to_owned(),
+        serde_json::to_string(&SshExtensionInstallMode::NeverInstall)
+            .expect("Can serialize setting as JSON"),
+    )])
+}
 
 /// The prompt regex of fish on the local sshd fixture: `user@host ~>` with the short host name
 /// (fish's `prompt_hostname`) and the fixture's remote home shown as `~`.
@@ -177,15 +204,18 @@ macro_rules! generate_can_bootstrap_legacy_ssh_test_for_shell {
         pub fn $fn_name() -> Builder {
             new_builder()
                 .with_cleanup(|_| stop_ssh_fixtures())
+                .with_user_defaults(without_helper_question())
                 // TODO(CORE-2333) PowerShell has no SSH wrapper.
                 .set_should_run_test(|| {
                     if FeatureFlag::SSHTmuxWrapper.is_enabled() {
-                        return false;
+                        return skip_because(TMUX_WRAPPER_FLAG_ON);
                     }
                     let (starter, _) = current_shell_starter_and_version();
                     // Last: this starts the local sshd (see `ssh_test_fixture_available`).
-                    starter.shell_type() != ShellType::PowerShell
-                        && ssh_test_fixture_available($shell)
+                    needs(
+                        starter.shell_type() != ShellType::PowerShell,
+                        POSIX_LOCAL_SHELL,
+                    ) && ssh_test_fixture_available($shell)
                 })
                 .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
                 .with_step(enter_ssh_command($shell))
@@ -248,12 +278,14 @@ macro_rules! generate_can_bootstrap_tmux_ssh_test_for_shell {
                 // TODO(CORE-2333) PowerShell has no SSH wrapper.
                 .set_should_run_test(|| {
                     if !FeatureFlag::SSHTmuxWrapper.is_enabled() {
-                        return false;
+                        return skip_because("FeatureFlag::SSHTmuxWrapper on");
                     }
                     let (starter, _) = current_shell_starter_and_version();
                     // Last: this starts the local sshd (see `ssh_test_fixture_available`).
-                    starter.shell_type() != ShellType::PowerShell
-                        && ssh_test_fixture_available($shell)
+                    needs(
+                        starter.shell_type() != ShellType::PowerShell,
+                        POSIX_LOCAL_SHELL,
+                    ) && ssh_test_fixture_available($shell)
                 })
                 .with_step(wait_until_bootstrapped_single_pane_for_tab(0));
             // Install Tmux
@@ -281,12 +313,15 @@ macro_rules! generate_long_running_block_ssh_test_for_shell {
         pub fn $fn_name() -> Builder {
             new_builder()
                 .with_cleanup(|_| stop_ssh_fixtures())
+                .with_user_defaults(without_helper_question())
                 // TODO(CORE-2333) PowerShell has no SSH wrapper.
                 .set_should_run_test(|| {
                     let (starter, _) = current_shell_starter_and_version();
                     // Last: this starts the local sshd (see `ssh_test_fixture_available`).
-                    starter.shell_type() != ShellType::PowerShell
-                        && ssh_test_fixture_available($shell)
+                    needs(
+                        starter.shell_type() != ShellType::PowerShell,
+                        POSIX_LOCAL_SHELL,
+                    ) && ssh_test_fixture_available($shell)
                 })
                 .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
                 .with_step(enter_ssh_command($shell))
@@ -334,12 +369,16 @@ pub fn test_ssh_with_shell_override() -> Builder {
         .set_should_run_test(|| {
             let (starter, _) = current_shell_starter_and_version();
             // Last: this starts the local sshd (see `ssh_test_fixture_available`).
-            starter.shell_type() != ShellType::PowerShell && ssh_test_fixture_available("bash")
+            needs(
+                starter.shell_type() != ShellType::PowerShell,
+                POSIX_LOCAL_SHELL,
+            ) && ssh_test_fixture_available("bash")
         })
         .with_user_defaults(HashMap::from([(
             StartupShellOverride::storage_key().to_owned(),
             serde_json::to_string(&StartupShell::Zsh).expect("Can serialize setting as JSON"),
         )]))
+        .with_user_defaults(without_helper_question())
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(enter_ssh_command("bash"))
         .with_step(wait_for_password_prompt(0, "bash"))
@@ -363,12 +402,17 @@ pub fn test_ssh_with_shell_override() -> Builder {
 pub fn test_ssh_remote_bash_bootstrapped_hook() -> Builder {
     new_builder()
         .with_cleanup(|_| stop_ssh_fixtures())
+        .with_user_defaults(without_helper_question())
         .set_should_run_test(|| {
             let (starter, _) = current_shell_starter_and_version();
             // Last: this starts the local sshd (see `ssh_test_fixture_available`).
-            starter.shell_type() != ShellType::PowerShell
-                && !FeatureFlag::SSHTmuxWrapper.is_enabled()
-                && ssh_test_fixture_available("bash")
+            needs(
+                starter.shell_type() != ShellType::PowerShell,
+                POSIX_LOCAL_SHELL,
+            ) && needs(
+                !FeatureFlag::SSHTmuxWrapper.is_enabled(),
+                TMUX_WRAPPER_FLAG_ON,
+            ) && ssh_test_fixture_available("bash")
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(enter_ssh_command_without_prompt("bash"))
@@ -433,12 +477,17 @@ pub fn test_ssh_typeahead_during_connect_runs_remotely_once() -> Builder {
     let sentinel = format!("echo done-{nonce}");
     new_builder()
         .with_cleanup(|_| stop_ssh_fixtures())
+        .with_user_defaults(without_helper_question())
         .set_should_run_test(|| {
             let (starter, _) = current_shell_starter_and_version();
             // Last: this starts the local sshd (see `ssh_test_fixture_available`).
-            starter.shell_type() != ShellType::PowerShell
-                && !FeatureFlag::SSHTmuxWrapper.is_enabled()
-                && ssh_test_fixture_available("bash")
+            needs(
+                starter.shell_type() != ShellType::PowerShell,
+                POSIX_LOCAL_SHELL,
+            ) && needs(
+                !FeatureFlag::SSHTmuxWrapper.is_enabled(),
+                TMUX_WRAPPER_FLAG_ON,
+            ) && ssh_test_fixture_available("bash")
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(enter_ssh_command_without_prompt("bash"))

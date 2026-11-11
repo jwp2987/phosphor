@@ -1,7 +1,11 @@
+use std::collections::HashMap;
 use std::time::Duration;
+
+use settings::Setting as _;
 
 use warp::integration_testing::mock_provider::wire_mock_provider_config;
 use warp::integration_testing::terminal::util::current_shell_starter_and_version;
+use warp::settings::CompletionsOpenWhileTyping;
 use warp::terminal::shell::ShellType;
 use warp::{
     features::FeatureFlag,
@@ -33,11 +37,24 @@ pub fn test_autosuggestions_are_hidden_when_opening_tab_completions() -> Builder
     FeatureFlag::RemoveAutosuggestionDuringTabCompletions.set_enabled(true);
 
     new_builder()
-        // Ensure that $HOME contains a directory as a tab-completion candidate.
+        // Ensure that $HOME contains directories as tab-completion candidates. TWO of them, with
+        // no common prefix (#2122): an explicit Tab with exactly one candidate inserts it and
+        // opens no menu (`SuggestionResults::explicit_tab_completion`, the same at the oracle
+        // pin), and on Linux the test home holds no other visible directory (on macOS the app's
+        // own `~/Library` was the second one).
         .with_setup(|utils| {
             let dir = utils.test_dir();
-            std::fs::create_dir(dir.join("foo")).expect("must be able to create dirs for test");
+            for name in ["foo", "bar"] {
+                std::fs::create_dir(dir.join(name)).expect("must be able to create dirs for test");
+            }
         })
+        // The subject is the Tab-opened menu hiding the autosuggestion, which the app only does
+        // with the as-you-type menu off (`handle_completion_suggestions_results`). This fork's
+        // default is on (the pin's is off), so the scenario says off explicitly.
+        .with_user_defaults(HashMap::from([(
+            CompletionsOpenWhileTyping::storage_key().to_string(),
+            false.to_string(),
+        )]))
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         // Execute a command so that we can generate autosuggestions.
         .with_step(execute_command_for_single_terminal_in_tab(

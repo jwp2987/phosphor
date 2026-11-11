@@ -144,7 +144,12 @@ Hard rules:
   shell the scenario SKIPS and says `INTEG-SKIP <scenario> NEEDS: ...` (counted as a skip, never as a pass: "Round 19:
   what an integration run keeps"); `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` (set by the
   `integration-linux` job) turns a missing or broken sshd into a failure (a missing remote shell, e.g. `ash`, still
-  skips). The tmux-wrapper variants (`test_tmux_ssh_into_*`) need tmux on the remote
+  skips). Every ssh scenario sets `warpify.ssh.ssh_extension_install_mode` to `never_install`, like the real-app
+  harness: with the default the app asks whether to install the remote helper and holds the remote bootstrap until
+  a person answers. Four of the listed scenarios (`test_legacy_ssh_into_bash/zsh`,
+  `test_ssh_remote_bash_bootstrapped_hook`, `test_ssh_typeahead_during_connect_runs_remotely_once`) are gated on
+  `FeatureFlag::SSHTmuxWrapper` being off, which no default build of this fork has: they SKIP in every run until
+  #2128 is decided, and their skip line says so. The tmux-wrapper variants (`test_tmux_ssh_into_*`) need tmux on the remote
   and a package install and are not listed in `integration_tests!`; `test_ssh_into_fish` stays off (fish is not a
   supported remote shell). A scenario killed by a timeout can leave its sshd running (`ps`, stop by exact PID).
   Every scenario in `integration_tests!` must be registered in the binary's `register_tests()`
@@ -7358,6 +7363,18 @@ Write the reason as what the scenario NEEDS. Named so far: the ssh fixture (whic
 the ssh scenarios, `skip_if_powershell_core_2303` (15 scenarios), the tmux ssh wrapper flag (#2128). A predicate that names none gets "its
 set_should_run_test predicate said no (platform, shell or feature gate; no reason given)": about 30 predicates still do; give a new one a
 reason. On a machine without the evidence directory the line is printed but nextest hides the output of a passing test, so only CI counts.
+### The three scenarios of #2122 (all TEST faults; no assertion changed)
+- `test_ssh_with_shell_override`: the app asked whether to install the remote helper (`always_ask`, the default) and held the bootstrap for
+  an answer no scenario gives. All ssh scenarios now set `never_install` (`ssh.rs` `without_helper_question`). Fails as before if the remote
+  bash does not bootstrap, the session is not remote, or the login-shell check fails. Seen, not changed: the trace shows `/bin/bash` started
+  although the scenario sets the startup shell to zsh; if the runner has no zsh the override is never exercised.
+- `test_command_xray_hover`: runs with `terminal.input.completions_open_while_typing` set to false. The hover x-ray is not shown while a
+  suggestions menu is visible and this fork opens the as-you-type menu by default (the pin does not). Verdict by reading, probable: the next
+  run's `hop=suggestions_mode` / `hop=xray_hover` lines confirm or refute it. The product question is #2129.
+- `test_autosuggestions_are_hidden_when_opening_tab_completions`: as-you-type set to false (the app hides the autosuggestion for a
+  Tab-opened menu only then), and the test home gets a second directory (`bar` next to `foo`): one candidate is inserted without a menu, by
+  design, and on Linux `foo` was the only visible directory.
+
 Unit tests added: `warpui_core` `integration::evidence::tests` (six: lengths not text, named keys, the event line, the skip line, first
 reason wins, the bounded failure-state line); `crates/integration` `common::evidence::tests` (four, in the integration test binary, no
 display needed: which lines stay out of the trace, the log name per start, the log filter, the copy itself); `app`
