@@ -8,7 +8,7 @@
 #                              three blocks; control: one block after the plain click), a drag while a program rewrites its last line ten times a second.
 #   primary_and_middle_click   Linux. `terminal.copy_on_select` off, then on (written live, restored): PRIMARY holds a dragged and a double-clicked
 #                              selection, CLIPBOARD only when the setting is on; a middle click in the input pastes PRIMARY (the received line proves it).
-#   wheel_scroll               Linux. The wheel moves the block list's scrollback and comes back, moves `less`, and reaches a program that asked for SGR
+#   wheel_scroll               Linux, macOS (#2061: mptr w:). The wheel moves the block list's scrollback and comes back, moves `less`, and reaches a program that asked for SGR
 #                              mouse reporting as ESC[<64 / ESC[<65, with a click as press + release and the key typed after them last.
 #   pane_resize_maximize       Linux, macOS. Split; maximise and restore by key; `Move divider left` from the command palette; on Linux a drag of the
 #                              divider. Every step is judged by `stty size` and the shell's pid in the pane that has the keyboard.
@@ -401,11 +401,9 @@ PALETTE_DIVIDER_LEFT = "move divider left"      # app/i18n/en/warp.ftl keybindin
 
 
 # ================================================================ shared steps
-MAC_POINTER_CASES = ("link_and_path_click", "selection_modes")      # #2061 (r14-test-gaps T32): played on macOS with mac/tools/mptr
+MAC_POINTER_CASES = ("link_and_path_click", "selection_modes", "wheel_scroll")      # #2061 (r14-test-gaps T32): played on macOS with mac/tools/mptr
 MAC_NOT_PLAYED = {
     "primary_and_middle_click": "macOS has no PRIMARY selection and no middle-click paste (X11 / Wayland concepts): nothing to test there, by design",
-    "wheel_scroll": "not played on macOS yet: the case sends its wheel steps through xdotool / the Wayland holder. The Mac pointer tool has the wheel op "
-                    "(mptr w:, macptr.MacMouse.wheel); the case's macOS arm (and its mouse-reporting half under the Mac key names) is not written (#2061)",
 }
 
 
@@ -529,7 +527,9 @@ def wheel_or_skip(ctx, r):
 def wheel(ctx, m, x, y, steps):
     """`steps` wheel steps at (x, y): positive = down (later lines), negative = up"""
     m.move(x, y)
-    if ctx.be.name == "x11":
+    if ctx.be.name == "mac":                              # #2061: mptr's w: op (CGEvent line scroll; positive = down, as here), refused unless the app owns the point
+        m.wheel(x, y, steps)
+    elif ctx.be.name == "x11":
         subprocess.run(["xdotool", "click", "--repeat", str(abs(steps)), "--delay", "40", "5" if steps > 0 else "4"], timeout=20)
     else:
         for _ in range(abs(steps)):
@@ -1135,7 +1135,7 @@ def c_wheel_scroll(ctx, r):
     alone. Where the profile turns mouse or scroll reporting off, the program must receive nothing for it."""
     m = linux_pointer_or_skip(ctx, r, "wheel_scroll")
     wheel_or_skip(ctx, r)
-    U.need_tesseract(r)
+    U.need_tesseract(r, ctx)                              # macOS: Apple Vision (ocrw) counts as a word reader
     n = 240
     words = distinct_words(ctx.rng, n)
     tok = ctx.tok(5).lower()
