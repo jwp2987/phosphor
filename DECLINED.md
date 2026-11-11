@@ -3277,8 +3277,8 @@ Design and evidence: `docs/design/r10-r16-keys2.md`. Worked, unproven when writt
   user had put on it; only moving command search away helped. Command search is now marked as yielding
   (`EditableBinding::yielding_to_user_bindings`, `util/bindings.rs` `BINDINGS_YIELDING_TO_USER_BINDINGS`): while it has its default
   key and a binding with a user-set trigger on that key applies somewhere in the focused view's responder chain, it is not matched.
-  On macOS its menu item drops the key equivalent in that state. Nothing else is marked: every other pair of bindings keeps the
-  upstream order. Command search stays on the command palette, the macOS menu, Alt-R (history) and any key the user moves it to.
+  On macOS its menu item drops the key equivalent in that state. Nothing else is marked except the two readline defaults that are
+  new off macOS (#2079, below): every other pair of bindings keeps the upstream order. Command search stays on the command palette, the macOS menu, Alt-R (history) and any key the user moves it to.
   Kill switch `PHOSPHOR_USER_BINDING_WINS=0`. NOT done: the same rule for every built-in default (an owner question; it would change
   which binding wins for every chord a user has reused).
 - **Alt-R opens the app's history search (#1988 option B, IMPROVED).** `input:search_command_history` shipped unbound upstream. Its
@@ -3291,7 +3291,8 @@ Design and evidence: `docs/design/r10-r16-keys2.md`. Worked, unproven when writt
   and the app's single-line fields): start of line, end of line, yank; `editor_view:select_all` defaults to Ctrl-Shift-A (in all
   three editors, so the name has one default; the code and notebook editors keep their fixed Ctrl-A select-all);
   `editor_view:delete_all_left` has no default key in the text editor; the banner and its Ctrl-E key are not registered. macOS is
-  unchanged. Kill switch `PHOSPHOR_READLINE_INPUT_KEYS=0`. Known cost: `ctrl-shift-A` is also the Linux / Windows default of "toggle
+  unchanged. A user file that already gives Ctrl-A or Ctrl-E to another action keeps winning (the two new defaults are marked as
+  yielding off macOS). Kill switch `PHOSPHOR_READLINE_INPUT_KEYS=0`. Known cost: `ctrl-shift-A` is also the Linux / Windows default of "toggle
   the conversation list" (a workspace binding), which the focused text editor now answers first; that panel stays on Alt-1 and its
   button. NOT changed: the code and notebook editors' Ctrl-A / Ctrl-E / Ctrl-Y.
 - **Shift+PageUp / PageDown / Home / End also scroll at a prompt, and are editable (#2080, IMPROVED).** Round 15 bound them (fixed)

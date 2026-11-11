@@ -117,6 +117,13 @@ They register a binding of the same name `editor_view:select_all`; it takes the 
 `ctrl-shift-A` default so the name has one default in the settings page (Ctrl-A still selects
 all there through the fixed binding).
 
+A `keybindings.yaml` written before this may already give Ctrl-A or Ctrl-E to another action
+of the editor (an explicit `editor_view:select_all: ctrl-a`). Inside one view the later
+registered binding wins, which would be the new default. So off macOS the two new defaults are
+also marked as yielding (section 1's mark, `READLINE_BINDINGS_YIELDING_TO_USER_BINDINGS`): the
+user's line keeps the chord. Ctrl-Y needs nothing: the yank is a fixed binding, and any editable
+binding the user puts on Ctrl-Y already outranks a fixed one.
+
 Kill switch `PHOSPHOR_READLINE_INPUT_KEYS=0`: the old defaults, the banner included.
 
 **Known costs, for the owner.**

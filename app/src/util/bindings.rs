@@ -170,6 +170,14 @@ pub fn mark_bindings_yielding_to_user_bindings(ctx: &mut AppContext) {
             log::warn!("binding {name} is not registered; it cannot yield to user bindings");
         }
     }
+    // #2079: Ctrl-A / Ctrl-E are new defaults off macOS. A `keybindings.yaml` written before
+    // them may already give one of those chords to another action (an explicit
+    // `editor_view:select_all: ctrl-a`, say); that line keeps winning over the new default.
+    if readline_input_keys_enabled() {
+        for name in READLINE_BINDINGS_YIELDING_TO_USER_BINDINGS {
+            ctx.mark_binding_yielding_to_user_bindings(name);
+        }
+    }
 }
 
 /// The key equivalent a macOS menu item shows for `binding`: its keystroke, or none while the
@@ -272,6 +280,15 @@ pub fn with_select_all_default(binding: EditableBinding) -> EditableBinding {
         binding.with_custom_action(CustomAction::SelectAll)
     }
 }
+
+/// The readline defaults that stand aside for a binding the user bound to the same chord, where
+/// they are new defaults ([`readline_input_keys_enabled`]; see
+/// [`mark_bindings_yielding_to_user_bindings`]). Not on macOS, where they always were the
+/// defaults and nothing changes.
+pub const READLINE_BINDINGS_YIELDING_TO_USER_BINDINGS: [&str; 2] = [
+    MOVE_TO_LINE_START_BINDING_NAME,
+    MOVE_TO_LINE_END_BINDING_NAME,
+];
 
 /// Whether Ctrl-A / Ctrl-E / Ctrl-Y are readline's keys in the text editor on this platform
 /// because of the #2079 decision (owner, 2026-11-11): start of line, end of line and yank, with

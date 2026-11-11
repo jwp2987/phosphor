@@ -449,7 +449,8 @@ fn test_history_search_binding_default_and_no_collision() {
 
 // #1988 (owner decision 2026-11-11): a binding the user bound to Ctrl-R wins over command
 // search. The keymap mechanics are tested in `warpui_core` (`matcher_test.rs`); here: the app
-// marks command search, by the name it is registered under, and nothing else.
+// marks command search, by the name it is registered under, and (off macOS) the two readline
+// defaults that are new there.
 #[test]
 fn test_command_search_yields_to_a_user_binding() {
     assert_eq!(
@@ -479,13 +480,28 @@ fn test_command_search_yields_to_a_user_binding() {
             assert!(yields(ctx).iter().all(|yields| !yields));
             mark_bindings_yielding_to_user_bindings(ctx);
             assert!(yields(ctx).iter().all(|yields| *yields));
-            // Only command search: no other binding stands aside.
-            let others = ctx
+            // Besides command search only the readline defaults that are NEW on this platform
+            // stand aside (#2079: a user file written before them keeps its Ctrl-A / Ctrl-E);
+            // on macOS nothing else does.
+            let mut others: Vec<&str> = ctx
                 .get_key_bindings()
                 .filter(|binding| binding.name != COMMAND_SEARCH_BINDING_NAME)
                 .filter(|binding| binding.yields_to_user_bindings)
-                .count();
-            assert_eq!(others, 0);
+                .map(|binding| binding.name)
+                .collect();
+            others.sort_unstable();
+            others.dedup();
+            if readline_input_keys_enabled() {
+                assert_eq!(
+                    others,
+                    vec![
+                        MOVE_TO_LINE_END_BINDING_NAME,
+                        MOVE_TO_LINE_START_BINDING_NAME
+                    ]
+                );
+            } else {
+                assert_eq!(others, Vec::<&str>::new());
+            }
 
             // Once the user moves command search itself, it is the user's binding and no
             // longer stands aside (on its new key or on Ctrl-R).

@@ -301,7 +301,8 @@ everything, `ctrl-E` did nothing and `ctrl-Y` deleted to the start of the line.
 always), and "delete to the start of the line" (`editor_view:delete_all_left`)
 ships without a key there; `ctrl-U` clears the line. This applies to the input
 editor and the app's other single-line text fields; in a file or a notebook
-`ctrl-A` still selects everything. All of these can be changed in **Settings →
+`ctrl-A` still selects everything. A `keybindings.yaml` that already gives
+`ctrl-A` or `ctrl-E` to another action keeps doing so. All of these can be changed in **Settings →
 Keyboard shortcuts**, and `PHOSPHOR_READLINE_INPUT_KEYS=0` in the app's
 environment puts the old Linux / Windows defaults back.
 
