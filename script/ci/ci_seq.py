@@ -807,6 +807,17 @@ def self_test():
          "no online runner with the job's tags is offline"),
         (pending_state({"id": 1, "tag_list": ["mac"]}, {"a": {"id": 1, "status": "pending", "tag_list": ["mac"]}}, None) == "offline",
          "no runner information and no busy sibling keeps the old offline rule"),
+        ("if BUILD[p] in gave_up:" in _src and "succeeded late; started" in _src and "late_build_outcome(" in _src.split("def main")[1],
+         "#2168: no more jobs are queued on a runner whose build was given up, and the app job is played when that build succeeds late"),
+        # #2168: busy is not offline; the blocker is named; a build that finishes after the give-up is picked up
+        (blocking_job({"id": 1, "tag_list": ["windows"]}, {"build": {"id": 1, "status": "pending", "tag_list": ["windows"]}, "old": {"id": 9, "status": "running", "tag_list": ["windows"]}}) == "old#9",
+         "the running job on the same tags is named as the blocker"),
+        (blocking_job({"id": 1, "tag_list": ["windows"]}, {"build": {"id": 1, "status": "pending", "tag_list": ["windows"]}}) == "", "no blocker in the pipeline is empty"),
+        (verdict("build-windows-x86_64", RUNNER_BUSY) == "OFFLINE" and verdict("x", RUNNER_OFFLINE) == "OFFLINE", "a busy-runner give-up is never a pass"),
+        (late_build_outcome(iter(["pending", "pending", "running", "success"]).__next__, lambda s_: None, iter(range(0, 1000)).__next__, 10**6) == "success",
+         "a build that succeeds after the give-up is seen as success (fake API: pending, pending, running, success)"),
+        (late_build_outcome(lambda: "running", lambda s_: None, iter(range(0, 10**6, 100)).__next__, 500) == "running", "the late wait is bounded by its budget"),
+        (late_build_outcome(lambda: None, lambda s_: None, lambda: 0, 10) == "missing", "a vanished job is final"),
         (lab_image_recovered(False, "success") and not lab_image_recovered(False, "pending"), "an image that succeeds after ci_seq gave up still lets the lab job be played"),
     ):
         bad += 0 if ok else 1
@@ -1367,10 +1378,16 @@ def main():
                     allj = jobs()
                     state = pending_state(allj.get(name, {}), allj, project_runners())
                     if state == "offline" or waited > PENDING_LIMIT[0] * PENDING_GIVEUP_FACTOR:
-                        print("%s: RUNNER-OFFLINE (pending %.0f min, %s); continuing without it" % (
-                            name, waited / 60, "no online runner can take it" if state == "offline" else "queued, overall give-up"), flush=True)
-                        timeline[name] = (RUNNER_OFFLINE, None)
-                        return RUNNER_OFFLINE
+                        if state == "offline":
+                            print("%s: RUNNER-OFFLINE (pending %.0f min, no online runner can take it); continuing without it" % (name, waited / 60), flush=True)
+                            timeline[name] = (RUNNER_OFFLINE, None)
+                            return RUNNER_OFFLINE
+                        # #2168: the runner is online, it is BUSY (queued behind another job): say so, with the blocker; the build may still finish
+                        blk = blocking_job(allj.get(name, {}), allj)
+                        print("%s: RUNNER-BUSY (pending %.0f min, the runner is online but busy%s); continuing without it, the platform's app job is still played if this succeeds later" % (
+                            name, waited / 60, ", blocked by " + blk if blk else ", blocking job is not in this pipeline"), flush=True)
+                        timeline[name] = (RUNNER_BUSY, None)
+                        return RUNNER_BUSY
                     if int(waited) % 300 < 60:
                         print("%s: %s pending %.0f min but QUEUED (a runner can take it / is busy with this pipeline's jobs); still waiting" % (
                             time.strftime("%H:%M"), name, waited / 60), flush=True)
@@ -1558,8 +1575,12 @@ def main():
             if jobs().get(n, {}).get("status") not in (None, "manual"):
                 print(n, wait(n), flush=True)
 
+    gave_up = {}      # #2168: build job -> RUNNER-OFFLINE / RUNNER-BUSY; nothing more is queued on that machine, the app job is played if the build finishes late
+
     def after_build(b):
         bs = wait(b)
+        if bs in GAVE_UP:
+            gave_up[b] = bs
         if bs != "success":
             mine = [n for n, _ in box_app_sequence(tier)] if p_of[b] == LINUX else APP[p_of[b]] + ([LAB_APP[p_of[b]]] if tier != "fix" else [])
             for n in [t for t in mine if t not in SKIP and t in jobs()]:
@@ -1589,6 +1610,9 @@ def main():
         (release tier only), one after the other on the same machine. A build that failed leaves its unit suites unplayed."""
         if BUILD[p] in watch_of:
             watch_of[BUILD[p]].join()                       # units ran and the app tests were played (or the build failed) after this
+        if BUILD[p] in gave_up:
+            print("%s: nothing more is queued on the %s runner (its build was given up: %s)" % (time.strftime("%H:%M"), PLAT_SUFFIX[p], gave_up[BUILD[p]]), flush=True)
+            return                                          # #2168: the unit/heavy suites went onto a runner that was still busy with the build's blocker
         for n in APP[p]:
             with lock:
                 mine = n in started
@@ -1656,6 +1680,19 @@ def main():
             if late in jobs() and play(late, lv2):
                 print("%s: sshlab-image succeeded late; started %s" % (time.strftime("%H:%M"), late), flush=True)
                 print(late, wait(late), flush=True)
+    for b, why in list(gave_up.items()):
+        # #2168 (as #1921 for the lab image): the build was given up as offline/busy but may have finished since, or may yet: wait for it within its own
+        # job timeout, and when it succeeded play the platform's app job(s) now rather than never
+        st = late_build_outcome(lambda b=b: jobs().get(b, {}).get("status"), time.sleep, time.time, job_timeout_s(b))
+        print("%s: %s (given up as %s) is now %s" % (time.strftime("%H:%M"), b, why, st), flush=True)
+        if st != "success":
+            continue
+        timeline[b] = ("success", jobs().get(b, {}).get("duration"))
+        for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
+            timeline.pop(n, None)
+            if play(n, appvars):
+                print("%s: %s succeeded late; started %s" % (time.strftime("%H:%M"), b, n), flush=True)
+                print(n, wait(n), flush=True)
     if tier == "release":
         for n in ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
@@ -1698,6 +1735,8 @@ def collect_hint(pid, auto, tier=None, cases_file=None):
 TIER_SKIP = "skipped by tier"
 PLATFORM_UNSUPPORTED = "unsupported on platform"
 RUNNER_OFFLINE = "RUNNER-OFFLINE"
+RUNNER_BUSY = "RUNNER-BUSY"        # #2168: a runner that IS online but did not pick the job up in time (queued behind another job): not offline
+GAVE_UP = (RUNNER_OFFLINE, RUNNER_BUSY)
 RUNNING_DEADLINE = "RUNNING-DEADLINE"
 RUNNING_FACTOR = [2.0]             # set from --running-factor
 NETWORK_FAIL = "NETWORK-FAIL"
@@ -1727,6 +1766,30 @@ def pending_state(job, jobs_by_name, runners):
     if any(r.get("online") and need <= set(r.get("tag_list") or []) for r in runners):
         return "queued"
     return "offline"
+
+
+def blocking_job(job, jobs_by_name):
+    """#2168: the job (name, id, status) most likely holding the runner this pending job needs: a running job whose tags cover the pending job's.
+    -> "name#id" or "" when this pipeline shows none (the blocker is then another pipeline's job on the same runner)."""
+    need = set(job.get("tag_list") or [])
+    for n, o in jobs_by_name.items():
+        if o.get("id") != job.get("id") and o.get("status") == "running" and need <= set(o.get("tag_list") or []):
+            return "%s#%s" % (n, o.get("id"))
+    return ""
+
+
+def late_build_outcome(get_status, sleep, now, budget_s, poll_s=60):
+    """#2168: a build ci_seq gave up on (RUNNER-OFFLINE / RUNNER-BUSY) can still finish. Ask for its status until it is final or `budget_s` seconds
+    have passed. -> the final GitLab status ("success", "failed", "canceled", "skipped", "missing") or the last non-final one ("pending", "running", ...)
+    when the budget ran out. get_status() -> str; sleep(s); now() -> seconds (all injected so a self-test needs no API or clock)."""
+    end = now() + budget_s
+    while True:
+        st = get_status() or "missing"
+        if st in ("success", "failed", "canceled", "skipped", "missing"):
+            return st
+        if now() >= end:
+            return st
+        sleep(poll_s)
 
 
 def lab_image_recovered(state_ok, image_status):
@@ -1809,8 +1872,8 @@ def verdict(name, status):
         return "SKIPPED"                       # NOT_TARGETED: a job the targeted run's cases file does not name; not played, never a failure
     if status == "success":
         return "PASS"
-    if status == RUNNER_OFFLINE:
-        return "OFFLINE"
+    if status in GAVE_UP:
+        return "OFFLINE"                       # RUNNER-BUSY too: the job did not run, which is not a pass (the summary line names which)
     if status == RUNNING_DEADLINE:
         return "TIMEOUT"
     if status == NETWORK_FAIL:
@@ -1836,6 +1899,10 @@ def summary(timeline, t0):
     for k, (st, _) in timeline.items():
         if verdict(k, st) == "NEEDS":
             print("NEEDS a machine change (NOT a pass; what depends on it was skipped with the same reason): %s: %s" % (k, st[len(NEEDS_PREFIX):]))
+    busy = [k for k, (s_, _) in timeline.items() if s_ == RUNNER_BUSY]
+    off = [k for k in off if k not in busy]
+    if busy:
+        print("RUNNER-BUSY (not a code failure; the runner is online but was still busy with another job and never picked it up): %s" % ", ".join(busy))
     if off:
         print("RUNNER-OFFLINE (not a code failure; the runner never picked the job up): %s" % ", ".join(off))
     if net:

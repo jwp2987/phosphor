@@ -52,11 +52,11 @@ if ($outFull -and (Test-Path "$outFull\run\lab.json")) {
   if (Test-Path $labpy) { & $labpy (Join-Path $PSScriptRoot "..\..\appci\lab.py") stop "$outFull\run" 2>&1 | ForEach-Object { Write-Output "after_job: $_" } }
   else { Write-Output "after_job: run\lab.json exists but the VM python is missing: the lab container ends at its TTL" }
 }
-# audit: processes (other than this script) whose executable path or command line names this job's out dir, and the leftover scratch dirs
+# leftover processes naming this job's out dir are ended; then the leftover scratch dirs
 if ($outFull) {
-  $left = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $PID -and "$($_.ExecutablePath) $($_.CommandLine)" -like "*$outFull*" -and "$($_.CommandLine)" -notlike "*after_job.ps1*" })
-  if ($left.Count) { Write-Output "after_job: leftover processes naming ${outFull}:"; foreach ($l in $left) { Write-Output ("after_job:   pid {0} {1}" -f $l.ProcessId, ("$($l.CommandLine)".Substring(0, [Math]::Min(160, "$($l.CommandLine)".Length)))) } }
-  else { Write-Output "after_job: leftover processes naming ${outFull}: none" }
+  # #2150: leftovers are ENDED by exact PID (reap.ps1), not only listed; one that keeps the job's output pipe open stalls the runner step
+  . (Join-Path $PSScriptRoot "reap.ps1")
+  Reap-Leftovers -OutFull $outFull -Tag "after_job"
   foreach ($d in @("home", "ctl", "rctl", "refctl", "rhome")) {
     $dd = Join-Path $outFull "run\$d"
     if (Test-Path $dd) { Remove-Item $dd -Recurse -Force -ErrorAction SilentlyContinue; Write-Output ("after_job: scratch dir run\{0} {1}" -f $d, $(if (Test-Path $dd) { "COULD NOT BE REMOVED" } else { "removed" })) }

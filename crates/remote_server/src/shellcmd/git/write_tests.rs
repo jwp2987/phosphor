@@ -87,6 +87,9 @@ fn repo_with_origin() -> (tempfile::TempDir, PathBuf, PathBuf) {
     g(&work, &["init", "-q", "-b", "main"]);
     g(&work, &["config", "user.email", "t@example.com"]);
     g(&work, &["config", "user.name", "t"]);
+    // The fixtures are byte-exact LF text. A Windows git defaults to core.autocrlf=true, which makes a checkout (what discard runs) write CRLF,
+    // so pin it here: the tests then assert what discard restores, not what the machine's line-ending setting does to it (#2167).
+    g(&work, &["config", "core.autocrlf", "false"]);
     g(
         &work,
         &["remote", "add", "origin", origin.to_str().unwrap()],

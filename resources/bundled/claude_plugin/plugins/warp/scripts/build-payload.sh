@@ -29,9 +29,10 @@ negotiate_protocol_version() {
 
 # truncate_chars TEXT MAX: TEXT unchanged if it has at most MAX characters, otherwise its
 # first MAX-3 characters plus "...". Counts Unicode characters (jq), never bytes and never
-# the shell locale, so a multi-byte character is never cut in half (Phosphor #1803).
+# the shell locale, so a multi-byte character is never cut in half (Phosphor #1803). -j, not -r: no terminator
+# is printed, so jq.exe's text mode on Windows cannot append a "\r" to the result (#2167).
 truncate_chars() {
-    printf '%s' "$1" | jq -Rrs --argjson n "$2" \
+    printf '%s' "$1" | jq -Rjs --argjson n "$2" \
         'if length > $n then .[0:($n - 3)] + "..." else . end' 2>/dev/null || printf '%s' "$1"
 }
 

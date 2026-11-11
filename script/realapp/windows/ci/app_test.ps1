@@ -104,6 +104,8 @@ finally {
   } catch { Emit "restore" "-" "fail" "restore crashed: $($_.Exception.Message) - finish by hand with restore.ps1 -Bak $Bak" }
   try { Remove-Item $Lock -Force -ErrorAction SilentlyContinue } catch {}
 }
+# ---- #2150: end anything this run left that names the out dir (a leftover child holds the job's output pipe and the runner step never ends) ----
+try { . (Join-Path $PSScriptRoot "reap.ps1"); Reap-Leftovers -OutFull $Out -Tag "app_test" } catch { "app_test: leftover reap crashed: $($_.Exception.Message)" }
 # ---- report: results.json / junit.xml / summary.md again, now including the wrapper's rows (restore, preflight) ----
 $rrc = 1
 if (Test-Path $Py) {

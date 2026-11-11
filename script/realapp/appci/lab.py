@@ -523,6 +523,16 @@ def sshlab_tar():
     return buf.getvalue()
 
 
+def stopped_line(label, lab):
+    """the teardown line after lab.stop(): a local/remote lab has a container id, a fixed slot has cid None (#2149: lab_obj.cid[:12] raised TypeError and
+    skipped the rest of teardown), so name the slot then"""
+    cid = getattr(lab, "cid", None)
+    if cid:
+        return "teardown[%s]: lab container %s stopped" % (label, str(cid)[:12])
+    info = getattr(lab, "info", None) or {}
+    return "teardown[%s]: lab slot %s released (fixed slot, no container id)" % (label, info.get("slot") or "?")
+
+
 class Lab:
     def __init__(self, info, host, mode, key_for_box=None):
         self.info, self.host, self.mode, self.box_key = info, host, mode, key_for_box

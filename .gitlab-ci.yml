@@ -124,6 +124,10 @@ guards:
     - python3 script/realapp/appci/selftest.py --require every_check_function_is_registered_2086,r15_proving_lab_is_one_list
     # the tier driver's own self-test (pure: reads this file and cases.py, no network): the fix-tier lab job gets every PROVING_LAB entry once
     - python3 script/ci/ci_seq.py --self-test
+    # #2148 / #2150: a child that holds the job's output pipe cannot keep a step open (run_bounded.py ends the tree it started; reap_leftovers ends the
+    # processes naming the out dir); both pure/offline.
+    - python3 script/ci/run_bounded.py --self-test
+    - script/realapp/test_reap.sh
     # #2122: the integration jobs' evidence step (bounds, the skip lines) and the collector's parsers; both pure.
     - python3 script/ci/integ_evidence.py --self-test
     - python3 script/ci/collect_results.py --self-test
@@ -1130,6 +1134,8 @@ bench-macos:
 test-windows:
   extends: [.windows_suite]
   timeout: 5h
+  variables:
+    SUITE_TIMEOUT_MIN: "270"   # #2148: run_bounded.py ends the test command's tree after this (job timeout 300)
   script:
     - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows test'
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1142,6 +1148,8 @@ test-windows:
 test-warpui-core-windows:
   extends: [.windows_suite]
   timeout: 2h
+  variables:
+    SUITE_TIMEOUT_MIN: "100"   # #2148 (job timeout 120)
   script:
     - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows warpui-core'
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1154,6 +1162,8 @@ test-warpui-core-windows:
 test-workspace-rest-windows:
   extends: [.windows_suite]
   timeout: 4h
+  variables:
+    SUITE_TIMEOUT_MIN: "220"   # #2148 (job timeout 240)
   script:
     - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows workspace-rest'
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
