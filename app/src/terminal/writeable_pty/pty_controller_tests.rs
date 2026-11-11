@@ -3483,6 +3483,73 @@ fn agent_and_paste_writes_are_split_on_the_wire_only_with_the_write_queue() {
     }
 }
 
+/// #2153: an ambiguous Tab's exchange is answered with its prompt but never with results (the
+/// user's ^C interrupts the hook). The ^C ends it, so the next Tab (different text) starts a
+/// fresh exchange instead of being refused as "already in flight"; the abandoned requester sees
+/// "no answer"; a late reply of the old hook is ignored and never reaches the new request.
+#[test]
+fn a_ctrl_c_ends_an_exchange_awaiting_results_so_the_next_tab_starts_fresh() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let first = controller.update(&mut app, |c, ctx| start_exchange(c, "cd amb", ctx));
+        model_events.update(&mut app, |_d, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt {
+                token: Some("1".to_owned()),
+            });
+        });
+        controller.read(&app, |c, _| {
+            assert!(matches!(
+                c.in_flight_native_completions_state,
+                Some(NativeShellCompletionsState::AwaitingResults { .. })
+            ));
+        });
+        // The abandoned Tab: ^C.
+        controller.update(&mut app, |c, ctx| c.write_bytes(&[0x03][..], ctx));
+        controller.read(&app, |c, _| {
+            assert!(c.in_flight_native_completions_state.is_none());
+            assert!(!c.native_cancel_owed);
+        });
+        assert!(
+            first.recv().await.is_err(),
+            "the abandoned Tab sees no answer"
+        );
+
+        // The next Tab, other text: a fresh exchange (its own ^Y), not a refusal.
+        let second = controller.update(&mut app, |c, ctx| start_exchange(c, "cd zzq", ctx));
+        Timer::after(Duration::from_millis(20)).await;
+        assert!(!second.is_closed(), "the new Tab is not refused");
+        controller.read(&app, |c, _| {
+            assert!(matches!(
+                c.in_flight_native_completions_state,
+                Some(NativeShellCompletionsState::AwaitingPrompt { .. })
+            ));
+        });
+        assert_eq!(
+            written(&sender)
+                .iter()
+                .filter(|b| b.as_slice() == [0x19])
+                .count(),
+            2,
+            "one ^Y per exchange"
+        );
+        // The old hook's late reply arrives while the new exchange waits for its prompt: ignored.
+        model_events.update(&mut app, |_d, ctx| {
+            ctx.emit(ModelEvent::CompletionsFinished(vec![]));
+        });
+        assert!(
+            second.try_recv().is_err(),
+            "the late old reply is not the new answer"
+        );
+        controller.read(&app, |c, _| {
+            assert!(matches!(
+                c.in_flight_native_completions_state,
+                Some(NativeShellCompletionsState::AwaitingPrompt { .. })
+            ));
+        });
+    });
+}
+
 /// Builds a controller for the #1801 tests below, with its line editor active (the exchange can
 /// start), and its line-editor status so a test can switch it off.
 fn native_completions_controller(
