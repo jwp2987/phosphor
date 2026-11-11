@@ -2512,6 +2512,18 @@ upstream's behavior is actually a defect rather than a preference.
   and are unchanged.
   <!-- markers: keep:resolve_for_session keep:IntelligentAutosuggestionsInSshEnabled keep:PromptSuggestionsInSshEnabled -->
 
+- **No passive code diff request from an ssh session unless the user turns it on** (`#2097`,
+  2026-11-11, owner decision, `app/src/ai/blocklist/passive_suggestions/legacy.rs`
+  `maybe_generate_passive_code_diff`, `app/src/ai/agent_providers/active_ai/mod.rs`
+  `allowed_for_session`, `app/src/settings/ai.rs`). **Upstream:** a prompt suggestion that names
+  files starts a code diff request (the files' contents and the finished block) in any session
+  that is not a warpified remote one, a plain bootstrapped `ssh` included. **We do:** in an ssh
+  session (and when the session is not known) the files are not read and the request is not
+  built unless `agents.warp_agent.active_ai.code_suggestions_in_ssh_enabled` is true (default
+  false; a switch under Suggested Code Banners on the AI settings page). The prompt suggestion
+  itself still shows (as it does when the diff fails for any other reason).
+  <!-- markers: keep:CodeSuggestionsInSshEnabled keep:is_code_suggestions_in_ssh_enabled -->
+
 - **A completion result that changes nothing does not re-render the input** (`#1995`,
   2026-11-11, owner decision, `app/src/terminal/input.rs`
   `handle_completion_suggestions_results`, `completion_result_needs_render`). **Upstream:** the

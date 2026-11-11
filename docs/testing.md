@@ -5772,6 +5772,14 @@ Owner decision 2026-11-11: the #1982 rule for two more features. Settings `agent
 - Run: `APPCI_FAKE_MODEL=1 python3 script/realapp/appci/run.py --cases 'lab_agent_suggestions_ssh.*'`.
 - Worked, unproven: nothing was compiled or run (the harness self-test passes).
 ## Round 14: routed (#1981, #1956, #2019; design `docs/design/r14-routed.md`)
+
+### #2097: no passive code diff request from an ssh pane by default (round 16, `docs/design/r10-r16-smallapp.md` section 2)
+
+Owner decision 2026-11-11: the #2094 rule for passive code diffs (`passive_suggestions/legacy.rs` `maybe_generate_passive_code_diff`, started by a prompt suggestion that names files). Setting `agents.warp_agent.active_ai.code_suggestions_in_ssh_enabled` (default false, a switch under Suggested Code Banners on the AI settings page) is the way back to the old behaviour.
+
+- Unit: `app/src/ai/agent_providers/active_ai/mod_test.rs` `a_passive_code_diff_is_not_requested_in_an_ssh_session_unless_allowed` (the shared decision with this feature's setting: local yes; ssh no; unknown session no; everything yes with the setting on). `app/src/settings/ai_tests.rs` `passive_code_diffs_in_ssh_default_off`.
+- Not covered by an app case. A case needs a model-made prompt suggestion that names files, on a plain bootstrapped ssh pane, with `prompt_suggestions_in_ssh_enabled` ON (with it off, #2094 already stops the suggestion that would start the diff, so "no request" would prove nothing about this gate). The fake model has no such reply yet.
+- Worked, unproven: nothing was compiled or run.
 Everything below is worked, unproven: nothing was compiled or run against a build (the appci self-test was run).
 - **#2019, TEST + DECLINED: the agent-mode lab arms on a `nu` login shell report the decided limitation by name.** Owner decision
   2026-11-10 (`DECLINED.md`, "A remote host whose login shell is fish or nu gets a plain ssh session: no agent tools on that host"): such

@@ -44,7 +44,7 @@ on Cancel is the only hint (the text is English only already, `r16-editor.md` "L
 ## 2. Passive code diffs are gated in ssh sessions like #2094 (#2097)
 
 **Today.** `app/src/ai/blocklist/passive_suggestions/legacy.rs` `maybe_generate_passive_code_diff` runs after every
-prompt suggestion (the static one at line 264, the model's at line 309). When the suggestion names files
+prompt suggestion (the static one and the model's, both in `generate_prompt_suggestions`). When the suggestion names files
 (`coding_query_context`) it reads them from the local disk and sends them, with the finished block, to the model
 provider (`BlocklistAIController::send_passive_code_diff_request`, an `AutoCodeDiffQuery`). Its only session check is
 `SessionType::WarpifiedRemote` (skip; unknown = skip). A plain `ssh` that was bootstrapped the legacy way
