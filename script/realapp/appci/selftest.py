@@ -6724,6 +6724,7 @@ def agent_close_undo_pieces_2103():
     """#2103 (owner decision 2026-11-11): agent_close_undo_call_status. The fake model's two-call reply (a registered command, then a question, in ONE
     reply), the case's pure verdicts (a discard line with kept_status=0 is a failure, no discard line is missing evidence and never a pass; only a
     tool-result message counts as the discarded result having been sent), the app strings the case reads, and the registration."""
+    import re
     import cases_agent_close_undo as CU, case_settings, fake_model as FM
     FM.SCRIPTED_COMMANDS["CUZZ"] = "printf '%s%s\\n' QX7 ZZ"
     try:
@@ -6752,6 +6753,19 @@ def agent_close_undo_pieces_2103():
             {"messages": [{"role": "tool", "content": "out: QX7AB12"}]}]
     assert CU.tool_results_with(reqs[:1], printed) == 0 and CU.other_messages_with(reqs[:1], printed) == ["user"]
     assert CU.tool_results_with(reqs, printed) == 1
+    # the note of the restored reply (owner decision 2026-11-11): read off the screen with a control, never a pass without the screen text
+    assert CU.judge_note(None)[0] == "unverifiable"
+    screen = "Please run scripted command CUAB12 then ask me a question Q5\n  Ran printf\n"
+    assert CU.judge_note(screen + "Results from before this tab was closed were not\nsent to the agent. Tell it what happened if it matters.\n")[0] == "shown"
+    assert CU.judge_note(screen + "Results frorn before this tab was closed were not sent to the agemt. Tell it what happened")[0] == "shown", "OCR confusions"
+    verdict, why = CU.judge_note(screen)
+    assert verdict == "missing" and CU.NOTE in why, "the control was read and the note was not: a failure"
+    assert CU.judge_note("@@ ~~ ||")[0] == "unverifiable", "neither the control nor the note was read: the screen text is unreadable, never a pass"
+    assert CU.NOTE_NEEDLE in CU.NOTE and CU.PROMPT_HEAD not in CU.NOTE
+    assert CU.requests_with_note(reqs) == 0
+    assert CU.requests_with_note(reqs + [{"messages": [{"role": "user", "content": [{"type": "text", "text": "x " + CU.NOTE}]}]}]) == 1
+    assert CU.requests_with_note([{"system": "Results ... were not sent\nto the agent."}]) == 1, "a line break inside the note does not hide it"
+    assert CU.requests_with_note([{"messages": [{"role": "tool", "content": "they were not sent  to the agent"}]}]) == 1
     done = "hop=agent_action id=c1 kind=run_shell_command status=done\n"
     ask = "hop=agent_action id=q1 kind=ask_user_question status=queued\nhop=agent_action id=q1 kind=ask_user_question status=blocked\n"
     assert CU.command_ran_and_question_waits(done + ask) and not CU.command_ran_and_question_waits(ask) and not CU.command_ran_and_question_waits(done)
@@ -6759,6 +6773,9 @@ def agent_close_undo_pieces_2103():
     src = open(os.path.join(root, "app/src/ai/blocklist/controller.rs"), errors="replace").read()
     assert "hop=agent_close_discard conversation={conversation_id:?} results={discarded}" in src and "kept_status={}" in src, "the app's discard line changed"
     assert "hop=agent_turn_stuck fault={}" in src, "the app's stuck-turn line changed"
+    am = open(os.path.join(root, "app/src/ai/blocklist/action_model.rs"), errors="replace").read()
+    m = re.search(r'const RESULTS_WITHHELD_BY_CLOSE_NOTE: &str =\s*"((?:[^"\\]|\\.|\\\n)*)";', am)
+    assert m and re.sub(r"\\\n\s*", "", m.group(1)) == CU.NOTE, "the app's note (action_model.rs RESULTS_WITHHELD_BY_CLOSE_NOTE) is not the text the case reads"
     n = "agent_close_undo_call_status"
     assert n in cases.PROVING and n in cases.PROVING_FAKE and n not in cases.SMOKE, n
     assert [c["modes"] for c in cases.CASES if c["name"] == n] == [("agent",)], n

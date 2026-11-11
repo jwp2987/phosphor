@@ -12,7 +12,14 @@
 #                                      (the app attaches the blocks run since the last prompt as context, #2045) is a note, not a verdict;
 #                                    * the prompt after the undo reaches the model exactly once and its turn ends `success`;
 #                                    * no `hop=agent_turn_stuck` line (#1967 / #2103: the restored reply's calls are not read as lost) and no
-#                                      unexpected ERROR line from the prompt of the two calls to the end.
+#                                      unexpected ERROR line from the prompt of the two calls to the end;
+#                                    * the note (owner decision 2026-11-11, docs/design/r18-closenote.md): after the undo the restored reply says
+#                                      "Results from before this tab was closed were not sent to the agent. Tell it what happened if it matters."
+#                                      Read off the screenshot by OCR, with a control (the prompt the case typed, in the same conversation): the
+#                                      control read and the note not = a failure; no OCR engine, or the control not read either = UNVERIFIABLE,
+#                                      never a pass. Judged only when the close logged kept_status=1 (with the kill switch off there is no note,
+#                                      and that run already fails on the discard line). And the note is SCREEN ONLY: its words are in no message
+#                                      of any request the fake model receives after the close.
 #                                  NOT judged by this case: what the restored cards LOOK like (the green check of the command that ran, the
 #                                  cancelled question). No log line or OCR text tells a check mark from a cancel mark; the screenshot
 #                                  `close_undo_restored` is kept for a person, and the unit test
@@ -34,6 +41,11 @@ from cases import case  # noqa: E402
 DISCARD_RE = re.compile(r"hop=agent_close_discard conversation=.*? results=(\d+) kept_status=([01])")     # controller.rs discard_finished_results_for_close
 STUCK = "hop=agent_turn_stuck"                                                                              # controller.rs check_turn_invariant (ERROR)
 SHELL_KIND = "run_shell_command"
+# action_model.rs RESULTS_WITHHELD_BY_CLOSE_NOTE (pinned against the source by the self-test). The needle is the part no other text on screen or in a
+# request has; OCR is matched with cases_caseagent.fuzzy_has (line wraps and single-glyph confusions tolerated).
+NOTE = "Results from before this tab was closed were not sent to the agent. Tell it what happened if it matters."
+NOTE_NEEDLE = "were not sent to the agent"
+PROMPT_HEAD = "Please run scripted command"          # the control for the OCR: the case typed it into the same conversation, it is on the same screen
 OUT_HEAD = "QX7"
 
 
@@ -77,6 +89,39 @@ def command_ran_and_question_waits(text):
     """the state the case needs before the close: the command's action is done and the question card is answerable"""
     ran = any(kind == SHELL_KIND and st == "done" for _a, kind, st in AR.action_hops(text))
     return ran and AQ.verdict(text) == "answerable"
+
+
+def judge_note(ocr_text):
+    """(verdict, why) for the screen of the restored tab. verdict: "shown", "missing" (the screen was read and the note is not on it: a failure), or
+    "unverifiable" (the screen text could not be read: never a pass)"""
+    if ocr_text is None:
+        return "unverifiable", "no OCR engine on this machine (tesseract-ocr; Apple Vision on macOS): the note on the restored reply was not read"
+    flat = " ".join(ocr_text.split())
+    if AG.fuzzy_has(flat, NOTE_NEEDLE):
+        return "shown", ""
+    if not AG.fuzzy_has(flat, PROMPT_HEAD):
+        return "unverifiable", ("the OCR read neither the note nor the prompt this case typed (%r) off the restored tab's screenshot: the screen text "
+                                "could not be read, the note is not judged" % PROMPT_HEAD)
+    return "missing", ("the restored reply does not show the note %r: the OCR read the case's own prompt off the same screenshot but not the note "
+                       "(#2103, owner decision 2026-11-11)" % NOTE)
+
+
+def _strings(x):
+    """every string in a JSON-like value, keys included"""
+    if isinstance(x, str):
+        yield x
+    elif isinstance(x, dict):
+        for k, v in x.items():
+            yield str(k)
+            yield from _strings(v)
+    elif isinstance(x, (list, tuple)):
+        for v in x:
+            yield from _strings(v)
+
+
+def requests_with_note(reqs):
+    """how many of `reqs` (fake.reqs entries) hold the note's words anywhere: in any message of any role or any other field, line breaks or not"""
+    return sum(1 for q in reqs or [] if any(NOTE_NEEDLE in " ".join(t.split()) for t in _strings(q)))
 
 
 # ---------------------------------------------------------------- the case
@@ -151,7 +196,15 @@ def c_agent_close_undo_call_status(ctx, r):
         if not r.check(opened, "after the undo key (%s) the pane that has the keyboard is in %r, expected the closed tab's directory %r: the tab did not "
                        "come back, the steps after the undo were not run" % (undo, back, R.norm_path(d))):
             return
-        ctx.shot("close_undo_restored")
+        if found and all(k == 1 for _n, k in found):
+            verdict, why = judge_note(ctx.ocr("close_undo_restored"))          # the screenshot is kept under this tag either way
+            if verdict == "unverifiable":
+                r.unverifiable(why)
+            else:
+                r.check(verdict == "shown", why)
+            r.metric("close_note_shown", {"shown": 1, "missing": 0}.get(verdict, -1))
+        else:
+            ctx.shot("close_undo_restored")
 
         # ---- the next prompt in the restored conversation
         off2 = ctx.log_size()
@@ -164,6 +217,9 @@ def c_agent_close_undo_call_status(ctx, r):
         leaked = tool_results_with(later, printed)
         r.check(leaked == 0, "#848 / #2103: the output of the command that ran before the close is in %d tool-result message(s) of the %d request(s) sent after "
                 "the close: a result the close discarded was sent to the model" % (leaked, len(later)))
+        noted = requests_with_note(later)
+        r.check(noted == 0, "the note of the restored reply is in %d of the %d request(s) sent after the close: it is for the screen only and must never "
+                "reach the model" % (noted, len(later)))
         elsewhere = other_messages_with(later, printed)
         if elsewhere:
             r.note("the command's output is in %s message(s) of a request after the close (not a tool result: the app attaches the blocks run since the "

@@ -7158,7 +7158,13 @@ that discards something: `hop=agent_close_discard conversation=<id> results=<n> 
     exchange's inputs, every task message) plus `export_to_markdown` (copy, export, the conversation attachment): the note's words are in
     none of them, before or after the prompts (precondition: each prompt IS in that text), and the note is still on its reply afterwards
     (it stays as history).
-  - What the next run should show: both unit tests pass.
+  - App case `agent_close_undo_call_status`, two more oracles. After the undo the note is read off the screenshot `close_undo_restored` by
+    OCR (`cases_caseagent.fuzzy_has`), with the prompt the case typed as the control on the same screenshot: the control read and the note not
+    is a FAILURE; no OCR engine, or neither read, is UNVERIFIABLE, never a pass (metric `close_note_shown` 1 / 0 / -1). Judged only when the
+    close logged `kept_status=1`. And the note's words are in no string of any request the fake model receives after the close
+    (`requests_with_note`, line breaks tolerated). The self-test pins the case's text against the app's constant.
+  - What the next run should show: both unit tests pass; the app case PASSES with `close_note_shown = 1` on a machine with an OCR engine
+    (Linux box: tesseract; macOS: Apple Vision), UNVERIFIABLE on a machine with none (the Windows VM, unless a tesseract is on its PATH), with its other oracles judged.
 - **What the next run should show.** The five unit tests above pass; both paced fuzz tests, the matrix rows with `CloseTab` and the corpus
   replay pass with the exception gone (a new I1 failure after a close is a new finding, not this change's noise); the app case PASSES in the
   agent@fake pass with `close_discard_results >= 1`.
