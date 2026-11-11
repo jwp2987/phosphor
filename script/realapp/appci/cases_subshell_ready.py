@@ -435,10 +435,10 @@ def relay_command(target):
     return "sudo -s" if target["root"] and not target["explicit"] else "sudo -n -H -u %s -s" % target["user"]
 
 
-def relay_write_when(at_arm, after_line):
-    """pure: when the setup was written behind the relay: 'at_arm' (after Ctrl-I, nothing typed), 'after_first_line' (with the prompt of the first
-    typed line) or 'never'. Arguments: the write hop's index in each window, or None."""
-    return "at_arm" if at_arm is not None else ("after_first_line" if after_line is not None else "never")
+def relay_write_when(at_arm, after_enter):
+    """pure: when the setup was written behind the relay: 'at_arm' (after Ctrl-I, nothing typed), 'after_empty_enter' (with the prompt an empty
+    line's Enter brought) or 'never'. Arguments: the write hop's index in each window, or None."""
+    return "at_arm" if at_arm is not None else ("after_empty_enter" if after_enter is not None else "never")
 
 
 @case("subshell_ready_relay_shape", order=22)
@@ -468,27 +468,36 @@ def c_ready_relay_shape(ctx, r):
         ctx.be.type(cmd, 12, enter=True)
         time.sleep(BANNER_S)
         ctx.be.key("ctrl+i")
-        # Round 14 (#2109, the first run of this case anywhere): the case required the write within 10 s of Ctrl-I with nothing typed. Behind a
-        # relay the app writes at the first NEW prompt (subshell_ready.rs: Relay with no prompt drawn since arming = Wait(RelayNoPrompt); the
-        # relay hides the shell's own tty, so an idle prompt proves nothing), and sudo's shell had drawn its prompt before Ctrl-I. So: the write
-        # may come at once (a slow sudo draws its prompt after the arming); if not, it must come with the prompt of the first typed line.
+        # Behind a relay the app writes at the first NEW prompt (subshell_ready.rs: Relay with no prompt drawn since arming =
+        # Wait(RelayNoPrompt); the relay hides the shell's own tty, so an idle prompt proves nothing), and sudo's shell has usually drawn its
+        # prompt before Ctrl-I. Round 14 (#2109, the first run of this case anywhere) required the write within 10 s of Ctrl-I with nothing
+        # typed. Round 19 typed the case's line and required the write with ITS prompt: round 15's log showed what the app does with that line,
+        # by its rule R2 (on_user_line_ended): `subshell_ready_line_end non_empty=true fact=Relay tail=ShellPrompt verdict=Cancel`, then
+        # `subshell_setup_cancelled why=UserDrove`: a command typed at the prompt before the setup is written is the user driving the shell,
+        # and the attempt is cancelled (#2141; whether a person should be told is the owner's question #2142). What brings a new prompt
+        # WITHOUT driving the shell is an empty line: Enter alone re-arms (ReArm), the shell draws its prompt again, and the judge writes.
+        # So: the write may come at once (a slow sudo draws its prompt after the arming); if not, it must come after one Enter on an empty
+        # line; the case's own line is typed after the write.
         written = lambda: first_index(hops(ctx, off), "subshell_setup_ready_write")       # noqa: E731
         at_arm = written() if ctx.until(lambda: written() is not None, 3) else None
-        if at_arm is not None:
-            time.sleep(1.5)
-        tok = ctx.tok(6)
-        ctx.be.type("sh -c 'id -u; echo %s' >> %s" % (tok, f), 12, enter=True)
-        r.check(ctx.until(lambda: tok in PB.read_lines(f), 10), "the typed line ran in the %s shell: %r" % (t["user"], PB.read_lines(f)))
-        after_line = None
+        after_enter = None
         if at_arm is None:
-            after_line = written() if ctx.until(lambda: written() is not None, 10) else None
-            time.sleep(1.5)
+            ctx.be.key("Return")
+            after_enter = written() if ctx.until(lambda: written() is not None, 10) else None
         hs = hops(ctx, off)
         judged = [ln for h, ln in hs if h == "subshell_ready_judged"]
-        r.metric("relay_write", relay_write_when(at_arm, after_line))
-        r.check(relay_write_when(at_arm, after_line) != "never",
-                "the setup was written behind sudo: not after Ctrl-I and not within 10 s of the first typed line's prompt (the first new prompt behind "
-                "the relay). The judge's last looks: %r; armed: %s" % ([ln[-260:] for ln in judged[-3:]], first_index(hs, "subshell_setup_armed") is not None))
+        ends = [ln for h, ln in hs if h in ("subshell_ready_line_end", "subshell_setup_cancelled")]
+        r.metric("relay_write", relay_write_when(at_arm, after_enter))
+        r.check(relay_write_when(at_arm, after_enter) != "never",
+                "the setup was written behind sudo: not after Ctrl-I and not within 10 s of an Enter on an empty line (the first new prompt "
+                "behind the relay). The judge's last looks: %r; line ends and cancels: %r; armed: %s"
+                % ([ln[-260:] for ln in judged[-3:]], [ln[-200:] for ln in ends[-3:]], first_index(hs, "subshell_setup_armed") is not None))
+        r.check(not any("verdict=Cancel" in ln or "subshell_setup_cancelled" in ln for ln in ends),
+                "an Enter on an empty line cancelled the setup (it must re-arm: ReArm): %r" % [ln[-200:] for ln in ends[-3:]])
+        time.sleep(2.0)
+        tok = ctx.tok(6)
+        ctx.be.type("sh -c 'id -u; echo %s' >> %s" % (tok, f), 12, enter=True)
+        r.check(ctx.until(lambda: tok in PB.read_lines(f), 10), "the line typed after the setup ran in the %s shell: %r" % (t["user"], PB.read_lines(f)))
         r.check(any("kind=Relay" in ln for ln in judged) or any("leader=Shell" in ln for ln in judged),
                 "the samples named sudo a relay (use_pty) or the %s shell a shell leader: %r" % (t["user"], judged[-1:]))
         l = PB.read_lines(f)

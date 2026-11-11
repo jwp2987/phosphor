@@ -9118,6 +9118,8 @@ import selftest_r19_macallow  # noqa: E402  (owner decision 2026-11-11: the harn
 CHECKS.extend(selftest_r19_macallow.CHECKS)
 import selftest_r21_chip  # noqa: E402  (round 21, #2138: the prompt suggestion is a chip that moves no output row; cases_chip.py, fake_model.suggestion_tag)
 CHECKS.extend(selftest_r21_chip.CHECKS)
+import selftest_r21_wlinput  # noqa: E402  (round 21, #2139 #2140 #2141: the Wayland input rows of the round 15 targeted run; own file)
+CHECKS.extend(selftest_r21_wlinput.CHECKS)
 
 
 def missing_required(required, passed):

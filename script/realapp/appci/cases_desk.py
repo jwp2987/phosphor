@@ -314,6 +314,27 @@ def fcitx_profile(engine):
             "[Groups/0/Items/1]\nName=%s\nLayout=\n\n[GroupOrder]\n0=Default\n" % (engine, engine))
 
 
+def fcitx_config():
+    """~/.config/fcitx5/config for the case: fcitx5's defaults with ONE key list emptied, `AltTriggerKeys` ("temporarily toggle input method",
+    default: a lone Left Shift). Every call of the Wayland injector is led by a lone Shift_L tap (#1414: the first key after a new virtual
+    keyboard never reached the client under headless sway), so in rounds 14 and 15 the tap in front of the letters switched Pinyin OFF and the
+    tap in front of the commit Space switched it on again: the letters and one space reached the app untouched, with the app's text input
+    focused in the daemon all along (#2141). An empty list is written as the bare key, as fcitx5 itself saves it."""
+    return "[Hotkey]\n# appci ime_compose: the injector's priming Shift_L tap must not be a hotkey of the input method\nAltTriggerKeys=\n"
+
+
+def prime_tap_verdict(engine, after_tap):
+    """pure: None when the daemon still reports `engine` after the injector's lead alone (a lone Shift_L tap) was sent to the app with `engine`
+    selected; else the UNVERIFIABLE text: letters typed now would follow such a tap and reach the app untouched, so nothing about composition
+    can be judged."""
+    if after_tap == engine:
+        return None
+    return ("the injector's own lead switches the input method off: with %r selected, one lone Shift_L tap (it leads every wtype call, #1414) left "
+            "the daemon on %r. A lone Left Shift is fcitx5's default AltTriggerKeys; the case writes ~/.config/fcitx5/config with that list "
+            "empty (fcitx_config) and this fcitx5 did not take it. Letters typed now would reach the app as plain keys: 'marked text leaked' is "
+            "not judged" % (engine, after_tap or "nothing"))
+
+
 def ime_pre_script(plan, addr_file, log):
     """the shell lines sourced before the app: the input method's environment for the app, and its daemon inside the app's session (not daemonized:
     it must stay in the launcher's process group, which is all the harness ever signals)"""
@@ -1198,6 +1219,8 @@ class LinuxIme:
             os.makedirs(p, exist_ok=True)
             with open(os.path.join(p, "profile"), "w", encoding="utf-8") as f:
                 f.write(fcitx_profile(plan["engine"]))
+            with open(os.path.join(p, "config"), "w", encoding="utf-8") as f:      # #2141: before the daemon starts (it reads the file once)
+                f.write(fcitx_config())
         if os.path.exists(self.addr_file):
             os.remove(self.addr_file)
         arm_session_pre(ctx, "ime", ime_pre_script(plan, self.addr_file, self.log))
@@ -1226,6 +1249,14 @@ class LinuxIme:
 
     def ime(self):
         self._select(self.plan["engine"])
+
+    def current(self):
+        """the input method the daemon reports now ('' when it cannot be asked)"""
+        try:
+            return subprocess.run(ime_switch_argv(self.plan, self.plan["engine"])[1], env=self._env(), capture_output=True,
+                                  timeout=15).stdout.decode(errors="replace").strip()
+        except Exception:
+            return ""
 
     def focused_contexts(self):
         """fcitx5 only: the input contexts that have the focus, as the daemon itself lists them (fcitx_focused_contexts); None when it cannot be
@@ -1347,7 +1378,14 @@ def c_ime_compose(ctx, r):
             r.skip(plan)
         r.metric("input_method", "%s / %s" % (plan["framework"], plan["engine"]))
         sw, raw = LinuxIme(ctx, r, plan), bool(ctx.which("python3"))
-    keys = lambda word: (lambda: ctx.be.keys(list(word), delay_ms=20))      # noqa: E731
+    after_keys = []
+
+    def keys(word):
+        def go():
+            ctx.be.keys(list(word), delay_ms=20)
+            if not ctx.win:
+                after_keys.append(sw.current())           # evidence: the input method still selected with the letters typed (#2141)
+        return go
     commit = lambda: ctx.be.key("space")                                    # noqa: E731
     try:
         if not ctx.win and not sw.start():
@@ -1366,6 +1404,18 @@ def c_ime_compose(ctx, r):
             if focused is None:
                 r.note("the input method's own context list could not be read (no dbus-send / busctl / gdbus, or not fcitx5): whether it is in the "
                        "key path is shown only by the checks below")
+            if ctx.be.name == "wayland" and getattr(ctx.be, "prime_ms", 0) > 0 and not sw.unproven:
+                # #2141 control: the injector's lead alone (keys([]) is the lone Shift_L tap of every wtype call and no key) must leave the
+                # engine selected; in rounds 14 and 15 it was fcitx5's toggle key and every letter was typed past the input method
+                ctx.be.keys([])
+                time.sleep(0.5)
+                after_tap = sw.current()
+                r.metric("ime_after_prime_tap", after_tap)
+                why = prime_tap_verdict(plan["engine"], after_tap)
+                if why:
+                    sw.abc()
+                    r.unverifiable(why)
+                    return
         sw.abc()
         if sw.unproven:
             r.unverifiable("the input method could not be selected for the app (%s): the app may not have registered a text input with it, or the "
@@ -1379,6 +1429,12 @@ def c_ime_compose(ctx, r):
             INTL.compose_editor(ctx, r, "ime_" + word, keys(word), commit, text, sw=sw)
         if sw.unproven:
             r.unverifiable("a later input-method switch was not proven (%s): the rows above may have been typed on the wrong layout" % sw.unproven)
+        if not ctx.win:
+            r.metric("ime_after_keys", after_keys)
+            off = [a for a in after_keys if a != plan["engine"]]
+            if off:
+                r.note("with the letters typed the daemon reported %r, not %r, in %d of %d rows: those letters were typed past the input "
+                       "method (a failed row above then says nothing about the app's composition)" % (off[0], plan["engine"], len(off), len(after_keys)))
         r.check(ctx.app.alive(), "the app died in the input method case")
     finally:
         sw.restore()

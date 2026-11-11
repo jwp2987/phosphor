@@ -987,6 +987,27 @@ def input_position(ctx, r, tag):
     return p
 
 
+def relocate(ctx, tag, words, found, since):
+    """{word: row} of where the `words` first found at `found` are drawn NOW (#2141). From the find hook: the newest sighting of the same run of text
+    (current_row). A word the hook has no sighting of was found by OCR, which has no later sighting: ONE new screen read places those. A word in
+    neither is left out, and the caller's need_all says so. Round 15, Wayland, primary_and_middle_click: the first arm's own `echo ... >> file`
+    added a block, the fixture line moved up, and the second arm dragged and double-clicked at the old places, on the new block's command line."""
+    out, by_ocr = {}, []
+    for w in words:
+        hits = U._hook_word(ctx, w, since, all_hits=True)
+        if hits and w in found:
+            out[w] = current_row(found[w], hits)
+        else:
+            by_ocr.append(w)
+    if by_ocr:
+        ws, _ = U.words(ctx, tag)
+        for w in by_ocr:
+            hits = U.token_hits(ws, w)
+            if hits:
+                out[w] = hits[-1]
+    return out
+
+
 @case("primary_and_middle_click", order=71, gui=True)
 def c_primary_and_middle_click(ctx, r):
     """T23. terminal.copy_on_select off, then on (the settings file rewritten while the app runs, its bytes put back). Per arm, with CLIPBOARD and
@@ -1025,6 +1046,10 @@ def c_primary_and_middle_click(ctx, r):
             arm = "on" if on else "off"
             U.set_setting(ctx, "terminal", "copy_on_select", "true" if on else "false")
             time.sleep(2.0)                                   # the live settings reload (ui_settings_live)
+            # #2141: the previous arm's own command added a block, so the line is not where it was found: every arm reads the places again
+            found = relocate(ctx, "pm_find_%s" % arm, words, found, seen)
+            if not need_all(ctx, r, found, words, "pm_find_%s" % arm):
+                return
             sent_c = "SENTINEL_CLIP_%s" % arm
             # a drag
             ctx.be.clip_set(sent_c)

@@ -180,15 +180,18 @@ def r19_view_mode_of_the_pass_own_pane():
 @check
 def r19_relay_write_comes_with_the_first_new_prompt():
     """subshell_ready_relay_shape: behind a relay the setup is written at the first NEW prompt (the app's rule), so the case requires the write
-    after its first typed line when Ctrl-I alone did not bring it, and prints the judge's lines when it never comes"""
+    after Ctrl-I or, when that alone did not bring it, after an Enter on an EMPTY line (round 21, #2141: a typed command line is cancelled by the
+    app's rule R2, so the case's own line comes after the write), and prints the judge's and the line-end lines when it never comes"""
     import cases  # noqa: F401
     import cases_subshell_ready as SR
     body = inspect.getsource(SR.c_ready_relay_shape)
-    assert body.index("sh -c 'id -u; echo %s' >> %s") < body.index('"the setup was written behind sudo')
-    assert "relay_write" in body and "subshell_ready_judged" in body
+    assert body.index('ctx.be.key("Return")') < body.index('"the setup was written behind sudo') < body.index("sh -c 'id -u; echo %s' >> %s")
+    assert "relay_write" in body and "subshell_ready_judged" in body and "subshell_ready_line_end" in body and "subshell_setup_cancelled" in body
     rules = _src("app", "src", "terminal", "view", "subshell_ready.rs")
     assert "Decision::Wait(WaitWhy::RelayNoPrompt)" in rules and "SubshellTtyKind::Relay =>" in rules
-    assert SR.relay_write_when(None, None) == "never" and SR.relay_write_when(3, None) == "at_arm" and SR.relay_write_when(None, 9) == "after_first_line"
+    # the rule the round 19 form of the case ran into: a non-empty line at a shell prompt cancels, an empty one re-arms
+    assert "if !non_empty || program_owns_tty {\n        return LineEndVerdict::ReArm;" in rules and "_ => LineEndVerdict::Cancel," in rules
+    assert SR.relay_write_when(None, None) == "never" and SR.relay_write_when(3, None) == "at_arm" and SR.relay_write_when(None, 9) == "after_empty_enter"
     assert SR.relay_write_when(3, 9) == "at_arm"
 
 

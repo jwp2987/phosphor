@@ -7593,7 +7593,7 @@ close key asks again) and `editor_daily` (Escape, then a save has the kept edit)
 | `md_viewer_first_frame` | the control arm compares the closing probe with the root shell pid of its own instance (`close_file_viewer(..., root_pid=)`). Windows: `WINDOWS_RUST_LOG` gains `warpui_core::core::app=info` (the `dispatching action for "root_view:add_file_pane"` line; without it `md_viewer` and `md_viewer_big` also never closed their viewer tab) and `warp_editor::render::model=info` (the first-size line) | unchanged |
 | `desktop_notification` | the unfocused command prints a token; the notification's text must hold it (the body is `Latest output: <end of the output>`) and the title must start with the command's first 8 characters in a quote. The old needle was at character 16 of the command, which the title cuts by design | another block's notification, or a title that is not the command's |
 | `left_agent_mode_after_<case>` | `run.py` records the pass's own pane before each agent-pass case (`note_view_pane`: the pane of the latest `hop=view_mode mode=agent` line, once per app instance). `mode_now` answers from the log when the latest line is that pane's or every pane agrees; when another pane's line is the latest and the panes disagree (soak's closed throw-away tab) the screen decides (OCR), and without a reader there is no row | the pass's own pane logs `mode=terminal`; the screen shows a terminal session |
-| `subshell_ready_relay_shape` | the write is required after Ctrl-I OR with the prompt of the first typed line (behind a relay the app writes at the first new prompt: `Wait(RelayNoPrompt)` until then). Metric `relay_write`: `at_arm` / `after_first_line` / `never`; the failure prints the judge's last looks | no write within 10 s of the first typed line's prompt |
+| `subshell_ready_relay_shape` | superseded in round 21 (#2141, "Round 21, Wayland input" below): the round 19 form required the write with the prompt of the first typed line, which the app's rule R2 cancels. Now: the write after Ctrl-I OR after an Enter on an empty line. Metric `relay_write`: `at_arm` / `after_empty_enter` / `never`; the failure prints the judge's last looks and the line-end hops | no write within 10 s of the empty line's prompt |
 Not changed by this round and still to look at: `desktop_notification` in the Windows Git Bash terminal pass ("the 12 s command did not finish
 as typed", then `pane_wedged_after_desktop_notification`).
 
@@ -7855,8 +7855,43 @@ block of `selftest.py` (R8).
 
 ## Round 21, Wayland input: five cases of the round 15 targeted run (design `docs/design/r10-r21-wlinput.md`; #2139, #2140, #2141, #2142; nothing compiled, no app run when written)
 
-`app-test-linux-wayland` job 17936839261 (build/r15a `b06800e98`).
+`app-test-linux-wayland` job 17936839261 (build/r15a `b06800e98`). Self-tests: `script/realapp/appci/selftest_r21_wlinput.py` (run by
+`run.py --self-test`) and `r19_relay_write_comes_with_the_first_new_prompt` (`selftest_r19_tabs.py`, expectation changed, below).
 
+| case | verdict | what changed |
+|---|---|---|
+| `primary_and_middle_click`, `[copy_on_select off]` middle click | APP (#2139) | the primary read takes its text from PRIMARY; off: `PHOSPHOR_PRIMARY_READS_CLIPBOARD_TEXT=1` |
+| `primary_and_middle_click`, `[copy_on_select on]` rows | TEST (#2141) | every arm reads the words' places again (`relocate`) |
+| `link_and_path_click` (terminal FAIL, agent NOREF) | TEST (#2141) | the find hook finds the window of an app launched through a wrapper (`app_window_origin`) |
+| `ime_compose` | TEST (#2141) | fcitx5's toggle key is taken away (`fcitx_config`) and that is proven before typing (`prime_tap_verdict`) |
+| `desktop_notification_agent_question` | APP (#2140) | one notification per blocked action / finished turn; off: `PHOSPHOR_AGENT_NOTIFY_EVERY_EVENT=1` |
+| `subshell_ready_relay_shape` | TEST (#2141); owner question #2142 | the write is required after an Enter on an empty line; the case's line is typed after it |
+
+- **The find hook under a wrapper.** `link_and_path_click` and `zero_network_startup` launch `exec strace -f ... <app>`; `app.pid` is then
+  strace's PID and no window carries it. `cases_ui._hook_word` asked sway / xdotool for that PID's window, got none and returned nothing:
+  every position of `link_and_path_click` on Linux was OCR's, `aim()` (#2137) had no later sighting to follow, and in the agent pass one
+  word OCR missed made the row NO-REFERENCE although the app had logged its position. `app_window_origin(pid, by_pid)` asks the launcher's
+  PID first, then its descendants nearest first (`descendant_pids`, `child_map`: `/proc/<pid>/stat`). A launch without a wrapper is
+  unchanged. A case that wraps the app and uses the hook needs nothing else.
+- **Places between arms.** `cases_pointer.relocate(ctx, tag, words, found, since)`: for a word the find hook saw, `current_row` (the newest
+  sighting of the same run of text); for a word found by OCR, one new screen read; a word in neither is left out and `need_all` reports
+  it. Use it in any pointer case that runs a command of its own between two pointer actions on text printed earlier.
+- **`ime_compose` and the priming tap.** Every `wtype` call of the Wayland backend starts with a lone `Shift_L` tap (#1414). A lone Left
+  Shift is fcitx5's default `AltTriggerKeys`: in rounds 14 and 15 the tap before the letters switched Pinyin off and the tap before the
+  commit Space switched it on again, with the app's text input focused in the daemon all along. `LinuxIme.start` writes
+  `~/.config/fcitx5/config` (`fcitx_config`: `AltTriggerKeys=`) beside the profile. Control, after `ime_focused_contexts` and before any
+  key goes through the method: Pinyin selected, `ctx.be.keys([])` (the tap alone, no key in the injector accounting), then
+  `fcitx5-remote -n`. Metric `ime_after_prime_tap`; anything but the engine is UNVERIFIABLE (`prime_tap_verdict`), never a "leak". Metric
+  `ime_after_keys`: the daemon's method right after each row's letters; a row typed past the method is named in a note. The cause was
+  inferred from fcitx5's defaults and the bytes received (the daemon's log is not kept): the next run's `ime_after_prime_tap` settles it.
+- **`subshell_ready_relay_shape` (replaces the round 19 row above).** The app's log of the run: `Wait(RelayNoPrompt)` at the arming, then
+  at the typed line's Enter `subshell_ready_line_end non_empty=true fact=Relay tail=ShellPrompt verdict=Cancel` and
+  `subshell_setup_cancelled why=UserDrove` (rule R2: a command typed before the setup is written is the user driving the shell). The case
+  now presses Enter on an empty line when Ctrl-I alone brought no write within 3 s, requires the write within 10 s, fails when that Enter
+  cancelled, and types its line 2 s after the write. Metric `relay_write`: `at_arm` / `after_empty_enter` / `never`. Self-test
+  expectation changed: `relay_write_when(None, 9)` is `after_empty_enter` (was `after_first_line`), and the Enter comes before the case's
+  line in the body. Fails when: no write after the empty line's prompt; the empty Enter cancelled; the line did not run once as the
+  target uid.
 - **App side, #2139 (a middle click pastes the PRIMARY selection).** `clipboard_tests.rs` `primary_read_tests` (which selection the text,
   the pending write and the image come from; the kill switch `PHOSPHOR_PRIMARY_READS_CLIPBOARD_TEXT=1`) and
   `a_primary_read_never_returns_the_clipboards_text` (a real round trip; it skips where the display has no writable PRIMARY). Real-app

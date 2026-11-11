@@ -214,6 +214,58 @@ def find_token(ctx, tag, token, last=True, since=None, r=None):
     return ((hits[-1] if last else hits[0]) if hits else None), p
 
 
+def child_map(proc="/proc"):
+    """{ppid: [pid, ...]} of every process the kernel lists under `proc` (Linux); {} where that cannot be read. The parent is the field after the
+    state in /proc/<pid>/stat, read behind the LAST `)` (a command name may hold spaces and parentheses)."""
+    out = {}
+    try:
+        names = os.listdir(proc)
+    except OSError:
+        return out
+    for n in names:
+        if not n.isdigit():
+            continue
+        try:
+            with open(os.path.join(proc, n, "stat"), errors="replace") as f:
+                ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        out.setdefault(ppid, []).append(int(n))
+    return out
+
+
+def descendant_pids(pid, children=None):
+    """pure given `children` (child_map()): the descendants of `pid`, nearest generation first, `pid` itself not included. A launch through a
+    wrapper (`exec strace -f ... <app>`: link_and_path_click, zero_network_startup) leaves the WRAPPER's PID in app.pid; the window belongs to its
+    child."""
+    children = child_map() if children is None else children
+    out, level, seen = [], [pid], {pid}
+    while level:
+        nxt = []
+        for p in level:
+            for c in sorted(children.get(p, ())):
+                if c not in seen:
+                    seen.add(c)
+                    out.append(c)
+                    nxt.append(c)
+        level = nxt
+    return out
+
+
+def app_window_origin(pid, by_pid, children=None):
+    """the window origin of the app launched as `pid`: by_pid(pid) when that process owns a window, else the first descendant's that does (#2141:
+    under a wrapper the launcher's PID is the wrapper's, no window carries it, and the find hook then gave no position at all: every word of
+    link_and_path_click was located by OCR, and a block that moved after the read was clicked at its old place). by_pid: pid -> (x, y) or None."""
+    o = by_pid(pid)
+    if o:
+        return o
+    for c in descendant_pids(pid, children):
+        o = by_pid(c)
+        if o:
+            return o
+    return None
+
+
 def x11_window_origin(pid):
     """(x, y) of the app's X11 window on screen, from xdotool (no window manager under the job's Xvfb, so the window origin is the content origin), or None"""
     try:
@@ -245,10 +297,9 @@ def _hook_word(ctx, token, since=None, all_hits=False):
     elif mac(ctx):
         origin = mac_window_origin(ctx)
     elif on_wayland(ctx):
-        rect = sway_window_rect(pid)
-        origin = (rect[0], rect[1]) if rect else None
+        origin = app_window_origin(pid, sway_window_origin)
     else:
-        origin = x11_window_origin(pid)
+        origin = app_window_origin(pid, x11_window_origin)
     return hook_find(ctx, token, origin=origin, since=since, all_hits=all_hits) if origin else none
 
 
@@ -424,6 +475,12 @@ def sway_window_rect(pid):
         return None
     rc = best[0]["rect"]
     return rc["x"], rc["y"], rc["width"], rc["height"]
+
+
+def sway_window_origin(pid):
+    """(x, y) of the sway window of `pid`, or None"""
+    rect = sway_window_rect(pid)
+    return (rect[0], rect[1]) if rect else None
 
 
 FIND_RE = re.compile(r"appci_find token=(\S+) x0=(-?[\d.]+) y0=(-?[\d.]+) x1=(-?[\d.]+) y1=(-?[\d.]+)")
