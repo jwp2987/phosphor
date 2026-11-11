@@ -1238,6 +1238,61 @@ fn dispatch_refusals_do_not_auto_resume() {
     ));
 }
 
+/// #2029: whether a reply will be followed up by the app itself is read from the messages that
+/// reply added, when its stream finishes, so the turn's `Success` can be held until the
+/// follow-up is decided. Only a locally written result (no structured result, a resume marker
+/// in its text) that THIS reply added counts: an old one in the history must not hold every
+/// later turn, and an ordinary tool result is answered by the action queue.
+#[test]
+fn a_reply_that_left_a_local_error_result_expects_a_follow_up() {
+    use super::{is_local_result_needing_resume, reply_needs_local_follow_up};
+    use agent_proto::message;
+
+    let result_message = |id: &str, text: String| agent_proto::Message {
+        id: id.to_owned(),
+        task_id: "task".to_owned(),
+        server_message_data: text,
+        citations: vec![],
+        fetched_memories: vec![],
+        message: Some(message::Message::ToolCallResult(message::ToolCallResult {
+            tool_call_id: "call_1".to_owned(),
+            context: None,
+            result: None,
+        })),
+        request_id: "request".to_owned(),
+        timestamp: None,
+    };
+    let invalid = result_message(
+        "m-invalid",
+        serde_json::json!({ "error": "invalid_arguments", "tool": "ask_user_question" })
+            .to_string(),
+    );
+    let refused = result_message(
+        "m-refused",
+        serde_json::json!({ "status": "error", "error": "tool_not_offered" }).to_string(),
+    );
+    assert!(is_local_result_needing_resume(&invalid));
+    assert!(
+        !is_local_result_needing_resume(&refused),
+        "a dispatch refusal does not resume (#1067), so nothing is waited for"
+    );
+
+    let history = [refused.clone(), invalid.clone()];
+    assert!(reply_needs_local_follow_up(&history, |id| id == "m-invalid"));
+    assert!(
+        !reply_needs_local_follow_up(&history, |id| id == "m-refused"),
+        "the reply added only the refusal"
+    );
+    assert!(
+        !reply_needs_local_follow_up(&history, |_| false),
+        "an error result of an earlier reply does not hold this turn"
+    );
+    assert!(!reply_needs_local_follow_up(
+        std::iter::empty::<&agent_proto::Message>(),
+        |_| true
+    ));
+}
+
 /// #1068: a rejected `read_skill` name auto-resumes at most
 /// `MAX_SKILL_RESOLUTION_RESUMES_PER_TURN` times per turn, so a model (or injected tool
 /// output) that keeps naming an unlisted skill cannot loop on the user's API key.
@@ -3422,6 +3477,97 @@ fn byop_message_for_a_rejected_call_says_the_user_rejected_it() {
         "{}",
         ordinary.server_message_data
     );
+}
+
+/// #2036: a tool call that a broken reply stream left behind (the exchange that added it ended
+/// in an error) is answered as "connection lost, did not run", never as the user's interrupt.
+/// The automatic resume after the error is the request that writes this placeholder, and no
+/// user did anything there. A call the user's own action left behind keeps its text.
+///
+/// Red on the old code: there was one placeholder, `interrupted_by_user`, whoever left the call.
+#[test]
+fn a_call_left_by_a_broken_reply_is_answered_as_connection_lost_not_as_a_user_interrupt() {
+    use super::{CONNECTION_LOST_DETAIL, MissingResultCause, missing_result_cause_for};
+    use crate::ai::agent::{
+        AIAgentOutputStatus, CancellationReason, FinishedAIAgentOutput, RenderableAIError,
+    };
+    use agent_proto::message;
+
+    let broken = AIAgentOutputStatus::Finished {
+        finished_output: FinishedAIAgentOutput::Error {
+            output: None,
+            error: RenderableAIError::Other {
+                error_message: "connection reset".to_owned(),
+                will_attempt_resume: true,
+                waiting_for_network: false,
+            },
+        },
+    };
+    let stopped = AIAgentOutputStatus::Finished {
+        finished_output: FinishedAIAgentOutput::Cancelled {
+            output: None,
+            reason: CancellationReason::ManuallyCancelled,
+        },
+    };
+    let streaming = AIAgentOutputStatus::Streaming { output: None };
+    assert_eq!(
+        missing_result_cause_for(Some(&broken)),
+        MissingResultCause::ReplyCutOff
+    );
+    // The user stopped the reply, a reply still streaming, an exchange nobody knows: the
+    // placeholder that was always written.
+    assert_eq!(
+        missing_result_cause_for(Some(&stopped)),
+        MissingResultCause::UserInterrupt
+    );
+    assert_eq!(
+        missing_result_cause_for(Some(&streaming)),
+        MissingResultCause::UserInterrupt
+    );
+    assert_eq!(
+        missing_result_cause_for(None),
+        MissingResultCause::UserInterrupt
+    );
+
+    let text = |cause| -> serde_json::Value {
+        let message = super::BlocklistAIController::byop_synthetic_cancellation_message(
+            "request", "task", "call_1", cause,
+        );
+        assert_eq!(message.task_id, "task");
+        assert!(
+            matches!(
+                &message.message,
+                Some(message::Message::ToolCallResult(tool_result))
+                    if tool_result.tool_call_id == "call_1" && tool_result.result.is_none()
+            ),
+            "the call is answered, with no structured result: {:?}",
+            message.message
+        );
+        serde_json::from_str(&message.server_message_data).expect("the text is JSON")
+    };
+    let lost = text(MissingResultCause::ReplyCutOff);
+    assert_eq!(lost["status"], "cancelled");
+    assert_eq!(lost["reason"], "connection_lost");
+    assert_eq!(lost["detail"], CONNECTION_LOST_DETAIL);
+    assert!(
+        !lost.to_string().contains("interrupted_by_user"),
+        "nobody interrupted this call: {lost}"
+    );
+    let by_user = text(MissingResultCause::UserInterrupt);
+    assert_eq!(by_user["status"], "cancelled");
+    assert_eq!(by_user["reason"], "interrupted_by_user");
+    assert!(by_user.get("detail").is_none(), "unchanged: {by_user}");
+}
+
+/// The kill switches of this file read `0` as off and everything else as on.
+#[test]
+fn a_kill_switch_is_on_unless_it_says_zero() {
+    use super::kill_switch_on;
+    assert!(kill_switch_on(None));
+    assert!(kill_switch_on(Some("1")));
+    assert!(kill_switch_on(Some("")));
+    assert!(!kill_switch_on(Some("0")));
+    assert!(!kill_switch_on(Some(" 0 ")));
 }
 
 /// The agent file tools follow the connected server's capabilities (#1804): a limited server

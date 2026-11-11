@@ -6044,6 +6044,9 @@ def agent_question_pure_parts_and_fake_asks():
     queued_only = "hop=agent_action id=q2 kind=ask_user_question status=queued\nhop=turn conv=c1 state=error\n"
     assert aq.verdict(queued_only) == "hung" and aq.ask_open_ids(queued_only) == ["q2"], "a terminal turn with an ask action left open is a hang"
     assert aq.verdict("hop=turn conv=c1 state=error\n") == "ended"
+    # #2029: `success` and then more turn states with nobody acting = reported finished too early (round 10: success, in_progress, success)
+    assert aq.early_success(["success", "in_progress", "success"]) and aq.early_success(["blocked", "success", "in_progress"])
+    assert not aq.early_success(["in_progress", "success"]) and not aq.early_success(["blocked"]) and not aq.early_success([]) and not aq.early_success(["success"])
     r = FM.reply_for([{"role": "user", "content": "Please ask me a question Z9"}])
     assert r["tool"]["name"] == "ask_user_question" and "Z9" in r["tool"]["arguments"]["questions"][0]["question"]
     assert FM.reply_for([{"role": "user", "content": "Please ask me a question Z9"}, {"role": "tool", "content": "{}"}])["text"] == "Done."

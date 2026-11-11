@@ -2147,6 +2147,26 @@ impl BlocklistAIHistoryModel {
         }
     }
 
+    /// [`Self::mark_response_stream_completed_successfully`] for a reply the controller will
+    /// follow up by itself (#2029): the exchange is completed, the conversation's status is
+    /// left `InProgress`. See `AIConversation::mark_request_completed_with`.
+    pub fn mark_response_stream_completed_awaiting_follow_up(
+        &mut self,
+        stream_id: &ResponseStreamId,
+        conversation_id: AIConversationId,
+        terminal_view_id: EntityId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) else {
+            return;
+        };
+        if let Err(e) =
+            conversation.mark_request_completed_with(stream_id, terminal_view_id, false, ctx)
+        {
+            log::warn!("Failed to mark exchange as completed: {e}");
+        }
+    }
+
     pub fn set_exchange_time_to_first_token(
         &mut self,
         conversation_id: AIConversationId,

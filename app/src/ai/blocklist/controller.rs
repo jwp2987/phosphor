@@ -752,6 +752,75 @@ pub(crate) const REJECTED_BY_USER_DETAIL: &str = "The user rejected this tool ca
      not run. Do not issue it again unless the user asks for it; continue with what the other \
      results allow, or ask the user how to proceed.";
 
+/// What the model reads as the result of a tool call that a broken reply stream left behind
+/// (#2036): the reply never finished, so the call was never queued and never ran.
+pub(crate) const CONNECTION_LOST_DETAIL: &str = "The connection to the model provider was lost \
+     before this reply finished, so this tool call did not run. The user did not cancel it. \
+     Issue the call again if it is still needed.";
+
+/// Why a tool call in the conversation has no result and nothing left that could produce one
+/// (the BYOP preflight's `MissingResultWithoutRepairSource { NoResult }`), for the placeholder
+/// result the preflight writes (#2036).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MissingResultCause {
+    /// The user's own action lost the result (a stop or a new message racing the call,
+    /// #147 / #222), or nothing says otherwise.
+    UserInterrupt,
+    /// The reply that carried the call ended in an error (connection reset, idle timeout, no
+    /// terminal `End`): its calls were shown but never committed, queued or run. Nobody
+    /// cancelled anything; this is also what the automatic resume after the error finds.
+    ReplyCutOff,
+}
+
+/// [`MissingResultCause`] from how the exchange that added the call's message ended. `None`:
+/// the exchange is not known (a restored conversation, a message no exchange claims).
+pub(crate) fn missing_result_cause_for(
+    exchange_output: Option<&AIAgentOutputStatus>,
+) -> MissingResultCause {
+    match exchange_output {
+        Some(AIAgentOutputStatus::Finished {
+            finished_output: FinishedAIAgentOutput::Error { .. },
+        }) => MissingResultCause::ReplyCutOff,
+        _ => MissingResultCause::UserInterrupt,
+    }
+}
+
+/// See [`missing_result_cause_for`]: the exchange is the one whose `added_message_ids` hold the
+/// tool call's own message.
+fn missing_result_cause(
+    conversation: &AIConversation,
+    tool_call_message_id: &str,
+) -> MissingResultCause {
+    if !connection_lost_reason_enabled() {
+        return MissingResultCause::UserInterrupt;
+    }
+    let message_id = MessageId::new(tool_call_message_id.to_owned());
+    missing_result_cause_for(
+        conversation
+            .all_exchanges()
+            .into_iter()
+            .find(|exchange| exchange.added_message_ids.contains(&message_id))
+            .map(|exchange| &exchange.output_status),
+    )
+}
+
+/// Kill switch for #2036: `PHOSPHOR_CONNECTION_LOST_TOOL_RESULT=0` writes `interrupted_by_user`
+/// for every call with no result, as before.
+pub(crate) const CONNECTION_LOST_TOOL_RESULT_ENV: &str = "PHOSPHOR_CONNECTION_LOST_TOOL_RESULT";
+
+fn connection_lost_reason_enabled() -> bool {
+    kill_switch_on(
+        std::env::var(CONNECTION_LOST_TOOL_RESULT_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// A kill switch's reading of its environment value: on unless it says `0`.
+pub(crate) fn kill_switch_on(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
 impl RequestInput {
     fn for_task(
         inputs: Vec<AIAgentInput>,
@@ -992,6 +1061,15 @@ pub struct BlocklistAIController {
     /// only once a reply's stream ended or an action finished here, so a restored conversation
     /// that was never continued is never judged.
     turn_watch: HashMap<AIConversationId, super::turn_invariant::StuckWatch>,
+    /// #2029: conversations whose last reply finished cleanly with no actions but is followed
+    /// up by the app itself (its tool call was answered locally with an error, and the model
+    /// is asked again), keyed to that reply's stream. Their status was NOT set to `Success`
+    /// when the stream finished: the turn is not over. The entry goes when the follow-up
+    /// request is sent, or when it turns out not to happen (the per-turn allowance is spent,
+    /// the user stopped or sent something else, the resume could not be sent), in which case
+    /// the status is written then ([`Self::publish_turn_success_if_idle`]). Never left behind
+    /// with nothing coming: every path that drops the scheduled resume settles it.
+    deferred_turn_success: HashMap<AIConversationId, ResponseStreamId>,
 }
 
 /// What [`MonitoredCompletionFacts`] say to do about a finished monitored command.
@@ -1568,6 +1646,7 @@ impl BlocklistAIController {
             deferred_monitored_completions: HashMap::new(),
             monitored_completion_resumes_in_flight: HashSet::new(),
             turn_watch: HashMap::new(),
+            deferred_turn_success: HashMap::new(),
         }
     }
 
@@ -1960,6 +2039,8 @@ impl BlocklistAIController {
         if let Some(handle) = self.pending_auto_resume_handles.remove(&conversation_id) {
             handle.abort();
         }
+        // #2029: the close stops the conversation and writes its status itself.
+        self.deferred_turn_success.remove(&conversation_id);
         self.update_compaction_turn_state(conversation_id, |state| state.on_conversation_stopped());
         self.action_model.update(ctx, |action_model, _| {
             action_model.clear_finished_action_results(conversation_id);
@@ -3721,13 +3802,24 @@ impl BlocklistAIController {
         let handle = ctx.spawn(wait, move |me, _, ctx| {
             // Clean up the pending handle now that the resume is executing.
             me.pending_auto_resume_handles.remove(&conversation_id);
-            me.resume_conversation_with_recovery_budget(
+            let sent = me.resume_conversation_with_recovery_budget_checked(
                 conversation_id,
                 recovery,
                 /*is_auto_resume_after_error*/ true,
                 vec![],
                 ctx,
             );
+            // #2029: a `Success` held for this resume. Sent: the request owns the status now.
+            // Not sent: nothing else will end the turn, so it ends as it would have.
+            if me.deferred_turn_success.remove(&conversation_id).is_some() {
+                if let Err(e) = &sent {
+                    log::warn!(
+                        "the automatic follow-up of conversation {conversation_id:?} was not \
+                         sent: {e:#}"
+                    );
+                }
+                me.publish_turn_success_if_idle(conversation_id, ctx);
+            }
         });
         // At most one scheduled auto-resume per conversation. `SpawnedFutureHandle` does
         // not abort on drop, so overwriting an entry without aborting it would orphan a
@@ -4737,6 +4829,21 @@ impl BlocklistAIController {
             if self.has_persisted_tool_result(conversation_id, task_id, tool_call_id, ctx) {
                 continue;
             }
+            // #2036: who left the call behind. A reply whose stream broke after it delivered
+            // the call is not the user's doing, and the model must not be told it was.
+            let cause = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .map(|conversation| {
+                    missing_result_cause(
+                        conversation,
+                        &tool_call.key.assistant_tool_call_message_id,
+                    )
+                })
+                .unwrap_or(MissingResultCause::UserInterrupt);
+            log::info!(
+                "[byop-readiness] placeholder result for a tool call with no result: \
+                 cause={cause:?} conversation_id={conversation_id:?}"
+            );
             grouped_messages
                 .entry(TaskId::new(task_id.clone()))
                 .or_default()
@@ -4744,6 +4851,7 @@ impl BlocklistAIController {
                     &request_id,
                     task_id,
                     tool_call_id,
+                    cause,
                 ));
         }
 
@@ -4767,15 +4875,27 @@ impl BlocklistAIController {
     /// anymore, so `byop_action_result_message` can't be used; instead the
     /// cancelled state is carried directly via `server_message_data` (matching the
     /// format used when there's no structured result).
+    ///
+    /// `cause` picks the reason the model reads (#2036): a call the user's own action left
+    /// behind keeps `interrupted_by_user`; a call left by a reply whose stream broke says the
+    /// connection was lost and that the call did not run, so the model can make it again.
     fn byop_synthetic_cancellation_message(
         request_id: &str,
         task_id: &str,
         tool_call_id: &str,
+        cause: MissingResultCause,
     ) -> agent_proto::Message {
-        let server_message_data = serde_json::json!({
-            "status": "cancelled",
-            "reason": "interrupted_by_user",
-        })
+        let server_message_data = match cause {
+            MissingResultCause::UserInterrupt => serde_json::json!({
+                "status": "cancelled",
+                "reason": "interrupted_by_user",
+            }),
+            MissingResultCause::ReplyCutOff => serde_json::json!({
+                "status": "cancelled",
+                "reason": "connection_lost",
+                "detail": CONNECTION_LOST_DETAIL,
+            }),
+        }
         .to_string();
         agent_proto::Message {
             id: uuid::Uuid::new_v4().to_string(),
@@ -5105,6 +5225,16 @@ impl BlocklistAIController {
             .remove(&request_input.conversation_id)
         {
             handle.abort();
+        }
+        // #2029: a `Success` held for the automatic follow-up this request replaces (or is).
+        // The request normally takes the turn over. If it does not get as far as a stream, the
+        // check on the next main-loop turn (no clock) ends the turn as it would have ended.
+        if self
+            .deferred_turn_success
+            .remove(&request_input.conversation_id)
+            .is_some()
+        {
+            self.settle_deferred_turn_success_on_next_hop(request_input.conversation_id, ctx);
         }
 
         // Passive background requests never auto-resume: a resume would issue a fresh turn
@@ -5483,6 +5613,65 @@ impl BlocklistAIController {
         }
     }
 
+    /// #2029: ends a turn whose `Success` was held for an automatic follow-up that did not
+    /// happen. Writes `Success` only when the conversation is still `InProgress` and nothing is
+    /// left that could move it: no stream in flight, no resume scheduled, no request stashed
+    /// for a live call, no action pending or running. Anything else owns the status.
+    fn publish_turn_success_if_idle(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self
+            .in_flight_response_streams
+            .has_active_stream_for_conversation(conversation_id, ctx)
+            || self
+                .pending_auto_resume_handles
+                .contains_key(&conversation_id)
+            || self.pending_byop_requests.contains_key(&conversation_id)
+            || self
+                .action_model
+                .as_ref(ctx)
+                .has_unfinished_actions_for_conversation(conversation_id)
+        {
+            return;
+        }
+        let history_model = BlocklistAIHistoryModel::handle(ctx);
+        let is_in_progress = history_model
+            .as_ref(ctx)
+            .conversation(&conversation_id)
+            .is_some_and(|conversation| conversation.status().is_in_progress());
+        if !is_in_progress {
+            return;
+        }
+        log::info!(
+            "conversation {conversation_id:?}: no automatic follow-up after all, the turn ends \
+             as a success"
+        );
+        let terminal_view_id = self.terminal_view_id;
+        history_model.update(ctx, |history_model, ctx| {
+            history_model.update_conversation_status(
+                terminal_view_id,
+                conversation_id,
+                ConversationStatus::Success,
+                ctx,
+            );
+        });
+    }
+
+    /// [`Self::publish_turn_success_if_idle`] on the next turn of the main loop, after the
+    /// current event's handlers (a ready future, never a timer): for the paths that drop the
+    /// held follow-up while something else is about to take the turn over.
+    fn settle_deferred_turn_success_on_next_hop(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        ctx.spawn(async {}, move |me, _, ctx| {
+            me.publish_turn_success_if_idle(conversation_id, ctx);
+        });
+    }
+
     fn spawn_turn_check_hop(
         &mut self,
         conversation_id: AIConversationId,
@@ -5646,6 +5835,17 @@ impl BlocklistAIController {
         if let Some(handle) = self.pending_auto_resume_handles.remove(&conversation_id) {
             handle.abort();
         }
+        // #2029: the turn's `Success` was held for the automatic follow-up just dropped. A user
+        // stop ends the turn `Cancelled` below; anything else (a superseding submit, a revert)
+        // writes its own status or starts a request, and the check on the next main-loop turn
+        // ends the turn if neither happened.
+        let dropped_deferred_follow_up = self
+            .deferred_turn_success
+            .remove(&conversation_id)
+            .is_some();
+        if dropped_deferred_follow_up && !reason.is_user_stop() {
+            self.settle_deferred_turn_success_on_next_hop(conversation_id, ctx);
+        }
 
         // Discard any queued passive suggestion results for this conversation.
         self.pending_passive_suggestion_results
@@ -5708,8 +5908,10 @@ impl BlocklistAIController {
             //   new, empty conversation starts `InProgress`) had no turn to end, and is left
             //   as it was.
             // Event-driven: decided here, at the stop, never by a timer.
+            // #2029: likewise a turn that was only waiting for its automatic follow-up (its
+            // status was held `InProgress` for it): the stop dropped the follow-up above.
             if stopped_by_user
-                && cancelled.dropped_preprocessing
+                && (cancelled.dropped_preprocessing || dropped_deferred_follow_up)
                 && !cancelled.cancelled_any
                 && !self
                     .action_model
@@ -6347,18 +6549,10 @@ impl BlocklistAIController {
                     //    like todowrite / webfetch / websearch. These tools don't go
                     //    through the protobuf executor; the result is synthesized
                     //    directly, with no AIAgentAction ever queued.
-                    let needs_byop_local_resume = conversation.all_tasks().any(|task| {
-                        task.messages().any(|msg| {
-                            newly_added_message_ids.contains(&MessageId::new(msg.id.clone()))
-                                && matches!(
-                                    msg.message,
-                                    Some(message::Message::ToolCallResult(
-                                        message::ToolCallResult { result: None, .. },
-                                    )),
-                                )
-                                && byop_synthetic_result_needs_resume(&msg.server_message_data)
-                        })
-                    });
+                    let needs_byop_local_resume = reply_needs_local_follow_up(
+                        conversation.all_tasks().flat_map(|task| task.messages()),
+                        |id| newly_added_message_ids.contains(&MessageId::new(id.to_owned())),
+                    );
                     // Defer to the stream's own `pending_resume` when it has one (checked
                     // below): scheduling both would arm two resumes for one stream. The
                     // stream's resume wins because it is the bounded one -- it carries the
@@ -6453,6 +6647,25 @@ impl BlocklistAIController {
                     }
                 });
                 ctx.unsubscribe_from_model(response_stream);
+
+                // #2029: this reply's `Success` was held for the follow-up decided above. With
+                // a resume scheduled the turn goes on and the entry stays until that request
+                // is sent. With none (the per-turn allowance is spent, the pane is closing)
+                // the turn ends here after all: write the status now. A cancelled stream had
+                // its status written by the cancel.
+                if self
+                    .deferred_turn_success
+                    .get(&conversation_id)
+                    .is_some_and(|deferred| *deferred == stream_id)
+                    && !self
+                        .pending_auto_resume_handles
+                        .contains_key(&conversation_id)
+                {
+                    self.deferred_turn_success.remove(&conversation_id);
+                    if cancellation.is_none() {
+                        self.publish_turn_success_if_idle(conversation_id, ctx);
+                    }
+                }
 
                 // A monitored command that finished during this stream is reported now that it
                 // has ended -- unless the turn goes on (tool calls were queued above, a resume
@@ -6840,13 +7053,45 @@ impl BlocklistAIController {
                         );
                     });
                 } else {
+                    // #2029: the follow-up to a tool call the app answered itself is decided
+                    // in `AfterStreamFinished`, a moment after this. Until then the turn used
+                    // to read `Success`, and anything acting on "the turn succeeded" could act
+                    // next to the automatic request. When this reply left such a result, its
+                    // exchange is completed but the status is held; `AfterStreamFinished`
+                    // either schedules the follow-up or writes the status.
+                    let follow_up_expected = defer_turn_success_enabled()
+                        && !self.suspended_for_close
+                        && BlocklistAIHistoryModel::as_ref(ctx)
+                            .conversation(&conversation_id)
+                            .is_some_and(|conversation| {
+                                reply_needs_local_follow_up(
+                                    conversation.all_tasks().flat_map(|task| task.messages()),
+                                    |id| {
+                                        stream_message_ids.contains(&MessageId::new(id.to_owned()))
+                                    },
+                                )
+                            });
+                    if follow_up_expected {
+                        self.deferred_turn_success
+                            .insert(conversation_id, stream_id.clone());
+                    }
+                    let terminal_view_id = self.terminal_view_id;
                     history_model.update(ctx, |history_model, ctx| {
-                        history_model.mark_response_stream_completed_successfully(
-                            stream_id,
-                            conversation_id,
-                            self.terminal_view_id,
-                            ctx,
-                        );
+                        if follow_up_expected {
+                            history_model.mark_response_stream_completed_awaiting_follow_up(
+                                stream_id,
+                                conversation_id,
+                                terminal_view_id,
+                                ctx,
+                            );
+                        } else {
+                            history_model.mark_response_stream_completed_successfully(
+                                stream_id,
+                                conversation_id,
+                                terminal_view_id,
+                                ctx,
+                            );
+                        }
                     });
                 }
 
@@ -7330,6 +7575,41 @@ pub(crate) fn byop_synthetic_result_needs_resume(server_message_data: &str) -> b
         // finished.
         || server_message_data.contains(r#""error":"unknown_tool""#)
         || server_message_data.contains(r#""_byop_intercepted":true"#)
+}
+
+/// Whether `message` is a locally written tool result the model has to be asked about again
+/// ([`byop_synthetic_result_needs_resume`]): a `ToolCallResult` with no structured result whose
+/// text carries one of the markers.
+pub(crate) fn is_local_result_needing_resume(msg: &agent_proto::Message) -> bool {
+    matches!(
+        msg.message,
+        Some(message::Message::ToolCallResult(message::ToolCallResult {
+            result: None,
+            ..
+        })),
+    ) && byop_synthetic_result_needs_resume(&msg.server_message_data)
+}
+
+/// Whether the reply that added the messages `is_added` accepts left a locally written tool
+/// result the model has to be asked about again. Decided when the reply's stream finishes
+/// (#2029: before the turn's status is published) and again, on the same messages, when the
+/// follow-up is scheduled.
+pub(crate) fn reply_needs_local_follow_up<'a>(
+    messages: impl IntoIterator<Item = &'a agent_proto::Message>,
+    is_added: impl Fn(&str) -> bool,
+) -> bool {
+    messages
+        .into_iter()
+        .any(|msg| is_added(&msg.id) && is_local_result_needing_resume(msg))
+}
+
+/// Kill switch for #2029: `PHOSPHOR_DEFER_TURN_SUCCESS=0` publishes `Success` at the end of
+/// every reply without actions, as before (the turn then reads `success` for the moment before
+/// an automatic follow-up starts).
+pub(crate) const DEFER_TURN_SUCCESS_ENV: &str = "PHOSPHOR_DEFER_TURN_SUCCESS";
+
+fn defer_turn_success_enabled() -> bool {
+    kill_switch_on(std::env::var(DEFER_TURN_SUCCESS_ENV).ok().as_deref())
 }
 
 /// At most this many automatic resumes per turn for synthetic local tool results of any kind

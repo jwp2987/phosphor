@@ -42,3 +42,5 @@ mod prompt_tests;
 mod smoke_tests;
 #[cfg(test)]
 mod stop_tests;
+#[cfg(test)]
+mod turn_status_tests;
