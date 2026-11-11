@@ -139,3 +139,65 @@ fn a_terminal_mode_status_bar_is_known_to_draw_nothing() {
         });
     });
 }
+
+/// #2034: the Ctrl-C key and the Stop button differ in exactly one state, an action that runs
+/// (the status bar only ever sees one that is not a shell command: a running command's key and
+/// button are the pty's, #850). The key interrupts what runs and the turn goes on; the button
+/// stops the turn. A card that still waits is cancelled by both, as before, and so is
+/// everything when the kill switch is off.
+///
+/// Red on the old code, which had one answer for all six rows: cancel the action by id.
+#[test]
+fn the_key_interrupts_a_running_action_and_the_button_stops_the_turn() {
+    use super::{ActiveActionStop, StopPress, active_action_stop};
+
+    assert_eq!(
+        active_action_stop(StopPress::CtrlC, true, true),
+        ActiveActionStop::InterruptRunning
+    );
+    assert_eq!(
+        active_action_stop(StopPress::StopButton, true, true),
+        ActiveActionStop::StopTurn
+    );
+    for press in [StopPress::CtrlC, StopPress::StopButton] {
+        assert_eq!(
+            active_action_stop(press, false, true),
+            ActiveActionStop::CancelAction,
+            "{press:?}: a waiting card is cancelled, with the rest of the turn (#1799)"
+        );
+        for is_running in [false, true] {
+            assert_eq!(
+                active_action_stop(press, is_running, false),
+                ActiveActionStop::CancelAction,
+                "{press:?}: kill switch off"
+            );
+        }
+    }
+}
+
+/// The Stop button's press is known to the Ctrl-C routing it goes through, and only for that
+/// one pass: once taken, the next Ctrl-C is the key's again.
+#[test]
+fn a_stop_button_press_is_seen_once() {
+    App::test((), |mut app| async move {
+        let _tips = FeatureFlag::AgentTips.override_enabled(false);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let status_bar = terminal.read(&app, |terminal, ctx| {
+            terminal.input().as_ref(ctx).agent_status_bar().clone()
+        });
+
+        status_bar.read(&app, |bar, _| {
+            assert!(!bar.current_stop_press_is_button(), "a key by default");
+        });
+        status_bar.update(&mut app, |bar, _| bar.stop_button_press = true);
+        status_bar.read(&app, |bar, _| {
+            assert!(bar.current_stop_press_is_button());
+        });
+        let taken = status_bar.update(&mut app, |bar, _| bar.take_stop_button_press());
+        assert!(taken);
+        status_bar.read(&app, |bar, _| {
+            assert!(!bar.current_stop_press_is_button(), "forgotten once taken");
+        });
+    })
+}

@@ -846,7 +846,14 @@ editable). What it does depends on what is running.
 **Phosphor's own agent, GUI.** `ctrl-c` — or the Stop button on the agent block,
 which displays this same keystroke — cancels the in-flight model request, or the
 pending/running tool action, or, if a subagent is running with neither of those,
-the whole conversation's progress. If the agent is mid-summarisation you get a
+the whole conversation's progress. The key and the button differ in one state,
+a tool that is running and is not a shell command (a file read, a search, an
+MCP call): `ctrl-c` interrupts that tool and the turn goes on (the next action
+of the reply comes up, and the model is told the call was cancelled), exactly
+as it does for a running command; the Stop button stops the whole turn. On a
+card that is still waiting for your decision both stop the turn.
+`PHOSPHOR_CTRL_C_INTERRUPTS_ACTION=0` in the environment restores the old
+behaviour (both cancel the one running tool and leave the rest queued). If the agent is mid-summarisation you get a
 confirmation first; a second `ctrl-c` confirms. If the agent had taken control
 of a long-running command, `ctrl-c` first hands control back to you (the
 conversation stays alive and resumes when the command finishes); a second

@@ -25,13 +25,15 @@
 #   * "Please ask me a question <TAG>" (#1851) -> one ask_user_question call (one multiple-choice question, options "alpha" / "beta", TAG in the question text);
 #     after the answer the turn after the tool result is "Done." like any other;
 #   * "Please run a slow command then ask me a question <TAG>" (#1858) -> ONE reply with two calls: run_shell_command `sleep 8`, then ask_user_question;
+#   * "Please call mcp tool <TOOL> on <SERVER> then ask me a question <TAG>" (#2034, agent_ctrl_c_running_tool) -> ONE reply with two calls: the MCP
+#     function (arguments {"text": TAG}), then ask_user_question; "NO-MCP-TOOL ..." when the function was not offered, as for the plain MCP call;
 #   * "Please run scripted command <KEY>" (round 14, agent_autorun_permissions) -> one run_shell_command call with SCRIPTED_COMMANDS[KEY], a command the
 #     case registered beforehand. The prompt the case TYPES is plain prose: a command with `;`, `|` or `$(...)` typed into the input could be routed to
 #     the shell by its syntax and run there, which would read as "ran with no card". An unknown key -> the text "NO-SCRIPTED-COMMAND <KEY>";
 #   * "Please write code snippets <TOK> count <N>" (#2071, agent_code_recycle) -> the text of N fenced bash code blocks, block i holding the single line
 #     `echo RCY<TOK>_<ii>` (snippet_reply): the answer whose code-block editors the app recycles and rebuilds, word for word the same in every run;
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
-# Trigger order in reply_for (no trigger shadows another): plan, tool-result "Done.", stream long reply, follow up check, call mcp tool, show this image,
+# Trigger order in reply_for (no trigger shadows another): plan, tool-result "Done.", stream long reply, follow up check, call mcp tool then ask, call mcp tool, show this image,
 # run a slow command then ask me a question, ask me a question, run scripted command, write code snippets, run / read / create / delete / edit exactly,
 # STREAMLONG (sticky), SLOW, fallback.
 # Every trigger and every fault `match` reads the text the USER typed (prompt_text): never the app's <environment_context> message, and never the
@@ -81,6 +83,7 @@ ASK_RE = re.compile(r"run exactly this shell command and nothing else:\s*(.+?)\s
 STREAM_RE = re.compile(r"stream long reply (\w+) chunks (\d+) gap (\d+)")
 FOLLOW_RE = re.compile(r"follow up check (\w+)")
 MCP_RE = re.compile(r"call mcp tool (\S+) on (\S+)(?: with (\{.*\}))?\s*$", re.S)
+MCPASK_RE = re.compile(r"call mcp tool (\S+) on (\S+) then ask me a question(?:\s+(\w+))?")      # #2034: [mcp call, ask_user_question] in ONE reply
 ASKCMD_RE = re.compile(r"run a slow command then ask me a question(?:\s+(\w+))?")      # #1858: [run_shell_command sleep, ask_user_question] in ONE reply
 ASKQ_RE = re.compile(r"ask me a question(?:\s+(\w+))?")
 SCRIPT_RE = re.compile(r"run scripted command (\w+)")
@@ -407,6 +410,13 @@ def reply_for(messages, tools=None):
     if m:
         c = history_check(messages, m.group(1))
         return {"text": "CHECKED %s %s" % (m.group(1), check_verdict(c)), "tool": None, "check": c}
+    m = MCPASK_RE.search(text)
+    if m:                                      # #2034: a question queued behind an MCP call (a tool that is not a shell command)
+        fn = mcp_function(tools, m.group(2), m.group(1))
+        if fn is None:
+            return {"text": "NO-MCP-TOOL %s/%s" % (m.group(2), m.group(1)), "tool": None, "mcp_missing": (m.group(2), m.group(1))}
+        return {"text": "", "tool": {"name": fn, "arguments": {"text": m.group(3) or ""}}, "mcp": (m.group(2), m.group(1)),
+                "tools_after": [ask_question_call(m.group(3))], "ask_question": True}
     m = MCP_RE.search(text)
     if m:
         fn = mcp_function(tools, m.group(2), m.group(1))

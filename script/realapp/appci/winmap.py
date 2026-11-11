@@ -109,6 +109,7 @@ GITBASH_ONLY = {
     # the two cases depends on the pane's shell: one pane is enough, and the fake-model pass of the Git Bash pane is the one that carries them
     "mcp_basic": "the MCP path does not depend on the pane's shell: runs once, in the Git Bash pane's fake-model pass (#2065)",
     "agent_mcp_faults": "the MCP path does not depend on the pane's shell: runs once, in the Git Bash pane's fake-model pass (#1834, #2065)",
+    "agent_ctrl_c_running_tool": "the MCP path does not depend on the pane's shell: runs once, in the Git Bash pane's fake-model pass (#2034)",
     # r15 wave 4 (#2060; r14-test-gaps T31): the Windows pointer is SendInput (winapi.Pointer), every position comes from the app's find hook (no OCR)
     "ui_mouse_select_copy": "T31: the token is printed by bash `printf` and the command is checked against rec.log: runs in the Git Bash pane (pointer by SendInput, position from the app's find hook)",
     "ui_copy_wrapped_drag": "T31 (#1976): `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (pointer by SendInput, positions from the app's find hook)",

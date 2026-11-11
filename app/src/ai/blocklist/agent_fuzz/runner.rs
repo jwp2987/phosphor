@@ -158,18 +158,23 @@ async fn drive(
             record.stage = obs.snapshot.first().map(|s| stage_name(s.stage));
             record.tool = rig.front_action(app).map(|a| fuzz_action_kind(&a.action));
             let requests_before = rig.seam.request_count();
-            // The agent commands a Ctrl-C of this step would be typed into (the same question
-            // the actor asks; nothing runs in between).
-            let ctrl_c_commands = if matches!(step.op, Op::CtrlC) {
-                rig.running_commands(app)
+            // What a Ctrl-C of this step interrupts (`oracle::ctrl_c_interrupts`): the agent
+            // command it is typed into (the same question the actor asks; nothing runs in
+            // between), or the tools that run with no reply streaming (#2034).
+            let ctrl_c_interrupted = if matches!(step.op, Op::CtrlC) {
+                oracle::ctrl_c_interrupts(
+                    rig.running_commands(app),
+                    rig.running_actions(app),
+                    obs.stream_in_flight,
+                )
             } else {
                 Vec::new()
             };
-            let into_running_command = !ctrl_c_commands.is_empty();
+            let interrupts_what_runs = !ctrl_c_interrupted.is_empty();
             actor::perform(app, &mut rig, &step.op);
             match &step.op {
-                // I8a. Stop always stops the conversation. Ctrl-C does when no command is
-                // running. CloseTab is not counted: the rig's close only discards pending work,
+                // I8a. Stop always stops the conversation. Ctrl-C does when it interrupts
+                // nothing. CloseTab is not counted: the rig's close only discards pending work,
                 // it does not suspend the pane as the real close does, so a command still
                 // running may report afterwards.
                 Op::Stop => {
@@ -177,11 +182,12 @@ async fn drive(
                     oracle.user_stopped(requests_before, obs.stream_in_flight);
                 }
                 // A Ctrl-C typed into a running agent command is that command's interrupt and
-                // the turn goes on (#850, owner decision 2026-11-10). It is not a stop in any
-                // of I8's senses: it draws no I8a line (the step's results may go back to the
-                // model, #1178), and it discards nothing, so it is no excuse for a message that
-                // never reached the model either (I8b).
-                Op::CtrlC if into_running_command => {}
+                // the turn goes on (#850, owner decision 2026-11-10); the same key with a tool
+                // running interrupts the tool and the turn goes on (#2034). It is not a stop in
+                // any of I8's senses: it draws no I8a line (the step's results may go back to
+                // the model, #1178), and it discards nothing, so it is no excuse for a message
+                // that never reached the model either (I8b).
+                Op::CtrlC if interrupts_what_runs => {}
                 Op::CtrlC => {
                     stopped = true;
                     if !obs.running() {
@@ -220,29 +226,30 @@ async fn drive(
             if let Op::Wait { ms } = &step.op {
                 pump_for(app, knobs.scale(Duration::from_millis(*ms))).await;
             }
-            // I2b / I2c. A Stop always ends the turn. So does a Ctrl-C, with exactly one
-            // exception (#850, DECLINED.md IMPROVED; owner decision 2026-11-10, which closed
-            // the question on #1942): a Ctrl-C typed into a running agent command interrupts
-            // that command and the turn goes on. I2b ("terminal, nothing held") is not asked of
-            // that Ctrl-C, whether or not other actions of the reply wait behind the command;
-            // I2c is: the command stops, and the action that waited behind it for the user's
-            // answer is still there, not cancelled with the command. How the step ends after
-            // that is the app's ordinary end-of-step rule, not this key's: the cards that
-            // follow are the closing user's, a step with a finished result goes back to the
-            // model and a step whose only result is the interrupted command ends `Cancelled`
-            // (#1178), and I2a still requires the turn to end.
+            // I2b / I2c. A Stop always ends the turn. A Ctrl-C interrupts what runs and the
+            // turn goes on (#850, DECLINED.md IMPROVED; owner decision 2026-11-10, which closed
+            // the question on #1942; #2034 made the key do the same for a running tool as for
+            // a running command). I2b ("terminal, nothing held") is not asked of that Ctrl-C,
+            // whether or not other actions of the reply wait behind what ran; I2c is: what ran
+            // stops, and the action that waited behind it for the user's answer is still
+            // there, not cancelled with it. How the step ends after that is the app's ordinary
+            // end-of-step rule, not this key's: the cards that follow are the closing user's,
+            // a step with a finished result goes back to the model and a step whose only
+            // result is the interrupted action ends `Cancelled` (#1178), and I2a still
+            // requires the turn to end.
             //
-            // A Ctrl-C with any other action running (a read, a grep) is not that exception:
-            // it is a stop, and I2b applies.
-            if into_running_command {
+            // A Ctrl-C with nothing running (a card waits, a reply streams) has nothing to
+            // interrupt: it is a stop, and I2b applies. So it is for a tool that runs while a
+            // reply is still streaming (the key cancels the reply there).
+            if interrupts_what_runs {
                 let waited_for_the_user = oracle::waits_for_the_user(&obs, safe_allowlist);
                 let interrupted = settle_until(app, knobs.terminal_after_stop, |app| {
-                    Oracle::interrupted(&rig.observe(app), &ctrl_c_commands).is_ok()
+                    Oracle::interrupted(&rig.observe(app), &ctrl_c_interrupted).is_ok()
                 })
                 .await;
                 let after = rig.observe(app);
                 if !interrupted {
-                    Oracle::interrupted(&after, &ctrl_c_commands)?;
+                    Oracle::interrupted(&after, &ctrl_c_interrupted)?;
                 }
                 Oracle::turn_goes_on(&after, waited_for_the_user.as_ref())?;
             } else if matches!(step.op, Op::CtrlC | Op::Stop) {

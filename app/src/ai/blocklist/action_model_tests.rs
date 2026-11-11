@@ -329,6 +329,54 @@ fn only_a_user_reject_cancels_the_rest_of_the_turn() {
     }
 }
 
+/// #2034: a Ctrl-C interrupts running actions as actions only when something runs, the executor
+/// holds every one of them, and none is a shell command (or drives one: its ^C is the pty's,
+/// #850). Anything else is left to the path that handled it before.
+///
+/// Red if the command check is dropped: a Ctrl-C that reached this path with a command running
+/// would cancel the tool call with no reason and never interrupt the process.
+#[test]
+fn ctrl_c_interrupts_running_tools_but_never_a_shell_command() {
+    let grep = AIAgentActionType::Grep {
+        queries: vec!["needle".to_owned()],
+        path: ".".to_owned(),
+    };
+    let question = one_question();
+    let command = shell_command();
+    let hand_over = AIAgentActionType::TransferShellCommandControlToUser {
+        reason: "needs a password".to_owned(),
+    };
+
+    assert!(ctrl_c_can_interrupt_actions([Some(&grep)]));
+    assert!(
+        ctrl_c_can_interrupt_actions([Some(&grep), Some(&question)]),
+        "a parallel phase: everything that runs is interrupted"
+    );
+    assert!(
+        !ctrl_c_can_interrupt_actions(std::iter::empty::<Option<&AIAgentActionType>>()),
+        "nothing runs: nothing to interrupt"
+    );
+    assert!(!ctrl_c_can_interrupt_actions([Some(&command)]));
+    assert!(!ctrl_c_can_interrupt_actions([Some(&hand_over)]));
+    assert!(
+        !ctrl_c_can_interrupt_actions([Some(&grep), Some(&command)]),
+        "one command among them: not this path"
+    );
+    assert!(
+        !ctrl_c_can_interrupt_actions([Some(&grep), None]),
+        "an action the executor does not hold cannot be cancelled there"
+    );
+}
+
+/// The #2034 kill switch reads `0` as off and everything else as on.
+#[test]
+fn ctrl_c_interrupts_action_kill_switch() {
+    assert!(ctrl_c_interrupts_action_enabled_from(None));
+    assert!(ctrl_c_interrupts_action_enabled_from(Some("1")));
+    assert!(!ctrl_c_interrupts_action_enabled_from(Some("0")));
+    assert!(!ctrl_c_interrupts_action_enabled_from(Some(" 0 ")));
+}
+
 /// #1967: the pane's "a waiting question must have a card" check asks about exactly one state:
 /// the question at the front of its conversation's queue, nothing running, in a pane that takes
 /// answers. Everything else (a question queued behind another action, a command, a running
