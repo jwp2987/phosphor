@@ -275,10 +275,11 @@ def requires(ctx, r, **settings):
 
 
 def requires_declared(ctx, r, name):
-    """run.py, before a case's first key: the baseline of the pass plus the case's own declared needs (case_settings.py). A case with no declaration
-    (not in SMOKE / PROVING: the full-tier-only cases have not been audited) and a settings-independent one are not checked. Returns what was checked."""
+    """run.py, before a case's first key: the baseline of the pass plus the case's own declared needs (case_settings.py: the exact declaration, or
+    for a lab arm its family's). A settings-independent case is not checked, nor is a name nothing declares (the self-test
+    r16_every_case_declares_its_settings fails for a registered case with no declaration). Returns what was checked."""
     import case_settings
-    d = case_settings.CASE_SETTINGS.get(name)
+    d = case_settings.declaration(name)
     if d is None:
         return None
     wants = dict(case_settings.baseline(ctx.mode))

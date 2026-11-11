@@ -11,10 +11,11 @@
 #                     `sets` (the case writes them itself and puts them back), `reads` (the case judges by the value in force: it reads the file, or
 #                     the value is one the harness forces in every pass);
 #   * INDEPENDENT     cases that judge nothing on the pass's settings file, each with the reason.
-# Every case of cases.SMOKE and cases.PROVING is in CASE_SETTINGS or in INDEPENDENT (self-test r16_every_fix_tier_case_declares_its_settings), and the
-# table in docs/testing.md is table_markdown() of this file (same self-test). Names only: no value of the owner's seed is written here; the values
-# in `needs` are the ones the CASE was written against.
-import os, re, sys
+#   * FAMILIES        the lab: one declaration per lab family, by glob (`lab_<family>.*`: the arms of a family share one body, so one oracle).
+# Every registered case (cases.CASES: fix tier, full tier, every lab arm) is in CASE_SETTINGS or in INDEPENDENT, or matches exactly one glob of
+# FAMILIES (self-test r16_every_case_declares_its_settings), and the table in docs/testing.md is table_markdown() of this file (same self-test).
+# Names only: no value of the owner's seed is written here; the values in `needs` are the ones the CASE was written against.
+import fnmatch, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import toml_text as T  # noqa: E402
@@ -44,6 +45,10 @@ SETTINGS = {
                          forced="true in the agent pass; the terminal pass keeps the seed's value"),
     "nld_predict_in_ssh": S("agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled", "false",
                             "query predictions from an ssh pane (settings/ai.rs, #1982)"),
+    "next_command_in_ssh": S("agents.warp_agent.active_ai.intelligent_autosuggestions_in_ssh_enabled", "false",
+                             "next-command suggestions requested from an ssh pane (settings/ai.rs, #2094)"),
+    "prompt_suggestions_in_ssh": S("agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled", "false",
+                                   "prompt suggestions requested from an ssh pane (settings/ai.rs, #2094)"),
     "vertical_tabs": S("appearance.vertical_tabs.enabled", "false", "the vertical tabs panel instead of the horizontal tab bar (workspace/tab_settings.rs)"),
     "vertical_tabs_primary_info": S("appearance.vertical_tabs.primary_info", '"command"', "what a panel row shows first: command | working_directory | branch"),
     "vertical_tabs_view_mode": S("appearance.vertical_tabs.view_mode", '"compact"', "panel rows compact | expanded"),
@@ -93,6 +98,7 @@ SETTINGS = {
     "notifications": S("notifications.preferences", None, "desktop notification preferences", simple=False),
     "toast_seconds": S("notifications.toast_duration_secs", "8", "how long a toast stays (terminal/session_settings.rs)"),
     "system_theme": S("appearance.themes.system_theme", "false", "the theme follows the OS light / dark setting (settings/theme.rs)"),
+    "theme": S("appearance.themes.theme", None, "the theme, when it does not follow the OS (settings/theme.rs; the default is the fork's own theme kind)"),
     "font_size": S("appearance.text.font_size", "13.0", "the terminal font size (settings/font.rs)"),
     "zoom": S("appearance.window.zoom_level", "100", "the window zoom (window_settings.rs)"),
     "mcp_config": S("<mcp config file>", None, "the app's global MCP server file, beside settings.toml (not a settings.toml key)", simple=False),
@@ -264,6 +270,7 @@ MODEL = ("providers",)                                                  # the pr
 
 CASE_SETTINGS = {}
 INDEPENDENT = {}
+FAMILIES = []          # [(glob, declaration)] in the order declared: the lab families (one registered case per arm, one declaration per family)
 
 
 def _merge(*ds):
@@ -283,6 +290,35 @@ def independent(names, why):
     for n in names.split():
         assert n not in CASE_SETTINGS and n not in INDEPENDENT, n
         INDEPENDENT[n] = why
+
+
+def family(globs, needs=None, sets=(), reads=(), note=""):
+    """one declaration for every case whose name matches a glob (`lab_tab_remote_dir.*`: every arm of that lab family)"""
+    for g in globs.split():
+        assert g not in dict(FAMILIES) and ("*" in g or "?" in g), g
+        FAMILIES.append((g, dict(needs=dict(needs or {}), sets=tuple(sets), reads=tuple(reads), note=note)))
+
+
+def family_globs(name):
+    """the globs of FAMILIES that match a case name (the self-test wants exactly one for a case with no exact declaration)"""
+    return [g for g, _ in FAMILIES if fnmatch.fnmatchcase(name, g)]
+
+
+def declaration(name):
+    """the declaration `run.py` checks before the case: the exact one, else the first family glob that matches; None for a settings-independent
+    case and for a name nothing declares"""
+    if name in CASE_SETTINGS:
+        return CASE_SETTINGS[name]
+    if name in INDEPENDENT:
+        return None
+    for g, d in FAMILIES:
+        if fnmatch.fnmatchcase(name, g):
+            return d
+    return None
+
+
+def declared(name):
+    return name in CASE_SETTINGS or name in INDEPENDENT or bool(family_globs(name))
 
 
 # ---- SMOKE
@@ -428,6 +464,98 @@ independent("upgrade_from_previous_release", "the previous release writes its ow
 independent("keychain_startup_macos", "three launches judged on first frame, log and exact typing against keychains the harness creates; no setting of the profile is read")
 
 
+# ================================================================== full tier only (round 16, r16-declare): the registered cases outside SMOKE / PROVING
+# ---- typing, paste, programs at the prompt
+decl("rollover expert_fuzz arrows_behind_paste read_x keydown_count flood_typed_line", needs=_merge(INPUT, PROMPT),
+     note="typed (and pasted) lines at the prompt, judged by the exact line the shell received")
+decl("subshells shell_zsh shell_pwsh gitbash_subshell", needs=_merge(INPUT, PROMPT),
+     note="a shell started from the pane's shell (the built-in subshell commands; Git Bash from PowerShell on Windows)")
+decl("alt_screen paste_bracketed_off", needs=INPUT, note="a program at the tty (less, vim, cat) by keyboard and paste; judged by the bytes it received")
+decl("latency_first_key_after_idle", needs=_merge(INPUT, PROMPT, dict(font_size=APP_DEFAULT, zoom=APP_DEFAULT)),
+     note="as latency_paint: macOS watches a screen rectangle (default text size); elsewhere key -> first frame from the app log")
+decl("idle_cpu", note="CPU of the idle app on the pass profile as a whole (theme, tab layout, provider: the seed's); no single setting is its oracle")
+decl("flood_typing_latency tabs_streaming tabs_two_windows", needs=_merge(INPUT, KEYS, PROMPT),
+     note="new tab / new window by the default chords; the tab layout (vertical_tabs: the seed's) is not read")
+decl("quit_24_tabs", needs=_merge(INPUT, KEYS), note="the quit goes through the app's quit key; its question is answered when it comes (quit_warning is not read)")
+decl("intl_wide_type intl_wide_paste intl_wide_edit intl_wide_program intl_compose_linux intl_ime_japanese intl_ime_pinyin", needs=_merge(INPUT, PROMPT),
+     note="judged by the UTF-8 bytes the shell or the program received; the rendering is a screenshot, not a check (the font is the seed's)")
+decl("intl_deadkey_option intl_altgr_ps intl_altgr_bash", needs=_merge(INPUT, PROMPT, dict(extra_meta_keys=APP_DEFAULT)),
+     note="Option dead keys (macOS) and AltGr (Windows, German layout): with Option / Alt acting as Meta the character is not composed")
+# ---- ssh on the harness's own test host
+decl("ssh_failing_not_local ssh_hanging_host_not_local", needs=_merge(INPUT, SSH),
+     note="an ssh that fails or hangs while connecting: the typed line runs locally once (plain-terminal pass-through of the managed ssh path)")
+decl("remote_heredoc_paste latency_enter_ssh ssh_drop_reconnect", needs=_merge(INPUT, SSH))
+decl("remote_session_ext", needs=_merge(INPUT, SSH), sets=("ssh_extension_install",), note="always_install for the case (app relaunched), then never_install again")
+decl("sudo_su_real_shell", needs=_merge(INPUT, PROMPT), note="sudo / su shells are built-in subshell matches; proof is `id -u` typed into the inner shell")
+# ---- agent
+decl("approval_card_pause", needs=_merge(INPUT, AGENT_ASK), reads=MODEL, note="the real CI model must propose the command and the app must stop at its card (OCR)")
+decl("md_viewer_ai_answer", needs=INPUT, reads=MODEL, note="the real CI model's answer; OCR is a note, only a crash fails")
+decl("paste_agent_input cb_agent_pickers cb_agent_file_mention", needs=INPUT,
+     note="the agent input itself (paste, / and @ pickers), judged from the app's own enter lines; no model is needed (the baseline's agent mode is)")
+# ---- UI by keyboard and pointer
+decl("md_viewer_big", needs=KEYS, note="as md_viewer: opened through the app's own open-file path, OCR of the viewer")
+decl("ui_palette", needs=_merge(INPUT, KEYS), note="the palette chord and its action names; OCR where there is one, else the app log's frame lines")
+decl("ui_mouse_select_copy", needs=KEYS, note="every copy is the copy key after the selection (a sentinel is on the clipboard first), so copy_on_select is not what is judged")
+decl("ui_right_click_paste", needs=_merge(INPUT, dict(right_click="context_menu")), note="a right click that pastes has no menu with a Paste entry to click")
+decl("ui_drag_drop_file", needs=INPUT)
+decl("alt_screen_mouse_reporting", needs=_merge(INPUT, dict(mouse_reporting=True)), note="a click must reach the program that asked for SGR mouse reports")
+decl("ui_startup_time cb_state_relaunch", needs=INPUT,
+     note="relaunches on the pass profile (restore_session false: the baseline); launch times depend on the whole profile, typing after each launch is exact")
+decl("ui_settings_live", needs=INPUT, sets=("system_theme", "theme", "font_size", "vertical_tabs"),
+     note="each written live from whatever the profile has (following the system theme is switched off first); the file's bytes are put back")
+decl("editor_edit_save editor_paste cb_editor_mac", needs=KEYS, note="the code editor's default keys (save, undo, redo, paste, close pane); judged by the file on disk")
+decl("cb_settings_ui_open", needs=_merge(INPUT, KEYS), note="the settings page by its default shortcut; closed by Escape, else the close key or the palette")
+decl("cb_settings_migration", needs=INPUT,
+     note="replaces the WHOLE settings file with the app stopped (a legacy-shaped copy of the pass's file, then a truncated one: the app then runs "
+          "on its defaults) and puts the original bytes back")
+decl("cb_ui_action_latency", needs=_merge(INPUT, KEYS), note="new tab, next tab and the Tab menu timed from screenshots; either tab layout changes the screen")
+# ---- state on disk
+decl("crash_corrupt_db", needs=_merge(INPUT, KEYS), sets=("restore_session",), note="restore_session on for the relaunch on the corrupt database, put back")
+decl("upgrade_over_previous", needs=INPUT, note="the previous release is launched on the pass's own profile, then the build under test on its data")
+independent("upgrade_from_v0_1_17", "replaces the profile's settings.toml and keybindings.yaml with the checked-in v0.1.17 fixture, judges the upgrade of that, and puts "
+                                    "the pass's own files back at the end")
+independent("cb_no_autoupdate", "reads the app log of the whole run for updater lines; there is no setting that turns the updater on (DECLINED.md)")
+
+# ================================================================== the ssh lab (round 16, r16-declare): one declaration per family, every arm
+# The lab's own harness writes two settings per arm BEFORE the case body and AFTER run.py's check (cases_lab.lab_prepare): the helper install mode
+# (never_install for the nohelper / helper arms, always_install for upload / upgrade / never) and the denied-host list, with a relaunch, whenever the
+# arm's helper mode differs from the one the app was last launched with. They are NOT put back: the next arm of another mode writes its own. So no
+# lab family may NEED a value of ssh_extension_install or helper_hosts (it would be judged against the previous arm's).
+LAB = _merge(INPUT, dict(ssh_warpification=True, legacy_ssh_wrapper=True, honor_ps1=False))      # a managed ssh session, lines typed at its prompt
+LAB_SETS = ("ssh_extension_install", "helper_hosts")
+LAB_NOTE = "ssh_extension_install and helper_hosts are written per helper arm by the lab harness (not put back between arms)"
+
+
+def lab(globs, needs=None, reads=(), note=""):
+    family(globs, needs=_merge(LAB, needs or {}), sets=LAB_SETS, reads=reads, note=(note + "; " if note else "") + LAB_NOTE)
+
+
+lab("lab_tab_remote_dir.* lab_nohelper_tab_hands_back.* lab_nohelper_listing_single_flight.*", needs=KEYS, note="Tab completion of remote paths by the default Tab key")
+lab("lab_path_detect.* lab_enter_start.* lab_enter_no_network_wait.* lab_raw_key_arrival.* lab_ctrl_c_no_esc_i.* lab_ssh_drop_reconnect.* "
+    "lab_password_prompt.* lab_nu_agent_pager_env.*", note="typed lines and keys in the ssh session, judged by the host's files, the sshd log and the app log")
+lab("lab_chips.* lab_no_helper_chip.* lab_gh_chip_remote.*", note="chips by OCR or the app's chip hop lines; the theme and text size are the seed's and are not read")
+lab("lab_helper_install.* lab_helper_quiet_fallback.* lab_helper_digest_mismatch.* lab_helper_missing_asset.* lab_helper_one_version.* lab_helper_idle_exit.* "
+    "lab_helper_reconnect.* lab_helper_scp_fallback.* lab_helper_route_unsupported.* lab_helper_killed.* lab_nohelper_unavailable.*",
+    note="what the app does about the helper, judged on the host's files, the sshd log and the app log")
+lab("lab_helper_policy.*", note="also writes helper_hosts' allowed list (the host allowed under never_install) and relaunches; the lists are emptied at the end")
+lab("lab_fam_fs_basic.* lab_fam_git_read.* lab_fam_run_command.* lab_file_tree_remote.* lab_skills_remote.*",
+    note="a `cd` into a fixture on the host; judged by the routing lines of the app log and the sshd exec channels")
+lab("lab_remote_edit.* lab_diff_panel_remote.* lab_git_write_remote.*", needs=KEYS,
+    note="panels opened through the command palette by its default chord and the action's name; the editor's default save key")
+lab("lab_codebase_index_remote.*", reads=("codebase_index",) + MODEL, note="needs the fake embeddings provider the harness configures (APPCI_FAKE_EMBEDDINGS)")
+lab("lab_read_files_remote.* lab_diff_apply_remote.* lab_agent_remote_flow.* lab_agent_remote_errors.*", reads=MODEL,
+    note="the scripted model's tool calls on the host; a card is approved when one shows, so the agent's file-read permission (the seed's) is not needed")
+lab("lab_agent_remote_drop.*", needs=AGENT_ASK, reads=MODEL, note="the run_shell_command must stop at its approval card before the connection is reset")
+lab("lab_fam_agent_edit_conflict.* lab_fam_agent_delete_conflict.* lab_fam_agent_edit_endings.* lab_fam_agent_edit_touch_only.*", needs=KEYS, reads=MODEL,
+    note="as agent_edit_*: the diff card of an edit the scripted model proposes, accepted by the card's default keys")
+lab("lab_agent_nld_predict_ssh.*", needs=dict(nld_predict_in_ssh=False), reads=MODEL,
+    note="written against the default (no prediction request from an ssh pane, #1982); the local control makes the case UNVERIFIABLE itself when predictions are off")
+lab("lab_agent_suggestions_ssh.*", needs=dict(next_command_in_ssh=False, prompt_suggestions_in_ssh=False), reads=MODEL,
+    note="written against the defaults (no suggestion request from an ssh pane, #2094); each purpose is judged only against its own local control")
+lab("lab_freeze_and_wake.*", reads=MODEL, note="as freeze_and_wake, against the lab host with its link stalled")
+lab("lab_replay.*", reads=MODEL, note="the recorded-session replay: typed lines locally and over ssh (terminal pass), agent steps on the scripted model (agent pass)")
+
+
 # ------------------------------------------------------------------ the table of docs/testing.md
 DOC_BEGIN = "<!-- case-settings-table: generated by `python3 script/realapp/appci/case_settings.py --write`; do not edit by hand -->"
 DOC_END = "<!-- /case-settings-table -->"
@@ -444,15 +572,29 @@ def _fmt_needs(needs):
     return ", ".join(one(n, needs[n]) for n in sorted(needs)) or "-"
 
 
+def table_order(case_names, fix_names):
+    """the rows of the table for the registered case names: [(name, tier)]: the fix tier in its own order (SMOKE, PROVING), then every other exactly
+    declared case in registry order (tier full); the lab arms are not rows (table_markdown appends one row per family glob)"""
+    fix = list(fix_names)
+    seen = set(fix)
+    rest = [n for n in case_names if n not in seen and (n in CASE_SETTINGS or n in INDEPENDENT)]
+    return [(n, "fix") for n in fix] + [(n, "full") for n in rest]
+
+
 def table_markdown(order):
-    """the per-case table, in the order given (cases.SMOKE + cases.PROVING). Names and the values the CASES need; no value of any seed."""
-    rows = ["| case | needs (beyond the baseline) | sets itself, puts back | judges by the value in force | note |", "|---|---|---|---|---|"]
-    for n in order:
+    """the per-case table: `order` is table_order(...) ([(case, tier)]), then one row per lab family glob (tier lab). Names and the values the
+    CASES need; no value of any seed."""
+    rows = ["| case | tier | needs (beyond the baseline) | sets itself, puts back | judges by the value in force | note |", "|---|---|---|---|---|---|"]
+
+    def row(label, tier, d):
+        rows.append("| `%s` | %s | %s | %s | %s | %s |" % (label, tier, _fmt_needs(d["needs"]), ", ".join(d["sets"]) or "-", ", ".join(d["reads"]) or "-", d["note"] or ""))
+    for n, tier in order:
         if n in INDEPENDENT:
-            rows.append("| `%s` | settings-independent | - | - | %s |" % (n, INDEPENDENT[n]))
+            rows.append("| `%s` | %s | settings-independent | - | - | %s |" % (n, tier, INDEPENDENT[n]))
             continue
-        d = CASE_SETTINGS[n]
-        rows.append("| `%s` | %s | %s | %s | %s |" % (n, _fmt_needs(d["needs"]), ", ".join(d["sets"]) or "-", ", ".join(d["reads"]) or "-", d["note"] or ""))
+        row(n, tier, CASE_SETTINGS[n])
+    for g, d in FAMILIES:
+        row(g, "lab", d)
     return "\n".join([DOC_BEGIN] + rows + [DOC_END])
 
 
@@ -476,7 +618,7 @@ def replace_block(doc, begin, end, block):
 
 if __name__ == "__main__":
     import cases
-    order = list(cases.SMOKE) + list(cases.PROVING)
+    order = table_order([c["name"] for c in cases.CASES], list(cases.SMOKE) + list(cases.PROVING))
     if "--write" in sys.argv:        # rewrite the two generated tables of docs/testing.md ("Test settings model") in place
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "docs", "testing.md")
         with open(path, encoding="utf-8") as f:

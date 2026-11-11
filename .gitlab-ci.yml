@@ -1458,7 +1458,7 @@ app-test-lab-linux:
 # NOT re-mapped here (re-mapping would put the token into the job's variable list/expansion). lab.py reads them from the environment through ci_env.get,
 # prints only whether they are set, and a job on an unprotected ref SKIPs the lab cases with that reason. No `set -x` anywhere near them.
 # Round 15 (#2063; docs/design/r12-macssh.md 4, docs/design/r15-tiers.md): ci_seq.py plays these two in the candidate and release tiers, after that platform's
-# app tests, with APPCI_LAB_MATRIX=quick and APPCI_FAKE_MODEL=1. Round 16 (owner 2026-11-11): in the CANDIDATE tier it also passes APPCI_CASES = the
+# app tests, with APPCI_LAB_MATRIX=quick and APPCI_FAKE_MODEL=1. Round 16 (owner 2026-11-11): in the CANDIDATE and RELEASE tiers it also passes APPCI_CASES = the
 # PROVING_LAB globs (what the fix tier's Linux lab job plays), not the quick matrix of every family, for now (ci_seq.LAB_PLAT_PROVING_ONLY_TIERS).
 #
 # The helper (#2062, docs/design/r12-macssh.md 4, docs/design/r15-lab.md): these two machines have no helper cache and cannot build a Linux musl binary, so

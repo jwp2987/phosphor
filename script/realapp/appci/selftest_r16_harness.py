@@ -191,7 +191,7 @@ def r16_never_played_lab_families_wait_one_run():
 @check
 def r16_lab_jobs_and_guards_in_the_ci_file():
     """owner 2026-11-11: APPCI_FAKE_EMBEDDINGS=1 on the three lab jobs (lab_codebase_index_remote judges); the Mac and Windows lab jobs play only the
-    PROVING_LAB globs in the candidate tier; the ssh wrapper pinned on app-test-macos; and the guards job names the #2086 and #2089 / #2090 checks."""
+    PROVING_LAB globs in the candidate and release tiers; the ssh wrapper pinned on app-test-macos; and the guards job names the #2086 and #2089 / #2090 checks."""
     yml = _read(".gitlab-ci.yml")
     CS = _ci_seq()
     for j in CS.LAB_APP.values():
@@ -205,15 +205,18 @@ def r16_lab_jobs_and_guards_in_the_ci_file():
     import cases_lab_index
     assert 'os.environ.get("APPCI_FAKE_EMBEDDINGS_ACTIVE") != "1"' in inspect.getsource(cases_lab_index.c_codebase_index_remote)
     assert "lab_codebase_index_remote.*" in cases.PROVING_LAB and os.path.isfile(os.path.join(ROOT, "script", "fake_embeddings.py"))
-    # the candidate tier, Mac and Windows: the PROVING_LAB globs, as the fix tier's Linux lab job; the release tier and Linux keep lab_*
+    # the candidate AND release tiers (owner 2026-11-11, r16-declare: the release tier too), Mac and Windows: the PROVING_LAB globs, as the fix tier's
+    # Linux lab job; Linux keeps lab_* in both. The release expectation was 'keeps lab_*' until that decision changed the behaviour.
     globs = CS.proving_lab_globs()
     assert globs == list(cases.PROVING_LAB)
     for p in (CS.MAC, CS.WIN):
         v = CS.lab_tier_vars(p, "candidate")
         assert v == CS.lab_fix_vars() and v["APPCI_CASES"] == ",".join(cases.PROVING_LAB) and v["APPCI_LAB_MATRIX"] == "quick" and v["APPCI_FAKE_MODEL"] == "1", v
-        assert "APPCI_CASES" not in CS.lab_tier_vars(p, "release") and "APPCI_CASES" not in CS.lab_tier_vars(p, "candidate", ())
-        assert 'APPCI_CASES: "lab_*"' in _job(yml, CS.LAB_APP[p]), "the job's own default stays lab_* (a hand play, the release tier)"
+        assert CS.lab_tier_vars(p, "release") == v and CS.LAB_PLAT_PROVING_ONLY_TIERS == ("candidate", "release")
+        assert "APPCI_CASES" not in CS.lab_tier_vars(p, "candidate", ()) and "APPCI_CASES" not in CS.lab_tier_vars(p, "release", ())
+        assert 'APPCI_CASES: "lab_*"' in _job(yml, CS.LAB_APP[p]), "the job's own default stays lab_* (a hand play)"
     assert "APPCI_CASES" not in CS.lab_tier_vars(CS.LINUX, "candidate") and CS.lab_tier_vars(CS.LINUX, "candidate")["APPCI_LAB_MATRIX"] == CS.LAB_CANDIDATE_MATRIX
+    assert "APPCI_CASES" not in CS.lab_tier_vars(CS.LINUX, "release") and CS.lab_tier_vars(CS.LINUX, "release")["APPCI_LAB_MATRIX"] == CS.LAB_CANDIDATE_MATRIX
     # fewer arms than the quick matrix of every family, and never the replay (run.py plays lab_replay* only when --cases names it)
     arms = [c for c in cases.CASES if c.get("lab") and not c["name"].startswith("lab_replay")]
     quick = L.matrix_selection("quick")

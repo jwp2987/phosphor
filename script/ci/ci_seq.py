@@ -119,10 +119,10 @@ LAB_HELPER_JOB = "lab-helper"
 # rows, about 10 h at the 43 s a row the committed lab runs took: more than the job's 6 h, so it stays a hand play.
 LAB_CANDIDATE_MATRIX = "shells=bash,zsh,fish,nu;lat=lan,150;helper=nohelper,helper,upload,upgrade,never;faults=1;scenarios=1"
 LAB_PLAT_MATRIX = "quick"                       # macOS and Windows: the client side of the same remote
-# Owner 2026-11-11 ("Mac/Win lab in candidate: PROVING_LAB only", for now): in these tiers the Mac and Windows lab jobs get APPCI_CASES = the PROVING_LAB
-# globs, exactly what the fix tier's Linux lab job plays (lab_fix_vars), instead of their own `lab_*` (the quick matrix of every family, about 340 rows a
-# platform, never played there). The release tier is not named by the decision and keeps the job's own `lab_*`; add "release" here to change that.
-LAB_PLAT_PROVING_ONLY_TIERS = ("candidate",)
+# Owner 2026-11-11 ("Mac/Win lab in candidate: PROVING_LAB only", for now; the same day, r16-declare: the release tier too): in these tiers the Mac and
+# Windows lab jobs get APPCI_CASES = the PROVING_LAB globs, exactly what the fix tier's Linux lab job plays (lab_fix_vars), instead of their own `lab_*`
+# (the quick matrix of every family, about 340 rows a platform, never played there). A hand play of either job still plays its own `lab_*`.
+LAB_PLAT_PROVING_ONLY_TIERS = ("candidate", "release")
 # The lab jobs keep their own APPCI_CASES ("lab_*"). That glob never sweeps in the replay (run.py plays lab_replay* only when --cases names it), so the
 # replay is played once, by its own job.
 X11_MODES = "terminal,agent"                    # #2058: the X11 pass runs BOTH session modes (agent mode had never run there)
@@ -584,9 +584,12 @@ def self_test_r15(yml, src):
         (lab_tier_vars(MAC, "candidate", g) == lab_fix_vars(g) == lab_tier_vars(WIN, "candidate", g) and lab_tier_vars(MAC) == lab_tier_vars(MAC, "candidate")
          and lab_tier_vars(MAC)["APPCI_CASES"] == ",".join(proving_lab_globs()) != "lab_*",
          "candidate, Mac and Windows lab jobs: the PROVING_LAB globs only (what the fix tier's lab job plays), quick matrix, scripted model"),
-        ("APPCI_CASES" not in lab_tier_vars(MAC, "release", g) and "APPCI_CASES" not in lab_tier_vars(WIN, "release", g) and LAB_PLAT_PROVING_ONLY_TIERS == ("candidate",)
-         and "APPCI_CASES" not in lab_tier_vars(LINUX, "candidate", g) and "APPCI_CASES" not in lab_tier_vars(LINUX, "release", g),
-         "the release tier and the Linux lab job keep the job's own lab_* (the decision names the candidate tier, Mac and Windows)"),
+        (lab_tier_vars(MAC, "release", g) == lab_fix_vars(g) == lab_tier_vars(WIN, "release", g) and LAB_PLAT_PROVING_ONLY_TIERS == ("candidate", "release")
+         and lab_tier_vars(MAC, "release")["APPCI_CASES"] == ",".join(proving_lab_globs()) != "lab_*",
+         "release, Mac and Windows lab jobs: the PROVING_LAB globs only, as in the candidate tier (owner 2026-11-11, r16-declare)"),
+        ("APPCI_CASES" not in lab_tier_vars(LINUX, "candidate", g) and "APPCI_CASES" not in lab_tier_vars(LINUX, "release", g)
+         and "APPCI_CASES" not in lab_tier_vars(MAC, "fix", g) and "APPCI_CASES" not in lab_tier_vars(WIN, "full", g),
+         "the Linux lab job keeps the job's own lab_* in both tiers (every family); a tier the constant does not name passes no APPCI_CASES"),
         ("APPCI_CASES" not in lab_tier_vars(MAC, "candidate", ()), "no PROVING_LAB glob: APPCI_CASES is not passed empty (the job's lab_* stays)"),
         ("lvars = lab_tier_vars(p, tier)" in src, "the driver passes its tier to the Mac / Windows lab variables"),
         (all(re.search(r'^    APPCI_FAKE_EMBEDDINGS: "1"', job_block(j), re.M) for j in LAB_APP.values()) and re.search(r'^    APPCI_FAKE_EMBEDDINGS: "0"', job_block(REPLAY_JOB), re.M)
