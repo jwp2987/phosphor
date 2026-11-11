@@ -3415,5 +3415,11 @@ compiled or run). The log is this fork's own (`warp::input_order`, #1016); there
   asked for on a remote host (the local tty is raw under ssh); ssh.exe's password prompt on ConPTY (no fact at all,
   see the ssh.exe entry above). With the text opt-in on, those keys are in `typed_characters` / `keydown` lines. The
   opt-in is for synthetic text; the manual says so.
-  <!-- markers: keep:describe_user_key_bytes_escaped keep:register_secret_input_probe keep:prompt_reader_noted_flag -->
+- **#2100 (2026-11-11, worked, unproven when written): the same rule for lines outside the input-order target.** The
+  #2040 audit's ten kinds of line (typed-action dump, history at start-up, `[byop-diag] LRC running_command`, find and
+  search queries, next-command lines, the completer parse line, voice transcription, rich-text editor apply lines,
+  typeahead and hook JSON lines, the prompt detector's lines) build their user text with `input_order::TextShown`: a
+  length by default, the text with `WARP_INPUT_ORDER_LOG_TEXT=1`, never during a secret read. Several of these lines
+  are byte-identical at the pin; the difference is deliberate, not drift. Design: `docs/design/r10-r17-privacy2.md`.
+  <!-- markers: keep:describe_user_key_bytes_escaped keep:register_secret_input_probe keep:prompt_reader_noted_flag keep:assert_line_withholds -->
 
