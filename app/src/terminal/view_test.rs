@@ -31567,14 +31567,14 @@ fn scenario_text_behind_a_cli_submit_gate(
 fn table_mode_arrivals_reach_the_same_destinations_as_legacy() {
     let concat = |chunks: &[Vec<u8>]| chunks.concat();
 
-    // A running command takes the typed text; nothing lands in the editor or in a setup's hold.
-    let (writes, buffer, held) = run_arrival_scenario(scenario_running_command_keys);
+    // A running command takes the typed text; nothing lands in the editor. (What its Enter and
+    // ^C leave in the queue is the hand-off's business, which has tests of its own.)
+    let (writes, buffer, _) = run_arrival_scenario(scenario_running_command_keys);
     assert!(
         writes.iter().any(|write| write.as_slice() == b"ls"),
         "running command: {writes:?}"
     );
     assert_eq!(buffer, "", "running command");
-    assert!(held.is_empty(), "running command: {held:?}");
 
     // B11 a: between an Enter and preexec the pty takes typed text, not a control key or an
     // escape sequence (D10: dropped, the editor did not take input over).
