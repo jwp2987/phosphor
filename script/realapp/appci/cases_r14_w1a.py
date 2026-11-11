@@ -402,10 +402,8 @@ def c_scroll_keys_position(ctx, r):
     Round 21 (#2146): a control reads whether the job's lines are drawn at all (skp_stream_state). The agent pass scrolls to the top with
     Shift+Home (skp_top_keys). Where the agent view does not draw the job's output (#2145) the two facts that need drawn output are not judged
     and the row is NO-REFERENCE with that reason; everything else is judged (skp_after_key_verdict)."""
-    if ctx.win:
-        r.skip("Windows: the case reads the scroll position from the screen and the Windows runner has no OCR engine; the app logs no scroll-position hop yet")
     if ctx.ocr("skp_probe") is None:
-        raise C.Skip("no OCR engine (tesseract-ocr; Apple Vision on macOS): the scroll position can only be read from the screenshot")
+        raise C.Skip("no OCR engine (tesseract-ocr; Apple Vision on macOS; Windows.Media.Ocr on Windows, an OCR language pack is needed): the scroll position can only be read from the screenshot")
     tag, stag = skp_tags(ctx.rng)
     src, stream, seen, stop, eff = "skp_lines.txt", "skp_stream.txt", "skp_seen.txt", "skp_stop", "skp_eff.txt"
     ctx.rm(src, stream, seen, stop, eff)

@@ -2115,6 +2115,13 @@ class Ctx:
 
     def ocr(self, tag):
         mac_ocr = os.path.join(getattr(self.be, "TOOLS", "") or "", "ocr") if self.be.name == "mac" else ""
+        if self.be.name == "windows":                    # #2060: Windows.Media.Ocr through windows/lib/ocr.ps1 (winocr); None where no engine can be made
+            import winocr
+            if not winocr.available():
+                return None
+            p = self.shot(tag)
+            got = winocr.read(p, self.be.shot_origin()) if p else None
+            return got[0] if got else None
         engines = ocr_engines(self.be.name, bool(shutil.which("tesseract")), bool(mac_ocr and os.access(mac_ocr, os.X_OK)))
         if not engines:
             return None
