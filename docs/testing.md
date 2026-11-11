@@ -7972,3 +7972,38 @@ the classic (PS1) and universal input layouts in an app case (one `render_input_
 height; no pass runs those layouts, and the PS1 prompt's prefix and right-prompt inset are untested on a build); the input pinned to
 the top and the waterfall input; a same-line prompt that is not the shell's own (context chips inside the editor, only without the
 agent view feature) keeps the banner.
+
+## Round 21: the two notes of a Phosphorize click behind a relay (design `docs/design/r10-r21-relaynote.md`; #2142, owner decision 2026-11-11; nothing compiled, no app run when written)
+
+Behind a relay (`sudo -s` with `use_pty`, ssh) the judge's rules are unchanged: a click at the idle prompt writes nothing
+(`Wait(RelayNoPrompt)`), an Enter on an empty line brings the setup, a typed command cancels the attempt (`UserDrove`). New: the person
+is told, by two toasts. Off: `PHOSPHOR_SUBSHELL_RELAY_NOTE=0` (the old toast at the click, a silent cancel, no button offered again).
+
+- **Hops** (`input_order`, no text of the user's): `subshell_relay_note note=armed_wait event=shown`, `... event=gone why=written|cancelled`,
+  `subshell_relay_note note=cancelled event=shown reoffer=<bool>`, and `subshell_setup_reoffered offered=<bool>` (the Phosphorize button
+  offered again at the first look of the pane after the cancel; `false`: the subshell's block was gone by then).
+- **Unit tests.** `terminal/view/subshell_relay_note_tests.rs` (pure): the switch, which wait shows the wait note (only a banner
+  attempt whose look says `RelayNoPrompt`), which cancel shows the cancel note (a banner attempt that waited behind a relay), the texts
+  (the cancel note names the button only when it is offered again).
+- **View tests.** `terminal/view/subshell_relay_note_view_tests.rs` (child of `view_test.rs`), on a fake `sudo` relay probe with the
+  `ToastStack` events recorded: the wait note once (a second click adds none, the old toast is not shown beside it), kept through the
+  empty line's Enter, removed when the setup is written; a typed command: the note removed, ONE cancel note naming the button, the
+  user's keys at the pty and nothing of the setup, the button back at the next look (not on the key path) and a second click arming a
+  new attempt that is written after an empty Enter; the 60 s ceiling removes the wait note; controls: a click that waits for something
+  else keeps the old toast and the silent cancel, and so does the relay scenario with the switch off.
+- **App case `subshell_ready_relay_shape` (PROVING, extended).** First leg, when the setup was not written at the arming and the look at
+  the arming says `Wait(RelayNoPrompt)`: the wait note is read BEFORE the Enter on the empty line: the screen (OCR, words
+  `press Enter on an empty line`) or the hop line naming it; after the write the `event=gone why=written` hop is required when the
+  note was shown. Second leg (`relay_cancel_leg`, only when the first leg has no failure; a second `sudo`): Ctrl-I, then `true` + Enter
+  at the idle prompt: `subshell_setup_cancelled why=UserDrove` (premise), the cancel note (screen words `Phosphor setup cancelled` or its
+  hop), the wait note's `event=gone why=cancelled`, `subshell_setup_reoffered offered=true` within 4 s, and Ctrl-I arming a new attempt
+  (a second `subshell_setup_armed`); then the shell is left and the root shell proven as in the first leg. Metrics
+  `relay_note_armed_wait` and `relay_note_cancelled`: `read` (on screen) / `logged` (the hop; the screen read missed the toast or no OCR
+  engine: a note in the row, not a failure) / `not_judged` (this sudo wrote at the arming, or waited for something else; a failed first
+  leg for the second note). Fails when: the readiness hops are in the log and neither the screen nor a hop shows the note; the wait
+  note is not removed; the button is not offered again; Ctrl-I after the cancel arms nothing. UNVERIFIABLE when the log has no
+  readiness hop at all and the screen cannot be read. The cancel note is an ordinary toast (4 s): the screen is read right after its
+  hop, so `logged` there is expected on a slow screen grab.
+- **Self-tests.** `script/realapp/appci/selftest_r21_relaynote.py` (run by `run.py --self-test`): `relay_note_state` with right and wrong
+  inputs (the old toast is `absent`, the other note is `absent`), `relay_waits_for_prompt` (only the look at the arming), the two hop
+  names in `HOPS`, the words and hop fields held against the Rust source, the order of the case's steps.

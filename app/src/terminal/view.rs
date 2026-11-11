@@ -3280,6 +3280,32 @@ struct ArmedSubshellSetup {
     user_line_before_prompt: bool,
     /// R4 hop binding: a shell leader was seen; a relay after it is an unpredicted hop.
     seen_shell_leader: bool,
+    /// #2142: why the last look waited (`None`: no look yet, or it did not wait). What the banner
+    /// click's note is chosen from.
+    last_wait: Option<subshell_ready::WaitWhy>,
+    /// #2142: the subshell command the Phosphorize button was offered for when the user clicked
+    /// it (a banner trigger only): what the button is offered for again when the user's own
+    /// command cancels the attempt. The app's own record of a command it already ran; never
+    /// logged.
+    banner_command: Option<String>,
+}
+
+/// #2142: a banner-triggered attempt the user's own command cancelled (R2, `UserDrove`), as the
+/// key path saw it. The key path only fills this in; the note and the button are the caller's.
+struct SubshellUserDroveCancel {
+    /// The attempt came from a click on Phosphorize (not auto-setup, not the rc file).
+    banner: bool,
+    /// The tty fact at the Enter was a relay (sudo -s, ssh).
+    relay: bool,
+    block_id: BlockId,
+    banner_command: Option<String>,
+}
+
+/// #2142: the Phosphorize button to offer again at the next look of the pane (off the key path:
+/// offering it takes the model lock).
+struct SubshellReoffer {
+    block_id: BlockId,
+    command: String,
 }
 
 /// A subshell setup whose first line is out (#1679 step 3): the keys are held behind the setup
@@ -3948,6 +3974,15 @@ pub struct TerminalView {
     /// (#1014). The wait is a state, not an event: the toast stays until setup completes, is
     /// skipped or is abandoned.
     subshell_setup_waiting_toast_id: Option<String>,
+    /// #2142: the "set up at the next empty prompt" note of a banner click behind a relay, while
+    /// it shows (its toast's object id). Removed when the setup is written or cancelled.
+    subshell_relay_wait_note_id: Option<String>,
+    /// #2142: the two relay notes are on (`subshell_relay_note::enabled`, read once; a test
+    /// flips it).
+    subshell_relay_note_on: bool,
+    /// #2142: the Phosphorize button to offer again at the next look, after the user's own
+    /// command cancelled a banner attempt behind a relay.
+    subshell_reoffer_pending: Option<SubshellReoffer>,
     /// An ssh warpify write waiting for the shell's line to be ended, with the block it was for
     /// (#1562). Resumed by the hand-off's change and by output, never by a timer.
     ssh_warpify_deferred: Option<(DeferredSshWarpify, BlockId)>,
@@ -5806,6 +5841,9 @@ impl TerminalView {
             powershell_setup_marker_token: None,
             powershell_abort_marker_count: 0,
             subshell_setup_waiting_toast_id: None,
+            subshell_relay_wait_note_id: None,
+            subshell_relay_note_on: subshell_relay_note::enabled(),
+            subshell_reoffer_pending: None,
             ssh_warpify_deferred: None,
             subshell_setup_state: SubshellSetupState::Idle,
             subshell_setup_generation: 0,
@@ -14412,7 +14450,9 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         self.note_abort_key_for_deferred_ssh_warpify(&bytes);
-        self.note_user_bytes_for_subshell_readiness(&bytes);
+        if let Some(cancel) = self.note_user_bytes_for_subshell_readiness(&bytes) {
+            self.on_subshell_setup_user_drove(cancel, ctx);
+        }
         if is_queue_signal_key(&bytes) {
             // Ctrl-C / Ctrl-D (and in `table` mode Ctrl-Z / Ctrl-\): the rest of a chunked
             // line-clear write is dropped (#1354).
@@ -23758,6 +23798,8 @@ impl TerminalView {
         if self.tmux_setup_pending {
             self.resume_tmux_control_mode_setup(ctx);
         }
+        // #2142: the button a cancelled banner attempt promised, offered off the key path.
+        self.reoffer_subshell_setup_if_pending(ctx);
         match &self.subshell_setup_state {
             SubshellSetupState::Idle => {}
             SubshellSetupState::Armed(_) => self.judge_armed_subshell_setup(source, ctx),
@@ -23804,6 +23846,8 @@ impl TerminalView {
             user_line: subshell_ready::LastUserLine::None,
             user_line_before_prompt: false,
             seen_shell_leader: false,
+            last_wait: None,
+            banner_command: None,
         });
         self.judge_armed_subshell_setup("armed", ctx);
     }
@@ -23816,17 +23860,161 @@ impl TerminalView {
         shell_type: Option<ShellType>,
         ctx: &mut ViewContext<Self>,
     ) {
+        // #2142: the command the button was offered for, read before the button goes; a click
+        // on an armed attempt (no button on screen) keeps the one the first click read.
+        let banner_command = self
+            .pending_subshell_warpify_command(ctx)
+            .or_else(|| match &mut self.subshell_setup_state {
+                SubshellSetupState::Armed(armed) => armed.banner_command.take(),
+                _ => None,
+            });
+        // A click is a new attempt: a button waiting to be offered again is this one.
+        self.subshell_reoffer_pending = None;
         self.dismiss_warpify_banner(&RememberForWarpification::DoNotRememberSubshellCommand, ctx);
         if matches!(self.subshell_setup_state, SubshellSetupState::Written(_)) {
             return;
         }
         self.arm_subshell_setup(SubshellPromptTrigger::Banner { shell_type }, ctx);
-        if matches!(self.subshell_setup_state, SubshellSetupState::Armed(_)) {
+        let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state else {
+            return;
+        };
+        armed.banner_command = banner_command;
+        // #2142 (owner decision 2026-11-11): behind a relay the click writes nothing at the idle
+        // prompt (R4: the first NEW prompt is the proof). The person is told what brings it.
+        if subshell_relay_note::armed_wait_note_wanted(
+            self.subshell_relay_note_on,
+            true,
+            armed.last_wait,
+        ) {
+            self.show_subshell_relay_wait_note(ctx);
+        } else {
             self.show_subshell_setup_toast(
                 "Phosphor setup starts when the shell shows its prompt.",
                 ctx,
             );
         }
+    }
+
+    /// #2142: the note of a banner click that waits behind a relay. Shown once per wait (a second
+    /// click while it shows adds nothing); a state, so it stays until the setup is written or
+    /// cancelled ([`Self::dismiss_subshell_relay_wait_note`]). No timer, nothing typed for the
+    /// user.
+    fn show_subshell_relay_wait_note(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.subshell_relay_wait_note_id.is_some() || !ctx.has_singleton_model::<ToastStack>() {
+            return;
+        }
+        let window_id = ctx.window_id();
+        let toast_id = format!("subshell-relay-wait-{}", ctx.view_id());
+        self.subshell_relay_wait_note_id = Some(toast_id.clone());
+        warpui::input_order::log_hop("subshell_relay_note", || {
+            format!("note={} event=shown", subshell_relay_note::ARMED_WAIT_NOTE)
+        });
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            let toast = DismissibleToast::new(
+                subshell_relay_note::ARMED_WAIT_TEXT.to_owned(),
+                ToastFlavor::Default,
+            )
+            .with_object_id(toast_id);
+            toast_stack.add_persistent_toast(toast, window_id, ctx);
+        });
+    }
+
+    /// #2142: removes the relay wait note, if it shows: the setup was written (`why` =
+    /// `written`) or the attempt is over (`cancelled`). Takes no model lock (the key path calls
+    /// it).
+    fn dismiss_subshell_relay_wait_note(&mut self, why: &'static str, ctx: &mut ViewContext<Self>) {
+        let Some(toast_id) = self.subshell_relay_wait_note_id.take() else {
+            return;
+        };
+        warpui::input_order::log_hop("subshell_relay_note", || {
+            format!(
+                "note={} event=gone why={why}",
+                subshell_relay_note::ARMED_WAIT_NOTE
+            )
+        });
+        if !ctx.has_singleton_model::<ToastStack>() {
+            return;
+        }
+        let window_id = ctx.window_id();
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.remove_toast_by_identifier(toast_id, window_id, ctx);
+        });
+    }
+
+    /// #2142: the user's own command cancelled an armed attempt (R2, `UserDrove`; judged on the
+    /// key path, which hands the facts here). The wait note goes. For a click on Phosphorize
+    /// behind a relay the person is told the setup was cancelled and how to try again, and the
+    /// button is offered again at the next look of the pane. Nothing is written or typed, the
+    /// model is not locked, the key that cancelled is on its way to the shell as before.
+    fn on_subshell_setup_user_drove(
+        &mut self,
+        cancel: SubshellUserDroveCancel,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let wait_note_showing = self.subshell_relay_wait_note_id.is_some();
+        self.dismiss_subshell_relay_wait_note("cancelled", ctx);
+        if !subshell_relay_note::cancelled_note_wanted(
+            self.subshell_relay_note_on,
+            cancel.banner,
+            wait_note_showing,
+            cancel.relay,
+        ) {
+            return;
+        }
+        let reoffer = cancel.banner_command.is_some();
+        self.subshell_reoffer_pending = cancel.banner_command.map(|command| SubshellReoffer {
+            block_id: cancel.block_id,
+            command,
+        });
+        if !ctx.has_singleton_model::<ToastStack>() {
+            return;
+        }
+        let retry_key = keybinding_name_to_keystroke("terminal:warpify_subshell", ctx)
+            .map(|keystroke| keystroke.displayed());
+        let text = subshell_relay_note::cancelled_text(reoffer, retry_key.as_deref());
+        warpui::input_order::log_hop("subshell_relay_note", || {
+            format!(
+                "note={} event=shown reoffer={reoffer}",
+                subshell_relay_note::CANCELLED_NOTE
+            )
+        });
+        let window_id = ctx.window_id();
+        let toast_id = format!("subshell-relay-cancelled-{}", ctx.view_id());
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            let toast = DismissibleToast::new(text, ToastFlavor::Default).with_object_id(toast_id);
+            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+        });
+    }
+
+    /// #2142: offers the Phosphorize button again (the footer button or the in-block banner,
+    /// whichever this build shows) after the user's own command cancelled a banner attempt
+    /// behind a relay, so "try again" has something to click and Ctrl-I has its context back.
+    /// Runs at a look of the pane, never on the key path. Dropped when the block the attempt was
+    /// for is no longer the running one (the subshell is gone) or a new attempt is under way.
+    fn reoffer_subshell_setup_if_pending(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(reoffer) = self.subshell_reoffer_pending.take() else {
+            return;
+        };
+        if !matches!(self.subshell_setup_state, SubshellSetupState::Idle) {
+            return;
+        }
+        let same_block = {
+            let model = self.model.lock();
+            let block = model.block_list().active_block();
+            block.id() == &reoffer.block_id && !block.finished()
+        };
+        warpui::input_order::log_hop("subshell_setup_reoffered", || {
+            format!("offered={same_block}")
+        });
+        if !same_block {
+            return;
+        }
+        if FeatureFlag::WarpifyFooter.is_enabled() {
+            self.show_warpify_footer(WarpificationMode::subshell(reoffer.command), ctx);
+        } else {
+            self.handle_action(&TerminalAction::ShowSubshellBanner(reoffer.command), ctx);
+        }
+        ctx.notify();
     }
 
     /// Judges an armed attempt on one look (#1679 step 3): Write, Wait or Cancel, by the pure rules.
@@ -23959,6 +24147,10 @@ impl TerminalView {
         armed.last_position = look.position;
         let decision =
             subshell_ready::subshell_ready(&sample, &armed.ledger, armed.trigger.shell_type());
+        armed.last_wait = match decision {
+            Decision::Wait(why) => Some(why),
+            Decision::Write(_) | Decision::Cancel(_) => None,
+        };
         warpui::input_order::log_hop("subshell_ready_judged", || {
             format!(
                 "source={source} decision={decision:?} kind={:?} leader={:?} comm={:?} tail={:?} \
@@ -24006,6 +24198,8 @@ impl TerminalView {
         else {
             return;
         };
+        // #2142: the wait the note described is over.
+        self.dismiss_subshell_relay_wait_note("written", ctx);
         warpui::input_order::log_hop("subshell_setup_ready_write", || {
             format!(
                 "trigger={} shell={shell_type:?} relay={relay} line_editor={} bytes_passed={} \
@@ -24379,7 +24573,13 @@ impl TerminalView {
     /// the ledger (R1), and every line end is judged (R2): an empty or answering line re-arms the
     /// shape baseline, any other non-empty line is the user driving the shell and cancels the
     /// attempt. Nothing is written here, ever.
-    fn note_user_bytes_for_subshell_readiness(&mut self, bytes: &[u8]) {
+    ///
+    /// #2142: returns the facts of a `UserDrove` cancel (the caller, which has the context, tells
+    /// the user); `None` for everything else.
+    fn note_user_bytes_for_subshell_readiness(
+        &mut self,
+        bytes: &[u8],
+    ) -> Option<SubshellUserDroveCancel> {
         use crate::terminal::model::subshell_tty::SubshellTtyKind;
         if let SubshellSetupState::Written(written) = &mut self.subshell_setup_state {
             // #1940: a user byte on its way to the pty while the setup is written (the held keys
@@ -24387,10 +24587,10 @@ impl TerminalView {
             // tty's input: the unread bytes may be these.
             written.user_bytes_since_write =
                 written.user_bytes_since_write.saturating_add(bytes.len());
-            return;
+            return None;
         }
         let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state else {
-            return;
+            return None;
         };
         armed.ledger.bytes_since_arm = armed.ledger.bytes_since_arm.saturating_add(bytes.len());
         // #2016: whatever a key read took before, these bytes are in someone's line again.
@@ -24398,7 +24598,7 @@ impl TerminalView {
         let ends = armed.tracker.note(bytes);
         if ends.is_empty() {
             armed.line_started = true;
-            return;
+            return None;
         }
         // #1936 (review r8 D5, invariant I6): the line end is judged with the tty facts AT THE KEY,
         // not those of the last look. No look happens between keys while the program is silent,
@@ -24475,7 +24675,7 @@ impl TerminalView {
             let SubshellSetupState::Armed(armed) =
                 std::mem::replace(&mut self.subshell_setup_state, SubshellSetupState::Idle)
             else {
-                return;
+                return None;
             };
             warpui::input_order::log_hop("subshell_setup_cancelled", || {
                 format!(
@@ -24488,7 +24688,13 @@ impl TerminalView {
             if matches!(armed.trigger, SubshellPromptTrigger::AutoWarpify { .. }) {
                 self.warpify_state.abort_auto_warpify();
             }
-            return;
+            // #2142: the caller tells the user (it has the context; nothing here locks or waits).
+            return Some(SubshellUserDroveCancel {
+                banner: matches!(armed.trigger, SubshellPromptTrigger::Banner { .. }),
+                relay: fact_at_enter == SubshellTtyKind::Relay,
+                block_id: armed.block_id,
+                banner_command: armed.banner_command,
+            });
         }
         // ReArm: the shape baseline and the line-end mark are re-taken from the LAST look's
         // position (#1847): no model lock on the key path, and the next output look (the event
@@ -24521,6 +24727,7 @@ impl TerminalView {
                 "from=None to=Unread at=line_end".to_owned()
             });
         }
+        None
     }
 
     /// The ONE cancel of a readiness-judged setup (#1679 step 3). Armed: nothing was written or
@@ -24537,6 +24744,8 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         use subshell_ready::{CancelKind, WrittenCancel};
+        // #2142: whatever ends the attempt ends the wait note with it.
+        self.dismiss_subshell_relay_wait_note("cancelled", ctx);
         let state = std::mem::replace(&mut self.subshell_setup_state, SubshellSetupState::Idle);
         match (state, why) {
             (SubshellSetupState::Armed(armed), SubshellCancel::Armed(kind)) => {
@@ -42404,6 +42613,7 @@ mod ssh_queue;
 mod ssh_typeahead;
 /// #1679 step 3: the pure readiness judge of the subshell setup (C3a: additive; C3b switches to it).
 mod subshell_ready;
+mod subshell_relay_note;
 
 #[cfg(test)]
 #[path = "view_test.rs"]

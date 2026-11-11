@@ -44,7 +44,8 @@ def write_rc(ctx, name, text):
 # app log of the same case has that hop, before the Secret cancel, with no write between them: the name was missing from this list, so
 # first_index() could never find it. selftest.py (subshell_ready_hops_cover_every_lookup) reads the names the cases look up from this file.
 HOPS = ("subshell_setup_armed", "subshell_ready_judged", "subshell_ready_line_end", "subshell_setup_ready_write", "subshell_written_judged",
-        "subshell_setup_cancelled", "subshell_setup_unsupported", "subshell_stage_two_pending")
+        "subshell_setup_cancelled", "subshell_setup_unsupported", "subshell_stage_two_pending",
+        "subshell_relay_note", "subshell_setup_reoffered")     # #2142: the two relay notes and the button offered again
 
 
 def hops_in(text):
@@ -441,6 +442,93 @@ def relay_write_when(at_arm, after_enter):
     return "at_arm" if at_arm is not None else ("after_empty_enter" if after_enter is not None else "never")
 
 
+# #2142 (owner decision 2026-11-11): words of the two notes a click on Phosphorize behind a relay shows (subshell_relay_note.rs: ARMED_WAIT_TEXT,
+# cancelled_text). selftest_r21_relaynote.py holds them against the Rust source.
+RELAY_WAIT_WORDS = "press Enter on an empty line"
+RELAY_CANCEL_WORDS = "Phosphor setup cancelled"
+
+
+def relay_waits_for_prompt(hs):
+    """pure: the judge's look at the arming said Wait(RelayNoPrompt): the one wait the wait note is shown for (any other wait keeps the old toast)"""
+    for h, ln in hs:
+        if h == "subshell_ready_judged" and "source=armed" in ln:
+            return "decision=Wait(RelayNoPrompt)" in ln
+    return False
+
+
+def relay_note_state(armed_logged, hop_shown, flat, words):
+    """pure: what the run says about one relay note. 'read': the screen (OCR, `flat`: the text on one line, None with no engine) shows its words.
+    'logged': the app logged showing it (hop `subshell_relay_note note=<name> event=shown`) and the screen read did not find the words (a toast is
+    small text; no engine). 'absent': neither, although the readiness hops ARE in the log (`armed_logged`): the app did not show it. 'unreadable':
+    neither, and no readiness hop at all: the log cannot say, the screen could not be read."""
+    import cases_caseagent as CAG
+    if flat is not None and CAG.fuzzy_has(flat, words):
+        return "read"
+    if hop_shown:
+        return "logged"
+    return "absent" if armed_logged else "unreadable"
+
+
+def judge_relay_note(ctx, r, off, name, words, tag, when):
+    """#2142: one relay note, from the screen (OCR) or the app's hop line naming it. FAIL when the app's log has the readiness hops and neither shows
+    the note; UNVERIFIABLE when the log has no readiness hop and the screen cannot be read. Metric relay_note_<name>."""
+    shown = lambda: first_index(hops(ctx, off), "subshell_relay_note", "note=%s event=shown" % name)       # noqa: E731
+    ctx.until(lambda: shown() is not None, 2)
+    t = ctx.ocr(tag)
+    flat = None if t is None else " ".join(t.split())
+    hs = hops(ctx, off)
+    state = relay_note_state(first_index(hs, "subshell_setup_armed") is not None, shown() is not None, flat, words)
+    r.metric("relay_note_" + name, state)
+    if state == "unreadable":
+        r.unverifiable("the note %s (%r): no readiness hop in the app log and no screen read (no OCR engine)" % (when, words))
+    elif state == "logged":
+        r.note("the note %s: the app logged showing it (hop subshell_relay_note note=%s event=shown); the screen read %s"
+               % (when, name, "is not available (no OCR engine)" if flat is None else "did not find %r" % words))
+    else:
+        r.check(state == "read", "the note %s was not shown: no hop `subshell_relay_note note=%s event=shown` and %r is not on screen (#2142). "
+                "Relay-note hops: %r" % (when, name, words, [ln[-120:] for h, ln in hs if h == "subshell_relay_note"][-4:]))
+    return state
+
+
+def relay_cancel_leg(ctx, r, cmd):
+    """#2142, the second note: a second `sudo -s`, Phosphorize, and a COMMAND typed at the idle prompt. The app's rule R2 cancels the attempt
+    (unchanged); the person must be told (the cancel note), the wait note must go, the Phosphorize button must be offered again (hop
+    `subshell_setup_reoffered offered=true`) and Ctrl-I must arm a new attempt: the way back the note names. Not judged when this sudo wrote at the
+    arming or waited for something else (no wait behind the relay to cancel). Leaves the shell it started, proven like the first leg."""
+    ctx.left_inner = False
+    off = ctx.log_size()
+    ctx.be.type(cmd, 12, enter=True)
+    time.sleep(BANNER_S)
+    ctx.be.key("ctrl+i")
+    armed = ctx.until(lambda: first_index(hops(ctx, off), "subshell_setup_armed") is not None, 4)
+    time.sleep(1.0)
+    hs = hops(ctx, off)
+    if not armed or first_index(hs, "subshell_setup_ready_write") is not None or not relay_waits_for_prompt(hs):
+        r.metric("relay_note_cancelled", "not_judged")
+        r.note("cancel note not judged: the second %s did not wait for a prompt behind the relay (armed %s, written %s, look at the arming: %r)"
+               % (cmd, armed, first_index(hs, "subshell_setup_ready_write") is not None, [ln[-200:] for h, ln in hs if h == "subshell_ready_judged"][:1]))
+    else:
+        had_wait_note = first_index(hs, "subshell_relay_note", "note=armed_wait event=shown") is not None
+        ctx.be.type("true", 12, enter=True)
+        cancelled = ctx.until(lambda: first_index(hops(ctx, off), "subshell_setup_cancelled", "why=UserDrove") is not None, 4)
+        r.check(cancelled, "premise of the cancel note: a command typed at the idle prompt behind the relay cancels the armed setup (R2, UserDrove): %r"
+                % [ln[-200:] for h, ln in hops(ctx, off) if h in ("subshell_ready_line_end", "subshell_setup_cancelled")][-3:])
+        if cancelled:
+            judge_relay_note(ctx, r, off, "cancelled", RELAY_CANCEL_WORDS, "relay_cancel_note", "of a cancelled setup")
+            if had_wait_note:
+                r.check(first_index(hops(ctx, off), "subshell_relay_note", "note=armed_wait event=gone why=cancelled") is not None,
+                        "the wait note was removed when the setup was cancelled (hop subshell_relay_note note=armed_wait event=gone why=cancelled)")
+            back = ctx.until(lambda: first_index(hops(ctx, off), "subshell_setup_reoffered", "offered=true") is not None, 4)
+            r.check(back, "the Phosphorize button was offered again after the cancel (hop subshell_setup_reoffered offered=true): the cancel note "
+                    "names it as the way back: %r" % [ln[-120:] for h, ln in hops(ctx, off) if h == "subshell_setup_reoffered"][-2:])
+            off2 = ctx.log_size()
+            ctx.be.key("ctrl+i")
+            r.check(ctx.until(lambda: first_index(hops(ctx, off2), "subshell_setup_armed") is not None, 4),
+                    "Ctrl-I after the cancel arms a new attempt (the cancel note says: try again)")
+    ctx.exit_nested(getattr(ctx, "sub_base", None), r, "relay_cancel")
+    leave_inner(ctx, r, "relay_cancel")
+
+
 @case("subshell_ready_relay_shape", order=22)
 @guarded
 def c_ready_relay_shape(ctx, r):
@@ -482,12 +570,26 @@ def c_ready_relay_shape(ctx, r):
         at_arm = written() if ctx.until(lambda: written() is not None, 3) else None
         after_enter = None
         if at_arm is None:
+            # #2142 (owner decision 2026-11-11): nothing was written at the idle prompt, and the person is told what brings the setup.
+            if relay_waits_for_prompt(hops(ctx, off)):
+                judge_relay_note(ctx, r, off, "armed_wait", RELAY_WAIT_WORDS, "relay_wait_note", "of a setup that waits behind the relay")
+            else:
+                r.metric("relay_note_armed_wait", "not_judged")
+                r.note("wait note not judged: the look at the arming did not say Wait(RelayNoPrompt): %r"
+                       % [ln[-200:] for h, ln in hops(ctx, off) if h == "subshell_ready_judged"][:1])
             ctx.be.key("Return")
             after_enter = written() if ctx.until(lambda: written() is not None, 10) else None
         hs = hops(ctx, off)
         judged = [ln for h, ln in hs if h == "subshell_ready_judged"]
         ends = [ln for h, ln in hs if h in ("subshell_ready_line_end", "subshell_setup_cancelled")]
         r.metric("relay_write", relay_write_when(at_arm, after_enter))
+        if at_arm is not None:
+            r.metric("relay_note_armed_wait", "not_judged")
+            r.note("wait note not judged: this sudo drew its prompt after the arming, the setup was written at once (no wait to announce)")
+        elif after_enter is not None and first_index(hs, "subshell_relay_note", "note=armed_wait event=shown") is not None:
+            r.check(first_index(hs, "subshell_relay_note", "note=armed_wait event=gone why=written") is not None,
+                    "the wait note was removed when the setup was written (hop subshell_relay_note note=armed_wait event=gone why=written): %r"
+                    % [ln[-120:] for h, ln in hs if h == "subshell_relay_note"][-4:])
         r.check(relay_write_when(at_arm, after_enter) != "never",
                 "the setup was written behind sudo: not after Ctrl-I and not within 10 s of an Enter on an empty line (the first new prompt "
                 "behind the relay). The judge's last looks: %r; line ends and cancels: %r; armed: %s"
@@ -511,6 +613,11 @@ def c_ready_relay_shape(ctx, r):
         ctx.rm(fb)
         ctx.be.type(ctx.append_cmd("bash", back, fb), 12, enter=True)
         r.check(ctx.until(lambda: back in ctx.lines(fb), 8), "the pane's bash runs the next command")
+        if r.fails:
+            r.metric("relay_note_cancelled", "not_judged")
+            r.note("cancel note not judged: the first leg failed, no second sudo is started on top of it")
+        else:
+            relay_cancel_leg(ctx, r, cmd)
     finally:
         cleanup()
 

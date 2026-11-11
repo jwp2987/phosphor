@@ -9120,6 +9120,8 @@ import selftest_r21_chip  # noqa: E402  (round 21, #2138: the prompt suggestion 
 CHECKS.extend(selftest_r21_chip.CHECKS)
 import selftest_r21_wlinput  # noqa: E402  (round 21, #2139 #2140 #2141: the Wayland input rows of the round 15 targeted run; own file)
 CHECKS.extend(selftest_r21_wlinput.CHECKS)
+import selftest_r21_relaynote  # noqa: E402  (round 21, #2142: the two notes of a Phosphorize click that waits behind a relay; own file)
+CHECKS.extend(selftest_r21_relaynote.CHECKS)
 
 
 def missing_required(required, passed):
