@@ -3564,7 +3564,15 @@ def app_find_hook_harness_side_1789():
     without xdotool output"""
     import cases_ui as UI
     src = open(os.path.join(HERE, "app.py")).read()
-    assert src.count("warpui::appci_find=info") >= 2, "RUST_LOG must enable the hook's log target for the launched app"
+    assert src.count("warpui::appci_find=info") >= 3, "RUST_LOG must enable the hook's log target for the launched app on Linux, macOS and Windows"
+    # #2069: the Linux launcher arms the hook (it never did until round 14, so every Linux position was OCR and ui_right_click_paste never placed its pointer)
+    import app as A
+    assert "warpui::appci_find=info" in A.INNER and 'export PHOSPHOR_APPCI_FIND_FILE="%(home)s/appci_find.txt"' in A.INNER
+    assert 'os.path.join(ctx.prof.home, "appci_find.txt")' in open(os.path.join(HERE, "cases_ui.py")).read(), "register_find writes the file the launcher names"
+    import cases_coverage_a as CA_
+    assert '"MOUSEREADY mrdy" + sys.argv[2]' in CA_.MOUSE_PROG and "* 5" in CA_.MOUSE_PROG
+    msrc = open(os.path.join(HERE, "cases_coverage_a.py")).read()
+    assert "hit[2] + 60" not in msrc and "pos = (hit[1], hit[2])" in msrc, "the mouse-report click goes ON the program's rows, not below them"
     tmp = tempfile.mkdtemp()
     try:
         log = os.path.join(tmp, "app.log")
@@ -3594,6 +3602,12 @@ def app_find_hook_harness_side_1789():
             finally:
                 UI.words = orig_words
             assert w is None and len(notes) == 1 and "find hook" in notes[0], notes
+            os.environ["APPCI_NO_FIND_HOOK"] = "1"
+            try:
+                assert UI._hook_word(c, "tokx") is None, "the kill switch puts every position back on OCR"
+            finally:
+                del os.environ["APPCI_NO_FIND_HOOK"]
+            assert UI._hook_word(c, "tokx") is not None
         finally:
             UI.x11_window_origin = orig
         Be.name = "mac"
@@ -4189,6 +4203,16 @@ def r18u23_paste_backlog_and_bash_agent_command_count():
     assert ca.approved_command_writes(log, "APPROVEMEX1") == 1
     assert ca.approved_command_writes(log + log, "APPROVEMEX1") == 2
     assert ca.approved_command_writes(log, "REJECTMEX1") == 0 and ca.approved_command_writes("", "A") == 0
+    # #2069: a ConPTY short write logs the wrapper in two pieces; the token split across them is still ONE write of the command, and twice is still two
+    split = ('x hop=pty_write_bytes class=UserCommand wrote=20 of_job=40 bytes="{ echo APPROV" t=1.0\n'
+             'x hop=pty_write_reply bytes=4\n'
+             'x hop=pty_write_bytes class=UserCommand wrote=20 of_job=40 bytes="EMEX1 >> ap_ok.txt; }\\n" t=1.0\n')
+    assert ca.approved_command_writes(split, "APPROVEMEX1") == 1 and ca.approved_command_writes(split + split, "APPROVEMEX1") == 2
+    assert ca.approved_once_verdict(split, "APPROVEMEX1", [])[0]
+    assert ca.token_write_classes(log, "APPROVEMEX1") == {"UserCommand": 1, "UserKey": 1}
+    other = 'x hop=pty_write_bytes class=Agent wrote=9 of_job=9 bytes="echo APPROVEMEX1" t=1\nx hop=pty_write_bytes class=SetupChunked wrote=9 of_job=9 bytes=<setup 9 bytes> t=1\n'
+    ok, _how, detail = ca.approved_once_verdict(other, "APPROVEMEX1", ["APPROVEMEX1"])
+    assert not ok and "'Agent': 1" in detail and "<not shown>" in detail, detail          # still a failure; the message now says where the token went
     # Linux-style log: no pty_write_bytes hop at all; the effect file decides
     linux = 'x [DEBUG] input_order hop=enter_begin deferred=false t=1\n'
     assert not ca.pty_write_hop_logged(linux) and ca.pty_write_hop_logged(log)

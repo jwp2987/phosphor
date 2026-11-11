@@ -230,7 +230,8 @@ MOUSE_PROG = r'''import sys, os, tty, termios, select, time
 fd = sys.stdin.fileno(); old = termios.tcgetattr(fd); tty.setraw(fd)
 buf = b""
 try:
-    sys.stdout.write("\x1b[?1000h\x1b[?1006hMOUSEREADY\r\n"); sys.stdout.flush()
+    # five rows that carry a token the command line does not (the two halves are joined here): the click goes ON one of them, inside this block
+    sys.stdout.write("\x1b[?1000h\x1b[?1006h" + ("MOUSEREADY mrdy" + sys.argv[2] + "\r\n") * 5); sys.stdout.flush()
     end = time.time() + 45
     while time.time() < end and not buf.endswith(b"k"):
         if select.select([fd], [], [], 0.2)[0]:
@@ -246,7 +247,11 @@ finally:
 def c_alt_mouse(ctx, r):
     """A program turns on SGR mouse reporting (ESC[?1000h ESC[?1006h); a real pointer click inside the terminal must reach it as ESC[<0;col;rowM
     (press) and ...m (release), and the key typed after the click ('k') arrives intact and last. Afterwards the mode is off and the shell exact.
-    The pointer is xdotool (X11) / the sway seat (Wayland); the click position is found by OCR of the program's banner, else the window centre."""
+    The pointer is xdotool (X11) / the virtual pointer (Wayland).
+    #2069: the case never passed (r18u28, both Linux backends: the program got b'k' only). The app reports a click to a running program only when the
+    click is ON that program's block (block_list_element.rs: on_long_running_block && !should_intercept_mouse); the case clicked 60 px BELOW a banner
+    of one row, or swept fixed fractions of the window. The program now prints five rows carrying a token and the click goes on the token itself (the
+    app's find hook, else OCR); the sweep and the window centre remain as fallbacks, and the result names which placement was used and where."""
     if ctx.win or ctx.be.name == "mac":
         r.skip("no pointer synthesis in the %s backend (Linux xdotool / sway seat only); the program itself needs python3 termios" % ctx.be.name)
     if not ctx.which("python3"):
@@ -256,27 +261,40 @@ def c_alt_mouse(ctx, r):
     with open(prog, "w") as f:
         f.write(MOUSE_PROG)
     ctx.rm("ca_mouse.out")
-    ctx.be.type("python3 ca_mouse.py ca_mouse.out", ctx.rng.randint(10, 25), enter=True)
+    half = UI.ocr_safe(ctx.tok(6).lower().replace("_", ""))
+    tok = "mrdy" + half
+    UI.register_find(ctx, tok)
+    seen = ctx.log_size()
+    ctx.be.type("python3 ca_mouse.py ca_mouse.out %s" % half, ctx.rng.randint(10, 25), enter=True)
     time.sleep(1.5)
     pos = None
     sweep = None
-    if UI.wl_pointer_real(ctx):
+    how = None
+    hit = UI._hook_word(ctx, tok, seen)
+    if hit:
+        how = "the app's find hook"
+    elif shutil.which("tesseract"):
+        hit, _ = UI.find_token(ctx, "ca_mouse_find", tok, since=seen)
+        how = "OCR" if hit else None
+    if hit:
+        pos = (hit[1], hit[2])
+        r.note("click placed ON the program's own output: token %r at (%d, %d), located by %s" % (tok, pos[0], pos[1], how))
+    if pos is None and UI.wl_pointer_real(ctx):
         # #1789: OCR-free placement. The window rectangle comes from sway (exact); the banner's row is not known without an app hook, so the click is
         # swept down the left side of the window: only a click inside the program's block is reported to it, any other click does nothing to the test.
         rect = UI.sway_window_rect(ctx.be.pid_fn()) if getattr(ctx.be, "pid_fn", None) and ctx.be.pid_fn() else None
         if rect:
             sweep = [(rect[0] + 140, rect[1] + int(rect[3] * f)) for f in (0.08, 0.14, 0.22, 0.32, 0.45, 0.6)]
-            r.note("OCR-free placement: clicks swept down x=%d over the window %r" % (sweep[0][0], rect))
-    if sweep is None and shutil.which("tesseract"):
-        hit, _ = UI.find_word(ctx, "ca_mouse_find", "mouseready")
-        pos = (hit[1], hit[2] + 60) if hit else None
+            how = "a sweep of fixed window fractions"
+            r.note("neither the find hook nor OCR located the program's rows; clicks swept down x=%d over the window %r, which may miss the program's block" % (sweep[0][0], rect))
     if sweep is None and pos is None:
         shot = ctx.shot("ca_mouse_size")
         try:
             from PIL import Image
             w, h = Image.open(shot).size
             pos = (w // 2, h // 2)
-            r.note("OCR did not locate the banner; clicked the window centre %r" % (pos,))
+            how = "the window centre"
+            r.note("neither the find hook nor OCR located the program's rows; clicked the window centre %r, which may not be on the program's block" % (pos,))
         except Exception:
             r.skip("cannot place the pointer: no tesseract hit and no Pillow to read the screenshot size (packages: tesseract-ocr, python3-pil)")
     ctx.shot("ca_mouse_before_click")
@@ -294,8 +312,9 @@ def c_alt_mouse(ctx, r):
         UI.wl_check(ctx, r, False, "no SGR mouse event reached the program that asked for mouse reporting: %s" % got[:200], "pointer")
         local_cmd_exact(ctx, r, "ca_mouse_after")
         return
-    r.check(bool(re.search(r"\\x1b\[<0;\d+;\d+M", got)), "no SGR mouse press ESC[<0;x;yM reached the program that asked for mouse reporting: %s" % got[:200])
-    r.check(bool(re.search(r"\\x1b\[<0;\d+;\d+m", got)), "no SGR mouse release ESC[<0;x;ym reached the program: %s" % got[:200])
+    placed = "click placed by %s at %r" % (how, sweep or pos)
+    r.check(bool(re.search(r"\\x1b\[<0;\d+;\d+M", got)), "no SGR mouse press ESC[<0;x;yM reached the program that asked for mouse reporting: %s (%s)" % (got[:200], placed))
+    r.check(bool(re.search(r"\\x1b\[<0;\d+;\d+m", got)), "no SGR mouse release ESC[<0;x;ym reached the program: %s (%s)" % (got[:200], placed))
     r.check(got.endswith("k'") or got.endswith('k"'), "the key typed after the click is not last/intact: %s" % got[-80:])
     local_cmd_exact(ctx, r, "ca_mouse_after")
 

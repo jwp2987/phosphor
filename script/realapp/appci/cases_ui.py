@@ -194,6 +194,8 @@ def _hook_word(ctx, token, since=None):
     (an app without the hook, or a token the hook never saw drawn): the caller falls back to OCR and says so (hook_missing_note)"""
     if getattr(ctx.be, "name", None) not in ("wayland", "x11"):
         return None
+    if os.environ.get("APPCI_NO_FIND_HOOK") == "1":       # kill switch: positions by OCR only, as every Linux run before round 14 was (the launcher never armed the hook)
+        return None
     pid = ctx.be.pid_fn() if getattr(ctx.be, "pid_fn", None) else None
     if not pid:
         return None

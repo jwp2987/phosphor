@@ -385,9 +385,28 @@ USER_COMMAND_WRITE_RE = re.compile(r'hop=pty_write_bytes class=UserCommand\b[^\n
 
 
 def approved_command_writes(log_text, tok):
-    """how many of the app's pty writes of a command (`hop=pty_write_bytes class=UserCommand ... bytes="..."`, the agent's wrapper among them) carry
-    `tok`; needs WARP_INPUT_ORDER_LOG_TEXT=1 (the harness sets it on every backend)"""
-    return sum(1 for m in USER_COMMAND_WRITE_RE.finditer(log_text or "") if tok in m.group(1))
+    """how many times `tok` occurs in the app's pty writes of a command (`hop=pty_write_bytes class=UserCommand ... bytes="..."`, the agent's wrapper
+    among them); needs WARP_INPUT_ORDER_LOG_TEXT=1 (the harness sets it on every backend).
+    #2069: counted over the writes JOINED in log order, not per line. A ConPTY pipe may take part of a buffer (the app logs `pty_write_partial` and one
+    pty_write_bytes line per accepted piece), so a wrapper of several hundred bytes can have the token split across two lines; per line that read as 0
+    writes although the command ran once (r18u28 Git Bash: effect file exact, 0 counted). The bytes are escape_ascii text, byte by byte, so joining the
+    pieces is the escaped text of the joined bytes. A command written twice still counts 2."""
+    return "".join(m.group(1) for m in USER_COMMAND_WRITE_RE.finditer(log_text or "")).count(tok)
+
+
+ANY_CLASS_WRITE_RE = re.compile(r'hop=pty_write_bytes class=(\w+)\b[^\n]*?\bbytes=("[^\n]*"|<[^>\n]*>)')
+
+
+def token_write_classes(log_text, tok):
+    """{class: lines} of every pty write line of ANY class whose shown bytes carry `tok`, plus '<not shown>' for writes logged by size only: what a
+    failed count reports, so the next run says whether the command went out under another class, in pieces, or with its text not logged"""
+    out = {}
+    for m in ANY_CLASS_WRITE_RE.finditer(log_text or ""):
+        if tok in m.group(2):
+            out[m.group(1)] = out.get(m.group(1), 0) + 1
+        elif m.group(2).startswith("<"):
+            out["<not shown>"] = out.get("<not shown>", 0) + 1
+    return out
 
 
 def pty_write_hop_logged(log_text):
@@ -401,7 +420,8 @@ def approved_once_verdict(log_text, tok, effect_lines):
     (`echo tok >> file`, one line per run) is the count: exactly [tok] = once; no line or two lines fail."""
     if pty_write_hop_logged(log_text):
         n = approved_command_writes(log_text, tok)
-        return n == 1, "the app's pty writes (hop=pty_write_bytes class=UserCommand)", "%d pty writes carrying %s" % (n, tok)
+        return n == 1, "the app's pty writes (hop=pty_write_bytes class=UserCommand)", "%d pty writes carrying %s (writes of any class carrying it: %s)" % (
+            n, tok, token_write_classes(log_text, tok) or "none")
     got = list(effect_lines or [])
     return got == [tok], "the command's effect file (this platform logs no pty_write_bytes hop)", "effect file lines %r, expected [%r]" % (got, tok)
 
