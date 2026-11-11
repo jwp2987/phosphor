@@ -277,8 +277,11 @@ def main():
     # The fake pass (owner rule 2026-11-09): in the fix tier the PROVING cases that need the scripted fake model (cases.PROVING_FAKE) run in their OWN app
     # launch ("agent@fake", own profile) whose provider is a local fake_model.py; the other passes keep the configured provider, so the SMOKE agent cases are
     # undisturbed. No fake pass when the whole run already is the fake (APPCI_FAKE_MODEL_ACTIVE), nor when --cases is explicit. A real provider is never sent anything by these cases.
-    fake_plan = fake_pass_plan(a.cases if os.environ.get("APPCI_TIER") == "smoke" and not explicit_cases else None, a.modes.split(","),
-                              os.environ.get("APPCI_FAKE_MODEL_ACTIVE") == "1")
+    # Targeted tier (owner 2026-11-11, ci_seq.py --tier targeted): the run names its cases itself, and a PROVING_FAKE case among them still needs the
+    # scripted model, so the fake pass is planned from the SELECTED names (a glob in --cases is resolved by then). Any other explicit --cases: no fake pass.
+    tier_env = os.environ.get("APPCI_TIER")
+    fake_src = a.cases if tier_env == "smoke" and not explicit_cases else (",".join(c["name"] for c in sel) if tier_env == "targeted" else None)
+    fake_plan = fake_pass_plan(fake_src, a.modes.split(","), os.environ.get("APPCI_FAKE_MODEL_ACTIVE") == "1")
     fake_server = [None]
     if fake_plan:
         passes += [("agent", p, True) for p in panes]

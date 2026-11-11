@@ -1167,7 +1167,7 @@ exercised outside a running job when this was written: the first real reuse run 
 
 ### 2.9 Test tiers (what a push costs)
 
-One driver, three sizes: `python3 script/ci/ci_seq.py build/<ref> --tier fix|candidate|release [--platforms linux,macos,windows]
+One driver, three sizes and the targeted proof run (below the table): `python3 script/ci/ci_seq.py build/<ref> --tier fix|candidate|release [--platforms linux,macos,windows]
 [--tests '<nextest filterset>'] [--skip job ...] [--no-reuse] [--dry-run]` (default tier `fix`; bare job names after the ref still mean `--skip`).
 It plays only manual jobs that have not run yet (never a re-run), passes per-job variables (`TEST_FILTER`, `APPCI_TIER`) through the
 play API, and ends with a table of job, status, VERDICT (PASS / FAIL / SKIPPED / INFO) and minutes, plus an `overall:` line. The exit code is non-zero when ANY
@@ -1181,6 +1181,69 @@ the table, never a pass, and it does not fail the tier. A job the plan names tha
 | `fix` | `check-linux`; `test-linux` with a nextest filter; `test-warpui-core` only if its crate changed; `test-workspace-rest` on every code change (#1496); builds for the chosen platforms only; app tests in SMOKE + PROVING mode on those platforms (the PROVING cases, incl. the `agent@fake` pass). On the Linux box, one at a time and in this order: `app-test-linux-wayland`, `app-test-linux-x11` in both modes (round 15, #2058), `app-test-lab-linux` with the PROVING lab cases | ~1 h before PROVING; about 2.5 h on Linux while the PROVING list is long, and about as much again for the x11 pass (not measured; section 'Round 15: tier reach') | every push of a fix |
 | `candidate` | `check-linux`; all three suites unfiltered; all three builds; the FULL app matrix on every platform (both Linux passes); on macOS and Windows also the three unit suites (`test-<plat>`, `test-warpui-core-<plat>`, `test-workspace-rest-<plat>`), played BEFORE that platform's app tests, one at a time on the same machine (owner 2026-11-05: unit tests first); on the Linux box the Wayland/X11 app tests likewise wait for the box's three unit suites, and in the release tier every machine's heavy suites (loom, fuzz, bench, mutants) follow its app tests, so compile and mutation load never overlaps the latency and typing cases (r18u31). Round 15 (#2056, #2063, #2064): also `sshlab-image` and `lab-helper` right after `check-linux`; on the box after wayland and x11 the lab with every family (`app-test-lab-linux`, `LAB_CANDIDATE_MATRIX`) and `app-test-replay-linux`; on macOS and Windows the lab job (`app-test-lab-macos`, `app-test-lab-windows`, quick matrix; round 16, owner 2026-11-11: in the candidate AND release tiers only the `PROVING_LAB` globs, not every family) after that platform's app tests | ~6 h before round 15; the lab adds an estimated 3 to 6 h on the box and 2.5 to 4 h on each of macOS and Windows (not measured) | a batch of fixes is ready; nothing is "done" until a candidate passes |
 | `release` | candidate + `test-shuttle-loom`, `fuzz-smoke`, `bench`, `mutants`, `mutants-warpui-core` on the box, and the same five with the `-macos` and `-windows` suffix after each platform's unit suites (`fuzz-smoke-windows` is reported `unsupported on platform`, never played) | ~16 h (estimate; the first run records it) | before a numbered release (then also the manual checklist of section 5) |
+
+**The targeted tier: prove a round's fixes first, then run the whole harness (owner 2026-11-11; `docs/design/r10-r19-targeted.md`). Worked, unproven: only the self-tests and `--dry-run` ran; no pipeline was played when written.**
+Fixes that come out of a round are proven with a TARGETED run first: only the cases that failed, on the OS where they failed, plus the cases that touch the
+changed code. Only when that is green is the whole harness (fix / candidate) worth its hours.
+`python3 script/ci/ci_seq.py build/<ref> --tier targeted --cases-file FILE [--skip job ...] [--collect] [--dry-run]`.
+
+- **The cases file is the plan** (JSON; TOML with the same keys on Python 3.11+). `--platforms`, `--tests` and `--reuse-job` are refused with it.
+  ```json
+  {"platforms": {"linux-wayland": {"cases": ["tab_enter", "ssh_*"], "modes": ["agent"]},
+                 "windows": {"cases": ["big_paste"], "win_shells": ["gitbash"]},
+                 "macos": ["job_control"],
+                 "linux-lab": {"cases": ["lab_raw_key_arrival.*"], "lab_matrix": "quick"}},
+   "suites": {"linux": ["test-linux", "integration-linux"], "macos": []},
+   "filters": {"test-linux": "test(/terminal::view/)"}}
+  ```
+  Platforms: `linux-wayland`, `linux-x11`, `linux-lab`, `macos`, `macos-lab`, `windows`, `windows-lab` (the jobs `app-test-linux-wayland`, `app-test-linux-x11`,
+  `app-test-lab-linux`, `app-test-macos`, `app-test-lab-macos`, `app-test-windows`, `app-test-lab-windows`). A platform is a list of case names or globs, or an
+  object: `cases`; `modes` (terminal / agent -> `APPCI_MODES`); `win_shells` (Windows pane passes -> `APPCI_WIN_SHELLS`); `lab_matrix` (lab platforms ->
+  `APPCI_LAB_MATRIX`; default the candidate tier's matrix for that platform; an exactly named arm bypasses the matrix, a glob is filtered by it); `vars` (other
+  `APPCI_*` play-time variables). A `PROVING_FAKE` case named in the file gets its `agent@fake` pass as in the fix tier: with `APPCI_TIER=targeted` `run.py`
+  plans the fake pass from the selected names (any other explicit `--cases` run still has none).
+  `lab_*` names go under the `-lab` platforms and nowhere else; the replay is not targeted. `suites` is per machine (`linux`, `macos`, `windows`): unit,
+  integration and usage suite job names (`integration-linux` = its three shards). No entry for a machine that plays an app job = its three unit suites
+  (unit tests first); `[]` = none. `filters` gives a unit suite a nextest filterset (`TEST_FILTER`).
+- **A wrong file is an error (exit 2), never a smaller run:** an unknown key, platform, suite or variable, a name with a comma or a space, a lab case on a
+  non-lab platform (and the reverse), a filter for a suite the run does not play, or a file with nothing to play; every problem is named at once. A case name
+  the harness does not know is refused by `run.py` itself (#1508: a FAIL row, never an empty green selection).
+- **What it plays.** `check-linux` is waited for. Every platform with an app job BUILDS (no reuse, like candidate). On each machine, one job at a time:
+  the unit suites first, then ONLY the app jobs that have cases, in the order wayland, x11, lab. Each app job gets `APPCI_CASES` = the file's names, comma
+  joined, in the file's order, and `APPCI_TIER=targeted` (recorded as `meta.tier`). That is NOT `smoke`: a named case runs at full strength (the soak is 60
+  minutes, `md_viewer_big` runs), as in the candidate run where it failed. A lab job also gets the scripted model, and `sshlab-image` and `lab-helper` are
+  played first on the box. The Wayland job leaves out its fixed xwayland pass in a targeted run (that pass has its own case list). `app-test-windows` now
+  reads `APPCI_MODES` (it ignored it; Linux and macOS already read it).
+- **A platform without cases is not played and not failed.** Its jobs are rows with the status `not in this targeted run` and the verdict SKIPPED, and the
+  summary ends with `TARGETED run: PASS here proves only the named cases and suites.` Verdicts are otherwise the same as in every tier (FAIL, NEEDS,
+  OFFLINE, TIMEOUT; an app job whose build failed is `not run`, a FAIL; a green app job that judged nothing is a FAIL). A targeted PASS is not a release
+  gate and not a candidate: `check_release_gate.py` still wants `tier=release` rows.
+- **Results are kept like every tier's.** `--collect` (or the printed command) runs `collect_results.py <pipeline> --tier targeted --cases-file FILE`:
+  the manifest has `tier: targeted` and the file's content under `targeted`, the README says what was asked for, and the run is committed under
+  `test-results/` as usual. A targeted run is never the baseline of a later run's app diff (it holds only its own cases); it is itself compared with the
+  last full run, so a case it proves shows under FIXED.
+- **Writing the file: `python3 script/ci/failed_cases.py <test-results/RUN | dir of saved traces> [...] [-o FILE] [--add PLATFORM=names] [--noref] [--no-unverifiable] [--proving PLATFORM] [--changed-since REF]`.**
+  Per platform the cases whose row was FAIL or UNVERIFIABLE (a `noref` row whose detail says UNVERIFIABLE; an inconclusive latency NOREF is not one),
+  with `modes` / `win_shells` = where those rows failed, and per machine its three unit suites plus every integration / usage suite that failed there
+  (a machine with no app case: only its failed suites). `--add windows=ssh_connect_typing,big_paste` adds related cases (the arm filters of that platform
+  are then lifted: an added case may need any pass); `--add linux=integration-linux` adds suites. Left out, and listed on stderr and under `info` in the
+  file: the follow-on rows `pane_not_local_after_*`, `pane_wedged_after_*`, `left_agent_mode_after_*` (they come back by themselves; the case they name
+  IS added), rows that are no registered case (`preflight`, `needs_owner`, ... and arm names that no longer exist), the xwayland pass, the replay, and app
+  jobs that failed without a single case row (read their trace). It reads a collected run's `manifest.json`, or a directory of `<job>.txt` traces,
+  `<job>.fails` name lists, `app-fails.txt` and `failed-jobs.txt`. Always read the file and `--dry-run` it before playing: it is a proposal, the related
+  cases are yours to add.
+- **The rest of a round's targeted file (coordinator / owner 2026-11-11).** `--noref` also takes every other NOREF row (nothing was judged). `--proving
+  linux-x11` is for a job with NO result in the round: its whole `PROVING` list (a `-lab` platform: the `PROVING_LAB` globs with the quick matrix, what the
+  fix tier's lab job plays); when the job's result lands, run the helper again with its trace and its failures are added. `--changed-since <commit>` adds
+  every case that was ADDED or CHANGED since that commit and so has never played: the `@case` functions of `script/realapp/appci/cases*.py` whose own
+  code differs, or that use a changed helper or table of the same file (also through another helper), to `--changed-platforms` (default
+  `linux-wayland,macos,windows`; a case skips itself where it cannot run). It cannot see generated names (lab arms) or a change in another file
+  (`winmap.py`, `backend.py`, `run.py`): those files are listed under `info.changed_files_not_mapped`, and their cases are yours to `--add`. An added
+  name that matches no registered case is refused. Why each added list is in the file is kept under `info.added`, and `ci_seq.py --dry-run` (and the
+  run itself) prints it before the plan, with what was left out (`dropped`, `jobs_without_rows`, `not_targeted`, `changed_files_not_mapped`).
+- **Self-tests:** `ci_seq.py --self-test` (a fake pipeline: only the listed jobs are played, unit suites before the app job, a platform with no cases is not
+  played and not failed, `APPCI_CASES` passed exactly, a failed build, a missing lab image, every refused file), `failed_cases.py --self-test` (both in the
+  `guards` job) and `collect_results.py --self-test` (tier and baseline rows).
 
 **New tests run in the fix tier first (owner rule, standing, 2026-11-09).** Every NEW test runs in the fix tier until it has passed; only then does it graduate to the candidate / full tier.
 

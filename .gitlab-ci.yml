@@ -127,6 +127,8 @@ guards:
     # #2122: the integration jobs' evidence step (bounds, the skip lines) and the collector's parsers; both pure.
     - python3 script/ci/integ_evidence.py --self-test
     - python3 script/ci/collect_results.py --self-test
+    # the targeted tier's cases-file writer (pure: fixed rows, no network, no harness import): what it writes must be a file ci_seq.py accepts
+    - python3 script/ci/failed_cases.py --self-test
     # #1495: the release gate's offline fixtures (pass, failed job, wrong sha / tier, KNOWN, NOREF, missing platform).
     - python3 script/ci/test_check_release_gate.py
     # Large deletions. There are no pull requests here, so the base is the
@@ -1307,7 +1309,8 @@ app-test-linux-wayland:
   script:
     - rc=0
     - script/realapp/linux/wayland_session.sh --mode wayland --dist dist --out "$CI_PROJECT_DIR/appci-out/wayland" || rc=$?
-    - 'if [ "${APPCI_TIER:-}" = smoke ]; then echo "APPCI_TIER=smoke: skipping the xwayland pass"; exit $rc; fi'
+    # targeted (owner 2026-11-11, ci_seq.py --tier targeted): the job plays only the cases it was given (APPCI_CASES); the xwayland pass has its own fixed list
+    - 'if [ "${APPCI_TIER:-}" = smoke ] || [ "${APPCI_TIER:-}" = targeted ]; then echo "APPCI_TIER=${APPCI_TIER}: skipping the xwayland pass"; exit $rc; fi'
     - script/realapp/linux/wayland_session.sh --mode xwayland --dist dist --out "$CI_PROJECT_DIR/appci-out/xwayland" --cases fast_typing,paste_instant_enter,tab_enter,ctrl_c_d,latency_enter || { r=$?; [ $r -gt $rc ] && rc=$r; }
     - exit $rc
   after_script:
