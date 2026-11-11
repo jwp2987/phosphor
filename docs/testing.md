@@ -324,6 +324,8 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK=0` | `general.show_warning_before_quitting = false` again also switches off the question about unsaved code editor edits on quit and close (#2092; default: those edits always ask, and that dialog has no "Don't show again"). `app/src/quit_warning/mod_tests.rs` |
 | `PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0` | a save while the code editor's disk-conflict banner shows overwrites the file without asking again (#2092; default: it asks Overwrite / Reload / Cancel). `app/src/code/save_conflict_tests.rs`; app case `editor_daily` |
 | `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0` | Enter on the code editor's overwrite question is its first button, Overwrite, again, and Tab does nothing there (owner decision 2026-11-11; default: the question comes up with Cancel selected, Enter cancels, Tab then Enter overwrites). `app/src/code/save_conflict_tests.rs`, `app/src/workspace/native_modal_tests.rs`; app case `editor_daily` |
+| `PHOSPHOR_MD_FIRST_LAYOUT_HOLD=0` | the markdown viewer lays its file out when it arrives again, at whatever width its render model has (0 before the first frame: one glyph per line until the debounced resize), instead of holding the layout until its element has a width (#2028). Unit: `test_first_size_hold_*` (`crates/editor/src/render/mod_tests.rs`), `test_file_notebook_holds_layout_until_its_first_size`, `test_first_layout_hold_kill_switch_is_the_exact_value_zero`; app case `md_viewer_first_frame` (its control arm runs with this switch) |
+| `PHOSPHOR_TEST_GPU_LOSE_DEVICE_FILE=<abs path>/phosphor-test-lose-gpu-device` | TEST HOOK, never set in a normal run (#2091). The winit event loop (Linux, Windows) tries to remove that file at every redraw; the redraw that removes it reports the GPU device as lost instead of drawing, once per file, and the app's real lost-device handling runs (renderer dropped and rebuilt). Ignored unless the path is absolute and ends in exactly that file name (the app deletes the file). Logs `TEST HOOK armed (..)` at start and `TEST HOOK (..): reporting the GPU device as lost for this frame`. Unit: `draw_retry_tests.rs` `test_device_loss_hook_*`; app case `gpu_lost_device_recovers` |
 | `PHOSPHOR_BASH_HOOK_HEX_CACHE=0` | read by the bash bootstrap at every prompt, in the shell that runs the hooks (set it in that shell, local or remote; not an app variable): CommandFinished, the Precmd head and the Preexec tail are hex-encoded whole on every prompt again instead of from the per-session cached pieces (#2030). The bytes sent are the same either way (`test_bootstrap_hook_equivalence`, "bash hook hex cache") |
 | `PHOSPHOR_PTY_WRITE_QUEUE=0` | back to timer-chained pty writes instead of the writer-owned job queue (#1384) |
 | `PHOSPHOR_PTY_COALESCE=0` | no key-write coalescing in the pty event loop |
@@ -3025,6 +3027,8 @@ one row per lab family, for every arm of it; the lab harness's own two settings 
 | `desktop_notification_agent_question` | fix | - | notifications | providers | as desktop_notification, with the agent's needs-attention notification on |
 | `drag_drop_file` | fix | autosuggestions = true, completions_while_typing = true | - | - |  |
 | `ime_compose` | fix | autosuggestions = true, completions_while_typing = true | - | - |  |
+| `md_viewer_first_frame` | fix | keybindings_file = absent | - | - | as md_viewer: opened through the app's own open-file path; judged from the app log (the viewer's first-size line, no image painted without a width), OCR of the heading where there is an engine |
+| `gpu_lost_device_recovers` | fix | - | - | - | one launch compared with itself before and after the rebuilt renderer, so the seed's theme and text size cancel out; judged from the app log (the hook's line, the rebuild, frames) and two screenshots |
 | `rollover` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
 | `expert_fuzz` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
 | `arrows_behind_paste` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
@@ -6571,7 +6575,7 @@ Outcomes that are not a verdict, each stated on the row:
 - a node, but the session offers no hardware adapter the app can present to (Xvfb has no DRI3): SKIP, NEEDS: the headless-sway job with `WLR_RENDERER=gles2`, and Mesa's driver packages;
 - a presentable hardware adapter listed and a software one used: FAIL;
 - fewer than 30 frames, no `Surface configured:` line, a software launch that did not come up or did not take the software rasteriser, a control pair that does not differ: NOREF with the reason;
-- "a lost device recovers" (the spec's third oracle; #2091): `NOT RUN:` on every row. NEEDS: a way to take the device away that the CI user has (the kernel's reset switches need root) or a test hook in the renderer. The recovery policy is unit-tested (`draw_retry_tests.rs`).
+- "a lost device recovers" (the spec's third oracle; #2091): built in round 17 as its own case, `gpu_lost_device_recovers` (see "Round 17 misc"); every `gpu_real_render` row says so. It was `NOT RUN:` on every row before. NEEDS: nothing on the machine (the app's test hook reports the loss; the kernel's reset switches need root and are not used).
 **T49, the soak on macOS and Windows (`appci/procsample.py`).** `procsample.sample(ctx)` returns the app's pids, memory in KiB and CPU seconds: `/proc` on Linux (the same figures as before), `ps -axo pid=,rss=,time=,command=` filtered to the job's private bundle on macOS (the main process and its terminal-server helper; before, one process), and on Windows the app's Win32 job for the exact pids plus `GetProcessTimes` / `GetProcessMemoryInfo` for those running the app's exe (the calls `Get-Process` wraps; without a job, one `Get-Process` by the exe path). The Windows memory figure is private bytes (#1340: the working set is trimmed and shared).
 - Tiers: `APPCI_SOAK_MIN` wins; else 10 minutes in the fix tier and 60 elsewhere (`cases_robust.soak_minutes`, also the case's time limit in `run.py`). In the fix tier the soak runs on macOS (both modes) and on Windows in two of the four passes (terminal in the PowerShell pane, agent in the Git Bash pane: each mode and each pane once); the other two Windows passes and Linux SKIP with that reason. The full tier is unchanged on Linux and soaks every pass on macOS and Windows.
 - A run under 18 minutes takes a second memory sample at each minute boundary, so the growth rule (3 windows of 5 after a warm-up of 3) still gives a verdict in 10 minutes. The thresholds are the 60-minute ones.
@@ -6885,3 +6889,43 @@ Proof on the wire: `test_bootstrap_hook_equivalence` ("bash hook hex cache", 2.4
 `lab_enter_start.bash.150.nohelper` metrics `enter_to_next_prompt_app_ms` (r13a median 107.1 ms, zsh 82.0 ms) and `enter_start_app_ms` (85.7 / 81.5);
 the next lab run should show the bash next-prompt figure lower and the command-start figure about the same. No new app case: the existing lab
 case measures exactly this and the harness cannot see inside the remote shell otherwise.
+
+**#2028: `md_viewer_first_frame` (`appci/cases_r17_misc.py`; `PROVING`; Linux, macOS, both Windows panes; both modes).** The markdown viewer
+(`FileNotebookView`) now holds its layout until its element has given the render model a width (`RenderState::hold_layout_until_first_size`): edits
+that arrive before the first frame are queued and laid out by the first `set_viewport_size` with a width above zero, which logs
+`rich text: first size <w>x<h> released <n> held layout edit(s)` and asks for no resize. Before, the file was shaped at width 0 and the first frame
+showed one glyph per line for at least the 150 ms resize debounce. The case writes a markdown file with a heading, an image (a PNG it builds itself)
+and a 120-word paragraph, hands it to the running app (`open_file_in_app`) and judges the app log since the open: the first-size line with a width
+above zero, and no `image paint with suspicious size` line (the issue's own evidence). The heading is read by OCR where there is an engine (a note
+without one); the broken picture lasted too short to be caught by a screenshot, so the log is the oracle. Control (Linux launcher only): the app
+relaunched with `PHOSPHOR_MD_FIRST_LAYOUT_HOLD=0` opens the same file and must NOT log the first-size line; how many suspicious image paints it logs
+there is the metric `control_suspicious_image_paints` (it depends on whether the file arrives before the first frame, so it is not a verdict). The
+case then relaunches with the default environment. A build before the fix FAILS the case ("no `rich text: first size` line"). Not covered: the code
+pane's rendered remote markdown (`app/src/code/view.rs`), which very likely has the same first frame and does not hold (not opted in; see the design
+note). Unit tests: `crates/editor/src/render/mod_tests.rs` `test_first_size_hold_lays_out_at_the_first_width_and_not_before` (nothing laid out and no
+version published while holding; a zero width keeps the hold and asks for no resize; the first width lays out, reports once, asks for no resize; one-shot
+afterwards), `test_without_the_first_size_hold_an_edit_is_laid_out_on_arrival` (control), `test_first_size_hold_is_refused_where_it_cannot_apply`;
+`app/src/notebooks/file/mod_tests.rs` `test_file_notebook_holds_layout_until_its_first_size`, `test_first_layout_hold_kill_switch_is_the_exact_value_zero`.
+**Expectation change in an existing test, stated:** `test_file_notebook_mermaid_blocks_default_to_rendered` read the laid-out content right after
+`layout_complete()`; with the hold the content exists only after the viewer's first frame, so the test now also waits (bounded, 2000 yields) for the
+hold to be released. Its assertions are unchanged.
+
+**#2091: `gpu_lost_device_recovers` (`appci/cases_r15_w5c.py`; `PROVING`; Linux, both modes).** The third oracle of T48. The app is relaunched with
+`PHOSPHOR_TEST_GPU_LOSE_DEVICE_FILE=<work dir>/phosphor-test-lose-gpu-device` (2.6); the launch log must have `TEST HOOK armed` (else UNVERIFIABLE:
+a build without the hook). The case clears the pane (control picture), draws the 24-row pattern of `gpu_real_render` (reference picture), creates the
+trigger file and, if no redraw took it within 1.5 s, types one key. Judged from the app log after that: the hook's line exactly once and the file
+gone; `Recreating the renderer` after it; a `Surface configured:` line after that (the rebuilt renderer; its adapter is on the row); at least one
+`hop=frame_drawn` after the rebuild; the app alive and no panic. Then one more key and Backspace for every key typed, a settled screenshot, and the
+screen must equal the reference within `APPCI_GPU_SHOT_DIFF` (2 %), with the cleared pane against the pattern differing by 5x that (else
+UNVERIFIABLE). It runs on whatever adapter the launch uses: the render node where the session can present to it, the software rasteriser under Xvfb;
+the rebuild is the app's own code either way. Metric and note, not a verdict: `frames_after_rebuild_before_input`, the frames drawn in the 2 s after
+the rebuild before the next key. The lost-device decision asks for no retry, so 0 is expected on an idle window: the frame that hit the loss waits for
+the next event (#2101, filed, not worked). `gpu_real_render` rows now say where the third oracle is judged instead of `NOT RUN:`. Unit tests:
+`draw_retry_tests.rs` `test_device_loss_hook_is_off_unless_the_variable_names_its_own_file`, `test_device_loss_hook_fires_once_per_trigger_file`,
+`the_error_the_test_hook_reports_rebuilds_the_renderer`.
+
+Self-tests: `appci/selftest_r17_misc.py` (registered at the tail of `selftest.py`): both verdicts with the input each defect produces, the PNG
+fixture, and the Rust strings and order the cases read (`r17_*`).
+Run: `python3 script/realapp/appci/run.py --cases md_viewer_first_frame,gpu_lost_device_recovers`.
+What the next run should show: `md_viewer_first_frame` PASS in both modes with a first size near the pane size and `suspicious_image_paints` 0;
+`gpu_lost_device_recovers` PASS in both modes on Wayland and X11 with the adapter named, and `frames_after_rebuild_before_input` (0 confirms #2101).

@@ -12,7 +12,7 @@ BOTH = {
     "ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "ssh_failing_not_local",
     "idle_cpu", "enter_loss_control", "latency_enter", "latency_paint", "latency_key_views_ab", "tabs_two_windows", "tabs_streaming",
     "paste_multiline_prompt", "intl_wide_type", "intl_wide_paste", "intl_wide_edit", "intl_altgr_bash", "intl_altgr_ps",
-    "cb_no_autoupdate", "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
+    "cb_no_autoupdate", "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "md_viewer_first_frame", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
     "editor_edit_save", "editor_paste", "editor_save_mixed_endings",         # #1544: phosphor.exe <file URL> reaches the running instance over its named pipe (cases.open_file_in_windows_app)
     "upgrade_over_previous",                 # #1546: skips itself without APPCI_PREV_FIXTURE / APPCI_PREV_BIN
     "startup_shell_pane",                    # #1534: itself skips outside a startup_shell_override pass
@@ -233,6 +233,9 @@ BOTH.add("soak")
 # T48: the comparison is the machine's DRM render node against Mesa's software rasteriser, both chosen through Linux environment variables.
 NOT_WINDOWS["gpu_real_render"] = ("T48: Linux only by design: it compares the app on the machine's DRM render node (/dev/dri) with a forced Mesa software launch; "
                                   "the Windows VM has no GPU and renders on WARP (no machine change short of a GPU passthrough makes it run here)")
+# #2091: the lost-device hook is in the winit event loop (so Windows has it), but the case needs a launcher that can relaunch with an environment.
+NOT_WINDOWS["gpu_lost_device_recovers"] = ("#2091: Linux only by design: the case relaunches the app with PHOSPHOR_TEST_GPU_LOSE_DEVICE_FILE, and the Windows "
+                                           "launcher has no per-launch environment; the recovery policy is unit-tested on every platform (draw_retry_tests.rs)")
 
 
 # #1534: the startup_shell_override passes (APPCI_WIN_SHELLS="pwsh7,cmd", never in the default list: cmd.exe and pwsh 7 are not installed on every VM).

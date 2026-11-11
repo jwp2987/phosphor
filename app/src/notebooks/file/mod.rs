@@ -267,6 +267,25 @@ pub fn init(app: &mut AppContext) {
     ])
 }
 
+/// `PHOSPHOR_MD_FIRST_LAYOUT_HOLD=0` turns the viewer's first-size layout hold off (#2028): the
+/// file is then laid out when it arrives, at whatever width the render model has (0 before the
+/// first frame), and re-laid out by the debounced resize, as before.
+fn first_layout_hold_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        first_layout_hold_from(
+            std::env::var("PHOSPHOR_MD_FIRST_LAYOUT_HOLD")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// Only the exact value `0` turns the hold off.
+fn first_layout_hold_from(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
 impl FileNotebookView {
     /// Create a new file notebook view, with no open file.
     pub fn new(ctx: &mut ViewContext<Self>) -> Self {
@@ -280,6 +299,11 @@ impl FileNotebookView {
             let styles = rich_text_styles(Appearance::as_ref(ctx), FontSettings::as_ref(ctx));
             let mut model = NotebooksEditorModel::new(styles, window_id, ctx);
             model.set_default_mermaid_display_mode(MarkdownDisplayMode::Rendered, ctx);
+            // #2028: the file usually arrives before the pane's first frame, when the render
+            // model still has no width; laid out then, the first frame shows one glyph per line.
+            if first_layout_hold_enabled() {
+                model.hold_layout_until_first_size(ctx);
+            }
             model
         });
         let editor = ctx.add_typed_action_view(|ctx| {

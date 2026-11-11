@@ -205,6 +205,10 @@ PROVING_LAB += ("lab_agent_suggestions_ssh.*",)
 # round 15 wave 4, desktop integration (docs/design/r14-test-gaps.md T35 / T37 / T38 / T39, design docs/design/r15-w4desk.md; #2075, #2078): display
 # scale 1.25 / 1.5 / 2 and a second output, desktop notifications (a recording service on the app's private bus), a real file drag, a real input method
 PROVING += ("scale_matrix", "desktop_notification", "desktop_notification_agent_question", "drag_drop_file", "ime_compose")
+# round 17 misc (docs/design/r17-misc.md). #2028: md_viewer_first_frame, a markdown file with an image is laid out at the pane width from its first
+# content frame (the app's first-size line, no image painted without a width; cases_r17_misc.py). #2091: gpu_lost_device_recovers, the third oracle
+# of T48: the renderer's test hook reports the device as lost once and the app must rebuild, draw again and show the same screen (cases_r15_w5c.py)
+PROVING += ("md_viewer_first_frame", "gpu_lost_device_recovers")
 PROVING_FAKE += ("desktop_notification_agent_question",)
 # Lab families the fix tier's lab job does NOT play, each with the reason (self-test r15_every_lab_family_is_in_a_tier: a lab family is in PROVING_LAB
 # or here, so a new one cannot be registered and never played, which is what #2063 found for 18 of them).
@@ -6726,3 +6730,4 @@ import cases_desk  # noqa: E402,F401  (r15 wave 4, T35/T37/T38/T39: scale_matrix
 import cases_macptr  # noqa: E402,F401  (r15 wave 4, #2061: mac_pointer_chord_proof)
 import cases_install  # noqa: E402,F401  (#2076 / #1546, round 15 wave 5 part B: installer_smoke, upgrade_from_previous_release)
 import cases_r15_w5a  # noqa: E402,F401  (r15 wave 5 part A, T42/T45/T50: keychain_startup_macos, keybinding_rebind, editor_daily)
+import cases_r17_misc  # noqa: E402,F401  (round 17 misc, #2028: md_viewer_first_frame; #2091's gpu_lost_device_recovers is in cases_r15_w5c.py)

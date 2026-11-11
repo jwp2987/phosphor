@@ -341,10 +341,11 @@ def w5c_gpu_adapter_and_frame_judges():
     assert G.SOFTWARE_ENV == {"WGPU_BACKEND": "gl", "LIBGL_ALWAYS_SOFTWARE": "1"}
     mod = open(os.path.join(REPO, "crates", "warpui", "src", "rendering", "wgpu", "mod.rs"), encoding="utf-8").read()
     assert "wgpu::Backends::from_env()" in mod, "the app no longer reads WGPU_BACKEND: the software launch would not be forced"
-    assert "NOT RUN" in G.LOST_DEVICE_NOT_RUN and "NEEDS:" in G.LOST_DEVICE_NOT_RUN
+    # #2091 (round 17): the third oracle is built (gpu_lost_device_recovers), so the text on every row names that case instead of "NOT RUN".
+    assert "gpu_lost_device_recovers" in G.LOST_DEVICE_ELSEWHERE and "NOT RUN" not in G.LOST_DEVICE_ELSEWHERE
     src = open(os.path.join(HERE, "cases_r15_w5c.py"), encoding="utf-8").read()
-    body = src[src.index("def c_gpu_real_render"):]
-    assert body.count("NEEDS:") >= 3 and "r.note(LOST_DEVICE_NOT_RUN)" in body, "every way the case cannot run names the machine change, and the unrun oracle is on every row"
+    body = src[src.index("def c_gpu_real_render"):src.index('@case("gpu_lost_device_recovers"')]
+    assert body.count("NEEDS:") >= 3 and "r.note(LOST_DEVICE_ELSEWHERE)" in body, "every way the case cannot run names the machine change, and every row says where the third oracle is judged"
 
 
 @check

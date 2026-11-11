@@ -496,6 +496,15 @@ pub struct RenderState {
     hydration: hydration::HydrationState,
 
     pending_edits: Mutex<Vec<PendingLayout>>,
+    /// #2028: this model lays nothing out until its element has given it a width above zero
+    /// (see [`Self::hold_layout_until_first_size`]). One-shot: `first_size_seen` ends it.
+    hold_layout_until_first_size: bool,
+    /// A viewport width above zero has been stored at least once.
+    first_size_seen: bool,
+    /// The buffer version of the newest edit held by the first-size hold. It becomes
+    /// `next_render_version` when the held edits are laid out, not when they arrive: until then
+    /// the element must not report that content as laid out.
+    held_buffer_version: Option<BufferVersion>,
     pending_selection_change: Mutex<Option<PendingSelectionUpdate>>,
     /// A scroll fraction awaiting layout. The content height isn't known until element layout
     /// completes, so the fraction is applied only once content at or past its `minimum_version`
@@ -2236,6 +2245,9 @@ impl RenderState {
             lazy_layout,
             hydration: Default::default(),
             pending_edits: Mutex::new(Vec::new()),
+            hold_layout_until_first_size: false,
+            first_size_seen: false,
+            held_buffer_version: None,
             #[cfg(any(test, feature = "test-util"))]
             outstanding_layouts: Default::default(),
             pending_selection_change: Mutex::new(None),
@@ -2414,6 +2426,68 @@ impl RenderState {
 
     pub fn width(&self) -> Pixels {
         self.content.borrow().summary().width
+    }
+
+    /// #2028: lay nothing out until the element has given this model a width above zero.
+    ///
+    /// A new model's viewport is 0 x 0 until its element's first `after_layout`. Without the hold
+    /// an eager (non-lazy) model shapes every edit that arrives before then at width 0: one glyph
+    /// per line, block items with a negative content width, and that is what the first frame
+    /// paints, until the debounced resize re-lays it out. With the hold, edits and temporary
+    /// blocks that arrive before the first size are queued (in arrival order, in the queue the
+    /// lazy mode uses) and laid out by [`Self::set_viewport_size`] the moment the width is known.
+    /// The first frame then shows the empty document and the next one the content at the pane
+    /// width.
+    ///
+    /// Call it before the first edit, on a model whose element WILL be laid out: a model that is
+    /// never shown keeps its edits queued. No effect on a lazy model (it already lays out at
+    /// element layout time) or once a size has been seen.
+    pub fn hold_layout_until_first_size(&mut self) {
+        if !self.lazy_layout && !self.first_size_seen {
+            self.hold_layout_until_first_size = true;
+        }
+    }
+
+    /// Whether edits are being queued because no width has been stored yet (#2028).
+    pub fn holding_layout_for_first_size(&self) -> bool {
+        self.hold_layout_until_first_size && !self.first_size_seen
+    }
+
+    /// Lays out what the first-size hold queued, at the width that was just stored.
+    fn release_first_size_hold(&mut self, ctx: &mut ModelContext<Self>) {
+        self.first_size_seen = true;
+        let held = mem::take(&mut *self.pending_edits.lock());
+        let held_version = self.held_buffer_version.take();
+        log::info!(
+            "rich text: first size {}x{} released {} held layout edit(s)",
+            self.viewport.width().as_f32(),
+            self.viewport.height().as_f32(),
+            held.len()
+        );
+        if held.is_empty() {
+            // No content was waiting; a selection that waited applies to what is there.
+            self.flush_pending_selection_update(None);
+            ctx.notify();
+            return;
+        }
+        for edit in held {
+            match edit {
+                PendingLayout::Edit {
+                    delta,
+                    hidden_ranges,
+                } => self.layout_edit_delta(delta, hidden_ranges, ctx),
+                PendingLayout::TemporaryBlocks(blocks) => self.layout_temporary_blocks(blocks, ctx),
+            }
+        }
+        self.update_content_sizing();
+        // `None` (only temporary blocks were held) applies a waiting selection unconditionally.
+        self.flush_pending_selection_update(held_version);
+        if let Some(version) = held_version {
+            self.buffer_version.borrow_mut().next_render_version = Some(version);
+        }
+        self.hydrate_pinned(ctx);
+        ctx.emit(RenderEvent::LayoutUpdated);
+        ctx.notify();
     }
 
     pub fn next_render_buffer_version(&self) -> Option<BufferVersion> {
@@ -2695,6 +2769,9 @@ impl RenderState {
             .y()
             .approx_ne(self.viewport.height().as_f32(), UNIT_MARGIN);
 
+        // #2028: the first width above zero of a model that held its layout for it.
+        let first_size = self.holding_layout_for_first_size() && size_info.viewport_size.x() > 0.;
+
         self.viewport
             .set_size(size_info.viewport_size, self.width(), self.height());
 
@@ -2703,7 +2780,12 @@ impl RenderState {
         // In order to do this, we need to:
         // - Extract debouncing logic from the main app crate
         // - Support text layout outside the Element lifecycle
-        if size_info.needs_layout {
+        if first_size {
+            // Nothing was laid out at the old width (0), so there is nothing to redo: lay the
+            // held edits out now, at this width, instead of asking for a (debounced) resize.
+            self.release_first_size_hold(ctx);
+        } else if size_info.needs_layout && !self.holding_layout_for_first_size() {
+            // (A model still holding for its first size has nothing laid out to resize.)
             ctx.emit(RenderEvent::NeedsResize);
         }
 
@@ -2814,6 +2896,7 @@ impl RenderState {
         self.decorations = Default::default();
         *self.selections.get_mut() = Default::default();
         self.pending_edits.lock().clear();
+        self.held_buffer_version = None;
         *self.pending_selection_change.lock() = None;
         self.hydration = Default::default();
     }
@@ -2924,7 +3007,11 @@ impl RenderState {
                     // If the version for the selection is newer than the last version we've rendered, then mark it as pending and apply it on our next layout
                     // Otherwise immediately apply it.
                     let active_version = self.buffer_version.borrow().last_rendered_version;
-                    if active_version.is_some_and(|v| v < buffer_version) {
+                    // #2028: while the first-size hold has the content queued, a selection cannot
+                    // be applied either (it would index the empty document); it waits with it.
+                    if self.holding_layout_for_first_size()
+                        || active_version.is_some_and(|v| v < buffer_version)
+                    {
                         *self.pending_selection_change.lock() = Some(PendingSelectionUpdate {
                             selection: selections,
                             buffer_version,
@@ -2996,7 +3083,7 @@ impl RenderState {
             LayoutAction::LayoutTemporaryBlock(blocks) => {
                 // If we are performing layout lazily, push the temporary blocks to the pending edits queue which is flushed
                 // at editor element layout time
-                if self.lazy_layout {
+                if self.lazy_layout || self.holding_layout_for_first_size() {
                     self.pending_edits
                         .lock()
                         .push(PendingLayout::TemporaryBlocks(blocks));
@@ -3020,6 +3107,20 @@ impl RenderState {
 
                 // If we are performing layout lazily, push the delta to the pending edits queue which is flushed
                 // at editor element layout time.
+                if self.holding_layout_for_first_size() {
+                    // #2028: no width yet. Queued, and published as the next render version
+                    // only when `release_first_size_hold` lays it out.
+                    self.pending_edits.lock().push(PendingLayout::Edit {
+                        delta,
+                        hidden_ranges,
+                    });
+                    self.held_buffer_version = Some(buffer_version);
+                    ctx.notify();
+                    #[cfg(any(test, feature = "test-util"))]
+                    self.outstanding_layouts
+                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
                 if self.lazy_layout {
                     self.pending_edits.lock().push(PendingLayout::Edit {
                         delta,

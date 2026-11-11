@@ -36,7 +36,10 @@ use crate::{
 
 use crate::notebooks::context_menu::MenuSource;
 
-use super::{FileNotebookAction, FileNotebookEvent, FileNotebookView, FileState, SourceFile};
+use super::{
+    FileNotebookAction, FileNotebookEvent, FileNotebookView, FileState, SourceFile,
+    first_layout_hold_from,
+};
 
 fn init_app(app: &mut App) {
     initialize_settings_for_tests(app);
@@ -221,6 +224,71 @@ fn test_malformed_jupyter_notebook_falls_back_to_raw() {
     });
 }
 
+/// #2028: yields until the viewer's render model has had its first size (its element was laid
+/// out and the model took the size), at most 2000 times.
+async fn wait_for_first_layout_release(
+    app: &App,
+    render_state: &warpui::ModelHandle<warp_editor::render::model::RenderState>,
+) {
+    for _ in 0..2000 {
+        if !app.read(|ctx| render_state.as_ref(ctx).holding_layout_for_first_size()) {
+            return;
+        }
+        futures_lite::future::yield_now().await;
+    }
+}
+
+/// #2028: a new viewer holds its layout for the first size (nothing is laid out at width 0), and
+/// the hold is over once the file is shown.
+#[test]
+fn test_file_notebook_holds_layout_until_its_first_size() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        let (_, handle) = app.add_window(WindowStyle::NotStealFocus, FileNotebookView::new);
+        let render_state = handle.read(&app, |view, ctx| {
+            view.editor
+                .as_ref(ctx)
+                .model()
+                .as_ref(ctx)
+                .render_state()
+                .clone()
+        });
+        // No file yet: the editor is not on screen, so its model has no width.
+        app.read(|ctx| assert!(render_state.as_ref(ctx).holding_layout_for_first_size()));
+
+        handle.update(&mut app, |file_notebook, ctx| {
+            file_notebook.open_static("Test Title", "# Heading\n\nSome text.", ctx);
+        });
+        app.read(|ctx| render_state.as_ref(ctx).layout_complete())
+            .await;
+        wait_for_first_layout_release(&app, &render_state).await;
+        app.read(|ctx| {
+            let render_state = render_state.as_ref(ctx);
+            assert!(
+                !render_state.holding_layout_for_first_size(),
+                "the first frame of the loaded file must give the model its width"
+            );
+            assert!(
+                render_state.viewport().width().as_f32() > 0.,
+                "the content is laid out at the pane width"
+            );
+            assert!(
+                render_state.blocks() > 1,
+                "the held file content is laid out by the first size"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_first_layout_hold_kill_switch_is_the_exact_value_zero() {
+    assert!(first_layout_hold_from(None));
+    assert!(first_layout_hold_from(Some("1")));
+    assert!(first_layout_hold_from(Some("")));
+    assert!(first_layout_hold_from(Some("false")));
+    assert!(!first_layout_hold_from(Some("0")));
+}
+
 #[test]
 fn test_file_notebook_mermaid_blocks_default_to_rendered() {
     App::test((), |mut app| async move {
@@ -240,6 +308,12 @@ fn test_file_notebook_mermaid_blocks_default_to_rendered() {
                 .render_state()
                 .clone()
         });
+        app.read(|ctx| render_state.as_ref(ctx).layout_complete())
+            .await;
+        // #2028: the viewer lays its file out only once its element has a width (the first
+        // frame), so the content is there after the hold is released, not after the edit was
+        // handled. Bounded wait; the assertions below are unchanged.
+        wait_for_first_layout_release(&app, &render_state).await;
         app.read(|ctx| render_state.as_ref(ctx).layout_complete())
             .await;
         app.read(|ctx| render_state.as_ref(ctx).layout_complete())

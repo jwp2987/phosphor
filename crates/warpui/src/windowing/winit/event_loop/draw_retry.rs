@@ -236,6 +236,64 @@ impl OwedRedraw {
     }
 }
 
+/// The variable that arms [`TestDeviceLoss`].
+pub(super) const TEST_DEVICE_LOSS_ENV: &str = "PHOSPHOR_TEST_GPU_LOSE_DEVICE_FILE";
+/// The file name the trigger path must end in. The hook DELETES the file it is given, so a
+/// variable that names anything else is ignored.
+pub(super) const TEST_DEVICE_LOSS_FILE_NAME: &str = "phosphor-test-lose-gpu-device";
+
+/// Test hook (#2091): lets a real-app test take the GPU device away without root.
+///
+/// Armed only when `PHOSPHOR_TEST_GPU_LOSE_DEVICE_FILE` names an absolute path whose file name
+/// is `phosphor-test-lose-gpu-device`; no normal run sets it, and then a redraw pays one
+/// `Option` test. When armed, each redraw tries to remove that file. The redraw that removes it
+/// reports [`Error::DeviceLost`] instead of drawing, exactly once per file: creating the file is
+/// the request, removing it is taking the request. From there the app's own lost-device path
+/// runs unchanged (the decision of [`DrawRetryState`], the renderer dropped and rebuilt).
+///
+/// The loss is reported, not produced: `wgpu::Device::destroy` would make later calls on the
+/// device raise validation errors instead of the lost-device error, which is another path.
+#[derive(Debug, Default)]
+pub(super) struct TestDeviceLoss {
+    trigger: Option<std::path::PathBuf>,
+}
+
+impl TestDeviceLoss {
+    pub fn from_env() -> Self {
+        Self::from_path(std::env::var_os(TEST_DEVICE_LOSS_ENV).map(std::path::PathBuf::from))
+    }
+
+    pub fn from_path(path: Option<std::path::PathBuf>) -> Self {
+        let trigger = path.filter(|path| {
+            path.is_absolute()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name == TEST_DEVICE_LOSS_FILE_NAME)
+        });
+        if let Some(path) = &trigger {
+            log::warn!(
+                "TEST HOOK armed ({TEST_DEVICE_LOSS_ENV}): a redraw that finds {} reports the \
+                 GPU device as lost",
+                path.display()
+            );
+        }
+        Self { trigger }
+    }
+
+    #[cfg(test)]
+    pub fn armed(&self) -> bool {
+        self.trigger.is_some()
+    }
+
+    /// Whether this redraw must report a lost device. True once per trigger file.
+    pub fn take(&self) -> bool {
+        match &self.trigger {
+            None => false,
+            Some(path) => std::fs::remove_file(path).is_ok(),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "draw_retry_tests.rs"]
 mod tests;

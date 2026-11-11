@@ -677,6 +677,8 @@ pub(super) struct EventLoop {
     skipped_frame_log: RateLimitedSummary,
     /// Same, for frames that drew but took long or waited long for the swapchain.
     slow_frame_log: RateLimitedSummary,
+    /// Test hook (#2091), unarmed in every normal run: see [`draw_retry::TestDeviceLoss`].
+    test_device_loss: draw_retry::TestDeviceLoss,
 }
 
 impl EventLoop {
@@ -701,6 +703,7 @@ impl EventLoop {
             terminating_signal: None,
             skipped_frame_log: RateLimitedSummary::new(SKIPPED_FRAME_LOG_INTERVAL),
             slow_frame_log: RateLimitedSummary::new(SKIPPED_FRAME_LOG_INTERVAL),
+            test_device_loss: draw_retry::TestDeviceLoss::from_env(),
         }
     }
 
@@ -1436,6 +1439,15 @@ impl EventLoop {
 
         let redraw_start = Instant::now();
         let render_result = (|| {
+            // #2091 test hook (unarmed unless PHOSPHOR_TEST_GPU_LOSE_DEVICE_FILE is set): this
+            // redraw reports a lost device instead of drawing; the handling below is the real one.
+            if self.test_device_loss.take() {
+                log::warn!(
+                    "TEST HOOK ({}): reporting the GPU device as lost for this frame",
+                    draw_retry::TEST_DEVICE_LOSS_ENV
+                );
+                return Err(crate::rendering::wgpu::renderer::Error::DeviceLost);
+            }
             // Before building the scene, make sure the window size is up-to-date, to ensure
             // that the scene is built at a size that matches the size we're about to render at.
             window.update_size_if_needed()?;

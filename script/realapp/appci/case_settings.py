@@ -426,6 +426,8 @@ decl("alt_screen_programs", needs=INPUT, note="vim, less, tmux by keyboard only"
 decl("keybinding_rebind", needs=KEYS, sets=("keybindings_file",), note="starts from NO keybindings.yaml (the control), writes its own, removes it")
 decl("grid_snapshot_render", needs=INPUT, note="cells are compared through the app's grid snapshot hook, not from pixels: theme, text size and tab layout are not read")
 decl("gpu_real_render", note="two launches on the same profile are compared with each other, so the seed's theme and text size cancel out")
+decl("gpu_lost_device_recovers", note="one launch compared with itself before and after the rebuilt renderer, so the seed's theme and text size cancel out; "
+                                      "judged from the app log (the hook's line, the rebuild, frames) and two screenshots")
 decl("soak", needs=_merge(INPUT, KEYS), reads=MODEL)
 decl("startup_shell_pane", needs=INPUT, reads=("startup_shell",), note="the pass's own startup shell (set by the harness for the pwsh 7 / cmd / WSL passes)")
 
@@ -493,6 +495,8 @@ decl("md_viewer_ai_answer", needs=INPUT, reads=MODEL, note="the real CI model's 
 decl("paste_agent_input cb_agent_pickers cb_agent_file_mention", needs=INPUT,
      note="the agent input itself (paste, / and @ pickers), judged from the app's own enter lines; no model is needed (the baseline's agent mode is)")
 # ---- UI by keyboard and pointer
+decl("md_viewer_first_frame", needs=KEYS, note="as md_viewer: opened through the app's own open-file path; judged from the app log (the viewer's "
+                                              "first-size line, no image painted without a width), OCR of the heading where there is an engine")
 decl("md_viewer_big", needs=KEYS, note="as md_viewer: opened through the app's own open-file path, OCR of the viewer")
 decl("ui_palette", needs=_merge(INPUT, KEYS), note="the palette chord and its action names; OCR where there is one, else the app log's frame lines")
 decl("ui_mouse_select_copy", needs=KEYS, note="every copy is the copy key after the selection (a sentinel is on the clipboard first), so copy_on_select is not what is judged")
