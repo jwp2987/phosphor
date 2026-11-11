@@ -704,11 +704,11 @@ fn the_disk_conflict_kill_switch_and_trace_line() {
     assert!(!disk_conflict_flag_enabled_for(Some("0")));
 
     assert_eq!(
-        disk_event_trace("conflict", true),
-        "editor_disk outcome=conflict external=true"
+        disk_event_trace("conflict", true, true),
+        "editor_disk outcome=conflict external=true flagged=true"
     );
     assert_eq!(
-        disk_event_trace("reloaded", false),
-        "editor_disk outcome=reloaded external=false"
+        disk_event_trace("reloaded", false, false),
+        "editor_disk outcome=reloaded external=false flagged=false"
     );
 }

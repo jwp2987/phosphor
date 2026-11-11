@@ -64,9 +64,10 @@ fn text_hash(text: &str) -> u64 {
 /// The trace line of a file-watcher report for an open file (target `editor_disk`, debug; the
 /// app tests read it). `outcome` is `reloaded` (the buffer took the disk's text) or `conflict`
 /// (the buffer has unsaved edits and kept them); `external` is whether the text was another
-/// program's change rather than the echo of this editor's own save. No path, no content.
-fn disk_event_trace(outcome: &str, external: bool) -> String {
-    format!("editor_disk outcome={outcome} external={external}")
+/// program's change rather than the echo of this editor's own save; `flagged` is whether the
+/// file is now one the editor shows its conflict banner for. No path, no content.
+fn disk_event_trace(outcome: &str, external: bool, flagged: bool) -> String {
+    format!("editor_disk outcome={outcome} external={external} flagged={flagged}")
 }
 
 /// State for a shared buffer including the file ID and buffer handle.
@@ -479,10 +480,11 @@ impl GlobalBufferModel {
     /// program's change is remembered so the editor can say so; the echo of our own save is not
     /// (the buffer is that text plus what the user typed since).
     fn note_disk_update_refused(&mut self, file_id: FileId, external: bool) {
-        if external && disk_conflict_flag_enabled() {
+        let flagged = external && disk_conflict_flag_enabled();
+        if flagged {
             self.disk_changed_under_edits.insert(file_id);
         }
-        log::debug!(target: "editor_disk", "{}", disk_event_trace("conflict", external));
+        log::debug!(target: "editor_disk", "{}", disk_event_trace("conflict", external, flagged));
     }
 
     /// Whether another program changed `file_id` on disk while its buffer had unsaved edits, and
@@ -856,7 +858,7 @@ impl GlobalBufferModel {
             // #2087: the buffer is what the disk holds.
             let external = self.external_reload_pending.remove(&file_id);
             self.disk_changed_under_edits.remove(&file_id);
-            log::debug!(target: "editor_disk", "{}", disk_event_trace("reloaded", external));
+            log::debug!(target: "editor_disk", "{}", disk_event_trace("reloaded", external, false));
 
             ctx.emit(GlobalBufferModelEvent::BufferUpdatedFromFileEvent {
                 file_id,
@@ -931,10 +933,11 @@ impl GlobalBufferModel {
             // If it was another program's change, the buffer now holds edits on text the disk
             // no longer has: the same conflict as a change that arrives after the typing.
             let external = self.external_reload_pending.remove(&file_id);
-            if external && disk_conflict_flag_enabled() {
+            let flagged = external && disk_conflict_flag_enabled();
+            if flagged {
                 self.disk_changed_under_edits.insert(file_id);
             }
-            log::debug!(target: "editor_disk", "{}", disk_event_trace("conflict", external));
+            log::debug!(target: "editor_disk", "{}", disk_event_trace("conflict", external, flagged));
             ctx.emit(GlobalBufferModelEvent::BufferUpdatedFromFileEvent {
                 file_id,
                 success: false,
@@ -986,7 +989,7 @@ impl GlobalBufferModel {
         // #2087: the buffer is what the disk holds.
         let external = self.external_reload_pending.remove(&file_id);
         self.disk_changed_under_edits.remove(&file_id);
-        log::debug!(target: "editor_disk", "{}", disk_event_trace("reloaded", external));
+        log::debug!(target: "editor_disk", "{}", disk_event_trace("reloaded", external, false));
 
         if let Some(char_offset_edits) = char_offset_edits {
             // Upstream 25bb50823 ("Fix spurious unsaved diff state", #10823): a
