@@ -7251,3 +7251,19 @@ siblings.
   in a PowerShell session.
 - `crates/warp_tui/src/terminal_session_view_tests.rs` `shell_completion_source_warmup_loads_path_executables`: the wait for the load is a
   give-up net of 45 s (was 5 s: one cold `pwsh` start on the Windows runner took longer twice, then 1.4 s). It still ends when the load does.
+
+### Integration driver: a named key sends no text (#2121)
+
+`crates/warpui_core/src/integration/step.rs` `with_keystrokes`: the key down of a key outside the driver's table carried the key's NAME as its
+text (`chars: "left"`, `"f2"`), which no platform sends. Since the pane key sink (#1411) a key down with printable text is a key that types, so
+`shift-left` reached vim as the word "left" and F2 was never translated: `test_escape_sequences_sent_to_focused_terminal` and
+`test_pass_control_sequences_to_long_running_block` failed 3 of 3 in round 14. `chars_for_keystroke` now gives the table's control characters,
+the character itself for a key that types one (`a`, `ctrl-i`, `space`), and nothing for every other named key. Unit tests
+`chars_for_keystroke_tests` (in `warpui_core`). `with_keystrokes_in_composing` is unchanged. A scenario that relied on a key name arriving as
+text would now see no text; none is known.
+
+### No verdict, nothing changed
+
+`integration-linux`: `test_ssh_with_shell_override`, `test_command_xray_hover`,
+`test_autosuggestions_are_hidden_when_opening_tab_completions` (#2122: the job keeps no artifacts and the INFO trace has no line for the pty
+writes, the hover or the Tab). `test_ssh_into_sh` is an APP defect (#2120) and stays red until that is worked.
