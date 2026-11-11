@@ -599,8 +599,9 @@ def c_no_autoupdate(ctx, r):
 
 
 # ---------------------------------------------------------------- #1548 UI-action budgets (screenshot-observed: loose bounds, trend metrics)
-def _until_changed(ctx, before, tag, thresh, timeout):
-    """seconds from now until a screenshot differs from `before` by >= thresh; None on timeout, -1 without Pillow"""
+def _until_changed(ctx, before, tag, thresh, timeout, seen=None):
+    """seconds from now until a screenshot differs from `before` by >= thresh; None on timeout, -1 without Pillow. `seen` (a list) receives every
+    difference measured, so a miss can say how large the largest change on screen was."""
     t0 = time.time()
     n = 0
     while time.time() - t0 < timeout:
@@ -609,6 +610,8 @@ def _until_changed(ctx, before, tag, thresh, timeout):
         d = U.img_diff(before, p) if p else None
         if d is None and p:
             return -1.0
+        if d is not None and seen is not None:
+            seen.append(d)
         if d is not None and d >= thresh:
             return time.time() - t0
     return None
@@ -628,6 +631,15 @@ def ui_work_metric(ctx, r, off, label):
         r.note("WARN UI work: %s had a main-thread item of %.1f ms (>= 16 ms drops a frame)" % (label, worst))
 
 
+# The part of the directory name that Tab inserts, and the share of the screen's pixels that must change for "a changed frame". Until round 19
+# the name ended in `_dir`, so a unique-prefix completion drew five glyphs (`_dir/`): about 150 pixels, where 0.05 % of a 1280x720 screen is 461.
+# The stage could not pass: the round 14 candidate failed it with "no changed frame within 6 s" while its own effect proof (the completed line
+# ran) passed. 56 of the densest glyphs change a few thousand pixels at any size the harness runs at (the glyphs scale with the screen). The
+# threshold is unchanged (a blinking cursor and a clock stay under it), so a Tab that completes nothing still shows no changed frame.
+TAB_SUFFIX = "_" + "MW" * 28
+TAB_CHANGE_THRESH = 0.0005
+
+
 def completion_stage(ctx, r, limit):
     """#1548: the LOCAL Tab completion, seen from screenshots like the other UI actions: a unique prefix of a fresh directory + Tab. Metric `tab_completion_s`
     (first changed frame after Tab, an UPPER bound, bound `limit`), and an EFFECT proof that the line really was completed (`test -d <prefix>` + Tab + an
@@ -635,23 +647,27 @@ def completion_stage(ctx, r, limit):
     d = "cbtab%s" % ctx.tok(5).lower().replace("_", "")
     f = "cb_tabcomp.txt"
     ctx.rm(f)
-    ctx.be.type("mkdir %s_dir" % d, 12, enter=True)
+    ctx.be.type("mkdir %s%s" % (d, TAB_SUFFIX), 12, enter=True)
     time.sleep(1.0)
     ctx.be.type("test -d %s" % d, 12, enter=False)
     time.sleep(0.4)
     before = ctx.shot("cb_ui_tab_before")
     ctx.be.key("Tab")
-    s = _until_changed(ctx, before, "cb_ui_tab", 0.0005, 6)
+    seen = []
+    s = _until_changed(ctx, before, "cb_ui_tab", TAB_CHANGE_THRESH, 6, seen)
     r.metric("tab_completion_s", s if s is not None else -2)
+    r.metric("tab_completion_max_change", round(max(seen), 6) if seen else None)
     if s is not None and s != -1.0:
         r.check(s <= limit, "Tab completion: first changed frame after %.2f s (bound %.1f s)" % (s, limit))
     elif s is None:
-        r.check(False, "Tab completion: no changed frame within 6 s of Tab on a unique directory prefix")
+        r.check(False, "Tab completion: no changed frame within 6 s of Tab on a unique directory prefix (largest change seen %s of the screen's "
+                       "pixels, needed %.4f%%; the completion inserts %d dense glyphs)" % (
+                           ("%.4f%%" % (100 * max(seen))) if seen else "none measured", 100 * TAB_CHANGE_THRESH, len(TAB_SUFFIX) + 1))
     tok = ctx.tok(8).lower()
     ctx.be.type(" && " + ctx.append_cmd(ctx.pane_shell(), tok, f), 12, enter=True)
     ctx.until(lambda: ctx.lines(f), 8)
     CA_.exact_lines(r, "Tab completion: the completed line ran (test -d on the completed name)", [tok], ctx.lines(f))
-    ctx.be.type("rmdir %s_dir; rm -f %s" % (d, f), 12, enter=True)
+    ctx.be.type("rmdir %s%s; rm -f %s" % (d, TAB_SUFFIX, f), 12, enter=True)
     time.sleep(0.8)
     ctx.reset()
 

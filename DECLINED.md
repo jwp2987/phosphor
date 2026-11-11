@@ -3501,3 +3501,14 @@ Not removed, and not legacy: `delivering` / `requeue_request` (a key a stage hol
 delivery), the bytes take-and-write of the hand-off's and the PowerShell gate's keys,
 `paste_routing` (three writers read it), `refresh_ssh_connect_gate` (the events and the signal
 rows use it). Design note and the full list: `docs/design/r17-step8.md`.
+
+## Page Up / Page Down with a modifier are encoded for the program in front — IMPROVED 2026-11-11 (#2105)
+
+Upstream (byte-identical at `42effe840`) encodes modified cursor keys (`CSI 1;<mods> <letter>`) and modified Delete
+(`CSI 3;<mods>~`) but has no encoding for Page Up / Page Down with a modifier, so Shift+Page Up or Ctrl+Page Down pressed
+with a full-screen program in front wrote nothing: the key was lost. This fork writes xterm's `CSI 5;<mods>~` /
+`CSI 6;<mods>~` (`warp_terminal` `escape_sequences.rs`, `page_keystroke_to_escape_sequence`). A chord the app binds itself
+still goes to the binding (the scrollback keys outside the alternate screen, the tab keys), a chord with the Meta key
+keeps its ESC-prefixed form, and the plain keys are unchanged. A re-pin must not drop the encoder. Found by the app case
+`scroll_keys_foreground` (alternate-screen arm); unit test `test_modified_page_keys_to_escape_sequence`. Worked, unproven
+when written (nothing compiled or run). No kill switch: before it the keys did nothing at all.

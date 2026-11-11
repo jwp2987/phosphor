@@ -997,6 +997,20 @@ def c_tab_pointer_use(ctx, r):
 
 
 # ---------------------------------------------------------------- T29 focus_cycle
+def focus_cycle_ref_rc(win, pane, ref_rc):
+    """pure: the rc file the reference shell of focus_cycle must source, or None for the platform's default reference. Windows Git Bash pane: the
+    reference's OWN rc (prof.ref_rc, which logs to refctl). By default that reference sources the pane's ~/.bashrc, whose hook writes the pane's
+    rec.log: every line typed into the reference was then read back as "received by Phosphor's shell" (round 14 candidate, both Git Bash rows:
+    three reference lines "reached Phosphor's shell" while the app's key trace showed 0 keys in that time). Same reason as big_paste_control
+    (r18u23). Linux and macOS references already have their own rc; the PowerShell reference has its own history file."""
+    return ref_rc.replace("\\", "/") if (win and pane == "gitbash") else None
+
+
+def focus_cycle_reference(ctx):
+    rc = focus_cycle_ref_rc(ctx.win, ctx.pane, ctx.prof.ref_rc)
+    return C.ref_terminal_windows(ctx, rcfile=rc) if rc else C.ref_terminal(ctx)
+
+
 @case("focus_cycle", order=75, gui=True)
 def c_focus_cycle(ctx, r):
     """T29 (G37): the keyboard focus leaves and comes back. The reference terminal takes the focus and three lines are typed there; the focus returns to
@@ -1006,7 +1020,7 @@ def c_focus_cycle(ctx, r):
     if ctx.app is None:
         r.skip("no app process (sim backend)")
     sh = ctx.pane_shell()
-    ref = C.ref_terminal(ctx)
+    ref = focus_cycle_reference(ctx)
     if not ref:
         r.skip("no reference terminal to give the keyboard focus to: %s" % (getattr(ctx, "ref_reason", None) or "unavailable"))
     C.ref_note(ctx, r)

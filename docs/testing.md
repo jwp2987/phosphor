@@ -7306,3 +7306,36 @@ text would now see no text; none is known.
 `integration-linux`: `test_ssh_with_shell_override`, `test_command_xray_hover`,
 `test_autosuggestions_are_hidden_when_opening_tab_completions` (#2122: the job keeps no artifacts and the INFO trace has no line for the pty
 writes, the hover or the Tab). `test_ssh_into_sh` is an APP defect (#2120) and stays red until that is worked.
+## Round 19: keys (design `docs/design/r10-r19-keys.md`; #2105 #2106 #2107; round 14 candidate `42ef67839`, pipeline 3052606915; nothing compiled, no app run when written)
+The key cases of the round 14 candidate, each judged TEST or APP from the run's own logs before anything was changed. None of
+these cases ran in rounds 10 to 13 (fix tier), so the candidate was their first run.
+| case | where it failed | verdict | what changed |
+|---|---|---|---|
+| `scroll_keys_foreground`, "Shift+Home with text in the input" | Wayland (both modes), macOS, Git Bash (both modes) | TEST | The step passed its expected hop count (0) as the press count and sent no key (macOS app log: no key event between the two typed lines). `sfg_press_plan` raises on a press count below 1; the step asks for one press and no hop. |
+| `scroll_keys_foreground`, Shift+PageUp in the alternate screen | all of the above | APP #2105 | Modified Page Up / Page Down had no encoding: `CSI 5;<mods>~` / `CSI 6;<mods>~` now (`escape_sequences.rs`, `test_modified_page_keys_to_escape_sequence`). |
+| `scroll_keys_foreground`, Shift+Home in the alternate screen | macOS | APP #2106 | A function key carried a private-use character and was held for a typed event that never follows: `pane_key::key_down_will_type` (`a_function_key_is_not_a_key_that_will_type`). |
+| `scroll_keys_position`, "PageUp did not move the view" | macOS terminal | TEST | One glyph read wrong decoded line 394 as 906 of 500 (the shot shows 362..397). `skp_visible(text, tag, hi)` drops a number no printed line has; all six reads of the case are bounded, and `scroll_keys_foreground`'s too. |
+| `scroll_keys_position`, block-up + Home, and the typed key | Wayland agent | not judged | The job's `after_script` timed out and uploaded no shots and no app log (`run_slim` missing). Numbers only: after block-up and Home the screen held lines 462..500 and no stream line. Needs `shots/*skp_3_top.png` and `*skp_5_after_key.png` of the next run. |
+| `meta_and_word_keys`, Ctrl-Left / Ctrl-Right into a program | Wayland terminal, Git Bash (both modes) | TEST | The table expected xterm's `CSI 1;5D` / `1;5C`. The app's editable bindings `terminal:executing_command_move_cursor_word_left` / `_right` (inherited from upstream) write readline's `ESC b` / `ESC f` while a command runs; no build ever sent the xterm form. The table expects the binding's bytes and the self-test pins the two constants and the two bindings. On macOS with Option as Meta the expectation stays `CSI 1;3D` / `1;3C`. Whether the app should send the xterm form instead is an owner question, not decided here. |
+| `cb_ui_action_latency`, "no changed frame within 6 s of Tab" | Wayland terminal | TEST | The completion drew five glyphs (`_dir/`, about 150 pixels) against a threshold of 0.05 % of the screen (461 pixels at 1280x720), while the stage's own effect proof passed. The directory now ends in 56 dense glyphs (`TAB_SUFFIX`); the threshold is unchanged; a miss reports the largest change seen (`tab_completion_max_change`). |
+| `history_up_recall`, step (b) | Windows agent, PowerShell pane | not decided; candidate APP #2107 | The three BackSpaces after Up had no effect on the recalled line and the next Enter went to the agent. No Windows app log in the artifact. Candidate: a history above 5000 entries is listed on a background thread and only the menu's own keys are held meanwhile. The case records `pane_history_lines` and names #2107 when it is above 5000 on a failure. |
+| `keybinding_rebind`, arm B moved chord and arm C Alt-R | Git Bash (both modes) | not decided | Both are the first open of command search after a relaunch, read after a fixed 1.2 s; the controls on the warm app passed, and Wayland passed all of it. No Windows app log or shot in the artifact. The three opens now wait for the `CommandSearchView` frame with an 8 s give-up net (`await_view`), and a miss says what the app's key trace did with the chord (`key_fate`). The oracle is unchanged: the view must render. |
+| `ime_compose` (Pinyin; there is no dead-key arm) | Wayland, both modes | UNVERIFIABLE as run | `fcitx5-remote -n` said `pinyin`, yet every letter reached the app as a plain key (the app's key trace counted all of them; the pty got `nihao`, then the Space). The keys never passed through the input method, so "marked text leaked" was not tested. The case now asks fcitx5 for its focused input contexts (`Controller1.DebugInfo`) before typing: none is UNVERIFIABLE with the daemon's log tail; one or more and a leak is a real FAIL. |
+| `focus_cycle`, "lines typed into the reference reached Phosphor's shell" | Git Bash (both modes) | TEST | The Git Bash reference sourced the pane's `~/.bashrc`, whose hook writes the pane's `rec.log`; the app's key trace had 0 keys while away. The reference gets its own rc (`prof.ref_rc`, logs to `refctl`), as `big_paste_control` does. |
+**How each changed test can still fail.** Shift+Home with text: the shell must receive exactly the typed line (an app that does
+not select appends it, an app that scrolls logs a hop). `skp_visible`: a view that stayed reads its real lines 466..500 and
+fails `moved`. Word keys: any other bytes than the binding's fail, and a binding whose bytes change fails the self-test.
+Tab completion: no completion, no changed frame; and the effect proof is still there. Command search: no frame of the view
+within 8 s. `ime_compose`: with a focused input context every earlier check runs unchanged. `focus_cycle`: the app's key
+count while away and the pane's own `rec.log`.
+**Self-tests.** `selftest_r15_defects.py` `r19_keys_test_faults_of_the_round_14_candidate` and additions to
+`r15_scroll_keys_pure_parts`; `selftest.py` (the `skp_visible` bound with the misread of the run, the word-key bytes pinned
+to `EscCodes::WORD_LEFT` / `WORD_RIGHT` and the two bindings, the focus reference's rc).
+**Not covered.** A unit test of the Up-arrow list with a slow source and a BackSpace in the pending time (#2107). The macOS
+half of #2106 is read, not run. The Wayland job that uploads no `run_slim` when its `after_script` times out is a harness
+defect outside this change.
+What the next run should show: `scroll_keys_foreground` PASS on Wayland, macOS and Git Bash (Shift+PageUp in the alternate
+screen `1b5b353b327e`, Shift+Home `1b5b313b3248` on macOS too); `scroll_keys_position` PASS on macOS; `meta_and_word_keys`
+with `1b62` / `1b66` for the two word keys; `cb_ui_action_latency` with a `tab_completion_s` under its bound;
+`focus_cycle` PASS in the Git Bash pane; `ime_compose` either judged with `ime_focused_contexts` non-empty or UNVERIFIABLE
+with the reason; `keybinding_rebind` and `history_up_recall` either PASS or a failure text that names the cause.

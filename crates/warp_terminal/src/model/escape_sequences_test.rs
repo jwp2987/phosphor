@@ -546,6 +546,55 @@ fn test_readline_meta_keys_reach_the_program_in_front() {
     validate_keystroke_test_cases(test_cases, &terminal_model_mock);
 }
 
+/// #2105: Page Up / Page Down with a modifier are xterm's `CSI 5;<mods>~` / `CSI 6;<mods>~`
+/// (they had no encoding, so Shift+Page Up was lost to a full-screen program). A chord with the
+/// Meta key keeps its ESC-prefixed form, and the plain keys are not encoded here (the terminal
+/// view's fixed bindings write them).
+#[test]
+fn test_modified_page_keys_to_escape_sequence() {
+    let test_cases: &[(Keystroke, Vec<u8>)] = &[
+        (
+            Keystroke::parse("shift-pageup").unwrap(),
+            b"\x1b[5;2~".to_vec(),
+        ),
+        (
+            Keystroke::parse("shift-pagedown").unwrap(),
+            b"\x1b[6;2~".to_vec(),
+        ),
+        (
+            Keystroke::parse("ctrl-pageup").unwrap(),
+            b"\x1b[5;5~".to_vec(),
+        ),
+        (
+            Keystroke::parse("shift-ctrl-pagedown").unwrap(),
+            b"\x1b[6;6~".to_vec(),
+        ),
+    ];
+    let terminal_model_mock = TerminalModelMock::new();
+    validate_keystroke_test_cases(test_cases, &terminal_model_mock);
+
+    let meta = if OperatingSystem::get().is_mac() {
+        "meta-pageup"
+    } else {
+        "alt-pageup"
+    };
+    validate_keystroke_test_cases(
+        &[(Keystroke::parse(meta).unwrap(), b"\x1b\x1b[5~".to_vec())],
+        &terminal_model_mock,
+    );
+
+    for plain in ["pageup", "pagedown"] {
+        let keystroke = Keystroke::parse(plain).unwrap();
+        let result = KeystrokeWithDetails {
+            keystroke: &keystroke,
+            key_without_modifiers: None,
+            chars: None,
+        }
+        .to_escape_sequence(&terminal_model_mock);
+        assert_eq!(result, None, "{plain} is a fixed binding, not an encoding");
+    }
+}
+
 #[test]
 fn test_unmatched_keystroke_does_not_yield_escape_sequence() {
     let test_cases: &[Keystroke] = &[

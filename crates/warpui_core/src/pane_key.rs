@@ -114,6 +114,28 @@ pub(crate) fn note_event_and_is_ime_commit(clear_marked_text: bool, typed: bool)
     }
 }
 
+/// Whether the platform follows a key down that carries `chars` with a typed event for the same
+/// physical key ([`PaneKeyKind::KeyDown::will_type`]): the key is printable and Cmd is not held.
+///
+/// Printable means some character of `chars` is neither a control character nor one of AppKit's
+/// function-key code points (#2106). macOS puts a private-use character in a key down's text for
+/// every function key (arrows, Home, End, Page Up / Down, F1..F35, ...: `NSUpArrowFunctionKey`
+/// U+F700 up to U+F8FF); no typed event ever follows such a key, so calling it "will type" made
+/// the sink wait for an event that never came and the key was lost (Shift+Home with a
+/// full-screen program in front wrote nothing on macOS). Linux and Windows send no text with
+/// those keys.
+pub fn key_down_will_type(chars: &str, cmd: bool) -> bool {
+    !cmd && chars
+        .chars()
+        .any(|c| !c.is_control() && !is_function_key_code_point(c))
+}
+
+/// AppKit's function-key range (`NSEvent.h`: 0xF700..=0xF8FF, the "corporate use" part of the
+/// Unicode private-use area that Apple reserves for keys with no character).
+fn is_function_key_code_point(c: char) -> bool {
+    ('\u{F700}'..='\u{F8FF}').contains(&c)
+}
+
 #[cfg(test)]
 #[path = "pane_key_tests.rs"]
 mod tests;

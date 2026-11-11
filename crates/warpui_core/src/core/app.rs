@@ -4981,12 +4981,11 @@ impl AppContext {
                 details,
             } => {
                 note_event_and_is_ime_commit(false, false);
-                let printable = !chars.is_empty() && !chars.chars().all(|c| c.is_control());
                 PaneKeyKind::KeyDown {
                     keystroke: keystroke.clone(),
                     chars: chars.clone(),
                     is_composing: *is_composing,
-                    will_type: printable && !keystroke.cmd,
+                    will_type: crate::pane_key::key_down_will_type(chars, keystroke.cmd),
                     key_without_modifiers: details.key_without_modifiers.clone(),
                 }
             }

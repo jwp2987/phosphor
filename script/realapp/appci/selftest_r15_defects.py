@@ -88,6 +88,23 @@ def r15_scroll_keys_pure_parts():
     assert 'pub const EDITOR_BUFFER_EMPTY_CONTEXT_KEY: &str = "EditorView_BufferEmpty";' in ed and "shift_home_end_selects_predicate(scrollback_keys_at_prompt)" in ed
     assert "app.register_editable_bindings(scrollback_keys::scrollback_key_bindings(" in _src("app", "src", "terminal", "view", "init.rs")
     import inspect
+    # round 19: a key step presses its key. The round 14 candidate failed "Shift+Home with text" on four platforms because the step passed its
+    # expected hop count (0) as the press count and sent nothing; a zero press count now raises, and the step asks for one press and no hop.
+    assert X.sfg_press_plan("shift+Home", 1, want_hops=0) == (["shift+Home"], 0) and X.sfg_press_plan("shift+Prior", 3) == (["shift+Prior"] * 3, 3)
+    for bad in (0, -1):
+        try:
+            X.sfg_press_plan("shift+Home", bad)
+            raise AssertionError("a press count of %d was accepted: the step would send no key" % bad)
+        except ValueError:
+            pass
+    half = inspect.getsource(X._sfg_prompt_half)
+    assert 'key("home", True), 1, want_hops=0)' in half and 'key("home", True), 0)' not in half, "the text-in-the-input step presses Shift+Home once"
+    assert "sfg_press_plan(" in inspect.getsource(X._sfg_prompt_press) and "sfg_press_plan(" in inspect.getsource(X._sfg_press)
+    # the alternate-screen keys: the encoder the program's bytes come from (#2105) and the macOS will-type rule (#2106)
+    esc = _src("crates", "warp_terminal", "src", "model", "escape_sequences.rs")
+    assert "fn page_keystroke_to_escape_sequence(" in esc and ".or_else(|| page_keystroke_to_escape_sequence(keystroke))" in esc
+    assert "pub fn key_down_will_type(" in _src("crates", "warpui_core", "src", "pane_key.rs")
+    assert "will_type: crate::pane_key::key_down_will_type(chars, keystroke.cmd)" in _src("crates", "warpui_core", "src", "core", "app.rs")
     s = inspect.getsource(X.c_scroll_keys_foreground)
     assert s.index("_sfg_prompt_half(ctx, r, off, key, rows)") < s.index('_sfg_start(ctx, r, "main", rf)'), "the prompt half runs before the foreground program starts"
     # a key that is the program's
@@ -238,3 +255,49 @@ def r15_find_hook_armed_on_every_launcher_2082():
             os.environ["APPCI_NO_FIND_HOOK"] = old
     # the file the launcher names is the file register_find appends to
     assert 'os.path.join(ctx.prof.home, "appci_find.txt")' in open(os.path.join(HERE, "cases_ui.py"), encoding="utf-8").read()
+
+
+@check
+def r19_keys_test_faults_of_the_round_14_candidate():
+    """round 19 (docs/design/r10-r19-keys.md): the test faults the round 14 candidate showed in the key cases, each with the input that produced
+    the wrong verdict and the input a real defect would produce (the oracle still fails)."""
+    import inspect
+    import cases_coverage_b as CB
+    import cases_desk as DK
+    import cases_r14_w1a as W1
+    import cases_r15_w5a as W5
+    # cb_ui_action_latency: the completion draws enough to be seen. `_dir/` was 5 glyphs against a threshold of 0.05 % of the screen.
+    assert CB.TAB_SUFFIX.startswith("_") and len(CB.TAB_SUFFIX) >= 49 and set(CB.TAB_SUFFIX[1:]) == {"M", "W"} and CB.TAB_CHANGE_THRESH == 0.0005
+    st = inspect.getsource(CB.completion_stage)
+    assert '"mkdir %s%s" % (d, TAB_SUFFIX)' in st and '"rmdir %s%s; rm -f %s" % (d, TAB_SUFFIX, f)' in st and "TAB_CHANGE_THRESH, 6, seen)" in st
+    assert "exact_lines(r, \"Tab completion: the completed line ran" in st, "the effect proof stays: a Tab that completes nothing fails it"
+    for px_w, px_h in ((1280, 720), (1920, 1080), (2560, 1440)):
+        cell = (px_w / 160.0) * (px_h / 45.0)                    # a pane of about 160 x 45 cells fills the screen
+        assert len(CB.TAB_SUFFIX) * cell * 0.25 > 2 * CB.TAB_CHANGE_THRESH * px_w * px_h, "a quarter of each glyph cell lit is twice the threshold"
+        assert 5 * cell * 0.25 < CB.TAB_CHANGE_THRESH * px_w * px_h, "the five glyphs of `_dir/` were under it: the stage could not pass"
+    # ime_compose: the daemon's own list of focused input contexts
+    info = ("Group [wayland:] has 2 InputContext(s)\n  IC [0a1b] program: frontend:wayland_v2 cap:40000000012 focus:1\n"
+            "  IC [0c2d] program:foot frontend:wayland_v2 cap:12 focus:0\nInput Context without group\n")
+    assert DK.fcitx_focused_contexts(info) == [("", "wayland_v2")] and DK.fcitx_focused_contexts(info.replace("\n", "\\n")) == [("", "wayland_v2")]
+    none = "Group [wayland:] has 0 InputContext(s)\nInput Context without group\n"
+    assert DK.fcitx_focused_contexts(none) == [] and DK.fcitx_focused_contexts("") is None and DK.fcitx_focused_contexts("Error org.freedesktop.DBus") is None
+    assert DK.ime_engaged_verdict([("", "wayland_v2")]) is None and DK.ime_engaged_verdict(None) is None
+    why = DK.ime_engaged_verdict([], "E wayland: failed to bind input-method")
+    assert why and "NO focused input context" in why and "failed to bind" in why
+    body = inspect.getsource(DK.c_ime_compose)
+    assert body.index("ime_engaged_verdict(") < body.index("INTL.compose_raw("), "the engagement is read before anything is typed through the input method"
+    assert "r.unverifiable(why)" in body and "dead" not in body.lower().replace("the app died", ""), "Pinyin only: the dead-key arm is gone (owner, 2026-11-10)"
+    # keybinding_rebind: a give-up net instead of a 1.2 s sleep, and what the app did with the key on a miss
+    log = ('t input_order keydown key=f9 ctrl=true alt=false shift=true cmd=false t=1 seq=2\n'
+           't input_order hop=keydown_keybound dispatch_seq=3 key="r" ctrl=false alt=true shift=false cmd=false step=4 action_type=warp::terminal::input::InputAction t=2\n')
+    fate = W5.key_fate(log)
+    assert "alt+r -> InputAction" in fate and "ctrl+shift+f9" in fate and "no key in that time" in W5.key_fate("frame 1: updated=[]")
+    kb = inspect.getsource(W5.c_keybinding_rebind)
+    assert kb.count("await_view(ctx, off, SEARCH_VIEW)") == 3 and "time.sleep(1.2)" not in kb and W5.SEARCH_OPEN_NET_S >= 5
+    assert "moved_seen is True" in kb and "seen is True" in kb, "the oracle is unchanged: the view must have rendered"
+    # history_up_recall: the history size the app's inline / background split turns on
+    ds = _src("app", "src", "terminal", "input", "inline_history", "data_source.rs")
+    assert "pub(crate) const INLINE_BUILD_MAX_ENTRIES: usize = 5_000;" in ds and W1.HIST_INLINE_MAX == 5000 and W1.ISSUE_UP_RECALL_ASYNC == 2107
+    assert "hist_file_lines(ctx, rec)" in inspect.getsource(W1.c_history_up_recall) and "got == want" in inspect.getsource(W1.c_history_up_recall)
+    doc = _src("docs", "testing.md")
+    assert "Round 19: keys" in doc and all(("#%d" % n) in doc for n in (2105, 2106, 2107))

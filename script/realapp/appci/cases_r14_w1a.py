@@ -185,6 +185,27 @@ def hist_diagnose(want, got, seeded):
     return "line %d, %s: expected %r, the shell received %r%s" % (i + 1, step, a, b, " (%s)" % why if why else "")
 
 
+HIST_INLINE_MAX = 5000                 # app/src/terminal/input/inline_history/data_source.rs INLINE_BUILD_MAX_ENTRIES
+ISSUE_UP_RECALL_ASYNC = 2107
+
+
+def hist_file_lines(ctx, rec):
+    """the number of lines of the history the pane's shell loads at start (PSReadLine's file for a PowerShell pane, ~/.bash_history or the zsh
+    history of the profile's home elsewhere); None when no such file is readable. A count only: no line is read into a result."""
+    try:
+        if getattr(rec, "ps", False):
+            return len(ctx.ps_history_lines())
+        home = ctx.prof.home
+        for name in (".bash_history", ".zsh_history", os.path.join(".zdot", ".zsh_history")):
+            p = os.path.join(home, name)
+            if os.path.isfile(p):
+                with open(p, "rb") as f:
+                    return sum(1 for _ in f)
+    except Exception:
+        pass
+    return None
+
+
 @case("history_up_recall", order=64, gui=True)
 def c_history_up_recall(ctx, r):
     """T1: Up-arrow history recall in the pane's own shell. Three commands, then (a) Up, Up, Enter: the second command runs again, once; (b) Up, an
@@ -235,6 +256,14 @@ def c_history_up_recall(ctx, r):
         r.check(d is None, "%s holds %r, expected %r (first difference at line %s)" % (f, got_eff[f], eff[f], d[0] + 1 if d else None))
     got = rec.lines()
     r.metric("history_received_lines", len(got))
+    # round 19 (#2107): how long the pane's history is. Above INLINE_BUILD_MAX_ENTRIES (5000, inline_history/data_source.rs) the app builds the
+    # Up-arrow list on a background thread, and a key typed before it arrives is the suspected cause of the Windows agent-mode failure of the
+    # round 14 candidate (the BackSpaces of step (b) had no effect on the recalled line). The number decides that on the next failure.
+    hist_n = hist_file_lines(ctx, rec)
+    r.metric("pane_history_lines", hist_n)
+    if hist_n is not None and hist_n > HIST_INLINE_MAX and got != want:
+        r.note("the pane's history holds %d lines, more than the %d the app lists inline: the Up-arrow list was built in the background in this run "
+               "(#%d: keys typed before it arrives are applied first)" % (hist_n, HIST_INLINE_MAX, ISSUE_UP_RECALL_ASYNC))
     if not rec.recorded():
         r.unverifiable("this pane's shell kept no record of the lines it received (%s): the effect files were checked, the exact recalled and edited "
                        "lines were NOT" % ("no PSReadLine history file" if rec.ps else (
@@ -262,12 +291,17 @@ def skp_word(tag, i):
     return tag + SKP_CODE[(i >> 8) & 15] + SKP_CODE[(i >> 4) & 15] + SKP_CODE[i & 15]
 
 
-def skp_visible(text, tag):
-    """pure: the line numbers whose words an OCR text holds, sorted. A word is read whole or not at all."""
+def skp_visible(text, tag, hi=None):
+    """pure: the line numbers whose words an OCR text holds, sorted. A word is read whole or not at all. `hi`: the number of lines that were
+    printed; a word that decodes to a number outside 1..hi cannot be on screen, it is a glyph read wrong (round 14, macOS: one `c` read as `e`
+    turned line 394 into 906 of 500, and "the highest line on screen" then said the view had not moved). Such a word is dropped, never
+    clamped: the lines read right still place the view, and a view that did not move still reads its real lines."""
     out = set()
     for m in re.finditer(re.escape(tag) + "([%s]{3})" % SKP_CODE, (text or "").lower()):
         a, b, c = (SKP_CODE.index(ch) for ch in m.group(1))
-        out.add((a << 8) | (b << 4) | c)
+        n = (a << 8) | (b << 4) | c
+        if hi is None or 1 <= n <= hi:
+            out.add(n)
     return sorted(out)
 
 
@@ -343,7 +377,7 @@ def c_scroll_keys_position(ctx, r):
         typed(ctx, cat)
         rec.wait(1, 10)
         time.sleep(1.0)
-        at_bottom = skp_visible(ctx.ocr("skp_0_bottom"), tag)
+        at_bottom = skp_visible(ctx.ocr("skp_0_bottom"), tag, SKP_LINES)
         r.metric("skp_lines_read_at_bottom", len(at_bottom))
         if len(at_bottom) < 3:
             r.unverifiable("OCR read %d of the numbered lines on a screen that shows the last of 500 (shots/*skp_0_bottom.png): the scroll position "
@@ -357,7 +391,7 @@ def c_scroll_keys_position(ctx, r):
         ctx.be.keys([key_name(ctx, "pageup")] * 3, delay_ms=60)
         time.sleep(0.8)
         t1 = ctx.ocr("skp_1_pageup")
-        v1, n1 = skp_visible(t1, tag), stream_no()
+        v1, n1 = skp_visible(t1, tag, SKP_LINES), stream_no()
         r.metric("skp_after_pageup", dict(first=v1[0] if v1 else None, last=v1[-1] if v1 else None, read=len(v1)))
         moved = bool(v1) and v1[-1] < at_bottom[-1] - 10
         r.check(moved, "PageUp three times at the prompt did not move the view up: numbered lines on screen %s (before the keys %d..%d; shots/*skp_1_pageup.png)" % (
@@ -365,8 +399,8 @@ def c_scroll_keys_position(ctx, r):
         time.sleep(3.0)
         grew = stream_no() - n1
         t2 = ctx.ocr("skp_2_pageup_held")
-        v2 = skp_visible(t2, tag)
-        verdict, why = skp_hold_verdict(v1, v2, skp_visible(t2, stag), grew)
+        v2 = skp_visible(t2, tag, SKP_LINES)
+        verdict, why = skp_hold_verdict(v1, v2, skp_visible(t2, stag, SKP_STREAM_LINES), grew)
         r.metric("skp_pageup_hold", dict(verdict=verdict, new_lines=grew, read_before=len(v1), read_after=len(v2)))
         if verdict == "noref":
             r.unverifiable("after PageUp: %s" % why)
@@ -376,14 +410,14 @@ def c_scroll_keys_position(ctx, r):
         ctx.be.keys([WV.KX(ctx, "block_up"), "Home"], delay_ms=120)
         time.sleep(0.8)
         t3 = ctx.ocr("skp_3_top")
-        v3, n3 = skp_visible(t3, tag), stream_no()
+        v3, n3 = skp_visible(t3, tag, SKP_LINES), stream_no()
         went_up = t3 is not None and (not v3 or not v2 or v3[0] < v2[0])
         r.check(went_up, "block-up then Home did not move the view above where PageUp left it (numbered lines on screen %s, before %s; shots/*skp_3_top.png)" % (
             ("%d..%d" % (v3[0], v3[-1])) if v3 else "none", ("%d..%d" % (v2[0], v2[-1])) if v2 else "none"))
         time.sleep(3.0)
         grew_top = stream_no() - n3
         t4 = ctx.ocr("skp_4_top_held")
-        kept, new_on_screen = anchors_kept(t3, t4), skp_visible(t4, stag)
+        kept, new_on_screen = anchors_kept(t3, t4), skp_visible(t4, stag, SKP_STREAM_LINES)
         r.metric("skp_top_hold", dict(new_lines=grew_top, anchor_words=len(anchor_words(t3)), kept=round(kept, 2), stream_lines_on_screen=len(new_on_screen)))
         if grew_top < 10:
             r.check(False, "at the top of the scrollback the job printed %d line(s) in 3 s, expected about 30: no output arrived, so holding the view proves nothing" % grew_top)

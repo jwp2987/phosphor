@@ -50,6 +50,34 @@ def view_rendered(text, view):
     return False if re.search(r"frame \d+: updated=\[", text) else None
 
 
+KEY_FATE_RE = re.compile(r'hop=keydown_keybound\b[^\n]*?key="?([^" ]+)"? ctrl=(true|false) alt=(true|false) shift=(true|false)[^\n]*?action_type=(\S+)')
+KEY_DOWN_RE = re.compile(r'input_order keydown key="?([^" ]+)"? ctrl=(true|false) alt=(true|false) shift=(true|false)')
+SEARCH_OPEN_NET_S = 8.0
+
+
+def key_fate(text):
+    """pure: one sentence on what the app's key trace says became of the keys in a log excerpt: every chord a key binding took, with the type of
+    the action it dispatched (`hop=keydown_keybound`), and the chords that reached no binding (`keydown key=`). For a failure text: 'the binding
+    fired and the view never rendered' and 'the chord was bound to nothing' are different defects."""
+    def chord(m):
+        return "+".join([n for n, on in (("ctrl", m.group(2)), ("alt", m.group(3)), ("shift", m.group(4))) if on == "true"] + [m.group(1)])
+    bound = ["%s -> %s" % (chord(m), m.group(5).rsplit("::", 1)[-1]) for m in KEY_FATE_RE.finditer(text or "")]
+    plain = [chord(m) for m in KEY_DOWN_RE.finditer(text or "")]
+    if not bound and not plain:
+        return "the app's key trace has no key in that time (the key never reached the app, or the key trace is off)"
+    return "the app's key trace: taken by a binding: %s; reached no binding: %s" % (", ".join(bound[:4]) or "none", ", ".join(plain[:4]) or "none")
+
+
+def await_view(ctx, off, view, net=SEARCH_OPEN_NET_S):
+    """wait until a frame after log offset `off` rendered `view` (a give-up net of `net` seconds, not a settle: the first open of command search
+    after a launch reads the whole history, which on a slow machine with a long history takes longer than any fixed sleep) -> (True | False |
+    None as view_rendered, the log excerpt)"""
+    ctx.until(lambda: view_rendered(ctx.log_since(off), view) is True, net, step=0.1)
+    time.sleep(0.3)
+    log = ctx.log_since(off)
+    return view_rendered(log, view), log
+
+
 # ================================================================ T45 keybinding_rebind
 NEW_TAB_ACTION = "workspace:new_tab"                       # app/src/workspace/mod.rs NEW_TAB_BINDING_NAME (default ctrl-shift-T, cmd-t on macOS)
 CMD_SEARCH_ACTION = "workspace:show_command_search"        # app/src/terminal/input.rs (default ctrl-r)
@@ -177,8 +205,7 @@ def c_keybinding_rebind(ctx, r):
         off = ctx.log_size()
         ctx.be.guard()
         ctx.be.key(CTRL_R[1])
-        time.sleep(1.2)
-        search_seen = view_rendered(ctx.log_since(off), SEARCH_VIEW)
+        search_seen, _ = await_view(ctx, off, SEARCH_VIEW)
         ctx.shot("kbr_control_ctrl_r")
         ctx.be.key("Escape")
         time.sleep(0.5)
@@ -195,15 +222,15 @@ def c_keybinding_rebind(ctx, r):
             off = ctx.log_size()
             ctx.be.guard()
             ctx.be.key(ALT_R)
-            time.sleep(1.2)
-            seen = view_rendered(ctx.log_since(off), SEARCH_VIEW)
+            seen, klog = await_view(ctx, off, SEARCH_VIEW)
             ctx.shot("kbr_%s_alt_r" % tag)
             ctx.be.key("Escape")
             time.sleep(0.5)
             ctx.reset()
             r.metric("%s_alt_r_opens_search" % tag, seen)
             if search_seen is True:
-                r.check(seen is True, "%s: Alt-R did not open the history search (no frame rendered %s; #%d option B)" % (tag, SEARCH_VIEW, ISSUE_CTRL_R))
+                r.check(seen is True, "%s: Alt-R did not open the history search (no frame rendered %s within %.0f s; #%d option B); %s" % (
+                    tag, SEARCH_VIEW, SEARCH_OPEN_NET_S, ISSUE_CTRL_R, key_fate(klog)))
             else:
                 r.unverifiable("%s: the control's Ctrl-R showed no %s frame in the app log, so 'Alt-R opens the history search' is NOT judged" % (tag, SEARCH_VIEW))
 
@@ -227,14 +254,15 @@ def c_keybinding_rebind(ctx, r):
         off = ctx.log_size()
         ctx.be.guard()
         ctx.be.key(MOVED[1])
-        time.sleep(1.2)
-        moved_seen = view_rendered(ctx.log_since(off), SEARCH_VIEW)
+        moved_seen, klog = await_view(ctx, off, SEARCH_VIEW)
         ctx.shot("kbr_b_moved")
         ctx.be.key("Escape")
         time.sleep(0.5)
         ctx.reset()
+        r.metric("arm_b_moved_opens_search", moved_seen)
         if search_seen is True:
-            r.check(moved_seen is True, "arm B: %s did not open command search (no frame rendered %s) although keybindings.yaml binds it" % (MOVED[1], SEARCH_VIEW))
+            r.check(moved_seen is True, "arm B: %s did not open command search (no frame rendered %s within %.0f s) although keybindings.yaml binds it; %s" % (
+                MOVED[1], SEARCH_VIEW, SEARCH_OPEN_NET_S, key_fate(klog)))
         else:
             r.unverifiable("the control's Ctrl-R showed no %s frame in the app log (frame lines off, or the view has another name): 'the moved chord opens "
                            "command search' is NOT judged; the tab arms were" % SEARCH_VIEW)
