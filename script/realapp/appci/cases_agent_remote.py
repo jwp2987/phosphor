@@ -1,6 +1,6 @@
 # appci/cases_agent_remote.py (#1827): the AGENT driving a remote host end to end in the ssh lab, with the uploaded helper and with none.
 #   lab_agent_remote_flow    one agent turn of six scripted tool calls: read_files -> grep -> file_glob -> apply_file_diffs (edit of an EXISTING file) ->
-#                            run_shell_command (cat the edited file, use its output) -> search_codebase; shells bash dash ash nu pwsh, helper nohelper|upload
+#                            run_shell_command (cat the edited file, use its output) -> get_relevant_files; shells bash dash ash nu pwsh, helper nohelper|upload
 #   lab_agent_remote_errors  the failure answers over ssh: a missing file, an edit whose search text is not in the file, a grep/glob with no hit; the model must
 #                            be told (not "ok with the old content") and the host file must stay byte for byte
 #   lab_agent_remote_drop    the connection RESETS while a run_shell_command is running on the host: the model gets a tool result that says the command did not
@@ -159,7 +159,7 @@ def c_agent_remote_flow(ctx, r, arm):
         r.check(res[4].get("status") == "completed" and res[4].get("exit_code") == 0 and toks["e"] in out and toks["a"] not in out,
                 "the run_shell_command result does not show the EDITED content: %.300r" % (res[4],))
     if index_on and len(res) >= 6:
-        r.check(res[5].get("status") not in ("error", "cancelled"), "search_codebase answered with an error: %.300r" % (res[5],))
+        r.check(res[5].get("status") not in ("error", "cancelled"), "get_relevant_files answered with an error: %.300r" % (res[5],))
         r.metric("codebase_result", str(res[5])[:200])
     elif not index_on:
         r.note("codebase step not run: APPCI_FAKE_EMBEDDINGS=1 is off, so the host has no embeddings provider to index with")

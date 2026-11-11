@@ -410,7 +410,7 @@ def plan_call(step):
     if k == "run":
         return {"name": "run_shell_command", "arguments": {"command": step[1], "is_read_only": False, "uses_pager": False, "is_risky": False}}
     if k == "codebase":
-        return {"name": "search_codebase", "arguments": {"query": step[1]}}
+        return {"name": "get_relevant_files", "arguments": {"query": step[1]}}
     return None
 
 

@@ -5870,7 +5870,7 @@ def fake_model_plan_and_agent_remote_pure_parts():
         rep = FM.reply_for(msgs)
         names.append(rep["tool"]["name"])
         msgs += [{"role": "assistant", "content": ""}, {"role": "tool", "content": '{"status":"ok","n":%d}' % i}]
-    assert names == ["read_files", "grep", "file_glob", "apply_file_diffs", "run_shell_command", "search_codebase"], names
+    assert names == ["read_files", "grep", "file_glob", "apply_file_diffs", "run_shell_command", "get_relevant_files"], names
     assert FM.reply_for(msgs) == {"text": "Done.", "tool": None}
     text, results = FM.turn_state(msgs)
     assert text == t and len(results) == 6, (text, results)
@@ -9129,6 +9129,8 @@ import selftest_r21_wlpanes  # noqa: E402  (round 21 Wayland, #2143 #2144 #2145 
 CHECKS.extend(selftest_r21_wlpanes.CHECKS)
 import selftest_r21_relaynote  # noqa: E402  (round 21, #2142: the two notes of a Phosphorize click that waits behind a relay; own file)
 CHECKS.extend(selftest_r21_relaynote.CHECKS)
+import selftest_r22_labfx  # noqa: E402  (round 22, #2157 #2158 #2159: lab fixture repos, git apply format, codebase step tool; own file)
+CHECKS.extend(selftest_r22_labfx.CHECKS)
 
 
 def missing_required(required, passed):
