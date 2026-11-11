@@ -395,3 +395,46 @@ def macptr_proof_case_parts():
             raise AssertionError(want)
         except RuntimeError as e:
             assert want in str(e) and ran == [], (want, str(e))
+
+
+@check
+def macptr_menu_bar_refusal_is_judged_on_the_tool_not_the_message_r21():
+    """r15a macOS (job 17936839263): mptr refused the menu-bar click (injector-stderr.log has the sentence below) and the proof failed, because the
+    error message kept only the last 240 characters of it and the word looked for was cut off."""
+    said = ("refused a click at (756.0, 6.0): the topmost window there belongs to Window Server (pid 547, layer 24), not to pid 84331; windows at the "
+            "point, front to back: Window Server (pid 547, layer 24, 0,0,1512,33) > Dock (pid 90039, layer 20, 0,0,1512,982); area clear of the Dock bar "
+            "and the menu bar: 0,33,1512,874\n")
+    assert "refused" not in backend._tail(said), "the old message: the tool's verdict was in the part cut off"
+    e = backend.PtrError(4, said)
+    assert isinstance(e, RuntimeError) and e.rc == 4 and e.stderr == said and e.refused() and e.posted == []
+    assert str(e).startswith("pointer injector failed: mptr exit 4 (refused a click at (756.0, 6.0)") and "area clear of the Dock bar" in str(e)
+    assert CM.menu_bar_refusal(e) is None
+    # every other outcome is a failed proof, each with its own sentence
+    assert "was NOT refused" in CM.menu_bar_refusal(None)
+    assert "another reason" in CM.menu_bar_refusal(RuntimeError("refusing pointer input: the injection target is the reference terminal (Terminal)"))
+    assert "without refusing" in CM.menu_bar_refusal(backend.PtrError(2, "bad op k:1:1 (unknown, malformed, or a point outside the main display)"))
+    assert "without refusing" in CM.menu_bar_refusal(backend.PtrError(4, "")) and "without refusing" in CM.menu_bar_refusal(backend.PtrError(1, said))
+    assert "posted ['click1']" in CM.menu_bar_refusal(backend.PtrError(4, said, ["click1"]))
+    assert backend.ptr_posted(["T0 mach_ms=1 epoch=2", "P move 756.0 6.0 3", "LOC 756 6", "ERR refused"]) == []
+    assert backend.ptr_posted(["P move 1 1 3", "P click1 1 1 4", "P down 1 1 5", "P up 2 2 6", "P wheel 1 1 7"]) == ["click1", "down", "up", "wheel"]
+    assert backend.head_tail("short | text") == "short | text" and backend.head_tail("a\nb") == "a | b" and backend.head_tail(None) == ""
+    long = "H" * 300 + "M" * 300 + "T" * 300
+    assert backend.head_tail(long) == "H" * 200 + " ... " + "T" * 240
+    assert "raise PtrError(r.returncode" in inspect.getsource(backend.MacBackend.ptr) and "menu_bar_refusal(got)" in inspect.getsource(CM._pointer_half)
+    # the tool itself: the refusal starts with the word the proof reads, exits 4, and posts nothing for the refused op
+    swift = open(os.path.join(TOOLS_DIR, "mptr.swift"), encoding="utf-8").read()
+    assert 'finish(4, "refused \\(what) at' in swift and swift.index('mustOwn(p, "a click")') < swift.index("mouse(down, p, btn, Int64(i))")
+
+
+@check
+def r21_mac_documented():
+    """docs/testing.md and the design note name what round 21 changed for macOS"""
+    doc = open(os.path.join(ROOT, "docs", "testing.md"), encoding="utf-8").read()
+    sec = doc[doc.index("## Round 21, macOS"):]
+    for word in ("#2137", "#2138", "`backend.PtrError`", "`cases_macptr.menu_bar_refusal`", "`cases_pointer.current_row`", "`aim()`", "all_hits=True",
+                 "`cases_window_use.ax_fs_script`", "`Window.covers_display()`", "`wait_fullscreen_left()`", "`path_click_at`", "`windows_at_request`",
+                 "selftest_macptr.py", "selftest_pointer.py", "docs/design/r10-r21-mac.md", "meta_and_word_keys"):
+        assert word in sec, "docs/testing.md (Round 21, macOS) does not mention %s" % word
+    note = open(os.path.join(ROOT, "docs", "design", "r10-r21-mac.md"), encoding="utf-8").read()
+    for word in ("17936839263", "TEST", "#2138", "window 1", "set_prompt_suggestions_banner_state", "injector-stderr.log"):
+        assert word in note, word

@@ -815,6 +815,41 @@ def mac_windows_of(listing, pid):
     return out
 
 
+def head_tail(txt, head=200, tail=240):
+    """pure: a tool's stderr for an error message, newlines as ' | '. Short text whole; else its first `head` and last `tail` characters with the cut
+    marked. The START is kept because a tool says WHAT it did first (mptr: "refused a click at ...") and lists the details after; r15a on macOS: the
+    last 240 characters of a 330-character refusal began after the word `refused`, and the proof that looks for that word failed on a correct tool."""
+    txt = (txt or "").strip().replace("\n", " | ")
+    if len(txt) <= head + tail + 5:
+        return txt
+    return txt[:head] + " ... " + txt[-tail:]
+
+
+class PtrError(RuntimeError):
+    """the macOS pointer tool (mptr) ended with an error. A RuntimeError, as before, for every caller that only reports it; a caller that judges
+    WHICH error it was reads the fields, never the message: `rc` (mptr: 2 = bad ops or a point outside the main display, 4 = refused by the fence:
+    the topmost window at the point is not the app's), `stderr` (the whole text, uncut), `posted` (the `P` rows of the out file: the presses,
+    drags and wheel steps that WERE posted before the error)."""
+
+    def __init__(self, rc, stderr, posted=()):
+        self.rc, self.stderr, self.posted = rc, stderr or "", list(posted)
+        RuntimeError.__init__(self, "pointer injector failed: mptr exit %d (%s)" % (rc, head_tail(self.stderr) or "no stderr"))
+
+    def refused(self):
+        """the tool's own fence refused the op (exit 4 and its sentence), i.e. nothing was posted for it"""
+        return self.rc == 4 and self.stderr.lstrip().startswith("refused ")
+
+
+def ptr_posted(lines):
+    """pure: the out file's `P <op> <x> <y> <mach_ms>` rows that are presses, drags or wheel steps (a `P move` only moved the cursor) -> [op]"""
+    out = []
+    for l in lines:
+        w = l.split()
+        if w[:1] == ["P"] and len(w) >= 2 and w[1] != "move":
+            out.append(w[1])
+    return out
+
+
 class NeedsOwner(RuntimeError):
     """a macOS system dialog (Local Network / TCC / authorization) is in front: keys would go into it. run.py stops the run
     with exit 3 and NEEDS_OWNER.txt. We NEVER click such a dialog ourselves."""
@@ -1245,7 +1280,7 @@ class MacBackend(Backend):
                 pass
         if r.returncode != 0:
             _log_stderr("mptr", r.returncode, r.stderr)
-            raise RuntimeError("pointer injector failed: mptr exit %d (%s)" % (r.returncode, _tail(r.stderr.decode("utf-8", "replace")) or "no stderr"))
+            raise PtrError(r.returncode, r.stderr.decode("utf-8", "replace"), ptr_posted(lines))
         return loc
 
     def ptr_info(self):

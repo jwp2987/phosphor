@@ -6810,7 +6810,7 @@ Until this round the macOS backend had no pointer, no close key and no quit key,
 | half | what it checks | the control: what a wrong result trips |
 |---|---|---|
 | tools | `mptr`, `appkey`, `ocrw` are compiled | a missing one fails here |
-| pointer | the display scale is a whole number; the cursor is where two different moves put it; the find hook and Apple Vision agree (within 24 px) on where a printed word is; a double click on that word plus the copy key puts exactly it on the clipboard (sentinel first) | a cursor that does not move cannot be in two places; a click on the menu bar, which is not the app's window, must be REFUSED by `mptr`; a hook position a title bar's height off fails with the offset and names `APPCI_NO_FIND_HOOK=1` |
+| pointer | the display scale is a whole number; the cursor is where two different moves put it; the find hook and Apple Vision agree (within 24 px) on where a printed word is; a double click on that word plus the copy key puts exactly it on the clipboard (sentinel first) | a cursor that does not move cannot be in two places; a click on the menu bar, which is not the app's window, must be REFUSED by `mptr` (exit 4, a stderr starting with `refused `, nothing posted: `menu_bar_refusal`, round 21); a hook position a title bar's height off fails with the offset and names `APPCI_NO_FIND_HOOK=1` |
 | chords | Cmd-W closes a tab the case opened (the pane that answers a `pwd` probe is the first tab again) | Cmd-H, Cmd-Shift-Q and Ctrl-Cmd-F raise before anything is sent; Cmd-W raises while the reference terminal is the target. A tab that does not close fails and sets `app_chords_proven = False` on the backend: no later case sends an app chord in that run (`cases_robust.mac_chords_why_not`); the cases that need one SKIP naming the failed proof |
 
 Cmd-Q is not sent by the proof (it needs a relaunch); `quit_24_tabs` and `agent_restart_quit_*` are its cases.
@@ -7530,7 +7530,7 @@ screenshots and app logs, and the code. The Wayland job uploaded no screenshots 
 | `job_control` | macOS | TEST (#2118) | `READER_PROG` in place of `cat`; nothing typed for a reader that is not in front |
 | `flood_scrollback_find` | macOS | TEST (#2118) | the tail is a line of just 499999 or 499998 |
 | `mac_pointer_chord_proof`, `ui_mouse_select_copy`, `ui_copy_wrapped_drag`, `context_menu_actions`, `selection_modes`, `link_and_path_click` | macOS | TEST, the tool (#2118) | `mptr` looks through the Dock's backing window |
-| `minimize_fullscreen` (fullscreen off) | macOS | not decided | `judge_fullscreen_off` makes the next run decide |
+| `minimize_fullscreen` (fullscreen off) | macOS | not decided (round 21: TEST, the request went to `window 1`) | `judge_fullscreen_off` makes the next run decide |
 | `ui_copy_wrapped_drag` | Wayland agent | not decided (no log) | none; expected to follow the first row |
 - **A selected block stays selected.** The focus-input key clears a text selection only. With the agent view feature on, a block selected by
   block-up stays selected as context for the next agent query (`terminal/view.rs` `focus_input_box`), the next block-up starts from it, and in
@@ -7811,3 +7811,40 @@ in the terminal pass (the agent pass may carry the note instead); `editor_daily`
 `close_confirm_outcome = discarded`, `close_enter_alone = saved`. On a build without these commits the three fail with the #2130 / #2131 /
 #2132 texts.
 Run: `python3 script/realapp/appci/run.py --cases meta_and_word_keys,selection_modes,editor_daily`.
+
+## Round 21, macOS: the round 15 targeted run's failures (design `docs/design/r10-r21-mac.md`; #2137, #2138; harness only; nothing run on a Mac when written)
+
+`app-test-macos` job 17936839263 (build/r15a `b06800e98`): 4 FAIL rows. Self-tests: `pointer_link_click_follows_a_moved_block_r21`
+(`selftest_pointer.py`), `macptr_menu_bar_refusal_is_judged_on_the_tool_not_the_message_r21` (`selftest_macptr.py`), and the fullscreen
+block of `selftest.py` (R8).
+
+| case | verdict | what changed |
+|---|---|---|
+| `mac_pointer_chord_proof` | TEST (#2137) | the menu-bar refusal is judged on `backend.PtrError`, not on a cut message |
+| `link_and_path_click` | TEST (#2137); #2138 filed for the owner | every link click goes where the text is drawn now |
+| `minimize_fullscreen` (fullscreen off) | TEST (#2137); the app was not shown wrong | the request goes to every window that says it is fullscreen; the window server is asked too |
+| `needs_owner` | the Local Network dialog | none here (`APPCI_MAC_AUTO_ALLOW_LOCAL_NETWORK=1`, 3.3) |
+
+- **`mptr` errors.** `MacBackend.ptr` raises `backend.PtrError` (a `RuntimeError`): `rc` (2 = bad ops or a point off the main display, 4 =
+  refused by the fence), `stderr` (whole), `posted` (the out file's press / drag / wheel rows), `refused()`. A case that judges which error
+  it was reads the fields. The message keeps the first 200 and last 240 characters of the tool's text (`backend.head_tail`). In the run
+  the tool had refused correctly; its sentence had grown past 240 characters in r19 and the message began after the word the proof read.
+  `cases_macptr.menu_bar_refusal`: exit 4, stderr starts with `refused `, nothing posted; anything else fails with its own sentence.
+- **A click goes where the text is now.** In the run a prompt-suggestions banner was laid out under the block 15 s after the `cat`; the
+  block moved up 78 px and the path click hit the banner, which started an agent conversation. `cases_ui.hook_find(..., all_hits=True)`
+  returns every sighting of a word. `cases_pointer.current_row` takes the newest one with the same left edge, right edge and height as the
+  row first found (the same text, moved); another copy of the word is never taken. `aim()` hovers there, reads the place again and hovers
+  again if it moved (four tries, then no click and UNVERIFIABLE). A click that opened nothing while its target moved is UNVERIFIABLE; a
+  terminal pane that entered the agent view after it is named in the failure. Metric `path_click_at`. What a link click must open is
+  unchanged. Other pointer cases still click the place found first; use `aim()` in a case whose target can be displaced.
+- **Fullscreen off on macOS (replaces the round 14 entry above).** The window had not left fullscreen: both screenshots show it, and the
+  app logged no resize for the request, which went to `window 1` of the process. `cases_window_use.ax_fs_script` lists every Accessibility
+  window as `subrole=state`; off sets every window that reads true, on the first that reads false. A request that reached no window is its
+  error: NO-REFERENCE with the window list. `Window.fullscreen_state()` is true when any window says so; `Window.covers_display()` asks the
+  window server (`winrect`, `mptr info`); `wait_fullscreen_left()` waits for the window to stop covering the display (give-up net 10 s).
+  `judge_fullscreen_off(..., covers)`: still covering the display: FAIL "did not leave fullscreen"; left and the grid not back: FAIL "the
+  grid did not follow". Metric `fullscreen_off` adds `covers_display`, `windows_fullscreen`, `windows_at_request`, `windows_after`. The
+  AppleScript has not been run; an osascript error fails the "fullscreen on" step with its text.
+- **What the dialog cost.** The 45 terminal rows before it stand. Not played: `agent_close_undo_call_status`,
+  `agent_lrc_no_false_takeover`, `cb_ui_action_latency`, `desktop_notification_agent_question`, `meta_and_word_keys`,
+  `upgrade_over_previous`, and the whole agent pass.

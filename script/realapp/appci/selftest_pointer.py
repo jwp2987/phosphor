@@ -209,3 +209,60 @@ def pointer_pane_probe_parts():
     assert "expected the right one wider" in P.divider_verdict(a1, b1, (10, 40, 83), (20, 40, 79))[0]      # moved the other way
     assert "total changed" in P.divider_verdict(a1, b1, (10, 40, 80), (20, 40, 90))[0]
     assert "for a divider moved about" in P.divider_verdict(a1, b1, (10, 40, 79), (20, 40, 83), want_cols=13.3)[0]
+
+
+@check
+def pointer_link_click_follows_a_moved_block_r21():
+    """r15a macOS (job 17936839263): a prompt-suggestions banner quoting the URL was laid out under the block 15 s after the `cat`, the block moved
+    up 78 px and the path click went to the old place, which was the banner. The numbers below are that run's hook lines plus the window origin."""
+    import cases_ui as U
+    ox, oy = 232, 102
+    def row(tok, x0, y0, x1, y1):
+        l, t, rgt, b = int(ox + x0), int(oy + y0), int(ox + x1), int(oy + y1)
+        return (tok, (l + rgt) // 2, (t + b) // 2, l, rgt, t, b)
+    path0, path1 = row("pan2yw2r4", 612.0, 1276.0, 756.0, 1308.0), row("pan2yw2r4", 612.0, 1198.0, 756.0, 1230.0)
+    assert path0[1:3] == (916, 1394), "the place the case clicked in that run"
+    assert P.current_row(path0, [path0]) == path0 and P.current_row(path0, []) == path0
+    assert P.current_row(path0, [path0, path1]) == path1 and P.current_row(path0, [path0, path1])[2] == 1316, "the block moved up 78 px: the click follows it"
+    # another copy of the word (the banner's text: another left edge, width and height) is never the target, wherever it is in the log
+    url0, url1, banner = row("uanuardcf", 884.0, 1148.0, 1028.0, 1180.0), row("uanuardcf", 884.0, 1070.0, 1028.0, 1102.0), row("uanuardcf", 852.7, 1296.2, 969.8, 1326.7)
+    assert P.current_row(url0, [url0, url1, banner]) == url1 and P.current_row(url0, [url0, banner, url1, banner]) == url1
+    assert P.current_row(url0, [banner]) == url0, "only a foreign copy was logged since: the place found first stands"
+    # hook_find: every sighting, oldest first; the single answer is still the last line
+    log = ("a appci_find token=pan2yw2r4 x0=612.0 y0=1276.0 x1=756.0 y1=1308.0\nb appci_find token=other x0=1.0 y0=1.0 x1=2.0 y1=2.0\n"
+           "c appci_find token=pan2yw2r4 x0=612.0 y0=1198.0 x1=756.0 y1=1230.0\n")
+    fctx = types.SimpleNamespace(log_since=lambda off: log)
+    assert U.hook_find(fctx, "pan2yw2r4", origin=(ox, oy), since=0, all_hits=True) == [path0, path1]
+    assert U.hook_find(fctx, "pan2yw2r4", origin=(ox, oy), since=0) == path1 and U.hook_find(fctx, "absent", since=0) is None
+    assert U.hook_find(fctx, "absent", since=0, all_hits=True) == [] and U._hook_word(types.SimpleNamespace(be=types.SimpleNamespace(name="tui")), "x", all_hits=True) == []
+    # aim: hovers where the text is now; a move during the hover gets another hover; text that never rests gets no click
+    real_hook, real_hover = U._hook_word, P.hover
+    hovers, script = [], []
+    U._hook_word = lambda ctx, token, since=None, all_hits=False: list(script[0]) if script else []
+    def fake_hover(m, r_):
+        hovers.append(tuple(r_[1:3]))
+        if len(script) > 1:
+            script.pop(0)
+    P.hover = fake_hover
+    try:
+        script[:] = [[path0, path1]]                                    # moved before the hover
+        assert P.aim(None, None, "pan2yw2r4", path0, 0) == (path1, None) and hovers == [(916, 1316)]
+        hovers[:] = []
+        script[:] = [[path0], [path0, path1]]                           # moved DURING the first hover
+        assert P.aim(None, None, "pan2yw2r4", path0, 0) == (path1, None) and hovers == [(916, 1394), (916, 1316)]
+        hovers[:] = []
+        script[:] = [[path0], [path0, path1], [path0, path1, path0], [path0, path1, path0, path1], [path0, path1, path0, path1, path0]]
+        got, why = P.aim(None, None, "pan2yw2r4", path0, 0)
+        assert got is None and "kept moving" in why and "no click was sent" in why and len(hovers) == 4
+        script[:] = [[path0, path1]]
+        assert P.moved_since(None, "pan2yw2r4", path0, 0) == (0, -78) and P.moved_since(None, "pan2yw2r4", path1, 0) is None
+    finally:
+        U._hook_word, P.hover = real_hook, real_hover
+    # what a click that opened nothing did instead
+    went = P.click_went_elsewhere("x input_order hop=view_mode mode=agent pane=1496 t=1\n", "terminal")
+    assert went and "agent view" in went
+    assert P.click_went_elsewhere("x hop=view_mode mode=agent pane=1 t=1\n", "agent") is None and P.click_went_elsewhere("nothing\n", "terminal") is None
+    import inspect
+    src = inspect.getsource(P.links_play)
+    assert src.count("aim(ctx, m, ") == 2 and "m.click(found[" not in src, "every link click goes where the text is now, never where it was first found"
+    assert src.count("moved_since(ctx, ") == 2 and "click_went_elsewhere(ctx.log_since(off), ctx.mode)" in src

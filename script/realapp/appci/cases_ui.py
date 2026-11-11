@@ -227,17 +227,19 @@ def x11_window_origin(pid):
         return None
 
 
-def _hook_word(ctx, token, since=None):
+def _hook_word(ctx, token, since=None, all_hits=False):
     """the OCR-free position (hook_find) of `token` on Wayland (window origin from sway), X11 (from xdotool), macOS (mac_window_origin, #2061) and
     Windows (ClientToScreen of the app window: the hook's pixels are the client area's); None without the app hook line (an app without the hook,
-    or a token the hook never saw drawn): the caller falls back to OCR and says so (hook_missing_note), or on Windows reports the part as not judged"""
+    or a token the hook never saw drawn): the caller falls back to OCR and says so (hook_missing_note), or on Windows reports the part as not judged.
+    `all_hits`: every sighting, oldest first (hook_find), [] in place of None."""
+    none = [] if all_hits else None
     if getattr(ctx.be, "name", None) not in ("wayland", "x11", "mac", "windows"):
-        return None
+        return none
     if os.environ.get("APPCI_NO_FIND_HOOK") == "1":       # kill switch: positions by OCR only, as every Linux run before round 14 was (the launcher never armed the hook)
-        return None
+        return none
     pid = ctx.be.pid_fn() if getattr(ctx.be, "pid_fn", None) else None
     if not pid:
-        return None
+        return none
     if is_windows(ctx):
         origin = ctx.be.client_origin()
     elif mac(ctx):
@@ -247,7 +249,7 @@ def _hook_word(ctx, token, since=None):
         origin = (rect[0], rect[1]) if rect else None
     else:
         origin = x11_window_origin(pid)
-    return hook_find(ctx, token, origin=origin, since=since) if origin else None
+    return hook_find(ctx, token, origin=origin, since=since, all_hits=all_hits) if origin else none
 
 
 def hook_missing_note(r, token):
@@ -427,12 +429,15 @@ def sway_window_rect(pid):
 FIND_RE = re.compile(r"appci_find token=(\S+) x0=(-?[\d.]+) y0=(-?[\d.]+) x1=(-?[\d.]+) y1=(-?[\d.]+)")
 
 
-def hook_find(ctx, token, origin=(0, 0), scale=1.0, since=None):
+def hook_find(ctx, token, origin=(0, 0), scale=1.0, since=None, all_hits=False):
     """OCR-free position of `token` from the app's own log (#1789): the env-gated hook logs `appci_find token=T x0= y0= x1= y1=` (window-content
     pixels of the drawn text) for every token listed in $PHOSPHOR_APPCI_FIND_FILE. Returns a words() row (text, cx, cy, left, right, top, bottom) in
     screen pixels (origin = the window's top-left on screen, scale = device pixels per logical pixel) or None when the app logged nothing (an app
     without the hook, which is today's app): the caller then falls back to OCR. The LAST line for the token wins (the lowest, newest occurrence).
-    `since` (a ctx.log_size() offset) limits the search to lines logged after it, so a stale line of an earlier case cannot be taken."""
+    `since` (a ctx.log_size() offset) limits the search to lines logged after it, so a stale line of an earlier case cannot be taken.
+    `all_hits`: every line for the token as a row, oldest first ([] for none). The hook logs a token again when the place it is drawn at changes,
+    and each on-screen copy of it separately, so the list is where the text has been and what else showed the same word (cases_pointer.current_row)."""
+    none = [] if all_hits else None
     try:
         if since is not None:
             text = ctx.log_since(since)
@@ -443,16 +448,17 @@ def hook_find(ctx, token, origin=(0, 0), scale=1.0, since=None):
                 f.seek(max(0, f.tell() - (2 << 20)))
                 text = f.read().decode(errors="replace")
     except Exception:
-        return None
-    hit = None
-    for m in FIND_RE.finditer(text):
-        if m.group(1) == token:
-            hit = m
-    if not hit:
-        return None
-    x0, y0, x1, y1 = (float(hit.group(i)) * scale for i in (2, 3, 4, 5))
-    l, t, rgt, b = (int(origin[0] + x0), int(origin[1] + y0), int(origin[0] + x1), int(origin[1] + y1))
-    return (token, (l + rgt) // 2, (t + b) // 2, l, rgt, t, b)
+        return none
+    rows = []
+    for hit in FIND_RE.finditer(text):
+        if hit.group(1) != token:
+            continue
+        x0, y0, x1, y1 = (float(hit.group(i)) * scale for i in (2, 3, 4, 5))
+        l, t, rgt, b = (int(origin[0] + x0), int(origin[1] + y0), int(origin[0] + x1), int(origin[1] + y1))
+        rows.append((token, (l + rgt) // 2, (t + b) // 2, l, rgt, t, b))
+    if all_hits:
+        return rows
+    return rows[-1] if rows else None
 
 
 def register_find(ctx, *tokens):

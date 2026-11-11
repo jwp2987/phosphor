@@ -8911,7 +8911,7 @@ def r14_window_use_cases_pure_parts():
     assert W.judge_restore_ui(20.0, 59.0) == (True, 60.0) and W.judge_restore_ui(20.0, 61.0) == (False, 60.0), "3x the control, never unbounded"
     body = inspect.getsource(W._hide_under_stream) + inspect.getsource(W._fullscreen_twice) + inspect.getsource(W.c_minimize_fullscreen)
     for needle in ("judge_stream_copy(got, tag, n)", "ms <= limit", "judge_restore_ui(ctl_max, res_max)", "now == size0",
-                   "judge_fullscreen_off(before, back, off_err, ax_state, ax_why)", "full != before", "not win.has_wm()"):
+                   "judge_fullscreen_off(before, back, off_err, ax_state, ax_why, covers)", "full != before", "not win.has_wm()"):
         assert needle in body, needle
     # a Skip after a failed check would hide the failure (run.py turns the row into a skip): the cases skip only before their first check
     for fn in (W.c_resize_reflow_output, W.c_context_menu_actions, W.c_tab_pointer_use, W.c_focus_cycle, W.c_minimize_fullscreen):
@@ -8998,6 +8998,38 @@ def r19_copy_window_pointer_faults():
     v, why = W.judge_fullscreen_off(b, f, None, None, "not read on wayland")
     assert v == "fail" and "not read on wayland" in why, "a backend without a readable state keeps the plain size comparison"
     assert W.judge_fullscreen_off(b, None, None, False, None)[0] == "fail", "no `stty size` answer is not a pass"
+    # r21 (r15a macOS, job 17936839263): the off request to `window 1` was accepted, `window 1` read false, and the window was still fullscreen on
+    # the screenshots with no resize in the app log. The request goes to every window that says it is fullscreen; one that reached none is the
+    # harness's (NOREF); the window server is asked too whether the window still covers the display.
+    rows, errs = W.parse_ax_windows("AXUnknown=false;AXStandardWindow=true>set;|")
+    assert rows == [("AXUnknown", False, False), ("AXStandardWindow", True, True)] and errs == ""
+    assert W.ax_request_verdict(rows, errs, False) is None and W.ax_fullscreen_state(rows) == (True, None)
+    rows, errs = W.parse_ax_windows("AXUnknown=false;AXStandardWindow=false;|")
+    why = W.ax_request_verdict(rows, errs, False)
+    assert why and "no request was sent" in why and "AXUnknown: not fullscreen, AXStandardWindow: not fullscreen" in why
+    assert W.ax_fullscreen_state(rows) == (False, None) and W.judge_fullscreen_off(b, f, why, False, None, True)[0] == "noref"
+    rows, errs = W.parse_ax_windows("AXStandardWindow=true;|window 1: System Events got an error: not allowed ")
+    assert "could not write AXFullScreen" in W.ax_request_verdict(rows, errs, False) and "not allowed" in W.ax_request_verdict(rows, errs, False)
+    rows, errs = W.parse_ax_windows("none=none;|")
+    assert rows == [("none", None, False)] and W.ax_fullscreen_state(rows)[0] is None and "no fullscreen attribute" in W.ax_fullscreen_state(rows)[1]
+    assert W.parse_ax_windows("") == ([], "") and W.ax_fullscreen_state([])[0] is None and "can go fullscreen" in W.ax_request_verdict([], "", True)
+    rows, errs = W.parse_ax_windows("AXStandardWindow=false>set;AXStandardWindow=false;|")
+    assert W.ax_request_verdict(rows, errs, True) is None and [wr for _s, _t, wr in rows] == [True, False], "on: one window only"
+    on, off, look = W.ax_fs_script(4242, True), W.ax_fs_script(4242, False), W.ax_fs_script(4242, None)
+    assert 'if fs is "false" and did < 1 then' in on and "to true" in on and 'if fs is "true" and did < 99 then' in off and "to false" in off
+    assert 'if fs is "none-wanted"' in look and "unix id is 4242" in look and "window 1 " not in on + off + look, "no request is addressed to `window 1`"
+    disp = (0, 0, 1512, 982, 3024, 1964)
+    assert W.covers_display((0.0, 0.0, 1512.0, 982.0), disp) is True and W.covers_display((0.0, 33.0, 1512.0, 949.0), disp) is True
+    assert W.covers_display((124.0, 55.0, 1352.0, 846.0), disp) is False and W.covers_display(None, disp) is None and W.covers_display((0, 0, 1, 1), None) is None
+    v, why = W.judge_fullscreen_off(b, f, None, False, None, True)
+    assert v == "fail" and "still covers the whole display" in why and "did not follow" not in why, "not the app's grid: the window never left"
+    v, why = W.judge_fullscreen_off(b, f, None, False, None, False)
+    assert v == "fail" and "no longer covers the display" in why and "the grid did not follow" in why
+    assert W.judge_fullscreen_off(b, b, None, False, None, True) == ("pass", "")
+    src = inspect.getsource(W._fullscreen_twice)
+    assert "win.wait_fullscreen_left()" in src and "covers = win.covers_display()" in src and "windows_at_request=off_windows" in src
+    wsrc = inspect.getsource(W.Window.fullscreen) + inspect.getsource(W.Window.restore)
+    assert "ax_request_verdict(rows, errs, bool(on))" in wsrc and "self._ax_fullscreen(False)" in wsrc and "window 1" not in inspect.getsource(W.Window.restore)
     src = inspect.getsource(W.c_minimize_fullscreen)
     assert "off_refused and end != size0" in src and "r.check(end == size0" in src
     # R5: the reader of job_control part 2 is a shell read loop (BSD cat exits on EINTR after fg), and nothing is typed for a reader that is not in front

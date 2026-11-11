@@ -593,6 +593,51 @@ def hover(m, row):
     time.sleep(1.0)
 
 
+def current_row(row, hits, slack=1):
+    """pure: where the text first found at `row` is drawn NOW, from every sighting the find hook logged for its word since (`hits`, oldest first):
+    the newest one with the same left edge, right edge and height, i.e. the same run of text moved up or down with its block. A sighting of
+    another shape is another copy of the word (a banner, a tab title, a tooltip quoting it) and is never taken. No such sighting: `row` itself.
+    #2137, r15a, macOS job 17936839263: 15 s after the `cat`, a prompt-suggestions banner whose text quoted the URL was laid out under the block, the
+    block moved up 78 px, and the path click went to the place found before that, which was now the banner: it started an agent conversation."""
+    same = [h for h in hits if abs(h[3] - row[3]) <= slack and abs(h[4] - row[4]) <= slack and abs((h[6] - h[5]) - (row[6] - row[5])) <= slack]
+    return same[-1] if same else row
+
+
+def aim(ctx, m, token, row, since, tries=4):
+    """hover the word `token` where it is drawn now and return (the row to click, None), or (None, why) when the text moved during every one
+    of `tries` hovers. The place is read again after the hover: a layout that moved under the resting pointer gets a new hover, never a click at
+    the old place. Positions that did not come from the find hook (OCR) have no later sighting and are used as found."""
+    seen = [tuple(row[1:3])]
+    for _ in range(tries):
+        row = current_row(row, U._hook_word(ctx, token, since, all_hits=True))
+        hover(m, row)
+        now = current_row(row, U._hook_word(ctx, token, since, all_hits=True))
+        if now[1:3] == row[1:3]:
+            return row, None
+        seen.append(tuple(now[1:3]))
+        row = now
+    return None, "the text kept moving while the pointer rested on it (centres seen: %r): no click was sent" % (seen,)
+
+
+def moved_since(ctx, token, row, since):
+    """-> (dx, dy) when the text clicked at `row` is drawn elsewhere now (the layout moved between the hover's check and the click), else None"""
+    now = current_row(row, U._hook_word(ctx, token, since, all_hits=True))
+    return None if now[1:3] == row[1:3] else (now[1] - row[1], now[2] - row[2])
+
+
+VIEW_MODE_RE = re.compile(r"hop=view_mode mode=(\w+)")
+
+
+def click_went_elsewhere(log_text, mode):
+    """pure: what the app log since a click that opened nothing says the click did instead, or None. A terminal-mode pane that entered the agent
+    view right after the click took the click on something that starts an agent conversation (a suggested prompt), not on the printed text."""
+    modes = VIEW_MODE_RE.findall(log_text or "")
+    if mode == "terminal" and "agent" in modes:
+        return ("the pane entered the agent view after the click (hop=view_mode mode=agent): the click landed on something that starts an agent "
+                "conversation, not on the printed path")
+    return None
+
+
 def link_mod(ctx):
     """the modifier a user holds to open a link: Ctrl on Linux, Cmd on macOS (app/src/terminal/links.rs)"""
     return "Cmd" if U.mac(ctx) else "Ctrl"
@@ -630,24 +675,36 @@ def links_play(ctx, r, m, calls, fx, tok, front_changed=None):
     r.check(calls() == [], "the desktop opener was called before any click (printing or hovering opened something): %r" % calls())
     for name, t, want in (("URL", t_url, fx["url"]), ("OSC 8 link", t_vis, fx["osc_url"])):
         n0 = len(calls())
-        hover(m, found[t])
+        row, why = aim(ctx, m, t, found[t], seen)
+        if row is None:
+            r.unverifiable("%s+click on the %s: %s" % (mod, name, why))
+            continue
         with Held(ctx, "ctrl"):
-            m.click(found[t][1], found[t][2])
+            m.click(row[1], row[2])
         ctx.until(lambda: len(calls()) > n0, 6, step=0.2)
         time.sleep(0.5)
         ctx.shot("lc_clicked_%s" % t[:2])
         err = url_open_verdict(calls()[n0:], want)
         msg = ("%s+click on the %s: %s (the pointer hovered the word first; if the app got a plain click, the %s key held by the harness did "
                "not reach it: shots/*lc_clicked_%s.png shows a link tooltip then)" % (mod, name, err, mod, t[:2]))
-        if err and not calls()[n0:] and U.on_wayland(ctx) and not U.wl_pointer_real(ctx):
+        moved = moved_since(ctx, t, row, seen) if err and not calls()[n0:] else None
+        if moved:
+            r.unverifiable("%s+click on the %s: nothing was handed to the opener, and the text moved %+d, %+d px between the hover and the check after "
+                           "the click: the click may not have been on the link, so this click is not judged" % ((mod, name) + moved))
+        elif err and not calls()[n0:] and U.on_wayland(ctx) and not U.wl_pointer_real(ctx):
             U.wl_check(ctx, r, False, msg, "pointer")
         else:
             r.check(err is None, msg)
     # the path
     n0, off = len(calls()), ctx.log_size()
-    hover(m, found[t_path])
+    row, why = aim(ctx, m, t_path, found[t_path], seen)
+    if row is None:
+        r.unverifiable("%s+click on `%s:%d`: %s" % (mod, fx["src"], fx["line_no"], why))
+        r.check(ctx.app.alive(), "the app died while opening links")
+        return
+    r.metric("path_click_at", dict(found=list(found[t_path][1:3]), clicked=list(row[1:3])))
     with Held(ctx, "ctrl"):
-        m.click(found[t_path][1], found[t_path][2])
+        m.click(row[1], row[2])
     ctx.until(lambda: len(calls()) > n0, 4, step=0.2)
     time.sleep(1.0)
     other = front_changed() if front_changed and not calls()[n0:] else None
@@ -659,7 +716,14 @@ def links_play(ctx, r, m, calls, fx, tok, front_changed=None):
                "running: the harness signals only its own PIDs)" % other)
     r.metric("path_opened_by", how or "nothing")
     msg = "%s+click on `%s:%d`: %s" % (mod, fx["src"], fx["line_no"], err)
-    if err and how is None and not calls()[n0:] and U.on_wayland(ctx) and not U.wl_pointer_real(ctx):
+    went = click_went_elsewhere(ctx.log_since(off), ctx.mode) if err and how is None else None
+    if went:
+        msg += "; " + went
+    moved = moved_since(ctx, t_path, row, seen) if err and how is None and not calls()[n0:] else None
+    if moved:
+        r.unverifiable("%s; the path's text moved %+d, %+d px between the hover and the check after the click: the click may not have been on the "
+                       "path, so this click is not judged" % ((msg,) + moved))
+    elif err and how is None and not calls()[n0:] and U.on_wayland(ctx) and not U.wl_pointer_real(ctx):
         U.wl_check(ctx, r, False, msg, "pointer")
     else:
         r.check(err is None, msg)

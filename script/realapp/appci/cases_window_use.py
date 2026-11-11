@@ -101,12 +101,106 @@ def parse_ax_bool(rc, out, err):
     return None, (err or "").strip() or "osascript exit %s, answer %r" % (rc, (out or "")[:40])
 
 
-def judge_fullscreen_off(before, back, off_err, ax_state, ax_why):
+AX_FS_SCRIPT = '''tell application "System Events"
+    set out to ""
+    set errs to ""
+    set did to 0
+    set n to count of windows of (first process whose unix id is %(pid)d)
+    repeat with i from 1 to n
+        set fs to "none"
+        try
+            set v to value of attribute "AXFullScreen" of window i of (first process whose unix id is %(pid)d)
+            if v is true then
+                set fs to "true"
+            else if v is false then
+                set fs to "false"
+            end if
+        end try
+        set sr to "none"
+        try
+            set sr to (subrole of window i of (first process whose unix id is %(pid)d)) as text
+        end try
+        if fs is "%(from)s" and did < %(limit)d then
+            try
+                set value of attribute "AXFullScreen" of window i of (first process whose unix id is %(pid)d) to %(to)s
+                set fs to fs & ">set"
+                set did to did + 1
+            on error e
+                set errs to errs & "window " & i & ": " & e & " "
+            end try
+        end if
+        set out to out & sr & "=" & fs & ";"
+    end repeat
+    return out & "|" & errs
+end tell'''
+
+
+def ax_fs_script(pid, want=None):
+    """the System Events script that lists EVERY Accessibility window of process `pid` as `subrole=state;` (state: true / false / none = the
+    window has no AXFullScreen attribute), then `|` and the errors of its own writes. `want` True: the first window that reads false is set to
+    true (one window goes fullscreen). `want` False: every window that reads true is set to false. `want` None: nothing is written.
+    Why every window and not `window 1` (#2137; r15a, macOS job 17936839263): the off request to `window 1` was accepted, `window 1` then read false,
+    and the app's window was still fullscreen on both screenshots with no resize, no screen change and no layout in the app log: the request
+    did not reach the fullscreen window. Which window `window 1` was is not known from that run (a fullscreen window can have a second window of
+    the same process in front of it, e.g. for a detached title bar); the rows this script returns are recorded, so the next run shows it."""
+    return AX_FS_SCRIPT % {"pid": pid, "from": "none-wanted" if want is None else "false" if want else "true",
+                           "to": "true" if want else "false", "limit": 1 if want else 99}
+
+
+def parse_ax_windows(out):
+    """pure: the script's answer -> ([(subrole, state, written)], errors). state: True / False / None (no such attribute)"""
+    body, _, errs = (out or "").partition("|")
+    rows = []
+    for part in body.split(";"):
+        sr, eq, st = part.strip().partition("=")
+        if not eq:
+            continue
+        st, _, mark = st.partition(">")
+        rows.append((sr, {"true": True, "false": False}.get(st), mark == "set"))
+    return rows, errs.strip()
+
+
+def ax_windows_text(rows):
+    return ", ".join("%s: %s%s" % (sr, {True: "fullscreen", False: "not fullscreen", None: "no fullscreen attribute"}[st], " (written)" if wr else "")
+                     for sr, st, wr in rows) or "no window"
+
+
+def ax_request_verdict(rows, errs, want):
+    """pure: None when the request reached a window, else why it did not (the caller reports it as the request's error: the harness did not
+    change the window's state, so nothing about the app follows from what the window does next)"""
+    if errs:
+        return "System Events could not write AXFullScreen (%s; windows: %s)" % (errs[:160], ax_windows_text(rows))
+    if not any(wr for _sr, _st, wr in rows):
+        return "no window of the app %s, so no request was sent (windows: %s)" % (
+            "can go fullscreen (none reads AXFullScreen = false)" if want else "says it is fullscreen (none reads AXFullScreen = true)", ax_windows_text(rows))
+    return None
+
+
+def ax_fullscreen_state(rows):
+    """pure: is any window of the app fullscreen -> (True | False, None), or (None, why) when no window has the attribute"""
+    states = [st for _sr, st, _wr in rows if st is not None]
+    if not states:
+        return None, "no window of the app has an AXFullScreen attribute (windows: %s)" % ax_windows_text(rows)
+    return any(states), None
+
+
+def covers_display(rect, display):
+    """pure: does the app's largest window (x, y, w, h in points, winrect) cover the main display (x, y, w, h, ...; `mptr info`), as a native
+    fullscreen window does: the whole width, and the whole height less at most the band a camera housing takes at the top. None when either is
+    unknown. A second opinion on `is the window fullscreen` that asks the window server, not the window."""
+    if not rect or not display:
+        return None
+    return rect[2] >= display[2] - 2 and rect[3] >= display[3] - 60 and abs(rect[0] - display[0]) <= 2
+
+
+def judge_fullscreen_off(before, back, off_err, ax_state, ax_why, covers=None):
     """the fullscreen-off step -> ("pass" | "fail" | "noref", text). `before` / `back` = `stty size` before fullscreen and after the off request;
-    `off_err` = the error of the off request (None when it was accepted); `ax_state` / `ax_why` = Window.fullscreen_state() after it.
-    The size came back: pass. It did not: a request the system refused is NOREF (the harness did not get the window out of fullscreen; nothing
-    about the app is known); an accepted request with the window still fullscreen, or a window that says it left fullscreen with the grid not
-    back, is a FAIL saying which. No readable state (other backends; ax_why says why): the plain size comparison, a FAIL."""
+    `off_err` = the error of the off request (None when it was accepted); `ax_state` / `ax_why` = Window.fullscreen_state() after it; `covers` =
+    Window.covers_display() after it (macOS; None elsewhere).
+    The size came back: pass. It did not: a request the system refused or that reached no window is NOREF (the harness did not get the window out
+    of fullscreen; nothing about the app is known); an accepted request with the window still fullscreen (by its own word, or by the window
+    server's: it still covers the display), or a window that left fullscreen with the grid not back, is a FAIL saying which. No readable state
+    (other backends; ax_why says why): the plain size comparison, a FAIL."""
     if back == before:
         return "pass", ""
     if off_err:
@@ -114,8 +208,12 @@ def judge_fullscreen_off(before, back, off_err, ax_state, ax_why):
     if ax_state is True:
         return "fail", ("fullscreen off: the request (the window's Accessibility fullscreen attribute set to false, not the user's key) was accepted but the window still "
                         "says it is fullscreen; `stty size` is %r, it was %r before fullscreen" % (back, before))
+    if ax_state is False and covers:
+        return "fail", ("fullscreen off: the request was accepted and no window of the app says it is fullscreen any more, but the app's window still covers the "
+                        "whole display (the window did not leave fullscreen); `stty size` is %r, it was %r before fullscreen" % (back, before))
     if ax_state is False:
-        return "fail", "fullscreen off: the window says it left fullscreen, but `stty size` is %r, it was %r before fullscreen (the grid did not follow)" % (back, before)
+        return "fail", "fullscreen off: the window says it left fullscreen%s, but `stty size` is %r, it was %r before fullscreen (the grid did not follow)" % (
+            " and no longer covers the display" if covers is False else "", back, before)
     return "fail", "fullscreen off: `stty size` is %r, it was %r before fullscreen (window state: %s)" % (back, before, ax_why)
 
 
@@ -351,6 +449,7 @@ class Window:
         self.ctx, self.be = ctx, ctx.be.name
         self.saved = None                                   # Windows: backend.window_save() (place, size, maximised)
         self.orig, self.xid, self.floated, self.ws, self.unmapped = None, None, False, None, False
+        self.ax_seen = None                                 # macOS: the app's Accessibility windows as the last fullscreen call saw them
 
     def _sway(self, cmd):
         rc = subprocess.run(["swaymsg", cmd], capture_output=True, timeout=10)
@@ -487,24 +586,56 @@ class Window:
             err = err or "refocus: %r" % (e,)
         return err
 
+    def _ax_fullscreen(self, want=None):
+        """macOS: run ax_fs_script for the app -> (rows, errors of the writes, error of the call or None)"""
+        rc, out, err = _osa(ax_fs_script(app_pid(self.ctx) or 0, want))
+        if rc != 0:
+            return [], "", err or "osascript exit %s" % rc
+        rows, errs = parse_ax_windows(out)
+        self.ax_seen = ax_windows_text(rows)
+        return rows, errs, None
+
     def fullscreen(self, on):
         """ask for fullscreen on / off the way a user does where the harness can: the app's own F11 binding (root_view:toggle_fullscreen) on Linux; the
-        window's AXFullScreen attribute on macOS (the cmd-ctrl-f chord is one the frontmost-app guard refuses) -> None or the error"""
+        AXFullScreen attribute of the app's windows on macOS (the cmd-ctrl-f chord is one the frontmost-app guard refuses): on = the first window
+        that is not fullscreen, off = EVERY window that says it is (ax_fs_script says why not `window 1`) -> None or the error. A request that
+        reached no window is an error."""
         if self.be in ("wayland", "x11"):
             self.ctx.be.key("F11")
             return None
-        rc, _out, err = _osa('tell application "System Events" to set value of attribute "AXFullScreen" of window 1 of (first process whose unix id is %d) to %s'
-                             % (app_pid(self.ctx) or 0, "true" if on else "false"))
-        return None if rc == 0 else err
+        rows, errs, err = self._ax_fullscreen(bool(on))
+        return err or ax_request_verdict(rows, errs, bool(on))
 
     def fullscreen_state(self):
-        """macOS: the window's own AXFullScreen attribute -> (True | False, None), or (None, why) when it cannot be read. Other backends: (None, why):
-        the cases judge fullscreen there by `stty size` alone."""
+        """macOS: is any window of the app fullscreen by its own AXFullScreen attribute -> (True | False, None), or (None, why) when it cannot be
+        read. Other backends: (None, why): the cases judge fullscreen there by `stty size` alone."""
         if self.be != "mac":
             return None, "not read on %s" % self.be
-        rc, out, err = _osa('tell application "System Events" to get value of attribute "AXFullScreen" of window 1 of (first process whose unix id is %d)'
-                            % (app_pid(self.ctx) or 0))
-        return parse_ax_bool(rc, out, err)
+        rows, _errs, err = self._ax_fullscreen(None)
+        return (None, err) if err else ax_fullscreen_state(rows)
+
+    def covers_display(self):
+        """macOS: does the app's largest window cover the main display (the window server's answer: winrect and `mptr info`)? None when it cannot
+        be told, and on the other backends"""
+        if self.be != "mac":
+            return None
+        try:
+            return covers_display(self.ctx.be.window_rect(), self.ctx.be.ptr_info().get("display"))
+        except Exception:
+            return None
+
+    def wait_fullscreen_left(self, give_up=10.0):
+        """macOS: wait until the window no longer covers the display and no window says it is fullscreen (the leave animation takes about a
+        second; `give_up` is a give-up net, the caller judges the state it reads afterwards). Elsewhere: the fixed wait the case always had."""
+        if self.be != "mac" or self.covers_display() is None:
+            time.sleep(2.5)
+            return
+        end = time.time() + give_up
+        while time.time() < end:
+            if self.covers_display() is False and self.fullscreen_state()[0] is not True:
+                break
+            time.sleep(0.5)
+        time.sleep(1.5)                                         # the app lays out at the new size
 
     def restore(self):
         try:
@@ -524,9 +655,9 @@ class Window:
             elif self.be == "x11" and self.xid and self.orig:
                 subprocess.run(["xdotool", "windowsize", self.xid, str(self.orig[0]), str(self.orig[1])], capture_output=True, timeout=10)
             elif self.be == "mac" and self.orig:
-                _osa('tell application "System Events" to set value of attribute "AXFullScreen" of window 1 of (first process whose unix id is %d) to false'
-                     % (app_pid(self.ctx) or 0))
-                time.sleep(1.5)
+                rows, _errs, _err = self._ax_fullscreen(False)          # every window that says it is fullscreen; none: nothing is written
+                if any(wr for _sr, _st, wr in rows):
+                    self.wait_fullscreen_left()
                 U.resize_to(self.ctx, self.orig[0], self.orig[1])
             self.ctx.be.refocus()
         except Exception:
@@ -1248,6 +1379,9 @@ def c_minimize_fullscreen(ctx, r):
                        "window may still be fullscreen" % (end, size0, off_refused))
     else:
         r.check(end == size0, "at the end `stty size` is %r, it was %r before the case" % (end, size0))
+    if win.covers_display():
+        r.note("macOS: the app's window still covers the display at the end of the case (it could not be taken out of fullscreen; windows: %s): the "
+               "cases after this one run in a fullscreen window until the app is next relaunched" % win.ax_seen)
     U.exact_burst(ctx, r, "mf_after", 3)
     r.check(ctx.app.alive(), "the app died in the minimise / fullscreen case")
 
@@ -1354,16 +1488,27 @@ def _fullscreen_twice(ctx, r, win):
             " (%s)" % err if err else "", before, full)):
         return                                                  # Window.restore() leaves fullscreen
     U.exact_burst(ctx, r, "mf_fullscreen", 3)
+    win.fullscreen_state()
+    full_windows = win.ax_seen                                  # macOS: the app's windows while it is fullscreen (None elsewhere)
     off_err = win.fullscreen(False)
-    time.sleep(2.5)
+    off_windows = win.ax_seen
+    if off_err:
+        time.sleep(2.5)                                         # nothing was asked of the window: nothing to wait for
+    else:
+        win.wait_fullscreen_left()
     ax_state, ax_why = win.fullscreen_state()
+    covers = win.covers_display()
     V.back_to_input(ctx, r)
     back = pane_size(ctx, "mf_fs2")
     ctx.shot("mf_fullscreen_off")
     # r14a (macOS): `stty size` stayed at the fullscreen size and the window was still fullscreen at the end; the off request's error was dropped
     # here, so "the request was refused" could not be told from "the app did not leave fullscreen". Both are recorded now.
-    r.metric("fullscreen_off", dict(back=list(back or ()), request_error=off_err, window_says_fullscreen=ax_state, state_error=ax_why))
-    verdict, why = judge_fullscreen_off(before, back, off_err, ax_state, ax_why)
+    # r15a (macOS): the request to `window 1` was accepted and `window 1` read false while the app's window was still fullscreen on the
+    # screenshots and the app logged no resize. The request now goes to every window that says it is fullscreen, the windows are recorded as
+    # they were (fullscreen, at the request, after it), and the window server is asked too whether the window still covers the display.
+    r.metric("fullscreen_off", dict(back=list(back or ()), request_error=off_err, window_says_fullscreen=ax_state, state_error=ax_why,
+                                    covers_display=covers, windows_fullscreen=full_windows, windows_at_request=off_windows, windows_after=win.ax_seen))
+    verdict, why = judge_fullscreen_off(before, back, off_err, ax_state, ax_why, covers)
     if verdict == "noref":
         r.unverifiable(why)
     else:

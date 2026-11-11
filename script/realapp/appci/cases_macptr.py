@@ -16,6 +16,7 @@
 import os, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import backend as B  # noqa: E402
 import cases as C  # noqa: E402  (cases.py imports this module near its end, so everything below is already defined)
 import cases_r14_w1a as W1  # noqa: E402
 import cases_robust as R  # noqa: E402
@@ -45,6 +46,23 @@ def menu_bar_point(display):
     return display[0] + display[2] / 2.0, display[1] + 6.0
 
 
+def menu_bar_refusal(err):
+    """pure: None when `err`, what MacBackend.ptr raised for the click on the menu bar, is the tool's own refusal with nothing posted; else what is
+    wrong (#2137). Judged on the tool's exit code, the start of its whole stderr and its out file (backend.PtrError), not on the error's message: r15a
+    (job 17936839263) the tool refused correctly ("refused a click at (756.0, 6.0): the topmost window there belongs to Window Server (pid N, layer
+    24) ...", injector-stderr.log) and this check failed, because the message carried only the last 240 characters of a refusal that had grown a
+    window list in r19 (#2118), and the word it looked for was in the part cut off."""
+    if err is None:
+        return "was NOT refused by mptr (the call returned): the fence that keeps clicks inside the app's own windows is not live"
+    if not isinstance(err, B.PtrError):
+        return "was not sent, for another reason than the tool's fence (%s): the fence itself was not exercised" % err
+    if not err.refused():
+        return "mptr failed without refusing (exit %d, %r): the fence that keeps clicks inside the app's own windows is not proven" % (err.rc, err.stderr[:300])
+    if err.posted:
+        return "mptr says it refused, but its out file shows it posted %r first: a press reached the menu bar" % (err.posted,)
+    return None
+
+
 def _pointer_half(ctx, r):
     m = U.mac_mouse(ctx)
     if not r.check(m is not None, MP.missing_tool_reason(ctx.be, "mptr")):
@@ -69,13 +87,12 @@ def _pointer_half(ctx, r):
     disp = ctx.be.ptr_info().get("display")
     if r.check(bool(disp), "`mptr info` gave no display line"):
         bx, by = menu_bar_point(disp)
-        refused = None
+        got = None
         try:
             ctx.be.ptr(["k:%.1f:%.1f:1:1" % (bx, by)])
         except RuntimeError as e:
-            refused = str(e)
-        r.check(bool(refused) and "refused" in refused, "a click on the menu bar at (%.0f, %.0f) points was NOT refused by mptr (%r): the fence that "
-                                                         "keeps clicks inside the app's own windows is not live" % (bx, by, refused))
+            got = e
+        r.check(menu_bar_refusal(got) is None, "a click on the menu bar at (%.0f, %.0f) points: %s" % (bx, by, menu_bar_refusal(got)))
     return m
 
 
