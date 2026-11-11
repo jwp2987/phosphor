@@ -11,7 +11,7 @@
 # Tools: only into the CI user's OWN home (cargo-binstall and the crates it installs go to $CARGO_HOME/bin = ~/.cargo/bin),
 # installed when missing, never system-wide, never sudo. Anything that cannot be installed that way fails the job with the
 # reason. cargo-fuzz does not exist on Windows (see fuzz-smoke below): that job fails loudly, it does not skip.
-# Env: TEST_FILTER (nextest filterset, test suite only), FUZZ_SECONDS, MUTANTS_* (as the box jobs), PHOSPHOR_PYTHON (python.exe on Windows).
+# Env: SUITE_TIMEOUT_MIN (minutes the test command may run before its tree is ended, exit 124), TEST_FILTER (nextest filterset, test suite only), FUZZ_SECONDS, MUTANTS_* (as the box jobs), PHOSPHOR_PYTHON (python.exe on Windows).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 plat="${1:?usage: script/ci/run_suite.sh macos|windows <suite>}"
@@ -35,6 +35,16 @@ for t in cargo rustc; do
 done
 [[ "$plat" == macos ]] && { command -v protoc >/dev/null || { echo "ERROR protoc is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; }
 
+# #2148: nextest + check_test_failures run through run_bounded.py. A leaky test child holds the job's output pipe after the tests are done and
+# the step never ended (Windows test job: 3 h until cancelled). run_bounded ends the process tree IT started (Job Object on Windows, own
+# process group elsewhere; never anything else) as soon as the command returns, and gives the command SUITE_TIMEOUT_MIN minutes (under the job
+# timeout in .gitlab-ci.yml), then exits 124. $BASH_EXE is a native path so python.exe can start it on Windows.
+BASH_EXE="$(cygpath -w "$BASH" 2>/dev/null || echo "$BASH")"
+bounded() {   # bounded <minutes> <script> args...: run a repo bash script, end its tree on return
+  local mins="$1"; shift
+  "$PY" script/ci/run_bounded.py --timeout-min "$mins" -- "$BASH_EXE" "$@"
+}
+
 # Install a cargo tool into the CI user's own ~/.cargo/bin when missing (pinned cargo-binstall: script/install_cargo_binstall).
 need_tool() {   # need_tool <binary> <crate>
   command -v "$1" >/dev/null && return 0
@@ -50,20 +60,20 @@ case "$suite" in
     # == test-linux: BOTH crates in ONE invocation (a listed failure that did not run counts as "fixed"). Default nextest profile.
     set -o pipefail
     st=0
-    ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui ${TEST_FILTER:+-E "$TEST_FILTER"} 2>&1 | tee "nextest-$plat.log" || st=$?
+    bounded "${SUITE_TIMEOUT_MIN:-270}" ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui ${TEST_FILTER:+-E "$TEST_FILTER"} 2>&1 | tee "nextest-$plat.log" || st=$?
     if [[ -n "${TEST_FILTER:-}" ]]; then "$PY" script/ci/check_filter_terms.py "$TEST_FILTER" "nextest-$plat.log" || st=$(( st ? st : 1 )); fi
     exit $st
     ;;
   warpui-core)
     need_tool cargo-nextest cargo-nextest
     # == test-warpui-core: --features tui is not optional (elements/tui/ is cfg(feature = "tui")).
-    ./script/check_test_failures -p warpui_core --features tui ${TEST_FILTER:+-E "$TEST_FILTER"} 2>&1 | tee "nextest-warpui-core-$plat.log"
+    bounded "${SUITE_TIMEOUT_MIN:-100}" ./script/check_test_failures -p warpui_core --features tui ${TEST_FILTER:+-E "$TEST_FILTER"} 2>&1 | tee "nextest-warpui-core-$plat.log"
     exit "${PIPESTATUS[0]}"
     ;;
   workspace-rest)
     need_tool cargo-nextest cargo-nextest
     # == test-workspace-rest: one invocation listing every package (do not split).
-    ./script/check_test_failures \
+    bounded "${SUITE_TIMEOUT_MIN:-220}" ./script/check_test_failures \
         -p sum_tree -p string-offset -p fuzzy_match -p handlebars -p syntax_tree \
         -p languages -p asset_cache -p settings_value -p jsonrpc -p simple_logger \
         -p warp_logging -p channel_versions -p command -p http_client -p warp_features \

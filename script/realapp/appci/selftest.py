@@ -9174,6 +9174,18 @@ def r17_subshell_line_editor_proof_verdict_1991():
         assert field in src, "view.rs no longer logs %r: the case reads it" % field
 
 
+@check
+def lab_teardown_line_with_cid_none():
+    """#2149: the teardown print for a fixed lab slot (cid None) must not raise and must name the slot; a container id is still shortened to 12"""
+    import lab as labmod
+    slot = types.SimpleNamespace(cid=None, info=dict(cid=None, slot="mac"))
+    line = labmod.stopped_line("terminal", slot)
+    assert "slot mac" in line and "None" not in line, line
+    assert labmod.stopped_line("agent", types.SimpleNamespace(cid=None, info={})).endswith("(fixed slot, no container id)")
+    ctr = types.SimpleNamespace(cid="0123456789abcdef0123", info=dict(slot=None))
+    assert "container 0123456789ab stopped" in labmod.stopped_line("agent", ctr)
+
+
 def main(argv=None):
     """`--require a,b`: besides running every check, fail unless the named ones ran and passed. The guards job names the two checks whose absence
     nothing else would notice (#2086, #2089 / #2090): a selftest_*.py file is registered by two lines at this file's tail, and a merge that drops

@@ -54,6 +54,7 @@ else
   command -v Xwayland >/dev/null || { [ "$MODE" = xwayland ] && need+=("Xwayland") || log "note: Xwayland missing (no reference terminal)"; }
 fi
 
+. "$HERE/../reap_leftovers.sh"
 teardown() {
   # exact PIDs/process groups recorded in $PIDS, newest first
   local pid name
@@ -66,6 +67,8 @@ teardown() {
     [ -n "${pid:-}" ] || continue
     kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
   done < <(tac "$PIDS")
+  # #2150: anything still alive whose command line names this out dir is logged and ended by PID (it could keep the job's output pipe open)
+  reap_leftovers "$OUT" | sed 's/^/[session] /'
   [ -n "${RT_TMP:-}" ] && rm -rf "$RT_TMP"
   true
 }

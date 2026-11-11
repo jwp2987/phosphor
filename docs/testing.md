@@ -8061,3 +8061,24 @@ is told, by two toasts. Off: `PHOSPHOR_SUBSHELL_RELAY_NOTE=0` (the old toast at 
 - **Self-tests.** `script/realapp/appci/selftest_r21_relaynote.py` (run by `run.py --self-test`): `relay_note_state` with right and wrong
   inputs (the old toast is `absent`, the other note is `absent`), `relay_waits_for_prompt` (only the look at the arming), the two hop
   names in `HOPS`, the words and hop fields held against the Rust source, the order of the case's steps.
+
+## A leftover child cannot hold a CI step open (#2148, #2150), teardown with a fixed lab slot (#2149), line-ending-proof fixtures (#2167)
+
+- **Windows / macOS unit jobs (#2148).** `script/ci/run_suite.sh` runs the `test`, `warpui-core` and `workspace-rest` suites through
+  `script/ci/run_bounded.py`. When the test command returns, the tree it started is ended: Windows puts the command in a Job Object
+  (`KILL_ON_JOB_CLOSE`, `TerminateJobObject`; fallback `taskkill /T /F` of its own PID), POSIX runs it in its own process group and TERM/KILLs the
+  group. Every process ended is logged (`run_bounded: ...`). The command also has `SUITE_TIMEOUT_MIN` minutes (270 / 100 / 220 for the three
+  Windows jobs, set in `.gitlab-ci.yml`, each under the job timeout); on expiry the tree is ended and the step exits 124. A leaky test (nextest
+  `LEAK`) used to keep the job's output pipe open and the step sat until the job was cancelled. Only processes started by the command are touched.
+- **app-test cleanup (#2150).** `script/realapp/reap_leftovers.sh` (`reap_leftovers OUT`) ends, by exact PID after logging it (`reap: leftover pid ...`),
+  every process whose command line names the job's out dir, except the calling script and its ancestors. TERM, up to 4 s, then KILL. macOS
+  `app_test.sh` calls it in `cleanup` (it only listed them before) and also starts a watchdog that TERMs the script at `CI_JOB_TIMEOUT` minus 900 s
+  (`APPCI_STEP_MARGIN_S`), so the step is bounded under the job timeout. Linux `wayland_session.sh` calls it at the end of `teardown`. Windows
+  `windows/ci/reap.ps1` (`Reap-Leftovers`, taskkill by PID /T) is called at the end of `app_test.ps1` (before the report) and by `after_job.ps1`.
+- **Teardown with a fixed lab slot (#2149).** A fixed slot has `cid` None; `lab.stopped_line` prints the slot name instead of slicing the container id.
+- **Windows line endings (#2167).** `repo_with_origin()` in `remote_server/src/shellcmd/git/write_tests.rs` pins `core.autocrlf=false`, so the
+  `discard` tests assert the bytes discard restores, not the machine's checkout conversion. `truncate_chars` (`build-payload.sh`) prints with
+  `jq -j` (no terminator), so jq.exe's text mode cannot append `\r` to the truncated text; the test is unchanged.
+- **Self-tests.** `python3 script/ci/run_bounded.py --self-test` (a grandchild holding stdout cannot keep the pipe open; a control proves the
+  leak holds it without the wrapper; timeout gives 124), `script/realapp/test_reap.sh` (same shape for the app-test cleanup), and
+  `lab_teardown_line_with_cid_none` in `appci/selftest.py` (run by `run.py --self-test`). All three run in the `.gitlab-ci.yml` self-test job.

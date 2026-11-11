@@ -15,7 +15,8 @@ DIST=${1:?dist dir}; OUT=${2:?out dir}
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; APPCI="$HERE/../../appci"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); : > "$OUT/pids"
-CAFF=""; PYPID=""; KTAP=""; DONE=0
+CAFF=""; PYPID=""; KTAP=""; DONE=0; WATCHDOG=""
+. "$HERE/../../reap_leftovers.sh"
 # Exact-PID cleanup, also on SIGTERM/INT/HUP (a cancelled GitLab job): python runner first (its SIGTERM handler unwinds app.stop /
 # sshd.stop), then anything still recorded in the pids files whose command line is verified to be OURS (PID reuse safe), caffeinate, DMG.
 killif() {   # killif PID SUBSTRING: signal PID only when its command line contains SUBSTRING
@@ -33,14 +34,22 @@ cleanup() {
   [ -n "$CAFF" ] && { kill "$CAFF" 2>/dev/null; echo "cleanup: caffeinate pid $CAFF stopped"; }
   [ -n "$KTAP" ] && killif "$KTAP" "$OUT/ktap.log"
   if hdiutil detach "$OUT/mnt" -quiet 2>/dev/null; then echo "cleanup: DMG detached from $OUT/mnt"; else echo "cleanup: DMG mount $OUT/mnt not attached (nothing to detach)"; fi
-  # audit: anything still alive whose command line names this job's out dir (the app bundle, tools, sshd) is reported, never killed here (teardown.sh in after_script owns that)
-  left=$(ps -axo pid=,command= 2>/dev/null | grep -F "$OUT" | grep -v "grep -F" | grep -v "app_test.sh" | cut -c1-160)
-  if [ -n "$left" ]; then echo "cleanup: leftover processes naming $OUT:"; echo "$left" | sed 's/^/cleanup:   /'; else echo "cleanup: leftover processes naming $OUT: none"; fi
+  # #2150: anything still alive whose command line names this job's out dir (a leftover Python child, the app bundle, tools, sshd) is logged and
+  # ENDED by exact PID. It used to be only listed; the leftover held the job's output pipe and the step sat until the 6 h job timeout.
+  reap_leftovers "$OUT"
+  [ -n "$WATCHDOG" ] && kill "$WATCHDOG" 2>/dev/null
   true; }
 # #2123: the logs and screenshots are made ready for upload HERE (scrub, then run_slim/), after the cleanup, on every exit path of this script (the
 # EXIT trap also runs after the TERM/INT/HUP trap and after fail3), not in the job's after_script, which GitLab stops after 5 minutes in all. It
 # cannot change this script's exit status. The after_script keeps `appci_artifacts.py --fallback` as the net for a job killed before this ran.
 artifacts() { [ "${APPCI_ARTIFACTS:-1}" = 0 ] || python3 "$HERE/../../../ci/appci_artifacts.py" "$OUT" 2>&1; true; }
+# #2150: the step is bounded well under the job timeout: at CI_JOB_TIMEOUT minus APPCI_STEP_MARGIN_S (default 900 s, room for cleanup + the artifacts
+# pass) this script TERMs itself, which runs the TERM trap (cleanup, exit 143) and then the EXIT trap. The watchdog's fds go to /dev/null so it never
+# holds the job's output pipe itself (cleanup logs "cleanup: begin" as always).
+if [ -n "${CI_JOB_TIMEOUT:-}" ]; then
+  _lim=$(( CI_JOB_TIMEOUT - ${APPCI_STEP_MARGIN_S:-900} )); [ "$_lim" -gt 60 ] || _lim=60
+  ( sleep "$_lim"; kill -TERM $$ ) </dev/null >/dev/null 2>&1 & WATCHDOG=$!
+fi
 trap 'cleanup; artifacts' EXIT
 trap 'cleanup; exit 143' TERM INT HUP
 fail3() { echo "NEEDS OWNER: $*" | tee "$OUT/NEEDS_OWNER.txt"; 

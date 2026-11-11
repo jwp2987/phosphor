@@ -739,7 +739,7 @@ def main():
             print("teardown[%s]: test sshd %s" % (label, "stopped" if ssh_info else "was not running"), flush=True)
             if lab_obj:
                 lab_obj.stop()
-                print("teardown[%s]: lab container %s stopped" % (label, lab_obj.cid[:12]), flush=True)
+                print(labmod.stopped_line(label, lab_obj), flush=True)
             if sim and be:
                 be.close()
             logs = os.path.join(run, "logs", label)
