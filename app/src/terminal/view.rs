@@ -10681,13 +10681,21 @@ impl TerminalView {
     ) {
         if has_block_list_selection {
             self.copy(ctx);
-            if ctrl_c_copy_drops_text_selection(is_long_running) {
-                // #2117: this Ctrl-C would have been the interrupt. With the selection left
-                // up (the clear below keeps it while the agent view feature is on) every
-                // later Ctrl-C copied again and none reached the program.
+            if ctrl_c_copy_drops_text_selection(
+                is_long_running,
+                ctrl_c_copy_clears_idle_selection_enabled(),
+            ) {
+                // #2117: with a command in front this Ctrl-C would have been the interrupt.
+                // With the selection left up (the clear below keeps it while the agent view
+                // feature is on) every later Ctrl-C copied again and none reached the program.
+                // #2131 (owner decision 2026-11-11): at an idle prompt too, as Windows
+                // Terminal does.
                 self.clear_selected_text(ctx);
                 ctx.notify();
-            } else {
+            }
+            if !is_long_running {
+                // As before #2117 at an idle prompt: selected blocks (and the text) go when
+                // they are not agent context.
                 self.clear_selections_when_shell_mode_without_focusing_input(ctx);
             }
             return;
@@ -42006,13 +42014,37 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
 }
 
 /// Windows, Ctrl-C with text selected in the block list: the key copies and is not sent as an
-/// interrupt. Whether that copy also drops the text selection (#2117): yes while a command is
-/// in front, so the NEXT Ctrl-C is the interrupt the user is reaching for. At an idle prompt
-/// the selection is treated as before (kept as agent context while the agent view feature is
-/// on); there is no program a Ctrl-C has to reach.
+/// interrupt. Whether that copy also drops the text selection:
+///
+/// - with a command in front, always (#2117): the NEXT Ctrl-C is the interrupt the user is
+///   reaching for;
+/// - at an idle prompt, yes too (#2131, owner decision 2026-11-11: what Windows Terminal does).
+///   `idle_clears == false` is the kill switch ([`ctrl_c_copy_clears_idle_selection_enabled`]):
+///   the selection is then treated as before the decision (kept as agent context while the
+///   agent view feature is on).
 #[cfg_attr(not(windows), allow(dead_code))]
-fn ctrl_c_copy_drops_text_selection(command_in_front: bool) -> bool {
-    command_in_front
+fn ctrl_c_copy_drops_text_selection(command_in_front: bool, idle_clears: bool) -> bool {
+    command_in_front || idle_clears
+}
+
+/// Env kill switch (#2131): `PHOSPHOR_WIN_CTRL_C_COPY_CLEARS_IDLE=0` keeps the text selection
+/// after a Ctrl-C copy at an idle prompt on Windows, as before the decision. Read once per run.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ctrl_c_copy_clears_idle_selection_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        ctrl_c_copy_clears_idle_selection_enabled_for(
+            std::env::var("PHOSPHOR_WIN_CTRL_C_COPY_CLEARS_IDLE")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// The kill switch's rule: on unless the variable is exactly `0`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ctrl_c_copy_clears_idle_selection_enabled_for(value: Option<&str>) -> bool {
+    value != Some("0")
 }
 
 /// Whether an appearing approval card may take keyboard focus (#1195, #1350): never from the

@@ -3562,7 +3562,8 @@ The fork now records whether the left press began inside the block list
 `pane_resize_maximize` (round 14). Reverse only with another rule that keeps the next key out of a
 pane the user did not click. Design: `docs/design/r10-r19-copy.md`.
 <!-- markers: keep:left_mouse_up_is_foreign keep:foreign_left_mouse_up_is_ignored_by_an_unfocused_pane_only -->
-## Windows: a Ctrl-C that copied a selection while a command runs drops the selection (#2117) — IMPROVED
+## Windows: a Ctrl-C that copied a selection drops the selection (#2117, #2131) — IMPROVED
+
 On Windows a Ctrl-C with text selected in the block list copies and is not sent as an interrupt
 (upstream design, kept). The copy was followed by
 `clear_selections_when_shell_mode_without_focusing_input`, which does nothing while
@@ -3592,3 +3593,45 @@ back. Tests: `ssh_remote_command_starts_an_unbootstrapped_login_shell_as_a_login
 `docs/design/r19-loginshell.md`. Worked, unproven when written (nothing compiled; the wrapper text was
 run by hand against a real dash and a real busybox ash).
 <!-- markers: keep:PHOSPHOR_SSH_LOGIN_SHELL keep:ssh_remote_command_starts_an_unbootstrapped_login_shell_as_a_login_shell -->
+away. With a command in front the copy drops the text selection
+(`ctrl_c_copy_drops_text_selection`, #2117), so the next Ctrl-C is the interrupt. Found by the app
+case `selection_modes` in the Git Bash pane (round 14). Design: `docs/design/r10-r19-copy.md`.
+
+Owner decision 2026-11-11 (#2131, the question #2117 left open): the copy drops the text selection
+at an idle prompt too, as Windows Terminal does. A text selection that was copied with Ctrl-C is
+therefore no longer attached to the next agent query (selected blocks are treated as before). Off:
+`PHOSPHOR_WIN_CTRL_C_COPY_CLEARS_IDLE=0` (the idle selection is kept again; the command-in-front
+rule of #2117 has no switch). A re-pin must not put the kept selection back. Design:
+`docs/design/r10-r19-decide-app.md`.
+<!-- markers: keep:ctrl_c_copy_drops_text_selection keep:ctrl_c_copy_drops_the_text_selection_with_a_command_in_front keep:ctrl_c_copy_drops_the_text_selection_at_an_idle_prompt -->
+
+## Linux / Windows: Ctrl+Left / Ctrl+Right with a program in front are xterm's CSI 1;5D / CSI 1;5C (#2130) — IMPROVED 2026-11-11
+
+Upstream (identical at `42effe840`, `app/src/terminal/view/init.rs`) binds
+`terminal:executing_command_move_cursor_word_left` / `_right` (Ctrl+Left / Ctrl+Right off macOS,
+Option+Left / Option+Right on macOS) to readline's `ESC b` / `ESC f` on every platform, while every
+other modified arrow key goes through the encoder as `CSI 1;<mods><letter>`. A program that does not
+read Meta-prefixed keys takes `ESC b` as Escape followed by `b`. Owner decision 2026-11-11: on Linux
+and Windows the two bindings write `CSI 1;5D` / `CSI 1;5C` (what xterm, Konsole and Windows Terminal
+send); macOS keeps `ESC b` / `ESC f` (`escape_sequences::word_key_sequence_for`). Off:
+`PHOSPHOR_WORD_KEYS_XTERM=0`. The other word keys of that table (Ctrl+Backspace = `0x17`, the
+macOS-only Cmd keys) are as at the pin. A re-pin must not point the two bindings back at
+`EscCodes::WORD_LEFT` / `WORD_RIGHT` for every platform. App case `meta_and_word_keys` (raw half).
+Design: `docs/design/r10-r19-decide-app.md`.
+<!-- markers: keep:word_key_sequence_for keep:word_keys_are_xterm_ctrl_arrows_off_macos_and_meta_letters_on_macos -->
+
+## Editor tab close question: Tab / Shift+Tab move, Enter / Space press, focus ring (#2132) — IMPROVED 2026-11-11
+
+Upstream's in-app dialog (identical at `42effe840`, `app/src/workspace/native_modal.rs`) has two
+keys, Enter (the first button) and Escape (the last), so the editor tab's close question (Save /
+Don't Save / Cancel; Linux and Windows) could not be answered "Don't Save" without the pointer.
+Owner decision 2026-11-11: that question asks for a keyboard selection that starts on Save
+(`quit_warning` `close_question_enter_button`), so Tab / Shift+Tab move between the buttons and
+Enter presses the selected one (Enter alone is Save, as before; Escape is Cancel). In every dialog
+with a keyboard selection (this one and the editor's overwrite question) Space presses the selected
+button too (`NativeModalAction::PressSelected`) and the selected button carries a focus ring
+(`has_focus_ring`). Dialogs without a selection are as at the pin. Off:
+`PHOSPHOR_CLOSE_QUESTION_KEYS=0` (the close question has no selection again). macOS shows the system
+alert for this question and is not affected. App case `editor_daily`. Design:
+`docs/design/r10-r19-decide-app.md`.
+<!-- markers: keep:close_question_enter_button keep:space_button_index keep:has_focus_ring keep:the_close_question_is_answered_dont_save_by_tab_then_enter_or_space -->

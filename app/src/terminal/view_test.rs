@@ -129,12 +129,30 @@ fn unfocused_input_lets_the_approval_card_take_focus() {
 }
 
 // #2117 (Windows): a Ctrl-C that copied a block-list text selection while a command is in front
-// drops that selection, so the next Ctrl-C interrupts. Fails on old code: the helper did not
-// exist and the selection was kept whenever the agent view feature was on, so every Ctrl-C copied.
+// drops that selection, so the next Ctrl-C interrupts. That holds whatever the idle switch says.
 #[test]
-fn ctrl_c_copy_drops_the_text_selection_only_with_a_command_in_front() {
-    assert!(ctrl_c_copy_drops_text_selection(true));
-    assert!(!ctrl_c_copy_drops_text_selection(false));
+fn ctrl_c_copy_drops_the_text_selection_with_a_command_in_front() {
+    assert!(ctrl_c_copy_drops_text_selection(true, true));
+    assert!(ctrl_c_copy_drops_text_selection(true, false));
+}
+
+// #2131 (Windows, owner decision 2026-11-11): the copy drops the selection at an idle prompt
+// too, as Windows Terminal does. Fails on old code: `ctrl_c_copy_drops_text_selection(false)`
+// was false (the test of #2117 asserted exactly that; the decision changed the expectation).
+#[test]
+fn ctrl_c_copy_drops_the_text_selection_at_an_idle_prompt() {
+    assert!(ctrl_c_copy_drops_text_selection(false, true));
+}
+
+// The kill switch `PHOSPHOR_WIN_CTRL_C_COPY_CLEARS_IDLE=0` puts the idle behaviour of #2117
+// back (the selection is kept); anything else leaves the decision on.
+#[test]
+fn the_idle_ctrl_c_copy_kill_switch_is_off_only_for_zero() {
+    assert!(ctrl_c_copy_clears_idle_selection_enabled_for(None));
+    assert!(ctrl_c_copy_clears_idle_selection_enabled_for(Some("")));
+    assert!(ctrl_c_copy_clears_idle_selection_enabled_for(Some("1")));
+    assert!(!ctrl_c_copy_clears_idle_selection_enabled_for(Some("0")));
+    assert!(!ctrl_c_copy_drops_text_selection(false, false));
 }
 
 fn tool_call_message_with_tool_for_test(

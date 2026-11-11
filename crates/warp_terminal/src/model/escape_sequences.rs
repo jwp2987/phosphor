@@ -169,6 +169,11 @@ pub mod EscCodes {
 
     pub const WORD_LEFT: &[u8] = &[C0::ESC, b'b'];
     pub const WORD_RIGHT: &[u8] = &[C0::ESC, b'f'];
+    /// xterm's Ctrl+Left / Ctrl+Right, `CSI 1;5D` / `CSI 1;5C` (#2130). The form the terminal's
+    /// own encoder gives every other modified arrow key
+    /// (`cursor_movement_keystroke_to_escape_sequence`).
+    pub const XTERM_CTRL_LEFT: &[u8] = &[C0::ESC, b'[', b'1', b';', b'5', b'D'];
+    pub const XTERM_CTRL_RIGHT: &[u8] = &[C0::ESC, b'[', b'1', b';', b'5', b'C'];
 
     // Navigation escape codes
     pub const PAGE_UP: &[u8] = b"5~";
@@ -211,6 +216,51 @@ pub mod EscCodes {
         }
         C1::CSI
     }
+}
+
+/// The bytes of the "move by a word" keys while a program is in front (the terminal view's
+/// editable bindings `terminal:executing_command_move_cursor_word_left` / `_right`: Ctrl+Left /
+/// Ctrl+Right on Linux and Windows, Option+Left / Option+Right on macOS).
+///
+/// Owner decision 2026-11-11 (#2130): off macOS they are xterm's `CSI 1;5D` / `CSI 1;5C`, what
+/// xterm, Konsole and Windows Terminal send for the same keys and what the terminal's own encoder
+/// gives every other modified arrow key. Before, they were readline's `ESC b` / `ESC f`, which a
+/// program that does not read Meta-prefixed keys takes as Escape followed by a letter. macOS
+/// keeps `ESC b` / `ESC f` (what Terminal.app sends for Option+arrows).
+///
+/// `xterm_form == false` is the kill switch ([`word_keys_xterm_enabled`]): `ESC b` / `ESC f` on
+/// every platform, as before the decision.
+pub fn word_key_sequence_for(left: bool, mac: bool, xterm_form: bool) -> &'static [u8] {
+    match (left, xterm_form && !mac) {
+        (true, true) => EscCodes::XTERM_CTRL_LEFT,
+        (false, true) => EscCodes::XTERM_CTRL_RIGHT,
+        (true, false) => EscCodes::WORD_LEFT,
+        (false, false) => EscCodes::WORD_RIGHT,
+    }
+}
+
+/// Env kill switch (#2130): `PHOSPHOR_WORD_KEYS_XTERM=0` puts `ESC b` / `ESC f` back on
+/// Ctrl+Left / Ctrl+Right with a program in front (Linux and Windows). Read once per run.
+pub fn word_keys_xterm_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        word_keys_xterm_enabled_for(std::env::var("PHOSPHOR_WORD_KEYS_XTERM").ok().as_deref())
+    })
+}
+
+/// The kill switch's rule: on unless the variable is exactly `0`.
+pub fn word_keys_xterm_enabled_for(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
+/// [`word_key_sequence_for`] on this platform, with the kill switch read.
+pub fn word_key_sequence(left: bool) -> Vec<u8> {
+    word_key_sequence_for(
+        left,
+        OperatingSystem::get().is_mac(),
+        word_keys_xterm_enabled(),
+    )
+    .to_vec()
 }
 
 /// Trait for objects that can provide information about the terminal's mode.

@@ -1,5 +1,6 @@
 use super::{
-    should_display_warning_for, unsaved_edits_always_ask_for, warning_can_be_switched_off,
+    close_question_enter_button, close_question_keys_enabled_for, should_display_warning_for,
+    unsaved_edits_always_ask_for, warning_can_be_switched_off,
 };
 
 /// #2092, the owner's decision of 2026-11-11: losing unsaved editor edits always asks, whatever
@@ -61,4 +62,33 @@ fn the_unsaved_edits_question_offers_no_dont_show_again() {
     // Kill switch: the checkbox is back, and it does switch the question off.
     assert!(warning_can_be_switched_off(false, true));
     assert!(warning_can_be_switched_off(false, false));
+}
+
+/// #2132, the owner's decision of 2026-11-11: the editor tab's close question (Save / Don't Save
+/// / Cancel) has a keyboard selection, so Tab reaches "Don't Save". It starts on Save, the first
+/// button: Enter alone is what it was. Fails on old code: the function did not exist and the
+/// question was built without a selection, so Tab did nothing in it.
+#[test]
+fn the_editor_tab_close_question_starts_with_save_selected() {
+    assert_eq!(close_question_enter_button(true, Some(0), true), Some(0));
+}
+
+/// Every other question (pane, tab, window, quit) keeps Enter on its first button and has no
+/// keyboard selection; so does an editor tab question that has no Save button.
+#[test]
+fn other_close_questions_have_no_keyboard_selection() {
+    assert_eq!(close_question_enter_button(false, None, true), None);
+    assert_eq!(close_question_enter_button(false, Some(1), true), None);
+    assert_eq!(close_question_enter_button(true, None, true), None);
+}
+
+/// The kill switch `PHOSPHOR_CLOSE_QUESTION_KEYS=0` puts back the question without a keyboard
+/// selection; anything else (unset, empty, another value) leaves the decision on.
+#[test]
+fn the_close_question_keys_kill_switch_is_off_only_for_zero() {
+    assert!(close_question_keys_enabled_for(None));
+    assert!(close_question_keys_enabled_for(Some("")));
+    assert!(close_question_keys_enabled_for(Some("1")));
+    assert!(!close_question_keys_enabled_for(Some("0")));
+    assert_eq!(close_question_enter_button(true, Some(0), false), None);
 }

@@ -505,10 +505,13 @@ pub fn init(app: &mut AppContext) {
         .with_context_predicate(
             id!("Terminal") & !id!("IMEOpen") & id!("TerminalView_NonEmptyBlockList"),
         ),
+        // #2130 (owner decision 2026-11-11): on Linux and Windows the two word keys are xterm's
+        // `CSI 1;5D` / `CSI 1;5C`; macOS keeps `ESC b` / `ESC f`
+        // (`escape_sequences::word_key_sequence`, kill switch `PHOSPHOR_WORD_KEYS_XTERM=0`).
         EditableBinding::new(
             "terminal:executing_command_move_cursor_word_left",
             crate::t!("keybinding-desc-terminal-cursor-word-left"),
-            TerminalAction::ControlSequence(Vec::from(EscCodes::WORD_LEFT)),
+            TerminalAction::ControlSequence(escape_sequences::word_key_sequence(true)),
         )
         .with_mac_key_binding("alt-left")
         .with_linux_or_windows_key_binding("ctrl-left")
@@ -516,7 +519,7 @@ pub fn init(app: &mut AppContext) {
         EditableBinding::new(
             "terminal:executing_command_move_cursor_word_right",
             crate::t!("keybinding-desc-terminal-cursor-word-right"),
-            TerminalAction::ControlSequence(Vec::from(EscCodes::WORD_RIGHT)),
+            TerminalAction::ControlSequence(escape_sequences::word_key_sequence(false)),
         )
         .with_mac_key_binding("alt-right")
         .with_linux_or_windows_key_binding("ctrl-right")

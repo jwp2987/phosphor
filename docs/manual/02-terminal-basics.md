@@ -586,6 +586,18 @@ Notes:
 - In the alternate screen there is no scrollback of your own. Scrolling is
   translated into arrow-key sequences sent to the program, which is what makes
   the wheel work in `less` and `man`.
+- **Word keys while a command runs.** `ctrl-←` / `ctrl-→` (Linux, Windows)
+  reach the program as xterm's Ctrl+arrow keys, `CSI 1;5D` / `CSI 1;5C`, as in
+  xterm, Konsole and Windows Terminal. On macOS `option-←` / `option-→` send
+  readline's `ESC b` / `ESC f`. Both are ordinary bindings
+  (`terminal:executing_command_move_cursor_word_left` / `..._right`).
+  `PHOSPHOR_WORD_KEYS_XTERM=0` in the app's environment puts `ESC b` / `ESC f`
+  back on Linux and Windows.
+- **Windows: `ctrl-C` with text selected copies it** and is not sent to the
+  program. The copy also drops the selection, at a prompt and while a command
+  runs, so the next `ctrl-C` is an ordinary one.
+  (`PHOSPHOR_WIN_CTRL_C_COPY_CLEARS_IDLE=0` keeps the selection after a copy
+  at an idle prompt.)
 - **There is no vim half-page scroll for terminal output.** `ctrl-D` / `ctrl-U`
   scroll by half a page only inside the code editor.
 - `ctrl`+scroll is zoom, and is excluded from all terminal scroll handling.

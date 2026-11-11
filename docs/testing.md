@@ -338,6 +338,9 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK=0` | `general.show_warning_before_quitting = false` again also switches off the question about unsaved code editor edits on quit and close (#2092; default: those edits always ask, and that dialog has no "Don't show again"). `app/src/quit_warning/mod_tests.rs` |
 | `PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0` | a save while the code editor's disk-conflict banner shows overwrites the file without asking again (#2092; default: it asks Overwrite / Reload / Cancel). `app/src/code/save_conflict_tests.rs`; app case `editor_daily` |
 | `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0` | Enter on the code editor's overwrite question is its first button, Overwrite, again, and Tab does nothing there (owner decision 2026-11-11; default: the question comes up with Cancel selected, Enter cancels, Tab then Enter overwrites). `app/src/code/save_conflict_tests.rs`, `app/src/workspace/native_modal_tests.rs`; app case `editor_daily` |
+| `PHOSPHOR_WORD_KEYS_XTERM=0` | Linux / Windows: Ctrl+Left / Ctrl+Right with a program in front write readline's `ESC b` / `ESC f` again (#2130, owner decision 2026-11-11; default: xterm's `CSI 1;5D` / `CSI 1;5C`; macOS Option+arrows are `ESC b` / `ESC f` either way). Read once per run. `escape_sequences_test.rs` `word_keys_are_xterm_ctrl_arrows_off_macos_and_meta_letters_on_macos`, `the_word_keys_kill_switch_is_off_only_for_zero`; app case `meta_and_word_keys` |
+| `PHOSPHOR_WIN_CTRL_C_COPY_CLEARS_IDLE=0` | Windows: a Ctrl-C that copied a text selection at an idle prompt keeps the selection again (#2131, owner decision 2026-11-11; default: the copy drops it, as it does with a command in front since #2117, which has no switch). `view_test.rs` `ctrl_c_copy_drops_the_text_selection_at_an_idle_prompt`, `the_idle_ctrl_c_copy_kill_switch_is_off_only_for_zero`; app case `selection_modes` |
+| `PHOSPHOR_CLOSE_QUESTION_KEYS=0` | Linux / Windows: the editor tab's close question (Save / Don't Save / Cancel) has no keyboard selection again: Tab and Space do nothing, Enter is Save (#2132, owner decision 2026-11-11; default: Save selected, Tab / Shift+Tab move, Enter / Space press, a focus ring). `quit_warning/mod_tests.rs`, `workspace/native_modal_tests.rs`; app case `editor_daily` |
 | `PHOSPHOR_CTRL_C_INTERRUPTS_ACTION=0` | agent, a tool that is running and is not a shell command (a read, a search, an MCP call): Ctrl-C and the Stop button both cancel that one action as a user stop again and leave the later actions of the reply queued (#2034; default: the key interrupts what runs and the turn goes on, the button and a stop of the running action by id stop the whole turn). `action_model_tests.rs` `ctrl_c_interrupts_action_kill_switch` |
 | `PHOSPHOR_DEFER_TURN_SUCCESS=0` | agent: the turn reads `success` again at the end of every reply without actions, also when the app is about to ask the model again by itself (a tool call it answered with an error), i.e. `success`, `in_progress`, `success` within a few ms (#2029; default: the status is held until that follow-up is decided, and written at once when it does not happen). `controller_tests.rs` `a_reply_that_left_a_local_error_result_expects_a_follow_up`, `agent_fuzz::turn_status_tests` |
 | `PHOSPHOR_CONNECTION_LOST_TOOL_RESULT=0` | agent: a tool call with no result that a broken reply stream left behind is answered to the model as `interrupted_by_user` again (#2036; default: `connection_lost`, with the note that the call did not run). `controller_tests.rs` `a_call_left_by_a_broken_reply_is_answered_as_connection_lost_not_as_a_user_interrupt` |
@@ -7547,7 +7550,7 @@ screenshots and app logs, and the code. The Wayland job uploaded no screenshots 
 | layer | test | asserts |
 |---|---|---|
 | unit | `block_list_element.rs` `foreign_left_mouse_up_is_ignored_by_an_unfocused_pane_only` | a release with no press of its own is ignored by an unfocused pane, kept by the focused one, and a click on an unfocused pane still counts (#2119) |
-| unit | `view_test.rs` `ctrl_c_copy_drops_the_text_selection_only_with_a_command_in_front` | the Windows copy drops the selection with a command in front, keeps it at an idle prompt (#2117) |
+| unit | `view_test.rs` `ctrl_c_copy_drops_the_text_selection_with_a_command_in_front` (until #2131: `..._only_with_a_command_in_front`, which also asserted "kept at an idle prompt"; the owner's decision of 2026-11-11 changed that, see "Round 19: owner decisions") | the Windows copy drops the selection with a command in front, keeps it at an idle prompt (#2117) |
 | appci self-test | `r19_copy_window_pointer_faults` | every corrected judge passes the right result and fails the wrong one; the source facts each correction rests on |
 | app | `pane_resize_maximize`, `selection_modes`, and the rows of the table above | as described |
 ## Round 19 tabs: the round 14 candidate's tab, close-question, Find, viewer and notification failures (design `docs/design/r10-r19-tabs.md`; #2108, #2109, #2110; nothing compiled, no app run when written)
@@ -7737,3 +7740,36 @@ every terminal-mode arm on these hosts (`plain_session_feature_limit` stays fish
 `lab_plain_session_limit_2019` lost its one `agent_connect` row for a dash arm (that arm now has its own connect, covered by the new check).
 **Next lab run with dash / ash arms:** the agent-mode rows above NOREF with "KNOWN LIMITATION (owner decision 2026-11-11, #2120)".
 No played matrix has dash / ash today (the quick and candidate selections leave them out), so this needs a run that selects them.
+## Round 19: owner decisions of 2026-11-11 in the app (design `docs/design/r10-r19-decide-app.md`; #2130 #2131 #2132; nothing compiled, no app run when written)
+Three decisions the round 14 verdicts had left as owner questions. Each has a kill switch (the table of section 2.6) and an
+`IMPROVED` entry in `DECLINED.md`.
+| issue | decision | app | unit tests | app case |
+|---|---|---|---|---|
+| #2130 | Linux / Windows: Ctrl+Left / Ctrl+Right with a program in front are xterm's `CSI 1;5D` / `CSI 1;5C`; macOS Option+arrows keep `ESC b` / `ESC f` | `escape_sequences::word_key_sequence_for`, read by the two bindings in `terminal/view/init.rs` | `escape_sequences_test.rs`: `word_keys_are_xterm_ctrl_arrows_off_macos_and_meta_letters_on_macos` (both platforms by argument), `word_keys_off_macos_match_the_encoder_for_ctrl_arrows`, `the_word_keys_kill_switch_is_off_only_for_zero` | `meta_and_word_keys`, raw half |
+| #2131 | Windows: a Ctrl-C that copies a text selection at an idle prompt drops the selection too | `terminal/view.rs` `ctrl_c_internal` (Windows arm), `ctrl_c_copy_drops_text_selection(command_in_front, idle_clears)` | `view_test.rs`: `ctrl_c_copy_drops_the_text_selection_with_a_command_in_front`, `ctrl_c_copy_drops_the_text_selection_at_an_idle_prompt`, `the_idle_ctrl_c_copy_kill_switch_is_off_only_for_zero` | `selection_modes` (Windows) |
+| #2132 | Linux / Windows: the editor tab's close question is answered by keyboard: Tab / Shift+Tab move, Enter / Space press, Escape is Cancel, focus ring | `quit_warning/mod.rs` `close_question_enter_button`; `workspace/native_modal.rs` (`PressSelected` on Space, `has_focus_ring`, trace lines) | `quit_warning/mod_tests.rs`: `the_editor_tab_close_question_starts_with_save_selected`, `other_close_questions_have_no_keyboard_selection`, `the_close_question_keys_kill_switch_is_off_only_for_zero`; `native_modal_tests.rs`: `the_close_question_is_answered_dont_save_by_tab_then_enter_or_space`, `space_does_nothing_in_a_dialog_without_a_selection`, `the_focus_ring_is_on_the_selected_button_only`, `the_trace_lines_name_the_button_and_what_pressed_it` | `editor_daily` (Linux, Windows) |
+**Changed expectations (each follows an owner decision, none is weaker):**
+- `meta_and_word_keys`, raw half: Ctrl-Left / Ctrl-Right expect `1b5b313b3544` / `1b5b313b3543` on Linux and in the Git Bash pane (`raw_expect`;
+  the r19-keys change had set `1b62` / `1b66`, what the app sent then). macOS: unchanged (`1b62` / `1b66`; `CSI 1;3D/C` with Option as Meta). A
+  key that arrives in the old form prints the reason (`word_key_hint`). The self-test pins the Rust constants, the function's match arms, the
+  two bindings and the switch's name.
+- `selection_modes`, Windows: after the double click's copy proved the word is selected, `idle_ctrl_c_arm` presses Ctrl-C at the idle prompt
+  (clipboard on a sentinel: it must hold the word) and then the copy key on a fresh sentinel: the word alone again means the selection was
+  still up and fails (`idle_ctrl_c_copy_errors`). Metric `idle_ctrl_c_copy` = `{copied, selection_dropped}`. In the agent view an idle Ctrl-C
+  can be the view's own exit key before it is a copy (`handle_ctrl_c_input_event`): when it did not copy there the arm is a note, not a
+  verdict, and waits out the exit-confirmation window. Not played on Linux or macOS (Ctrl-C never copies there).
+- `editor_daily`, close arm (Linux, Windows): the second close question is answered `Tab`, `Tab`, `shift+Tab`, `space`. The dialog's trace must
+  show the walk Don't Save, Cancel, Don't Save (`hop=native_modal event=selected button=1`, `2`, `1`; `dont_save_walk_verdict`) BEFORE Space
+  is sent (anywhere else Space would press another answer: then Escape, and the failure says why), then `event=pressed button=1 by=space` and
+  the file must be exactly the last saved text (`dont_save_verdict`; until round 19 this step pressed Enter and accepted "saved" or
+  "discarded"). The file is then reopened, edited, closed with Enter ALONE: `event=pressed button=0 by=enter` and the edit on disk (Enter is
+  still Save). Metrics `close_dont_save_walk`, `close_confirm_outcome`, `close_enter_alone`. Screenshot `edd_close_dont_save` shows the ring.
+- New trace lines of the in-app dialog (`hop=native_modal`, target `warp::input_order`, indexes only): `event=selected button=<i>` when Tab /
+  Shift+Tab moved the selection, `event=pressed button=<i> by=<pointer|enter|space|escape>` when a button was pressed.
+Self-tests: `selftest_r19_decide.py` (the judges with right and wrong inputs, the Rust sources they rest on, this section).
+What the next run should show: `meta_and_word_keys` PASS on Wayland and in the Git Bash pane with `raw_keys` Ctrl-Left `1b5b313b3544`,
+Ctrl-Right `1b5b313b3543` (macOS as before); `selection_modes` on Windows with `idle_ctrl_c_copy = {copied: true, selection_dropped: true}`
+in the terminal pass (the agent pass may carry the note instead); `editor_daily` on Linux and Windows with `close_dont_save_walk = [1, 2, 1]`,
+`close_confirm_outcome = discarded`, `close_enter_alone = saved`. On a build without these commits the three fail with the #2130 / #2131 /
+#2132 texts.
+Run: `python3 script/realapp/appci/run.py --cases meta_and_word_keys,selection_modes,editor_daily`.

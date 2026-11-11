@@ -561,12 +561,17 @@ Two questions have no setting that switches them off:
   sessions only; it does not switch off this question, and this dialog has no "Don't show again" box.
   (`PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK=0` in the app's environment puts back the old rule, where the one setting
   covered both.)
+  On Linux and Windows the editor tab's question (**Save**, **Don't Save**, **Cancel**) is answered by keyboard:
+  it comes up with **Save** selected, Tab and Shift-Tab move the selection (the selected button has a ring), Enter
+  or Space presses the selected button, Escape is Cancel. So "Don't Save" is Tab, then Enter or Space.
+  (`PHOSPHOR_CLOSE_QUESTION_KEYS=0` puts back the question without a selection, where Enter is Save and Tab does
+  nothing.) macOS shows the system dialog for this question.
 - **Saving over a file that changed on disk.** When another program changed a file while the editor had unsaved
   edits, a banner says so. A save in that state (`ctrl-S` / `cmd-S`, or "Save" on a close question) asks:
   **Overwrite** writes the editor's text over what is on disk, **Reload** drops the unsaved edits and loads what is on
   disk, **Cancel** does neither. The question comes up with **Cancel** selected: Enter is Cancel and so is Escape, so
   a key typed into a question that just appeared loses nothing. To overwrite, click **Overwrite** or press Tab (the
-  selection moves from Cancel to Overwrite) and then Enter; Shift-Tab moves the other way, to Reload. The banner's own
+  selection moves from Cancel to Overwrite) and then Enter or Space; Shift-Tab moves the other way, to Reload. The banner's own
   **Overwrite** button writes at once. (`PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0` puts back the save that overwrote
   without asking; `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0` puts Enter back on Overwrite.)
 
