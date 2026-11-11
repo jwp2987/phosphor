@@ -7766,7 +7766,7 @@ Three decisions the round 14 verdicts had left as owner questions. Each has a ki
   still Save). Metrics `close_dont_save_walk`, `close_confirm_outcome`, `close_enter_alone`. Screenshot `edd_close_dont_save` shows the ring.
 - New trace lines of the in-app dialog (`hop=native_modal`, target `warp::input_order`, indexes only): `event=selected button=<i>` when Tab /
   Shift+Tab moved the selection, `event=pressed button=<i> by=<pointer|enter|space|escape>` when a button was pressed.
-Self-tests: `selftest_r19_decide.py` (the judges with right and wrong inputs, the Rust sources they rest on, this section).
+Self-tests: `selftest_r19_decide_app.py` (the judges with right and wrong inputs, the Rust sources they rest on, this section).
 What the next run should show: `meta_and_word_keys` PASS on Wayland and in the Git Bash pane with `raw_keys` Ctrl-Left `1b5b313b3544`,
 Ctrl-Right `1b5b313b3543` (macOS as before); `selection_modes` on Windows with `idle_ctrl_c_copy = {copied: true, selection_dropped: true}`
 in the terminal pass (the agent pass may carry the note instead); `editor_daily` on Linux and Windows with `close_dont_save_walk = [1, 2, 1]`,
