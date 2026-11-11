@@ -28,6 +28,7 @@ mod audible_bell;
 pub use audible_bell::AudibleBell;
 pub mod available_shells;
 
+mod appci_grid;
 mod block_filter;
 pub mod block_list_element;
 pub mod block_list_viewport;

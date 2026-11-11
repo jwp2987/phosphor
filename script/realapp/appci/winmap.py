@@ -202,6 +202,11 @@ NOT_WINDOWS = {
     "minimize_fullscreen": "r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33)",
 }
 
+# round 15 wave 4 core (#2075; cases_w4core.py). Separate statements, so a merge with other branches' additions to the tables above stays line-wise.
+GITBASH_ONLY["grid_snapshot_render"] = ("T34: the escape scripts are files printed with `cat` and stepped with bash `read`; the grid the app paints "
+                                        "does not depend on the pane's shell, so one pane is enough: runs in the Git Bash pane")
+NOT_WINDOWS["freeze_and_wake"] = ("T36: specified for Linux and macOS; the freeze is SIGSTOP / SIGCONT. NEEDS: a suspend / resume of the app's process "
+                                  "in the Windows backend (NtSuspendProcess in winapi.py), which is not built")
 
 # #1534: the startup_shell_override passes (APPCI_WIN_SHELLS="pwsh7,cmd", never in the default list: cmd.exe and pwsh 7 are not installed on every VM).
 # The pane's shell is chosen through the app's `session.startup_shell_override` (a custom shell path, profile.Profile.gitbash_toml), not by the harness. Only the

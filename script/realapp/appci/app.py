@@ -13,6 +13,10 @@ export WARP_INPUT_ORDER_LOG_TEXT=1
 # with pointer cases, the hook never logged a position: r12a, every hook-asking case, "app find hook gave no position ... located by OCR instead", and
 # ui_right_click_paste has never got past "the probe was not found on screen by OCR". cases_ui.register_find appends tokens to this file.
 export PHOSPHOR_APPCI_FIND_FILE="%(home)s/appci_find.txt"
+# #2075 (T34): the app's grid snapshot hook (app/src/terminal/appci_grid.rs). cases_w4core.grid_request lists tokens in <dir>/request; the app writes
+# the grid it paints to <dir>/<token>.grid when a listed token is on screen.
+export PHOSPHOR_APPCI_GRID_DIR="%(home)s/appci_grid"
+mkdir -p "%(home)s/appci_grid"
 mkdir -p "$XDG_STATE_HOME" "$XDG_DATA_HOME"
 if [ -z "$APPCI_NO_KEYRING" ]; then
   # A fresh HOME has no default collection and gnome-keyring cannot create one without a prompt, so the "unlocked" keyring was never usable
@@ -264,6 +268,7 @@ class MacApp:
             env_args += ["--env", "%s=%s" % (k, v)]
         for k, v in passthrough_env().items():
             env_args += ["--env", "%s=%s" % (k, v)]
+        env_args += ["--env", "PHOSPHOR_APPCI_GRID_DIR=%s" % os.path.join(self.home, "appci_grid")]      # #2075 (T34): the grid snapshot hook, as in INNER
         for k, v in self.extra_env.items():
             env_args += ["--env", "%s=%s" % (k, v)]
         # exactly ONE instance per pass: refuse to launch over a leftover of this job's bundle (it would share the window/dialog state)
@@ -418,6 +423,7 @@ class WindowsApp:
         # #1789: tokens the harness wants located; an app with the env-gated hook (warpui_core::appci_find) logs `appci_find token=.. x0= y0= x1= y1=` for each. An app
         # without the hook ignores both variables and the cases fall back to OCR (cases_ui.hook_find).
         e["PHOSPHOR_APPCI_FIND_FILE"] = fwd(os.path.join(self.home, "appci_find.txt"))
+        e["PHOSPHOR_APPCI_GRID_DIR"] = fwd(os.path.join(self.home, "appci_grid"))      # #2075 (T34): the grid snapshot hook, as in INNER
         tail = os.pathsep.join(winapi.git_dirs())
         e["PATH"] = os.path.join(self.home, "bin") + os.pathsep + e.get("PATH", "") + (os.pathsep + tail if tail else "")
         if os.name != "nt":
