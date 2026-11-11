@@ -17913,6 +17913,22 @@ impl Workspace {
         ctx.notify();
     }
 
+    /// Shows `dialog` in the in-app modal unless that modal already shows a dialog; returns
+    /// whether it was shown. [`Self::show_native_modal`] replaces a dialog that is up and drops
+    /// its callbacks unrun, which is wrong for a question that must not go unanswered (#2092:
+    /// the editor's "overwrite the file changed on disk?").
+    pub fn show_native_modal_if_free(
+        &mut self,
+        dialog: AlertDialogWithCallbacks<AppModalCallback>,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if self.current_workspace_state.is_native_quit_modal_open {
+            return false;
+        }
+        self.show_native_modal(dialog, ctx);
+        true
+    }
+
     fn handle_native_modal_event(&mut self, event: &NativeModalEvent, ctx: &mut ViewContext<Self>) {
         match event {
             NativeModalEvent::Close => {

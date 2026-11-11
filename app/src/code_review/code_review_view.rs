@@ -6576,9 +6576,17 @@ impl CodeReviewView {
         if let CodeReviewViewState::Loaded(state) = self.state() {
             if let Some(file_state) = state.file_states.get(path) {
                 if let Some(editor) = file_state.editor_state.as_ref().map(|state| state.editor()) {
-                    if let Err(err) =
-                        editor.update(ctx, |local_editor, ctx| local_editor.save_local(ctx))
-                    {
+                    let result =
+                        editor.update(ctx, |local_editor, ctx| local_editor.save_local(ctx));
+                    // #2092: a file changed on disk asks before it is overwritten. That is the
+                    // editor waiting for an answer, not a failed save.
+                    if matches!(
+                        result,
+                        Err(crate::code::ImmediateSaveError::AwaitingOverwriteAnswer)
+                    ) {
+                        return;
+                    }
+                    if let Err(err) = result {
                         safe_error!(
                             safe: ("Failed to save file: {err}"),
                             full: ("Failed to save file {}: {err:?}", path.display())

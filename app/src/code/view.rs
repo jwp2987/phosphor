@@ -330,6 +330,10 @@ pub struct CodeView {
     /// `FailedToSave` async event; the "close tab" callback must be deferred
     /// until that event arrives, otherwise the tab would already be closed by
     /// the time a save failure occurs and the user would never see the error.
+    ///
+    /// #2092: a save that first asks "overwrite the file changed on disk?" (local or remote,
+    /// `ImmediateSaveError::AwaitingOverwriteAnswer`) waits here too. It ends with `FileSaved` /
+    /// `FailedToSave` after "Overwrite", or `SaveCanceled` after "Reload" or "Cancel".
     pending_remote_save_callbacks: HashMap<EntityId, SaveCallback>,
     /// Set while the pane is hidden for undo-close: the tabs' editors (buffer, paragraph layouts,
     /// syntax trees) are dropped and only their locations are kept (#1340).
@@ -958,6 +962,14 @@ impl CodeView {
                     cb(SaveOutcome::Failed, me, ctx);
                 }
             }
+            LocalCodeEditorEvent::SaveCanceled => {
+                // #2092: the save asked "overwrite the file changed on disk?" and the answer
+                // was Reload or Cancel. Whoever waits on that save (a tab's close question)
+                // is told it was cancelled: the tab stays.
+                if let Some(cb) = me.pending_remote_save_callbacks.remove(&emitter.id()) {
+                    cb(SaveOutcome::Canceled, me, ctx);
+                }
+            }
             LocalCodeEditorEvent::DiffAccepted => {
                 CodeManager::handle(ctx).update(ctx, |code_manager, ctx| {
                     code_manager.complete_pending_diffs(me.source.clone(), ctx);
@@ -1321,6 +1333,7 @@ impl CodeView {
             let is_remote = GlobalBufferModel::as_ref(ctx).is_remote(file_id);
             is_remote.then(|| tab.editor_view.id())
         });
+        let editor_id = self.tab_at(index).map(|tab| tab.editor_view.id());
 
         // This will only return an error immediately if there is a failure in the sync part of the call.
         // Other errors could be returned asynchronously via the FileModelEvent::FailedToSave event.
@@ -1338,6 +1351,16 @@ impl CodeView {
             Err(ImmediateSaveError::NoFileId) => {
                 // If there's no file ID, this is a new file - trigger Save As
                 self.save_as(index, callback, ctx)
+            }
+            Err(ImmediateSaveError::AwaitingOverwriteAnswer) => {
+                // #2092: the file changed on disk and the editor is asking before it writes.
+                // Nothing failed and nothing was written: no toast, and the callback waits for
+                // the answer like a remote save waits for the host (`FileSaved`,
+                // `FailedToSave` or `SaveCanceled` from that editor).
+                if let (Some(editor_id), Some(cb)) = (editor_id, callback) {
+                    self.pending_remote_save_callbacks.insert(editor_id, cb);
+                }
+                SaveStatus::AsyncSaveInProgress
             }
             Err(err) => {
                 log::warn!("Failed to save file. {err:?}");
