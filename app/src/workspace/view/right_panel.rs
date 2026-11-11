@@ -1785,3 +1785,34 @@ impl View for RightPanelView {
             .finish()
     }
 }
+
+/// The trace line for a change of the right (code review) panel's open state:
+/// `hop=right_panel open=<bool> repo_context=<bool>`.
+///
+/// Trace only, no behaviour: the app tests open the panel by keyboard (the command
+/// palette's "Toggle code review") and need the app's own word that it opened before
+/// they judge what the panel then shows (appci `cases_lab_diff.py`, #2063). Flags only:
+/// no path and no repository name. `repo_context` says whether the caller handed the
+/// panel a repository of the active session at that moment.
+pub(crate) fn right_panel_trace_line(open: bool, repo_context: bool) -> String {
+    format!("hop=right_panel open={open} repo_context={repo_context}")
+}
+
+#[cfg(test)]
+mod right_panel_trace_tests {
+    use super::right_panel_trace_line;
+
+    /// The format is read by the app tests (`cases_lab_diff.HOOK_PANEL`): a change here
+    /// is a change there.
+    #[test]
+    fn right_panel_trace_line_format_is_pinned() {
+        assert_eq!(
+            right_panel_trace_line(true, false),
+            "hop=right_panel open=true repo_context=false"
+        );
+        assert_eq!(
+            right_panel_trace_line(false, true),
+            "hop=right_panel open=false repo_context=true"
+        );
+    }
+}

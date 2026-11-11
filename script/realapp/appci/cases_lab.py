@@ -4,7 +4,8 @@
 # runners): without one they SKIP with the reason. Before each arm the harness sets the network fault, MEASURES the echo RTT, and a mismatch makes the arm
 # UNVERIFIABLE (never a pass). `nohelper` (no remote helper on the server) is the default and always the first arm; `helper` pre-installs the binary named by
 # APPCI_LAB_HELPER_BIN (a built phosphor-remote; the lab blocks outbound network, so nothing could be downloaded anyway) with never_install; when that
-# variable is not set the binary is this checkout's entry in the machine-local helper cache (script/ci/lab_helper.py, filled by the manual `lab-helper` job:
+# variable is not set the binary is the `lab-helper` job's artifact in this checkout (./helper-artifacts/, #2062) or this checkout's entry in the machine-local
+# helper cache (script/ci/lab_helper.py, filled by the manual `lab-helper` job:
 # resolve_helper_bin), and the arm SKIPs with `NEEDS: ...` (helper_missing_reason; round 15, #2063) when there is neither. The Wave H arms (#1804) use the same binary as the bundle the app uploads: `upload` (nothing on the server, always_install), `upgrade` (older
 # versions pre-seeded), `never` (per-host policy never: nothing may be uploaded, the session still works). Scenario user p_noscp refuses scp/sftp.
 #
@@ -89,9 +90,14 @@ def lab_helper_cache():
 
 
 def resolve_helper_bin(env=None):
-    """-> (path, why). The helper the non-`nohelper` arms use: APPCI_LAB_HELPER_BIN when it is set (an explicit choice always wins, and a wrong one is not
-    papered over), else this checkout's entry in the machine-local cache the manual `lab-helper` job fills (script/ci/lab_helper.py: built once per set of
-    helper inputs, not in every dev build). ('' , reason) when neither names a file."""
+    """-> (path, why). The helper the non-`nohelper` arms use, first hit wins:
+      1. APPCI_LAB_HELPER_BIN when it is set (an explicit choice always wins, and a wrong one is not papered over);
+      2. the `lab-helper` job's artifact in this checkout, ./helper-artifacts/ (#2062: how the Mac and the Windows VM get it, `needs: lab-helper`), when
+         it is THIS checkout's helper (script/ci/lab_helper.py artifact_entry: same key, or exported by this pipeline);
+      3. this checkout's entry in the machine-local cache the same job fills on the build box (built once per set of helper inputs, not in every dev build).
+    ('', reason) when none names a file. The reason carries the `NEEDS: ...` line of the last `lab-helper` build that could not start for a missing tool
+    (from the artifact, else from the cache root), and on Linux the same line for zig when zig is not where that build looks for it: the row then says which
+    machine change is missing, not only which job to play."""
     env = os.environ if env is None else env
     explicit = env.get("APPCI_LAB_HELPER_BIN", "")
     if explicit:
@@ -99,15 +105,25 @@ def resolve_helper_bin(env=None):
     cache = lab_helper_cache()
     if cache is None:
         return "", "APPCI_LAB_HELPER_BIN is not set and this checkout has no script/ci/lab_helper.py"
+    art, art_why = cache.artifact_entry(cache.ROOT, env)
+    if art is not None:
+        return os.path.join(art, cache.BIN), None
     entry, why = cache.cached_entry(cache.ROOT, env)
-    if entry is None:
-        return "", "APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: %s" % why
-    return os.path.join(entry, cache.BIN), None
+    if entry is not None:
+        return os.path.join(entry, cache.BIN), None
+    if art_why:
+        return "", "APPCI_LAB_HELPER_BIN is not set and %s" % art_why
+    why = "APPCI_LAB_HELPER_BIN is not set, this checkout has no helper-artifacts/ from `lab-helper`, and the lab helper cache has none for it: %s" % why
+    if "NEEDS:" not in why and sys.platform.startswith("linux"):
+        needs = cache.zig_needs(env)
+        if needs:
+            why += ". " + needs
+    return "", why
 
 
 # round 15 (#2063; the machine change is #2062): what a helper arm says when there is no helper file for this checkout. The box builds it (the `lab-helper`
 # job, script/ci/lab_helper.py: zig + cargo-zigbuild + the musl rust target, none of which the job installs); the macOS and Windows lab jobs take that
-# job's artifact (helper-artifacts/, APPCI_LAB_HELPER_BIN in .gitlab-ci.yml). ci_seq.py plays lab-helper first in the candidate and release tiers.
+# job's artifact (helper-artifacts/, `needs: lab-helper` in .gitlab-ci.yml; resolve_helper_bin finds it and checks it is this checkout's, #2062). ci_seq.py plays lab-helper first in the candidate and release tiers.
 HELPER_NEEDS = ("NEEDS: a built lab helper for this checkout: zig, cargo-zigbuild and the x86_64-unknown-linux-musl rust target for the runner user on the Linux box "
                 "(owner, machine change, #2062), then the `lab-helper` job played on this ref (the macOS and Windows lab jobs take its artifact)")
 
@@ -310,6 +326,78 @@ def agent_connect(ctx, r, arm):
     r.unverifiable(why)
     finish_remote(ctx, r)
     return False
+
+
+def plain_session_feature_limit(shell, log_text, feature):
+    """pure: plain_session_limit for a TERMINAL-mode case about a remote feature of the managed session (the code-review panel, the remote editor, the git
+    dialog). Same premise, read from the app log of this connect; None = judge the arm in full."""
+    if plain_session_limit(shell, log_text) is None:
+        return None
+    return ("KNOWN LIMITATION (owner decision, #2019): the host's login shell is %s, which gets a plain ssh session by decision (the app log of this connect "
+            "has '%s' and no managed-session line); %s needs a managed session. Not judged; see %s" % (shell, PLAIN_SESSION_HOOK, feature, PLAIN_SESSION_DECLINED))
+
+
+# ---- round 15 (#2063): keyboard drivers for the panels the lab cases had called unreachable. The command palette runs an action by its name; the names are
+# the English keybinding descriptions (app/i18n/en/warp.ftl: keybinding-desc-workspace-toggle-right-panel, -toggle-project-explorer), pinned by the self-test.
+PALETTE_CODE_REVIEW = "Toggle code review"
+PALETTE_PROJECT_EXPLORER = "Toggle project explorer"
+HOOK_RIGHT_PANEL = re.compile(r"hop=right_panel open=(true|false) repo_context=(true|false)")     # workspace/view/right_panel.rs right_panel_trace_line (trace only)
+
+
+def right_panel_states(text):
+    """[open: bool] of every right-panel state change the app logged in `text`, in order"""
+    return [m.group(1) == "true" for m in HOOK_RIGHT_PANEL.finditer(text)]
+
+
+def palette_run(ctx, text, tag=None):
+    """the command palette by keyboard: open it, type the action's name, Enter. With `tag`, a screenshot of the filtered palette first (the evidence of which
+    entry Enter ran)."""
+    import cases_ui as U
+    ctx.be.guard()
+    ctx.be.key(U.K(ctx, "palette"))
+    time.sleep(1.0)
+    ctx.be.type(text, 15)
+    time.sleep(0.9)
+    if tag:
+        ctx.shot(tag)
+    ctx.be.key("Return")
+    time.sleep(0.9)
+
+
+def open_code_review(ctx, off, tag):
+    """open the code-review (right) panel by keyboard and say what the app logged about it: 'open' (hop=right_panel open=true after this call), 'unknown' (no
+    hop=right_panel line: a build before the trace line, or the palette entry did not run). A panel that was already open is toggled CLOSED by the first
+    Enter (the app says open=false): it is then toggled once more."""
+    for attempt in (1, 2):
+        mark = ctx.log_size()
+        palette_run(ctx, PALETTE_CODE_REVIEW, "%s_palette_%d" % (tag, attempt))
+        st = ctx.until(lambda: right_panel_states(ctx.log_since(mark)), 4, step=0.1) or []
+        if not st:
+            return "unknown"
+        if st[-1]:
+            return "open"
+    return "unknown"
+
+
+def close_code_review(ctx, r, tag):
+    """close the panel this case opened (the next case must find the window as every other case leaves it); closing gives the focus back to the terminal
+    (Workspace::update_right_panel_open_state). A close the app does not confirm is a note on the row, with the screenshot."""
+    mark = ctx.log_size()
+    palette_run(ctx, PALETTE_CODE_REVIEW)
+    st = ctx.until(lambda: right_panel_states(ctx.log_since(mark)), 4, step=0.1) or []
+    if st and st[-1]:                   # it was closed already and this opened it: once more
+        palette_run(ctx, PALETTE_CODE_REVIEW)
+    elif not st:
+        ctx.shot("%s_close_unconfirmed" % tag)
+        r.note("the code-review panel was asked to close by the palette and the app logged no hop=right_panel line (shots/*%s_close_unconfirmed.png)" % tag)
+
+
+def hold_line(gate):
+    """a line for the remote shell that keeps the foreground busy (no prompt comes back) until the file `gate` exists; the harness creates it over its own ssh
+    connection, so the prompt can be made to return WITHOUT a key typed into the app (the terminal need not have the focus). `sh -c '...'` with no `!`, no
+    `$` and no backslash: bash, zsh, dash, ash, fish, nu and pwsh all hand the quoted text to sh unchanged."""
+    assert re.fullmatch(r"[\w./-]+", gate), gate
+    return "sh -c 'until [ -e %s ]; do sleep 0.2; done'" % gate
 
 
 def finish_remote(ctx, r, label=""):

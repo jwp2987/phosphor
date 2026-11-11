@@ -75,25 +75,29 @@ def lab_image_skipped(doc):
 
 
 def proving_lab_globs(path=None):
-    """cases.PROVING_LAB, read from cases.py as a literal (this script imports no harness code). Round 15: the UNION of every literal assignment, in
-    order. cases.py assigns PROVING_LAB twice (two branches each added a glob to their own copy of the line); this function returned the first, Python keeps
-    the second, so the fix tier's lab job played lab_agent_nld_predict_ssh and not lab_raw_key_arrival. Both are owed a fix-tier run."""
-    import ast
+    """cases.PROVING_LAB, read from cases.py as a literal (this script imports no harness code): the assignment and every `PROVING_LAB += (...)` line
+    (fold_tuple_assignments)"""
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "realapp", "appci", "cases.py")
-    return proving_lab_globs_of(open(path).read())
+    return fold_tuple_assignments(open(path).read(), "PROVING_LAB")
 
 
-def proving_lab_globs_of(src):
+def fold_tuple_assignments(source, name):
+    """every entry of module-level tuple `name` that a literal `name = (...)` or `name += (...)` statement of `source` lists, in order, each once.
+    With ONE plain assignment (what cases.py must hold: self-test r15_proving_lab_is_one_list) this is exactly what Python computes. With more than one
+    it is the UNION, never only the last: round 14 left two `PROVING_LAB = ` statements in cases.py (two branches each rewrote the tuple), Python kept
+    the second, this function returned the first, and the fix tier's lab job played lab_agent_nld_predict_ssh and not lab_raw_key_arrival. Every entry
+    any statement lists is owed a fix-tier run, so a doubled assignment can no longer drop one here. A statement whose value is not a literal (e.g.
+    `name = name + (...)`) is skipped, not fatal: the literal ones still count."""
     import ast
     out = []
-    for node in ast.parse(src).body:
-        assigns = isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "PROVING_LAB" for t in node.targets)
-        extends = isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add) and getattr(node.target, "id", "") == "PROVING_LAB"
-        if assigns or extends:          # `PROVING_LAB += ("lab_x.*",)` (round 15 branches add their globs this way) counts too
+    for node in ast.parse(source).body:
+        assigns = isinstance(node, ast.Assign) and any(getattr(t, "id", "") == name for t in node.targets)
+        extends = isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add) and getattr(node.target, "id", "") == name
+        if assigns or extends:
             try:
                 out += [g for g in ast.literal_eval(node.value) if g not in out]
             except ValueError:
-                pass                            # not a literal (e.g. PROVING_LAB + (...)): the literal ones still count
+                pass
     return out
 
 
@@ -487,6 +491,14 @@ def self_test():
     lv = lab_fix_vars()
     for ok, what in (
         (bool(globs) and all(g.startswith("lab_") for g in globs), "PROVING_LAB names lab globs"),
+        (fold_tuple_assignments('X = ("a",)\nX += ("d",)\nY = ("z",)\nX += ("e", "f")\n', "X") == ["a", "d", "e", "f"] == list(("a",) + ("d",) + ("e", "f"))
+         and fold_tuple_assignments("Y = 1\n", "X") == [],
+         "PROVING_LAB with one plain assignment is read as Python computes it: the assignment, then every += after it; other names are not read"),
+        # merge of fix/r15-lab into the round 15 branch: this row expected ["b", "c", "d", "e", "f"] (a second plain assignment starts over, as in Python).
+        # The integrated reader deliberately returns the union instead (see the "PROVING_LAB union" rows below), so the first assignment's "a" is kept
+        (fold_tuple_assignments('X = ("a",)\nX = ("b", "c")\nX += ("d",)\nY = ("z",)\nX += ("e", "f")\n', "X") == ["a", "b", "c", "d", "e", "f"],
+         "a second plain assignment does not drop the first one's entries: the union, in order, each once"),
+        (len(globs) == len(set(globs)) and "lab_raw_key_arrival.*" in globs and "lab_agent_nld_predict_ssh.*" in globs, "the fix-tier lab job gets every PROVING_LAB entry once (round 14 lost one to a doubled assignment)"),
         (lv["APPCI_CASES"] == ",".join(globs) and lv["APPCI_FAKE_MODEL"] == "1" and lv["APPCI_LAB_MATRIX"] == "quick", "the fix-tier lab job gets only the PROVING lab cases, the fake model and the quick matrix"),
         (re.search(r"^%s:" % LAB_FIX_JOB, yml, re.M) is not None and re.search(r"^%s-reuse:" % LAB_FIX_JOB, yml, re.M) is not None, "the lab job and its -reuse variant exist in .gitlab-ci.yml"),
         (LAB_FIX_JOB in APP_RESULT_DIR and LAB_FIX_JOB not in sum(APP.values(), []), "the lab job is judged like an app job but is not a platform app-test job (never played in candidate/release by APP)"),
@@ -560,8 +572,9 @@ def self_test_r15(yml, src):
         (all(k in LAB_CANDIDATE_MATRIX for k in ("upload", "upgrade", "never", "faults=1", "scenarios=1")), "the candidate matrix has the upload / upgrade / never arms, the faults and the scenario users"),
         ("APPCI_LAB: fixed" in job_block(LAB_APP[MAC]) and "APPCI_LAB: fixed" in job_block(LAB_APP[WIN]) and "APPCI_LAB: local" in job_block(LAB_APP[LINUX]),
          "the Mac and Windows lab jobs attach to the box's fixed slot (APPCI_LAB=fixed)"),
-        (all("job: lab-helper" in job_block(LAB_APP[p]) and "APPCI_LAB_HELPER_BIN" in job_block(LAB_APP[p]) and 'APPCI_APP_PINNED_DIGESTS: "0"' in job_block(LAB_APP[p]) for p in (MAC, WIN)),
-         "the Mac and Windows lab jobs take lab-helper's artifact and say the dev build pins no digest"),
+        (all("job: lab-helper" in job_block(LAB_APP[p]) and "APPCI_LAB_HELPER_BIN" not in job_block(LAB_APP[p]) and 'APPCI_APP_PINNED_DIGESTS: "0"' in job_block(LAB_APP[p]) for p in (MAC, WIN)),
+         "the Mac and Windows lab jobs take lab-helper's artifact (found and checked by cases_lab.resolve_helper_bin, #2062: the jobs do NOT set APPCI_LAB_HELPER_BIN, "
+         "an explicit path would skip the this-checkout check and the recorded NEEDS line) and say the dev build pins no digest"),
         (all(n in APP_RESULT_DIR for n in list(LAB_APP.values()) + [REPLAY_JOB, "app-test-linux-x11-reuse", "app-test-lab-linux-reuse"]) and not set(LAB_APP.values()) & set(sum(APP.values(), [])),
          "lab, replay and reused jobs are checked for a run that judged nothing; the lab jobs are not platform app-test jobs (the release gate's list is unchanged)"),
         ("app-test-lab-linux" not in sum(release_gate_jobs().values(), []) and LAB_HELPER_JOB not in sum(release_gate_jobs().values(), []), "the release gate's job list is not widened by this round (owner decision)"),
@@ -577,8 +590,8 @@ def self_test_r15(yml, src):
         ("NEEDS" not in ("FAIL", "OFFLINE") and verdict(LAB_HELPER_JOB, "success") == "PASS", "a NEEDS row does not fail the tier and is not a pass"),
         (is_lab_job("app-test-lab-linux-reuse") and is_lab_job(REPLAY_JOB) and not is_lab_job("app-test-linux-x11"), "lab jobs (image needed first) are told from the others"),
         # the PROVING_LAB union
-        (proving_lab_globs_of('PROVING_LAB = ("a.*", "b.*")\nX = 1\nPROVING_LAB = ("a.*", "c.*")\n') == ["a.*", "b.*", "c.*"], "PROVING_LAB assigned twice: the fix tier plays the union"),
-        (proving_lab_globs_of('PROVING_LAB = ("a.*",)\nPROVING_LAB = PROVING_LAB + ("d.*",)\n') == ["a.*"], "a non-literal PROVING_LAB line is skipped, not fatal"),
+        (fold_tuple_assignments('PROVING_LAB = ("a.*", "b.*")\nX = 1\nPROVING_LAB = ("a.*", "c.*")\n', "PROVING_LAB") == ["a.*", "b.*", "c.*"], "PROVING_LAB assigned twice: the fix tier plays the union"),
+        (fold_tuple_assignments('PROVING_LAB = ("a.*",)\nPROVING_LAB = PROVING_LAB + ("d.*",)\n', "PROVING_LAB") == ["a.*"], "a non-literal PROVING_LAB line is skipped, not fatal"),
         ({"lab_agent_nld_predict_ssh.*", "lab_raw_key_arrival.*"} <= set(proving_lab_globs()), "both round 14 lab globs are played in the fix tier"),
         ("def play_wait" in src and "status created" in src, "a planned job that is absent or stuck in `created` is reported, not waited for"),
     ]

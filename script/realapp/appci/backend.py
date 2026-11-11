@@ -247,6 +247,35 @@ def is_injector(argv):
     return bool(argv) and (argv[0] == "wtype" or (argv[0] == "xdotool" and len(argv) > 1 and argv[1] in ("type", "key", "keyup")))
 
 
+KL_NAMED = {"DEL": "KEY51", "TAB": "KEY48", "ESC": "KEY53", "CMDP": "KEY35", "CMDK": "KEY40"}      # kl3.swift keyFor: its key names -> htype2's (virtual key codes)
+KL_CMD = ("CMDP", "CMDK")                                                                           # the two it posts with Command held
+
+
+def kl_keys(line):
+    """pure: the key-downs ONE kl3 command posts, as (typed characters, [named keys], Cmd chords) in htype2's vocabulary (a Return is KEY36, which
+    injacct._enters_keyed counts as an Enter; a Cmd chord may be a menu's, injacct.join). kl3.swift: `K <cap> <key>` one key (keyFor: a name of KL_NAMED,
+    AT = shift-2, else the first character); `R <cap>` a Return; `T|F <cap> <text>` the text then a Return; `W <text>` the text; `C ...` and `Q` post
+    nothing. An unknown command posts nothing as far as this record knows."""
+    p = line.split(" ", 2)
+    cmd = p[0] if p else ""
+    if cmd == "K" and len(p) == 3 and p[2]:
+        if p[2] in KL_NAMED:
+            return 0, [KL_NAMED[p[2]]], int(p[2] in KL_CMD)
+        return 1, [], 0
+    if cmd == "R":
+        return 0, ["KEY36"], 0
+    if cmd in ("T", "F") and len(p) == 3:
+        return len(p[2]), ["KEY36"], 0
+    if cmd == "W" and len(line) > 2:
+        return len(line[2:]), [], 0
+    return 0, [], 0
+
+
+def kl_posted(out):
+    """pure: did kl3 say it posted? Its answer to a key command carries post0=<epoch> (K, R, T, F) or is `W done`; an ERR / BADCHAR / empty line did not."""
+    return bool(re.search(r"post0=[\d.]+", out)) or out.startswith("W done")
+
+
 STDERR_LOG = None        # path of the injector stderr log (<run>/logs/injector-stderr.log), set by Ctx next to inject_log
 
 
@@ -1234,11 +1263,36 @@ class MacBackend(Backend):
         return self._kl
 
     def kl(self, line):
-        """one kl3 command (guarded); returns its output line"""
+        """one kl3 command (guarded); returns its output line. kl3 posts its keys itself (CGEvent), so they are recorded here like an htype2 call
+        (#2005: unrecorded, they were the "app logged 39 more than were injected" of every latency_paint / latency_paint_ab / latency_key_views_ab
+        row on macOS in rounds 11 and 12)."""
         self.guard()
+        t0 = time.time()
         self._kl.stdin.write(line + "\n")
         self._kl.stdin.flush()
-        return self._kl.stdout.readline().strip()
+        out = self._kl.stdout.readline().strip()
+        self._record_kl(line, out, t0, time.time())
+        return out
+
+    def _record_kl(self, line, out, t0, t1):
+        chars, special, chords = kl_keys(line)
+        if not chars and not special:
+            return
+        posted = kl_posted(out)
+        m = re.search(r"post0=([\d.]+)", out)
+        wall = float(m.group(1)) if m else None
+        named = ["%s@%s" % (k, ("%.3f" % wall) if wall else "?") for k in special] if posted else []
+        rec = dict(n=len(self.calls), wall0=t0, wall1=t1, enters_want=0, enters_posted=0, enter_wall=[], post_wall=[wall] * len(named) if wall else [],
+                   post_mach_ms=[], clock=None, chars=chars if posted else 0, special=named, err=None if posted else "kl3: %s" % (out[:60] or "no answer"),
+                   out=posted, ref=bool(self.guard_override), cmd_chords=chords if posted else 0, span_ms=0, tool="kl3")
+        self.calls.append(rec)
+        if self.inject_log:
+            try:
+                with open(self.inject_log, "a") as f:
+                    f.write("call=%d tool=kl3 wall=%.3f..%.3f chars=%d span_ms=0 enters_want=0 enters_posted=0 out=%s%s%s %s\n" % (
+                        rec["n"], t0, t1, rec["chars"], posted, (" ERR=" + rec["err"]) if rec["err"] else "", " REF" if rec["ref"] else "", " ".join(named)))
+            except OSError:
+                pass
 
     def kl_stop(self):
         p, self._kl = self._kl, None

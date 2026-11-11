@@ -14,7 +14,9 @@
 #       hop=diff_state event=<snapshot|delta> source=<helper|shell> files=N path_hash=[...]      (code_review/diff_state_remote.rs)
 #       hop=git_chip source=<helper|shell> files=N added=A removed=R ahead=a behind=b upstream=0|1  (code_review/git_status_update_remote.rs)
 #       hop=gh_chip event=<pr|repo> source=<helper|shell> pr=<number|none> | repo=<some|none>     (code_review/github_repo_model/remote.rs)
-#     The harness has no keyboard path to open the code-review panel, so when no hop=diff_state line appears the panel layer is UNVERIFIABLE, never a pass. The same
+#     Round 15 (#2063): the code-review panel is opened by keyboard, through the command palette ("Toggle code review", CL.open_code_review), and the app says
+#     whether it opened (hop=right_panel open=<bool>, trace only). Opened and no hop=diff_state snapshot is a FAIL; no hop=right_panel line at all (an older
+#     build) is UNVERIFIABLE, never a pass. A fish / nu login shell has a plain session by decision (#2019): UNVERIFIABLE with that reference. The same
 #     assertions run against both backends with real git and a fake gh in crates/remote_server/src/backend/contract_tests.rs.
 import base64, os, re, sys, time
 
@@ -88,18 +90,52 @@ def c_diff_panel_remote(ctx, r, arm):
     rc, out, err = CLG.run(lab, arm, "cd %s && git diff --numstat HEAD" % repo)
     r.check(rc == 0 and out.split() [:3] == ["1", "0", "a.txt"], "git diff --numstat HEAD on the host: %r" % out[-200:])
 
-    # ---- 2. APP layer
+    # ---- 2. APP layer. The panel is opened by keyboard (round 15: the command palette's "Toggle code review"); nothing is typed into the app after that, so
+    # the case does not depend on where the focus is while the panel is open: the prompt the shell backend refreshes on is made to return from outside
+    # (CL.hold_line: the foreground waits for a file the harness creates over its own ssh connection).
     off = ctx.log_size()
     if CL.connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     time.sleep(1.0 + 2 * rt)
+    why = CL.plain_session_feature_limit(arm["shell"], ctx.log_since(off), "the code-review panel of a remote repository")
+    if why:
+        r.metric("plain_session_by_decision", arm["shell"])
+        r.unverifiable(why)
+        CL.finish_remote(ctx, r)
+        return
     ctx.be.type("cd %s" % repo, CL.type_pace(ctx), enter=True)
-    seen = ctx.until(lambda: any(e == "snapshot" for e, *_ in diff_events(ctx.log_since(off))), 20 + 6 * rt, step=0.1)
+    time.sleep(1.5 + 2 * rt)
+    gate = CL.work(arm, "go_%s" % uid)
+    held = arm["helper"] != "upload"
+    if held:
+        ctx.be.type(CL.hold_line(gate), CL.type_pace(ctx), enter=True)
+        time.sleep(0.5 + rt)
+
+    def release():
+        lab.ssh(u, "sh -c 'touch %s'" % gate)
+
+    def snapshot_seen():
+        return any(e == "snapshot" for e, *_ in diff_events(ctx.log_since(off)))
+    opened = None
+    seen = ctx.until(snapshot_seen, 4 + 2 * rt, step=0.1)           # a panel left open by the user profile needs no key
     if not seen:
-        r.unverifiable("[hook] no hop=diff_state snapshot in the app log: the code-review panel is not open and the harness has no keyboard path to open it, so the panel layer "
-                       "(snapshot, outside edit) was not run; the host layer above did, and contract_tests.rs holds the same assertions for both backends")
+        opened = CL.open_code_review(ctx, off, "lab_diff_panel")
+        seen = ctx.until(snapshot_seen, 20 + 6 * rt, step=0.1)
+    if not seen:
+        verdict, msg = panel_no_snapshot_verdict(opened)
+        ctx.shot("lab_diff_panel_no_snapshot_%s" % arm["helper"])
+        if held:
+            release()
+            time.sleep(0.5 + rt)
+        if opened == "open":
+            CL.close_code_review(ctx, r, "lab_diff_panel")
+        if verdict == "fail":
+            r.check(False, msg)
+        else:
+            r.unverifiable(msg)
         ctx.reset()
+        lab.ssh(u, "sh -c 'rm -f %s'" % gate)
         CL.finish_remote(ctx, r)
         return
     snaps = [x for x in diff_events(ctx.log_since(off)) if x[0] == "snapshot"]
@@ -120,10 +156,27 @@ def c_diff_panel_remote(ctx, r, arm):
     else:
         time.sleep(2.0 + 2 * rt)
         r.check(not changed(), "the edit was reported before any prompt returned: the shell backend must refresh on prompt events only")
-        ctx.be.type("true", CL.type_pace(ctx), enter=True)
+        release()                                                   # the held foreground ends: the prompt comes back, no key typed
         r.check(bool(ctx.until(changed, 15 + 6 * rt, step=0.1)), "the next prompt did not bring the edit into the diff (no hop=diff_state line naming a.txt)")
     ctx.shot("lab_diff_panel_edit_%s" % arm["helper"])
+    if opened == "open":
+        CL.close_code_review(ctx, r, "lab_diff_panel")
+    lab.ssh(u, "sh -c 'rm -f %s'" % gate)
     CL.finish_remote(ctx, r)
+
+
+def panel_no_snapshot_verdict(opened):
+    """pure: what a missing diff snapshot means, by what the app said about the panel. ('fail' | 'noref', message).
+      'open'    the app logged hop=right_panel open=true after the palette's "Toggle code review": the panel is open in a remote git repository and showed
+                no diff. That is what the user would see: FAIL.
+      'unknown' the palette was driven and the app logged no hop=right_panel line: whether the panel opened is not known. UNVERIFIABLE, never a pass.
+      None      (kept for a caller that did not drive the palette) the same."""
+    if opened == "open":
+        return "fail", ("the code-review panel opened (hop=right_panel open=true, by the palette's '%s') in a git repository on the remote host and the app applied "
+                        "no diff snapshot for it (no hop=diff_state event=snapshot): the panel has nothing to show for a remote repository" % CL.PALETTE_CODE_REVIEW)
+    return "noref", ("[hook] no hop=diff_state snapshot, and the app logged no hop=right_panel line after the palette's '%s': whether the panel opened is not "
+                     "known (a build without the round 15 trace line, or the palette ran another entry: shots/*lab_diff_panel_palette_*.png). The host layer above "
+                     "ran. NEEDS: an app build with workspace/view/right_panel.rs right_panel_trace_line" % CL.PALETTE_CODE_REVIEW)
 
 
 @CL.lab_case("gh_chip_remote", shells=SHELLS, lat=("lan",), helper=("nohelper", "upload"), modes=("terminal",))

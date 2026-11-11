@@ -329,7 +329,7 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `SSHLAB_BOX`, `SSHLAB_TOKEN` | harness, fixed lab: the box address and the control-API bearer token (protected project variables or machine-local `ci.env`; the token is never printed or written) |
 | `APPCI_LAB_BOX`, `APPCI_LAB_KEY` (`SSHLAB_BOX` is the CI variable that feeds the first) | harness, LEGACY remote lab: `user@host` of the box account whose `authorized_keys` carries the forced-command key, and the path of that machine-local private key. Never in the repo |
 | `APPCI_LAB_MATRIX=quick\|full\|<spec>` | which arms of a lab case run: `quick` = {bash, zsh, fish, nu} x {LAN, 150 ms} x {nohelper, helper} (nu is the pinned 0.116.1 of `versions.env`); `full` = all 8 shells x {LAN, 150, 300} x {nohelper, helper} + the fault arms (bash/zsh) + the scenario users; or `shells=bash,zsh;lat=lan,150;helper=nohelper;faults=1;scenarios=0` (a typo is an error, not an empty selection) |
-| `APPCI_LAB_HELPER_BIN` | path of a built `phosphor-remote` (`cargo build -p remote_server --profile release-remote-helper --no-default-features --features daemon --bin phosphor-remote`, built from the SAME tree as the app under test so both compute the same `phosphor-remote-<version>` name). The `helper` arm pre-installs it as `~/.phosphor/remote-server/phosphor-remote-<version>`; `upload`, `upgrade` and `never` arms hand it to the app as its bundled asset (`PHOSPHOR_REMOTE_HELPER_ASSET_DIR` = `<run>/helper-asset/phosphor-remote-linux-<arch>.gz`). The lab blocks outbound network. When it is NOT set, the arms take this checkout's entry of the machine-local helper cache (`script/ci/lab_helper.py`, filled by the manual `lab-helper` job; see "The lab helper" in the round 12 section at the end). With neither, every non-`nohelper` arm is UNVERIFIABLE with the reason |
+| `APPCI_LAB_HELPER_BIN` | path of a built `phosphor-remote` (`cargo build -p remote_server --profile release-remote-helper --no-default-features --features daemon --bin phosphor-remote`, built from the SAME tree as the app under test so both compute the same `phosphor-remote-<version>` name). The `helper` arm pre-installs it as `~/.phosphor/remote-server/phosphor-remote-<version>`; `upload`, `upgrade` and `never` arms hand it to the app as its bundled asset (`PHOSPHOR_REMOTE_HELPER_ASSET_DIR` = `<run>/helper-asset/phosphor-remote-linux-<arch>.gz`). The lab blocks outbound network. When it is NOT set, the arms take the `lab-helper` job's artifact in the checkout (`./helper-artifacts/`, or `APPCI_LAB_HELPER_ARTIFACTS`; round 15, how the Mac and Windows lab jobs get it) when it is this checkout's helper, else this checkout's entry of the machine-local helper cache (`script/ci/lab_helper.py`, filled by the same manual job; see "The lab helper" in the round 12 section and the round 15 lab section at the end). With none, every non-`nohelper` arm is UNVERIFIABLE with the reason, which carries the `NEEDS: ...` line when the box could not build the helper |
 | `APPCI_APP_PINNED_DIGESTS` | `0`: the app under test is a bundled build with NO pinned helper digest (CI's dev builds), which refuses every helper upload by design: the `upload`, `upgrade` and `never` arms are UNVERIFIABLE with that reason (APPCI_APP_PINNED_DIGESTS=0 is set by `app-test-lab-linux`); the pre-installed `helper` arms run. `1`: a build with `PHOSPHOR_REMOTE_SHA256_*` pins (`helper_digest_mismatch` needs it). Unset: a source build, which computes the digest of the asset it is handed |
 | `PHOSPHOR_REMOTE_HELPER_ASSET_DIR` | app: a directory that directly holds `phosphor-remote-<os>-<arch>.gz` and replaces the bundled resources directory as the helper's source (set by the lab arms; usable for manual runs) |
 | `PHOSPHOR_REMOTE_HELPER_DIR` | helper: base directory for the daemon sockets and pid files instead of the directory of the executable (unit tests, manual runs) |
@@ -5072,8 +5072,8 @@ Nothing here was compiled or run on a build: `rustfmt --check`, the script tests
   APPCI_APP_PINNED_DIGESTS=0 (see the variable table): the eight `.helper` arms of the first lab run become runnable, the `upload` / `upgrade` / `never`
   arms stay UNVERIFIABLE, now for the true reason. Order of play: `sshlab-image`, `lab-helper` (once per helper change), the build, `app-test-lab-linux`.
   `ci_seq.py` did not play `lab-helper` in round 12; since round 15 it plays it right after `check-linux` in the candidate and release tiers (not in the
-  fix tier), and the Mac and Windows lab jobs take the file as that job's artifact (`needs: lab-helper`, `APPCI_LAB_HELPER_BIN` =
-  `helper-artifacts/phosphor-remote`; section 'Round 15: tier reach'). The bundle the `upload` / `upgrade` / `never` arms stage is named after the HELPER's CPU, read from its
+  fix tier), and the Mac and Windows lab jobs take the file as that job's artifact (`needs: lab-helper`; `cases_lab.resolve_helper_bin` finds
+  `helper-artifacts/` itself, `APPCI_LAB_HELPER_BIN` is not set there; sections 'Round 15: tier reach' and 'Round 15: the lab'). The bundle the `upload` / `upgrade` / `never` arms stage is named after the HELPER's CPU, read from its
   ELF header (`cases_lab.helper_arch`, #2042): it was named after the runner's, `linux-aarch64` on the arm64 Mac for an x86_64 helper and lab
   host, a name the app never asks for (self-test `r12_lab_helper_bundle_is_named_after_the_helper_not_the_runner`). Self-tests:
   `python3 script/ci/lab_helper.py --self-test` (key, cache, prune, ELF and version checks, the `cargo tree` parser; also the job's first
@@ -5922,8 +5922,8 @@ least one arm of every lab family (46 with the replay). The quick matrix reaches
 `helper_missing_asset`, `helper_one_version`, `helper_quiet_fallback`, `helper_scp_fallback` and `password_prompt` need the upload / upgrade / never arms or a
 scenario user. The `full` matrix (626 arms, 831 rows, about 10 h at the 43 s a row of the committed lab runs) does not fit the job's 6 h and stays a hand
 play. The Mac and Windows jobs attach to the box's fixed slots (`APPCI_LAB=fixed`, slot `mac` / `windows`, `SSHLAB_BOX` / `SSHLAB_TOKEN`; 2.15 and
-`docs/design/r12-macssh.md` 4), take the helper file from this pipeline's `lab-helper` job as an artifact (`needs`, `APPCI_LAB_HELPER_BIN` =
-`helper-artifacts/phosphor-remote`; the helper is a Linux binary the lab host runs, so those machines read only its `.version` file) and say
+`docs/design/r12-macssh.md` 4), take the helper file from this pipeline's `lab-helper` job as an artifact (`needs`; `cases_lab.resolve_helper_bin` finds `./helper-artifacts/`, checks it is
+this checkout's and reads its `NEEDS.txt`, so the jobs do not set `APPCI_LAB_HELPER_BIN`: section 'Round 15: the lab'; the helper is a Linux binary the lab host runs, so those machines read only its `.version` file) and say
 `APPCI_APP_PINNED_DIGESTS=0` like the Linux job. `app-test-lab-macos` has `timeout: 6h`. A lab job whose image is not built is a FAIL (as in the fix tier),
 and `check_app_results` now reads every lab, replay and `-reuse` job's `results.json` for a run that judged nothing.
 **Helper arms without a helper: `NEEDS` (#2062).** A helper arm (`helper`, `upload`, `upgrade`, `never`) with no helper file for the checkout now SKIPs with
@@ -6163,3 +6163,80 @@ Not enabled, each with a stated SKIP: `primary_and_middle_click` (macOS has no P
 **Self-tests** (`script/realapp/appci/selftest_macptr.py`, run by `run.py --self-test` and `selftest.py`): `macptr_registry_and_docs_2061` (the proof case's registration and order, this section, the tool sources and their fences, the job's non-fatal compile loop), `macptr_chord_rule` (every spec's kind, each refusal reason alone, order kept by `keys`, htype2 never carries an app chord), `macptr_pointer_math_and_ops` (PNG size, scale, pixel to point, the op strings against the tool's parser, `MacMouse`, the skip / error of `mouse_or_skip`), `macptr_vision_words_lsof_and_recorder`, `macptr_case_gates_on_macos` (which cases reach the Mac pointer, which skip and why; quit / close keys per platform; a failed proof switches the chords off; the key names against `bindings.rs`; the alert's button order against `quit_warning/mod.rs`), `macptr_proof_case_parts`. Two older assertions changed with the behaviour: `NO_CLOSE_WHY` no longer says the chord is refused by policy, and `tab_lifecycle_keys` no longer has a macOS skip constant.
 
 Run: `APPCI_CASES=mac_pointer_chord_proof,ui_mouse_select_copy,selection_modes,context_menu_actions,tab_pointer_use,tab_lifecycle_keys,quit_24_tabs` on `app-test-macos`. What the first run must show: all four `swiftc` compiles succeed; `display_scale` 2; `cursor_readback` equal pairs; the menu-bar click refused; `word_at` with a hook and an OCR position that agree; `chord_via pid` and the tab closed. If Cmd-W does not close the tab and the app log has no `hop=os_key_event` after it, `postToPid` did not deliver: rerun with `APPCI_MAC_CHORD_VIA=hid`.
+
+## Round 15: the lab: the helper artifact, the families that never played, kl3's keys (design `docs/design/r15-lab.md`; #2062 #2063 #2005; nothing compiled, no lab or app run when written)
+
+### The helper reaches every lab job (#2062)
+
+- **Where a helper arm takes the helper from**, first hit (`cases_lab.resolve_helper_bin`): `APPCI_LAB_HELPER_BIN`; the `lab-helper` job's artifact in the
+  checkout, `./helper-artifacts/` (override: `APPCI_LAB_HELPER_ARTIFACTS`); the box's helper cache. The artifact is used only as THIS checkout's helper
+  (`lab_helper.py artifact_entry`): `meta.json`'s key must equal the key computed in the checkout, or, where no key can be computed, `export.json` must name
+  the job's own pipeline. Another commit's file is refused by name and the cache is asked next.
+- **Mac and Windows** (`app-test-lab-macos`, `app-test-lab-windows`): `needs: lab-helper` with `artifacts: true` (and `optional: true`), next to the build
+  job; `APPCI_APP_PINNED_DIGESTS=0` as on Linux. Order of play on those machines: `sshlab-image`, **`lab-helper`**, the build, the lab job. `lab-helper` is
+  seconds when the box has the helper cached. While a manual `needs` job has not been played GitLab does not offer the job that needs it (stated from
+  GitLab's documented behaviour, not tried here). A `lab-helper` that FAILS (it is `allow_failure`) does not block them.
+- **Linux** (`app-test-lab-linux`, `-reuse`): no `needs: lab-helper`. It runs on the machine that holds the cache the artifact is copied from, and a `needs`
+  there would make the fix tier's lab job unplayable until someone plays `lab-helper` (`ci_seq.py` does not: `docs/design/r12-policy.md` 3, open item 5).
+  Its `before_script` prints `lab_helper.py artifact`, then `path`.
+- **`NEEDS:`.** When the build tools are missing, `lab_helper.py build` fails as before and writes one line, `NEEDS: <tools> installed for the CI runner
+  user on the build box (owner: machine change; ...), then the manual lab-helper job played once`, to `helper-artifacts/NEEDS.txt` (the job's artifact is
+  now `when: always`) and to `<cache>/NEEDS.txt`. A helper arm quotes that line as its reason; on Linux, with no record, it adds the same line for zig when
+  zig is not where the build looks (`lab_helper.zig_needs`: `PATH`, `~/.local/bin`, `~/.local/zig-*/`). The row is a SKIP that carries the line
+  (`cases_lab.helper_missing_reason`, section 'Round 15: tier reach'; it was UNVERIFIABLE when this was written), never a pass.
+  The first build that succeeds removes the record. Until the box has zig, cargo-zigbuild and the musl target, every helper arm on every platform reads
+  `NEEDS: zig ...`.
+- `lab_helper.py artifact` prints the artifact's binary or exits 3 with the reason. Self-tests: `lab_helper.py --self-test` (the artifact accepted and
+  refused five ways, the NEEDS record written, quoted and cleared, each missing tool named) and `r15_lab_helper_from_the_artifact` in
+  `appci/selftest_r15_lab.py` (the resolver's order, the reason a helper arm gives, the CI wiring).
+
+### Every lab family is in a tier (#2063)
+
+- **`PROVING_LAB` was two statements.** Round 14 merged two branches that each rewrote the tuple; Python used the second, `ci_seq.py` read the first. The
+  harness's list had no `lab_agent_nld_predict_ssh`, and the fix tier's lab job was never given `lab_raw_key_arrival`. Now one assignment and one
+  `PROVING_LAB += (...)` line per later entry; `ci_seq.proving_lab_globs` (`fold_tuple_assignments`, the one reader) folds them: with one assignment exactly what Python computes; should a second
+  assignment come back, the union of both, never only one. Self-tests `r15_proving_lab_is_one_list` and two rows of
+  `ci_seq.py --self-test`.
+- **The families that had never produced a row** (`docs/design/r14-test-gaps.md` 4.5; 36 of the 46 registered families) are in `PROVING_LAB`, 28 of them, one a line: `lab_tab_remote_dir`,
+  `lab_path_detect`, `lab_chips`, `lab_no_helper_chip`, `lab_nu_agent_pager_env`, `lab_ssh_drop_reconnect`, `lab_fam_fs_basic`, `lab_fam_git_read`,
+  `lab_fam_run_command`, `lab_nohelper_*`, `lab_read_files_remote`, `lab_diff_apply_remote`, `lab_file_tree_remote`, `lab_diff_panel_remote`,
+  `lab_gh_chip_remote`, `lab_git_write_remote`, `lab_remote_edit`, `lab_skills_remote`, `lab_codebase_index_remote`, `lab_helper_*`, and, named exactly
+  because the quick matrix leaves scenario users and network faults out, `lab_password_prompt.p_password|p_kbdint.lan.nohelper`,
+  `lab_path_detect.p_exec|p_tinypath.lan.nohelper`, `lab_ssh_drop_reconnect.bash.lan.nohelper.rst|stall10`.
+- **Cost, counted from the registry, not measured:** at `APPCI_LAB_MATRIX=quick` the fix tier's lab job goes from 76 rows (the list `ci_seq.py` was
+  reading) to 331: 203 no-helper rows (44 before) and 128 helper rows (32 before), which end at once as a SKIP with the `NEEDS:` line until the box
+  builds the helper. At the 30 s a row the only timed lab run averaged (an upper figure: most of its rows ran to their timeouts), the 159 new no-helper
+  rows add about 80 minutes. A no-helper-only play is `APPCI_LAB_MATRIX="shells=bash,zsh,fish,nu;lat=lan,150;helper=nohelper"`. Which tier carries them
+  is the tier plan's and the owner's.
+- **`cases.LAB_NOT_IN_FIX_TIER`** names the families that job does not play, with the reason: `lab_replay` (its own manual job,
+  `app-test-replay-linux`), and the seven `lab_helper_*` families that have only upload / upgrade / never arms (a CI dev build refuses every upload; owner
+  question, `r12-policy.md` 3 item 3). Self-test `r15_every_lab_family_is_in_a_tier`: a lab family is in `PROVING_LAB` or in that dict, never both, so a
+  new family cannot be registered and never played.
+- **`codebase_index_remote`** still SKIPs unless the job sets `APPCI_FAKE_EMBEDDINGS=1` (no tier does; reported, not changed).
+
+### Three drivers that did not exist
+
+The three cases ended UNVERIFIABLE with "no keyboard path" / "no pointer click on the file tree". The first of those was not true.
+
+| case | driver | oracle | UNVERIFIABLE when |
+|---|---|---|---|
+| `lab_diff_panel_remote` | the command palette's `Toggle code review` (`cases_lab.open_code_review`). The app answers `hop=right_panel open=<bool> repo_context=<bool>` (trace only, `workspace/view/right_panel.rs`, format pinned by a unit test). Nothing is typed into the app after the panel opens: the prompt the shell backend refreshes on is made to return from outside (`cases_lab.hold_line`: the foreground waits for a file the harness creates over its own ssh connection) | as before: the snapshot's source and files; an edit from outside is pushed by the helper, and without the helper appears only after the next prompt. New: panel open and no `hop=diff_state` snapshot is a FAIL (`panel_no_snapshot_verdict`) | the app logged no `hop=right_panel` line (a build without it); a fish / nu login shell (#2019) |
+| `lab_remote_edit` | a repository with one file; the palette's `Toggle project explorer` (it takes the focus), Down x4 (the selection stops at the last row), Enter | the app's `Opening remote file: ... path=<the file>` line, then: a typed edit saved with Ctrl/Cmd-S is in the host's file, byte for byte; every `hop=backend_route family=buffers` line names the arm's backend; after a change made on the host from a second connection and a second save, the host's change is still in the file (`conflict_verdict`: a save that replaces it fails) | the app did not log that it opened the file (nothing is typed then); a fish / nu login shell |
+| `lab_git_write_remote`, app layer | the panel by the palette, then the pointer: the `Commit` button, the message, the dialog's `Confirm` (the dialog binds Escape only). Linux backends | `app_commit_verdict`: the host's last commit carries the typed message AND the app logged `hop=backend_route family=git_write backend=<shell|helper>` for the arm. A call on the wrong backend, a call with no commit, or a commit with no route line is a FAIL | no pointer (macOS, Windows: `NEEDS: pointer synthesis`); the panel not confirmed open; a button the OCR did not find; clicks made and no git call (whether the dialog opened is not known) |
+
+Each driver leaves the window as it found it (the panel toggled closed, the editor pane closed after undoing unsaved typing, the file tree closed); a
+close the app does not confirm is a note on the row with a screenshot. Self-test `r15_lab_panel_drivers_pure_parts`: every verdict function is fed the
+results it must reject, `open_code_review` is run against a scripted app (an already-open panel is toggled twice; no trace line is `unknown`), and the
+palette entries, the button words, the two app lines and the file tree's clamp are read from the app's sources.
+
+Not built: the app-driven push / pull / stage / discard (the host layer and `contract_tests.rs` hold them); the helper families' own gaps
+(`lab_helper_policy`, `lab_helper_scp_fallback`, the write half of `lab_helper_killed` end UNVERIFIABLE by their own text).
+
+### The keys kl3 posts are counted (#2005)
+
+Rounds 11 and 12 (after 15093ac33 and #2041): no row is TAINTED, no row has an Enter mismatch, and "app logged N more than were injected" is left on six
+rows, all macOS: `latency_paint`, `latency_paint_ab`, `latency_key_views_ab`, both modes (39, 78, 78). Those are the cases whose keys `kl3` posts itself
+(key to first changed pixel); no injector record was kept for them. `MacBackend.kl` now records each kl3 command as a call (`backend.kl_keys`: `K` one
+key, `R` a Return, `T`/`F` text and a Return, `W` text; `kl_posted`: an answer without a post time is an errored call), marked `ref` when it is aimed at
+the reference terminal, with `tool=kl3` in `inject.log`. Self-test `r15_kl3_keys_are_recorded`: the round 12 note reproduced without the record, gone with
+it, and a key the app never saw still counted as lost.

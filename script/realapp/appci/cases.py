@@ -145,9 +145,40 @@ PROVING_FAKE += ("agent_code_recycle",)      # #2071 (round 15 wave 5c): its ans
 # #1970 / #1983 (round 10): the slow-link and Ctrl-C lab cases had existed since 2026-11-08 but no tier ever played them. lab_enter_no_network_wait is new;
 # lab_enter_start (only its 150 ms arms here: the netem test the annoyance review found never run) and lab_ctrl_c_no_esc_i are the existing cases.
 # #1982 (round 14): lab_agent_nld_predict_ssh, no query prediction request from an ssh pane by default (local control in the same case).
+# ONE entry per line below, appended with `+=` (round 15): two branches each rewrote the whole tuple in round 14 and the merge kept both statements, so
+# Python used the second (no lab_agent_nld_predict_ssh) and ci_seq.py, which read the first, never played lab_raw_key_arrival. A new entry is a new line;
+# script/ci/ci_seq.py proving_lab_globs folds the assignment and every `+=` (self-test r15_proving_lab_is_one_list).
+PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wait.*", "lab_enter_start.*.150.*", "lab_ctrl_c_no_esc_i.*")
+PROVING_LAB += ("lab_agent_nld_predict_ssh.*",)
 # #985 (round 14): lab_raw_key_arrival is new: a key to a raw-input program on the server against plain ssh, with and without the helper's session.
-PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wait.*", "lab_enter_start.*.150.*", "lab_ctrl_c_no_esc_i.*", "lab_agent_nld_predict_ssh.*",
-               "lab_raw_key_arrival.*")
+PROVING_LAB += ("lab_raw_key_arrival.*",)
+# #2063 (round 15): the lab families that had never produced a row in any committed run (docs/design/r14-test-gaps.md G6, 7.0 e; docs/design/r15-lab.md
+# has the list and the cost). By the owner rule a case that has never passed runs in the fix tier, so they are here, one family a line. Their `helper`
+# arms are selected by the quick matrix too and are UNVERIFIABLE with the `NEEDS:` line until the box can build the helper (#2062).
+PROVING_LAB += ("lab_tab_remote_dir.*",)
+PROVING_LAB += ("lab_path_detect.*",)
+PROVING_LAB += ("lab_chips.*",)
+PROVING_LAB += ("lab_no_helper_chip.*",)
+PROVING_LAB += ("lab_nu_agent_pager_env.*",)
+PROVING_LAB += ("lab_ssh_drop_reconnect.*",)
+PROVING_LAB += ("lab_fam_fs_basic.*",)
+PROVING_LAB += ("lab_fam_git_read.*",)
+PROVING_LAB += ("lab_fam_run_command.*",)
+PROVING_LAB += ("lab_nohelper_*",)
+PROVING_LAB += ("lab_read_files_remote.*",)
+PROVING_LAB += ("lab_diff_apply_remote.*",)
+PROVING_LAB += ("lab_file_tree_remote.*",)
+PROVING_LAB += ("lab_diff_panel_remote.*",)
+PROVING_LAB += ("lab_gh_chip_remote.*",)
+PROVING_LAB += ("lab_git_write_remote.*",)
+PROVING_LAB += ("lab_remote_edit.*",)
+PROVING_LAB += ("lab_skills_remote.*",)
+PROVING_LAB += ("lab_codebase_index_remote.*",)
+PROVING_LAB += ("lab_helper_*",)
+# arms the quick matrix leaves out (scenario users, network faults), named exactly: an exact name is run whatever the matrix says (run.py exact_names)
+PROVING_LAB += ("lab_password_prompt.p_password.lan.nohelper", "lab_password_prompt.p_kbdint.lan.nohelper")
+PROVING_LAB += ("lab_path_detect.p_exec.lan.nohelper", "lab_path_detect.p_tinypath.lan.nohelper")
+PROVING_LAB += ("lab_ssh_drop_reconnect.bash.lan.nohelper.rst", "lab_ssh_drop_reconnect.bash.lan.nohelper.stall10")
 # round 15 wave 4 core (#2075; r14-test-gaps T34, T36; cases_w4core.py): the grid snapshot hook's case on every platform, the app frozen for 60 s and
 # woken with an ssh session and a streaming agent turn open (the fake-model pass; its lab arm with the link stalled is in PROVING_LAB)
 PROVING += ("grid_snapshot_render", "freeze_and_wake")
@@ -157,6 +188,19 @@ PROVING_LAB += ("lab_freeze_and_wake.*",)
 # scale 1.25 / 1.5 / 2 and a second output, desktop notifications (a recording service on the app's private bus), a real file drag, a real input method
 PROVING += ("scale_matrix", "desktop_notification", "desktop_notification_agent_question", "drag_drop_file", "ime_compose")
 PROVING_FAKE += ("desktop_notification_agent_question",)
+# Lab families the fix tier's lab job does NOT play, each with the reason (self-test r15_every_lab_family_is_in_a_tier: a lab family is in PROVING_LAB
+# or here, so a new one cannot be registered and never played, which is what #2063 found for 18 of them).
+LAB_NOT_IN_FIX_TIER = {
+    "lab_replay": "the real-use replay is 15 to 60 minutes per mode and has its own manual job, app-test-replay-linux (APPCI_CASES=lab_replay*); 'lab_*' never sweeps it in",
+    "lab_helper_install": "upload / upgrade / never arms only: CI's dev build has no pinned helper digest and refuses every upload (APPCI_APP_PINNED_DIGESTS=0), so "
+                          "the arms could prove nothing. NEEDS: the owner decision of docs/design/r12-policy.md 3, item 3 (pin the cached helper's digest into the dev build)",
+    "lab_helper_quiet_fallback": "upload arms only; as lab_helper_install",
+    "lab_helper_digest_mismatch": "upload arm only; as lab_helper_install",
+    "lab_helper_missing_asset": "upload arm only; as lab_helper_install",
+    "lab_helper_one_version": "upload arm only; as lab_helper_install",
+    "lab_helper_policy": "upload arm only; as lab_helper_install",
+    "lab_helper_scp_fallback": "upload arm only; as lab_helper_install",
+}
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):

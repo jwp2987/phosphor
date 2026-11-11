@@ -7147,12 +7147,14 @@ def lab_helper_from_the_cache_r12():
     LH = CL.lab_helper_cache()
     assert LH is not None and LH.BIN == "phosphor-remote" and callable(LH.cached_entry)
     d = tempfile.mkdtemp()
-    keep = {k: os.environ.get(k) for k in ("APPCI_LAB_HELPER_BIN", "PHOSPHOR_CI_HELPER_CACHE", "APPCI_APP_PINNED_DIGESTS", "LAB_HELPER_TAG", CL.HELPER_ASSET_ENV)}
+    keep = {k: os.environ.get(k) for k in ("APPCI_LAB_HELPER_BIN", "PHOSPHOR_CI_HELPER_CACHE", "APPCI_APP_PINNED_DIGESTS", "LAB_HELPER_TAG", CL.HELPER_ASSET_ENV,
+                                           "APPCI_LAB_HELPER_ARTIFACTS")}
     try:
         for k in keep:
             os.environ.pop(k, None)
         cache = os.path.join(d, "cache")
         os.environ["PHOSPHOR_CI_HELPER_CACHE"] = cache
+        os.environ["APPCI_LAB_HELPER_ARTIFACTS"] = os.path.join(d, "no-artifact")      # round 15: a lab job's checkout may hold a real ./helper-artifacts/; this check is about the cache
         # (1) nothing anywhere
         path, why = CL.resolve_helper_bin()
         assert path == "" and "APPCI_LAB_HELPER_BIN" in why and "lab-helper" in why, why
@@ -8316,6 +8318,8 @@ import selftest_r15_w5b  # noqa: E402  (round 15 wave 5 part B: cases_install.py
 CHECKS.extend(selftest_r15_w5b.CHECKS)
 import selftest_macptr  # noqa: E402  (round 15 wave 4, #2061: the macOS pointer, app-only chords and the cases enabled with them)
 CHECKS.extend(selftest_macptr.CHECKS)
+import selftest_r15_lab  # noqa: E402  (round 15 lab: the helper artifact, the lab families and their drivers, kl3's keys; its checks live in their own file)
+CHECKS.extend(selftest_r15_lab.CHECKS)
 
 
 def main():

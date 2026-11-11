@@ -1388,7 +1388,9 @@ sshlab-image:
 # crates (crates/remote_server, crates/command, lib/notify; proven complete with cargo tree before each build), Cargo.toml, Cargo.lock, rust-toolchain.toml
 # and .cargo/config.toml, so a commit that touches none of them reuses the entry. This job installs nothing: the musl
 # rust target, zig and cargo-zigbuild must already be there (what cli-linux leaves in the runner user's home), else it fails naming the one missing.
-# helper-artifacts/ is also uploaded (30 days) so the same file can be carried to a Mac or Windows runner by hand.
+# helper-artifacts/ is also uploaded (30 days): the Mac and Windows lab jobs have no such cache and take it from there (`needs: lab-helper`, #2062;
+# cases_lab.resolve_helper_bin accepts it only as this checkout's helper). The artifact is uploaded when the job FAILS too: a build that could not start for a
+# missing tool leaves helper-artifacts/NEEDS.txt (one `NEEDS: ...` line), which the lab's helper arms then give as their reason.
 lab-helper:
   tags: [little-thing]
   stage: apptest
@@ -1408,6 +1410,7 @@ lab-helper:
     - python3 script/ci/lab_helper.py build
   artifacts:
     name: lab-helper
+    when: always
     paths: [helper-artifacts/]
     expire_in: 30 days
 
@@ -1426,8 +1429,10 @@ app-test-lab-linux:
     APPCI_APP_PINNED_DIGESTS: "0"
   before_script:
     - script/ci/fetch_build.sh --this-pipeline
-    # say in the job log which helper the helper arms will use (cases_lab.resolve_helper_bin reads the same cache); a miss is not an error here
-    - python3 script/ci/lab_helper.py path || echo "lab helper not cached - the helper arms will be UNVERIFIABLE (play lab-helper)"
+    # say in the job log which helper the helper arms will use (cases_lab.resolve_helper_bin reads the same places); a miss is not an error here.
+    # This job has NO `needs: lab-helper` (#2062): it runs on the machine that holds the helper cache, which is what that job's artifact is a copy of, and a
+    # `needs` on a manual job that was not played would leave this job unplayable in every fix tier. A helper-artifacts/ in the checkout is still used first.
+    - python3 script/ci/lab_helper.py artifact || python3 script/ci/lab_helper.py path || echo "no lab helper for this checkout - the helper arms will be UNVERIFIABLE with the reason above (play lab-helper)"
   script:
     - script/realapp/linux/wayland_session.sh --mode wayland --dist dist --out "$CI_PROJECT_DIR/appci-out/wayland"
   after_script:
@@ -1439,10 +1444,17 @@ app-test-lab-linux:
 # NOT re-mapped here (re-mapping would put the token into the job's variable list/expansion). lab.py reads them from the environment through ci_env.get,
 # prints only whether they are set, and a job on an unprotected ref SKIPs the lab cases with that reason. No `set -x` anywhere near them.
 # Round 15 (#2063; docs/design/r12-macssh.md 4, docs/design/r15-tiers.md): ci_seq.py plays these two in the candidate and release tiers, after that platform's
-# app tests, with APPCI_LAB_MATRIX=quick and APPCI_FAKE_MODEL=1. The helper file comes from this pipeline's `lab-helper` job
-# as an artifact (the box-local cache is not on these machines); the helper is a Linux binary the LAB HOST runs, so here only its recorded version line is read
-# (helper-artifacts/phosphor-remote.version). No artifact (lab-helper not played, or failed for its missing build tools, #2062): the helper arms SKIP with
-# `NEEDS: ...`. APPCI_APP_PINNED_DIGESTS=0 as on the Linux job: the dev build refuses every helper upload by design.
+# app tests, with APPCI_LAB_MATRIX=quick and APPCI_FAKE_MODEL=1.
+#
+# The helper (#2062, docs/design/r12-macssh.md 4, docs/design/r15-lab.md): these two machines have no helper cache and cannot build a Linux musl binary, so
+# they take the `lab-helper` job's artifact (helper-artifacts/: the binary, its version line for a machine that cannot start it, its key). The helper is a
+# Linux binary the LAB HOST runs, so here only its recorded version line is read (helper-artifacts/phosphor-remote.version). APPCI_LAB_HELPER_BIN is NOT set
+# here: cases_lab.resolve_helper_bin finds ./helper-artifacts/ itself, uses it only when it is THIS checkout's helper, and reads its NEEDS.txt (an explicit
+# path would skip both). PLAY `lab-helper` FIRST in the pipeline (ci_seq.py does): it is seconds when the box has the helper cached, and while a `needs` job
+# that is manual has not been played GitLab does not offer these jobs. When `lab-helper` fails (allowed) for a missing tool on the box (#2062), or was not
+# played, these jobs still run: the helper arms SKIP with the `NEEDS: ...` line (the one recorded in helper-artifacts/NEEDS.txt when there is one); every
+# `nohelper` arm is judged as usual. `needs` is a list that REPLACES the parent's, so the build job is named again. APPCI_APP_PINNED_DIGESTS=0 as on Linux:
+# the dev build refuses every helper upload by design, so upload / upgrade / never prove nothing there.
 app-test-lab-macos:
   extends: app-test-macos
   resource_group: mac-gui
@@ -1457,7 +1469,6 @@ app-test-lab-macos:
     APPCI_LAB: fixed
     APPCI_LAB_SLOT: mac
     APPCI_CASES: "lab_*"
-    APPCI_LAB_HELPER_BIN: "$CI_PROJECT_DIR/helper-artifacts/phosphor-remote"
     APPCI_APP_PINNED_DIGESTS: "0"
 
 app-test-lab-windows:
@@ -1473,7 +1484,6 @@ app-test-lab-windows:
     APPCI_LAB: fixed
     APPCI_LAB_SLOT: windows
     APPCI_CASES: "lab_*"
-    APPCI_LAB_HELPER_BIN: "$CI_PROJECT_DIR/helper-artifacts/phosphor-remote"
     APPCI_APP_PINNED_DIGESTS: "0"
 
 # Real-use replay (Wave 1.5 #3, docs/testing.md "Real-use replay"): a seeded "day of use" in one long case per session mode, against the fake ssh lab at

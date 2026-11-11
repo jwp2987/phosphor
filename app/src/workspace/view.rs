@@ -9042,6 +9042,14 @@ impl Workspace {
     ) {
         let should_open = panel_update_params.target_open_state;
         let should_close = !panel_update_params.target_open_state;
+        // Trace only (#2063): the app tests read this to know the panel opened.
+        log::info!(
+            "{}",
+            right_panel::right_panel_trace_line(
+                should_open,
+                panel_update_params.review_pane_context.is_some()
+            )
+        );
 
         let new_is_maximized = panel_update_params.pane_group.update(ctx, |pane_group, _| {
             pane_group.right_panel_open = should_open;
