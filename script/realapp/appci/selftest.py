@@ -7442,6 +7442,163 @@ def lab_plain_session_limit_2019():
         assert n in names, n                                 # the nu rows are still registered: reported by name, not dropped
     doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
     assert "lab_plain_session_limit_2019" in doc and "plain_session_limit" in doc
+def r14_w1a_wave1_cases_pure_parts_and_registry():
+    """#2072 (docs/design/r14-w1a.md): history_up_recall, scroll_keys_position, find_basic, tab_lifecycle_keys, routing_table_powershell. Each verdict
+    helper is shown to FAIL on a wrong result (no oracle that cannot fail), the registry and Windows classification are pinned, and so are the app
+    texts and keys the cases read."""
+    import inspect, random, re
+    import backend
+    import cases_ui
+    import cases_r14_w1a as w
+    reg = {c["name"]: c for c in cases.CASES}
+    names = ("history_up_recall", "scroll_keys_position", "find_basic", "tab_lifecycle_keys", "routing_table_powershell")
+    for n in names:
+        assert n in reg and n in cases.PROVING and n not in cases.SMOKE and n not in cases.PROVING_FAKE, n
+        assert reg[n]["modes"] == ("terminal", "agent") and reg[n]["gui"], n
+    assert winmap.skip_reason("history_up_recall", "powershell") is None and winmap.skip_reason("history_up_recall", "gitbash") is None
+    assert winmap.skip_reason("tab_lifecycle_keys", "powershell") is None and winmap.skip_reason("tab_lifecycle_keys", "gitbash") is None
+    assert winmap.skip_reason("find_basic", "gitbash") is None and "rec.log" in winmap.skip_reason("find_basic", "powershell")
+    assert winmap.skip_reason("routing_table_powershell", "powershell") is None and winmap.skip_reason("routing_table_powershell", "gitbash")
+    assert all("OCR" in winmap.skip_reason("scroll_keys_position", p) for p in ("powershell", "gitbash"))
+    # a skip names the missing capability
+    assert "OCR" in inspect.getsource(w.c_scroll_keys_position) and "close key" in w.NO_UNDO_MAC and "PowerShell pane" in inspect.getsource(w.c_routing_table_powershell)
+
+    # --- Received: rec.log, or PSReadLine's history in the PowerShell pane, minus the harness's own probe lines
+    marker = cases.Ctx.HARNESS_MARKER_RE
+    hist = ["old", "Add-Content hu.txt a", "Add-Content ~/.appci_pid p1:22", "Get-Date"]
+    ps = types.SimpleNamespace(pane="powershell", ps_history_lines=lambda: list(hist), HARNESS_MARKER_RE=marker, ps_history_path=lambda: None)
+    rec = w.Received(ps)
+    assert rec.mark == 4 and rec.lines() == [] and not rec.recorded()
+    hist += ["Add-Content ~/.appci_where w1", "Write-Host x"]
+    assert rec.lines() == ["Write-Host x"]
+    sh = types.SimpleNamespace(pane=None, cmd_mark=lambda: 2, cmds_since=lambda m: ["a", "b"][m - 2:], prof=types.SimpleNamespace(commands=lambda: [(0, "x")]))
+    assert w.Received(sh).lines() == ["a", "b"] and w.Received(sh).recorded()
+    assert w.first_diff(["a", "b"], ["a", "b"]) is None and w.first_diff(["a", "b"], ["a"]) == (1, "b", None) and w.first_diff(["a"], ["a", "c"]) == (1, None, "c")
+    assert w.key_name(types.SimpleNamespace(be=types.SimpleNamespace(name="wayland")), "pageup") == "Prior"
+    assert w.key_name(types.SimpleNamespace(be=types.SimpleNamespace(name="mac")), "pageup") == "pageup"
+    assert backend.MacBackend.SPECIAL["pageup"] == 116 and backend.MacBackend.SPECIAL["pagedown"] == 121 and backend.WindowsBackend.NAMED["pageup"] == 0x21
+    assert backend.x11_keyname("Prior") == "Prior"
+
+    # --- T1: the six lines and the effect files, both shell families; every usual defect is told apart
+    toks = ["t1_aaaaaaaa", "t2_bbbbbbbb", "t3_cccccccc", "t4_dddddddd"]
+    want, eff = w.hist_expected("bash", "hu.txt", toks)
+    assert want == ["echo t1_aaaaaaaa >> hu.txt", "echo t2_bbbbbbbb >> hu.txt", "echo t3_cccccccc >> hu.txt", "echo t2_bbbbbbbb >> hu.txt",
+                    "echo t2_bbbbbbbb >> hu_e.txt", "echo t4_dddddddd >> hu.txt"]
+    assert eff == {"hu.txt": [toks[0], toks[1], toks[2], toks[1], toks[3]], "hu_e.txt": [toks[1]]}
+    plan = w.hist_edit_plan("bash", "hu.txt", toks[1])
+    assert plan["line"][:len(plan["line"]) - plan["backspaces"]] + plan["typed"] == plan["edited"] == want[4]
+    pw, peff = w.hist_expected("pwsh", "hu.txt", toks)
+    pp = w.hist_edit_plan("pwsh", "hu.txt", toks[1])
+    assert pp["line"] == "Add-Content hu.txt t2_bbbbbbbb" and pp["line"][:-pp["backspaces"]] + pp["typed"] == pp["edited"] == pw[4] == "Add-Content hu.txt t2_bbbbbe9z"
+    assert peff == {"hu.txt": [toks[0], toks[1], toks[2], toks[1], "t2_bbbbbe9z", toks[3]]}
+    assert w.hist_diagnose(want, want, want[:3]) == ""
+    assert "the recall picked typed command 3" in w.hist_diagnose(want, want[:3] + [want[2]] + want[4:], want[:3])            # Up once instead of twice
+    assert "nothing was received" in w.hist_diagnose(want, want[:3], want[:3])                                               # Enter ran nothing
+    assert "extra text around it" in w.hist_diagnose(want, want[:5] + [want[1] + want[5]], want[:3])                         # Down did not clear the line
+    assert "one line more" in w.hist_diagnose(want, want + [want[5]], want[:3])                                              # a doubled line
+    assert "line 5" in w.hist_diagnose(want, want[:4] + [want[1]] + want[5:], want[:3])                                      # the edit was lost
+    body = inspect.getsource(w.c_history_up_recall)
+    for needle in ('["Up", "Up", "Return"]', '["Up"] + ["BackSpace"] * plan["backspaces"]', '["Up", "Down"]', "got == want", "got.count(want[1]) == 2", "r.unverifiable("):
+        assert needle in body, needle
+
+    # --- T2: line words survive OCR-style text; the hold verdict fails on a snap, on no output, and is noref when nothing was read
+    assert len(set(w.SKP_CODE)) == 16 and set(w.SKP_CODE) <= set(cases_ui.OCR_SAFE)
+    words = [w.skp_word("kmn", i) for i in range(1, 501)]
+    assert len(set(words)) == 500 and all(len(x) == 6 for x in words)
+    text = "junk %s 7\n %s 480 \n$ CAT x\n%s\n" % (words[6], words[479].upper(), "pqr" + words[3][3:])
+    assert w.skp_visible(text, "kmn") == [7, 480] and w.skp_visible(None, "kmn") == [] and w.skp_visible(text, "pqr") == [4]
+    a, b = w.skp_tags(random.Random(3))
+    assert a != b and len(a) == len(b) == 3
+    before = list(range(300, 340))
+    assert w.skp_hold_verdict(before, before[2:], [], 30)[0] == "pass"
+    assert w.skp_hold_verdict(before, list(range(470, 500)), [], 30)[0] == "fail"                 # the view moved
+    assert w.skp_hold_verdict(before, before, [5, 6], 30)[0] == "fail"                            # new output on screen: it followed the bottom
+    assert w.skp_hold_verdict(before, before, [], 2)[0] == "fail"                                 # no output arrived: nothing was tested
+    assert w.skp_hold_verdict([300], [300], [], 30)[0] == "noref"
+    assert w.anchors_kept("alpha bravo12 charlie x y", "ALPHA bravo12 zz") == 2 / 3.0 and w.anchors_kept("a b", "a b") == 0.0
+    job = w.skp_stream_cmd("s.txt", "seen.txt", "stop")
+    assert job.startswith("(sleep 1; while read -r l; do [ -e stop ] && break;") and job.endswith("done < s.txt &)") and 'echo "$l" >> seen.txt; sleep 0.1' in job
+    body = inspect.getsource(w.c_scroll_keys_position)
+    for needle in ('key_name(ctx, "pageup")] * 3', 'WV.KX(ctx, "block_up"), "Home"', "skp_hold_verdict(v1, v2", "typed(ctx, last[0], enter=False)", "got == [cat, job, last]"):
+        assert needle in body, needle
+
+    # --- T3: the hop parser reads the app's own format; next / previous verdicts fail when the focus does not move or does not return
+    log = ("x input_order hop=find_state event=query count=0 focused=none scanning=true t=1.0\n"
+           "x input_order hop=find_state event=next count=3 focused=2 scanning=false t=2.0\nnoise hop=find_scroll result=scroll\n")
+    assert w.find_states(log) == [dict(event="query", count=0, focused=None, scanning=True), dict(event="next", count=3, focused=2, scanning=False)]
+    assert w.find_nav_verdict(2, 1, 2) is None
+    assert "did not move" in w.find_nav_verdict(2, 2, 2) and "did not return" in w.find_nav_verdict(2, 1, 0) and "missing" in w.find_nav_verdict(None, 1, 0)
+    fx = w.find_fixture(random.Random(1), 3, "fqtoken", "nbword")
+    assert len(fx) == w.FIND_BLOCK_LINES and fx[14].split() == ["fqtoken"] * w.FIND_HITS and "nbword" in fx[13] and sum(l.count("fqtoken") for l in fx) == 3
+    assert not [l for l in w.find_fixture(random.Random(1), 4) if "fqtoken" in l or "near" in l]
+    root = os.path.join(HERE, "..", "..", "..")
+    model = open(os.path.join(root, "app", "src", "terminal", "find", "model.rs"), encoding="utf-8").read()
+    assert 'format!("event={event} count={count} focused={focused} scanning={scanning}")' in model
+    view = open(os.path.join(root, "app", "src", "terminal", "view.rs"), encoding="utf-8").read()
+    assert 'log_hop("find_state", || {' in view and 'self.log_find_state("query", ctx);' in view and 'self.log_find_state("next", ctx);' in view
+    findbar = open(os.path.join(root, "app", "src", "view_components", "find.rs"), encoding="utf-8").read()
+    assert "EditorEvent::ShiftEnter | EditorEvent::AltEnter" in findbar and "EditorEvent::Escape" in findbar
+    body = inspect.getsource(w.c_find_basic)
+    for needle in ('none["count"] == 0', 'first["count"] == FIND_HITS', "find_nav_verdict(", '"shift+Return"', "got == cats + [after]", "R.find_scroll_geometry("):
+        assert needle in body, needle
+
+    # --- T4: the loop lines, the beat verdict (still beating = not gone), and the app's keys and texts
+    assert w.tl_beat_cmd("bash", "b", "s", "p") == "echo $$ > p; while [ ! -e s ]; do echo b >> b; sleep 0.5; done"
+    assert w.tl_beat_cmd("pwsh", "b", "s") == "while (-not (Test-Path s)) { Add-Content b b; Start-Sleep -Milliseconds 500 }"
+    assert w.beat_verdict([(0, 5), (1, 7), (2, 9), (3, 11)]) is None                              # an orphan keeps beating
+    assert w.beat_verdict([(0, 5), (1, 7), (2, 7), (3, 7), (4, 7)]) == 1
+    assert w.beat_verdict([(0, 5), (1, 5), (2, 5), (3, 5)]) == 0 and w.beat_verdict([(0, 5), (1, 6), (2, 6)]) is None and w.beat_verdict([]) is None
+    assert w.pid_alive(os.getpid())
+    pg = open(os.path.join(root, "app", "src", "pane_group", "mod.rs"), encoding="utf-8").read()
+    assert 'log::info!("%s");' % w.CLOSE_WARNING_LINE in pg
+    nm = open(os.path.join(root, "app", "src", "workspace", "native_modal.rs"), encoding="utf-8").read()
+    assert 'FixedBinding::new("escape", NativeModalAction::Close, id!("NativeModal"))' in nm and 'FixedBinding::new("enter", NativeModalAction::Confirm, id!("NativeModal"))' in nm
+    binds = open(os.path.join(root, "app", "src", "util", "bindings.rs"), encoding="utf-8").read()
+    assert 'Keystroke::parse("ctrl-alt-t").ok()' in binds and w.REOPEN_KEY == os.environ.get("APPCI_KEY_REOPEN", "ctrl+alt+t")
+    grace = open(os.path.join(root, "app", "src", "undo_close", "settings.rs"), encoding="utf-8").read()
+    assert "default: Duration::from_secs(%d)," % int(w.UNDO_GRACE_S) in grace
+    # the record comparison leaves out the cwd probes and the loop line (an rc hook never logs a command that does not return), nothing else
+    notes = []
+    tb = w.Tabs.__new__(w.Tabs)
+    tb.r = types.SimpleNamespace(check=lambda ok, msg: notes.append((ok, msg)), unverifiable=lambda msg: notes.append(("noref", msg)))
+    tb.typed, tb.unlogged = ["cd d2", "LOOP", "cd d3", "echo t >> e"], ["LOOP"]
+    tb.rec = types.SimpleNamespace(ps=False, recorded=lambda: True, lines=lambda: ["pwd >> w/tl_pwd_1.txt", "cd d2", "cd d3", "echo t >> e"])
+    tb.received_ok()
+    assert notes[-1][0] is True
+    tb.rec = types.SimpleNamespace(ps=False, recorded=lambda: True, lines=lambda: ["cd d2", "cd d3", "echo t >> e", "echo t >> e"])
+    tb.received_ok()
+    assert notes[-1][0] is False and "line 4" in notes[-1][1]                                     # the command ran again after the undo
+    tb.rec = types.SimpleNamespace(ps=True, recorded=lambda: False, lines=lambda: [])
+    tb.received_ok()
+    assert notes[-1][0] == "noref"
+    body = inspect.getsource(w.c_tab_lifecycle_keys)
+    for needle in ('ctx.be.key("Escape")', 'ctx.be.key("Return")', "ctx.be.key(REOPEN_KEY)", "beat_verdict(samples)", "Escape was NOT sent", "Enter was NOT sent", "t.received_ok()"):
+        assert needle in body, needle
+
+    # --- T5: the table and its verdicts
+    tab = w.ps_routing_table("agent", None)
+    kinds = {k for _l, k, _w in tab}
+    assert kinds == {"shell", "prose", "ambiguous", "typo", "typo_prose"} and len(tab) == len(set(l for l, _k, _w in tab))
+    assert all(want == "shell" for _l, k, want in tab if k == "shell") and all(want == "agent" for _l, k, want in tab if k == "prose")
+    term = w.ps_routing_table("terminal", False)
+    assert all(want == "shell" for _l, k, want in term if k == "prose") and not [1 for _l, k, _w in term if k.startswith("typo")]
+    corpus = open(os.path.join(root, "crates", "input_classifier", "src", "routing_corpus.rs"), encoding="utf-8").read()
+    for line in ("Get-Date", "Write-Host hello world", "Get-ChildItem -Recurse", "dir", "echo $env:PATH", "$x = Get-Date", "$env:PATH -split ';'", "@(1,2,3)",
+                 "Get-Content log.txt | Select-String error", "ls | Where-Object { $_.Length -gt 1kb }"):
+        assert line in w.PS_SHELL_LINES and ('"%s"' % line) in corpus, line
+    assert not [l for l in w.PS_SHELL_LINES if re.search(r"Remove-|winget|Invoke-Web|Restart-|Set-Location", l)], "the table runs nothing that deletes, installs or fetches"
+    assert w.ps_row_verdict("shell", "shell", "shell", "Terminal", "r") == (True, None) and w.ps_row_verdict("shell", "shell", "agent", "Terminal", "r")[0] is False
+    assert w.ps_row_verdict("prose", "agent", "shell", "Terminal", "r")[0] is False and w.ps_row_verdict("prose", "agent", "BOTH", "Terminal", "r")[0] is False
+    assert w.ps_row_verdict("ambiguous", None, "shell", None, None)[0] is None
+    assert w.ps_row_verdict("typo", None, "agent", "AgentConversation", "x")[0] is False and w.ps_row_verdict("typo", None, "shell", "Terminal", "x")[0] is None
+    assert w.ps_row_verdict("typo_prose", None, "shell", "AgentConversation", "x")[0] is False
+    body = inspect.getsource(w.c_routing_table_powershell)
+    for needle in ("r.unverifiable(", "CA.classify_dest(reached", "CA.ambiguous_want(", "the shell also received", "judged >= len(PS_SHELL_LINES)"):
+        assert needle in body, needle
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    for n in names:
+        assert ("`%s`" % n) in doc, n
+    assert "cases_r14_w1a.py" in doc and "hop=find_state" in doc and "#2080" in doc
 
 
 def main():

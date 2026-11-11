@@ -115,3 +115,17 @@ fn alt_screen_rerun_bumps_revision_only_when_results_change() {
         assert_eq!(events.borrow().as_slice(), &["UpdatedFocusedMatch"][..]);
     });
 }
+
+/// Round 14: the `hop=find_state` detail is read by the real-app case `find_basic`
+/// (`script/realapp/appci/cases_r14_w1a.py` FIND_STATE_RE). The format is pinned here.
+#[test]
+fn find_state_hop_detail_format_is_pinned() {
+    assert_eq!(
+        super::find_state_hop_detail("query", 3, Some(0), false),
+        "event=query count=3 focused=0 scanning=false"
+    );
+    assert_eq!(
+        super::find_state_hop_detail("next", 0, None, true),
+        "event=next count=0 focused=none scanning=true"
+    );
+}

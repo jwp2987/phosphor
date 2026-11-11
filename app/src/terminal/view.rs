@@ -33829,6 +33829,15 @@ impl TerminalView {
         }
     }
 
+    /// `hop=find_state` (round 14): the find bar's match count and focused match after a query
+    /// edit or a next / previous key, for the real-app case `find_basic`. Trace only: nothing is
+    /// read or formatted unless input-order logging is on.
+    fn log_find_state(&self, event: &'static str, ctx: &ViewContext<Self>) {
+        warpui::input_order::log_hop("find_state", || {
+            self.find_model.as_ref(ctx).state_hop_detail(event)
+        });
+    }
+
     fn handle_find_event(&mut self, event: &FindEvent, ctx: &mut ViewContext<Self>) {
         match event {
             FindEvent::CloseFindBar => {
@@ -33843,9 +33852,13 @@ impl TerminalView {
                     .cloned()
                     .unwrap_or_default()
                     .with_query(query.clone());
-                self.run_find(options, ctx)
+                self.run_find(options, ctx);
+                self.log_find_state("query", ctx);
             }
-            FindEvent::NextMatch { direction } => self.goto_next_find_match(direction, ctx),
+            FindEvent::NextMatch { direction } => {
+                self.goto_next_find_match(direction, ctx);
+                self.log_find_state("next", ctx);
+            }
             FindEvent::ToggleFindInBlock { value } => self.toggle_find_within_block(ctx, *value),
             FindEvent::ToggleCaseSensitivity { is_case_sensitive } => {
                 let options = self
