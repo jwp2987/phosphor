@@ -22,12 +22,17 @@
 //! KILL SWITCH. `PHOSPHOR_AGENT_TURN_SELF_HEAL=0` (also `off`, `false`, `no`): faults are still
 //! logged (`hop=agent_turn_stuck ... healed=0`), nothing is healed.
 //!
-//! A REPLY A PANE CLOSE STOPPED IS NOT JUDGED FOR UNSETTLED CALLS (#2103). The close erases the
-//! conversation's finished results on purpose (#848: nothing stale goes out after an undo), and
-//! erased is not lost: those calls were settled and then discarded. The fact outlasts the
-//! close itself (`suspended_for_close` ends at the undo), so the controller remembers the reply
-//! the close stopped ([`TurnFacts::reply_discarded_for_close`]) until the conversation has a
-//! newer one. The agent fuzzer's oracle makes the same exception (`Oracle::tab_closed`).
+//! A REPLY A PANE CLOSE STOPPED IS NOT JUDGED FOR UNSETTLED CALLS (#2103). The close discards the
+//! conversation's finished results on purpose (#848: nothing stale goes out after an undo). Since
+//! the owner's decision of 2026-11-11 the calls of those results keep their status (the action
+//! model holds the discarded results for display only), so they are settled by the ordinary
+//! reading and the fuzzer's oracle no longer excepts a closed tab. What is left for this rule:
+//! the calls of a batch that was still preprocessing when the close's stop dropped it (no status
+//! until its future comes back, #1894), and every call of the reply when the kill switch
+//! `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` makes the close erase the results as before. Dropped on
+//! purpose is not lost. The fact outlasts the close itself (`suspended_for_close` ends at the
+//! undo), so the controller remembers the reply the close stopped
+//! ([`TurnFacts::reply_discarded_for_close`]) until the conversation has a newer one.
 //!
 //! NOT COVERED, on purpose: "the turn is in progress and nothing is held". That shape is also a
 //! new, empty conversation, a turn waiting for the network, a monitored command and a parked
@@ -92,9 +97,10 @@ pub struct TurnFacts {
     pub unsettled: usize,
     /// [`ids_hash`] of those calls.
     pub unsettled_ids: u64,
-    /// The conversation's last reply is the one a pane close stopped: the close erased its
-    /// calls' results on purpose, so a call of it with no status and no result is discarded,
-    /// not lost (#2103). Parked actions are judged all the same.
+    /// The conversation's last reply is the one a pane close stopped: a call of it with no
+    /// status and no result was dropped by the close on purpose (a batch still preprocessing,
+    /// or, with the kill switch off, every call whose result the close erased), not lost
+    /// (#2103). Parked actions are judged all the same.
     pub reply_discarded_for_close: bool,
 }
 

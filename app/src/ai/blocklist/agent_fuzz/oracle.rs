@@ -99,9 +99,9 @@ pub struct Oracle {
     /// (a request is recorded when its stream opens, a moment after it is sent), carried over
     /// while it has not shown up.
     late_request_slack: usize,
-    /// The tab was closed: the rig's close discards the finished results on purpose
-    /// (`discard_pending_work_for_close`), so the "status or result" half of I1 no longer holds.
-    tab_closed: bool,
+    /// A tab close ERASED finished results: only with the kill switch
+    /// `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0`. See [`Oracle::tab_closed`].
+    close_erased_results: bool,
     /// I4: requests whose reply stream the user cut (see [`Oracle::reply_cut`]).
     cut_replies: BTreeSet<usize>,
 }
@@ -126,8 +126,20 @@ impl Oracle {
         }
     }
 
-    pub fn tab_closed(&mut self) {
-        self.tab_closed = true;
+    /// The tab was closed (the rig's close is `discard_pending_work_for_close`).
+    ///
+    /// Until #2103's owner decision (2026-11-11) every close switched off the "status or
+    /// result" half of I1 for the rest of the scenario, because the close erased the finished
+    /// results of the reply and so left their calls with no status and no result, on purpose.
+    /// That is all the exception excused, and it no longer happens: the close still discards
+    /// those results (none is sent later), but their calls keep their status, so I1 reads them
+    /// as settled like any other finished call. I1 is therefore judged after a close as before
+    /// it, and a call with no status and no result after a close is a finding.
+    ///
+    /// `results_erased`: the kill switch is off and the close did erase them, the one case the
+    /// old exception still describes.
+    pub fn tab_closed(&mut self, results_erased: bool) {
+        self.close_erased_results |= results_erased;
     }
 
     /// I4: the user sent a message, pressed Stop, or pressed Ctrl-C with no command running
@@ -264,7 +276,7 @@ impl Oracle {
         // one of them is in no queue, has no card state and no result. While a stream is in
         // flight the calls of the reply before it are being answered (or its own are not queued
         // yet), so the clock only runs while nothing is streaming.
-        let unsettled: HashSet<String> = if self.tab_closed || obs.stream_in_flight {
+        let unsettled: HashSet<String> = if self.close_erased_results || obs.stream_in_flight {
             HashSet::new()
         } else {
             obs.unsettled_calls

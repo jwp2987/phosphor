@@ -4214,7 +4214,7 @@ Invariants (checked after every step; delta = 2 s, all waits scale with `AGENT_F
 
 | id | invariant |
 |---|---|
-| I1 | every blocked action has an actionable card within delta; nothing pending sits neither blocked-with-card, runnable nor running longer than delta (`transfer_shell_command_control_to_user` counts as carded only while the rig has a live never-ending command: its card is the CLI subagent view). Since the 2026-11-09 lifecycle audit (#1946) also: every tool call of the last cleanly finished reply has an action-model status (preprocessing, queued, blocked, running, finished) or a result message in the conversation within delta (`Obs::unsettled_calls`, read from the conversation and the action model separately; the clock runs only while no stream is in flight, and the check is off after a `CloseTab`, whose rig stand-in discards the finished results on purpose) |
+| I1 | every blocked action has an actionable card within delta; nothing pending sits neither blocked-with-card, runnable nor running longer than delta (`transfer_shell_command_control_to_user` counts as carded only while the rig has a live never-ending command: its card is the CLI subagent view). Since the 2026-11-09 lifecycle audit (#1946) also: every tool call of the last cleanly finished reply has an action-model status (preprocessing, queued, blocked, running, finished) or a result message in the conversation within delta (`Obs::unsettled_calls`, read from the conversation and the action model separately; the clock runs only while no stream is in flight. Until round 18 the check was off after a `CloseTab`, whose rig stand-in erased the finished results on purpose; since #2103 the close keeps those calls' status and the check stays ON after a close, off only when the kill switch `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` makes the close erase them: `Oracle::tab_closed(results_erased)`) |
 | I2a | script used up and every card answered -> conversation terminal within 5 s (+4 s per failing turn: retry backoff) |
 | I2b | Stop, and a Ctrl-C that has nothing to interrupt (a card waits, a reply streams) -> terminal within 2 s, nothing pending or running, no stream in flight. A Ctrl-C typed while something RUNS is not a stop: it interrupts what runs and the turn goes on (I2c). `oracle::ctrl_c_interrupts` says which: (1) a RUNNING agent command (an action in the `Running` stage that the shell command executor waits on, `Rig::running_commands`): the key is the command's interrupt (#850, DECLINED.md IMPROVED; owner decision 2026-11-10, which closed the question on #1942), whether or not other actions of the reply wait behind it; (2) since round 17 (#2034) equally a running tool that is not a command (a read, a search), when no reply is streaming: `BlocklistAIActionModel::interrupt_running_actions`. A tool that runs while a reply still streams stays with I2b (the key cancels the reply). History: round 10 applied I2b to the command's interrupt too (what failed in matrix `pairs_hung_command` / `triples_hung_command` / `triples_read_files`, `CtrlCAfterFirst`); rounds 10-11 exempted any running action with later actions waiting; rounds 12-16 exempted only the command and held a running tool to I2b, which was the app's own inconsistency (#2034: the same key stopped the turn on a waiting card and one action on a running one) written down as a rule |
 | I2c | that Ctrl-C: **(1)** what it interrupted stops running within 2 s (`Oracle::interrupted`: of the actions running at the key, at least one no longer runs; a command runs alone, and a file edit whose save is in flight is left to finish); **(2)** the turn goes on (`Oracle::turn_goes_on`): the action that waited next behind it and that only the user can end (a question; a command, with the allowlist off: `oracle::waits_for_the_user`) is still held when what ran has stopped. Gone means the key cancelled the rest of the turn too, which is a Stop's job. Not judged by I2c: how the step ends afterwards. That is the ordinary end-of-step rule (`plan_finished_batch`, no cancellation reason): the results go back to the model when any result of the step finished, and a step whose only result is the interrupted action ends `Cancelled` with the reason shown and sends nothing (#1178). The cards that follow are answered by the closing user and I2a still ends the turn |
@@ -7045,6 +7045,36 @@ fixture, and the Rust strings and order the cases read (`r17_*`).
 Run: `python3 script/realapp/appci/run.py --cases md_viewer_first_frame,gpu_lost_device_recovers`.
 What the next run should show: `md_viewer_first_frame` PASS in both modes with a first size near the pane size and `suspicious_image_paints` 0;
 `gpu_lost_device_recovers` PASS in both modes on Wayland and X11 with the adapter named, and `frames_after_rebuild_before_input` (0 confirms #2101).
+
+## Round 18: a pane close keeps the status of the calls whose results it discards (design `docs/design/r18-retire.md`; #2103, #848; nothing compiled or run when written)
+
+Owner decision 2026-11-11, with its condition: the results a close discards are kept for the calls' STATUS only (cards, turn bookkeeping) and
+are never sent to the model. Kill switch `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` (the close erases them as before). App log, one line per close
+that discards something: `hop=agent_close_discard conversation=<id> results=<n> kept_status=<0|1>`.
+
+- **Unit, `ai/blocklist/controller_tests.rs`** (no BYOP provider: a request is seen as the controller builds it, as for the #1059 tests).
+  `a_pane_close_discards_finished_results_and_their_calls_keep_their_status` (after close + undo: nothing left to send, the call that ran is
+  still a success, the cancelled one still cancelled, neither is in the copy / export text; red on the old code, where both had no status).
+  `a_result_a_pane_close_discarded_is_in_no_later_request` (the owner's condition: close with a finished, unsent result, undo, then the
+  automatic and the user-requested follow-up send nothing, and the user's next prompt and the one after it carry no tool result: checked on
+  every in-flight stream's inputs, every exchange's inputs and every `ToolCallResult` in the conversation's tasks).
+  `without_a_close_the_finished_result_travels_with_the_next_prompt` (its positive control: the same result with no close IS sent).
+  `with_the_kill_switch_off_a_pane_close_erases_the_results` (the switch's values; the erase arm leaves no status).
+- **Cards, `ai/blocklist/block/view_impl/output_tests.rs` `discarded_by_close_tests::cards_of_a_restored_pane_show_what_the_discarded_calls_did`.**
+  With the pane's real action model after a real close-discard, the two predicates `render` and `action_icon` decide on, with "hide completed
+  tool cards" off and on: the call that ran is a finished success (not orphaned; hidden exactly when the setting is on, like any completed
+  card), the cancelled call is a cancelled card that is never hidden, and the control (a call with no status) is orphaned and never hidden,
+  which is how both calls read before #2103. It does not paint a card.
+- **Agent fuzz oracle (`agent_fuzz/oracle.rs`): the `tab_closed` exception is gone by default.** It switched the "status or result" half of
+  I1 off for the rest of a scenario after a close, because the close erased finished results and left their calls with no status. That is all
+  it excused, and the close no longer does it, so I1 is judged after a close as before it. The exception remains only for
+  `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` (`Oracle::tab_closed(results_erased)`), where the erase still happens. Not a weakening: the oracle now
+  judges strictly more. A call with no status and no result after a close is a finding. Corpus `heal2103_stop_after_close_is_not_a_stuck_turn`
+  must still pass: its call's cancelled result is kept at the close, so the later Stop finds nothing unsettled.
+- **The r18-agentheal guard stays** (`replies_discarded_for_close`, `a_reply_a_close_stopped_is_not_judged_for_unsettled_calls`): the kept
+  status does not cover a batch that was still preprocessing when the close's stop dropped it, nor the kill switch's arm.
+- **What the next run should show.** The five unit tests above pass; both paced fuzz tests, the matrix rows with `CloseTab` and the corpus
+  replay pass with the exception gone (a new I1 failure after a close is a new finding, not this change's noise).
 
 ## Round 18: the turn self-heal after round 14's unit run (design `docs/design/r18-agentheal.md`; #1967, #2103; nothing compiled or run when written)
 

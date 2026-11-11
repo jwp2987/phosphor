@@ -708,7 +708,14 @@ upstream's behavior is actually a defect rather than a preference.
   - Every running conversation (in progress, blocked, transient error, waiting for events;
     not an empty one, not a shared-session viewer) is stopped: request and actions
     cancelled, status `Cancelled`, and the results of actions that finished earlier in the
-    batch dropped.
+    batch dropped. Dropped means never sent: none of them goes out with a later request.
+    Since #2103 (owner decision 2026-11-11) each such call keeps its STATUS for its card
+    and for the turn bookkeeping: the action model holds the discarded results apart
+    (`results_discarded_by_close`), no request path and no copy / export text reads them,
+    and a restored pane shows the call that ran as run and the cancelled one as cancelled
+    (before, both had no status and showed as cancelled). The model is still told, by the
+    next request's preflight, that those calls were interrupted. Kill switch
+    `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` erases them as before.
   - Only a command this conversation's agent requested and is still driving gets Ctrl-C
     (and a copy parked in the PTY write queue is dropped). The user's own command, one the
     agent was tagged into or that the user took over, and the idle prompt are left alone.

@@ -1062,10 +1062,19 @@ pub struct BlocklistAIController {
     /// that was never continued is never judged.
     turn_watch: HashMap<AIConversationId, super::turn_invariant::StuckWatch>,
     /// #2103: per conversation, the reply (its last exchange) that a pane close stopped. The
-    /// close erases that reply's finished results on purpose (#848), which leaves its calls
-    /// with no action-model status and no result message: discarded, not lost. The turn watch
-    /// does not judge that reply for unsettled calls, during the close or after its undo. The
-    /// entry goes when the conversation has a newer exchange (or is gone).
+    /// turn watch does not judge that reply for unsettled calls, during the close or after its
+    /// undo. The entry goes when the conversation has a newer exchange (or is gone).
+    ///
+    /// Since the close keeps the status of the calls whose results it discards
+    /// (`discard_finished_results_for_close`), those calls are settled by their status and
+    /// need none of this. It stays for the two cases that leaves:
+    /// * calls of a batch that was still PREPROCESSING at the close. The close's stop drops
+    ///   the batch (`cancel_all_pending_actions`, `abandon_all`) and its calls get their
+    ///   cancelled result only when the batch's future comes back, if it ever does (#1894).
+    ///   Until then they have no status and no result, and they are dropped on purpose, not
+    ///   lost: healing them would log a false `hop=agent_turn_stuck` after the undo;
+    /// * the kill switch (`PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0`), with which the close erases
+    ///   the results as it did before and every call of the reply is in that state.
     replies_discarded_for_close: HashMap<AIConversationId, crate::ai::agent::AIAgentExchangeId>,
     /// #2029: conversations whose last reply finished cleanly with no actions but is followed
     /// up by the app itself (its tool call was answered locally with an error, and the model
@@ -1362,10 +1371,7 @@ impl BlocklistAIController {
                 {
                     return;
                 }
-                me.note_reply_discarded_for_close(*conversation_id, ctx);
-                me.action_model.update(ctx, |action_model, _| {
-                    action_model.clear_finished_action_results(*conversation_id);
-                });
+                me.discard_finished_results_for_close(*conversation_id, ctx);
                 me.update_compaction_turn_state(*conversation_id, |state| {
                     state.on_conversation_stopped()
                 });
@@ -1656,6 +1662,12 @@ impl BlocklistAIController {
             replies_discarded_for_close: HashMap::new(),
             deferred_turn_success: HashMap::new(),
         }
+    }
+
+    /// The pane's action model, for tests outside this module that judge what its cards show.
+    #[cfg(test)]
+    pub(crate) fn action_model_for_test(&self) -> &ModelHandle<BlocklistAIActionModel> {
+        &self.action_model
     }
 
     /// Marks this controller's pane closed (or restored); see `suspended_for_close`.
@@ -2050,15 +2062,44 @@ impl BlocklistAIController {
         // #2029: the close stops the conversation and writes its status itself.
         self.deferred_turn_success.remove(&conversation_id);
         self.update_compaction_turn_state(conversation_id, |state| state.on_conversation_stopped());
-        self.note_reply_discarded_for_close(conversation_id, ctx);
-        self.action_model.update(ctx, |action_model, _| {
-            action_model.clear_finished_action_results(conversation_id);
-        });
+        self.discard_finished_results_for_close(conversation_id, ctx);
     }
 
-    /// #2103: a pane close is about to erase `conversation_id`'s finished results. Remembers
-    /// the reply they belong to, so the turn watch (#1967) does not read its calls, now with no
-    /// status and no result, as calls nothing holds. See `replies_discarded_for_close`.
+    /// The one place a pane close takes a conversation's finished, unsent results away (#848):
+    /// at the close itself, and again when the actions the close's stop cancelled have all
+    /// finished (the suspended `FinishedAction` branch).
+    ///
+    /// #2103 (owner decision 2026-11-11): the results are discarded, never sent, and their
+    /// calls KEEP THEIR STATUS (`BlocklistAIActionModel::discard_finished_action_results_for_close`):
+    /// a call that ran shows as run and a call the close stopped shows as cancelled on the
+    /// cards of a restored pane, where both used to show as cancelled for want of any status.
+    /// Kill switch: `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` erases them as before.
+    ///
+    /// The reply is also noted for the turn watch (`replies_discarded_for_close`), still: see
+    /// that field for the two cases the kept status does not cover.
+    fn discard_finished_results_for_close(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.note_reply_discarded_for_close(conversation_id, ctx);
+        let keep_status = super::action_model::close_keeps_call_status_enabled();
+        let discarded = self.action_model.update(ctx, |action_model, _| {
+            action_model.discard_finished_action_results_for_close(conversation_id, keep_status)
+        });
+        if discarded > 0 {
+            log::info!(
+                "hop=agent_close_discard conversation={conversation_id:?} results={discarded} \
+                 kept_status={}",
+                u8::from(keep_status)
+            );
+        }
+    }
+
+    /// #2103: a pane close is about to discard `conversation_id`'s finished results. Remembers
+    /// the reply they belong to, so the turn watch (#1967) does not read a call of it that the
+    /// close left with no status and no result as a call nothing holds. See
+    /// `replies_discarded_for_close`.
     fn note_reply_discarded_for_close(
         &mut self,
         conversation_id: AIConversationId,

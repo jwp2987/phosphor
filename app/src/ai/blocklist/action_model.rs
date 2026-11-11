@@ -362,6 +362,27 @@ pub(crate) fn ctrl_c_interrupts_action_enabled_from(value: Option<&str>) -> bool
     value.is_none_or(|value| value.trim() != "0")
 }
 
+/// Kill switch for the #2103 retire: `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` (also `off`, `false`,
+/// `no`) restores what a pane close did with the finished, unsent results of the reply it stops
+/// before: it erased them, and their calls were left with no status at all.
+pub(crate) const CLOSE_KEEPS_CALL_STATUS_ENV: &str = "PHOSPHOR_CLOSE_KEEPS_CALL_STATUS";
+
+/// Whether a pane close keeps the status of the calls whose results it discards (#2103): it
+/// does, unless the kill switch says off. Read at each close, not cached: a close is rare.
+pub(crate) fn close_keeps_call_status_enabled() -> bool {
+    close_keeps_call_status_enabled_from(std::env::var(CLOSE_KEEPS_CALL_STATUS_ENV).ok().as_deref())
+}
+
+/// [`close_keeps_call_status_enabled`] with the variable's value passed in (tests).
+pub(crate) fn close_keeps_call_status_enabled_from(value: Option<&str>) -> bool {
+    !matches!(
+        value
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("0" | "off" | "false" | "no")
+    )
+}
+
 /// An action that is a command in the pane's shell, or drives one. A Ctrl-C for it belongs to
 /// the pty (`TerminalView::interrupt_agent_command`, #850), never to
 /// [`BlocklistAIActionModel::interrupt_running_actions`].
@@ -494,6 +515,21 @@ pub struct BlocklistAIActionModel {
     /// Past actions and their corresponding statuses from previous AI exchanges.
     past_action_results: HashMap<AIAgentActionId, Arc<AIAgentActionResult>>,
 
+    /// #2103: the finished results a pane close discarded (#848), kept so that each of their
+    /// calls still has a status after the close: its card shows what the call did, and the
+    /// turn watch (#1967) and the fuzz oracle (I1) do not read it as a call nothing holds.
+    ///
+    /// DISPLAY AND BOOKKEEPING ONLY. #848 discards these results so that a reply the user
+    /// abandoned by closing its pane is never sent to the model later, and that still holds:
+    /// nothing that builds a request reads this map. Requests take results from
+    /// `finished_action_results` only (`drain_finished_action_results`,
+    /// `finished_action_results_matching`); this map is read by [`Self::get_action_result`]
+    /// (cards, status) and skipped by [`Self::get_action_result_for_export`] (the copy / export
+    /// text, which can be attached to a request). It is kept apart from
+    /// `past_action_results`, whose results did go to the model, for that reason. Never
+    /// persisted: after a restart these calls have no status, as before.
+    results_discarded_by_close: HashMap<AIAgentActionId, Arc<AIAgentActionResult>>,
+
     /// The actions whose own card the user rejected (`CancellationReason::Rejected`), as
     /// opposed to the later actions of the turn cancelled with them (#1799) or anything a Stop
     /// cancelled. `AIAgentActionResult` carries no reason, so this is how the controller tells
@@ -589,6 +625,7 @@ impl BlocklistAIActionModel {
             finished_action_results: Default::default(),
             executor,
             past_action_results: HashMap::new(),
+            results_discarded_by_close: HashMap::new(),
             rejected_by_user: HashSet::new(),
             running_actions: Default::default(),
             action_order: Default::default(),
@@ -1051,7 +1088,21 @@ impl BlocklistAIActionModel {
             })
     }
 
+    /// The result of the action `id`, for its card and its status. Includes a result a pane
+    /// close discarded (#2103, `results_discarded_by_close`), which the model never received:
+    /// anything that may end up in a request uses [`Self::get_action_result_for_export`].
     pub fn get_action_result(&self, id: &AIAgentActionId) -> Option<&Arc<AIAgentActionResult>> {
+        self.get_action_result_for_export(id)
+            .or_else(|| self.results_discarded_by_close.get(id))
+    }
+
+    /// [`Self::get_action_result`] without the results a pane close discarded (#848, #2103):
+    /// for text that leaves the pane (copy, export, a conversation attached to a prompt). Such a
+    /// text can be sent to the model, and a discarded result must never be.
+    pub fn get_action_result_for_export(
+        &self,
+        id: &AIAgentActionId,
+    ) -> Option<&Arc<AIAgentActionResult>> {
         // Search through all conversations' finished action results
         self.finished_action_results
             .values()
@@ -2100,6 +2151,41 @@ impl BlocklistAIActionModel {
     pub(super) fn clear_finished_action_results(&mut self, conversation_id: AIConversationId) {
         self.action_order.remove(&conversation_id);
         self.finished_action_results.remove(&conversation_id);
+    }
+
+    /// #2103: what a pane close does with the conversation's finished, unsent results (#848).
+    /// They leave `finished_action_results`, so none of them goes out with a later request,
+    /// exactly as [`Self::clear_finished_action_results`] has it; but each is kept in
+    /// `results_discarded_by_close`, so its call still has a status (see that field for what
+    /// may read it). Returns how many results were discarded.
+    ///
+    /// With the kill switch off ([`close_keeps_call_status_enabled`]) the results are erased
+    /// as before.
+    pub(super) fn discard_finished_action_results_for_close(
+        &mut self,
+        conversation_id: AIConversationId,
+        keep_status: bool,
+    ) -> usize {
+        self.action_order.remove(&conversation_id);
+        let discarded = self
+            .finished_action_results
+            .remove(&conversation_id)
+            .unwrap_or_default();
+        let count = discarded.len();
+        if keep_status {
+            for result in discarded {
+                self.results_discarded_by_close
+                    .insert(result.id.clone(), result);
+            }
+        }
+        count
+    }
+
+    /// Whether `id`'s result is one a pane close discarded and kept for its status only
+    /// (#2103).
+    #[cfg(test)]
+    pub(crate) fn is_result_discarded_by_close(&self, id: &AIAgentActionId) -> bool {
+        self.results_discarded_by_close.contains_key(id)
     }
 
     /// The control flow for initiating cancellations across suggested plans, requested commands,

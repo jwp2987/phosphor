@@ -196,7 +196,9 @@ async fn drive(
                 }
                 Op::CloseTab => {
                     stopped = true;
-                    oracle.tab_closed();
+                    oracle.tab_closed(
+                        !crate::ai::blocklist::action_model::close_keeps_call_status_enabled(),
+                    );
                 }
                 // A Reject is not a stop (#1942, owner decision 2026-11-09): with an earlier
                 // result of the step finished it opens the follow-up that tells the model, so
