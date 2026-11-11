@@ -7198,3 +7198,16 @@ re-read after the run and the run repeated if a login rewrote it meanwhile). `te
 test pane (`sh$ `) and the test asserts that it does; no assertion changed. Not covered in a view test: a prompt that soft-wraps staying `written`
 (the pure rule's `continues` cases cover it).
 What the next run should show: both PASS in test-linux.
+
+## Round 19: the unit and integration failures of round 14 (design `docs/design/r19-units.md`; #2111 #2112 #2120 #2121 #2122; nothing compiled or run when written)
+
+Verdicts and evidence per test are in the design note. What changed in the tests:
+
+### `remote_server`: the contract harness is unix only (#2121)
+
+`crates/remote_server/src/backend/contract_tests.rs` runs every backend assertion against a local POSIX `sh` (with unix modes, owners and
+symlinks) and is now declared `#[cfg(all(test, unix))]`: on Windows it did not compile, which took the whole `test-workspace-rest-windows` job
+down. Its users carry the same gate: `router_tests.rs` `git_reads_with_no_helper_are_served_by_the_shell_arm` and `index_sync_tests.rs` (every
+test there drives `scratch_home_executor`). The one index-sync test that runs no shell, `ranked_paths_keeps_best_first_and_drops_repeats`, moved
+to `index_sync_pure_tests.rs` and runs on every platform. A new test in this crate that starts `sh` goes behind `#[cfg(unix)]`; one that does not
+must not be put in a unix-only module.
