@@ -127,6 +127,19 @@ impl ShellGitRunner {
     }
 
     async fn exec(&self, script: String, stdin: Vec<u8>) -> Result<GitOutput> {
+        let started = std::time::Instant::now();
+        let result = self.exec_inner(script.as_str(), stdin).await;
+        // One line per exec channel (#2156), so a prompt's side-call count can be attributed.
+        log::debug!(
+            "shell exec: producer=git_runner family={} elapsed_ms={} ok={}",
+            exec_family(&script),
+            started.elapsed().as_millis(),
+            result.is_ok()
+        );
+        result
+    }
+
+    async fn exec_inner(&self, script: &str, stdin: Vec<u8>) -> Result<GitOutput> {
         let shell = self.executor.shell_kind();
         if shell.is_powershell() {
             return Err(anyhow!(
@@ -136,7 +149,7 @@ impl ShellGitRunner {
         let output = self
             .executor
             .execute(ExecRequest {
-                command: shell.wrap(&script),
+                command: shell.wrap(script),
                 stdin,
                 max_output_bytes: MAX_EXEC_OUTPUT_BYTES,
             })
@@ -151,6 +164,28 @@ impl ShellGitRunner {
             exit_code: output.exit_code,
         })
     }
+}
+
+/// The tool and subcommand of a git/gh script built by [`ShellGitRunner`], for the per-exec debug
+/// line only (`git:status`, `gh:pr`, `other`). Never includes paths or arguments' values.
+fn exec_family(script: &str) -> String {
+    let after_env = |marker: &str| script.split_once(marker).map(|(_, rest)| rest.trim_start());
+    if let Some(rest) = after_env(" gh ") {
+        let mut words = rest.split_whitespace().map(|w| w.trim_matches('\''));
+        return format!("gh:{}", words.next().unwrap_or("?"));
+    }
+    if let Some(rest) = script.split_once(" git ").map(|(_, r)| r) {
+        // Skip the fixed base args (`-c k=v`, `--no-pager`, ...) to the subcommand.
+        let mut words = rest.split_whitespace().map(|w| w.trim_matches('\''));
+        while let Some(w) = words.next() {
+            if w == "-c" {
+                words.next();
+            } else if !w.starts_with('-') && !w.contains('=') {
+                return format!("git:{w}");
+            }
+        }
+    }
+    "other".to_string()
 }
 
 impl GitRunner for ShellGitRunner {
