@@ -11,7 +11,8 @@ pub extern "C-unwind" fn configureAndRunModal(
     alert: &NSAlert,
     app: &NSApplication,
 ) -> NSModalResponse {
-    alert.setShowsSuppressionButton(true);
+    // Whether the alert shows its "don't ask again" checkbox is set where the alert is built
+    // (`create_native_platform_modal`, from `AlertDialog::show_suppression_button`).
 
     // It is generally frowned-upon to be overly assertive about putting our windows in
     // the user's face. However, it is reasonable to do this before showing our modal. If

@@ -17,6 +17,51 @@ use crate::{
     workspace::Workspace,
 };
 
+/// Env kill switch (#2092): `PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK=0` puts back the behaviour before
+/// the owner's decision of 2026-11-11: `general.show_warning_before_quitting = false` also
+/// switches off the question about unsaved editor edits. Read once per run.
+fn unsaved_edits_always_ask() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        unsaved_edits_always_ask_for(
+            std::env::var("PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// The kill switch's rule: on unless the variable is exactly `0`.
+fn unsaved_edits_always_ask_for(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
+/// Whether a quit or close has to ask first (#2092).
+///
+/// `general.show_warning_before_quitting` (`setting_on`) covers what is still running: commands
+/// and shared sessions. Unsaved editor edits are different: closing loses the user's text for
+/// good, so that question is asked whatever the setting says (`always_ask_unsaved`, the kill
+/// switch; with it off the setting covers the edits too, as it did before).
+fn should_display_warning_for(
+    setting_on: bool,
+    always_ask_unsaved: bool,
+    long_running_commands: usize,
+    shared_sessions: usize,
+    unsaved_code_changes: bool,
+) -> bool {
+    let running = long_running_commands > 0 || shared_sessions > 0;
+    (setting_on && (running || unsaved_code_changes))
+        || (always_ask_unsaved && unsaved_code_changes)
+}
+
+/// Whether the dialog offers "don't show again" (which switches off
+/// `general.show_warning_before_quitting`). Not when it asks about unsaved editor edits: that
+/// question comes back whatever the setting says, so the checkbox would promise something it
+/// does not do (#2092).
+fn warning_can_be_switched_off(always_ask_unsaved: bool, unsaved_code_changes: bool) -> bool {
+    !(always_ask_unsaved && unsaved_code_changes)
+}
+
 /// Scope of what's being quit/closed.
 #[derive(Clone)]
 enum QuitScope<'a> {
@@ -272,10 +317,13 @@ impl<'a> UnsavedStateSummary<'a> {
     }
 
     pub fn should_display_warning(&self, ctx: &AppContext) -> bool {
-        *GeneralSettings::as_ref(ctx).show_warning_before_quitting
-            && (self.total_long_running_commands > 0
-                || self.shared_sessions > 0
-                || self.unsaved_code_changes)
+        should_display_warning_for(
+            *GeneralSettings::as_ref(ctx).show_warning_before_quitting,
+            unsaved_edits_always_ask(),
+            self.total_long_running_commands,
+            self.shared_sessions,
+            self.unsaved_code_changes,
+        )
     }
 
     pub fn running_sessions(&self) -> RunningSessionSummary<'_> {
@@ -439,12 +487,17 @@ impl<'a> QuitWarningDialog<'a> {
             QuitScope::EditorTab { .. } => crate::t!("quit-warning-save-changes-title"),
         };
 
-        AlertDialogWithCallbacks::for_app(
+        let dialog = AlertDialogWithCallbacks::for_app(
             title,
             state.warning_text(),
             buttons,
             on_disable_warning_modal,
-        )
+        );
+        if warning_can_be_switched_off(unsaved_edits_always_ask(), state.unsaved_code_changes) {
+            dialog
+        } else {
+            dialog.without_disable()
+        }
     }
 
     /// Show the quit warning dialog. This returns `true` if the dialog was shown, and `false` if
@@ -508,3 +561,7 @@ fn on_disable_warning_modal(ctx: &mut AppContext) {
     });
     send_telemetry_from_app_ctx!(TelemetryEvent::QuitModalDisabled, ctx);
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

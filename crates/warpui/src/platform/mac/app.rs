@@ -32,6 +32,10 @@ pub fn create_native_platform_modal(dialog: AlertDialog) -> Retained<NSAlert> {
     let alert = NSAlert::new(mtm);
     alert.setInformativeText(&NSString::from_str(&dialog.info_text));
     alert.setMessageText(&NSString::from_str(&dialog.message_text));
+    // "Do not show this message again": not offered for a question no setting switches off
+    // (#2092). `showModal:modalId:` reads the button's state afterwards; a button that is not
+    // shown is off.
+    alert.setShowsSuppressionButton(dialog.show_suppression_button);
     for title in dialog.buttons {
         alert.addButtonWithTitle(&NSString::from_str(&title));
     }

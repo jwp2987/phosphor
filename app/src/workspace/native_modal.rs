@@ -102,13 +102,22 @@ impl NativeModal {
         if let Some(mut dialog) = self.alert_dialog.take() {
             let button = dialog.button_data.remove(idx);
             (button.on_click)(ctx);
-            if self.dont_show_again {
+            // #2092: a dialog without the checkbox never runs its disable callback. The checkbox
+            // state starts from the setting, so with the setting already off a dialog that still
+            // has to show (unsaved editor edits) would otherwise toggle the setting back on.
+            if should_run_disable_callback(dialog.can_disable, self.dont_show_again) {
                 (dialog.on_disable)(ctx);
             }
         }
         self.reset();
         ctx.emit(NativeModalEvent::Close);
     }
+}
+
+/// Whether pressing a button also runs the dialog's "don't show again" callback: only for a
+/// dialog that offers the checkbox, and only with the checkbox ticked.
+fn should_run_disable_callback(can_disable: bool, dont_show_again: bool) -> bool {
+    can_disable && dont_show_again
 }
 
 impl Entity for NativeModal {
@@ -145,11 +154,15 @@ impl View for NativeModal {
             .on_click(|ctx, _, _| ctx.dispatch_typed_action(NativeModalAction::ToggleDontShowAgain))
             .finish();
 
-        let mut dialog_column_contents = vec![
-            Container::new(dont_show_again_checkbox)
-                .with_padding_bottom(20.)
-                .finish(),
-        ];
+        // #2092: no "Don't show again" on a question that no setting switches off.
+        let mut dialog_column_contents = Vec::new();
+        if alert_dialog.can_disable {
+            dialog_column_contents.push(
+                Container::new(dont_show_again_checkbox)
+                    .with_padding_bottom(20.)
+                    .finish(),
+            );
+        }
 
         for (i, modal_button) in alert_dialog.button_data.iter().enumerate() {
             let button = Align::new(
@@ -226,3 +239,7 @@ impl TypedActionView for NativeModal {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "native_modal_tests.rs"]
+mod tests;
