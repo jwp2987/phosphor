@@ -1066,7 +1066,7 @@ fn the_positional_accepts_an_existing_path_through_clap() {
     std::fs::write(&file, "x").expect("write");
     let value = file.to_str().expect("utf-8 path");
     // Only when the kill switch is not set in the test environment (it is read by the parser).
-    if std::env::var(CLI_PATH_ARGS_ENV).is_ok_and(|v| v == "0") {
+    if std::env::var(CLI_PATH_ARGS_ENV).as_deref() == Ok("0") {
         return;
     }
     let args = Args::try_parse_from(["phosphor", value]).expect("an existing path parses");

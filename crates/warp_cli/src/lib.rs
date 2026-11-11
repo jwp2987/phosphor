@@ -158,7 +158,7 @@ pub const CLI_PATH_ARGS_ENV: &str = "PHOSPHOR_CLI_PATH_ARGS";
 /// against the current directory). Everything else is parsed as a URL exactly as before, so a
 /// mistyped subcommand still gets the same error and no URL changes meaning.
 fn parse_url_or_existing_path(value: &str) -> Result<Url, String> {
-    let paths_allowed = env::var(CLI_PATH_ARGS_ENV).map_or(true, |v| v != "0");
+    let paths_allowed = env::var(CLI_PATH_ARGS_ENV).as_deref() != Ok("0");
     let cwd = env::current_dir().ok();
     url_or_existing_path(value, paths_allowed, cwd.as_deref())
 }
