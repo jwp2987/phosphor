@@ -162,3 +162,38 @@ fn fault_names_are_the_log_names() {
         "blocked_question_without_card"
     );
 }
+
+/// #2103: a pane close erases the finished results of the reply it stops, on purpose (#848).
+/// Those calls then have no status and no result, and they are discarded, not lost: the reply
+/// is not judged for unsettled calls, whether the pane is still closed or the close was undone.
+/// Round 14 (r14a): the paced agent fuzz ran ctrl_c, close_tab, stop on a waiting card, and the
+/// heal logged `hop=agent_turn_stuck fault=unsettled_calls` and cancelled the call a second
+/// time. An action that is parked is a fault all the same: the close parks nothing.
+///
+/// Red on the old code: `TurnFacts` had no such fact, and `judge` returned `UnsettledCalls`.
+#[test]
+fn a_reply_a_close_stopped_is_not_judged_for_unsettled_calls() {
+    let after_the_undo = TurnFacts {
+        reply_discarded_for_close: true,
+        ..unsettled(2, 7)
+    };
+    assert_eq!(
+        judge(&after_the_undo),
+        None,
+        "the close discarded these calls' results: nothing is lost"
+    );
+    let parked_too = TurnFacts {
+        parked: 1,
+        ..after_the_undo
+    };
+    assert_eq!(
+        judge(&parked_too),
+        Some(TurnFault::ParkedActions { count: 1 }),
+        "a parked action is still a fault"
+    );
+    // The control: the same calls in a reply no close stopped.
+    assert_eq!(
+        judge(&unsettled(2, 7)),
+        Some(TurnFault::UnsettledCalls { count: 2, ids: 7 })
+    );
+}

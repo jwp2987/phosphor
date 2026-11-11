@@ -33567,6 +33567,85 @@ fn terminal_asking_questions(app: &mut App) -> (ViewHandle<TerminalView>, AIConv
     (terminal, conversation_id)
 }
 
+/// Gives the pane what a reply's stream gives it before the reply's question is ever queued: an
+/// AI block of the conversation that holds the question's card (the card is made when the tool
+/// call streams in, `AIBlock::handle_ask_user_question_stream_update`).
+///
+/// The fixtures below queue the question straight into the action model, with no stream. Until
+/// #1967 that was a harmless shortcut. Since #1967 a question that waits for the user with no
+/// card in the pane is a stuck turn and is stopped on the spot, so a fixture that skips the card
+/// builds the fault and not a waiting question (round 14, r14a: four tests here failed their
+/// "the question waits" precondition with `fault=blocked_question_without_card healed=1` in
+/// the trace). That fault has its own test now:
+/// `a_waiting_question_with_no_card_in_the_pane_is_stopped`.
+fn mount_question_card_in_pane(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+    conversation_id: AIConversationId,
+    question_id: &AIAgentActionId,
+) {
+    let crate::ai::agent::AIAgentActionType::AskUserQuestion { questions } = ask_one_question()
+    else {
+        unreachable!("ask_one_question builds an ask_user_question");
+    };
+    terminal.update(app, |view, ctx| {
+        let history_model = BlocklistAIHistoryModel::handle(ctx);
+        let terminal_view_id = view.view_id;
+        let (task_id, exchange_id, response_stream_id) =
+            history_model.update(ctx, |history_model, ctx| {
+                let task_id = history_model
+                    .conversation(&conversation_id)
+                    .expect("conversation should exist")
+                    .get_root_task_id()
+                    .clone();
+                let response_stream_id = ResponseStreamId::new_for_test();
+                let exchange = exchange_with_inputs(vec![AIAgentInput::UserQuery {
+                    query: "which branch should this go to?".to_owned(),
+                    context: Default::default(),
+                    static_query_type: None,
+                    referenced_attachments: Default::default(),
+                    user_query_mode: UserQueryMode::Normal,
+                    running_command: None,
+                    intended_agent: None,
+                }]);
+                let exchange_id = exchange.id;
+                history_model
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation should exist")
+                    .append_reassigned_exchange(
+                        &response_stream_id,
+                        exchange,
+                        terminal_view_id,
+                        ctx,
+                    )
+                    .expect("exchange should append");
+                (task_id, exchange_id, response_stream_id)
+            });
+        view.handle_ai_history_model_event(
+            history_model,
+            &BlocklistAIHistoryEvent::AppendedExchange {
+                exchange_id,
+                task_id,
+                terminal_view_id,
+                conversation_id,
+                is_hidden: false,
+                response_stream_id: Some(response_stream_id),
+            },
+            ctx,
+        );
+        let ai_block = view
+            .rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+            .find(|metadata| metadata.exchange_id == exchange_id)
+            .map(|metadata| metadata.ai_block_handle.clone())
+            .expect("the pane builds an AI block for the exchange");
+        ai_block.update(ctx, |ai_block, ctx| {
+            ai_block.show_question_card_for_test(question_id, &questions, ctx);
+        });
+    });
+}
+
 /// #1797: an accept that carries no answer (the generic Run / Enter: `execute_action` by id)
 /// leaves the question blocked on its card. Before, it ran the question with no answer: the
 /// action went `RunningAsync`, the card (drawn only while blocked) disappeared and the turn
@@ -33581,6 +33660,7 @@ fn a_question_finishes_only_with_its_cards_answer() {
         let (terminal, conversation_id) = terminal_asking_questions(&mut app);
         let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
         let question_id = AIAgentActionId::from("question".to_owned());
+        mount_question_card_in_pane(&mut app, &terminal, conversation_id, &question_id);
         action_model.update(&mut app, |action_model, ctx| {
             action_model.queue_actions_for_test(
                 vec![stuck_turn_action("question", ask_one_question())],
@@ -33701,29 +33781,10 @@ async fn queue_one_question(
     AIAgentActionId,
     Rc<RefCell<usize>>,
 ) {
-    use crate::ai::blocklist::BlocklistAIActionEvent;
-
-    let action_model = terminal.read(app, |view, _| view.ai_action_model.clone());
     let question_id = AIAgentActionId::from("question".to_owned());
-    let finished = Rc::new(RefCell::new(0));
-    let finished_sub = finished.clone();
-    let watched_id = question_id.clone();
-    app.update(|ctx| {
-        ctx.subscribe_to_model(&action_model, move |_, event, _| {
-            if let BlocklistAIActionEvent::FinishedAction { action_id, .. } = event {
-                if *action_id == watched_id {
-                    *finished_sub.borrow_mut() += 1;
-                }
-            }
-        });
-    });
-    action_model.update(app, |action_model, ctx| {
-        action_model.queue_actions_for_test(
-            vec![stuck_turn_action("question", ask_one_question())],
-            conversation_id,
-            ctx,
-        );
-    });
+    mount_question_card_in_pane(app, terminal, conversation_id, &question_id);
+    let (action_model, finished) =
+        queue_question_with_no_stream(app, terminal, conversation_id, &question_id);
     let blocked = pump_until(app, |app| {
         action_model.read(app, |action_model, _| {
             action_model
@@ -33736,7 +33797,98 @@ async fn queue_one_question(
         blocked,
         "the question goes straight to its blocked state, with nothing approved first"
     );
+    // #1967: the turn watch has had its hops by now (they are ready futures, run before this
+    // task is polled again). A question whose card is up is not a stuck turn: it still waits.
+    let_subscribers_run().await;
+    action_model.read(app, |action_model, _| {
+        assert!(
+            action_model
+                .get_action_status(&question_id)
+                .is_some_and(|status| status.is_blocked()),
+            "a question with its card up keeps waiting: the stuck-turn check leaves it alone"
+        );
+    });
+    assert_eq!(*finished.borrow(), 0, "nothing resolved it");
     (action_model, question_id, finished)
+}
+
+/// Queues the one-question turn straight into the action model (no stream, so no card unless
+/// the caller mounted one). Returns the action model and a counter of the `FinishedAction`
+/// events emitted for the question.
+fn queue_question_with_no_stream(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+    conversation_id: AIConversationId,
+    question_id: &AIAgentActionId,
+) -> (ModelHandle<BlocklistAIActionModel>, Rc<RefCell<usize>>) {
+    use crate::ai::blocklist::BlocklistAIActionEvent;
+
+    let action_model = terminal.read(app, |view, _| view.ai_action_model.clone());
+    let finished = Rc::new(RefCell::new(0));
+    let finished_sub = finished.clone();
+    let watched_id = question_id.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_model(&action_model, move |_, event, _| {
+            if let BlocklistAIActionEvent::FinishedAction { action_id, .. } = event {
+                if *action_id == watched_id {
+                    *finished_sub.borrow_mut() += 1;
+                }
+            }
+        });
+    });
+    let question = stuck_turn_action(&question_id.to_string(), ask_one_question());
+    action_model.update(app, |action_model, ctx| {
+        action_model.queue_actions_for_test(vec![question], conversation_id, ctx);
+    });
+    (action_model, finished)
+}
+
+/// #1967, the pane's half ("no pending action without a card"): a question that waits for the
+/// user at the front of the pane's active conversation, with no question card in any AI block
+/// of the pane, can never be answered. The pane stops the turn for the user: the question gets
+/// exactly one cancelled result and nothing of the turn is left pending.
+///
+/// This is the state the four question tests above used to build by accident (they queued the
+/// question with no stream and no card); round 14 (r14a) showed the check acting on it, with
+/// `hop=agent_turn_stuck fault=blocked_question_without_card healed=1` in each trace. It logs
+/// that ERROR line here too, on purpose.
+#[test]
+fn a_waiting_question_with_no_card_in_the_pane_is_stopped() {
+    use crate::ai::agent::AIAgentActionResultType;
+    use ai::agent::action_result::AskUserQuestionResult;
+
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id) = terminal_asking_questions(&mut app);
+        let question_id = AIAgentActionId::from("question".to_owned());
+        let (action_model, finished) =
+            queue_question_with_no_stream(&mut app, &terminal, conversation_id, &question_id);
+
+        let resolved = pump_until(&app, |app| {
+            action_model.read(app, |action_model, _| {
+                action_model.get_action_result(&question_id).is_some()
+            })
+        })
+        .await;
+        assert!(
+            resolved,
+            "a question nobody can answer does not wait for good: {:?}",
+            action_model.read(&app, |action_model, _| action_model
+                .get_action_status(&question_id))
+        );
+        let_subscribers_run().await;
+        action_model.read(&app, |action_model, _| {
+            assert!(matches!(
+                action_model
+                    .get_action_result(&question_id)
+                    .map(|result| &result.result),
+                Some(AIAgentActionResultType::AskUserQuestion(
+                    AskUserQuestionResult::Cancelled
+                ))
+            ));
+            assert!(!action_model.has_unfinished_actions_for_conversation(conversation_id));
+        });
+        assert_eq!(*finished.borrow(), 1, "one cancelled result, no more");
+    })
 }
 
 fn question_card(

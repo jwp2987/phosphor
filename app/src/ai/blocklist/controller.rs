@@ -1061,6 +1061,12 @@ pub struct BlocklistAIController {
     /// only once a reply's stream ended or an action finished here, so a restored conversation
     /// that was never continued is never judged.
     turn_watch: HashMap<AIConversationId, super::turn_invariant::StuckWatch>,
+    /// #2103: per conversation, the reply (its last exchange) that a pane close stopped. The
+    /// close erases that reply's finished results on purpose (#848), which leaves its calls
+    /// with no action-model status and no result message: discarded, not lost. The turn watch
+    /// does not judge that reply for unsettled calls, during the close or after its undo. The
+    /// entry goes when the conversation has a newer exchange (or is gone).
+    replies_discarded_for_close: HashMap<AIConversationId, crate::ai::agent::AIAgentExchangeId>,
     /// #2029: conversations whose last reply finished cleanly with no actions but is followed
     /// up by the app itself (its tool call was answered locally with an error, and the model
     /// is asked again), keyed to that reply's stream. Their status was NOT set to `Success`
@@ -1356,6 +1362,7 @@ impl BlocklistAIController {
                 {
                     return;
                 }
+                me.note_reply_discarded_for_close(*conversation_id, ctx);
                 me.action_model.update(ctx, |action_model, _| {
                     action_model.clear_finished_action_results(*conversation_id);
                 });
@@ -1646,6 +1653,7 @@ impl BlocklistAIController {
             deferred_monitored_completions: HashMap::new(),
             monitored_completion_resumes_in_flight: HashSet::new(),
             turn_watch: HashMap::new(),
+            replies_discarded_for_close: HashMap::new(),
             deferred_turn_success: HashMap::new(),
         }
     }
@@ -2042,9 +2050,32 @@ impl BlocklistAIController {
         // #2029: the close stops the conversation and writes its status itself.
         self.deferred_turn_success.remove(&conversation_id);
         self.update_compaction_turn_state(conversation_id, |state| state.on_conversation_stopped());
+        self.note_reply_discarded_for_close(conversation_id, ctx);
         self.action_model.update(ctx, |action_model, _| {
             action_model.clear_finished_action_results(conversation_id);
         });
+    }
+
+    /// #2103: a pane close is about to erase `conversation_id`'s finished results. Remembers
+    /// the reply they belong to, so the turn watch (#1967) does not read its calls, now with no
+    /// status and no result, as calls nothing holds. See `replies_discarded_for_close`.
+    fn note_reply_discarded_for_close(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &AppContext,
+    ) {
+        let last_exchange = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .and_then(super::turn_invariant::last_exchange_id);
+        match last_exchange {
+            Some(exchange_id) => {
+                self.replies_discarded_for_close
+                    .insert(conversation_id, exchange_id);
+            }
+            None => {
+                self.replies_discarded_for_close.remove(&conversation_id);
+            }
+        }
     }
 
     /// Internal method to send a query to the AI model. External callers should use either
@@ -5699,12 +5730,19 @@ impl BlocklistAIController {
         Vec<crate::ai::agent::AIAgentAction>,
     ) {
         let action_model = self.action_model.as_ref(ctx);
-        let unsettled = BlocklistAIHistoryModel::as_ref(ctx)
-            .conversation(&conversation_id)
+        let conversation = BlocklistAIHistoryModel::as_ref(ctx).conversation(&conversation_id);
+        let unsettled = conversation
             .map(|conversation| {
                 super::turn_invariant::unsettled_actions(conversation, action_model)
             })
             .unwrap_or_default();
+        // #2103: the last reply is still the one a pane close stopped.
+        let reply_discarded_for_close = self
+            .replies_discarded_for_close
+            .get(&conversation_id)
+            .is_some_and(|discarded| {
+                conversation.and_then(super::turn_invariant::last_exchange_id) == Some(*discarded)
+            });
         let facts = super::turn_invariant::TurnFacts {
             stream_in_flight: self
                 .in_flight_response_streams
@@ -5715,6 +5753,7 @@ impl BlocklistAIController {
             unsettled_ids: super::turn_invariant::ids_hash(
                 unsettled.iter().map(|action| &action.id),
             ),
+            reply_discarded_for_close,
         };
         (facts, unsettled)
     }
@@ -5734,9 +5773,15 @@ impl BlocklistAIController {
             .is_none()
         {
             self.turn_watch.remove(&conversation_id);
+            self.replies_discarded_for_close.remove(&conversation_id);
             return;
         }
         let (facts, unsettled) = self.turn_facts(conversation_id, ctx);
+        if !facts.reply_discarded_for_close {
+            // The conversation has a newer exchange than the one a close stopped (or no close
+            // stopped one): nothing to remember (#2103).
+            self.replies_discarded_for_close.remove(&conversation_id);
+        }
         let fault = judge(&facts);
         let Some(watch) = self.turn_watch.get_mut(&conversation_id) else {
             return;
