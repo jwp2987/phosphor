@@ -2814,7 +2814,11 @@ esac
             fi
             local IFS=$'\n'
             local text="${__warp_ssh_bs_lines[*]:0:begin}"$'\n'"${__warp_ssh_bs_lines[*]:end+1}"
-            if [[ "$text" != *"WARP_BOOTSTRAP_VAR << 'EOM'"* ]]; then
+            # The pattern is spelled in two pieces on purpose (#2098): this body must never
+            # contain the opener of the here-document it travels in as one text, or the
+            # counted-read rewrite (bootstrap.rs counted_read_rewrite) cannot be told from one
+            # that left the here-document in place, and this guard would match its own line.
+            if [[ "$text" != *"WARP_BOOTSTRAP_VAR <<"" 'EOM'"* ]]; then
                 return 1
             fi
             __warp_ssh_bs_text=$text
