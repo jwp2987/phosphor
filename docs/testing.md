@@ -117,6 +117,8 @@ Hard rules:
   `mock_workspace_with_shared_session` in `workspace/view_test.rs`, `build_test_http_client` in
   `ai/agent_sdk/test_support.rs`, `void_enter_gate_for_test` in `terminal/input/enter_queue.rs`); no test was removed.
 
+- `app/src/terminal/bootstrap_test.rs` `bash_arm_of_the_ssh_remote_command_does_not_resolve_bash_through_path` (#2154): the ssh remote command execs the running shell by `$BASH`/`$SHELL`, never `bash` through PATH, and a failed exec falls back to the plain login shell.
+
 ### 2.2 Integration crates
 
 - `crates/integration`: ~300 GUI-driving scenarios (`src/test/*.rs`: agent_mode, ssh, subshell, typeahead,

@@ -1637,7 +1637,7 @@ fn ssh_remote_command_starts_an_unbootstrapped_login_shell_as_a_login_shell() {
                 at(
                     "  if test -r /etc/profile; then\n    . /etc/profile\n  fi\n  exec $SHELL\nfi\n",
                 ),
-                at("exec -a bash bash --rcfile <(echo '"),
+                at("exec -a bash \"${BASH:-$SHELL}\" --rcfile <(echo '"),
                 at("exec -l zsh -g"),
             ];
             assert!(
@@ -5545,7 +5545,7 @@ exit 0
             at("if test \"${SHELL##*/}\" != bash; then"),
             at("export TERM_PROGRAM='WarpTerminal'"),
             at("{\nprintf 'OSCd;%sEND' '"),
-            at("exec -a bash bash --rcfile <(echo '"),
+            at("exec -a bash \"${BASH:-$SHELL}\" --rcfile <(echo '"),
             at("'; command -p cat <&9) 9<&-\n"),
             at(&format!("}} 9<<'{delimiter}'\n{TEXT}\n{delimiter}\n")),
         ];
@@ -5847,5 +5847,72 @@ fn msys_ssh_auth_done_script_reports_exactly_what_was_typed_before_the_token() {
             "input {input:?}, kill switch {keep_plain}"
         );
         assert!(output.status.success(), "input {input:?}");
+    }
+}
+
+/// #2154: the bash arm of every ssh remote command runs the shell that is running it ($BASH, else
+/// the login shell), never `bash` found through PATH: a remote login PATH without bash made
+/// `exec -a bash bash` die with 'exec: bash: not found' while a plain ssh worked. A failed exec
+/// does not end the command (`shopt -s execfail`): it falls through to the plain login shell.
+#[test]
+fn bash_arm_of_the_ssh_remote_command_does_not_resolve_bash_through_path() {
+    for (name, source) in [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+        ),
+        (
+            "zsh",
+            include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+        ),
+    ] {
+        assert!(
+            !source.contains("exec -a bash bash"),
+            "{name}: a bash looked up through PATH"
+        );
+        assert!(
+            source.contains("exec -a bash \"'\"${BASH:-$SHELL}\"'\" --rcfile"),
+            "{name}: the running shell is not exec'd by its own path"
+        );
+        assert!(
+            source.contains("shopt -s execfail 2>/dev/null"),
+            "{name}: a failed exec would end the command instead of falling back"
+        );
+    }
+    // The idiom itself, run for real with a PATH that has no bash: the absolute path works, and a
+    // failed exec falls through to the next command.
+    #[cfg(unix)]
+    {
+        let bash = ["/bin/bash", "/usr/bin/bash"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).is_file());
+        if let Some(bash) = bash {
+            let run = |script: &str| {
+                let output = std::process::Command::new(bash)
+                    .env_clear()
+                    .env("PATH", "/nonexistent")
+                    .env("SHELL", bash)
+                    .args(["-c", script])
+                    .output()
+                    .unwrap();
+                String::from_utf8_lossy(&output.stdout).into_owned()
+            };
+            assert_eq!(
+                run(
+                    "shopt -s execfail 2>/dev/null; exec -a bash \"${BASH:-$SHELL}\" -c 'echo started'"
+                ),
+                "started\n"
+            );
+            assert_eq!(
+                run(
+                    "shopt -s execfail 2>/dev/null; exec -a bash bash -c 'echo started'; echo fallback"
+                ),
+                "fallback\n"
+            );
+        }
     }
 }

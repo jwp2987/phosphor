@@ -1183,7 +1183,8 @@ fi
 
 case "'${SHELL##*/}'" in
 bash)
-    exec -a bash bash --rcfile <(echo '"'
+    shopt -s execfail 2>/dev/null
+    exec -a bash "'"${BASH:-$SHELL}"'" --rcfile <(echo '"'
       stty raw
       HISTCONTROL=ignorespace
       HISTIGNORE=" *"
@@ -1198,6 +1199,7 @@ bash)
       printf '\''"'\eP$d%s\x9c'"'\'' \""'$_msg'"\"'
       unset _hostname _user _msg _ju _jh _i _o _c _h
     )
+    exec "'$SHELL'" -l
     ;;
 zsh) WARP_TMP_DIR="'$(mktemp -d warptmp.XXXXXX)'"
 local ZSH_ENV_SCRIPT='$zsh_env_script'
