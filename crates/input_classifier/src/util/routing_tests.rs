@@ -1,5 +1,5 @@
-//! Direct tests of the #1980 rule (a mistyped command in an agent conversation). The corpus in
-//! `routing_corpus.rs` covers every other rule.
+//! Direct tests of the #1980 rule (a mistyped command in an agent conversation) and of the #2113
+//! rule (PowerShell expression heads). The corpus in `routing_corpus.rs` covers every other rule.
 
 use super::*;
 
@@ -221,4 +221,90 @@ fn the_session_lookup_is_asked_only_for_a_typo_candidate() {
     assert!(!is_near_a_command("kubctl", ["ls", "git", "kubctl"]));
     assert!(!is_near_a_command("sl", ["ls"]));
     assert!(!is_near_a_command("lsa", ["ls"]));
+}
+
+fn powershell(surface: Surface, shell: ShellFamily) -> RoutingContext {
+    RoutingContext {
+        shell,
+        ..context(surface, false, false)
+    }
+}
+
+/// #2113 (round 14, Windows PowerShell pane): `[IO.File]::AppendAllText('...', '...')` was left
+/// to the model (its first word carries a quote), which sent it to the agent or the shell by
+/// turns, and a lone `1..300000` went to the agent in a conversation for lack of evidence.
+#[test]
+fn powershell_type_and_range_heads_are_shell_syntax_in_a_powershell_session() {
+    for line in [
+        "[IO.File]::AppendAllText('C:\\w\\iw_emoji.txt', '\u{1F600}\u{1F680}' + \"`n\", (New-Object Text.UTF8Encoding $false))",
+        "[IO.File]::WriteAllText('C:\\w\\ag_ps.txt', '@\u{20AC}{[]}', (New-Object Text.UTF8Encoding $false))",
+        "[IO.File]::AppendAllText('ip_cjk.txt', '\u{65E5}\u{672C}\u{8A9E}')",
+        "[math]::Sqrt(2)",
+        "[datetime]::Now",
+        "[System.Collections.Generic.List[string]]::new()",
+        "[int[]]$a = 1, 2, 3",
+        "[int]$x = 5",
+        "[string]${name}",
+        "1..300000",
+        "1..10 | ForEach-Object { $_ * 2 }",
+        "0..$n",
+    ] {
+        for surface in [Surface::PlainTerminal, Surface::AgentConversation] {
+            let decision = route(
+                &unparsed(line),
+                &powershell(surface, ShellFamily::PowerShell),
+            );
+            assert_eq!(
+                (decision.route, decision.rule),
+                (Route::Shell, Rule::ShellSyntax),
+                "{line:?} on {surface:?}"
+            );
+        }
+    }
+}
+
+/// The rule is PowerShell's alone, and only for these two shapes: a bracketed word that is no
+/// type expression, a decimal and prose keep the rules they had.
+#[test]
+fn powershell_expression_rule_takes_nothing_else() {
+    for line in [
+        "[WIP] fix the build",
+        "[1]: see the note below",
+        "[IO.File] is a type, what does it do",
+        "[x] done",
+        "[int]5 apples",
+        "[a b]::c",
+        "[]::x",
+        "1.5 is the version",
+        "1...",
+        "..10",
+        "a..b",
+        "1..",
+        "FOO=1 [math]::PI",
+    ] {
+        for surface in [Surface::PlainTerminal, Surface::AgentConversation] {
+            let decision = route(
+                &unparsed(line),
+                &powershell(surface, ShellFamily::PowerShell),
+            );
+            assert_ne!(decision.rule, Rule::ShellSyntax, "{line:?} on {surface:?}");
+        }
+    }
+    for line in ["[math]::Sqrt(2)", "[IO.File]::Exists('x')", "1..10"] {
+        for shell in [
+            ShellFamily::Posix,
+            ShellFamily::Fish,
+            ShellFamily::Nu,
+            ShellFamily::Unknown,
+        ] {
+            for surface in [Surface::PlainTerminal, Surface::AgentConversation] {
+                let decision = route(&unparsed(line), &powershell(surface, shell));
+                assert_ne!(
+                    decision.rule,
+                    Rule::ShellSyntax,
+                    "{line:?} in {shell:?} on {surface:?}"
+                );
+            }
+        }
+    }
 }
