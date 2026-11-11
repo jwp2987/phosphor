@@ -1,6 +1,7 @@
 use super::{
-    closed_dialog_hands_focus_to_tab, enter_button_index, focus_back_enabled_for,
-    initial_selection, last_button_index, moved_selection, should_run_disable_callback,
+    closed_dialog_hands_focus_to_tab, enter_button_index, focus_back_enabled_for, has_focus_ring,
+    initial_selection, last_button_index, moved_selection, pressed_trace, selected_trace,
+    should_run_disable_callback, space_button_index,
 };
 
 /// #2108: Cancel on a close question does nothing but close the dialog, so the focus was left on
@@ -91,4 +92,65 @@ fn a_selection_past_the_end_is_the_last_button() {
     assert_eq!(initial_selection(Some(0), 0), None);
     assert_eq!(moved_selection(Some(7), 3, true), Some(0));
     assert_eq!(moved_selection(Some(0), 0, true), None);
+}
+
+/// #2132, the owner's decision of 2026-11-11: the editor tab's close question (Save, Don't
+/// Save, Cancel) comes up with Save selected. Tab reaches "Don't Save", a second Tab Cancel,
+/// Shift-Tab goes back; Enter and Space press the button the selection is on. Fails on old
+/// code: `space_button_index` did not exist (Space was not bound in the dialog).
+#[test]
+fn the_close_question_is_answered_dont_save_by_tab_then_enter_or_space() {
+    const SAVE: usize = 0;
+    const DONT_SAVE: usize = 1;
+    const CANCEL: usize = 2;
+    let selected = initial_selection(Some(SAVE), 3);
+    assert_eq!(enter_button_index(selected), SAVE);
+    assert_eq!(space_button_index(selected), Some(SAVE));
+
+    let selected = moved_selection(selected, 3, true);
+    assert_eq!(enter_button_index(selected), DONT_SAVE);
+    assert_eq!(space_button_index(selected), Some(DONT_SAVE));
+
+    let selected = moved_selection(selected, 3, true);
+    assert_eq!(space_button_index(selected), Some(CANCEL));
+    let selected = moved_selection(selected, 3, false);
+    assert_eq!(space_button_index(selected), Some(DONT_SAVE));
+    // Shift-Tab from Save wraps to Cancel.
+    assert_eq!(
+        moved_selection(initial_selection(Some(SAVE), 3), 3, false),
+        Some(CANCEL)
+    );
+    // Escape is Cancel wherever the selection is.
+    assert_eq!(last_button_index(3), Some(CANCEL));
+}
+
+/// Space presses nothing in a dialog without a keyboard selection (every question but the
+/// editor's two): there Enter is the first button and Space never was a key of the dialog.
+#[test]
+fn space_does_nothing_in_a_dialog_without_a_selection() {
+    assert_eq!(space_button_index(initial_selection(None, 3)), None);
+    assert_eq!(space_button_index(None), None);
+}
+
+/// The focus ring is on the selected button only, and a dialog without a keyboard selection
+/// draws none.
+#[test]
+fn the_focus_ring_is_on_the_selected_button_only() {
+    assert!(has_focus_ring(Some(1), 1));
+    assert!(!has_focus_ring(Some(1), 0));
+    assert!(!has_focus_ring(Some(1), 2));
+    for index in 0..3 {
+        assert!(!has_focus_ring(None, index));
+    }
+}
+
+/// The lines the app tests read carry indexes and the key's name only.
+#[test]
+fn the_trace_lines_name_the_button_and_what_pressed_it() {
+    assert_eq!(selected_trace(1), "event=selected button=1");
+    assert_eq!(pressed_trace(1, "space"), "event=pressed button=1 by=space");
+    assert_eq!(
+        pressed_trace(2, "escape"),
+        "event=pressed button=2 by=escape"
+    );
 }

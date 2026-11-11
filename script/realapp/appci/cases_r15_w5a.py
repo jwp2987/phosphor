@@ -331,6 +331,52 @@ def close_question_up(log):
     return CLOSE_WARNING_LINE in (log or "") or MODAL_SHOWN_LINE in (log or "")
 
 
+# #2132 (owner decision 2026-11-11): the editor tab's close question has a keyboard selection. The dialog logs where Tab / Shift-Tab put it and
+# which button was pressed by what (app/src/workspace/native_modal.rs selected_trace / pressed_trace; indexes only).
+MODAL_SELECTED = re.compile(r"hop=native_modal event=selected button=(\d+)")
+MODAL_PRESSED = re.compile(r"hop=native_modal event=pressed button=(\d+) by=(\w+)")
+CLOSE_Q_SAVE, CLOSE_Q_DONT_SAVE, CLOSE_Q_CANCEL = 0, 1, 2      # app/src/quit_warning/mod.rs build(): Save, Don't Save, Cancel
+DONT_SAVE_KEYS = ("Tab", "Tab", "shift+Tab")                  # from Save: Don't Save, Cancel, back to Don't Save
+DONT_SAVE_WALK = [CLOSE_Q_DONT_SAVE, CLOSE_Q_CANCEL, CLOSE_Q_DONT_SAVE]
+CLOSE_KEYS_SWITCH = "PHOSPHOR_CLOSE_QUESTION_KEYS"            # =0 in the app's environment: the question has no keyboard selection, as before #2132
+
+
+def modal_selected(log):
+    """pure: the buttons the in-app question's keyboard selection moved to, in order, from an app-log excerpt"""
+    return [int(i) for i in MODAL_SELECTED.findall(log or "")]
+
+
+def modal_pressed(log):
+    """pure: [(button, by)] of the in-app question's pressed buttons, in order (by: pointer | enter | space | escape)"""
+    return [(int(i), by) for i, by in MODAL_PRESSED.findall(log or "")]
+
+
+def dont_save_walk_verdict(selected):
+    """pure: what DONT_SAVE_KEYS did on the editor tab's close question, from the selection trace since the keys -> ('on_dont_save' | 'no_selection'
+    | 'elsewhere', text). Only 'on_dont_save' may be followed by the pressing key: anywhere else it would press another answer."""
+    if selected == DONT_SAVE_WALK:
+        return "on_dont_save", "Tab, Tab, Shift+Tab walked Don't Save, Cancel, Don't Save"
+    if not selected:
+        return "no_selection", ("Tab / Shift+Tab moved no selection in the close question (no `hop=native_modal event=selected` line): a build before "
+                                "#2132, %s=0, or the question up is not the editor tab's (Save / Don't Save / Cancel)" % CLOSE_KEYS_SWITCH)
+    return "elsewhere", "Tab, Tab, Shift+Tab moved the selection through buttons %r, expected %r (a key was lost, or the buttons are others)" % (selected, DONT_SAVE_WALK)
+
+
+def dont_save_verdict(pressed, end, kept, with_edit):
+    """pure: what Space did with the selection on Don't Save -> ('discarded' | 'not_pressed' | 'wrong_button' | 'saved' | 'other', text). `pressed`:
+    modal_pressed since the keys; `end`: the file after; `kept`: the last saved text (Don't Save leaves exactly it); `with_edit`: that text with the
+    unsaved edit (what Save writes)."""
+    if not pressed:
+        return "not_pressed", "Space pressed no button of the close question (no `hop=native_modal event=pressed` line): the question is still up"
+    if pressed != [(CLOSE_Q_DONT_SAVE, "space")]:
+        return "wrong_button", "the close question's pressed buttons are %r, expected only Don't Save by Space %r" % (pressed, [(CLOSE_Q_DONT_SAVE, "space")])
+    if end == with_edit:
+        return "saved", "Don't Save was pressed and the unsaved edit is on disk all the same"
+    if end != kept:
+        return "other", "after Don't Save the file is neither the saved text nor the saved text plus the edit: %r" % end[:80]
+    return "discarded", "Don't Save by keyboard dropped the edit and wrote nothing"
+
+
 DISK_TRACE = re.compile(r"editor_disk outcome=(\w+) external=(true|false)(?: flagged=(true|false))?")     # app/src/code/global_buffer_model.rs disk_event_trace
 SAVE_ASK_TRACE = re.compile(r"editor_save_ask outcome=(\w+)")                                             # app/src/code/save_conflict.rs save_ask_trace (#2092)
 NO_CLOSE_QUESTION_MAC = ("macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the "
@@ -603,14 +649,63 @@ def _arm_close_question(ctx, r, d):
         ctx.be.guard()
         ctx.be.key(R.CLOSE_PANE)
         if not r.check(bool(ctx.until(lambda: close_question_up(ctx.log_since(off)), 4)), "the second close key did not ask again (after Escape the "
-                       "keyboard is not back in the editor, #2108, or the question is gone); Enter was NOT sent"):
+                       "keyboard is not back in the editor, #2108, or the question is gone); no answer was sent"):
+            return
+        # #2132 (owner decision 2026-11-11): "Don't Save" by keyboard. The question comes up with Save selected; Tab, Tab, Shift+Tab walk Don't
+        # Save, Cancel, Don't Save; Space presses it. Until round 19 this step pressed Enter and accepted "saved" or "discarded".
+        off = ctx.log_size()
+        for spec in DONT_SAVE_KEYS:
+            ctx.be.key(spec)
+        ctx.until(lambda: len(modal_selected(ctx.log_since(off))) >= len(DONT_SAVE_WALK), 3)
+        time.sleep(0.3)
+        sel = modal_selected(ctx.log_since(off))
+        ctx.shot("edd_close_dont_save")                        # the focus ring is on Don't Save
+        state, why = dont_save_walk_verdict(sel)
+        r.metric("close_dont_save_walk", sel)
+        if not r.check(state == "on_dont_save", "the close question by keyboard: %s; Space was NOT sent" % why):
+            ctx.be.key("Escape")                               # Cancel loses nothing; close_editor below closes the pane
+            time.sleep(0.6)
+            return
+        ctx.be.key("space")
+        ctx.until(lambda: modal_pressed(ctx.log_since(off)), 3)
+        time.sleep(1.5)
+        pressed = modal_pressed(ctx.log_since(off))
+        end = R.disk(path)
+        state, why = dont_save_verdict(pressed, end, t1 + R.EDIT_ORIG, t2 + t1 + R.EDIT_ORIG)
+        r.metric("close_confirm_outcome", state)
+        if not r.check(state == "discarded", "Space on Don't Save: %s" % why):
+            if state == "not_pressed":
+                ctx.be.key("Escape")
+                time.sleep(0.6)
+            else:
+                closed = True
+            return
+        closed = True
+        if not NL.shell_back_in_front(ctx, r, "edd_close_dont_save"):
+            return
+        # Enter ALONE on the same question is Save, as before the decision (the selection starts on Save)
+        closed = False
+        if not open_editor(ctx, r, path, "close_enter"):
+            closed = True
+            return
+        t3 = "SAVE_%s_" % ctx.tok(6)
+        ctx.be.key(k["top"])
+        typed(ctx, t3, enter=False)
+        time.sleep(0.4)
+        off = ctx.log_size()
+        ctx.be.guard()
+        ctx.be.key(R.CLOSE_PANE)
+        if not r.check(bool(ctx.until(lambda: close_question_up(ctx.log_since(off)), 4)), "the close key on the reopened editor with a new edit did not ask; Enter was NOT sent"):
             return
         ctx.be.key("Return")
-        time.sleep(1.5)
+        ctx.until(lambda: R.disk(path) != t1 + R.EDIT_ORIG, 6)
+        time.sleep(1.0)
         closed = True
         end = R.disk(path)
-        r.metric("close_confirm_outcome", "discarded" if end == t1 + R.EDIT_ORIG else ("saved" if end == t2 + t1 + R.EDIT_ORIG else "other"))
-        r.check(end in (t1 + R.EDIT_ORIG, t2 + t1 + R.EDIT_ORIG), "after Enter on the close question the file is neither the saved text nor the saved text plus the new edit: %r" % end[:80])
+        pressed = modal_pressed(ctx.log_since(off))
+        r.metric("close_enter_alone", "saved" if end == t3 + t1 + R.EDIT_ORIG else ("discarded" if end == t1 + R.EDIT_ORIG else "other"))
+        r.check(end == t3 + t1 + R.EDIT_ORIG and pressed == [(CLOSE_Q_SAVE, "enter")], "Enter alone on the close question must be Save (its first button, selected when "
+                "the question comes up): pressed %r, file %r, expected %r" % (pressed, end[:80], (t3 + t1 + R.EDIT_ORIG)[:80]))
     finally:
         if closed:
             NL.shell_back_in_front(ctx, r, "edd_close")
@@ -769,8 +864,9 @@ def _arm_external(ctx, r, d):
 def c_editor_daily(ctx, r):
     """T50: what a user does in the code editor beyond edit and save. (1) Find and replace by keyboard: the find key, the query, the replace-row key
     (#2088), the replacement, Enter: exactly ONE match is replaced; again with the replace-all key: every match, bytes exact, the near-miss words and
-    the multi-byte text untouched. (2) Close with unsaved edits: the close key asks; Escape keeps the edits (a save then has them); the close key and
-    Enter closes, and the file is the saved text or the saved text plus the new edit, nothing else; the question comes whatever
+    the multi-byte text untouched. (2) Close with unsaved edits: the close key asks; Escape keeps the edits (a save then has them); the close key,
+    then Tab, Tab, Shift+Tab and Space answers "Don't Save" by keyboard (#2132: the selection trace walks Don't Save, Cancel, Don't Save, Space
+    presses it, the file keeps the saved text); reopened with a new edit, the close key and Enter ALONE saves it; the question comes whatever
     general.show_warning_before_quitting says (#2092). Not played on macOS (native dialog). (3) A file changed on disk: with no unsaved edits the
     editor reloads it (an edit typed and saved afterwards lands on the NEW content); with unsaved edits the change is flagged (`editor_disk
     outcome=conflict ... flagged=true`, #2087) and the app does not write the file on its own; a save in that state asks (`editor_save_ask

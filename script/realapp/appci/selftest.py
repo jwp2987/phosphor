@@ -9028,6 +9028,8 @@ import selftest_r19_tabs  # noqa: E402  (round 19, #2108 / #2109 / #2110: the ro
 CHECKS.extend(selftest_r19_tabs.CHECKS)
 import selftest_r19_artifacts  # noqa: E402  (#2123: run_slim is made by the job script, the after_script net is bounded, after_job.ps1's one snapshot; own file)
 CHECKS.extend(selftest_r19_artifacts.CHECKS)
+import selftest_r19_decide  # noqa: E402  (round 19, owner decisions of 2026-11-11 in the app: #2130 word keys, #2131 idle Ctrl-C copy, #2132 close question by keyboard; own file)
+CHECKS.extend(selftest_r19_decide.CHECKS)
 
 
 def missing_required(required, passed):

@@ -62,6 +62,45 @@ fn warning_can_be_switched_off(always_ask_unsaved: bool, unsaved_code_changes: b
     !(always_ask_unsaved && unsaved_code_changes)
 }
 
+/// Env kill switch (#2132): `PHOSPHOR_CLOSE_QUESTION_KEYS=0` puts back the editor tab's close
+/// question of before the owner's decision of 2026-11-11: no keyboard selection, so Tab and
+/// Space do nothing there and "Don't Save" needs the pointer. Read once per run.
+fn close_question_keys_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        close_question_keys_enabled_for(
+            std::env::var("PHOSPHOR_CLOSE_QUESTION_KEYS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// The kill switch's rule: on unless the variable is exactly `0`.
+fn close_question_keys_enabled_for(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
+/// The button the editor tab's close question (Save / Don't Save / Cancel) comes up with
+/// selected, which also gives the in-app dialog its keyboard selection (#2132, owner decision
+/// 2026-11-11): Tab / Shift-Tab move between the buttons and Enter or Space presses the selected
+/// one, so "Don't Save" can be answered without the pointer.
+///
+/// It is Save (`save_index`), so Enter alone is what it was before. `None` (no selection: Enter
+/// is the first button, Tab does nothing) for every other question, for a question with no Save
+/// button, and with the kill switch off.
+fn close_question_enter_button(
+    is_editor_tab: bool,
+    save_index: Option<usize>,
+    enabled: bool,
+) -> Option<usize> {
+    if is_editor_tab && enabled {
+        save_index
+    } else {
+        None
+    }
+}
+
 /// Scope of what's being quit/closed.
 #[derive(Clone)]
 enum QuitScope<'a> {
@@ -452,7 +491,9 @@ impl<'a> QuitWarningDialog<'a> {
             buttons.push(ModalButton::for_app(confirm_title.to_string(), callback));
         }
 
+        let mut save_index = None;
         if let Some(callback) = on_save_changes {
+            save_index = Some(buttons.len());
             buttons.push(ModalButton::for_app(crate::t!("common-save"), callback));
         }
 
@@ -493,6 +534,16 @@ impl<'a> QuitWarningDialog<'a> {
             buttons,
             on_disable_warning_modal,
         );
+        // #2132: the editor tab's question can be answered by keyboard (Tab, then Enter or
+        // Space). The macOS system alert does not look at this.
+        let dialog = match close_question_enter_button(
+            matches!(state.scope, QuitScope::EditorTab { .. }),
+            save_index,
+            close_question_keys_enabled(),
+        ) {
+            Some(index) => dialog.with_enter_button(index),
+            None => dialog,
+        };
         if warning_can_be_switched_off(unsaved_edits_always_ask(), state.unsaved_code_changes) {
             dialog
         } else {

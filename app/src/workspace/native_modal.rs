@@ -30,12 +30,20 @@ pub(super) fn init(app: &mut AppContext) {
             NativeModalAction::SelectPrevious,
             id!("NativeModal"),
         ),
+        // #2132: Space presses the selected button, as Enter does. In a dialog without a
+        // keyboard selection it does nothing, as before.
+        FixedBinding::new(
+            "space",
+            NativeModalAction::PressSelected,
+            id!("NativeModal"),
+        ),
     ]);
 }
 
 /// Used to show a Zap-native modal dialog above a [`super::Workspace`]. The button Enter presses
 /// is [`ButtonVariant::Accent`]: the first one, or the selected one in a dialog with a keyboard
-/// selection.
+/// selection. In a dialog with a keyboard selection the selected button also carries a focus
+/// ring, and Space presses it too (#2132).
 pub struct NativeModal {
     alert_dialog: Option<AlertDialogWithCallbacks<AppModalCallback>>,
     /// The keyboard selection, for a dialog that asked for one
@@ -60,6 +68,9 @@ pub enum NativeModalAction {
     /// Tab / Shift-Tab: move the keyboard selection, in a dialog that has one.
     SelectNext,
     SelectPrevious,
+    /// Space: trigger the selected button, in a dialog with a keyboard selection; nothing in
+    /// any other dialog (#2132).
+    PressSelected,
 }
 
 pub enum NativeModalEvent {
@@ -118,10 +129,18 @@ impl NativeModal {
         self.alert_dialog.is_some()
     }
 
-    fn trigger_button_callback(&mut self, idx: usize, ctx: &mut ViewContext<Self>) {
+    /// `by`: what pressed the button (`pointer`, `enter`, `space`, `escape`), for the trace line
+    /// the app tests read.
+    fn trigger_button_callback(
+        &mut self,
+        idx: usize,
+        by: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
         // Once we trigger a callback from a button, we are guaranteed that the modal will close so
         // it's ok to take the alert dialog from Self.
         if let Some(mut dialog) = self.alert_dialog.take() {
+            warpui::input_order::log_hop("native_modal", || pressed_trace(idx, by));
             let button = dialog.button_data.remove(idx);
             (button.on_click)(ctx);
             // #2092: a dialog without the checkbox never runs its disable callback. The checkbox
@@ -158,6 +177,33 @@ fn moved_selection(selected: Option<usize>, button_count: usize, forward: bool) 
 /// The button Enter presses: the selected one, or the first in a dialog without a selection.
 fn enter_button_index(selected: Option<usize>) -> usize {
     selected.unwrap_or(0)
+}
+
+/// The button Space presses (#2132): the selected one. `None` in a dialog without a keyboard
+/// selection, where Space does nothing (Enter there is the first button; Space never was).
+fn space_button_index(selected: Option<usize>) -> Option<usize> {
+    selected
+}
+
+/// Whether button `index` carries the focus ring (#2132): the selected button of a dialog with
+/// a keyboard selection. A dialog without one draws no ring (its Enter button is the accent
+/// one, as before).
+fn has_focus_ring(selected: Option<usize>, index: usize) -> bool {
+    selected == Some(index)
+}
+
+/// Width of the focus ring, in pixels (a button's own border is 1).
+const FOCUS_RING_WIDTH: f32 = 2.;
+
+/// The lines the app tests read (`editor_daily`), `hop=native_modal`: indexes only, no text.
+/// `event=selected button=<i>`: Tab / Shift-Tab moved the keyboard selection to button `i`.
+fn selected_trace(index: usize) -> String {
+    format!("event=selected button={index}")
+}
+
+/// `event=pressed button=<i> by=<pointer|enter|space|escape>`: button `i` was pressed.
+fn pressed_trace(index: usize, by: &str) -> String {
+    format!("event=pressed button={index} by={by}")
 }
 
 /// The button Escape presses: the last one ("Cancel"). `None` when no dialog is up.
@@ -243,6 +289,14 @@ impl View for NativeModal {
 
         // The accent marks the button Enter presses.
         let accent_button = enter_button_index(self.selected_button);
+        // #2132: the button that has the keyboard also carries a ring in the theme's foreground
+        // colour, so the selection does not rest on the accent colour alone. Given through the
+        // button's own style, it holds while the pointer hovers or presses too.
+        let ring_style = UiComponentStyles {
+            border_width: Some(FOCUS_RING_WIDTH),
+            border_color: Some(appearance.theme().foreground().into()),
+            ..button_style
+        };
         for (i, modal_button) in alert_dialog.button_data.iter().enumerate() {
             let button = Align::new(
                 appearance
@@ -259,7 +313,11 @@ impl View for NativeModal {
                             .clone(),
                     )
                     .with_centered_text_label(modal_button.title.clone())
-                    .with_style(button_style)
+                    .with_style(if has_focus_ring(self.selected_button, i) {
+                        ring_style
+                    } else {
+                        button_style
+                    })
                     .build()
                     .with_cursor(Cursor::PointingHand)
                     .on_click(move |ctx, _, _| {
@@ -302,7 +360,7 @@ impl TypedActionView for NativeModal {
     fn handle_action(&mut self, action: &NativeModalAction, ctx: &mut ViewContext<Self>) {
         match action {
             NativeModalAction::TriggerButtonCallback(idx) => {
-                self.trigger_button_callback(*idx, ctx);
+                self.trigger_button_callback(*idx, "pointer", ctx);
             }
             NativeModalAction::ToggleDontShowAgain => {
                 self.dont_show_again = !self.dont_show_again;
@@ -313,13 +371,19 @@ impl TypedActionView for NativeModal {
                 // dialog closed) has no last button; the workspace still hears `Close` and takes
                 // the focus back.
                 match last_button_index(self.modal_button_mouse_states.len()) {
-                    Some(last_button_idx) => self.trigger_button_callback(last_button_idx, ctx),
+                    Some(last_button_idx) => {
+                        self.trigger_button_callback(last_button_idx, "escape", ctx)
+                    }
                     None => ctx.emit(NativeModalEvent::Close),
                 }
             }
             NativeModalAction::Confirm => {
                 if self.alert_dialog.is_some() {
-                    self.trigger_button_callback(enter_button_index(self.selected_button), ctx);
+                    self.trigger_button_callback(
+                        enter_button_index(self.selected_button),
+                        "enter",
+                        ctx,
+                    );
                 } else {
                     // #2108: as for Escape above, with no dialog up there is no button to press.
                     ctx.emit(NativeModalEvent::Close);
@@ -334,7 +398,17 @@ impl TypedActionView for NativeModal {
                 );
                 if moved != self.selected_button {
                     self.selected_button = moved;
+                    if let Some(index) = moved {
+                        warpui::input_order::log_hop("native_modal", || selected_trace(index));
+                    }
                     ctx.notify();
+                }
+            }
+            NativeModalAction::PressSelected => {
+                if self.alert_dialog.is_some()
+                    && let Some(index) = space_button_index(self.selected_button)
+                {
+                    self.trigger_button_callback(index, "space", ctx);
                 }
             }
         }

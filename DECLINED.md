@@ -3558,3 +3558,19 @@ macOS-only Cmd keys) are as at the pin. A re-pin must not point the two bindings
 `EscCodes::WORD_LEFT` / `WORD_RIGHT` for every platform. App case `meta_and_word_keys` (raw half).
 Design: `docs/design/r10-r19-decide-app.md`.
 <!-- markers: keep:word_key_sequence_for keep:word_keys_are_xterm_ctrl_arrows_off_macos_and_meta_letters_on_macos -->
+
+## Editor tab close question: Tab / Shift+Tab move, Enter / Space press, focus ring (#2132) — IMPROVED 2026-11-11
+
+Upstream's in-app dialog (identical at `42effe840`, `app/src/workspace/native_modal.rs`) has two
+keys, Enter (the first button) and Escape (the last), so the editor tab's close question (Save /
+Don't Save / Cancel; Linux and Windows) could not be answered "Don't Save" without the pointer.
+Owner decision 2026-11-11: that question asks for a keyboard selection that starts on Save
+(`quit_warning` `close_question_enter_button`), so Tab / Shift+Tab move between the buttons and
+Enter presses the selected one (Enter alone is Save, as before; Escape is Cancel). In every dialog
+with a keyboard selection (this one and the editor's overwrite question) Space presses the selected
+button too (`NativeModalAction::PressSelected`) and the selected button carries a focus ring
+(`has_focus_ring`). Dialogs without a selection are as at the pin. Off:
+`PHOSPHOR_CLOSE_QUESTION_KEYS=0` (the close question has no selection again). macOS shows the system
+alert for this question and is not affected. App case `editor_daily`. Design:
+`docs/design/r10-r19-decide-app.md`.
+<!-- markers: keep:close_question_enter_button keep:space_button_index keep:has_focus_ring keep:the_close_question_is_answered_dont_save_by_tab_then_enter_or_space -->
