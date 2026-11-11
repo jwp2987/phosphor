@@ -328,6 +328,28 @@ pub fn render_grid<'a, G: GridSource>(
     // codepath (which is known to be less performant) if the font does not
     // even support ligatures.
     let respect_displayed_output = matches!(respect_displayed_output, RespectDisplayedOutput::Yes);
+    // Test-harness grid snapshot hook (#2075): None (one cached check) unless
+    // PHOSPHOR_APPCI_GRID_DIR is set and its request file lists tokens.
+    if let Some(tokens) = super::appci_grid::active_tokens() {
+        let redacting = obfuscate_secrets.should_redact_secret() && grid.has_secrets();
+        let count = end_row.saturating_sub(start_row);
+        match grid.displayed_output_rows() {
+            Some(rows) if respect_displayed_output => super::appci_grid::report_painted_grid(
+                grid,
+                (start_row..).zip(rows.skip(start_row).take(count)),
+                visible_cursor_shape,
+                redacting,
+                &tokens,
+            ),
+            _ => super::appci_grid::report_painted_grid(
+                grid,
+                (start_row..end_row).map(|row| (row, row)),
+                visible_cursor_shape,
+                redacting,
+                &tokens,
+            ),
+        }
+    }
     match (use_ligature_rendering, grid.displayed_output_rows()) {
         (true, Some(rows)) if respect_displayed_output => {
             let visible_rows = rows.skip(start_row).take(end_row.saturating_sub(start_row));
