@@ -2,7 +2,7 @@
 # script/ci/collect_results.py: archive one GitLab pipeline's test results under test-results/ (owner rule 2026-11-02: "every test
 # result is kept in the repo for regression review"). The coordinator commits the output; CI never pushes.
 #
-#   python3 script/ci/collect_results.py <pipeline_id | build/ref | ref> [--out test-results] [--tier fix|candidate|release]
+#   python3 script/ci/collect_results.py <pipeline_id | build/ref | ref> [--out test-results] [--tier fix|candidate|release|targeted] [--cases-file FILE]
 #   python3 script/ci/collect_results.py --self-test        (the pure parts: usage-suite parsing, tier inference; no network)
 #
 # Writes <out>/<YYYY-MM-DD>_<ref-sanitized>_<pipeline>/ with manifest.json, unit/<job>.json, app/<platform>/..., README.md, and
@@ -169,6 +169,10 @@ def parse_usage(lines):
     if d["run"] is None:
         d["errors"] = [l.strip()[:200] for l in lines if re.match(r"\s*(error(\[E\d+\])?:|ERROR)", l)][:8]
     return d
+
+
+TARGETED_NOTE = ("TARGETED run (ci_seq.py --tier targeted): only the cases and suites of its cases file were played. A pass here proves those cases on "
+                 "those platforms and nothing else; a job with the note `not run` was not part of it.")
 
 
 def tier_from_app_meta(app):
@@ -413,7 +417,8 @@ def diff(hist, cur):
         elif fl(pj) - fl(j):
             d["baselines"].append("%s ran fewer tests (%d vs %d): missing failures not counted as fixed" % (n, j["run"], pj["run"]))
     for plat, info in sorted(cur.get("app", {}).items()):
-        pm = last_with(hist, lambda m: plat in m.get("app", {}) and m["app"][plat]["cases"])
+        # a targeted run holds only the cases it was given: as a baseline it would make every other case "not in previous run"
+        pm = last_with(hist, lambda m: plat in m.get("app", {}) and m["app"][plat]["cases"] and m.get("tier") != "targeted")
         if not pm or not info["cases"]:
             continue
         d["baselines"].append("app %s: %s (%s)" % (plat, pm["ref"], pm["pipeline"]))
@@ -521,6 +526,12 @@ def render_readme(m, hist):
     L = ["# %s  %s  (pipeline %s)" % (m["ref"], m["commit"][:9], m["pipeline"]), "",
          "- date: %s, tier: %s, pipeline status: %s%s" % (m.get("date", "?"), m.get("tier", "?"), m.get("pipeline_status", "unknown"), " (collected before it finished)" if m.get("pipeline_status") in ("running", "pending", "created") else ""),
          "- compile (check-linux): %s" % compile_state(m)]
+    if m.get("tier") == "targeted":
+        L.append("- **%s**" % TARGETED_NOTE)
+        for k, e in sorted(((m.get("targeted") or {}).get("platforms") or {}).items()):
+            names = e if isinstance(e, list) else (e or {}).get("cases") or []
+            if names:
+                L.append("  - asked for on %s: %s" % (k, ", ".join("`%s`" % n for n in names)))
     u = unit_totals(m)
     L.append("- unit: %d passed, %d failed, %d skipped of %d run (%d suites)" % (u["passed"], u["failed"], u["skipped"], u["run"], u["jobs"]))
     L.append("- app (pass/fail/skip): %s; soak: %s" % (fmt_app(m), soak_verdict(m)))
@@ -594,7 +605,8 @@ def main():
     ap = argparse.ArgumentParser(description="archive one GitLab pipeline's test results under test-results/")
     ap.add_argument("pipeline", nargs="?", help="pipeline id, or a build/<ref> (its newest pipeline)")
     ap.add_argument("--out", default="test-results")
-    ap.add_argument("--tier", choices=["fix", "candidate", "release"], help="the tier that was played (ci_seq.py passes it); else the app runs' own meta.tier, else inferred")
+    ap.add_argument("--tier", choices=["fix", "candidate", "release", "targeted"], help="the tier that was played (ci_seq.py passes it); else the app runs' own meta.tier, else inferred")
+    ap.add_argument("--cases-file", default="", help="a targeted run's cases file (ci_seq.py --tier targeted passes it): kept in the manifest as `targeted`, so the record says what was asked for")
     ap.add_argument("--self-test", action="store_true", help="check the pure parts (usage-suite parsing, tier inference) and exit")
     a = ap.parse_args()
     if a.self_test:
@@ -615,6 +627,15 @@ def main():
     os.makedirs(os.path.join(d, "unit"))
     man = {"pipeline": pid, "web_url": pl.get("web_url"), "ref": pl["ref"], "commit": pl["sha"], "created_at": pl["created_at"], "date": date, "tier": tier,
            "pipeline_status": pl["status"], "jobs": {}, "unit": {}, "app": {}, "notes": []}
+    if tier == "targeted":
+        man["notes"].append(TARGETED_NOTE)
+        if a.cases_file:
+            try:
+                import ci_seq
+                doc = ci_seq.load_targeted(a.cases_file)
+                man["targeted"] = {k: doc[k] for k in ("platforms", "suites", "filters", "note") if k in doc}
+            except (OSError, ValueError) as e:
+                man["notes"].append("the targeted cases file could not be read (%s): what was asked for is not in this record" % str(e)[:160])
     for j in jobs:
         n = j["name"]
         ent = {"status": j["status"], "duration": j.get("duration"), "id": j["id"], "runner": (j.get("runner") or {}).get("description")}
@@ -716,6 +737,15 @@ def self_test():
     rows.append(([tier_from_app_meta({"wayland": {"meta": {"tier": t}}}) for t in ("smoke", "full", "release", "")] == ["fix", "candidate", "release", None]
                  and tier_from_app_meta({"a": {"meta": {"tier": "smoke"}}, "b": {"meta": {"tier": "full"}}}) == "candidate" and tier_from_app_meta({}) is None,
                  "the app runs' own meta.tier names the tier"))
+    rows.append((tier_from_app_meta({"wayland": {"meta": {"tier": "targeted"}}}) is None, "a targeted app run does not name fix / candidate / release (ci_seq passes --tier targeted)"))
+    tc = lambda st: [{"mode": "terminal", "name": "a", "status": st, "lat": {}}]
+    th = [{"tier": "candidate", "ref": "c", "pipeline": 1, "app": {"wayland": {"cases": tc("fail") + [{"mode": "terminal", "name": "b", "status": "pass", "lat": {}}]}}},
+          {"tier": "targeted", "ref": "t", "pipeline": 2, "app": {"wayland": {"cases": tc("pass")}}}]
+    td = diff(th, {"tier": "candidate", "app": {"wayland": {"cases": tc("pass") + [{"mode": "terminal", "name": "b", "status": "fail", "lat": {}}]}}})
+    rows.append((td["fixed_app"] == ["wayland/terminal/a"] and td["new_app"] == ["wayland/terminal/b"], "a targeted run is never the baseline of a later run's app diff (it holds only its own cases)"))
+    rows.append((diff(th[:1], {"tier": "targeted", "app": {"wayland": {"cases": tc("pass")}}})["fixed_app"] == ["wayland/terminal/a"], "a targeted run is compared with the last full run"))
+    rows.append((all(x in render_readme({"ref": "r", "commit": "c" * 9, "pipeline": 1, "tier": "targeted", "jobs": {}, "app": {}, "unit": {},
+                                                                 "targeted": {"platforms": {"macos": ["a"]}}}, []) for x in ("TARGETED run", "asked for on macos: `a`")), "a targeted run's README says so, with what was asked for"))
     rows.append((tier_from_app_meta({"lab-wayland": {"meta": {"tier": "full"}}, "wayland": {"meta": {"tier": "smoke"}}}) == "fix" and tier_from_app_meta({"replay-wayland": {"meta": {"tier": "full"}}}) is None,
                  "a lab or replay row does not name the tier"))
     rows.append((all(n in USAGE_JOBS for n in ("usage-test-linux", "usage-test-macos")) and "lab-helper" in SETUP_JOBS, "the job lists"))

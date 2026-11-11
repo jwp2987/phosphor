@@ -3,6 +3,7 @@
 #
 #   python3 script/ci/ci_seq.py build/<ref> [--tier fix|candidate|release] [--platforms linux,macos,windows]
 #                               [--tests '<nextest filterset>'] [--base <git ref>] [--skip job ...] [--dry-run]
+#   python3 script/ci/ci_seq.py build/<ref> --tier targeted --cases-file FILE [--skip job ...] [--collect] [--dry-run]
 #   (legacy positional job names after the ref still mean --skip)
 #
 #   (every tier: on the Linux box the unit suites run FIRST, the app tests wait for them, owner 2026-11-05; Mac/Windows have no unit suites in the fix tier)
@@ -28,6 +29,12 @@
 #                      suite runs on Linux, macOS and Windows ("the tests need to be the same on all boxes"); the one exception
 #                      is fuzz-smoke-windows (cargo-fuzz is Unix-only): it is never played, it is reported "unsupported" (neutral).
 #                      Times are estimates: the Mac/Windows suites have never run; the first release run records them.
+#   targeted           (owner 2026-11-11) the proof run of a round's fixes, BEFORE the whole harness: only what --cases-file names. Per platform
+#                      (linux-wayland, linux-x11, linux-lab, macos, macos-lab, windows, windows-lab) the case names or globs, passed to that job
+#                      as APPCI_CASES exactly, with optional arm filters (modes -> APPCI_MODES, win_shells -> APPCI_WIN_SHELLS); per machine the
+#                      unit / integration suites (default: the machine's three unit suites when it plays an app job). Every platform with an app job
+#                      BUILDS (no reuse); unit suites first; a platform without cases is not played and not failed ("not in this targeted run").
+#                      script/ci/failed_cases.py writes the file from a collected run. See TARGETED_APP below and docs/testing.md 2.9.
 #
 # After the run it prints the collect+commit command, or with --collect runs script/ci/collect_results.py itself (test-results/ archive).
 # Prereqs: glab authenticated (run 'glab api user' first). Never re-plays a job that already ran. Heavy jobs: ask the owner.
@@ -203,13 +210,282 @@ def tier_plan(tier, plats=(LINUX, MAC, WIN), reuse=(), lab_globs=None, units=("t
     return out
 
 
+# ---- the TARGETED tier (owner 2026-11-11; docs/design/r10-r19-targeted.md, docs/testing.md 2.9) ----------------------------------------------------
+# Fixes that come out of a round are proven with a targeted run FIRST: only the cases that failed, on the OS where they failed, plus the cases that touch
+# the changed code; only then the whole harness. `--tier targeted --cases-file FILE` plays what FILE names and nothing else. FILE (JSON, or TOML with the
+# same keys on Python 3.11+) is written by script/ci/failed_cases.py from a collected run, or by hand:
+#   {"platforms": {"linux-wayland": {"cases": ["tab_enter", "ssh_*"], "modes": ["agent"]},          (a bare list of names is the short form)
+#                  "windows": {"cases": ["big_paste"], "win_shells": ["gitbash"]},
+#                  "linux-lab": {"cases": ["lab_raw_key_arrival.*"], "lab_matrix": "quick", "vars": {"APPCI_REPLAY_MINUTES": "5"}}},
+#    "suites": {"linux": ["test-linux", "integration-linux"], "macos": []},      (default for a machine with app cases: its three unit suites)
+#    "filters": {"test-linux": "test(/terminal::view/)"}}                         (optional nextest filterset per unit suite: TEST_FILTER)
+# The app platforms, in the order one machine plays them (one app job at a time on a machine, as in every tier):
+TARGETED_APP = {"linux-wayland": (LINUX, "app-test-linux-wayland"), "linux-x11": (LINUX, "app-test-linux-x11"), "linux-lab": (LINUX, LAB_APP[LINUX]),
+                "macos": (MAC, "app-test-macos"), "macos-lab": (MAC, LAB_APP[MAC]), "windows": (WIN, "app-test-windows"), "windows-lab": (WIN, LAB_APP[WIN])}
+NOT_TARGETED = "not in this targeted run"      # a job the cases file does not name: not played, not judged, NOT a failure (verdict SKIPPED)
+TARGETED_APP_TIER = "targeted"                 # APPCI_TIER of a targeted app job (results.json meta.tier). Not "smoke": a named case runs at full strength
+TARGETED_MODES = ("terminal", "agent")
+TARGETED_WIN_SHELLS = ("powershell", "gitbash", "pwsh7", "wsl")      # the passes app-test-windows knows (its APPCI_WIN_SHELLS)
+TARGETED_RESERVED_VARS = ("APPCI_CASES", "APPCI_MODES", "APPCI_WIN_SHELLS", "APPCI_TIER")      # these have their own keys in the file
+TARGETED_FILTERABLE = ("test-linux", "test-warpui-core", "test-workspace-rest")      # and their -macos / -windows twins (run_suite.sh reads TEST_FILTER)
+_CASE_PATTERN_RX = re.compile(r"^[A-Za-z0-9_.*?\[\]!+@-]+$")
+_VAR_NAME_RX = re.compile(r"^APPCI_[A-Z0-9_]+$")
+
+
+def unit_suites(p):
+    """the three unit suites of machine p, in play order (the default of a targeted run for a machine that has app cases: unit tests first)"""
+    return ["test-linux", "test-warpui-core", "test-workspace-rest"] if p == LINUX else plat_suites(p, False)[:3]
+
+
+def targeted_suites_allowed(p):
+    """the suites a cases file may name for machine p: its unit suites and its integration / usage suites (the heavy release suites are not targeted)"""
+    return unit_suites(p) + (BOX_EXTRA if p == LINUX else MAC_EXTRA if p == MAC else [])
+
+
+def load_targeted(path):
+    """the cases file as a dict: JSON, or TOML when the name ends in .toml (Python 3.11+: tomllib; this script installs nothing)"""
+    if path.endswith(".toml"):
+        try:
+            import tomllib
+        except ImportError:
+            raise ValueError("%s: TOML needs Python 3.11 or newer (tomllib); write the cases file as JSON on this machine" % path)
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    with open(path) as f:
+        return json.load(f)
+
+
+def targeted_spec(doc):
+    """Check a cases file and bring it to one shape: {"apps": {platform: {"cases", "modes", "win_shells", "lab_matrix", "vars"}}, "suites": {machine:
+    [job names]}, "filters": {job: filterset}}. `apps` holds only platforms WITH cases; `suites` only machines that play at least one suite.
+    Raises ValueError naming EVERY problem: a misspelled key or name must never become a smaller (greener) run."""
+    bad = []
+    if not isinstance(doc, dict):
+        raise ValueError("the cases file must be an object with `platforms` (and optionally `suites`, `filters`, `note`, `info`)")
+    for k in doc:
+        if k not in ("platforms", "suites", "filters", "note", "info"):
+            bad.append("unknown top-level key %r" % k)
+    apps = {}
+    plats = doc.get("platforms") or {}
+    if not isinstance(plats, dict):
+        bad.append("`platforms` must be an object"); plats = {}
+    for key, ent in plats.items():
+        if key not in TARGETED_APP:
+            bad.append("unknown platform %r (known: %s)" % (key, ", ".join(TARGETED_APP))); continue
+        if isinstance(ent, list):
+            ent = {"cases": ent}
+        if not isinstance(ent, dict):
+            bad.append("%s: must be a list of case names or an object with `cases`" % key); continue
+        for k in ent:
+            if k not in ("cases", "modes", "win_shells", "lab_matrix", "vars", "note"):
+                bad.append("%s: unknown key %r" % (key, k))
+        lab = key.endswith("-lab")
+        names = []
+        for n in ent.get("cases") or []:
+            if not isinstance(n, str) or not _CASE_PATTERN_RX.match(n):
+                bad.append("%s: %r is not a case name or glob (no commas or spaces: one list entry per name)" % (key, n)); continue
+            if n.startswith("lab_replay"):
+                bad.append("%s: %s belongs to %s, which the targeted tier does not play (play it by hand)" % (key, n, REPLAY_JOB)); continue
+            if n.startswith("lab_") != lab:
+                bad.append("%s: %s is %s; it belongs under %s" % (key, n, "a lab case" if not lab else "not a lab case (lab_*)", (key + "-lab") if not lab else key[:-len("-lab")]))
+                continue
+            if n not in names:
+                names.append(n)
+        modes = ent.get("modes")
+        if modes is not None and (not isinstance(modes, list) or not modes or any(m not in TARGETED_MODES for m in modes)):
+            bad.append("%s: `modes` must be a non-empty list out of %s" % (key, ", ".join(TARGETED_MODES))); modes = None
+        shells = ent.get("win_shells")
+        if shells is not None and (not key.startswith("windows") or not isinstance(shells, list) or not shells or any(x not in TARGETED_WIN_SHELLS for x in shells)):
+            bad.append("%s: `win_shells` is for the Windows platforms only, a non-empty list out of %s" % (key, ", ".join(TARGETED_WIN_SHELLS))); shells = None
+        matrix = ent.get("lab_matrix")
+        if matrix is not None and (not lab or not isinstance(matrix, str) or not matrix):
+            bad.append("%s: `lab_matrix` is a non-empty string, for the -lab platforms only" % key); matrix = None
+        extra = ent.get("vars") or {}
+        if not isinstance(extra, dict):
+            bad.append("%s: `vars` must be an object" % key); extra = {}
+        for vk, vv in extra.items():
+            if not _VAR_NAME_RX.match(str(vk)) or vk in TARGETED_RESERVED_VARS or vk.startswith("APPCI_BUILD_") or not isinstance(vv, str):
+                bad.append("%s: vars.%s must be an APPCI_* name with a string value, and not one of %s / APPCI_BUILD_* (those have their own keys)" % (
+                    key, vk, ", ".join(TARGETED_RESERVED_VARS)))
+        if names:
+            apps[key] = {"cases": names, "modes": modes, "win_shells": shells, "lab_matrix": matrix, "vars": dict(extra)}
+    suites = {}
+    given = doc.get("suites") or {}
+    if not isinstance(given, dict):
+        bad.append("`suites` must be an object"); given = {}
+    for p in given:
+        if p not in (LINUX, MAC, WIN):
+            bad.append("suites: unknown machine %r (known: %s)" % (p, ", ".join((LINUX, MAC, WIN))))
+    for p in (LINUX, MAC, WIN):
+        if p in given:
+            lst = given[p]
+            if not isinstance(lst, list):
+                bad.append("suites.%s must be a list of job names" % p); continue
+            allowed, names = targeted_suites_allowed(p), []
+            for n in lst:
+                exp = [x for x in allowed if x.startswith("integration-linux: [")] if n == "integration-linux" else [n]      # the short name = its three shards
+                for x in exp:
+                    if x not in allowed:
+                        bad.append("suites.%s: %r is not a suite of that machine (known: %s)" % (p, x, ", ".join(allowed)))
+                    elif x not in names:
+                        names.append(x)
+            names.sort(key=allowed.index)                   # the machine's own order: unit suites first
+        else:
+            names = unit_suites(p) if any(TARGETED_APP[k][0] == p for k in apps) else []      # the default: unit tests first on a machine that plays app cases
+        if names:
+            suites[p] = names
+    filters = doc.get("filters") or {}
+    if not isinstance(filters, dict):
+        bad.append("`filters` must be an object"); filters = {}
+    played = [n for lst in suites.values() for n in lst]
+    for n, f in filters.items():
+        base = re.sub(r"-(macos|windows)$", "", str(n))
+        if base not in TARGETED_FILTERABLE or n not in played or not isinstance(f, str) or not f:
+            bad.append("filters.%s: a filter needs a unit suite this run plays (%s) and a non-empty nextest filterset" % (n, ", ".join(played) or "none"))
+    if not apps and not suites and not bad:
+        bad.append("nothing to play: no platform has a case and no machine has a suite")
+    if bad:
+        raise ValueError("; ".join(bad))
+    return {"apps": apps, "suites": suites, "filters": dict(filters)}
+
+
+def targeted_vars(key, ent):
+    """the play-time variables of the targeted app job of platform `key`: APPCI_CASES is the file's list, comma-joined, in the file's order, and nothing
+    else; the arm filters only when the file gives them (x11: both session modes, as in every tier, #2058); a lab job gets the scripted model and the
+    matrix of the candidate tier (an exactly named arm bypasses the matrix in run.py; a glob is filtered by it)."""
+    p = TARGETED_APP[key][0]
+    v = {"APPCI_TIER": TARGETED_APP_TIER, "APPCI_CASES": ",".join(ent["cases"])}
+    if ent.get("modes"):
+        v["APPCI_MODES"] = ",".join(ent["modes"])
+    elif key == "linux-x11":
+        v["APPCI_MODES"] = X11_MODES
+    if ent.get("win_shells"):
+        v["APPCI_WIN_SHELLS"] = ",".join(ent["win_shells"])
+    if key.endswith("-lab"):
+        v.update({"APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": ent.get("lab_matrix") or (LAB_CANDIDATE_MATRIX if p == LINUX else LAB_PLAT_MATRIX)})
+    v.update(ent.get("vars") or {})
+    return v
+
+
+def targeted_plan(spec):
+    """What a targeted run plays: {"machines": {machine: [(job, play-time variables or None, kind)]}, "not_played": [job names]}, each machine's list in
+    play order. kind: image / helper (the lab's two setup jobs, seconds each, first on the box whenever ANY lab job is played), build (only for a machine
+    with an app job: no reuse, like candidate), unit (before the app jobs: owner 2026-11-05), app, lab. A platform without cases has no job here; its job
+    is in `not_played` and gets the neutral NOT_TARGETED row."""
+    apps, suites, filters = spec["apps"], spec["suites"], spec.get("filters") or {}
+    machines = {}
+    if any(k.endswith("-lab") for k in apps):
+        machines[LINUX] = [(LAB_IMAGE_JOB, None, "image"), (LAB_HELPER_JOB, None, "helper")]
+    for p in (LINUX, MAC, WIN):
+        mine = [k for k in TARGETED_APP if TARGETED_APP[k][0] == p and k in apps]
+        steps = [(BUILD[p], None, "build")] if mine else []
+        steps += [(n, {"TEST_FILTER": filters[n]} if n in filters else None, "unit") for n in suites.get(p, [])]
+        steps += [(TARGETED_APP[k][1], targeted_vars(k, apps[k]), "lab" if k.endswith("-lab") else "app") for k in mine]
+        if steps:
+            machines[p] = machines.get(p, []) + steps
+    planned = {n for steps in machines.values() for n, _, _ in steps}
+    known = list(BUILD.values()) + [j for _, j in TARGETED_APP.values()] + [REPLAY_JOB] + [n for p in (LINUX, MAC, WIN) for n in targeted_suites_allowed(p)]
+    return {"machines": machines, "not_played": [n for n in known if n not in planned]}
+
+
+def run_targeted(plan, ops, skip=(), log=print):
+    """Play a targeted plan. ops: play(name, vars) -> bool, wait(name) -> status, play_wait(name, vars, what) -> status, ensure_lab_image() -> bool,
+    lab_helper(), timeline (dict). The machines run side by side, each machine one job at a time in the plan's order. The Mac and Windows builds start
+    before check-linux is waited for (own machines), and are waited for before anything else runs there (a build and a suite never share those machines);
+    the box build runs beside the box suites, as in every tier, and is waited for before the first box app job. An app job whose build did not succeed
+    is a "not run" row (FAIL); a lab job waits for the lab image and the helper job. -> False when check-linux failed (nothing else was played)."""
+    tl, machines = ops.timeline, plan["machines"]
+    for p in (MAC, WIN):
+        for n, _, k in machines.get(p, []):
+            if k == "build" and n not in skip and ops.play(n, None):
+                log("%s: started %s without waiting for check-linux (own machine)" % (time.strftime("%H:%M"), n))
+    s = ops.wait("check-linux")
+    log("check-linux %s" % s)
+    if s != "success":
+        return False
+    setup_done = threading.Event()
+
+    def machine(p):
+        build, build_st = None, None
+        try:
+            for n, v, k in machines[p]:
+                if k in ("image", "helper"):
+                    if n not in skip:
+                        (ops.ensure_lab_image if k == "image" else ops.lab_helper)()
+                    continue
+                if p == LINUX:
+                    setup_done.set()                    # the lab's setup jobs are the box's first steps: past them here
+                if n in skip:
+                    continue
+                if k == "build":
+                    build = n
+                    ops.play(n, None)
+                    if p != LINUX:
+                        build_st = ops.wait(n)
+                        log("%s %s" % (n, build_st))
+                elif k == "unit":
+                    ops.play_wait(n, v, "TEST_FILTER=%s" % v["TEST_FILTER"] if v else "")
+                else:
+                    if build and build_st is None:
+                        build_st = ops.wait(build)
+                        log("%s %s" % (build, build_st))
+                    if build and build_st != "success":
+                        tl[n] = ("not run (%s %s)" % (build, build_st), None)      # a build that failed leaves its app tests unrun: a failure, not a pass
+                        continue
+                    if k == "lab":
+                        setup_done.wait()
+                        if not ops.ensure_lab_image():
+                            tl[n] = (LAB_IMAGE_FAIL, None)
+                            continue
+                    ops.play_wait(n, v, "targeted: APPCI_CASES=%s" % v["APPCI_CASES"])
+        finally:
+            if p == LINUX:
+                setup_done.set()
+
+    if LINUX not in machines:
+        setup_done.set()
+    threads = [threading.Thread(target=machine, args=(p,), daemon=True) for p in machines]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    planned = {n for steps in machines.values() for n, _, _ in steps}
+    if LAB_FIX_JOB not in planned and tl.get(LAB_FIX_JOB, ("",))[0] == LAB_IMAGE_FAIL:
+        del tl[LAB_FIX_JOB]                             # ensure_lab_image's row for the fix tier's lab job; here the image's own row and the planned lab jobs say it
+    for n in plan["not_played"]:
+        tl.setdefault(n, (NOT_TARGETED, None))
+    return True
+
+
+def print_targeted_plan(plan, skip=(), doc=None):
+    """the plan, and from the cases file its `note` and why each added list is there (info.added, written by failed_cases.py: a job with no result in the
+    round, cases added or changed since a commit)"""
+    if isinstance(doc, dict):
+        if doc.get("note"):
+            print("cases file note: %s" % doc["note"])
+        info = doc.get("info") if isinstance(doc.get("info"), dict) else {}
+        for key, why in sorted((info.get("added") or {}).items()):
+            for reason, names in sorted(why.items()):
+                print("cases file: %s also plays %d name(s): %s: %s" % (key, len(names), reason, ", ".join(names)))
+        for k in ("dropped", "jobs_without_rows", "not_targeted", "changed_files_not_mapped"):
+            if info.get(k):
+                print("cases file: %s (NOT in this run): %s" % (k, json.dumps(info[k])))
+    print("plan (targeted tier; per machine, in play order; check-linux is waited for first; every platform that plays an app job BUILDS, no reuse):")
+    for p, steps in plan["machines"].items():
+        print("  %s" % p)
+        for n, v, k in steps:
+            print("    %-6s %s%s%s" % (k, n, "  [in --skip: left out]" if n in skip else "", "".join("\n             %s=%s" % kv for kv in sorted((v or {}).items()))))
+    print("  not in this targeted run (not played, not judged, not a failure): %s" % ", ".join(plan["not_played"]))
+
+
 UNSUPPORTED = {"fuzz-smoke-windows": "cargo-fuzz works only on Unix-like systems (no Windows/MSVC)"}
 
 
 def app_tier_name(tier):
     """The APPCI_TIER value ci_seq plays the app tests with (recorded in results.json meta.tier). fix = smoke; candidate = full; release = release
-    (#1495: script/ci/check_release_gate.py refuses a tag unless the app runs say `release`). Everything but smoke runs the full case set."""
-    return {"fix": "smoke", "candidate": "full", "release": "release"}[tier]
+    (#1495: script/ci/check_release_gate.py refuses a tag unless the app runs say `release`). Everything but smoke runs the full case set; a targeted
+    run names its cases itself (APPCI_CASES) and records `targeted`."""
+    return {"fix": "smoke", "candidate": "full", "release": "release", "targeted": TARGETED_APP_TIER}[tier]
 
 
 def release_gate_jobs():
@@ -536,6 +812,7 @@ def self_test():
         bad += 0 if ok else 1
         print("%s %s" % ("ok  " if ok else "FAIL", what))
     bad += self_test_r15(yml, _src)
+    bad += self_test_targeted(yml, _src)
     print("self-test: %s" % ("FAILED (%d)" % bad if bad else "all passed"))
     return 1 if bad else 0
 
@@ -624,6 +901,127 @@ def self_test_r15(yml, src):
         (fold_tuple_assignments('PROVING_LAB = ("a.*",)\nPROVING_LAB = PROVING_LAB + ("d.*",)\n', "PROVING_LAB") == ["a.*"], "a non-literal PROVING_LAB line is skipped, not fatal"),
         ({"lab_agent_nld_predict_ssh.*", "lab_raw_key_arrival.*"} <= set(proving_lab_globs()), "both round 14 lab globs are played in the fix tier"),
         ("def play_wait" in src and "status created" in src, "a planned job that is absent or stuck in `created` is reported, not waited for"),
+    ]
+    bad = 0
+    for ok, what in rows:
+        bad += 0 if ok else 1
+        print("%s %s" % ("ok  " if ok else "FAIL", what))
+    return bad
+
+
+def self_test_targeted(yml, src):
+    """The targeted tier (owner 2026-11-11): the plan a cases file gives and the driver that plays it, against a fake pipeline. -> number of failed rows."""
+    import types
+
+    def fake(statuses=None, image_ok=True):
+        """a pipeline that records what was played, in order, per call"""
+        o = types.SimpleNamespace(calls=[], timeline={}, lock=threading.Lock(), statuses=statuses or {})
+
+        def note(kind, name, v=None):
+            with o.lock:
+                o.calls.append((kind, name, v))
+
+        def wait(name):
+            note("wait", name)
+            o.timeline[name] = (o.statuses.get(name, "success"), 60)
+            return o.timeline[name][0]
+
+        def play_wait(name, v=None, what=""):
+            note("play_wait", name, v)
+            o.timeline[name] = (o.statuses.get(name, "success"), 60)
+            return o.timeline[name][0]
+        o.play = lambda name, v=None: note("play", name, v) or True
+        o.wait, o.play_wait = wait, play_wait
+        o.ensure_lab_image = lambda: note("image", LAB_IMAGE_JOB) or image_ok
+        o.lab_helper = lambda: note("helper", LAB_HELPER_JOB)
+        return o
+
+    def raises(doc):
+        try:
+            targeted_spec(doc)
+        except ValueError as e:
+            return str(e)
+        return ""
+    played = lambda o: [n for k, n, _ in o.calls if k in ("play", "play_wait")]
+    idx = lambda o, kind, name: next(i for i, c in enumerate(o.calls) if c[0] == kind and c[1] == name)
+    silent = lambda m: None
+    doc = {"platforms": {"linux-wayland": {"cases": ["tab_enter", "ssh_*", "tab_enter"], "modes": ["agent"]}, "linux-x11": [], "macos": {"cases": []},
+                         "windows": {"cases": ["big_paste", "gitbash_subshell"], "win_shells": ["gitbash"]}},
+           "suites": {"linux": ["integration-linux", "test-linux"]}, "filters": {"test-linux": "test(/terminal::view/)"}, "note": "x"}
+    spec = targeted_spec(doc)
+    plan = targeted_plan(spec)
+    o = fake()
+    ok_run = run_targeted(plan, o, log=silent)
+    names = lambda p: [n for n, _, _ in plan["machines"].get(p, [])]
+    vars_of = {n: v for steps in plan["machines"].values() for n, v, _ in steps}
+    lab = targeted_plan(targeted_spec({"platforms": {"macos-lab": ["lab_raw_key_arrival.*"], "linux-lab": {"cases": ["lab_x.bash.lan.nohelper"], "lab_matrix": "quick"}}, "suites": {"linux": []}}))
+    ol = fake()
+    run_targeted(lab, ol, log=silent)
+    ob = fake({BUILD[WIN]: "failed"})
+    run_targeted(plan, ob, log=silent)
+    oc = fake({"check-linux": "failed"})
+    oi = fake(image_ok=False)
+    run_targeted(lab, oi, log=silent)
+    units_only = targeted_plan(targeted_spec({"suites": {"macos": ["test-macos"]}}))
+    rows = [
+        (ok_run and sorted(set(played(o))) == sorted({BUILD[LINUX], BUILD[WIN], "test-linux", "integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]",
+                                                       "test-windows", "test-warpui-core-windows", "test-workspace-rest-windows", "app-test-linux-wayland", "app-test-windows"}),
+         "targeted plays only the jobs the cases file names (builds for the platforms with cases, the listed suites, the app jobs with cases)"),
+        (vars_of["app-test-linux-wayland"] == {"APPCI_TIER": "targeted", "APPCI_CASES": "tab_enter,ssh_*", "APPCI_MODES": "agent"}
+         and next(v for k, n, v in o.calls if k == "play_wait" and n == "app-test-linux-wayland") == vars_of["app-test-linux-wayland"],
+         "APPCI_CASES is passed exactly: the file's names, in the file's order, each once, with the mode filter as APPCI_MODES"),
+        (vars_of["app-test-windows"] == {"APPCI_TIER": "targeted", "APPCI_CASES": "big_paste,gitbash_subshell", "APPCI_WIN_SHELLS": "gitbash"},
+         "the Windows pane filter is passed as APPCI_WIN_SHELLS; no APPCI_MODES when the file gives none"),
+        (all(idx(o, "play_wait", u) < idx(o, "play_wait", "app-test-linux-wayland") for u in ("test-linux", "integration-linux: [3]"))
+         and all(idx(o, "play_wait", u) < idx(o, "play_wait", "app-test-windows") for u in unit_suites(WIN)),
+         "unit (and integration) suites run before that machine's app job"),
+        (names(LINUX) == [BUILD[LINUX], "test-linux", "integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]", "app-test-linux-wayland"]
+         and names(WIN) == [BUILD[WIN]] + unit_suites(WIN) + ["app-test-windows"],
+         "an explicit suite list is exact (`integration-linux` = its three shards, unit suites first); no list = the machine's three unit suites"),
+        (MAC not in plan["machines"] and not any("macos" in n for n in played(o)) and "app-test-linux-x11" not in played(o)
+         and all(o.timeline[n] == (NOT_TARGETED, None) and verdict(n, NOT_TARGETED) == "SKIPPED" for n in ("app-test-macos", BUILD[MAC], "app-test-linux-x11", "test-macos", REPLAY_JOB))
+         and all(verdict(k, v[0]) not in ("FAIL", "OFFLINE") for k, v in o.timeline.items()),
+         "a platform with no cases is not played and not failed: its jobs are listed as `not in this targeted run`, verdict SKIPPED"),
+        (vars_of["test-linux"] == {"TEST_FILTER": "test(/terminal::view/)"} and vars_of["integration-linux: [1]"] is None, "a suite's filter is passed as TEST_FILTER, to that suite only"),
+        (idx(o, "play", BUILD[WIN]) < idx(o, "wait", "check-linux") < idx(o, "play", BUILD[LINUX]) and idx(o, "wait", BUILD[WIN]) < idx(o, "play_wait", "test-windows")
+         and idx(o, "play_wait", "test-linux") < idx(o, "wait", BUILD[LINUX]) < idx(o, "play_wait", "app-test-linux-wayland"),
+         "the Windows build starts before check-linux and is waited for before its suites; the box build runs beside the box suites and is waited for before the app job"),
+        (not run_targeted(plan, oc, log=silent) and not [c for c in oc.calls if c[0] == "play_wait"], "a failed check-linux plays no suite and no app job"),
+        (ob.timeline["app-test-windows"][0] == "not run (%s failed)" % BUILD[WIN] and verdict("app-test-windows", ob.timeline["app-test-windows"][0]) == "FAIL"
+         and "app-test-windows" not in played(ob) and "app-test-linux-wayland" in played(ob), "an app job whose build failed is a `not run` FAIL row; the other machines go on"),
+        # the lab platforms
+        ([n for n, _, _ in lab["machines"][LINUX]] == [LAB_IMAGE_JOB, LAB_HELPER_JOB, BUILD[LINUX], LAB_APP[LINUX]] and [n for n, _, _ in lab["machines"][MAC]] == [BUILD[MAC]] + unit_suites(MAC) + [LAB_APP[MAC]],
+         "a lab platform adds the lab image and the helper job first on the box; `suites: []` plays no suite on that machine"),
+        ({n: v for n, v, _ in lab["machines"][MAC]}[LAB_APP[MAC]]
+         == {"APPCI_TIER": "targeted", "APPCI_CASES": "lab_raw_key_arrival.*", "APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": LAB_PLAT_MATRIX}
+         and {n: v for n, v, _ in lab["machines"][LINUX]}[LAB_APP[LINUX]]["APPCI_LAB_MATRIX"] == "quick"
+         and targeted_vars("linux-lab", {"cases": ["lab_a.*"]})["APPCI_LAB_MATRIX"] == LAB_CANDIDATE_MATRIX,
+         "a targeted lab job gets its cases, the scripted model and the candidate tier's matrix for that platform unless the file names one"),
+        (idx(ol, "helper", LAB_HELPER_JOB) < idx(ol, "play_wait", LAB_APP[MAC]) and idx(ol, "image", LAB_IMAGE_JOB) < idx(ol, "play_wait", LAB_APP[LINUX]),
+         "the Mac lab job waits for the box's lab image and helper jobs"),
+        (oi.timeline[LAB_APP[MAC]][0] == LAB_IMAGE_FAIL == oi.timeline[LAB_APP[LINUX]][0] and LAB_APP[MAC] not in played(oi), "no lab image: the planned lab jobs are FAIL rows, not played"),
+        (targeted_vars("linux-x11", {"cases": ["a"]})["APPCI_MODES"] == X11_MODES and targeted_vars("linux-x11", {"cases": ["a"], "modes": ["terminal"]})["APPCI_MODES"] == "terminal",
+         "the x11 job gets both session modes unless the file narrows them"),
+        (targeted_vars("macos", {"cases": ["a"], "vars": {"APPCI_FAKE_MODEL": "1"}}) == {"APPCI_TIER": "targeted", "APPCI_CASES": "a", "APPCI_FAKE_MODEL": "1"}, "extra APPCI_* variables of a platform are passed on"),
+        (units_only["machines"] == {MAC: [("test-macos", None, "unit")]} and BUILD[MAC] in units_only["not_played"], "suites alone need no build"),
+        # a wrong file is an error, never a smaller run
+        (all(raises(d) for d in (
+            {"platforms": {"linux-wayland": ["a b"]}}, {"platforms": {"linux-wayland": ["a,b"]}}, {"platforms": {"wayland": ["a"]}}, {"platforms": {"linux-wayland": {"case": ["a"]}}},
+            {"platforms": {"linux-wayland": ["lab_x.*"]}}, {"platforms": {"linux-lab": ["tab_enter"]}}, {"platforms": {"linux-lab": ["lab_replay*"]}},
+            {"platforms": {"macos": {"cases": ["a"], "modes": ["x11"]}}}, {"platforms": {"macos": {"cases": ["a"], "win_shells": ["gitbash"]}}},
+            {"platforms": {"macos": {"cases": ["a"], "vars": {"APPCI_CASES": "b"}}}}, {"platforms": {"macos": {"cases": ["a"], "vars": {"PATH": "/x"}}}},
+            {"platforms": {"macos": ["a"]}, "suites": {"macos": ["test-linux"]}}, {"platforms": {"macos": ["a"]}, "suites": {"mac": []}}, {"platforms": {"macos": ["a"]}, "tier": "fix"},
+            {"platforms": {"macos": ["a"]}, "filters": {"test-linux": "test(/x/)"}}, {"platforms": {}}, {"platforms": {"macos": []}, "suites": {"macos": []}}, [])),
+         "a misspelled key, platform, suite or variable, a name with a comma or space, a lab case on a non-lab platform (and the reverse), the replay, a filter for a suite that is not played and an empty file are all refused"),
+        ("unknown platform 'wayland'" in raises({"platforms": {"wayland": ["a"], "macos": {"x": 1}}}) and "unknown key 'x'" in raises({"platforms": {"wayland": ["a"], "macos": {"x": 1}}}), "every problem of a file is named at once"),
+        (app_tier_name("targeted") == "targeted" != app_tier_name("fix"), "targeted app runs record tier=targeted (a named case runs at full strength, not at the smoke settings)"),
+        (all(re.search(r"^%s:" % re.escape(j), yml, re.M) for _, j in TARGETED_APP.values()) and list(TARGETED_APP)[:3] == ["linux-wayland", "linux-x11", "linux-lab"],
+         "every targeted platform is a job of .gitlab-ci.yml; the box plays wayland, x11, lab in that order"),
+        ('"${APPCI_TIER:-}" = targeted' in yml, "the Wayland job leaves out its fixed xwayland pass in a targeted run (that pass has its own case list)"),
+        ("APPCI_MODES" in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "realapp", "windows", "ci", "app_test.ps1")).read(), "the Windows app job reads APPCI_MODES (it used to ignore it)"),
+        ('if tier_env == "targeted" else None)' in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "realapp", "appci", "run.py")).read(),
+         "run.py plans the fake-model pass of a targeted run from the selected names (a PROVING_FAKE case named in the file gets its scripted model)"),
+        ('collect_hint(pid, a.collect, tier, a.cases_file)' in src, "a targeted run is collected with its tier and its cases file"),
     ]
     bad = 0
     for ok, what in rows:
@@ -809,7 +1207,9 @@ def main():
     ap = argparse.ArgumentParser(description="Drive a GitLab pipeline through a test tier; see the header of script/ci/ci_seq.py and docs/testing.md")
     ap.add_argument("ref", nargs="?", default="")
     ap.add_argument("skip_pos", nargs="*", help="legacy: job names to skip")
-    ap.add_argument("--tier", choices=["fix", "candidate", "release"], default="fix")
+    ap.add_argument("--tier", choices=["fix", "candidate", "release", "targeted"], default="fix")
+    ap.add_argument("--cases-file", default="", metavar="PATH",
+                    help="--tier targeted: the JSON (or .toml) file that names, per platform, the app cases and the suites to play (script/ci/failed_cases.py writes one)")
     ap.add_argument("--platforms", default="")
     ap.add_argument("--tests", default="")
     ap.add_argument("--base", default="")
@@ -839,6 +1239,21 @@ def main():
         print("TEST_FILTER for test-linux:", filt or "(none: nothing in test-linux's scope changed)")
         print("suites:", sorted(suites) or "none", " platforms:", platforms_from(files))
         return 0
+    tplan = None
+    if (a.tier == "targeted") != bool(a.cases_file):
+        ap.error("--tier targeted and --cases-file go together (the cases file IS the targeted plan)")
+    if a.tier == "targeted":
+        if a.platforms or a.tests or a.reuse_job:
+            ap.error("--tier targeted takes its platforms, suites and filters from --cases-file (and never reuses a build): drop --platforms / --tests / --reuse-job")
+        try:
+            tdoc = load_targeted(a.cases_file)
+            tplan = targeted_plan(targeted_spec(tdoc))
+        except (OSError, ValueError) as e:
+            sys.stderr.write("ci_seq: cases file %s: %s\n" % (a.cases_file, e))
+            return 2
+        if a.dry_run:                              # the plan is the file: no git, no pipeline
+            print_targeted_plan(tplan, set(a.skip_pos) | set(a.skip), tdoc)
+            return 0
     if not a.ref:
         ap.error("ref is required")
     ref, tier = a.ref, a.tier
@@ -847,8 +1262,8 @@ def main():
     RUNNING_FACTOR[0] = a.running_factor
 
     sh("git", "fetch", "-q", "origin", check=True)
-    base = resolve_base(ref, a.base)
-    files = changed_files(base, ref) if tier == "fix" or a.dry_run else []
+    base = resolve_base(ref, a.base) if tier != "targeted" else ""
+    files = changed_files(base, ref) if tier != "targeted" and (tier == "fix" or a.dry_run) else []
     filt, suites, plats = "", {"linux", "core", "rest"}, [LINUX, MAC, WIN]
     if tier == "fix":
         filt, suites, why = derive(files)
@@ -1052,6 +1467,16 @@ def main():
             return lab_image_state[0]
 
     print("pipeline", pid, "tier", tier, flush=True)
+    if tier == "targeted":
+        import types
+        print_targeted_plan(tplan, SKIP, tdoc)
+        ops = types.SimpleNamespace(play=play, wait=wait, play_wait=play_wait, ensure_lab_image=ensure_lab_image, lab_helper=run_lab_helper, timeline=timeline)
+        if run_targeted(tplan, ops, SKIP, lambda m: print(m, flush=True)):
+            network_jobs(jobs, wait, timeline)
+            check_app_results(jobs, timeline)
+        summary(timeline, t_start)
+        collect_hint(pid, a.collect, tier, a.cases_file)
+        return 0 if all(verdict(k, v[0]) not in ("FAIL", "OFFLINE") for k, v in timeline.items()) else 1
     # r18e4: the Mac and Windows builds have `needs: []` and run on their own machines; holding them behind a check-linux that
     # waits for the busy box left those machines idle for hours. Start them now (a compile error fails them on their own).
     for p in (MAC, WIN):
@@ -1245,12 +1670,13 @@ def network_jobs(jobs, wait, timeline):
         print(n, timeline.get(n, (s,))[0], flush=True)
 
 
-def collect_hint(pid, auto, tier=None):
+def collect_hint(pid, auto, tier=None, cases_file=None):
     """Every tier run ends by archiving its results (owner rule: every test result is kept in the repo). CI never pushes: the coordinator commits.
     Round 15: the tier is passed on (the collector used to guess "candidate" from an x11 run of over 2 minutes, which the fix tier now has too)."""
     here = os.path.dirname(os.path.abspath(__file__))
-    targ = ["--tier", tier] if tier else []
-    cmd = "python3 script/ci/collect_results.py %d%s && git add test-results && git commit -m 'test-results: pipeline %d'" % (pid, " " + " ".join(targ) if targ else "", pid)
+    targ = (["--tier", tier] if tier else []) + (["--cases-file", cases_file] if cases_file else [])      # targeted: the cases file is kept in the record
+    import shlex
+    cmd = "python3 script/ci/collect_results.py %d%s && git add test-results && git commit -m 'test-results: pipeline %d'" % (pid, " " + " ".join(shlex.quote(x) for x in targ) if targ else "", pid)
     if auto:
         print("\ncollecting results for pipeline %d ..." % pid, flush=True)
         subprocess.run([sys.executable, os.path.join(here, "collect_results.py"), str(pid)] + targ)
@@ -1369,8 +1795,8 @@ def verdict(name, status):
     pipeline is green regardless; this verdict is the one that is not). Only an explicit tier skip is neutral (no job has one since round 15: the
     fix tier plays the x11 job); a NEEDS status (a machine change, named) is listed apart and does not fail the tier; bench,
     mutants and fuzz are informational (not gating) and keep their status. Anything else that is not success fails."""
-    if status in (TIER_SKIP, PLATFORM_UNSUPPORTED):
-        return "SKIPPED"
+    if status in (TIER_SKIP, PLATFORM_UNSUPPORTED, NOT_TARGETED):
+        return "SKIPPED"                       # NOT_TARGETED: a job the targeted run's cases file does not name; not played, never a failure
     if status == "success":
         return "PASS"
     if status == RUNNER_OFFLINE:
@@ -1394,6 +1820,9 @@ def summary(timeline, t0):
     net = [k for k, (s, _) in timeline.items() if verdict(k, s) == "NETWORK"]
     off = [k for k, (s, _) in timeline.items() if verdict(k, s) == "OFFLINE"]
     print("overall: %s" % ("FAIL (%s)" % ", ".join(bad) if bad else "PASS"))
+    nt = [k for k, (s, _) in timeline.items() if s == NOT_TARGETED]
+    if nt:
+        print("TARGETED run: PASS here proves only the named cases and suites. Not in this targeted run (not played, not judged): %s" % ", ".join(nt))
     for k, (st, _) in timeline.items():
         if verdict(k, st) == "NEEDS":
             print("NEEDS a machine change (NOT a pass; what depends on it was skipped with the same reason): %s: %s" % (k, st[len(NEEDS_PREFIX):]))
