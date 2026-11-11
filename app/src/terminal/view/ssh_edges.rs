@@ -184,7 +184,12 @@ impl TerminalView {
     /// The connect gate was released: tells the machine, and logs a release that was a give-up.
     pub(super) fn note_ssh_gate_released(&mut self, how: SshRelease) {
         warpui::input_order::log_hop("ssh_gate_released", || format!("how={}", how.name()));
-        if how.is_give_up() {
+        // #1849: the ceiling that ends a window whose hold already ended held nothing: the keys
+        // were delivered by their event, so no net caught anything and none is reported.
+        let ceiling_after_delivery = how == SshRelease::GiveUpCeiling
+            && self.ssh_window_hold_ended
+            && !self.ssh_typeahead_holding;
+        if how.is_give_up() && !ceiling_after_delivery {
             self.note_ssh_give_up(how.name());
         }
         self.ssh_edge(SshEdge::Released(how));

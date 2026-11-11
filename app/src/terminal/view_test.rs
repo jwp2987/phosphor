@@ -33693,6 +33693,32 @@ fn table_mode_the_give_up_ends_a_window_nothing_is_held_behind() {
     });
 }
 
+/// #1849: the keys were delivered by the ownership event; the ceiling that later ends the window
+/// held nothing and is not reported as a give-up (no counter, no warning).
+#[test]
+fn table_mode_a_ceiling_after_the_keys_were_delivered_is_not_a_give_up() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo kept", ctx);
+            assert!(view.ssh_typeahead_holding);
+            ssh_tty_owned_for_test(view, ctx);
+            assert!(!view.ssh_typeahead_holding, "delivered by the event");
+            assert!(view.ssh_window_hold_ended);
+            if let Some(gate) = view.ssh_connect_gate.as_mut() {
+                gate.armed_at =
+                    Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
+            }
+            view.ssh_give_up_fired(ctx);
+            assert_eq!(view.ssh_give_ups, 0, "nothing was held: no give-up to report");
+        });
+    });
+}
+
 /// A password read: the OWNERSHIP event, with the termios guard saying a secret is being read,
 /// discards what was held, and the next key reaches ssh, with no timing involved (#1348, owner
 /// rule 2026-11-01; #1611/#1612/#1621: the prompt's text decides nothing).
