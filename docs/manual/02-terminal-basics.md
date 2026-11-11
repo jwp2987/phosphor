@@ -199,6 +199,14 @@ The input is a real multi-line editor, not a single-line readline.
 - Completions open as you type in local sessions by default; remote sessions
   keep them on `tab` only. Set `terminal.input.completions_open_while_typing`
   explicitly (true or false) to override that for every session.
+- **`alt-B` / `alt-F` move by one word and `alt-backspace` removes the word
+  before the cursor** on Linux and Windows, as in readline (`alt-D` removes the
+  word after it on every platform). On macOS these are `option-B` / `option-F`
+  with that Option key set to act as Meta (`terminal.input.extra_meta_keys`),
+  and `option-backspace` always. The word-motion bindings are
+  `editor_view:move_backward_one_word` / `editor_view:move_forward_one_word`
+  and can be changed; `PHOSPHOR_ALT_WORD_KEYS=0` in the app's environment puts
+  the Linux / Windows defaults back on Meta only.
 - **`alt-.` inserts the last word of the previous command** (readline's
   yank-last-arg; press it again to step back through earlier commands). On
   macOS the key is `option-.` with that Option key set to act as Meta
@@ -262,7 +270,8 @@ The always-available emacs keys in the input editor:
 |---|---|---|---|
 | `ctrl-A` | Start of line *(macOS only — on Linux/Windows `ctrl-A` is Select All)* | `ctrl-E` | End of line *(macOS only)* |
 | `ctrl-B` / `ctrl-F` | Character left / right | `ctrl-P` / `ctrl-N` | Line up / down |
-| `meta-B` / `meta-F` | Word left / right | `meta-A` / `meta-E` | Paragraph start / end |
+| `alt-B` / `alt-F` *(Linux/Windows)*, `meta-B` / `meta-F` | Word left / right | `meta-A` / `meta-E` | Paragraph start / end |
+| `alt-backspace` *(on Linux/Windows it cuts; on macOS it deletes)*, `meta-backspace` | Word before the cursor | | |
 | `meta-shift-<` / `meta-shift->` | Buffer start / end | `meta-.` | Insert last word of previous command |
 | `ctrl-H` | Backspace | `ctrl-D` | Delete forward |
 | `ctrl-W` | Cut word left | `alt-D` | Cut word right |
@@ -439,6 +448,9 @@ also a checkbox in the **Edit** menu on macOS.
 *not* gated on `copy_on_select`. Turning `terminal.copy_on_select` off stops
 selections going to the system clipboard but they will still populate the
 primary selection unless you also turn off `system.linux_selection_clipboard`.
+On a display that has no primary selection (a Wayland compositor without the
+primary-selection protocol) that write is simply dropped: a selection never
+lands on the system clipboard unless `terminal.copy_on_select` is on.
 
 Explicit copy:
 
@@ -524,6 +536,7 @@ There is no "search across all blocks" surface other than the find bar.
 | Action | Binding |
 |---|---|
 | Page up / down | `pageup` / `pagedown` |
+| Page up / down, top / bottom **while a command runs** | `shift-pageup` / `shift-pagedown`, `shift-home` / `shift-end` |
 | Scroll one line up / down | *(no default binding; `terminal:scroll_up_one_line` / `..._down_one_line` are remappable)* |
 | Scroll to top / bottom of the selected block | `cmd-shift-↑` / `cmd-shift-↓` (macOS), `ctrl-shift-↑` / `ctrl-shift-↓` |
 
@@ -532,6 +545,14 @@ Notes:
 - The scroll multiplier is applied once, at event ingest, so it affects every
   scrollable surface — and it is applied *before* the decision to forward the
   event, so a boosted delta is what a full-screen program sees too.
+- **While a command runs in the foreground** (a build, a `tail -f`) the plain
+  `pageup` / `pagedown` / `home` / `end` keys belong to that program, as in any
+  terminal. Hold Shift to scroll the scrollback instead: `shift-pageup` /
+  `shift-pagedown` by a page, `shift-home` to the top, `shift-end` back to the
+  newest output. The next key you type for the program returns to the bottom.
+  A full-screen program (the alternate screen) keeps the shifted keys too.
+  These four are fixed bindings; `PHOSPHOR_SCROLLBACK_KEYS=0` in the app's
+  environment turns them off.
 - In the alternate screen there is no scrollback of your own. Scrolling is
   translated into arrow-key sequences sent to the program, which is what makes
   the wheel work in `less` and `man`.
