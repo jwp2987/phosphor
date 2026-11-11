@@ -5852,3 +5852,12 @@ palette entries, the button words, the two app lines and the file tree's clamp a
 
 Not built: the app-driven push / pull / stage / discard (the host layer and `contract_tests.rs` hold them); the helper families' own gaps
 (`lab_helper_policy`, `lab_helper_scp_fallback`, the write half of `lab_helper_killed` end UNVERIFIABLE by their own text).
+
+### The keys kl3 posts are counted (#2005)
+
+Rounds 11 and 12 (after 15093ac33 and #2041): no row is TAINTED, no row has an Enter mismatch, and "app logged N more than were injected" is left on six
+rows, all macOS: `latency_paint`, `latency_paint_ab`, `latency_key_views_ab`, both modes (39, 78, 78). Those are the cases whose keys `kl3` posts itself
+(key to first changed pixel); no injector record was kept for them. `MacBackend.kl` now records each kl3 command as a call (`backend.kl_keys`: `K` one
+key, `R` a Return, `T`/`F` text and a Return, `W` text; `kl_posted`: an answer without a post time is an errored call), marked `ref` when it is aimed at
+the reference terminal, with `tool=kl3` in `inject.log`. Self-test `r15_kl3_keys_are_recorded`: the round 12 note reproduced without the record, gone with
+it, and a key the app never saw still counted as lost.

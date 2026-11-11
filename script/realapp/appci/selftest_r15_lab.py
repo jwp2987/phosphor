@@ -323,3 +323,60 @@ def r15_lab_panel_drivers_pure_parts():
     doc = _read("docs", "testing.md")
     for word in ("hop=right_panel", CL.PALETTE_CODE_REVIEW, CL.PALETTE_PROJECT_EXPLORER, "lab_remote_edit", "panel_no_snapshot_verdict", "app_commit_verdict"):
         assert word in doc, word
+
+
+@check
+def r15_kl3_keys_are_recorded():
+    """#2005, what was left of it in round 12 (macOS only: latency_paint, latency_paint_ab, latency_key_views_ab, both modes, "app logged 39 / 78 more than
+    were injected"): kl3 posts its own keys and no injector record was kept for them. kl() now records each as a call, so the accounting counts them as
+    sent; a kl3 key aimed at the reference terminal is a `ref` call (not the app's), and a kl3 answer without a post time records an errored call."""
+    assert backend.kl_keys("K 400 m") == (1, [], 0) and backend.kl_keys("K 400 DEL") == (0, ["KEY51"], 0) and backend.kl_keys("K 400 CMDP") == (0, ["KEY35"], 1)
+    assert backend.kl_keys("K 400 AT") == (1, [], 0) and backend.kl_keys("R 400") == (0, ["KEY36"], 0)
+    assert backend.kl_keys("T 400 ls -la") == (6, ["KEY36"], 0) and backend.kl_keys("W echo hi") == (7, [], 0)
+    assert backend.kl_keys("C 200") == (0, [], 0) and backend.kl_keys("Q") == (0, [], 0) and backend.kl_keys("") == (0, [], 0)
+    assert backend.kl_posted("K post0=1731200000.123 post1=1731200000.124 n=2 ch=1.0:5") and backend.kl_posted("W done")
+    assert not backend.kl_posted("ERR no display") and not backend.kl_posted("BADCHAR") and not backend.kl_posted("")
+    swift = _read("script", "realapp", "mac", "tools", "kl3.swift")
+    for name, code in (("TAB", 48), ("CMDP", 35), ("CMDK", 40), ("DEL", 51), ("ESC", 53)):
+        assert 'if s == "%s"' % name in swift and backend.KL_NAMED[name] == "KEY%d" % code, name
+    d = tempfile.mkdtemp()
+    try:
+        mb = backend.MacBackend()
+        mb.calls, mb.inject_log, mb.guard_override = [], os.path.join(d, "inject.log"), None
+        t = 500.0
+        for i in range(6):                              # latency_paint's pattern: 'm' and Delete in turn
+            key = "m" if i % 2 == 0 else "DEL"
+            mb._record_kl("K 400 %s" % key, "K post0=%.3f post1=%.3f n=1 ch=%.1f:9" % (t + i, t + i + 0.001, (t + i) * 1000 + 6), t + i - 0.35, t + i + 0.4)
+        mb._record_kl("C 200", "C n=0 ch=", t + 7, t + 7.2)                                # posts nothing: no record
+        assert len(mb.calls) == 6 and [c["chars"] for c in mb.calls] == [1, 0, 1, 0, 1, 0] and all(c["tool"] == "kl3" and not c["ref"] for c in mb.calls)
+        assert mb.calls[1]["special"] == ["KEY51@501.000"] and mb.calls[1]["post_wall"] == [501.0]
+        lines = open(mb.inject_log).read().splitlines()
+        assert len(lines) == 6 and "tool=kl3" in lines[0] and "chars=1" in lines[0] and "KEY51@" in lines[1], lines
+
+        def osk(t):
+            return "input_order hop=os_key_event age_ms=0.400 enter=false ctrl=false t=%.3f\n" % (t * 1000)
+
+        def kd(t, seq):
+            return "input_order keydown key=<1 chars> ctrl=false alt=false shift=false cmd=false t=%.3f seq=%d\n" % (t * 1000, seq)
+        log = os.path.join(d, "app.log")
+        open(log, "w").write("".join(osk(t + i + 0.002) + kd(t + i + 0.003, i + 1) for i in range(6)))
+        txt, j = injacct.account(mb.calls, log, "latency_paint", t_end=t + 8, t_floor=t - 1)
+        assert (j["sent"], j["seen"], j["lost"], j["extra"]) == (6, 6, 0, 0) and "more than were injected" not in txt, (j, txt)
+        # before: the same app log against no record of kl3's keys is the round 12 note (one htype2 key so the case has a window at all)
+        one = [dict(n=0, wall0=t - 0.5, wall1=t + 6, chars=0, special=[], enters_posted=0, enters_want=0, enter_wall=[], err=None, out=True, ref=False, cmd_chords=0)]
+        txt0, j0 = injacct.account(one, log, "latency_paint", t_end=t + 8, t_floor=t - 1)
+        assert j0["extra"] == 6 and "app logged 6 more than were injected" in txt0, (j0, txt0)
+        # a key the app never saw is still a loss: the record does not hide it
+        open(log, "w").write("".join(osk(t + i + 0.002) + kd(t + i + 0.003, i + 1) for i in range(5)))
+        _txt, j1 = injacct.account(mb.calls, log, "latency_paint", t_end=t + 8, t_floor=t - 1)
+        assert (j1["sent"], j1["lost"]) == (6, 1), j1
+        # aimed at the reference terminal: recorded, and not expected of the app
+        mb.calls, mb.guard_override = [], {"pids": [1]}
+        mb._record_kl("K 400 m", "K post0=600.000 post1=600.001 n=1 ch=", 599.6, 600.4)
+        assert mb.calls[0]["ref"] is True and injacct.join(mb.calls, []) is None
+        # kl3 answered without a post time: an errored call, which counts as nothing sent
+        mb.calls, mb.guard_override = [], None
+        mb._record_kl("K 400 m", "ERR capture stopped", 700.0, 700.1)
+        assert mb.calls[0]["err"] and mb.calls[0]["chars"] == 0 and injacct.join(mb.calls, [])["sent"] == 0
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
