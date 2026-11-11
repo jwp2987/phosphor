@@ -36,7 +36,7 @@ use super::new_builder;
 // TODO(CORE-2721): Block count / index Failed b/c of in-band generators
 pub fn test_block_filtering_keybinding() -> Builder {
     new_builder()
-        .set_should_run_test(|| cfg!(target_os = "macos"))
+        .set_should_run_test(|| warpui::integration::needs(cfg!(target_os = "macos"), "macOS"))
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(clear_blocklist_to_remove_bootstrapped_blocks())
         .with_step(SimpleTestCase::execute_command())
@@ -46,7 +46,7 @@ pub fn test_block_filtering_keybinding() -> Builder {
 
 pub fn test_block_filtering_keybinding_with_long_running_command() -> Builder {
     new_builder()
-        .set_should_run_test(|| cfg!(target_os = "macos"))
+        .set_should_run_test(|| warpui::integration::needs(cfg!(target_os = "macos"), "macOS"))
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(clear_blocklist_to_remove_bootstrapped_blocks())
         .with_steps(LongRunningCommandTestCase::enter_input_into_cat())
@@ -268,10 +268,15 @@ pub fn test_block_filtering_with_secrets() -> Builder {
     new_builder()
         // TODO(REV-569): Fish flaking on linux
         .set_should_run_test(|| {
-            let (starter, _) = current_shell_starter_and_version();
-            !matches!(
-                starter.shell_type(),
-                ShellType::Fish | ShellType::PowerShell
+            warpui::integration::needs(
+                {
+                    let (starter, _) = current_shell_starter_and_version();
+                    !matches!(
+                        starter.shell_type(),
+                        ShellType::Fish | ShellType::PowerShell
+                    )
+                },
+                "a local shell other than fish or PowerShell",
             )
         })
         .with_step(initialize_secret_regexes())

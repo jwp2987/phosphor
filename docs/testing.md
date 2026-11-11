@@ -147,10 +147,16 @@ Hard rules:
   skips). Every ssh scenario sets `warpify.ssh.ssh_extension_install_mode` to `never_install`, like the real-app
   harness: with the default the app asks whether to install the remote helper and holds the remote bootstrap until
   a person answers. Four of the listed scenarios (`test_legacy_ssh_into_bash/zsh`,
-  `test_ssh_remote_bash_bootstrapped_hook`, `test_ssh_typeahead_during_connect_runs_remotely_once`) are gated on
-  `FeatureFlag::SSHTmuxWrapper` being off, which no default build of this fork has: they SKIP in every run until
-  #2128 is decided, and their skip line says so. The tmux-wrapper variants (`test_tmux_ssh_into_*`) need tmux on the remote
-  and a package install and are not listed in `integration_tests!`; `test_ssh_into_fish` stays off (fish is not a
+  `test_ssh_remote_bash_bootstrapped_hook`, `test_ssh_typeahead_during_connect_runs_remotely_once`) were gated on
+  `FeatureFlag::SSHTmuxWrapper` being off, which no default build of this fork has, so they skipped in every run
+  (#2128). Their gate is now the fact that decides which wrapper a typed `ssh` runs
+  (`legacy_ssh_wrapper_takes_ssh()`, i.e. `ssh_detection::TMUX_SSH_WRAPPER_TAKES_SSH` is false: the tmux option was
+  removed, the legacy wrapper is what ships), so they RUN; the first run is their first run ever. The MotD assertion
+  of the ssh scenarios looks for the first plain line of THIS machine's MotD file (a wrapped session carries a remote
+  command, so the machine's MotD is printed, not the fixture's banner) and holds, with a log line, on a machine that
+  has none. `test_ssh_with_shell_override` needs zsh on PATH and proves the pane's shell is zsh before the ssh
+  (#2133). The tmux-wrapper variants (`test_tmux_ssh_into_*`) need the removed tmux option, say so if started, and are
+  not listed in `integration_tests!`; `test_ssh_into_fish` stays off (fish is not a
   supported remote shell). A scenario killed by a timeout can leave its sshd running (`ps`, stop by exact PID).
   Every scenario in `integration_tests!` must be registered in the binary's `register_tests()`
   (guard `check_integration_test_registry`). `PHOSPHOR_TEST_SHELL=pwsh` pins the shell for the two
@@ -380,6 +386,7 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_HEAP_TRIM=0` | no heap trim at all (glibc `malloc_trim`, macOS `malloc_zone_pressure_relief`, Windows `HeapCompact` on the process heap; the close-time trims included) |
 | `PHOSPHOR_HEAP_TRIM_ON_CLOSE=0` | editor (#1607, #1407): no heap trim when a closed large (>= 1M chars) editor's buffer is really dropped. Default on: the drop event starts one trim on a background worker (a burst of drops is folded into at most one more pass, no timer); the app logs `editor_memory buffer_dropped ... trim=true|coalesced|off|false` and, when the trim ends, `editor_memory heap_trim why=close ms=<ms> freed_estimate=<bytes>` (footprint before minus after; also on the `input_order hop=heap_trim` line) |
 | `PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0` | agent answers (#1267): keep every fenced code block's editor for the life of its block (default: an AI block more than 6 rich-content entries from the visible ones drops the editors that hold no user state and renders those snippets as plain code blocks; within 2 entries they are rebuilt from the kept text; log `editor_memory agent_code_recycled` / `agent_code_rebuilt` at debug) |
+| `PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION=0` | ssh (#2127): the 7 s bootstrap give-up runs on while the app's own "install the remote helper?" question waits for its answer, as before (default: showing the question takes the give-up off the clock and the question leaving the screen arms it afresh; log `bootstrap give-up: off the clock ...` / `... armed afresh ...` at INFO). Read once per pane |
 | `PHOSPHOR_CODE_PANE_KEEP_ON_CLOSE=1`, `PHOSPHOR_FILE_PANE_KEEP_ON_CLOSE=1` | keep closed code/file pane editors alive through the undo-close grace (pre-#1340) |
 | `PHOSPHOR_LAZY_RESTORE=0`, `PHOSPHOR_LAZY_REFLOW=0` | eager restore / reflow of blocks (#1303) |
 | `PHOSPHOR_ALT_FILE_LINKS=0` | alt-screen TUIs treated as editors (no file hover scan) |
@@ -7546,9 +7553,11 @@ job, with `collect_results.py --self-test`).
 | `integ_event seq=N step="..." kind=KeyDown key=tab ... handled=true` | INFO | every event the driver injected, in order, with the saved position a click or hover was aimed at (`position_id=`) and whether the app handled it. Typed text by length only (`chars_len=`); a key that types one character is `key=<char>` |
 | `integ_failure_state step="..." terminal[0]: bootstrapped= read_only= pending_ssh= helper_question= menu=[...] xray= editor="..." block_command="..." block_output="..."` | ERROR | once, when a step fails: what the app showed (`app/src/integration_testing/evidence.rs`). Shows text: it is the scenario's own, typed into a scratch home. Block text is the last 1200 characters, the line the last 6000 |
 | `input_order hop=suggestions_mode from=[closed] to=[completions trigger=Keybinding candidates=2]` | DEBUG | every menu open and close; for the completion menu what opened it (`Keybinding` = Tab, `AsYouType`) and how many candidates. Never the candidates |
-| `input_order hop=xray_hover arm x= y= hid=` / `ask` / `no_ask past_text=` and `hop=xray set` / `cleared` | DEBUG | the hover x-ray: a pointer rest starts counting, the editor asks the input view for the x-ray, the x-ray is up or gone. `ask` with no `set` after it: the input view refused (AI input, a menu visible, no session context) or the completer had no description |
+| `input_order hop=xray_hover arm x= y= hid=` / `ask` / `no_ask past_text=` and `hop=xray set` / `cleared` | DEBUG | the hover x-ray: a pointer rest starts counting, the editor asks the input view for the x-ray, the x-ray is up or gone. `ask` with no `set` after it: the input view refused (AI input, a menu visible, no session context) or the completer had no description; since r19-integfix the next line says which |
+| `input_order hop=xray_ask_refused reason=ai_input` / `trigger=hover reason=visible_menu` / `trigger=hover reason=no_text_at_point` / `trigger=<hover\|keystroke> reason=no_session_context` / `reason=no_description` | DEBUG | why an ask for the x-ray went no further (`app/src/terminal/input.rs`: `TryToShowXRay`, `start_xray_at_offset`, `show_xray`). Log only |
+| `input_order hop=input_tab branch=ai_context_menu_accept` / `menu_insert_common_prefix prefix_len= word_len= single=` / `menu_select_next` / `workflow_enum_select_next` / `open_completions` / `to_editor tab_opens_completions=` | DEBUG | the branch a Tab took in `Input::input_tab`. Lengths and flags, never text (#2040). `to_editor tab_opens_completions=1`: Tab is bound to the completions but the cursor was not positioned for one |
 | `input_order hop=pty_write_bytes ...`, `input_order keydown key=...`, `input_order typed_characters text=<N chars>` and the rest of the target | DEBUG | existed; recorded by the run since #2122. Lengths, classes and names (text only with the opt-ins of `input_order.rs`, which the job does not set) |
-| `remote helper: asking the user about <host>; the bootstrap of session ... is held until the question is answered` | INFO | the remote shell will not bootstrap until a person answers (see #2127 for the give-up timer that keeps running meanwhile) |
+| `remote helper: asking the user about <host>; the bootstrap of session ... is held until the question is answered` | INFO | the remote shell will not bootstrap until a person answers. Followed by `bootstrap give-up: off the clock while the remote-helper question of session ... waits for its answer (#2127)` and, at the answer, `... left the screen; armed afresh for 7s from now` (or `left running under the remote-helper question` with the kill switch or for a session already judged) |
 The driver's older `Dispatching event ...` line is unchanged. `recording.log` now gives typed text by its length too (`event_description`).
 ### A scenario that skips itself
 A scenario whose `set_should_run_test` predicate says no still exits 0 and nextest still prints PASS: nextest has no "skipped at run time"
@@ -7559,15 +7568,15 @@ result, and the usage suite depends on the binary's exit codes. It is no longer 
   "`<job>` skipped scenarios (N; not coverage)" in the round's README, and notes that nextest counted them as passed. nextest's own summary
   line is kept as `summary_line`.
 A predicate names its reason with `warpui::integration::skip_because("...")` (records it, returns `false`) or `needs(condition, "...")`.
-Write the reason as what the scenario NEEDS. Named so far: the ssh fixture (which program or shell is missing), "a POSIX local shell" for
-the ssh scenarios, `skip_if_powershell_core_2303` (15 scenarios), the tmux ssh wrapper flag (#2128). A predicate that names none gets "its
-set_should_run_test predicate said no (platform, shell or feature gate; no reason given)": about 30 predicates still do; give a new one a
-reason. On a machine without the evidence directory the line is printed but nextest hides the output of a passing test, so only CI counts.
+Write the reason as what the scenario NEEDS. Every predicate in `crates/integration/src/test*.rs` names one (r19-integfix: the 43 that
+returned a bare bool are wrapped in `needs(<the same condition>, "...")`: the local shell, the platform, the feature flag). A predicate
+that names none still gets "its set_should_run_test predicate said no (platform, shell or feature gate; no reason given)": seeing that
+text in a skip line means a new predicate was added without a reason; give it one. On a machine without the evidence directory the line is printed but nextest hides the output of a passing test, so only CI counts.
 ### The three scenarios of #2122 (all TEST faults; no assertion changed)
 - `test_ssh_with_shell_override`: the app asked whether to install the remote helper (`always_ask`, the default) and held the bootstrap for
   an answer no scenario gives. All ssh scenarios now set `never_install` (`ssh.rs` `without_helper_question`). Fails as before if the remote
-  bash does not bootstrap, the session is not remote, or the login-shell check fails. Seen, not changed: the trace shows `/bin/bash` started
-  although the scenario sets the startup shell to zsh; if the runner has no zsh the override is never exercised.
+  bash does not bootstrap, the session is not remote, or the login-shell check fails. The trace showed `/bin/bash` started
+  although the scenario sets the startup shell to zsh: an APP defect, #2133 (r19-integfix below).
 - `test_command_xray_hover`: runs with `terminal.input.completions_open_while_typing` set to false. The hover x-ray is not shown while a
   suggestions menu is visible and this fork opens the as-you-type menu by default (the pin does not). Verdict by reading, probable: the next
   run's `hop=suggestions_mode` / `hop=xray_hover` lines confirm or refute it. The product question is #2129.
@@ -7602,3 +7611,15 @@ past connect and judges its effect file, then ends UNVERIFIABLE by its own rule 
 timing); `lab_no_helper_chip.{dash,ash}.*` gets past connect and then fails its `rec.log` check, a TEST fault for these shells (they have no
 history hook, so `rec.log` stays empty), and its 'shell mode' chip is an open question for a session that is a plain login since #2120. Neither
 proves #2126; `lab_nohelper_sh_login_profile` does.
+## Round 19: follow-ups of the integration evidence work (design `docs/design/r19-integfix.md`; #2127, #2128, #2133; nothing compiled or run when written)
+- **#2128, the gate.** The four ssh scenarios above run (section 2.2). Expect a verdict per scenario on the first run: everything after the
+  remote bootstrap (remote user and host, login shell, MotD, the typeahead count) has never been seen.
+- **#2127, APP.** The 7 s bootstrap give-up no longer runs while the app's own "install the remote helper?" question waits: showing the
+  question supersedes the armed give-up, the question leaving the screen (answered, withdrawn with its session, cleared) arms it afresh.
+  No timer was added. Kill switch `PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION=0` (read once per pane).
+- **#2133, APP.** A legacy `session.startup_shell_override` that names a shell is resolved directly while the shell scan is unfinished, so
+  the first tab starts it. Log: `startup shell: the legacy override names "zsh" and the shell scan has not finished; resolved directly: found`.
+| view | `view_test.rs`: `bootstrap_give_up_does_not_judge_a_session_waiting_for_the_helper_answer`, `bootstrap_give_up_runs_through_the_helper_question_with_the_kill_switch`, `helper_question_pause_rule` | an ssh session with a held line, the give-up armed as the `SSH` hook arms it, the question shown: the give-up armed before the question expires and judges nothing (session not marked failed, no pty write); "continue without" arms a new give-up, which still judges a bootstrap that never comes. The first fails on the code before this change; the second is its control (switch off: the old judgement) |
+| unit | `available_shells_test.rs`: `legacy_startup_shell_name_is_resolved_while_the_scan_is_unfinished`, `legacy_startup_shell_name_uses_the_finished_scan_as_before` | no finished scan: one direct lookup of the name, the named shell; a finished scan decides as before and nothing is resolved directly; `Default` and a custom path are untouched |
+| unit | `integration_testing::subshell::util::tests`: `motd_marker_is_the_start_of_the_first_plain_line`, `a_typed_ssh_runs_the_legacy_wrapper_in_this_fork` | what the MotD assertion looks for; the fact the ssh scenarios are gated on |
+| integration | `test_ssh_with_shell_override` (new second step `test -n "$ZSH_VERSION"`; needs zsh), `assert_motd_shown` (this machine's MotD), the four scenarios of #2128 | see section 2.2 |

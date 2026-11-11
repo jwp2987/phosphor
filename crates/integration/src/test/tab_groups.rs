@@ -265,7 +265,10 @@ fn drop_on_tab(target_tab_index: usize) -> TestStep {
 /// this predicate after the application is initialised, so the flag registry is
 /// live -- see `crates/warpui_core/src/integration/driver.rs:241`.
 fn drag_tabs_feature_enabled() -> bool {
-    FeatureFlag::DragTabsToWindows.is_enabled()
+    warpui::integration::needs(
+        FeatureFlag::DragTabsToWindows.is_enabled(),
+        "FeatureFlag::DragTabsToWindows on",
+    )
 }
 
 /// Four terminal tabs with the last three in one group: `[T0][G: T1 T2 T3]`.

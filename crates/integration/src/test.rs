@@ -455,19 +455,25 @@ pub fn make_1000_blocks_memory_benchmark() -> Builder {
 pub fn test_completions_with_autocd() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            let (starter, version) = current_shell_starter_and_version();
-            match starter.shell_type() {
-                ShellType::Zsh | ShellType::Fish => true,
-                // autocd was not added until Bash 4.0--the `shopt -s autocd` line below will fail
-                // in all versions of Bash before 4.0.
-                ShellType::Bash => {
-                    version_compare::compare_to(version, "4", Cmp::Ge).unwrap_or(false)
-                }
-                // TODO(PLAT-751)
-                ShellType::PowerShell => false,
-                // The rc-file setup above has no nushell equivalent.
-                ShellType::Nu => false,
-            }
+            warpui::integration::needs(
+                {
+                    let (starter, version) = current_shell_starter_and_version();
+                    match starter.shell_type() {
+                        ShellType::Zsh | ShellType::Fish => true,
+                        // autocd was not added until Bash 4.0--the `shopt -s autocd` line below will fail
+                        // in all versions of Bash before 4.0.
+                        ShellType::Bash => {
+                            version_compare::compare_to(version, "4", Cmp::Ge).unwrap_or(false)
+                        }
+                        // TODO(PLAT-751)
+                        ShellType::PowerShell => false,
+                        // The rc-file setup above has no nushell equivalent.
+                        ShellType::Nu => false,
+                    }
+                },
+                "zsh, fish, or bash 4.0 or newer as the local shell under test \
+                 (autocd; no PowerShell or nushell setup)",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -2403,8 +2409,13 @@ pub fn test_hover_over_menu() -> Builder {
     new_builder()
         // TODO(REV-569): Fish flaking on linux
         .set_should_run_test(|| {
-            let (starter, _) = current_shell_starter_and_version();
-            !matches!(starter.shell_type(), ShellType::Fish)
+            warpui::integration::needs(
+                {
+                    let (starter, _) = current_shell_starter_and_version();
+                    !matches!(starter.shell_type(), ShellType::Fish)
+                },
+                "a local shell other than fish",
+            )
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(execute_command_for_single_terminal_in_tab(
@@ -2424,9 +2435,14 @@ pub fn test_zshrc_keypress() -> Builder {
 
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on zsh
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Zsh)
+            warpui::integration::needs(
+                {
+                    // Only run this one on zsh
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Zsh)
+                },
+                "zsh as the local shell under test",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -2460,9 +2476,14 @@ pub fn test_detect_powerlevel10k() -> Builder {
 
     new_builder()
         .set_should_run_test(|| {
-            // Powerlevel10k only supports zsh
-            let (starter, _) = current_shell_starter_and_version();
-            starter.shell_type() == ShellType::Zsh
+            warpui::integration::needs(
+                {
+                    // Powerlevel10k only supports zsh
+                    let (starter, _) = current_shell_starter_and_version();
+                    starter.shell_type() == ShellType::Zsh
+                },
+                "zsh as the local shell under test (Powerlevel10k)",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -3304,11 +3325,16 @@ pub fn test_multi_block_selections() -> Builder {
 pub fn test_alias_guards_on_ps1_set() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on bash and zsh
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(
-                starter.shell_type(),
-                shell::ShellType::Zsh | shell::ShellType::Bash
+            warpui::integration::needs(
+                {
+                    // Only run this one on bash and zsh
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(
+                        starter.shell_type(),
+                        shell::ShellType::Zsh | shell::ShellType::Bash
+                    )
+                },
+                "bash or zsh as the local shell under test",
             )
         })
         .with_setup(|utils| {
@@ -3385,8 +3411,13 @@ pub fn test_custom_ps1_expansion_bash() -> Builder {
             true.to_string(),
         )]))
         .set_should_run_test(|| {
-            let (starter, _) = current_shell_starter_and_version();
-            starter.shell_type() == ShellType::Bash
+            warpui::integration::needs(
+                {
+                    let (starter, _) = current_shell_starter_and_version();
+                    starter.shell_type() == ShellType::Bash
+                },
+                "bash as the local shell under test",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -3420,9 +3451,14 @@ pub fn test_custom_ps1_expansion_bash() -> Builder {
 pub fn test_auto_title() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on zsh
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Zsh)
+            warpui::integration::needs(
+                {
+                    // Only run this one on zsh
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Zsh)
+                },
+                "zsh as the local shell under test",
+            )
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(tab_title_step(
@@ -3441,11 +3477,16 @@ pub fn test_auto_title() -> Builder {
 pub fn test_warp_auto_title_disabled() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on bash and zsh
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(
-                starter.shell_type(),
-                shell::ShellType::Zsh | shell::ShellType::Bash
+            warpui::integration::needs(
+                {
+                    // Only run this one on bash and zsh
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(
+                        starter.shell_type(),
+                        shell::ShellType::Zsh | shell::ShellType::Bash
+                    )
+                },
+                "bash or zsh as the local shell under test",
             )
         })
         .with_setup(|utils| {
@@ -3483,9 +3524,14 @@ WARP_DISABLE_AUTO_TITLE="true"
 pub fn test_warp_honors_user_title_bash() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on bash
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Bash)
+            warpui::integration::needs(
+                {
+                    // Only run this one on bash
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Bash)
+                },
+                "bash as the local shell under test",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -3515,9 +3561,14 @@ PROMPT_COMMAND='echo -en "\033]0;TEST_TAB_TITLE\a"'
 pub fn test_warp_honors_user_title_zsh() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on bash
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Zsh)
+            warpui::integration::needs(
+                {
+                    // Only run this one on bash
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Zsh)
+                },
+                "zsh as the local shell under test",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -3549,10 +3600,15 @@ precmd_functions+=(set_title)
 pub fn test_osc7_updates_current_working_directory() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(
-                starter.shell_type(),
-                shell::ShellType::Bash | shell::ShellType::Zsh
+            warpui::integration::needs(
+                {
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(
+                        starter.shell_type(),
+                        shell::ShellType::Bash | shell::ShellType::Zsh
+                    )
+                },
+                "bash or zsh as the local shell under test",
             )
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
@@ -3688,9 +3744,15 @@ pub fn test_new_session_focuses_input() -> Builder {
 pub fn test_executable_completions() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            let (starter, _version) = current_shell_starter_and_version();
-            // TODO(CORE-2734): Unknown failure for Powershell
-            !matches!(starter.shell_type(), ShellType::Fish) && skip_if_powershell_core_2303()
+            warpui::integration::needs(
+                {
+                    let (starter, _version) = current_shell_starter_and_version();
+                    // TODO(CORE-2734): Unknown failure for Powershell
+                    !matches!(starter.shell_type(), ShellType::Fish)
+                        && skip_if_powershell_core_2303()
+                },
+                "a local shell other than fish or PowerShell (CORE-2734)",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -3744,9 +3806,15 @@ pub fn test_executable_completions() -> Builder {
 pub fn test_function_completions() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            let (starter, _version) = current_shell_starter_and_version();
-            // TODO(CORE-2734): Unknown failure for Powershell
-            !matches!(starter.shell_type(), ShellType::Fish) && skip_if_powershell_core_2303()
+            warpui::integration::needs(
+                {
+                    let (starter, _version) = current_shell_starter_and_version();
+                    // TODO(CORE-2734): Unknown failure for Powershell
+                    !matches!(starter.shell_type(), ShellType::Fish)
+                        && skip_if_powershell_core_2303()
+                },
+                "a local shell other than fish or PowerShell (CORE-2734)",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -3901,7 +3969,7 @@ pub fn test_open_new_tab_with_specific_shell_from_new_session_menu() -> Builder 
     let test_cases = vec![(ShellType::PowerShell, "(Get-Process -Id $PID).Path")];
 
     let mut builder = new_builder()
-        .set_should_run_test(|| cfg!(windows))
+        .set_should_run_test(|| warpui::integration::needs(cfg!(windows), "Windows"))
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0));
     let mut tab_index = 1;
 
@@ -4127,8 +4195,13 @@ pub fn test_histcontrol_env_var() -> Builder {
     let histcontrol_val = "ignorespace";
     new_builder()
         .set_should_run_test(|| {
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), ShellType::Bash)
+            warpui::integration::needs(
+                {
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), ShellType::Bash)
+                },
+                "bash as the local shell under test",
+            )
         })
         .with_setup(move |utils| {
             let dir = utils.test_dir();
@@ -4724,7 +4797,7 @@ pub fn test_create_session_with_new_tab_while_bootstrapping() -> Builder {
 
 pub fn test_cmd_enter() -> Builder {
     new_builder()
-        .set_should_run_test(|| cfg!(target_os = "macos"))
+        .set_should_run_test(|| warpui::integration::needs(cfg!(target_os = "macos"), "macOS"))
         .with_setup(|utils| {
             // Change dir to cargo test dir for auto cleanup.
             let dir = utils.test_dir();
@@ -5813,9 +5886,14 @@ pub fn test_custom_open_completions_menu_binding() -> Builder {
 pub fn test_color_overrides_in_prompt_dont_crash() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on zsh
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Zsh)
+            warpui::integration::needs(
+                {
+                    // Only run this one on zsh
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Zsh)
+                },
+                "zsh as the local shell under test",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -6054,8 +6132,13 @@ pub fn test_copy_prompt_from_input_honor_ps1_disabled() -> Builder {
 pub fn test_warp_prompt_unsets_zsh_rprompt() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            let (starter, _) = current_shell_starter_and_version();
-            starter.shell_type() == shell::ShellType::Zsh
+            warpui::integration::needs(
+                {
+                    let (starter, _) = current_shell_starter_and_version();
+                    starter.shell_type() == shell::ShellType::Zsh
+                },
+                "zsh as the local shell under test",
+            )
         })
         .with_user_defaults(HashMap::from([(
             HonorPS1::storage_key().to_owned(),
@@ -6135,11 +6218,16 @@ pub fn test_copy_rprompt_from_input_honor_ps1_enabled() -> Builder {
     let rprompt_text = "right prompt";
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on zsh and fish
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(
-                starter.shell_type(),
-                shell::ShellType::Zsh | shell::ShellType::Fish
+            warpui::integration::needs(
+                {
+                    // Only run this one on zsh and fish
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(
+                        starter.shell_type(),
+                        shell::ShellType::Zsh | shell::ShellType::Fish
+                    )
+                },
+                "zsh or fish as the local shell under test",
             )
         })
         .with_setup(move |utils| {
@@ -6205,11 +6293,16 @@ pub fn test_rprompt_doesnt_show_when_not_enough_space() -> Builder {
             true.to_string(),
         )]))
         .set_should_run_test(|| {
-            // Only run this one on zsh and fish
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(
-                starter.shell_type(),
-                shell::ShellType::Zsh | shell::ShellType::Fish
+            warpui::integration::needs(
+                {
+                    // Only run this one on zsh and fish
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(
+                        starter.shell_type(),
+                        shell::ShellType::Zsh | shell::ShellType::Fish
+                    )
+                },
+                "zsh or fish as the local shell under test",
             )
         })
         .with_setup(move |utils| {
@@ -6991,7 +7084,7 @@ pub fn test_undo_close_stack_timeout_cleanup() -> Builder {
     FeatureFlag::UndoClosedPanes.set_enabled(true);
     new_builder()
         // This test is Mac-only due to differences in window management on Linux
-        .set_should_run_test(|| cfg!(target_os = "macos"))
+        .set_should_run_test(|| warpui::integration::needs(cfg!(target_os = "macos"), "macOS"))
         // Set a 5-second grace period to give time to close the window before it expires
         .with_user_defaults(HashMap::from([(
             "UndoCloseGracePeriod".to_owned(),

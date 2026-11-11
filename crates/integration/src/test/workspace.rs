@@ -200,7 +200,10 @@ fn assert_total_tab_count(
 /// this predicate after the application is initialised, so the flag registry is
 /// live -- see `crates/warpui_core/src/integration/driver.rs:241`.
 fn drag_tabs_feature_enabled() -> bool {
-    FeatureFlag::DragTabsToWindows.is_enabled()
+    warpui::integration::needs(
+        FeatureFlag::DragTabsToWindows.is_enabled(),
+        "FeatureFlag::DragTabsToWindows on",
+    )
 }
 
 fn assert_tab_color(expected: Option<AnsiColorIdentifier>) -> AssertionCallback {
@@ -439,7 +442,12 @@ pub fn test_focus_panes_on_hover() -> Builder {
 
 pub fn test_close_tab_with_long_running_process() -> Builder {
     new_builder()
-        .set_should_run_test(|| cfg!(any(target_os = "linux", target_os = "freebsd")))
+        .set_should_run_test(|| {
+            warpui::integration::needs(
+                cfg!(any(target_os = "linux", target_os = "freebsd")),
+                "Linux or FreeBSD",
+            )
+        })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(
             new_step_with_default_assertions("Open a new tab")
@@ -1275,7 +1283,10 @@ fn first_vertical_tab_pane_row_position_id(app: &mut warpui::App, window_id: Win
 
 fn should_run_tab_context_menu_metadata_test() -> bool {
     let (starter, _) = current_shell_starter_and_version();
-    starter.shell_type() != ShellType::PowerShell
+    warpui::integration::needs(
+        starter.shell_type() != ShellType::PowerShell,
+        "a local shell other than PowerShell",
+    )
 }
 
 fn set_active_tab_name(name: &'static str) -> TestStep {

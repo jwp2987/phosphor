@@ -1054,33 +1054,67 @@ impl AvailableShells {
 
     fn get_user_preferred_shell_setting_fallback(&self, ctx: &AppContext) -> NewSessionShell {
         use super::session_settings::SessionSettings;
+        use crate::terminal::local_tty::shell::supported_shell_path_and_type;
 
         let startup_shell = SessionSettings::as_ref(ctx)
             .startup_shell_override
             .to_owned();
+        Self::legacy_startup_shell_preference(startup_shell, self.scanned_if_ready(), |command| {
+            supported_shell_path_and_type(command).map(|(path, _)| path)
+        })
+    }
+
+    /// The [`NewSessionShell`] a legacy `startup_shell_override` value stands for.
+    ///
+    /// A value that names a shell (`"zsh"`) is looked up in the finished scan. #2133: while
+    /// the background scan has NOT finished (#1310, #1364) there is no list to look in, and
+    /// the lookup used to run against the empty stand-in, so the first tab (and every tab
+    /// started before the scan completed) silently got the system default shell. The answer
+    /// must not depend on whether the scan has finished: before it has, that one name is
+    /// resolved directly with `resolve_command` (one PATH lookup), as a saved executable
+    /// already is (`resolve_preferred_directly`). A finished scan decides as before.
+    fn legacy_startup_shell_preference(
+        startup_shell: StartupShell,
+        scanned: Option<&ScanResult>,
+        resolve_command: impl Fn(&str) -> Option<PathBuf>,
+    ) -> NewSessionShell {
         match startup_shell {
             StartupShell::Default => NewSessionShell::SystemDefault,
             StartupShell::Custom(path) => NewSessionShell::Custom(path),
-            _ => startup_shell
-                .shell_command()
-                .and_then(|command| {
-                    for shell in self.scanned().shells.iter() {
-                        if let Config::KnownLocal(LocalConfig {
-                            command: shell_command,
-                            executable_path,
-                            ..
-                        }) = shell.state.as_ref()
-                        {
-                            if shell_command == command {
-                                return Some(NewSessionShell::Executable(
-                                    executable_path.display().to_string(),
-                                ));
+            named => {
+                let Some(command) = named.shell_command() else {
+                    return NewSessionShell::SystemDefault;
+                };
+                let executable_path = match scanned {
+                    Some(scan) => scan
+                        .shells
+                        .iter()
+                        .find_map(|shell| match shell.state.as_ref() {
+                            Config::KnownLocal(LocalConfig {
+                                command: shell_command,
+                                executable_path,
+                                ..
+                            }) if shell_command == command => Some(executable_path.clone()),
+                            _ => None,
+                        }),
+                    None => {
+                        let resolved = resolve_command(command);
+                        log::info!(
+                            "startup shell: the legacy override names {command:?} and the shell \
+                             scan has not finished; resolved directly: {} (#2133)",
+                            if resolved.is_some() {
+                                "found"
+                            } else {
+                                "not found, the system default starts"
                             }
-                        }
+                        );
+                        resolved
                     }
-                    None
-                })
-                .unwrap_or(NewSessionShell::SystemDefault),
+                };
+                executable_path
+                    .map(|path| NewSessionShell::Executable(path.display().to_string()))
+                    .unwrap_or(NewSessionShell::SystemDefault)
+            }
         }
     }
 

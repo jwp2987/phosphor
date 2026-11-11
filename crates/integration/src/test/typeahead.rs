@@ -109,7 +109,12 @@ pub fn test_input_reporting_posix_shells() -> Builder {
     }
 
     new_builder()
-        .set_should_run_test(move || starter.shell_type() != ShellType::PowerShell)
+        .set_should_run_test(move || {
+            warpui::integration::needs(
+                starter.shell_type() != ShellType::PowerShell,
+                "a local shell other than PowerShell",
+            )
+        })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(
             TestStep::new("Execute sleep")
@@ -179,8 +184,13 @@ pub fn test_input_reporting_posix_shells() -> Builder {
 pub fn test_input_reporting_powershell() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            let (starter, _) = current_shell_starter_and_version();
-            starter.shell_type() == ShellType::PowerShell
+            warpui::integration::needs(
+                {
+                    let (starter, _) = current_shell_starter_and_version();
+                    starter.shell_type() == ShellType::PowerShell
+                },
+                "PowerShell as the local shell under test",
+            )
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(

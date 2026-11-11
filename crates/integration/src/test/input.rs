@@ -212,10 +212,15 @@ pub fn test_git_prompt_chips() -> Builder {
     // be in a place in the filesystem that's not already a git repo.
     new_builder()
         .set_should_run_test(|| {
-            // TODO(alokedesai): Re-enable for Powershell once the cause of the flakiness has been
-            // resolved.
-            let (starter, _) = current_shell_starter_and_version();
-            starter.shell_type() != ShellType::PowerShell
+            warpui::integration::needs(
+                {
+                    // TODO(alokedesai): Re-enable for Powershell once the cause of the flakiness has been
+                    // resolved.
+                    let (starter, _) = current_shell_starter_and_version();
+                    starter.shell_type() != ShellType::PowerShell
+                },
+                "a local shell other than PowerShell (flaky there)",
+            )
         })
         .use_tmp_filesystem_for_test_root_directory()
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
