@@ -7,13 +7,23 @@
 //! Keystrokes can be passwords, so text is redacted to its length unless the tester opts in with
 //! `WARP_INPUT_ORDER_LOG_TEXT=1`. Named keys (`enter`, `backspace`, ...) are always logged by name.
 //!
+//! Two more rules keep a secret out of an opted-in log (#2040):
+//! - While something reads a secret or a prompt's reader has the keys (a `read -s`, `sudo`, an
+//!   ssh password; see [`register_secret_input_probe`]) every text is logged by its length, with
+//!   every opt-in on. `PHOSPHOR_LOG_SECRET_GUARD=0` turns this rule off.
+//! - The bytes of a user key on its way to the pty (`hop=pty_write_bytes class=UserKey`,
+//!   `hop=hand_route`) are logged by their length unless the tester ALSO sets
+//!   `WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS=1`: the app cannot see every secret
+//!   read (ssh.exe on ConPTY, keys typed before the reader turned echo off), and these lines are
+//!   exactly what was typed.
+//!
 //! The same target also times the rest of a keystroke's round trip (#1092), so a slow echo can be
 //! placed without guessing: `pty_write` when user bytes reach the pty, `pty_read` for the first
 //! output read after them (with the gap since the write), and `frame` for the first frame built
 //! after that output. Only byte counts and times are logged, never the bytes.
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The log target every input-order line uses.
@@ -24,12 +34,148 @@ pub fn enabled() -> bool {
     log::log_enabled!(target: TARGET, log::Level::Debug)
 }
 
+fn env_flag_set(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| !value.is_empty() && value != "0")
+}
+
 fn text_opted_in() -> bool {
     static OPTED_IN: OnceLock<bool> = OnceLock::new();
-    *OPTED_IN.get_or_init(|| {
-        std::env::var("WARP_INPUT_ORDER_LOG_TEXT")
-            .is_ok_and(|value| !value.is_empty() && value != "0")
-    })
+    *OPTED_IN.get_or_init(|| env_flag_set("WARP_INPUT_ORDER_LOG_TEXT"))
+}
+
+/// The extra opt-in for the bytes of user keys on their way to the pty (#2040). Its name says
+/// what it costs: with it a password typed where the app sees no secret read is in the log.
+pub const KEY_BYTES_ENV: &str = "WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS";
+
+fn key_bytes_opted_in() -> bool {
+    static OPTED_IN: OnceLock<bool> = OnceLock::new();
+    *OPTED_IN.get_or_init(|| env_flag_set(KEY_BYTES_ENV))
+}
+
+/// Kill switch of the secret guard (#2040): set to `0`, text is logged during a secret read as
+/// it was before (for a synthetic test of the guard itself, never with real input).
+pub const SECRET_GUARD_ENV: &str = "PHOSPHOR_LOG_SECRET_GUARD";
+
+fn secret_guard_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED
+        .get_or_init(|| std::env::var(SECRET_GUARD_ENV).map_or(true, |value| value.trim() != "0"))
+}
+
+/// Says whether a pane's keys may be a secret right now. Called on any thread, with the caller's
+/// locks held: it must take no lock (an atomic load, one `tcgetattr`).
+pub type SecretInputProbe = Arc<dyn Fn() -> bool + Send + Sync>;
+
+static SECRET_INPUT_PROBES: Mutex<Vec<(u64, SecretInputProbe)>> = Mutex::new(Vec::new());
+static NEXT_SECRET_INPUT_PROBE: AtomicU64 = AtomicU64::new(1);
+
+/// Keeps a probe of [`register_secret_input_probe`] installed; dropping it removes the probe.
+pub struct SecretInputProbeRegistration(u64);
+
+impl std::fmt::Debug for SecretInputProbeRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecretInputProbeRegistration({})", self.0)
+    }
+}
+
+impl SecretInputProbeRegistration {
+    /// What this registration's own probe answers right now (`false` once it is gone).
+    pub fn says_secret(&self) -> bool {
+        SECRET_INPUT_PROBES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|(id, probe)| *id == self.0 && probe())
+    }
+}
+
+impl Drop for SecretInputProbeRegistration {
+    fn drop(&mut self) {
+        SECRET_INPUT_PROBES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|(id, _)| *id != self.0);
+    }
+}
+
+/// Installs a pane's answer to "may the keys typed now be a secret?" (#2040): the tty is
+/// canonical with echo off, a command announced a secret read, a prompt's reader has the keys.
+/// While ANY installed probe says yes, no text is logged, whichever pane the line is about (a
+/// key is logged before the app knows where it goes). The probes are asked only for a line that
+/// would otherwise show text, so nothing is sampled unless the tester opted in.
+pub fn register_secret_input_probe(probe: SecretInputProbe) -> SecretInputProbeRegistration {
+    let id = NEXT_SECRET_INPUT_PROBE.fetch_add(1, Ordering::Relaxed);
+    SECRET_INPUT_PROBES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push((id, probe));
+    SecretInputProbeRegistration(id)
+}
+
+/// Whether any installed probe says a secret may be typed right now.
+pub fn secret_input_active() -> bool {
+    SECRET_INPUT_PROBES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .any(|(_, probe)| probe())
+}
+
+/// Whether a log line outside this module must hold back the user's text right now (#2040): the
+/// secret guard is on and a probe says a secret may be typed. For a line that shows a piece of
+/// input without the text opt-in (the routing decision's first word).
+pub fn secret_guard_withholds_text() -> bool {
+    secret_guard_enabled() && secret_input_active()
+}
+
+/// What a log line may show of the user's input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TextPolicy {
+    /// `WARP_INPUT_ORDER_LOG_TEXT=1`.
+    text: bool,
+    /// [`KEY_BYTES_ENV`] is set as well.
+    key_bytes: bool,
+    /// The secret guard is on (it is, unless [`SECRET_GUARD_ENV`] says `0`).
+    secret_guard: bool,
+}
+
+impl TextPolicy {
+    fn from_env() -> Self {
+        Self {
+            text: text_opted_in(),
+            key_bytes: key_bytes_opted_in(),
+            secret_guard: secret_guard_enabled(),
+        }
+    }
+
+    /// Whether text (an editor buffer, typed characters, a command's bytes) is shown.
+    /// `secret_active` is asked last, and only when the answer depends on it.
+    fn shows_text(self, secret_active: impl FnOnce() -> bool) -> bool {
+        self.text && !(self.secret_guard && secret_active())
+    }
+
+    /// Whether the bytes of a user key on its way to the pty are shown.
+    fn shows_key_bytes(self, secret_active: impl FnOnce() -> bool) -> bool {
+        self.key_bytes && self.shows_text(secret_active)
+    }
+}
+
+/// The guard held text back at the last line that asked (for the edge lines below).
+static WITHHOLDING_FOR_SECRET: AtomicBool = AtomicBool::new(false);
+
+/// [`secret_input_active`], and one line at each change of the answer:
+/// `input_order hop=secret_text_withheld active=<bool> t=...`, so a reader of the log knows why
+/// the lines between the two carry lengths (and a test can tell the guard worked).
+fn secret_active_logged() -> bool {
+    let active = secret_input_active();
+    if WITHHOLDING_FOR_SECRET.swap(active, Ordering::Relaxed) != active && enabled() {
+        log::debug!(target: TARGET, "{}", secret_text_withheld_line(active));
+    }
+    active
+}
+
+fn secret_text_withheld_line(active: bool) -> String {
+    hop_line("secret_text_withheld", &format!("active={active}"))
 }
 
 /// Milliseconds since the Unix epoch, with microsecond resolution, for ordering log lines.
@@ -50,14 +196,17 @@ pub fn now_ms() -> String {
 /// happened to the paste. The count form is the one the harness already parses.
 pub const MAX_LOGGED_TEXT_BYTES: usize = 64 * 1024;
 
-/// Describes `text` for the log: the text itself only when the tester opted in (and it is at most
-/// [`MAX_LOGGED_TEXT_BYTES`] long).
+/// Describes `text` for the log: the text itself only when the tester opted in, it is at most
+/// [`MAX_LOGGED_TEXT_BYTES`] long and no secret is being read (#2040); else its length.
 pub fn describe_text(text: &str) -> String {
-    describe_text_with(text, text_opted_in())
+    describe_text_with(
+        text,
+        TextPolicy::from_env().shows_text(secret_active_logged),
+    )
 }
 
-fn describe_text_with(text: &str, opted_in: bool) -> String {
-    if opted_in && text.len() <= MAX_LOGGED_TEXT_BYTES {
+fn describe_text_with(text: &str, shown: bool) -> String {
+    if shown && text.len() <= MAX_LOGGED_TEXT_BYTES {
         format!("{text:?}")
     } else {
         format!("<{} chars>", text.chars().count())
@@ -66,10 +215,17 @@ fn describe_text_with(text: &str, opted_in: bool) -> String {
 
 /// Describes raw input bytes for a log line (control sequences can carry typed text: Alt+letter is
 /// ESC + letter, kitty/CSI-u sequences carry the character, a stray paste byte stream is text): the
-/// bytes themselves only when the tester opted in with `WARP_INPUT_ORDER_LOG_TEXT=1`, else only
-/// their count (#1444).
+/// bytes themselves only when the tester opted in with `WARP_INPUT_ORDER_LOG_TEXT=1` and no secret
+/// is being read, else only their count (#1444, #2040).
 pub fn describe_bytes(bytes: &[u8]) -> String {
-    if text_opted_in() && bytes.len() <= MAX_LOGGED_TEXT_BYTES {
+    describe_bytes_with(
+        bytes,
+        TextPolicy::from_env().shows_text(secret_active_logged),
+    )
+}
+
+fn describe_bytes_with(bytes: &[u8], shown: bool) -> String {
+    if shown && bytes.len() <= MAX_LOGGED_TEXT_BYTES {
         format!("{bytes:?}")
     } else {
         format!("<{} bytes>", bytes.len())
@@ -77,10 +233,28 @@ pub fn describe_bytes(bytes: &[u8]) -> String {
 }
 
 /// Describes raw input bytes as an escaped string (`echo\x1bi`) when the tester opted in with
-/// `WARP_INPUT_ORDER_LOG_TEXT=1`, else only their count (#1490). The exact bytes of a pty write,
-/// readable next to the shell's own record of the line.
+/// `WARP_INPUT_ORDER_LOG_TEXT=1` and no secret is being read, else only their count (#1490,
+/// #2040). For bytes the app composed for the pty (a submitted command, a paste, an agent's
+/// input); a user key's bytes go through [`describe_user_key_bytes_escaped`].
 pub fn describe_bytes_escaped(bytes: &[u8]) -> String {
-    if text_opted_in() && bytes.len() <= MAX_LOGGED_TEXT_BYTES {
+    describe_bytes_escaped_with(
+        bytes,
+        TextPolicy::from_env().shows_text(secret_active_logged),
+    )
+}
+
+/// As [`describe_bytes_escaped`] for the bytes of a user key on its way to the pty (#2040): their
+/// length, unless the tester set BOTH `WARP_INPUT_ORDER_LOG_TEXT=1` and [`KEY_BYTES_ENV`], and
+/// never while a secret is being read.
+pub fn describe_user_key_bytes_escaped(bytes: &[u8]) -> String {
+    describe_bytes_escaped_with(
+        bytes,
+        TextPolicy::from_env().shows_key_bytes(secret_active_logged),
+    )
+}
+
+fn describe_bytes_escaped_with(bytes: &[u8], shown: bool) -> String {
+    if shown && bytes.len() <= MAX_LOGGED_TEXT_BYTES {
         format!("\"{}\"", bytes.escape_ascii())
     } else {
         format!("<{} bytes>", bytes.len())
@@ -647,6 +821,126 @@ mod tests {
         assert_eq!(
             describe_text_with(&over, true),
             format!("<{} chars>", MAX_LOGGED_TEXT_BYTES / 2 + 1)
+        );
+    }
+
+    const ALL_OPT_INS: TextPolicy = TextPolicy {
+        text: true,
+        key_bytes: true,
+        secret_guard: true,
+    };
+
+    /// #2040: with every opt-in on, no describe form shows text while a secret is being read.
+    #[test]
+    fn no_secret_bytes_are_shown_while_a_secret_is_read_with_every_opt_in_on() {
+        let secret = || true;
+        let shown = [
+            describe_text_with("hunter2", ALL_OPT_INS.shows_text(secret)),
+            describe_bytes_with(b"hunter2", ALL_OPT_INS.shows_text(secret)),
+            describe_bytes_escaped_with(b"hunter2\r", ALL_OPT_INS.shows_text(secret)),
+            describe_bytes_escaped_with(b"hunter2\r", ALL_OPT_INS.shows_key_bytes(secret)),
+        ];
+        assert_eq!(
+            shown,
+            ["<7 chars>", "<7 bytes>", "<8 bytes>", "<8 bytes>"].map(String::from)
+        );
+        for line in &shown {
+            // `describe_bytes` prints numbers: 104 is `h`.
+            assert!(!line.contains("hunter2") && !line.contains("104"), "{line}");
+        }
+        // With no secret being read the same opt-ins show the text: the guard is what hid it.
+        let idle = || false;
+        assert_eq!(
+            describe_text_with("hunter2", ALL_OPT_INS.shows_text(idle)),
+            "\"hunter2\""
+        );
+        assert_eq!(
+            describe_bytes_escaped_with(b"ls\r", ALL_OPT_INS.shows_key_bytes(idle)),
+            "\"ls\\r\""
+        );
+    }
+
+    /// #2040: the text opt-in alone never shows the bytes of a user key on its way to the pty.
+    #[test]
+    fn user_key_bytes_need_the_extra_opt_in() {
+        let text_only = TextPolicy {
+            key_bytes: false,
+            ..ALL_OPT_INS
+        };
+        assert!(text_only.shows_text(|| false));
+        assert!(!text_only.shows_key_bytes(|| false));
+        assert_eq!(
+            describe_bytes_escaped_with(b"hunter2", text_only.shows_key_bytes(|| false)),
+            "<7 bytes>"
+        );
+        // The extra opt-in without the text opt-in shows nothing either.
+        let key_bytes_only = TextPolicy {
+            text: false,
+            ..ALL_OPT_INS
+        };
+        assert!(!key_bytes_only.shows_key_bytes(|| false));
+        assert!(!key_bytes_only.shows_text(|| false));
+        assert_eq!(
+            KEY_BYTES_ENV,
+            "WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS"
+        );
+    }
+
+    /// The tty is sampled only for a line that would show text: nothing is asked without the
+    /// opt-in, or with the guard's kill switch.
+    #[test]
+    fn the_secret_probe_is_asked_only_when_the_answer_matters() {
+        let never = || -> bool { panic!("the secret probe was sampled") };
+        let not_opted_in = TextPolicy {
+            text: false,
+            ..ALL_OPT_INS
+        };
+        assert!(!not_opted_in.shows_text(never));
+        assert!(!not_opted_in.shows_key_bytes(never));
+        let guard_off = TextPolicy {
+            secret_guard: false,
+            ..ALL_OPT_INS
+        };
+        assert!(guard_off.shows_text(never));
+        let text_only = TextPolicy {
+            key_bytes: false,
+            ..ALL_OPT_INS
+        };
+        assert!(!text_only.shows_key_bytes(never));
+    }
+
+    /// A probe counts while its registration lives, and any one probe saying yes is enough.
+    #[test]
+    fn secret_input_is_active_while_a_registered_probe_says_so() {
+        let reading = Arc::new(AtomicBool::new(false));
+        let flag = reading.clone();
+        let registration =
+            register_secret_input_probe(Arc::new(move || flag.load(Ordering::Relaxed)));
+        let _idle = register_secret_input_probe(Arc::new(|| false));
+        let mine = || registration.says_secret();
+        assert!(!mine());
+        reading.store(true, Ordering::Relaxed);
+        assert!(mine());
+        assert!(secret_input_active());
+        let id = registration.0;
+        drop(registration);
+        assert!(
+            !SECRET_INPUT_PROBES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .any(|(probe_id, _)| *probe_id == id)
+        );
+    }
+
+    #[test]
+    fn the_secret_text_withheld_line_is_the_hop_the_harness_parses() {
+        // script/realapp/appci/cases_precmd_secret.py WITHHELD_RE matches
+        // `hop=secret_text_withheld active=<bool>`.
+        let line = secret_text_withheld_line(true);
+        assert!(
+            line.starts_with("input_order hop=secret_text_withheld active=true t="),
+            "{line}"
         );
     }
 

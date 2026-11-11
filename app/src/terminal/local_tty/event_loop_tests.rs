@@ -2206,3 +2206,27 @@ fn bytes_held_in_a_synchronized_output_frame_are_not_published_as_applied() {
     state.publish_applied(&barrier);
     assert!(barrier.drained_with(|| Some(false)));
 }
+
+/// #2040: the writes that are the user's own keys or paste are the ones `hop=pty_write_bytes`
+/// logs by length; a submitted command, an agent's input, a reply and a bootstrap chunk are not.
+#[test]
+fn only_typed_and_pasted_pty_writes_are_logged_as_user_key_bytes() {
+    assert!(pty_write_is_user_typed(JobClass::UserKey));
+    assert!(pty_write_is_user_typed(JobClass::Paste));
+    for class in [
+        JobClass::UserCommand,
+        JobClass::Reply,
+        JobClass::Agent,
+        JobClass::SetupChunked,
+    ] {
+        assert!(!pty_write_is_user_typed(class), "{class:?}");
+    }
+    // The test run sets neither opt-in: a key's bytes are a length, never the PIN.
+    if std::env::var("WARP_INPUT_ORDER_LOG_TEXT").is_err() {
+        assert_eq!(
+            describe_pty_write(JobClass::UserKey, b"4711\r"),
+            "<5 bytes>"
+        );
+        assert_eq!(describe_pty_write(JobClass::Paste, b"4711"), "<4 bytes>");
+    }
+}

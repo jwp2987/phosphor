@@ -4,5 +4,5 @@
 # Prereqs: config.example.sh sourced; ssh key auth to the VM; IsPho foreground guard in lib/lib.ps1 refuses to type when Phosphor is not foreground.
 param([string]$Exe="C:\Users\@WINUSER@\r18ba\app\phosphor-oss.exe",[string]$Extra="")
 $env:RUST_LOG="warn,warp::input_order=debug,warp::terminal::model_lock_trace=debug"
-$env:WARP_INPUT_ORDER_LOG_TEXT="1"
+$env:WARP_INPUT_ORDER_LOG_TEXT="1"; $env:WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS="1"
 Start-Process $Exe -WorkingDirectory $env:USERPROFILE

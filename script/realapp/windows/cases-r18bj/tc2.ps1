@@ -31,7 +31,7 @@ function FreshApp2($rustlog,$wait=12){
   KillApp
   Remove-Item "$env:LOCALAPPDATA\phosphor\Phosphor\data\warp.sqlite*" -ea 0
   Remove-Item "$env:LOCALAPPDATA\phosphor\Phosphor\data\logs\*" -ea 0 -Force -Recurse -Confirm:$false
-  $env:RUST_LOG=$rustlog; $env:WARP_INPUT_ORDER_LOG_TEXT="1"
+  $env:RUST_LOG=$rustlog; $env:WARP_INPUT_ORDER_LOG_TEXT="1"; $env:WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS="1"
   $global:AppP = Start-Process "C:\Users\@WINUSER@\r18bj\app\phosphor-oss.exe" -WorkingDirectory $env:USERPROFILE -PassThru
   Start-Sleep $wait; Focus
 }

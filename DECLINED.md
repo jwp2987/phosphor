@@ -3395,3 +3395,25 @@ run).
 A re-pin diff that folds `unsaved_code_changes` back under the setting, or points the banner button back at
 `SaveFile`, is drift to reject. Tests: `app/src/quit_warning/mod_tests.rs`, `app/src/workspace/native_modal_tests.rs`,
 `app/src/code/save_conflict_tests.rs`; appci `editor_daily`.
+
+## Input-order debug log: no typed text while a secret is read; user-key bytes need a second opt-in — DECIDED 2026-11-11 (#2040)
+
+Owner-approved (round 14 queue). Design: `docs/design/r10-r17-privacy.md`. Worked, unproven when written (nothing
+compiled or run). The log is this fork's own (`warp::input_order`, #1016); there is no pin behaviour to compare.
+
+- **While a pane may be reading a secret, no input-order line shows text, with every opt-in on.** The facts are the
+  ones the key path already acts on: the tty is canonical with echo off (#2050's sample), a command announced a secret
+  read (`TtyRead`, #1882), a reader ahead of the line editor has the keys (#2038 / #2052). Any pane saying yes
+  withholds text in every line (a key is logged before the app knows which pane takes it). Off:
+  `PHOSPHOR_LOG_SECRET_GUARD=0`.
+- **The bytes of user keys and pastes on their way to the pty need a second opt-in whose name states the risk**
+  (`WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS=1`, with `WARP_INPUT_ORDER_LOG_TEXT=1`). The text opt-in alone
+  logs their length. The appci launchers set both: the harness types synthetic text only and three of its oracles read
+  those bytes.
+- **Known limits, accepted, not debt to re-file:** keys the app logs before it can know (ConPTY notes a precmd reader
+  at the first key or the prompt hold's cap; on any platform keys typed before the reader turns echo off); a secret
+  asked for on a remote host (the local tty is raw under ssh); ssh.exe's password prompt on ConPTY (no fact at all,
+  see the ssh.exe entry above). With the text opt-in on, those keys are in `typed_characters` / `keydown` lines. The
+  opt-in is for synthetic text; the manual says so.
+  <!-- markers: keep:describe_user_key_bytes_escaped keep:register_secret_input_probe keep:prompt_reader_noted_flag -->
+

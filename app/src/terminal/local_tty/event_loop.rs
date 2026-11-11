@@ -225,6 +225,24 @@ enum PollErrorAction {
     EndSession,
 }
 
+/// #2040: whether a pty write of `class` is what the user typed or pasted, byte for byte: a PIN
+/// at `read -s`, a password pasted at a prompt. `hop=pty_write_bytes` logs such a write by its
+/// length unless the tester took the opt-in that names the risk. (`UserKey` also carries what
+/// the app writes in the user's place, a typed bootstrap for one; nothing tells those apart
+/// here, so they are logged the same way.)
+fn pty_write_is_user_typed(class: JobClass) -> bool {
+    matches!(class, JobClass::UserKey | JobClass::Paste)
+}
+
+/// The `bytes=` field of `hop=pty_write_bytes` for a write of `class`.
+fn describe_pty_write(class: JobClass, bytes: &[u8]) -> String {
+    if pty_write_is_user_typed(class) {
+        warpui::input_order::describe_user_key_bytes_escaped(bytes)
+    } else {
+        warpui::input_order::describe_bytes_escaped(bytes)
+    }
+}
+
 /// Decides how to react to `err` given how many polls in a row have now failed (EINTR excluded).
 fn poll_error_action(err: &io::Error, consecutive_failures: u32) -> PollErrorAction {
     if err.kind() == ErrorKind::Interrupted {
@@ -1470,14 +1488,17 @@ where
                         // #1490: the exact bytes the ConPTY pipe accepted, in write order, with
                         // how long after each shell-ready signal they went out. Windows only: a
                         // bootstrap chunk is logged by size, everything else by its bytes (shown
-                        // only for synthetic test text, `WARP_INPUT_ORDER_LOG_TEXT=1`).
+                        // only for synthetic test text, `WARP_INPUT_ORDER_LOG_TEXT=1`). #2040: a
+                        // user key's bytes are what was typed (a PIN at `read -s`), so they are
+                        // logged by their length unless the tester also took the opt-in that
+                        // names that risk, and never while a secret is read.
                         if cfg!(windows) {
                             warpui::input_order::log_hop("pty_write_bytes", || {
                                 let accepted = current.remaining_bytes().get(..n).unwrap_or(&[]);
                                 let shown = if current.class == JobClass::SetupChunked {
                                     format!("<setup {} bytes>", accepted.len())
                                 } else {
-                                    warpui::input_order::describe_bytes_escaped(accepted)
+                                    describe_pty_write(current.class, accepted)
                                 };
                                 format!(
                                     "class={:?} wrote={n} of_job={} bytes={shown} {}",

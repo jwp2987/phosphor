@@ -313,6 +313,9 @@ pub fn shell_family(shell_type: ShellType) -> ShellFamily {
     }
 }
 
+/// What the routing log shows in place of the buffer's first word while a secret is read (#2040).
+const ROUTING_HEAD_WITHHELD: &str = "<withheld>";
+
 /// The deciding rule, at debug level (#1234): route, rule, surface and the first word only, since
 /// the rest of the buffer may hold a secret.
 fn log_routing_decision(
@@ -322,13 +325,19 @@ fn log_routing_decision(
     decision: &Decision,
 ) {
     if log::log_enabled!(target: "phosphor::routing", log::Level::Debug) {
-        let head: String = buffer_text
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(32)
-            .collect();
+        // #2040: while a secret is read the first word of the buffer may BE the secret (keys
+        // that went to the editor instead of the reader), so it is not shown.
+        let head: String = if warpui::input_order::secret_guard_withholds_text() {
+            ROUTING_HEAD_WITHHELD.to_owned()
+        } else {
+            buffer_text
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(32)
+                .collect()
+        };
         log::debug!(
             target: "phosphor::routing",
             "{stage}: {:?} by {} ({surface:?}, head {head:?}, {} bytes)",

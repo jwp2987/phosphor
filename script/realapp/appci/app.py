@@ -9,6 +9,9 @@ export HOME="%(home)s" XDG_CONFIG_HOME="%(home)s/.config" XDG_STATE_HOME="%(home
 export SHELL=/bin/bash ZDOTDIR="%(home)s"
 export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug,warp::terminal::cli_agent_sessions::event=info,editor_disk=debug
 export WARP_INPUT_ORDER_LOG_TEXT=1
+# #2040: the bytes of user keys on their way to the pty (`hop=pty_write_bytes class=UserKey`, `hop=hand_route bytes=`) need this second opt-in; without it
+# the app logs their length. The harness types synthetic text only. Never set it where a person types: its name says why.
+export WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS=1
 # #1789 / #2069: the app's find hook. Until round 14 only the Windows launcher set these two (where there is no pointer), so on Linux, the only platform
 # with pointer cases, the hook never logged a position: r12a, every hook-asking case, "app find hook gave no position ... located by OCR instead", and
 # ui_right_click_paste has never got past "the probe was not found on screen by OCR". cases_ui.register_find appends tokens to this file.
@@ -284,7 +287,8 @@ class MacApp:
         for k, v in (("HOME", self.home), ("SHELL", "/bin/zsh"), ("ZDOTDIR", self.home), ("APPCI_W", self.home + "/w"),
                      ("PA_CTL", os.path.join(self.run, "ctl")),
                      ("RUST_LOG", "warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug" + MAC_RUST_LOG_MORE),
-                     ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
+                     ("WARP_INPUT_ORDER_LOG_TEXT", "1"),
+                     ("WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS", "1")):      # #2040: user-key bytes in the log; synthetic text only
             env_args += ["--env", "%s=%s" % (k, v)]
         for k, v in find_hook_env(self.home).items():            # #2082: the find hook is armed on macOS too; #2061: the macOS pointer cases read it. The ONE place it is set (APPCI_NO_FIND_HOOK=1 leaves it unset)
             env_args += ["--env", "%s=%s" % (k, v)]
@@ -439,6 +443,7 @@ class WindowsApp:
         # CHANGES-PHOSPHOR.md) logs at info, and under the bare `warn` base the AltGr hang run carried none of it. winit logs nothing else through `log`.
         e["RUST_LOG"] = WINDOWS_RUST_LOG
         e["WARP_INPUT_ORDER_LOG_TEXT"] = "1"
+        e["WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS"] = "1"      # #2040: `hop=pty_write_bytes class=UserKey bytes="..."` (line_evidence, the Ctrl-Break sequence, agent prose never typed into the pty); synthetic text only
         e["PA_CTL"] = fwd(self.ctl)
         e["APPCI_W"] = fwd(os.path.join(self.home, "w"))
         e["PHOSPHOR_PWSH_HOOK_TIMING"] = self.hook_timing_path

@@ -4695,7 +4695,7 @@ def parse_t(line):
     return float(m.group(1)) if m else None
 
 
-KEYDOWN_RE = re.compile(r"input_order keydown key=\S+ ctrl=(true|false) alt=\S+ shift=\S+ cmd=\S+ t=(\d+\.\d+)(?: seq=(\d+))?")
+KEYDOWN_RE = re.compile(r"input_order keydown key=(?:<\d+ chars>|\S+) ctrl=(true|false) alt=\S+ shift=\S+ cmd=\S+ t=(\d+\.\d+)(?: seq=(\d+))?")
 FRAME_RE = re.compile(r"input_order frame layout=\S+ t=(\d+\.\d+)")
 
 
@@ -5266,7 +5266,7 @@ def ui_item_metrics(ctx, r, off, label):
     return a
 
 
-_KD_SEQ_RE = re.compile(r"input_order keydown key=(\S+) ctrl=(true|false) alt=(true|false) shift=(?:true|false) cmd=(true|false) t=\d+(?:\.\d+)? seq=(\d+)")
+_KD_SEQ_RE = re.compile(r"input_order keydown key=(<\d+ chars>|\S+) ctrl=(true|false) alt=(true|false) shift=(?:true|false) cmd=(true|false) t=\d+(?:\.\d+)? seq=(\d+)")
 _TYPED_SEQ_RE = re.compile(r"input_order typed_characters\b.* seq=(\d+)")
 _ENTER_HOP_RE = re.compile(r"input_order hop=enter_begin deferred=(\w+)")
 

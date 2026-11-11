@@ -6,7 +6,7 @@ function KillApp { Get-Process phosphor-oss -ea 0 | ? { $_.Path -like '*r18ba*' 
 function FreshApp($rustlog="info,warp::input_order=debug",$wait=12) {
   KillApp
   Remove-Item "$env:LOCALAPPDATA\phosphor\Phosphor\data\warp.sqlite*" -ea 0
-  $env:RUST_LOG=$rustlog; $env:WARP_INPUT_ORDER_LOG_TEXT="1"
+  $env:RUST_LOG=$rustlog; $env:WARP_INPUT_ORDER_LOG_TEXT="1"; $env:WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS="1"
   $global:AppP = Start-Process "C:\Users\@WINUSER@\r18ba\app\phosphor-oss.exe" -WorkingDirectory $env:USERPROFILE -PassThru
   Start-Sleep $wait; Focus
 }
