@@ -75,7 +75,9 @@ def strace_works():
 
 @case("zero_network_startup", modes=("terminal",), order=84, gui=True)
 def c_zero_network_startup(ctx, r):
-    """default settings + idle: the app makes no outbound connection from launch through APPCI_ZNS_IDLE_S seconds of idling (loopback allowed).
+    """the pass profile + idle: the app makes no outbound connection from launch through APPCI_ZNS_IDLE_S seconds of idling (loopback allowed).
+    NOT the app's default settings (round 16: this said "default settings"): the launch is on the pass's own settings file, the owner seed with the
+    harness overrides, which names a model provider when one is configured (case_settings.py: reads `providers`, needs the network gate on).
     Linux: `strace -f` (every connect / sendto / sendmsg). macOS and Windows: the per-process connection table polled (zero_network_polled)."""
     import nettrace
     if nettrace.platform_kind(ctx):

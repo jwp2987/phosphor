@@ -1236,7 +1236,9 @@ def c_settings(ctx, r):
 @case("ui_completions_as_you_type_local", modes=("terminal",), order=64, gui=True)
 def c_completions_as_you_type_local(ctx, r):
     """Wave 1.5: completions-as-you-type is ON by default for LOCAL sessions. With the setting not written by the profile, typing the common prefix of two
-    files (NO Tab) opens the menu: both candidate names are on screen (OCR). Skips when the profile sets the option explicitly (an explicit value wins)."""
+    files (NO Tab) opens the menu: both candidate names are on screen (OCR). A profile that sets the option explicitly (an explicit value wins) makes the
+    case UNVERIFIABLE before its first key (round 16: case_settings.py declares completions_while_typing absent; the skip below is the same rule for a
+    caller that runs the function without run.py)."""
     import cases_caseagent as CAG
     explicit = CAG.setting_bool(ctx, "completions_open_while_typing")
     if explicit is not None:

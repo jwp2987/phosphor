@@ -1,7 +1,9 @@
-# appci/profile.py: builds the scratch HOME (owner-like config, NO credentials), the shell logging rc files
-# and the test tree. Never reads the owner's real config: CI has none. The owner-like settings are the ones in
-# docs/testing.md 3.1 (agent mode default, autodetect + natural-language detection on, vertical tabs are not
-# set because they do not affect input), plus a provider ONLY when the endpoint is configured (ci_env.py: env or ~/.config/phosphor-ci/ci.env).
+# appci/profile.py: builds the scratch HOME (NO credentials), the shell logging rc files and the test tree.
+# The settings file of a pass has three layers (docs/testing.md 3.1b "Test settings model"; round 16: this header said the profile never reads the
+# owner's config and sets no vertical tabs, which stopped being true when OWNER_SEED was added): the machine-local owner seed (write_settings reads
+# it, never modifies or prints it; without one a bare profile), the harness overrides write_settings applies (case_settings.HARNESS_FORCED names them,
+# with a provider ONLY when the endpoint is configured: ci_env.py, env or ~/.config/phosphor-ci/ci.env), and what a case writes itself and puts back.
+# A new override here is a new `forced=` entry in case_settings.SETTINGS in the same commit.
 import os, random, re, shutil, subprocess, sys, time
 
 
