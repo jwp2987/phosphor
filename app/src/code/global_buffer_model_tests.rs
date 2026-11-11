@@ -645,3 +645,70 @@ fn a_save_of_a_mixed_ending_file_keeps_each_line_ending() {
         });
     })
 }
+
+/// #2087: a file another program changed on disk while its buffer had unsaved edits is
+/// remembered until the buffer and the disk agree again; the echo of this editor's own save is
+/// not a change.
+#[test]
+fn a_disk_change_under_unsaved_edits_is_remembered_until_resolved() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let file = warp_util::file::FileId::new();
+        let other = warp_util::file::FileId::new();
+        gbm(&app).update(&mut app, |gbm, _ctx| {
+            // Nothing was saved from here yet: any text the watcher reports is someone else's.
+            assert!(gbm.is_external_disk_text(file, "one\n"));
+            assert!(!gbm.disk_changed_under_edits(file));
+
+            // Our own save, reported back by the watcher while the user already typed again:
+            // refused (the buffer has edits) but not a conflict.
+            gbm.note_written_text(file, "one\ntwo\n");
+            assert!(!gbm.is_external_disk_text(file, "one\ntwo\n"));
+            let external = gbm.is_external_disk_text(file, "one\ntwo\n");
+            gbm.note_disk_update_refused(file, external);
+            assert!(!gbm.disk_changed_under_edits(file));
+
+            // Another program's text, refused for the same reason: a conflict, for this file only.
+            let external = gbm.is_external_disk_text(file, "ONE\ntwo\n");
+            assert!(external);
+            gbm.note_disk_update_refused(file, external);
+            assert!(gbm.disk_changed_under_edits(file));
+            assert!(!gbm.disk_changed_under_edits(other));
+
+            // A reload that the user typed over before it landed is the same conflict; one of
+            // our own echo is not.
+            gbm.note_disk_reload_started(other, true);
+            assert!(gbm.external_reload_pending.contains(&other));
+            gbm.note_disk_reload_started(other, false);
+            assert!(!gbm.external_reload_pending.contains(&other));
+
+            // The hash is of the text: one changed byte is another text, and another file's
+            // save does not vouch for this one.
+            assert!(gbm.is_external_disk_text(file, "one\ntwo\n "));
+            assert!(gbm.is_external_disk_text(other, "one\ntwo\n"));
+        });
+    });
+}
+
+/// #2087: the kill switch is on unless the variable is exactly `0`, and the trace line the app
+/// tests read has this exact shape (no path, no content).
+#[test]
+fn the_disk_conflict_kill_switch_and_trace_line() {
+    use super::{disk_conflict_flag_enabled_for, disk_event_trace};
+
+    assert!(disk_conflict_flag_enabled_for(None));
+    assert!(disk_conflict_flag_enabled_for(Some("1")));
+    assert!(disk_conflict_flag_enabled_for(Some("")));
+    assert!(!disk_conflict_flag_enabled_for(Some("0")));
+
+    assert_eq!(
+        disk_event_trace("conflict", true),
+        "editor_disk outcome=conflict external=true"
+    );
+    assert_eq!(
+        disk_event_trace("reloaded", false),
+        "editor_disk outcome=reloaded external=false"
+    );
+}
