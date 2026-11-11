@@ -282,13 +282,19 @@ def app_share_usable(share, expected=None):
 
 def old_app_share(what, rec_old, case_metric=None):
     """the app-share median of an older record (previous run or baseline entry) for the SAME figure `what`, or None. An older record made before the
-    figure was part of the latency record is read from the case metric the run recorded (same key, n >= min_n)."""
+    figure was part of the latency record is read from the case metric the run recorded (same key, n >= min_n): either {what: {p50, n}} (Ctrl-C) or the
+    flat {what_ms, what_n} of an Enter's app segments (owner 2026-11-11, latency_enter on Windows Git Bash)."""
     a = (rec_old or {}).get("app_share") or {}
     if a.get("what") == what and a.get("p50") is not None and (a.get("n") or 0) >= min_n():
         return a["p50"]
-    m = (case_metric or {}).get(what) or {}
-    if m.get("p50") is not None and (m.get("n") or 0) >= min_n():
+    cm = case_metric or {}
+    m = cm.get(what) or {}
+    if isinstance(m, dict) and m.get("p50") is not None and (m.get("n") or 0) >= min_n():
         return m["p50"]
+    # the flat shape of an Enter's app segments (metrics.app_segments_ms: `<what>_ms` is the median, `<what>_n` the count), same n rule
+    flat = cm.get(what + "_ms")
+    if isinstance(flat, (int, float)) and not isinstance(flat, bool) and (cm.get(what + "_n") or 0) >= min_n():
+        return flat
     return None
 
 

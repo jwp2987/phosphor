@@ -3409,8 +3409,10 @@ Owner decision 2026-11-10: that plain session is the answer for these hosts, and
 not debt. On a host whose LOGIN shell is fish or nu the pane works like a plain terminal: keys go to ssh as typed, no
 blocks in the remote shell, no remote completions from the app, and the agent has no tools on that host (no remote
 `read_files`, grep, glob, edits or commands: the remote backends hang off the managed session, and a prompt typed for
-the agent in that pane is typed to the remote shell). A host whose login shell is bash, zsh or another POSIX shell is
-not affected, whatever shell the user starts there by hand afterwards.
+the agent in that pane is typed to the remote shell). A host whose login shell is bash or zsh is not affected, whatever
+shell the user starts there by hand afterwards. (This sentence said "bash, zsh or another POSIX shell" until
+2026-11-11: a POSIX login shell the remote command does not bootstrap, dash or ash for one, gets a plain session as
+well, by a different mechanism; see the next entry.)
 Why not a managed session there: the remote shell would never be bootstrapped, so the app would have no event that says
 ssh owns the tty and typed keys would rest on a probe or a give-up timer (owner rule: timers only as give-up nets), and
 the bootstrap would have to be quoted and written per shell (`docs/design/r10-lab.md`, "Rejected").
@@ -3423,8 +3425,43 @@ Tests: unit `ssh_wrapper_decides_after_connecting_over_one_master`, `ssh_login_s
 session itself. The agent-mode arms with a nu login shell (`lab_agent_remote_{flow,errors,drop}.nu`,
 `lab_fam_agent_edit_conflict.nu`, `lab_read_files_remote.nu`, `lab_diff_apply_remote.nu`) report this entry by name as
 UNVERIFIABLE (status `noref`, never a pass) when the app log of their connect shows the plain session
-(`cases_lab.plain_session_limit`, selftest `lab_plain_session_limit_2019`); a bash / zsh / dash / ash / pwsh arm is
-judged in full whatever the log says, and so is a fish / nu arm that gets a managed session.
+(`cases_lab.plain_session_limit`, selftest `lab_plain_session_limit_2019`); a bash / zsh / pwsh arm is
+judged in full whatever the log says, and so is a fish / nu arm that gets a managed session. (dash / ash arms: the
+next entry.)
+
+## A remote host whose login shell is dash or ash gets a plain ssh session: no agent tools on that host (#2120) — DECIDED 2026-11-11
+The remote command `ssh <host>` runs from a Phosphor pane bootstraps two login shells, bash and zsh. For any other
+POSIX login shell (dash, busybox ash, also sh and ksh) it prints the `SSH` hook, the MotD, and runs the shell with no
+bootstrap, so no `InitShell` and no first prompt ever come from that session (the same text is in the pinned upstream
+wrapper). Until round 19 the app still took that hook for a coming managed session and held every typed key for as
+long as ssh ran (#2120). Since round 19 the hook of such a shell is the plain verdict of the connect: the wrapper's
+hold ends at that event and the keys are ssh's (`TerminalView::ssh_on_remote_plain_login`,
+`input_queue::ssh_hook_announces_session`; design `docs/design/r19-shssh.md`; kill switch
+`PHOSPHOR_SSH_UNBOOTSTRAPPED_PLAIN=0`).
+Owner decision 2026-11-11: that plain session is the answer for these hosts, like fish and nu above (#2019), and what
+it lacks is a known limitation, not debt. On a host whose LOGIN shell is dash or ash (sh, ksh: any POSIX shell that is
+not bash or zsh) the pane works like a plain terminal: keys go to ssh as typed, no blocks in the remote shell, no
+remote completions from the app, and the agent has no tools on that host (a prompt typed for the agent in that pane
+is typed to the remote shell). A host whose login shell is bash or zsh is not affected, whatever shell the user
+starts there by hand afterwards.
+Why not a managed session there: the same reason as for fish and nu. Nothing in an unbootstrapped session says when
+the remote shell reads the tty, so typed keys would rest on a probe or a give-up timer (owner rule: timers only as
+give-up nets), and a bootstrap would have to be written and kept per shell.
+Revisit only by another owner decision, with a design that gives these login shells an announced session with an
+event-driven key release. Do not file the missing remote features on such a host as bugs, and do not "fix" the lab
+rows below by making the app assume a session it was never told about.
+Separate and still open: the remote command starts these shells as non-login shells, so `~/.profile` is not read
+(#2126). That is a defect with its own issue, not part of this decision.
+Tests: unit and view tests of #2120 (`terminal/view_test.rs`
+`managed_ssh_to_a_login_shell_the_remote_command_does_not_bootstrap_is_plain_at_its_ssh_hook`,
+`input_queue/ssh_phase_tests.rs`), integration `test_ssh_into_sh` / `test_ssh_into_ash`, lab
+`lab_nohelper_sh_login_keys.{dash,ash}` (the plain session itself: typed keys arrive, in both session modes). The
+AGENT-mode lab arms on a dash / ash host (`lab_agent_remote_{flow,errors}.{dash,ash}`, `lab_agent_remote_drop.dash`,
+`lab_fam_agent_{edit,delete}_conflict.dash`, `lab_read_files_remote.{dash,ash}`, `lab_diff_apply_remote.{dash,ash}`)
+report this entry by name as UNVERIFIABLE (status `noref`, never a pass) when the app log of their connect has the
+plain-login event of the SSH hook (`cases_lab.plain_session_limit`, selftest `r19_lab_dash_ash_agent_arms_2120`); a
+dash / ash arm whose connect logged no such event is judged in full, and so is every terminal-mode arm on these
+hosts.
 
 ## Code editor: unsaved edits always ask; a save over a file changed on disk asks — IMPROVED 2026-11-11 (#2092, #2087)
 
