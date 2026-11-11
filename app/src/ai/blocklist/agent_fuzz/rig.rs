@@ -141,6 +141,7 @@ pub fn setup(app: &mut App, scenario: &Scenario, safe_allowlist: bool) -> Rig {
         enable_safe_allowlist(app);
     }
     let terminal = add_window_with_terminal(app, None);
+    give_the_session_a_shell_this_machine_has(app, &terminal);
     let terminal_id = terminal.read(app, |view, _| view.id());
 
     let model_id = format!("fuzz-model-{}", NEXT_MODEL.fetch_add(1, Ordering::SeqCst));
@@ -183,6 +184,41 @@ pub fn setup(app: &mut App, scenario: &Scenario, safe_allowlist: bool) -> Rig {
         preprocess_dropped_at: None,
     }
 }
+
+/// The test terminal's session says its shell is zsh, and the commands the app runs on the
+/// session for itself (the `git rev-parse` probe before a grep or a file glob) are started as
+/// `zsh -f -c <line>`. On a machine with no zsh (round 14's Windows runner) none of them can
+/// start, and the app logs each as an ERROR, which I6 reports: 35 tests failed on
+/// "Failed to run command to check if in git repository: program not found". A session whose
+/// shell is not installed is the fixture's fault, not a state of the app. On such a machine the
+/// session gets the app's own local executor with the bash found on PATH, which reads the same
+/// POSIX lines. With zsh installed nothing changes. A machine with neither shell cannot run the
+/// rig and is told so here, not by an invariant.
+#[cfg(feature = "local_tty")]
+fn give_the_session_a_shell_this_machine_has(app: &mut App, terminal: &ViewHandle<TerminalView>) {
+    use crate::terminal::model::session::{CommandExecutor, LocalCommandExecutor};
+    use crate::terminal::shell::ShellType;
+
+    if warp_util::path::resolve_executable("zsh").is_some() {
+        return;
+    }
+    let bash = warp_util::path::resolve_executable("bash")
+        .expect(
+            "the agent fuzz rig runs the session's own commands in zsh or bash, and this \
+             machine has neither on PATH",
+        )
+        .into_owned();
+    let executor: std::sync::Arc<dyn CommandExecutor> =
+        std::sync::Arc::new(LocalCommandExecutor::new(Some(bash), ShellType::Bash));
+    let sessions = terminal.read(app, |view, _| view.sessions_model().clone());
+    sessions.update(app, |sessions, _| {
+        sessions.set_command_executor_for_all_sessions(executor);
+    });
+}
+
+/// Without a local tty the session runs no commands of its own (the no-op executor).
+#[cfg(not(feature = "local_tty"))]
+fn give_the_session_a_shell_this_machine_has(_: &mut App, _: &ViewHandle<TerminalView>) {}
 
 /// Turns the safe read-only allowlist on, adding `echo` to the defaults: `Args::Valid`'s
 /// `echo hi` is then a listed line (runs without a card) while the scenario's `fake-cmd cN` lines

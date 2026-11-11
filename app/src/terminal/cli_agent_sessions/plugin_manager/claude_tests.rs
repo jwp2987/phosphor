@@ -374,37 +374,47 @@ fn truncate_chars_cuts_by_characters_not_bytes() {
         return;
     }
     let script = shipped_bundle().join("plugins/warp/scripts/build-payload.sh");
+    // `canonicalize` gives a verbatim path on Windows (`\\?\C:\...`); bash is handed the plain
+    // form of the same path.
+    let script = script
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_owned();
+    // The whole outcome of one run, so a failure says what bash and the script reported.
+    let truncate = |text: &str, limit: &str, locale: Option<&str>| {
+        let mut command = std::process::Command::new("bash");
+        command
+            .arg("-c")
+            .arg("source \"$1\"; truncate_chars \"$2\" \"$3\"")
+            .arg("bash")
+            .arg(&script)
+            .arg(text)
+            .arg(limit);
+        if let Some(locale) = locale {
+            command.env("LC_ALL", locale);
+        }
+        let out = command.output().unwrap();
+        let stdout = String::from_utf8(out.stdout).expect("output is valid UTF-8");
+        let report = format!(
+            "{script} locale={locale:?} status={:?} stderr={:?}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (stdout, report)
+    };
     // 13 two-byte characters, 12 of them kept short of a cut: limit 10 -> 7 chars + "...".
     let input = "\u{e9}".repeat(13);
     for locale in ["C", "C.UTF-8"] {
-        let out = std::process::Command::new("bash")
-            .arg("-c")
-            .arg("source \"$1\"; truncate_chars \"$2\" 10")
-            .arg("bash")
-            .arg(&script)
-            .arg(&input)
-            .env("LC_ALL", locale)
-            .output()
-            .unwrap();
-        let text = String::from_utf8(out.stdout).expect("output is valid UTF-8");
+        let (text, report) = truncate(&input, "10", Some(locale));
         assert_eq!(
             text.trim_end_matches('\n'),
-            format!("{}...", "\u{e9}".repeat(7))
+            format!("{}...", "\u{e9}".repeat(7)),
+            "{report}"
         );
     }
     // Short text is unchanged, a ';' survives.
-    let out = std::process::Command::new("bash")
-        .arg("-c")
-        .arg("source \"$1\"; truncate_chars \"$2\" 200")
-        .arg("bash")
-        .arg(&script)
-        .arg("a;b \u{e9}")
-        .output()
-        .unwrap();
-    assert_eq!(
-        String::from_utf8(out.stdout).unwrap().trim_end(),
-        "a;b \u{e9}"
-    );
+    let (text, report) = truncate("a;b \u{e9}", "200", None);
+    assert_eq!(text.trim_end(), "a;b \u{e9}", "{report}");
 }
 
 #[test]

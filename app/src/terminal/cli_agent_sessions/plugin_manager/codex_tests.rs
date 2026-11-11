@@ -467,7 +467,8 @@ fn registrations_are_classified_by_their_recorded_source() {
         fs::write(
             dir.path().join("config.toml"),
             format!(
-                "[marketplaces.codex-warp]\nsource_type = \"{source_type}\"\nsource = \"{source}\"\n"
+                "[marketplaces.codex-warp]\nsource_type = \"{source_type}\"\nsource = {}\n",
+                toml_string(source)
             ),
         )
         .unwrap();
@@ -964,11 +965,29 @@ fn move_with_nothing_to_move_runs_nothing() {
 
 /// The shape `codex plugin marketplace add <source>` writes, plus the enabled plugin entry
 /// `codex plugin add warp@codex-warp` writes.
+/// `text` as a TOML basic string. A Windows folder (`C:\\Users\\...`) written between quotes as it
+/// is would be read as escapes, the file would not parse, and the registration under test would
+/// not be there at all.
+fn toml_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[test]
+fn toml_string_keeps_a_windows_folder_readable() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = r"C:\Users\dev\AppData\Local\Phosphor\resources\bundled\codex_plugin";
+    write_enabled_plugin_with_marketplace(dir.path(), "local", folder);
+    let config = super::codex_warp_marketplace_config(dir.path()).unwrap();
+    assert_eq!(config.local_path().as_deref(), Some(folder));
+    assert!(config.is_bundle_folder());
+}
+
 fn write_enabled_plugin_with_marketplace(dir: &Path, source_type: &str, source: &str) {
     fs::write(
         dir.join("config.toml"),
         format!(
-            "[marketplaces.codex-warp]\nsource_type = \"{source_type}\"\nsource = \"{source}\"\n\n[plugins.\"{}\"]\nenabled = true\n",
+            "[marketplaces.codex-warp]\nsource_type = \"{source_type}\"\nsource = {}\n\n[plugins.\"{}\"]\nenabled = true\n",
+            toml_string(source),
             super::PLUGIN_KEY
         ),
     )
@@ -978,7 +997,10 @@ fn write_enabled_plugin_with_marketplace(dir: &Path, source_type: &str, source: 
 fn write_git_marketplace_config(dir: &Path, source: &str) {
     fs::write(
         dir.join("config.toml"),
-        format!("[marketplaces.codex-warp]\nsource_type = \"git\"\nsource = \"{source}\"\n"),
+        format!(
+            "[marketplaces.codex-warp]\nsource_type = \"git\"\nsource = {}\n",
+            toml_string(source)
+        ),
     )
     .unwrap();
 }

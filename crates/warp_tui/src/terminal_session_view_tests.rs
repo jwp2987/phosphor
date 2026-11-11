@@ -126,7 +126,10 @@ fn shell_completion_source_warmup_loads_path_executables() {
             view.warm_shell_completion_sources(session.clone(), ctx);
         });
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // A give-up net, not a budget: the wait ends when the load does. On Windows the load is
+        // one `pwsh` start, and a cold pwsh on a loaded box takes more than the 5 s this used to
+        // allow (round 14, test-windows: failed twice at this deadline, passed the third time).
+        let deadline = Instant::now() + Duration::from_secs(45);
         while !session.has_loaded_external_commands() && Instant::now() < deadline {
             Timer::after(Duration::from_millis(10)).await;
         }

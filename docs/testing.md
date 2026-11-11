@@ -7228,3 +7228,26 @@ test still depends on the machine (it passes wherever both programs exist), so `
 runs the real bootstrap, sets `$env:PATH` to an empty folder, runs the prompt twice and requires `errors=0` and no `ERR:` line: it fails on any
 machine with pwsh if a lookup of an optional program records an error again. Skipped (returns) only where pwsh is not installed, like its
 siblings.
+
+### Fixtures that followed the machine (Windows; #2121)
+
+- Agent fuzz rig (`app/src/ai/blocklist/agent_fuzz/rig.rs`, `give_the_session_a_shell_this_machine_has`): the test terminal's session says its
+  shell is zsh and the app runs the session's own commands (the git probe before a grep or a file glob) with `zsh -f -c`. With no zsh on the
+  machine each of them failed to start and I6 reported the app's ERROR line (35 tests on the Windows runner). On such a machine the rig gives the
+  session the app's local executor with the bash found on PATH (`Sessions::set_command_executor_for_all_sessions`, test only). With zsh installed
+  nothing changes. With neither shell the rig panics and says so. I6, the oracle and the allowed ERROR lines are unchanged.
+- `plugin_manager/codex_tests.rs`: config fixtures write the marketplace `source` as a TOML string (`toml_string`); a Windows folder between
+  plain quotes is not TOML and the registration under test was not there. `toml_string_keeps_a_windows_folder_readable` checks the helper on
+  every platform.
+- `plugin_manager/opencode_tests.rs`: `file://` fixtures are built per platform (`file_url`: `file:///C:/opt/...` on Windows, where a file URL
+  without a drive is refused by the URL parser), and `classifies_bundle_folder_entries_at_any_install_location` also checks a Windows install
+  URL (drive, escaped space) on every platform.
+- `plugin_manager/claude_tests.rs` `truncate_chars_cuts_by_characters_not_bytes`: no verdict for its Windows failure (bash printed nothing and
+  the test kept neither stderr nor the status). It now hands bash the plain form of the script's path (not the verbatim `\\?\C:\...` that
+  `canonicalize` gives) and puts the path, locale, exit status and stderr in every assertion message. Same expectations.
+- `terminal/view_test.rs` `an_ssh_window_survives_its_own_block_start_with_a_polluted_echo`: the block has no session in that fixture, so its
+  shell family was the machine's default; on Windows (PowerShell) an ssh block takes the subshell-banner arm by design and records no pending
+  ssh. The test sets a POSIX startup shell and asserts the family before it starts. No assertion changed. Not covered by a test: the same window
+  in a PowerShell session.
+- `crates/warp_tui/src/terminal_session_view_tests.rs` `shell_completion_source_warmup_loads_path_executables`: the wait for the load is a
+  give-up net of 45 s (was 5 s: one cold `pwsh` start on the Windows runner took longer twice, then 1.4 s). It still ends when the load does.
