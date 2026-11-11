@@ -546,6 +546,13 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                     .as_global_install_mode();
                 match remote_server::policy::decide(Self::host_policy(&host, ctx), global) {
                     HelperDecision::Ask => {
+                        // #2122: said at INFO because the session now waits for a person. The
+                        // bootstrap is not written until the question is answered, and a log
+                        // without this line shows only a remote shell that never bootstraps.
+                        log::info!(
+                            "remote helper: asking the user about {host}; the bootstrap of \
+                             session {session_id:?} is held until the question is answered"
+                        );
                         self.state = SshInitState::AwaitingUserChoice {
                             session_info,
                             transport,
