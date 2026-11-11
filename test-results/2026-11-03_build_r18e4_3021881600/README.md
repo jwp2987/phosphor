@@ -250,6 +250,41 @@
 | terminal | remote_session_legacy | SKIP | not run in the PowerShell pane: uses rec.log and prompt.log of the local shell and `ssh.cmd` Ctrl-C paths: runs in the Git Bash pane |
 | terminal | harness_crash | FAIL | the terminal pass crashed outside a case: UnicodeEncodeError('charmap', 'save_case_log: UnicodeEncodeError(\'charmap\', \'2026-11-03T13:51:4 |
 | - | restore | PASS | all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored) |
+
+## PROVING cases (owner decides graduation)
+
+| case | platform | mode | status |
+|---|---|---|---|
+| agent_approval | macos | agent | PASS |
+| big_paste | macos | agent | PASS |
+| big_paste | macos | terminal | PASS |
+| big_paste | windows | terminal | SKIP |
+| editor_memory_7mb | macos | terminal | FAIL |
+| flood_scrollback_find | macos | agent | FAIL |
+| flood_scrollback_find | macos | terminal | FAIL |
+| remote_session_legacy | macos | agent | FAIL |
+| remote_session_legacy | macos | terminal | FAIL |
+| remote_session_legacy | windows | terminal | SKIP |
+| session_restore | macos | agent | SKIP |
+| session_restore | macos | terminal | SKIP |
+| soak | macos | agent | SKIP |
+| soak | macos | terminal | SKIP |
+| ssh_password_prompt | macos | agent | FAIL |
+| ssh_password_prompt | macos | terminal | FAIL |
+| ui_ctrl_r | macos | agent | PASS |
+| ui_ctrl_r | macos | terminal | PASS |
+| ui_ghost_accept | macos | agent | PASS |
+| ui_ghost_accept | macos | terminal | PASS |
+| ui_resize_typing | macos | agent | PASS |
+| ui_resize_typing | macos | terminal | PASS |
+| ui_split_panes | macos | agent | PASS |
+| ui_split_panes | macos | terminal | PASS |
+| ui_tab_menu | macos | agent | FAIL |
+| ui_tab_menu | macos | terminal | FAIL |
+| ui_tab_menu | windows | terminal | SKIP |
+
+passed everywhere it ran (5, candidates for the owner's decision): agent_approval, ui_ctrl_r, ui_ghost_accept, ui_resize_typing, ui_split_panes
+not passed somewhere (fail / skip / no-reference): big_paste, editor_memory_7mb, flood_scrollback_find, remote_session_legacy, session_restore, soak, ssh_password_prompt, ui_tab_menu
 - note: windows/run/results.json: 1527 KB skipped (over 1 MB)
 
 ## vs previous run
