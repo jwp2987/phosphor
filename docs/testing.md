@@ -488,19 +488,23 @@ round 15 (#2058), `app-test-linux-x11` in both modes after it; the SAME list on 
 the ConPTY release blocker #1349. Target <= 10 min per platform; UNMEASURED so far (the full matrix has not been timed
 either).
 
-**Destination mode in the real app (#1532, #1528).** The app runs in the table's default mode (`PHOSPHOR_QUEUE_DESTINATION` unset = `table`)
-unless the run sets the variable; the harness passes it through (Linux and Windows inherit the environment, macOS via `open --env`,
-`app.passthrough_env`; `APPCI_APP_ENV="K=V,K2=V2"` sets more app variables for one run). Every `mode_proof` row records
-`metrics.queue_destination` (`table` | `legacy` | `shadow`, parsed like `facts.rs`), and `run.py` prints the mode at the start. To exercise
-the kill switch in the real app, play the fix tier a second time with `PHOSPHOR_QUEUE_DESTINATION=legacy` (set it as a play-time variable or
-export it): with `APPCI_TIER=smoke` the case list narrows to `winmap.KILL_SWITCH_SMOKE` (`mode_proof`, `paste_instant_enter`, `tab_enter`,
-`ctrl_c_d`, `ssh_connect_typing`, `ssh_enter_then_immediate_command`, `routing_table`: the cases whose routing the table decides), about a
-third of the smoke time, so both modes are covered without doubling the tier. It is NOT part of the default fix tier (that would double
-its runtime); run it per candidate. `PHOSPHOR_QUEUE_DESTINATION=shadow` runs the whole smoke list and adds a `dest_disagree` row per
-pass that FAILS on any `kh_dest_disagree` line in the app log that carries no `expected=` tag (`metrics.dest_disagree`, `dest_disagree_untagged`).
-Unit side of the same checks: `shadow::take_untagged` (a `cfg(test)` counter), `shadow_mode_reports_zero_untagged_disagreements_over_chained_key_sequences`
-(`terminal/view_test.rs`) and the exhaustive `exhaustive_enumeration_*` tests (`input_queue/table_enum_tests.rs`, #1530: all gate masks, the phase
-product and every pair of fact dimensions). `python3 script/realapp/appci/selftest.py` checks the metric and the list.
+**Destination logic in the real app (#1532, #1528; one path since #1353 step 8).** The app has ONE destination logic, the table. The
+`legacy` kill switch and the `shadow` comparison were removed with the legacy chain (`docs/design/r17-step8.md`, `DECLINED.md`), so there is
+no second pass of the fix tier and no `dest_disagree` row any more: `winmap.KILL_SWITCH_SMOKE` and `cases.dest_disagreements` are gone,
+`winmap.smoke_for` returns the whole list for every run. Every `mode_proof` row still records `metrics.queue_destination`, always `table`
+(`cases.dest_mode`). `PHOSPHOR_QUEUE_DESTINATION` selects nothing: a value other than `table` is still passed through to the app (Linux and
+Windows inherit the environment, macOS via `open --env`, `app.passthrough_env`), the app refuses it with one log line
+(`PHOSPHOR_QUEUE_DESTINATION=<value> is ignored`) and `run.py` prints a WARNING at the start (`cases.retired_dest_switch`); the run is a table
+run. `APPCI_APP_ENV="K=V,K2=V2"` still sets other app variables for one run.
+**The run-wide oracle that replaces the shadow row: `table_no_leaf`.** After each pass `run.py` reads the pass's app log for the app's two
+error lines `input queue: no leaf for ...` / `input queue: an arriving key has no leaf for ...` (`cases.table_no_leaf_lines`): a destination
+plan no executor could carry out, i.e. a key that was not applied (until step 8 such a plan re-ran the legacy chain). One line FAILS the
+pass and adds a row `table_no_leaf` (`metrics.table_no_leaf` = the count, the detail quotes the first line: row and outcome, never typed
+text). A clean pass has no row of that name, so it adds nothing to a results table or to a case count. Worked, unproven: no app run has
+exercised it. Unit side: `every_delivery_plan_has_a_leaf`, `every_arrival_plan_has_a_leaf` (`input_queue/table_enum_tests.rs`), the
+`every_plan_*_has_a_leaf` view tests (`terminal/view_test.rs`, the `dest_table::no_leaf_hits` counter) and the exhaustive
+`exhaustive_enumeration_*` tests (#1530). `python3 script/realapp/appci/run.py --self-test` checks the metric, the refused values and the
+oracle's pattern (`destination_mode_metric_and_kill_switch_smoke`).
 
 | job | runner | session | input / screenshots |
 |---|---|---|---|

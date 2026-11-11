@@ -56,17 +56,15 @@ def proving_in_the_fix_tier():
     assert not [n for n in cases.PROVING if n not in reg], "PROVING names no registered case: %s" % [n for n in cases.PROVING if n not in reg]
     assert not set(cases.PROVING) & set(cases.SMOKE), "PROVING and SMOKE overlap: %s" % sorted(set(cases.PROVING) & set(cases.SMOKE))
     assert not [n for n in cases.PROVING if reg[n].get("lab")], "PROVING lists a lab arm: lab cases are PROVING_LAB globs"
-    # Linux / macOS: the fix selection (table mode) holds every PROVING case; legacy (kill switch) is the narrowed list and may not
+    # Linux / macOS: the fix selection holds every PROVING case (#1353 step 8: no narrowed legacy list any more, the app has one destination logic)
     sel = wm.smoke_for("table", cases.SMOKE + cases.PROVING)
     assert set(cases.PROVING) <= set(sel) and set(cases.SMOKE) <= set(sel)
-    assert not set(wm.smoke_for("legacy", cases.SMOKE + cases.PROVING)) - set(wm.KILL_SWITCH_SMOKE)
     # the fake pass: PROVING_FAKE are agent-only PROVING cases; each runs in exactly one pass, the fake one; everything else only in the ordinary passes
     assert set(cases.PROVING_FAKE) <= set(cases.PROVING) and all(reg[n]["modes"] == ("agent",) for n in cases.PROVING_FAKE), "PROVING_FAKE: not agent-only PROVING cases"
     csv = ",".join(sel)
     assert runmod.fake_pass_plan(csv, ["terminal", "agent"], False) and not runmod.fake_pass_plan(csv, ["terminal"], False)
     assert not runmod.fake_pass_plan(csv, ["agent"], True), "already the fake globally: no second pass"
     assert not runmod.fake_pass_plan(None, ["agent"], False), "outside the fix tier / with explicit --cases: no fake pass"
-    assert not runmod.fake_pass_plan(",".join(wm.smoke_for("legacy", cases.SMOKE + cases.PROVING)), ["agent"], False), "kill-switch run: no PROVING case, no fake pass"
     for n in sel:
         assert [runmod.fake_pass_ok(n, f, True) for f in (False, True)] == ([False, True] if n in cases.PROVING_FAKE else [True, False]), n
     assert all(runmod.fake_pass_ok(n, f, False) for n in sel for f in (False, True)), "no plan: every pass runs every case (unchanged behaviour)"
@@ -101,21 +99,23 @@ def proving_in_the_fix_tier():
 
 @check
 def destination_mode_metric_and_kill_switch_smoke():
-    """#1532 / #1528: the destination mode is recorded in the results metrics, the legacy smoke pass is a subset of SMOKE, and the shadow
-    disagreement counter reads the app log."""
+    """#1532 -> #1353 step 8: the app has one destination logic. The metric always says table, a PHOSPHOR_QUEUE_DESTINATION that asks for a removed
+    mode is named (not obeyed), no value narrows the smoke list, and the run-wide no-leaf oracle reads the app log."""
     import app as appmod
-    assert cases.dest_mode({}) == "table" and cases.dest_mode({"PHOSPHOR_QUEUE_DESTINATION": "  "}) == "table"
-    assert cases.dest_mode({"PHOSPHOR_QUEUE_DESTINATION": "shadow"}) == "shadow" and cases.dest_mode({"PHOSPHOR_QUEUE_DESTINATION": "table"}) == "table"
-    for v in ("legacy", "0", "off", "false", "bogus"):
-        assert cases.dest_mode({"PHOSPHOR_QUEUE_DESTINATION": v}) == "legacy", v
-    assert set(winmap.KILL_SWITCH_SMOKE) <= set(cases.SMOKE), "KILL_SWITCH_SMOKE names a case outside SMOKE"
-    assert winmap.smoke_for("table", cases.SMOKE) == tuple(cases.SMOKE) and winmap.smoke_for("shadow", cases.SMOKE) == tuple(cases.SMOKE)
-    legacy = winmap.smoke_for("legacy", cases.SMOKE)
-    assert legacy and set(legacy) == set(winmap.KILL_SWITCH_SMOKE) and len(legacy) < len(cases.SMOKE) and "mode_proof" in legacy
-    # the metric lands in the mode_proof row (fake ctx: no OCR, the log says the view mode)
+    for env in ({}, {"PHOSPHOR_QUEUE_DESTINATION": "  "}, {"PHOSPHOR_QUEUE_DESTINATION": "table"}, {"PHOSPHOR_QUEUE_DESTINATION": "legacy"},
+                {"PHOSPHOR_QUEUE_DESTINATION": "shadow"}, {"PHOSPHOR_QUEUE_DESTINATION": "bogus"}):
+        assert cases.dest_mode(env) == "table", env
+    assert cases.retired_dest_switch({}) is None and cases.retired_dest_switch({"PHOSPHOR_QUEUE_DESTINATION": "  "}) is None
+    assert cases.retired_dest_switch({"PHOSPHOR_QUEUE_DESTINATION": " table "}) is None
+    for v in ("legacy", "shadow", "0", "off", "false", "bogus"):
+        assert cases.retired_dest_switch({"PHOSPHOR_QUEUE_DESTINATION": " %s " % v}) == v, v
+    assert not hasattr(winmap, "KILL_SWITCH_SMOKE"), "the legacy pass is gone: no narrowed list"
+    for dest in ("table", "legacy", "shadow"):
+        assert winmap.smoke_for(dest, cases.SMOKE) == tuple(cases.SMOKE), dest
+    # the metric lands in the mode_proof row (fake ctx: no OCR, the log says the view mode), whatever the variable says
     saved = os.environ.get("PHOSPHOR_QUEUE_DESTINATION")
     try:
-        for env, want in ((None, "table"), ("legacy", "legacy"), ("shadow", "shadow")):
+        for env in (None, "legacy", "shadow"):
             if env is None:
                 os.environ.pop("PHOSPHOR_QUEUE_DESTINATION", None)
             else:
@@ -125,22 +125,24 @@ def destination_mode_metric_and_kill_switch_smoke():
                                         shot=lambda *a, **k: None)
             r = cases.Result("mode_proof", "agent")
             cases.c_mode_proof(ctx, r)
-            assert r.metrics.get("queue_destination") == want, (env, r.metrics)
+            assert r.metrics.get("queue_destination") == "table", (env, r.metrics)
             assert not r.fails, r.fails
     finally:
         if saved is None:
             os.environ.pop("PHOSPHOR_QUEUE_DESTINATION", None)
         else:
             os.environ["PHOSPHOR_QUEUE_DESTINATION"] = saved
-    # macOS passes the variable through `open --env`
+    # macOS passes the variable through `open --env` (so the app's own "is ignored" line is in its log there too)
     assert appmod.passthrough_env({"PHOSPHOR_QUEUE_DESTINATION": "legacy", "HOME": "/x"}) == {"PHOSPHOR_QUEUE_DESTINATION": "legacy"}
     assert appmod.passthrough_env({"APPCI_APP_ENV": "FOO=1,BAR=2", "FOO": "1"}) == {"FOO": "1"}
     assert appmod.passthrough_env({}) == {}
-    # the shadow counter
-    log = ("2026 DEBUG input_order kh_dest_disagree row=D7 legacy=pty table=editor flags=x\n"
-           "2026 DEBUG input_order kh_dest_disagree row=P1a legacy=dropped table=held flags=x expected=OD5\n"
-           "2026 DEBUG input_order keydown key=a\n")
-    assert cases.dest_disagreements(log) == (2, 1) and cases.dest_disagreements("") == (0, 0)
+    # the no-leaf oracle: the app's two error lines, and nothing else (the decision hops name rows too)
+    log = ("2026 ERROR input queue: no leaf for Hold(SubshellSetup) (row H7, class Typed); the input is kept in the editor or not applied, never written\n"
+           "2026 ERROR input queue: an arriving key has no leaf for AgentInput (row D2); not applied\n"
+           "2026 DEBUG input_order hop=kh_table_decide class=Typed origin=Keyboard row=D6 outcome=Pty(Typed) effects=Effects(0x1000) arrival=1\n"
+           "2026 DEBUG input_order hop=kh_table_no_leaf row=H7 outcome=Hold(SubshellSetup)\n")
+    assert len(cases.table_no_leaf_lines(log)) == 2 and cases.table_no_leaf_lines("") == []
+    assert not hasattr(cases, "dest_disagreements"), "the shadow counter went with the shadow mode"
 
 
 @check

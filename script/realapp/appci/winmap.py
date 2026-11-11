@@ -361,16 +361,12 @@ def tier_plan(platform, tier, mode, pane, smoke, proving=()):
     return names, o
 
 
-# #1532: the fix tier runs the app in its DEFAULT destination mode (table). Run again with PHOSPHOR_QUEUE_DESTINATION=legacy (the shipped kill
-# switch) and the tier narrows to this list: the cases whose routing the table decides (paste, Tab+Enter, Ctrl-C, both ssh hand-overs, the
-# routing table), so the legacy chain is exercised in the real app for roughly a third of the smoke time. Each name must be in cases.SMOKE
-# (selftest). Shadow (PHOSPHOR_QUEUE_DESTINATION=shadow) runs the whole smoke list and the run fails on any untagged kh_dest_disagree line.
-KILL_SWITCH_SMOKE = ("mode_proof", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "ssh_enter_then_immediate_command", "routing_table")
-
-
+# #1532 -> #1353 step 8: the app has ONE destination logic (the table). The fix tier used to narrow to a KILL_SWITCH_SMOKE list when the run set
+# PHOSPHOR_QUEUE_DESTINATION=legacy, and to add a `dest_disagree` row in shadow mode; both modes were removed with the legacy chain, so every
+# run plays the whole list. `dest` is kept in the signature for the callers (run.py, selftest_r15_tiers.py).
 def smoke_for(dest, smoke):
-    """The smoke case names for destination mode `dest` ('table' | 'shadow' | 'legacy')."""
-    return tuple(n for n in smoke if n in KILL_SWITCH_SMOKE) if dest == "legacy" else tuple(smoke)
+    """The smoke case names for a run: all of `smoke` (`dest` is always 'table')."""
+    return tuple(smoke)
 
 
 # ---------------------------------------------------------------- round 15 wave 5 part A (#2076, #2077; docs/design/r15-w5a.md)
