@@ -7565,10 +7565,10 @@ result, and the usage suite depends on the binary's exit codes. It is no longer 
   "`<job>` skipped scenarios (N; not coverage)" in the round's README, and notes that nextest counted them as passed. nextest's own summary
   line is kept as `summary_line`.
 A predicate names its reason with `warpui::integration::skip_because("...")` (records it, returns `false`) or `needs(condition, "...")`.
-Write the reason as what the scenario NEEDS. Named so far: the ssh fixture (which program or shell is missing), "a POSIX local shell" for
-the ssh scenarios, `skip_if_powershell_core_2303` (15 scenarios), the tmux ssh wrapper flag (#2128). A predicate that names none gets "its
-set_should_run_test predicate said no (platform, shell or feature gate; no reason given)": about 30 predicates still do; give a new one a
-reason. On a machine without the evidence directory the line is printed but nextest hides the output of a passing test, so only CI counts.
+Write the reason as what the scenario NEEDS. Every predicate in `crates/integration/src/test*.rs` names one (r19-integfix: the 43 that
+returned a bare bool are wrapped in `needs(<the same condition>, "...")`: the local shell, the platform, the feature flag). A predicate
+that names none still gets "its set_should_run_test predicate said no (platform, shell or feature gate; no reason given)": seeing that
+text in a skip line means a new predicate was added without a reason; give it one. On a machine without the evidence directory the line is printed but nextest hides the output of a passing test, so only CI counts.
 ### The three scenarios of #2122 (all TEST faults; no assertion changed)
 - `test_ssh_with_shell_override`: the app asked whether to install the remote helper (`always_ask`, the default) and held the bootstrap for
   an answer no scenario gives. All ssh scenarios now set `never_install` (`ssh.rs` `without_helper_question`). Fails as before if the remote

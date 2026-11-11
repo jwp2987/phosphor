@@ -52,10 +52,15 @@ pub fn test_ctrl_d_exit() -> Builder {
 pub fn test_ctrl_d_handled_by_read_during_bootstrapping() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            let (starter, _) = current_shell_starter_and_version();
-            // We need to fix https://github.com/zerx-lab/warp/issues/1869 before
-            // this test works on fish.
-            !matches!(starter.shell_type(), ShellType::Fish)
+            warpui::integration::needs(
+                {
+                    let (starter, _) = current_shell_starter_and_version();
+                    // We need to fix https://github.com/zerx-lab/warp/issues/1869 before
+                    // this test works on fish.
+                    !matches!(starter.shell_type(), ShellType::Fish)
+                },
+                "a local shell other than fish (upstream issue 1869)",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();

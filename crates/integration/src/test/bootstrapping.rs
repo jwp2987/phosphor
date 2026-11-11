@@ -84,8 +84,13 @@ pub fn test_unescaped_prompt_bootstraps() -> Builder {
 pub fn test_paste_and_type_characters_before_bootstrap() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            let (starter, _version) = current_shell_starter_and_version();
-            !matches!(starter.shell_type(), ShellType::Fish)
+            warpui::integration::needs(
+                {
+                    let (starter, _version) = current_shell_starter_and_version();
+                    !matches!(starter.shell_type(), ShellType::Fish)
+                },
+                "a local shell other than fish",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -224,8 +229,13 @@ fn assert_active_prompt_text(expected: &'static str) -> AssertionCallback {
 pub fn test_bash_honor_ps1_expands_dynamic_prompt_once() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            let (starter, _) = current_shell_starter_and_version();
-            starter.shell_type() == ShellType::Bash
+            warpui::integration::needs(
+                {
+                    let (starter, _) = current_shell_starter_and_version();
+                    starter.shell_type() == ShellType::Bash
+                },
+                "bash as the local shell under test",
+            )
         })
         .with_user_defaults(std::collections::HashMap::from([(
             HonorPS1::storage_key().to_owned(),
@@ -295,9 +305,14 @@ pub fn test_bootstrap_with_no_script_execution_block() -> Builder {
 pub fn test_instant_prompt_bootstrap() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on zsh
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Zsh)
+            warpui::integration::needs(
+                {
+                    // Only run this one on zsh
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Zsh)
+                },
+                "zsh as the local shell under test",
+            )
         })
         .with_setup(|utils| {
             // If the instant prompt var is not set to off, hang forever.
@@ -317,10 +332,15 @@ pub fn test_instant_prompt_bootstrap() -> Builder {
 pub fn test_bash_bootstraps_with_prompt_command_array() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on bash
-            let (starter, version) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Bash)
-                && version_compare::compare_to(version, "5.1", Cmp::Ge).unwrap_or(false)
+            warpui::integration::needs(
+                {
+                    // Only run this one on bash
+                    let (starter, version) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Bash)
+                        && version_compare::compare_to(version, "5.1", Cmp::Ge).unwrap_or(false)
+                },
+                "bash 5.1 or newer as the local shell under test",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -354,9 +374,14 @@ PROMPT_COMMAND=('printf "\033]0;TEST_TAB_TITLE\a"' 'echo hello')
 pub fn test_zsh_bootstraps_with_nounset_option() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on zsh
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Zsh)
+            warpui::integration::needs(
+                {
+                    // Only run this one on zsh
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Zsh)
+                },
+                "zsh as the local shell under test",
+            )
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         // Enable nounset after bootstrap, then run a command to trigger precmd/preexec hooks
@@ -386,9 +411,14 @@ pub fn test_zsh_bootstraps_with_nounset_option() -> Builder {
 pub fn test_bash_bootstraps_with_nounset_option() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on bash
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Bash)
+            warpui::integration::needs(
+                {
+                    // Only run this one on bash
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Bash)
+                },
+                "bash as the local shell under test",
+            )
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(execute_command_for_single_terminal_in_tab(
@@ -417,9 +447,14 @@ pub fn test_bash_bootstraps_with_nounset_option() -> Builder {
 pub fn test_bash_bootstraps_with_nounset_in_rcfile() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on bash
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Bash)
+            warpui::integration::needs(
+                {
+                    // Only run this one on bash
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Bash)
+                },
+                "bash as the local shell under test",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -439,8 +474,13 @@ pub fn test_bash_bootstraps_with_nounset_in_rcfile() -> Builder {
 pub fn test_pwsh_vi_edit_mode_does_not_corrupt_commands() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            let (starter, _) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::PowerShell)
+            warpui::integration::needs(
+                {
+                    let (starter, _) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::PowerShell)
+                },
+                "PowerShell as the local shell under test",
+            )
         })
         .with_setup(|utils| {
             let dir = utils.test_dir();
@@ -469,10 +509,15 @@ pub fn test_pwsh_vi_edit_mode_does_not_corrupt_commands() -> Builder {
 pub fn test_bash_bootstraps_with_prompt_command_array_that_sets_ps1() -> Builder {
     new_builder()
         .set_should_run_test(|| {
-            // Only run this one on bash
-            let (starter, version) = current_shell_starter_and_version();
-            matches!(starter.shell_type(), shell::ShellType::Bash)
-                && version_compare::compare_to(version, "5.1", Cmp::Ge).unwrap_or(false)
+            warpui::integration::needs(
+                {
+                    // Only run this one on bash
+                    let (starter, version) = current_shell_starter_and_version();
+                    matches!(starter.shell_type(), shell::ShellType::Bash)
+                        && version_compare::compare_to(version, "5.1", Cmp::Ge).unwrap_or(false)
+                },
+                "bash 5.1 or newer as the local shell under test",
+            )
         })
         .with_user_defaults(std::collections::HashMap::from([(
             HonorPS1::storage_key().to_owned(),

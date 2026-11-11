@@ -64,8 +64,10 @@ macro_rules! generate_can_bootstrap_remote_subshell_for_shell {
                 .set_should_run_test(|| {
                     let (starter, _) = current_shell_starter_and_version();
                     // Last: this starts the local sshd (see `ssh_test_fixture_available`).
-                    starter.shell_type() != ShellType::PowerShell
-                        && ssh_test_fixture_available($shell)
+                    warpui::integration::needs(
+                        starter.shell_type() != ShellType::PowerShell,
+                        "a POSIX local shell (PowerShell has no ssh wrapper)",
+                    ) && ssh_test_fixture_available($shell)
                 })
                 .with_user_defaults(HashMap::from([(
                     AddedSubshellCommands::storage_key().to_owned(),

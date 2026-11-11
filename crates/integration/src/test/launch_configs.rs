@@ -132,7 +132,7 @@ pub fn test_with_launch_config() -> Builder {
 // TODO(CORE-2300): Once we remove FeatureFlag::ShellSelector, we should remove this test.
 pub fn test_open_launch_config_from_add_tab_menu_legacy() -> Builder {
     new_builder()
-        .set_should_run_test(|| !FeatureFlag::ShellSelector.is_enabled())
+        .set_should_run_test(|| warpui::integration::needs(!FeatureFlag::ShellSelector.is_enabled(), "FeatureFlag::ShellSelector off (the legacy add-tab menu, CORE-2300); it is on in every default build of this fork, so this legacy scenario does not run"))
         .with_setup(move |utils| {
             utils.set_env("WARP_CONFIG_WATCHER_DELAY_MS", Some((10).to_string()));
 
