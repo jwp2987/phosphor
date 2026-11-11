@@ -5786,3 +5786,14 @@ Details a reader of a red row needs:
 Self-tests (`script/realapp/appci/selftest_pointer.py`, run by `run.py --self-test` and `selftest.py`): `pointer_cases_registry_r14_w3a` (PROVING only, both modes, Windows reasons, this section, the maximise key and the palette text against the app's sources), `pointer_fixture_and_screen_read_parts`, `pointer_sgr_and_reporting_parts`, `pointer_selection_and_clipboard_parts`, `pointer_link_opener_parts`, `pointer_pane_probe_parts`. Each judge is fed the wrong results it must reject (only the key arriving, arrow keys instead of wheel reports, a screen that did not move, the OSC 8 text opened instead of its target, a file opened at line 1, a maximise that did nothing, a divider that moved the other way).
 Run: `python3 script/realapp/appci/run.py --cases link_and_path_click,selection_modes,primary_and_middle_click,wheel_scroll,pane_resize_maximize`.
 Harness finding, not changed here (#2082): `app.py` sets `PHOSPHOR_APPCI_FIND_FILE` only in the Windows launcher, so the find hook (#1789) has never been on in a Linux or macOS run and every Linux pointer case has placed the pointer by OCR (r12a rows carry "app find hook gave no position"). The statement above in 2.8 that `app.py` sets it holds for Windows only.
+
+## Round 15: self-test check functions that never ran (#2086, TEST)
+
+`selftest.py` runs only the functions that carry `@check`. Six had lost that line in hand merges of the file's tail and never ran (about 285
+assertions; four of them are named in this file as the proof that an oracle can fail): `wrapped_copy_and_vertical_tabs_pure_parts_1976_1990`,
+`r14_w1a_wave1_cases_pure_parts_and_registry`, `r14_w1b_pure_parts`, `r14_w2b_state_cases`, `r14_window_use_cases_pure_parts` and
+`lab_remote_edit_pieces`. The first five are registered again and pass. `every_check_function_is_registered_2086`
+(`script/realapp/appci/selftest_registered.py`) now fails when an asserting zero-argument function of a `selftest*.py` file is not registered,
+naming it. `lab_remote_edit_pieces` is listed there as the one known exception (`KNOWN_UNREGISTERED`): called directly it fails, because it
+expects `lab_remote_edit` arms for pwsh and the registry has none. Whether the arms or the expectation are wrong is the lab owner's call; the
+guard also fails once it is registered while still on the list, so the exception cannot outlive the decision.
