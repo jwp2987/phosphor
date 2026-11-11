@@ -3,7 +3,8 @@
 #   ui_copy_wrapped_output        keyboard only (Linux, macOS, Windows Git Bash pane): `cat` a file with a line 2.5 pane-widths long, a short line, a line of
 #                                 EXACTLY the pane width, one of width + 1 and a last line; select the block (block-up key) and copy it. The clipboard holds the
 #                                 file's lines exactly: no line break at a soft wrap, none lost after the exactly-full line. The width is the shell's `stty size`.
-#   ui_copy_wrapped_drag          pointer (X11; Wayland with the virtual pointer): a drag from a word on the first visual row of the long line to a word on the
+#   ui_copy_wrapped_drag          pointer (X11; Wayland with the virtual pointer; Windows Git Bash pane by SendInput, positions from the app's find hook
+#                                 only, r15 wave 4): a drag from a word on the first visual row of the long line to a word on the
 #                                 second gives the text between them with no line break; a triple click on a word gives the whole logical line.
 #   ui_vertical_tabs_many         vertical tabs on (from the profile, else switched on live and restored), APPCI_VT_TABS (8) tabs, one exact command in each; every
 #                                 tab reached by its number key in a shuffled order, then next / previous / last tab, each proven by that tab's own `pwd`; the tab
@@ -11,6 +12,9 @@
 #   ui_vertical_tabs_panel_click  4 tabs, each in a directory named by an OCR-safe token and with a last command holding it. With tab 1 shown, the other tabs'
 #                                 tokens are on screen only in the panel: they are stacked top to bottom in tab order, and a click on a row puts the next typed
 #                                 command in that tab's shell. The panel's own settings (view mode, primary info) stay as the profile has them.
+# Windows (r15 wave 4, #2060; r14-test-gaps T31, T33): the two vertical-tabs cases run in the Git Bash pane. The panel is switched on through the file
+# the app reads there (cases_ui.settings_path); the panel rows of ui_vertical_tabs_panel_click are located from the app's `appci_find` lines
+# (hook_panel_rows), not by OCR, and clicked with SendInput.
 # Same rules as cases.py: the EXACT text (clipboard, effect file, rec.log), typing at 10-25 ms/key with instant Enter, a case that cannot run SKIPS with the reason.
 import os, re, sys, time
 
@@ -151,6 +155,23 @@ def rows_stacked(rows, min_step=6):
     return True, desc
 
 
+def hook_panel_rows(sightings, band=3):
+    """sightings = {tab number: [(cx, cy), ...]}: every place the app's find hook reported a tab's token, OLDEST FIRST (the token is drawn in the panel
+    row and, while that tab is shown, in its pane). -> [(tab number, cx, cy)] with the panel's sighting of each tab that has one: the panel is the
+    leftmost column any token was drawn in, so of a tab's sightings within `band` px of that tab's smallest x the NEWEST is taken (a row moves when
+    the rows above it change height; the hook logs every new position). Tabs never sighted are left out; the caller judges how many it needs and
+    whether they are a stacked column (rows_stacked)."""
+    rows = []
+    for k in sorted(sightings):
+        pts = sightings[k]
+        if not pts:
+            continue
+        x0 = min(p[0] for p in pts)
+        near = [p for p in pts if p[0] - x0 <= band]
+        rows.append((k, near[-1][0], near[-1][1]))
+    return rows
+
+
 def tab_counts(text):
     """[(index, count)] of every `hop=tab_activate` line of `text`: the tab a key asked for and how many tabs the window had"""
     return [(int(a), int(b)) for a, b in TAB_HOP_RE.findall(text)]
@@ -249,7 +270,7 @@ def c_copy_wrapped_drag(ctx, r):
     """#1976 with the pointer: a drag from a word on the first visual row of a soft-wrapped line to a word on the second, then copy: the text between the
     two words, no line break. A triple click on a word, then copy: the whole printed line. Positions come from the app's find hook, else OCR."""
     m = U.mouse_or_skip(ctx, r)
-    U.need_tesseract(r)
+    U.need_tesseract(r, ctx)
     fx = print_wrap_fixture(ctx, r, "drag", register=True)
     if not fx:
         return
@@ -374,11 +395,14 @@ def probe_logged(fname):
     return lambda cmds: any(fname in c for c in cmds)
 
 
-def open_tabs(ctx, r, n, tag):
+def open_tabs(ctx, r, n, tag, register=False):
     """tab 1 is the pane the case started in (its cwd stays the work dir); tabs 2..n are opened with the new-tab key (in the agent pass each is put in
     agent view when it opened as a terminal session), each moved to its own directory <W>/<token>. One short command holding the tab's token runs in every tab (so the panel row shows it, and the effect file proves where each line
-    ran) -> (tokens, dirs, effect file name). Every line is checked exactly: effect file and rec.log."""
+    ran) -> (tokens, dirs, effect file name). Every line is checked exactly: effect file and rec.log. register=True gives the tokens to the app's
+    find hook BEFORE anything holds them (the hook attaches a hit when text is laid out: a title laid out earlier never reports)."""
     toks = vt_tokens(ctx, n)
+    if register:
+        U.register_find(ctx, *toks)
     eff = "vt_%s.txt" % tag
     ctx.rm(eff)
     dirs, expect = [R.norm_path(ctx.W)], []
@@ -451,8 +475,9 @@ def close_extra_tabs(ctx, r, n):
 
 
 def vt_need(ctx, r):
-    if ctx.win:
-        r.skip("Windows: the case rewrites the settings file while the app runs, which is not ported there (as ui_settings_live)")
+    """nothing is missing on any platform since r15 wave 4 (#2060): on Windows the settings file the app reads is cases_ui.settings_path's
+    (WindowsApp.config), so VTabs switches the panel on live there as on Linux and macOS. Kept as the one place a platform need would be stated."""
+    return
 
 
 def first_tab_precondition(got, want):
@@ -529,13 +554,32 @@ def c_vertical_tabs_many(ctx, r):
     U.exact_burst(ctx, r, "vt_many_closed", 4)
 
 
+def _panel_rows_from_hook(ctx, r, toks, n, since):
+    """Windows: the panel rows of tabs 2..n from the app's `appci_find` lines since the tabs were opened (hook_panel_rows) -> rows, or None after
+    reporting that they cannot be located (not judged: the VM has no OCR engine to fall back on)"""
+    import cases_window_use as WU                        # imported here: cases_window_use imports this module
+    origin = ctx.be.client_origin()
+    ctx.shot("vt_panel")
+    text = ctx.log_since(since)
+    sightings = {k + 1: [(w[1], w[2]) for w in WU.find_rows(text, toks[k], origin)] for k in range(1, n)} if origin else {}
+    rows = hook_panel_rows(sightings)
+    if len(rows) < 2:
+        r.unverifiable("the panel rows of tabs 2..%d could not be located: the app logged `appci_find` lines for %d of %d tab tokens (window origin %r; "
+                       "shots/*vt_panel.png). The panel's view mode / primary info in this profile may show neither the command nor the directory, or "
+                       "the build has no find hook; Windows has no OCR engine to fall back on. Stacking and the row click are NOT checked"
+                       % (n, len(rows), n - 1, origin))
+        return None
+    r.note("panel rows located from the app's find hook (the newest sighting in each token's leftmost column), not by OCR")
+    return rows
+
+
 @case("ui_vertical_tabs_panel_click", order=87, gui=True)
 def c_vertical_tabs_panel_click(ctx, r):
     """#1990: the panel itself. With tab 1 shown, the tokens of tabs 2..4 (each tab's directory name and last command) are on screen only in the panel:
     they are stacked top to bottom in tab order, and a click on a row puts the next typed command in that tab's shell (its own `pwd`)."""
     vt_need(ctx, r)
     m = U.mouse_or_skip(ctx, r)
-    U.need_tesseract(r)
+    U.need_tesseract(r, ctx)
     n = 4
     if not first_tab_in_front(ctx, r, "panel"):
         return
@@ -544,19 +588,25 @@ def c_vertical_tabs_panel_click(ctx, r):
     opened = False
     try:
         opened = True
-        toks, dirs, _eff = open_tabs(ctx, r, n, "panel")
+        seen = ctx.log_size()
+        toks, dirs, _eff = open_tabs(ctx, r, n, "panel", register=U.is_windows(ctx))
         ctx.be.guard()
         ctx.be.key(R.tab_key(ctx, 1))
         time.sleep(1.2)
         got = tab_answer(ctx, "p0")
         if not r.check(got == dirs[0], "the tab 1 key did not show tab 1 (the pane that answers is in %r): the other tabs' tokens may be in the pane, not only in the panel" % got):
             return
-        ws, _p = U.words(ctx, "vt_panel")
-        rows = []
-        for k in range(1, n):
-            hits = U.token_hits(ws, toks[k])
-            if hits:
-                rows.append((k + 1, hits[0][1], hits[0][2]))
+        if U.is_windows(ctx):
+            rows = _panel_rows_from_hook(ctx, r, toks, n, seen)
+            if rows is None:
+                return
+        else:
+            ws, _p = U.words(ctx, "vt_panel")
+            rows = []
+            for k in range(1, n):
+                hits = U.token_hits(ws, toks[k])
+                if hits:
+                    rows.append((k + 1, hits[0][1], hits[0][2]))
         r.metric("panel_rows_found", [list(x) for x in rows])
         if len(rows) < 2:
             r.no_reference("the panel rows of tabs 2..%d could not be read by OCR (found %d of %d tokens, shots/*vt_panel.png): the panel's view mode / primary info "
@@ -564,8 +614,11 @@ def c_vertical_tabs_panel_click(ctx, r):
                            % (n, len(rows), n - 1))
             return
         ok, desc = rows_stacked(rows)
-        U.wl_check(ctx, r, bool(ok), "vertical tabs panel: %s" % desc, "OCR")
-        r.note("panel rows (OCR): %s" % desc)
+        if U.is_windows(ctx):
+            r.check(bool(ok), "vertical tabs panel (positions from the app's find hook): %s" % desc)
+        else:
+            U.wl_check(ctx, r, bool(ok), "vertical tabs panel: %s" % desc, "OCR")
+        r.note("panel rows (%s): %s" % ("find hook" if U.is_windows(ctx) else "OCR", desc))
         ptr_unproven = U.on_wayland(ctx) and not U.wl_pointer_real(ctx)
         for tabno, cx, cy in sorted({rows[-1], rows[0]}, reverse=True):
             m.click(cx, cy, 1)

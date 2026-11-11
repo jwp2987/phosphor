@@ -105,6 +105,7 @@ def self_test():
     # the Windows fix tier table: case counts per pass (smoke) and the full tier is untouched
     smoke = cases.SMOKE
     fix = cases.SMOKE + cases.PROVING       # the fix tier runs SMOKE + PROVING (owner rule 2026-11-09)
+    fix = fix + winmap.PROVING_WINDOWS      # r15 wave 4 (#2060): plus the older cases whose Windows arm is new (Windows fix tier only)
     n = {}
     for mode in ("terminal", "agent"):
         for pane in ("powershell", "gitbash"):
@@ -762,6 +763,10 @@ def post_case_invariants(ctx, prof, be):
             prof.remote = None
             who = (arm.get("name") or arm.get("user")) if isinstance(arm, dict) else None
             out.append("the remote side still pointed at a lab arm (%s)" % (who or ("arm set" if arm is not None else "ctx.arm unset, but ctx.remote / prof.remote was not the same-machine remote")))
+        # r15 wave 4 (#2060): the Windows pointer. A button or a modifier a case left down is released here and named.
+        held = be.release_held() if be is not None and hasattr(be, "release_held") else []
+        if held:
+            out.append("the injector still held %s (released)" % ", ".join(held))
         if out and be is not None and hasattr(be, "refocus"):
             try:
                 be.refocus()

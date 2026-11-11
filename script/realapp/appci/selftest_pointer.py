@@ -29,7 +29,10 @@ def pointer_cases_registry_r14_w3a():
     for n in NAMES:
         assert n in reg and n in cases.PROVING and n not in cases.SMOKE and n not in cases.PROVING_FAKE, n
         assert reg[n]["gui"] and reg[n]["modes"] == ("terminal", "agent"), n
-        assert n in winmap.NOT_WINDOWS and all(winmap.skip_reason(n, pane) for pane in ("powershell", "gitbash")), n
+        if n == "selection_modes":       # r15 wave 4 (#2060): the Windows pointer exists (SendInput), so it runs in the Git Bash pane
+            assert winmap.skip_reason(n, "gitbash") is None and "Git Bash" in winmap.skip_reason(n, "powershell"), n
+        else:
+            assert n in winmap.NOT_WINDOWS and all(winmap.skip_reason(n, pane) for pane in ("powershell", "gitbash")), n
         assert cases.wants_depth_check(n, cases.PROVING), n
     doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md"), encoding="utf-8").read()
     assert all(("`%s`" % n) in doc for n in NAMES), "docs/testing.md does not describe every wave 3a case"

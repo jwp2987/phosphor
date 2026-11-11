@@ -1,9 +1,11 @@
 # appci/cases_window_use.py: round 14 wave 3 (docs/design/r14-test-gaps.md 7.1, T26-T30; design note docs/design/r14-w3b.md): what a user does to the
 # WINDOW rather than to the prompt. All five are in cases.PROVING (owner rule 2026-11-09: a new case runs in the fix tier until the owner graduates it).
-#   resize_reflow_output  T26 (Wayland, X11, macOS): soft-wrapped known lines copied before and after the window is resized (the copy is byte-identical: reflow
+#   resize_reflow_output  T26 (Wayland, X11, macOS; Windows Git Bash pane since r15 wave 4, #2060: SetWindowPos, read back): soft-wrapped known lines
+#                         copied before and after the window is resized (the copy is byte-identical: reflow
 #                         moved no line break); a program with a SIGWINCH trap streams 700 numbered lines under 60 resizes in 10 s (no line lost, the pty's
 #                         final `stty size` is the app's grid, the trap ran); vim open during a resize reports the new size; the size returns at the end.
-#   context_menu_actions  T27 (Wayland, X11): right click on a block -> Copy output, Copy command: the clipboard holds exactly the output / the command;
+#   context_menu_actions  T27 (Wayland, X11; Windows Git Bash pane since r15 wave 4: SendInput): right click on a block -> Copy output, Copy command:
+#                         the clipboard holds exactly the output / the command;
 #                         right click in the input -> Paste: the input holds exactly the clipboard text at Enter. Every pointer position comes from the
 #                         app's own `appci_find` line (#1789), never from OCR.
 #   tab_pointer_use       T28 (Wayland, X11): click a tab, drag a tab onto its neighbour, middle-click a tab; then the same in the other tab layout
@@ -47,7 +49,9 @@ done
 stty size > "wu_$tag.final"
 : > "wu_$tag.done"
 """
-WIN_RESIZE_WHY = "no window resize or window-state call in the Windows backend yet (r14-test-gaps T33)"
+# r15 wave 4 (#2060) built the Windows resize (SetWindowPos); hiding, showing and fullscreen are still not built there
+WIN_STATE_WHY = "no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33 built the resize only)"
+WIN_RR_LINES = 300            # the stream of T26 on Windows: every `sleep` of the bash loop is a process start there (tens of ms), so 700 lines take minutes
 UI_WARN_MS = 16.0             # the owner's UI budget is 4 ms, its warn bound 16 ms (perf budgets)
 RESTORE_CONTROL_FACTOR = 3.0  # T30: the largest main-thread item after the window returns, against the same stream's largest item while shown
 
@@ -125,6 +129,17 @@ def plan_sizes(orig_w, orig_h):
             h -= 90
         out.append((w, h))
     return dict(narrow=out[0], wide=out[1], rapid=out[2:5], rapid_end=out[5], vim=out[6])
+
+
+def desktop_too_small(vscreen, sizes):
+    """Windows clamps a window's size to the desktop, so two planned sizes larger than it become the same size and "the window took it" is no longer
+    observable. -> None when every size of plan_sizes() fits the virtual screen (left, top, w, h), else the NEEDS text naming the desktop size."""
+    flat = [sizes["narrow"], sizes["wide"], sizes["rapid_end"], sizes["vim"]] + list(sizes["rapid"])
+    need = (max(w for w, _ in flat), max(h for _, h in flat))
+    if vscreen[2] >= need[0] and vscreen[3] >= need[1]:
+        return None
+    return ("NEEDS: a desktop of at least %dx%d px on the Windows VM (it is %dx%d): the window sizes this case cycles through are clamped to the "
+            "desktop, so a resize would not be a provable change" % (need + (vscreen[2], vscreen[3])))
 
 
 def resize_plan(n, sizes, end):
@@ -253,10 +268,13 @@ def app_pid(ctx):
 
 
 def window_origin(ctx):
-    """(x, y) of the app window's content on screen (sway / xdotool), or None: what turns the hook's window pixels into pointer positions"""
+    """(x, y) of the app window's content on screen (sway / xdotool; Windows: ClientToScreen of the app window), or None: what turns the hook's
+    window pixels into pointer positions"""
     pid = app_pid(ctx)
     if not pid:
         return None
+    if U.is_windows(ctx):
+        return ctx.be.client_origin()
     if U.on_wayland(ctx):
         rect = U.sway_window_rect(pid)
         return (rect[0], rect[1]) if rect else None
@@ -286,11 +304,13 @@ def _osa(script):
 
 class Window:
     """the app window's size and state on this backend. Wayland: sway commands addressed by the app's pid (never 'the focused window'); X11: xdotool
-    on the app's window id; macOS: the Accessibility attributes of the app's first window through System Events (the path ui_resize_typing uses).
+    on the app's window id; macOS: the Accessibility attributes of the app's first window through System Events (the path ui_resize_typing uses);
+    Windows (r15 wave 4): SetWindowPos on the app's main window, read back (size only: hide / show / fullscreen are not built there, WIN_STATE_WHY).
     restore() undoes everything the case did and never raises."""
 
     def __init__(self, ctx):
         self.ctx, self.be = ctx, ctx.be.name
+        self.saved = None                                   # Windows: backend.window_save() (place, size, maximised)
         self.orig, self.xid, self.floated, self.ws, self.unmapped = None, None, False, None, False
 
     def _sway(self, cmd):
@@ -352,6 +372,12 @@ class Window:
                 return "the window rectangle could not be read (winrect)"
             self.orig = (int(rect[2]), int(rect[3]))
             return None
+        if self.be == "windows":
+            self.saved = self.ctx.be.window_save()
+            if not self.saved:
+                return "the app's main window rectangle could not be read (GetWindowRect)"
+            self.orig = (int(self.saved["rect"][2]), int(self.saved["rect"][3]))
+            return None
         return "backend %s has no window control" % self.be
 
     def resize(self, w, h):
@@ -361,6 +387,8 @@ class Window:
         if self.be == "x11":
             rc = subprocess.run(["xdotool", "windowsize", self.xid, str(w), str(h)], capture_output=True, timeout=10)
             return None if rc.returncode == 0 else "xdotool windowsize: " + rc.stderr.decode(errors="replace")[:100]
+        if self.be == "windows":
+            return self.ctx.be.window_resize(w, h)
         return U.resize_to(self.ctx, w, h)
 
     def hide(self):
@@ -432,6 +460,9 @@ class Window:
 
     def restore(self):
         try:
+            if self.be == "windows":
+                self.ctx.be.window_restore(self.saved)       # place, size and maximised state; refocuses; never raises
+                return
             if self.ws is not None or self.unmapped:
                 self.show()
             if self.be == "wayland":
@@ -455,9 +486,8 @@ class Window:
 
 
 def need_window(ctx, r):
-    """the Window of a case that resizes / hides it, or a SKIP naming what is missing. Called before the first check of the case."""
-    if ctx.win:
-        r.skip("Windows: " + WIN_RESIZE_WHY)
+    """the Window of a case that resizes / hides it, or a SKIP naming what is missing. Called before the first check of the case. On Windows the
+    Window resizes only (r15 wave 4): a case that hides the window or asks for fullscreen says WIN_STATE_WHY itself before calling this."""
     if ctx.app is None:
         r.skip("no app process (sim backend)")
     win = Window(ctx)
@@ -514,6 +544,11 @@ def c_resize_reflow_output(ctx, r):
     if not r.check(size0 is not None, "`stty size` gave no size before the first resize: nothing can be compared"):
         return
     sizes = plan_sizes(*win.orig)
+    if ctx.win:
+        small = desktop_too_small(ctx.be.w.virtual_screen(), sizes)
+        if small:
+            r.unverifiable("the resize case was not run: %s" % small)
+            return
     r.metric("window", dict(original=list(win.orig), rows_cols=list(size0)))
     try:
         _reflow_wrapped(ctx, r, win, off, sizes)
@@ -558,7 +593,7 @@ def _reflow_wrapped(ctx, r, win, off, sizes):
 
 def _stream_under_resizes(ctx, r, win, off, sizes):
     tag = safe_token(ctx, "rr")
-    n = max(200, int(os.environ.get("APPCI_RR_LINES", "700")))
+    n = max(200, int(os.environ.get("APPCI_RR_LINES", str(WIN_RR_LINES if ctx.win else 700))))
     write_stream_script(ctx)
     for suf in ("started", "winch", "final", "done"):
         ctx.rm("wu_%s.%s" % (tag, suf))
@@ -1087,6 +1122,8 @@ def c_minimize_fullscreen(ctx, r):
     APPCI_MINIMIZE_S (30) seconds and shown again: a frame is drawn within APPCI_RESTORE_FRAME_MAX_MS (2000), the largest main-thread item of the next
     3 s is within the warn bound or 3x the control's, every line of the stream is in the copied output, `stty size` is unchanged and typing is exact.
     Then fullscreen on and off: `stty size` grows, typing is exact, and the size returns."""
+    if ctx.win:
+        r.skip("Windows: " + WIN_STATE_WHY)
     win = need_window(ctx, r)
     if not V.first_tab_in_front(ctx, r, "mf"):
         return

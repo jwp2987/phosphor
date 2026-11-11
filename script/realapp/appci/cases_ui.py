@@ -7,6 +7,8 @@
 # Platform notes (docs/testing.md 2.8): keys follow app/src/util/bindings.rs (Linux ctrl-shift-X, macOS cmd-X); the mouse is
 # xdotool on X11 and `swaymsg seat - cursor ...` on the headless-sway Wayland job (no extra package); macOS has no mouse
 # tool in the harness, so mouse cases skip there. Positions come from tesseract word boxes of a screenshot (package: tesseract-ocr).
+# Windows (r15 wave 4, #2060): the mouse is SendInput (winapi.Pointer through backend.WindowsBackend.ptr_*), the window size is SetWindowPos, and
+# positions come ONLY from the app's find hook (`appci_find` lines; the VM has no OCR engine): a word the hook did not report is UNVERIFIABLE there.
 import hashlib, json, os, re, shlex, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -113,16 +115,27 @@ def shot_changed(a, b, thresh, color=False):
     return d >= thresh, d
 
 
-def need_tesseract(r):
+def is_windows(ctx):
+    return getattr(getattr(ctx, "be", None), "name", None) == "windows"
+
+
+def need_tesseract(r, ctx=None):
+    """SKIP without tesseract. With `ctx` given, not on Windows: a case ported there places the pointer from the app's find hook only (no OCR engine on
+    the VM, gap H19), and a word the hook does not report makes that part UNVERIFIABLE (wl_check), never a pass."""
+    if ctx is not None and is_windows(ctx):
+        return
     if not shutil.which("tesseract"):
         r.skip("tesseract not installed on this machine (package: tesseract-ocr): screen positions/text cannot be read")
 
 
 def words(ctx, tag):
-    """[(text, cx, cy, left, right, top, bottom)] of every word tesseract finds in a fresh screenshot, in screenshot pixels"""
+    """[(text, cx, cy, left, right, top, bottom)] of every word tesseract finds in a fresh screenshot, in screenshot pixels. No words (and the shot,
+    as evidence) where there is no OCR engine: Windows, where the callers have the find hook's positions or report the part as not judged."""
     p = ctx.shot(tag)
     if not p:
         return [], None
+    if is_windows(ctx) or not shutil.which("tesseract"):
+        return [], p
     out = subprocess.run(["tesseract", p, "-", "--psm", "11", "tsv"], capture_output=True, timeout=90).stdout.decode(errors="replace")
     res = tsv_words(out)
     up = C.ocr_upscaled(ctx.be.name, p)                   # X11: words of a 2x copy are added, boxes scaled back (cases.ocr_upscaled)
@@ -167,6 +180,8 @@ def find_token(ctx, tag, token, last=True, since=None, r=None):
     (a misread or a dropped/added glyph at either end). OCR noise around the word (a quote, a colon) is stripped before comparing.
     The app's find hook (#1789) is asked first for a token the case registered (register_find); with `r` given, a missing hook line is noted on it."""
     h = _hook_word(ctx, token, since)
+    if not h and is_windows(ctx):
+        h = ctx.until(lambda: _hook_word(ctx, token, since), 3.0, step=0.1)      # the hook is the only source there: its line is waited for (a give-up net)
     if h:
         return h, None
     if r is not None and getattr(ctx.be, "name", None) in ("wayland", "x11"):
@@ -190,16 +205,19 @@ def x11_window_origin(pid):
 
 
 def _hook_word(ctx, token, since=None):
-    """the OCR-free position (hook_find) of `token` on Wayland (window origin from sway) and X11 (from xdotool); None without the app hook line
-    (an app without the hook, or a token the hook never saw drawn): the caller falls back to OCR and says so (hook_missing_note)"""
-    if getattr(ctx.be, "name", None) not in ("wayland", "x11"):
+    """the OCR-free position (hook_find) of `token` on Wayland (window origin from sway), X11 (from xdotool) and Windows (ClientToScreen of the app
+    window: the hook's pixels are the client area's); None without the app hook line (an app without the hook, or a token the hook never saw
+    drawn): the caller falls back to OCR and says so (hook_missing_note), or on Windows reports the part as not judged"""
+    if getattr(ctx.be, "name", None) not in ("wayland", "x11", "windows"):
         return None
     if os.environ.get("APPCI_NO_FIND_HOOK") == "1":       # kill switch: positions by OCR only, as every Linux run before round 14 was (the launcher never armed the hook)
         return None
     pid = ctx.be.pid_fn() if getattr(ctx.be, "pid_fn", None) else None
     if not pid:
         return None
-    if on_wayland(ctx):
+    if is_windows(ctx):
+        origin = ctx.be.client_origin()
+    elif on_wayland(ctx):
         rect = sway_window_rect(pid)
         origin = (rect[0], rect[1]) if rect else None
     else:
@@ -234,7 +252,8 @@ class Mouse:
     """pointer synthesis in the job's own display: xdotool (X11), or on headless Wayland the session's persistent zwlr_virtual_pointer_v1 holder
     (wlptr.py, #1789: sway has no input device, so without a virtual pointer the seat has no pointer capability and no client ever sees `swaymsg
     seat - cursor` events). Without the holder (APPCI_WL_PTR unset or dead) Wayland falls back to the sway seat commands, which are NOT proof of delivery
-    (see wl_pointer_real)."""
+    (see wl_pointer_real). Windows (r15 wave 4): SendInput through the backend (ptr_move / ptr_button), every move read back from the cursor, a press
+    refused unless the window under the pointer is the app's; the same steps and waits as the Wayland arm."""
 
     def __init__(self, be):
         self.be = be
@@ -266,13 +285,18 @@ class Mouse:
         return self._wl("abs %d %d %d %d" % (max(0, min(int(x), w - 1)), max(0, min(int(y), h - 1)), w, h))
 
     def move(self, x, y):
-        if self.be.name == "x11":
+        if self.be.name == "windows":
+            self.be.ptr_move(x, y)
+        elif self.be.name == "x11":
             subprocess.run(["xdotool", "mousemove", str(int(x)), str(int(y))], timeout=10)
         elif not self._move(x, y):
             subprocess.run(["swaymsg", "seat - cursor set %d %d" % (x, y)], capture_output=True, timeout=10)
         time.sleep(0.15)
 
     def _btn(self, button, down):
+        if self.be.name == "windows":
+            self.be.ptr_button(button, down)
+            return
         code = wlptr.BTN.get(button, wlptr.BTN[1])
         if not self._wl("btn %d %d" % (code, 1 if down else 0)):
             subprocess.run(["swaymsg", "seat - cursor %s button%d" % ("press" if down else "release", button)], capture_output=True, timeout=10)
@@ -298,6 +322,15 @@ class Mouse:
                 subprocess.run(["xdotool", "mousemove", str(int(x0 + (x1 - x0) * i / 8)), str(int(y0 + (y1 - y0) * i / 8))], timeout=10)
                 time.sleep(0.03)
             subprocess.run(["xdotool", "mouseup", "1"], timeout=10)
+        elif self.be.name == "windows":
+            self._btn(1, True)
+            try:                                       # the button is released whatever a move raises (a point off the screen): never left held
+                time.sleep(0.15)
+                for i in range(1, 9):
+                    self.be.ptr_move(x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8)
+                    time.sleep(0.03)
+            finally:
+                self._btn(1, False)
         else:
             self._btn(1, True)
             time.sleep(0.15)
@@ -387,7 +420,19 @@ def register_find(ctx, *tokens):
     time.sleep(0.35)
 
 
+WIN_POINTER_NEEDS = ("NEEDS: the test runner on the unlocked, connected interactive console session of the Windows VM, the app window on screen and "
+                     "not covered (a locked screen or a disconnected RDP session has no input desktop)")
+
+
 def mouse_or_skip(ctx, r):
+    if is_windows(ctx):
+        # r15 wave 4 (#2060): SendInput. The pointer is proven before the case relies on it (a hover on the app window, read back); a pointer that
+        # does not arrive is NOT JUDGED (noref, listed by the trend report), never a skip that reads as "does not apply" and never a pass.
+        why = ctx.be.ptr_ready()
+        if why:
+            raise C.HostMissing("TEST CAPABILITY MISSING: the Windows pointer (SendInput) did not reach the app window, so this case was not judged: %s. %s"
+                                % (why, WIN_POINTER_NEEDS))
+        return Mouse(ctx.be)
     if ctx.be.name == "mac":
         r.skip("macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)")
     if ctx.be.name not in ("x11", "wayland"):
@@ -413,6 +458,12 @@ def wl_check(ctx, r, ok, msg, what):
     `what` names the harness limitation (e.g. 'OCR', 'pointer'). Checks that do not depend on pointer synthesis or OCR use r.check directly.
     #1789: a claim that is ONLY about the pointer (`what` == 'pointer') is a plain check whenever the session holds a live virtual pointer (wl_pointer_real):
     the events provably reach clients, so a missing effect is the app's. 'OCR' and mixed ('pointer/OCR') claims stay NOREF until the app hook gives positions."""
+    if not ok and what == "OCR" and is_windows(ctx):
+        # Windows has no OCR engine; the app's find hook is the only source of a position there. No line from it is missing evidence (an app
+        # without the hook, RUST_LOG without warpui::appci_find=info, or the text was laid out before its token was registered): not judged.
+        r.unverifiable("%s [Windows: positions come from the app's find hook only (no OCR engine on the VM); the app logged no usable `appci_find` "
+                       "line, so this part was not judged]" % msg)
+        return False
     if ok or not on_wayland(ctx) or (what == "pointer" and wl_pointer_real(ctx)):
         return r.check(ok, msg)
     r.no_reference("%s [%s: %s]" % (WAYLAND_NOREF, what, msg))
@@ -420,6 +471,11 @@ def wl_check(ctx, r, ok, msg, what):
 
 
 def settings_path(ctx):
+    """the settings file THE APP reads (and watches). Linux: the profile's own file. macOS: MacApp.settings. Windows (r15 wave 4, #2060):
+    %LOCALAPPDATA%\\phosphor\\Phosphor\\config\\settings.toml (WindowsApp.config), where start() installs the profile's file; until then this
+    returned the profile's source file there, which the running app never reads, so a live rewrite changed nothing."""
+    if getattr(ctx, "win", False) and getattr(ctx.app, "config", None):
+        return os.path.join(ctx.app.config, "settings.toml")
     return getattr(ctx.app, "settings", None) or os.path.join(ctx.prof.home, ".config", "phosphor", "settings.toml")
 
 
@@ -662,7 +718,7 @@ def c_mouse_copy(ctx, r):
     (tesseract word box), double-click it -> copy -> the PRIVATE clipboard (wl-paste / xsel of this job's own display) holds exactly the
     token; then a drag across the word -> copy contains the token. The clipboard is pre-set to a sentinel so a no-op copy cannot pass."""
     m = mouse_or_skip(ctx, r)
-    need_tesseract(r)
+    need_tesseract(r, ctx)
     tok = "msel" + ocr_safe(ctx.tok(6).lower().replace("_", ""))
     register_find(ctx, tok)
     seen = ctx.log_size()
@@ -823,6 +879,8 @@ def resize_to(ctx, w, h, orig=None):
         rc = subprocess.run(["osascript", "-e", 'tell application "System Events" to set size of window 1 of (first process whose unix id is %d) to {%d, %d}' % (pid, w, h)],
                             capture_output=True, timeout=30)
         return None if rc.returncode == 0 else "System Events refused (Accessibility permission?): " + rc.stderr.decode()[:100]
+    if is_windows(ctx):
+        return ctx.be.window_resize(w, h)              # SetWindowPos, read back (r15 wave 4, #2060)
     return "unsupported backend"
 
 
@@ -831,11 +889,15 @@ def c_resize(ctx, r):
     """resize the window small -> large -> back; at each size typing is exact (6 fast commands) and, at the small size, a 150-char command
     that must wrap is received byte-exact. The screenshot must change with the size (else the resize did not apply and the case skips)."""
     g0 = get_geometry(ctx)
+    win0 = ctx.be.window_save() if is_windows(ctx) else None
     base = ctx.shot("resize_base")
     try:
         sizes = [("small", 720, 460), ("large", 1280, 800)]
         for name, w, h in sizes:
             err = resize_to(ctx, w, h)
+            if err and is_windows(ctx):
+                # Windows has the capability (SetWindowPos, read back): a resize that did not take is NOT JUDGED (noref), never a plain skip
+                raise C.HostMissing("TEST CAPABILITY MISSING: the app window did not take the size %dx%d, so this case was not judged: %s" % (w, h, err))
             if err:
                 r.skip("cannot resize the window on %s: %s" % (ctx.be.name, err))
             time.sleep(1.5)
@@ -858,6 +920,8 @@ def c_resize(ctx, r):
     finally:
         if ctx.be.name == "wayland":
             subprocess.run(["swaymsg", "floating disable"], capture_output=True, timeout=10)
+        elif win0:
+            ctx.be.window_restore(win0)
         elif g0:
             subprocess.run(["xdotool", "windowsize", g0[0], str(g0[1]), str(g0[2])], timeout=10)
         time.sleep(1.0)

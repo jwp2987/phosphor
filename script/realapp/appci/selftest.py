@@ -367,7 +367,8 @@ def reference_forgiveness_is_capped():
 def tier_plan_shape():
     assert winmap.tier_plan("windows", None, "terminal", "gitbash", cases.SMOKE)[0] is None
     names, o = winmap.tier_plan("windows", "smoke", "agent", "powershell", cases.SMOKE)
-    assert names and set(names) <= set(cases.SMOKE) and "key_loss_control" not in names and not o["ref"]
+    # r15 wave 4 (#2060): plus winmap.PROVING_WINDOWS, the older cases whose Windows arm is new
+    assert names and set(names) <= set(cases.SMOKE) | set(winmap.PROVING_WINDOWS) and "key_loss_control" not in names and not o["ref"]
     names, o = winmap.tier_plan("windows", "smoke", "terminal", "gitbash", cases.SMOKE)
     assert "key_loss_control" in names and o["ref"]
 
@@ -6735,6 +6736,7 @@ def output_frames_pure_pieces_1979():
 def mt_frame_re():
     import cases_agent_multitab as MT
     return MT.FRAME_CAUSE_RE
+@check      # #2086: this line was lost in a hand merge and the function never ran
 def wrapped_copy_and_vertical_tabs_pure_parts_1976_1990():
     """cases_wrap_vtabs.py: the fixture wraps where the case says it does, the clipboard judges name an inserted and a lost line break and pass only the
     exact text, the settings reader tells an editable layout from one it must not touch, the panel-row judge tells a column from a tab bar, and the four
@@ -6800,7 +6802,8 @@ def wrapped_copy_and_vertical_tabs_pure_parts_1976_1990():
     names = ("ui_copy_wrapped_output", "ui_copy_wrapped_drag", "ui_vertical_tabs_many", "ui_vertical_tabs_panel_click")
     reg = {c["name"]: c for c in cases.CASES}
     assert all(n in cases.PROVING and n not in cases.SMOKE and n not in cases.PROVING_FAKE and reg[n]["gui"] and reg[n]["modes"] == ("terminal", "agent") for n in names)
-    assert "ui_copy_wrapped_output" in winmap.GITBASH_ONLY and all(n in winmap.NOT_WINDOWS for n in names[1:])
+    # r15 wave 4 (#2060): the pointer (SendInput) and the settings file the app reads exist on Windows, so all four run in the Git Bash pane
+    assert all(n in winmap.GITBASH_ONLY and n not in winmap.NOT_WINDOWS for n in names)
     src = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
     assert all(("`%s`" % n) in src for n in names), "docs/testing.md does not describe every new case"
 
@@ -7664,6 +7667,7 @@ def lab_plain_session_limit_2019():
         assert n in names, n                                 # the nu rows are still registered: reported by name, not dropped
     doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
     assert "lab_plain_session_limit_2019" in doc and "plain_session_limit" in doc
+@check      # #2086: this line was lost in a hand merge and the function never ran
 def r14_w1a_wave1_cases_pure_parts_and_registry():
     """#2072 (docs/design/r14-w1a.md): history_up_recall, scroll_keys_position, find_basic, tab_lifecycle_keys, routing_table_powershell. Each verdict
     helper is shown to FAIL on a wrong result (no oracle that cannot fail), the registry and Windows classification are pinned, and so are the app
@@ -7821,6 +7825,7 @@ def r14_w1a_wave1_cases_pure_parts_and_registry():
     for n in names:
         assert ("`%s`" % n) in doc, n
     assert "cases_r14_w1a.py" in doc and "hop=find_state" in doc and "#2080" in doc
+@check      # #2086: this line was lost in a hand merge and the function never ran
 def r14_w1b_pure_parts():
     """#2072 (r14-test-gaps T6-T10, cases_daily_b.py): each oracle's pure part passes the right answer and fails the wrong ones. The key table is
     replayed on a small line editor: every step's expected line is what readline semantics (or the documented app default) give for its keys, and
@@ -8050,6 +8055,7 @@ def r14_w1b_pure_parts():
     assert all(("`%s`" % n) in doc for n in names) and "r14_w1b_pure_parts" in doc and "#2079" in doc, "docs/testing.md does not describe every new case"
 import selftest_agent_w2  # noqa: E402  (round 14 wave 2: cases_agent_w2.py and the fake model's Anthropic wire)
 CHECKS.extend(selftest_agent_w2.CHECKS)
+@check      # #2086: this line was lost in a hand merge and the function never ran
 def r14_w2b_state_cases():
     """round 14 wave 2b (T16-T20, cases_r14_state.py): the pure parts each verdict hangs on, with the input a defect would produce, the registry rows,
     and the app texts the cases read (a rename there must fail here)"""
@@ -8153,6 +8159,7 @@ def r14_w2b_state_cases():
     for n in names:
         assert ("`%s`" % n) in doc, "docs/testing.md does not describe %s" % n
     assert "r14_w2b_state_cases" in doc and "hop=vtab_row_status" in doc and "hop=osc52_clipboard" in doc
+@check      # #2086: this line was lost in a hand merge and the function never ran
 def r14_window_use_cases_pure_parts():
     """r14 wave 3 (T26-T30, cases_window_use.py): every judge passes the right result and FAILS a wrong one, the parsers read the app's own line shapes
     (pinned against the Rust source), the cases are registered in PROVING with a Windows classification, and docs/testing.md names them."""
@@ -8277,6 +8284,9 @@ def r14_window_use_cases_pure_parts():
     for n in names:
         if n == "focus_cycle":
             assert winmap.skip_reason(n, "powershell") is None and winmap.skip_reason(n, "gitbash") is None
+        elif n in ("resize_reflow_output", "context_menu_actions"):
+            # r15 wave 4 (#2060): SetWindowPos and the SendInput pointer exist, so these two run in the Git Bash pane (selftest_w4win.py has the rest)
+            assert winmap.skip_reason(n, "gitbash") is None and "Git Bash" in winmap.skip_reason(n, "powershell"), n
         else:
             assert n in winmap.NOT_WINDOWS and "r14-test-gaps T3" in winmap.skip_reason(n, "gitbash"), n
 import selftest_pointer  # noqa: E402  (round 14 wave 3a: cases_pointer.py; its checks live in their own file)
@@ -8287,6 +8297,10 @@ import selftest_r15_tiers  # noqa: E402  (round 15: the tier plan, #2056 #2057 #
 CHECKS.extend(selftest_r15_tiers.CHECKS)
 import selftest_r15_defects  # noqa: E402  (round 15: cases_r15_defects.py, the #2079 / #2081 / #2082 source facts; its checks live in their own file)
 CHECKS.extend(selftest_r15_defects.CHECKS)
+import selftest_registered  # noqa: E402  (#2086: every check function of the selftest*.py files is registered)
+CHECKS.extend(selftest_registered.CHECKS)
+import selftest_w4win  # noqa: E402  (round 15 wave 4, #2060: the Windows pointer and window size)
+CHECKS.extend(selftest_w4win.CHECKS)
 
 
 def main():
