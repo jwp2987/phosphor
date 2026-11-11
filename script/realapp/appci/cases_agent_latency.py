@@ -19,7 +19,7 @@ import lat
 import render_hops
 
 KEY_FRAME_RE = re.compile(r"input_order hop=key_frame layout=\S+ t=(\d+(?:\.\d+)?)")
-KEYDOWN_ANY_RE = re.compile(r'input_order keydown key=("(?:[^"\\]|\\.)*"|\S+) ctrl=(true|false) alt=(true|false) shift=(true|false) cmd=(true|false) t=(\d+(?:\.\d+)?)')
+KEYDOWN_ANY_RE = re.compile(r'input_order keydown key=("(?:[^"\\]|\\.)*"|<\d+ chars>|\S+) ctrl=(true|false) alt=(true|false) shift=(true|false) cmd=(true|false) t=(\d+(?:\.\d+)?)')
 ENTER_BEGIN_RE = re.compile(r"input_order hop=enter_begin\b.* t=(\d+(?:\.\d+)?)\s*$")
 MODIFIERS = {"shift", "control", "ctrl", "alt", "option", "meta", "super", "command", "cmd", "capslock", "fn"}
 ENTER_KEYS = {"enter", "return"}

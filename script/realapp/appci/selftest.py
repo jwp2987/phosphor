@@ -7503,6 +7503,34 @@ def precmd_secret_honor_ps1_pure_parts():
     assert PS.pin_in_editor_enters(log.replace('buffer="2cd"', 'buffer="b12cd"'), pin) == ["AI", "Shell"], "the second half alone, run as a command"
     assert PS.pin_in_editor_enters('x hop=enter_begin deferred=false buffer=<9 chars> input_type=AI\n', pin) == [] and PS.pin_in_editor_enters("", pin) == [] and PS.pin_in_editor_enters(None, pin) == []
     assert PS.enter_text_logged(log) is True and PS.enter_text_logged('x hop=enter_begin deferred=false buffer=<9 chars> input_type=AI\n') is False and PS.enter_text_logged("no enters") is None
+    # #2040: the app logs no text while a secret is read. An Enter that found text in the editor then shows by its count; the PIN's keys show by count only
+    assert PS.withheld_enters('x hop=enter_begin deferred=false buffer=<9 chars> input_type=AI t=1\ny hop=enter_begin deferred=false buffer=<0 chars> input_type=Shell t=2\n') == [(9, "AI")]
+    assert PS.withheld_enters(log) == [] and PS.withheld_enters(None) == []
+    kd = lambda key, seq: 'x input_order keydown key=%s ctrl=false alt=false shift=false cmd=false t=1.0 seq=%d\nx input_order typed_characters text=%s t=1.1 seq=%d\n' % (key, seq, key, seq)
+    control = kd('"t"', 1) + kd('"o"', 2) + 'x input_order keydown key=enter ctrl=false alt=false shift=false cmd=false t=1.0 seq=3\n'
+    hidden = "".join(kd("<1 chars>", 10 + i) for i in range(9))
+    on = "x input_order hop=secret_text_withheld active=true t=2.0\n"
+    assert PS.key_text_seqs(control) == ({1, 2}, set()) and PS.key_text_seqs(hidden) == (set(), set(range(10, 19))) and PS.key_text_seqs(None) == (set(), set())
+    assert PS.secret_parts(pin) == ["pinab12cd", "b12cd"], "the 4-character first half (`pina`) is in ordinary words and is not searched in every line"
+    ok = PS.secret_log_verdict(control, on + hidden, pin, 4, True)
+    assert ok[0] and ok[1] == [] and ok[2] == dict(control_keys_shown=2, keys_shown=0, keys_counted=9, guard_engaged=True, lines_with_secret=0), ok
+    assert PS.secret_log_verdict(control + on, hidden, pin, 4, True)[1] == [], "the guard may engage at the question, before the first key"
+    leak = PS.secret_log_verdict(control, on + hidden + 'x input_order hop=pty_write_bytes class=UserKey wrote=5 of_job=5 bytes="b12cd" t=3\n', pin, 4, True)
+    assert leak[0] and len(leak[1]) == 1 and "holds the secret" in leak[1][0], leak
+    shown = PS.secret_log_verdict(control, kd('"p"', 10) + on + "".join(kd("<1 chars>", 11 + i) for i in range(8)), pin, 4, True)
+    assert len(shown[1]) == 1 and "1 key(s)" in shown[1][0] and "tty is sampled" in shown[1][0], shown
+    assert PS.secret_log_verdict(control, kd('"p"', 10) + on + "".join(kd("<1 chars>", 11 + i) for i in range(8)), pin, 4, False)[1] == [], "ConPTY: the first burst is logged before the reader is noted"
+    assert len(PS.secret_log_verdict(control, "".join(kd('"x"', 10 + i) for i in range(5)) + on + hidden, pin, 4, False)[1]) == 1, "ConPTY: more than the first burst"
+    off_ = PS.secret_log_verdict(control, "".join(kd('"x"', 10 + i) for i in range(9)), pin, 4, True)
+    assert off_[0] and len(off_[1]) == 3, "guard never engaged, every key shown, none counted: %r" % (off_,)
+    blind = PS.secret_log_verdict(control.replace('"t"', "<1 chars>").replace('"o"', "<1 chars>"), hidden, pin, 4, True)
+    assert blind[0] is False and blind[1] == [], "no text in the control: the log has no text at all, nothing is judged (the caller notes it)"
+    src_app = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "crates/warpui_core/src/input_order.rs"), encoding="utf-8").read()
+    assert 'hop_line("secret_text_withheld", &format!("active={active}"))' in src_app, "the hop the case reads must exist in the app"
+    assert "WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS" in src_app and "PHOSPHOR_LOG_SECRET_GUARD" in src_app
+    import app as _appmod
+    _app_src = open(_appmod.__file__, encoding="utf-8").read()
+    assert _app_src.count("WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS") >= 3, "Linux, macOS and Windows launchers all take the key-bytes opt-in (synthetic text only)"
     # #2053: the agent arm judges the question. Before a key where the tty is sampled; on ConPTY the look before a key is recorded and the one after half the PIN judged
     assert PS.question_in("touch pp_hp0_go.txt\nVault  PIN:\n") and not PS.question_in("touch pp_hp0_go.txt\n") and not PS.question_in(None) and not PS.question_in("")
     assert PS.asked_look_is_judged("terminal", False)[0] and PS.asked_look_is_judged("terminal", True)[0], "terminal mode: judged on every platform, as before"

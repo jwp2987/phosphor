@@ -93,6 +93,68 @@ def enter_text_logged(log_text):
     return any('buffer="' in ln for ln in ls)
 
 
+ENTER_COUNT_RE = re.compile(r"hop=enter_begin\b[^\n]*?\bbuffer=<(\d+) chars> input_type=(\w+)")
+
+
+def withheld_enters(log_text):
+    """pure (#2040): [(chars, input_type)] of every `hop=enter_begin` whose buffer is logged by its COUNT and is not empty. The harness opts in to text, so
+    a count there means the app withheld it: something read a secret, or a reader ahead of the line editor had the keys, when that Enter was pressed with text
+    in the input editor. That is the state `pin_in_editor_enters` used to read by text and no longer can (the app logs no text while a secret is read)."""
+    return [(int(m.group(1)), m.group(2)) for m in ENTER_COUNT_RE.finditer(log_text or "") if int(m.group(1)) > 0]
+
+
+# #2040: the app's own account of a typed key. Text form: `typed_characters text="4"`, `keydown key="4"`; count form (no opt-in, or withheld because a secret
+# is read): `text=<1 chars>`, `key=<1 chars>`. Named keys (`key=enter`) are neither. `hop=secret_text_withheld active=<bool>` marks each change of the guard.
+KEY_LINE_RE = re.compile(r'input_order (?:typed_characters text|keydown key)=("(?:[^"\\]|\\.)*"|<\d+ chars>)[^\n]*? seq=(\d+)')
+WITHHELD_RE = re.compile(r"hop=secret_text_withheld active=(true|false)")
+
+
+def key_text_seqs(log_text):
+    """pure: (shown, counted): the distinct key numbers (`seq=`) of an excerpt's key lines that carry the key's TEXT, and of those that carry its count only"""
+    shown, counted = set(), set()
+    for m in KEY_LINE_RE.finditer(log_text or ""):
+        (shown if m.group(1).startswith('"') else counted).add(int(m.group(2)))
+    return shown, counted - shown
+
+
+def secret_parts(secret):
+    """pure: the secret and its two typed halves, 5 characters or longer: what must never be in ANY log line. (The case's PIN is `pin` + 6 random characters,
+    so its first half is `pin` + one character, which words of ordinary log lines contain: `ping`, `typing`. The whole PIN and its random half are searched.)"""
+    half = len(secret) // 2
+    return [p for p in (secret, secret[:half], secret[half:]) if len(p) >= 5]
+
+
+def secret_log_verdict(before, during, secret, first_burst, sampled_tty):
+    """pure (#2040): what the app log says about a secret typed at a `read -s`. `before` is the excerpt of a line typed at the prompt just before the read
+    (the control: its keys must show text, else the log has no text at all and nothing is judged); `during` is the excerpt from the first key of the secret to
+    after its Enter. Returns (judged, problems, facts).
+      - no line of `during` holds the secret or a typed half of it (any hop: an editor buffer, a pty write, a shell report);
+      - the guard engaged: a `hop=secret_text_withheld active=true` in `before` or `during`;
+      - key lines that still show their character: none where the tty is sampled (`sampled_tty`: Linux, macOS: echo is off before the first key). On ConPTY
+        the reader is noted from the screen at the first key or at the prompt hold's cap, so the keys of the first burst (`first_burst` of them) were logged
+        before the app could know; no more than those may show, and at least one key must be count-only."""
+    shown, counted = key_text_seqs(during)
+    control, _ = key_text_seqs(before)
+    leaked = [ln.strip()[:160] for ln in (during or "").splitlines() if any(p in ln for p in secret_parts(secret))]
+    engaged = any(m.group(1) == "true" for m in WITHHELD_RE.finditer((before or "") + "\n" + (during or "")))
+    facts = dict(control_keys_shown=len(control), keys_shown=len(shown), keys_counted=len(counted), guard_engaged=engaged, lines_with_secret=len(leaked))
+    problems = []
+    if leaked:
+        problems.append("the app log holds the secret or a typed half of it in %d line(s), first: %r" % (len(leaked), leaked[0]))
+    if not control:
+        return False, problems, facts
+    if not engaged:
+        problems.append("no `hop=secret_text_withheld active=true` in the app log: the log's secret guard never engaged while the `read -s` waited")
+    allowed = 0 if sampled_tty else first_burst
+    if len(shown) > allowed:
+        problems.append("%d key(s) typed at the `read -s` are in the app log with their character (`typed_characters text=\"..\"` / `keydown key=\"..\"`), "
+                        "at most %d may be (%s)" % (len(shown), allowed, "the tty is sampled: echo was off before the first key" if sampled_tty
+                                                    else "ConPTY: the keys before the reader was noted"))
+    if not counted:
+        problems.append("no key typed at the `read -s` is logged by its count only: the log shows every key of the secret")
+    return True, problems, facts
+
+
 def question_in(ocr_text):
     """pure: is the question's word in an OCR text (case and line breaks ignored)?"""
     return QUESTION_WORD in " ".join((ocr_text or "").lower().split())
@@ -163,6 +225,7 @@ def pin_scenario(ctx, r, tag, n):
                    "[%s] the line that installs the precmd function had no effect in the shell (stderr file: %r): the PIN was NOT typed" % (tag, ctx.lines(n["err"])[:3])):
         return
     time.sleep(2.0)        # the install line's own prompt is drawn and its line-editor signal sent: the shell has signalled this session (the premise of #1923's hold)
+    off_control = ctx.log_size()
     ctx.be.type("touch " + n["go"], 12, enter=True)
     if not r.check(bool(ctx.until(lambda: ctx.lines(n["asked"]) == ["asked"], 10, step=0.2)),
                    "[%s] the precmd function never reached its `read` after `touch %s` (no %s): the PIN was NOT typed" % (tag, n["go"], n["asked"])):
@@ -187,6 +250,7 @@ def pin_scenario(ctx, r, tag, n):
         elif not seen:
             r.note("[%s] the question %r was not found on screen by OCR before a key was typed (shots/..pp_%s_asked; %s): recorded here, judged after the first "
                    "half of the PIN" % (tag, QUESTION, tag, where))
+    control_log = ctx.log_since(off_control)      # #2040: the keys of `touch <go>`, typed at a prompt: the control of the log check below
     off = ctx.log_size()
     ctx.be.type(pin[:half], ctx.rng.randint(10, 25))
     time.sleep(HOLD_GIVE_UP_S + 1.2)      # past the give-up cap the first key armed (ConPTY); elsewhere just a user who pauses in the middle of a PIN
@@ -215,9 +279,22 @@ def pin_scenario(ctx, r, tag, n):
     in_editor = pin_in_editor_enters(log, pin)
     r.check(not in_editor, "[%s] the PIN (or half of it) was in the input editor when an Enter was pressed, input_type %s: a secret shown in the editor and submitted"
             % (tag, ", ".join(in_editor)))
+    # #2040: while the `read -s` waits the app logs no text, so an Enter that found the PIN in the editor shows `buffer=<N chars>`: judged by the count.
+    held = withheld_enters(log)
+    r.check(not held, "[%s] an Enter was pressed with text in the input editor while the app withheld the text from its log (a secret was being read): %s "
+            "(chars, input_type): the PIN was typed into the editor and submitted" % (tag, held))
     logged = enter_text_logged(log)
-    if logged is False:
-        r.note("[%s] the app log carries no editor text (WARP_INPUT_ORDER_LOG_TEXT is off): 'the PIN was never in the editor at an Enter' was not judged" % tag)
+    if logged is False and not held:
+        r.note("[%s] the app log's Enter lines carry no editor text and no count above 0: 'the PIN was never in the editor at an Enter' rests on the counts" % tag)
+    # #2040: the PIN itself must not be in the app log (with the harness's text opt-ins on), in any line.
+    judged, problems, facts = secret_log_verdict(control_log, log, pin, half, not ctx.win)
+    for k, v in sorted(facts.items()):
+        r.metric("secret_log_%s_%s" % (k, tag), v)
+    for p in problems:
+        r.check(False, "[%s] #2040: %s" % (tag, p))
+    if not judged:
+        r.note("[%s] #2040: the keys of the control line typed at the prompt are not in the app log as text (WARP_INPUT_ORDER_LOG_TEXT off, or no key lines): "
+               "'the app log withholds the keys of a secret' was not judged" % tag)
     ran = [c for c in ctx.cmds_since(mark) if pin in c or pin[:half] in c or pin[half:] in c]
     r.check(not ran, "[%s] the PIN (or half of it) reached the shell as a command: %r" % (tag, ran))
     tok = ctx.tok(8).lower()
@@ -389,8 +466,12 @@ def echo_scenario(ctx, r, tag, n, shell):
     in_editor = pin_in_editor_enters(log, answer)
     r.check(not in_editor, "[%s] the answer (or half of it) was in the input editor when an Enter was pressed, input_type %s: typed into the editor and "
             "submitted%s" % (tag, ", ".join(in_editor), " TO THE MODEL" if "AI" in in_editor else ""))
-    if enter_text_logged(log) is False:
-        r.note("[%s] the app log carries no editor text (WARP_INPUT_ORDER_LOG_TEXT is off): 'the answer was never in the editor at an Enter' was not judged" % tag)
+    # #2040: while a reader ahead of the line editor is noted the app logs no text; an Enter with text in the editor then shows by its count.
+    held = withheld_enters(log)
+    r.check(not held, "[%s] an Enter was pressed with text in the input editor while a reader ahead of the line editor had the keys (the log withheld the "
+            "text): %s (chars, input_type)%s" % (tag, held, " TO THE MODEL" if any(t == "AI" for _, t in held) else ""))
+    if enter_text_logged(log) is False and not held:
+        r.note("[%s] the app log's Enter lines carry no editor text and no count above 0: 'the answer was never in the editor at an Enter' rests on the counts" % tag)
     half = len(answer) // 2
     ran = [c for c in ctx.cmds_since(mark) if answer in c or answer[:half] in c or answer[half:] in c]
     r.check(not ran, "[%s] the answer (or half of it) reached the shell as a command: %r" % (tag, ran))
