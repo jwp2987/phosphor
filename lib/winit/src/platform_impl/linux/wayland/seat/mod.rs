@@ -208,10 +208,15 @@ impl SeatHandler for WinitState {
     fn new_seat(
         &mut self,
         _connection: &Connection,
-        _queue_handle: &QueueHandle<Self>,
+        queue_handle: &QueueHandle<Self>,
         seat: WlSeat,
     ) {
         self.seats.insert(seat.id(), WinitSeatState::new());
+
+        // Phosphor #2085: the seat's data device, to take files dropped on a window.
+        if let Some(dnd) = self.dnd.as_mut() {
+            dnd.add_seat(queue_handle, &seat);
+        }
     }
 
     fn remove_seat(
@@ -222,6 +227,11 @@ impl SeatHandler for WinitState {
     ) {
         let _ = self.seats.remove(&seat.id());
         self.on_keyboard_destroy(&seat.id());
+
+        // Phosphor #2085: a hover that came through this seat ends; the device is released.
+        if let Some(device) = self.dnd.as_mut().and_then(|dnd| dnd.remove_seat(&seat.id())) {
+            self.dnd_leave(device.inner());
+        }
     }
 }
 

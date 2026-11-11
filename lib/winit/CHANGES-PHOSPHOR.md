@@ -44,3 +44,16 @@ Record every change to this copy here, with the issue number.
   "wgpu Device Class" window plus its Default IME window; the thread blocks in a channel `recv()` and never pumps) as hung: the
   layout change is sent synchronously to that thread. Fixed in the app (`crates/warpui/src/rendering/wgpu/mod.rs`
   `default_backends`: no GL backend on Windows by default). The fb78ecb port and the trace stay.
+- #2085 (2026-11-11) Wayland drop target for dragged files: new `src/platform_impl/linux/wayland/dnd/mod.rs` (SCTK glue) and
+  `dnd/logic.rs` (kill switch, mime choice, `text/uri-list` parser, the event order of one drag; `std` only, also compiled into
+  Phosphor's `warpui` tests by `#[path]`, so it is kept clean under Phosphor's `.rustfmt.toml`). Wiring: `wayland/mod.rs` (`mod dnd`),
+  `wayland/state.rs` (`WinitState::dnd`, created in `new`), `wayland/seat/mod.rs` (`new_seat` / `remove_seat` add and release the seat's
+  data device). The backend had no `wl_data_device` code at all (upstream rust-windowing/winit has none either), so
+  `HoveredFile` / `HoveredFileCancelled` / `DroppedFile` were never emitted on Wayland. Now: `wl_data_device_manager` is bound
+  (SCTK `DataDeviceManagerState`, versions 1-3), each seat gets a data device, a drag that offers `text/uri-list` over a window is
+  accepted with the copy action only, its data is read through a pipe registered on the calloop loop (one `read` per readiness, the
+  pipe is always read to its end, 1 MiB cap), and the three events are emitted; one `CursorMoved` at the drop position precedes the
+  `DroppedFile` events (no pointer event reaches a surface during a drag). Paths are not canonicalized (X11's are). Selection
+  (clipboard) offers reach the same data device and are ignored. Kill switch `PHOSPHOR_WAYLAND_DND=0`: nothing is bound, behaviour
+  as before. New dependency for the unix targets: `log = "0.4"` (already in Phosphor's lock and in winit's lock entry since #1632).
+  Design: `docs/design/r15-wldnd.md`.

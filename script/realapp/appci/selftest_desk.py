@@ -433,6 +433,16 @@ def drag_source_and_drop_verdict():
     assert D.drop_line_verdict(["ls -d file:///h/w/dnd%20file%20ab12.txt > dnd_out_ab12.txt"], path, out), "a URI is not the path"
     src = open(os.path.join(HERE, "cases_desk.py"), encoding="utf-8").read()
     assert D.WAYLAND_DROP_ISSUE == "#2085" and "m.move(tx, ty)" in src, "the pointer is parked on the target BEFORE the drag: the app drops at its last pointer position"
+    # #2085: Wayland has a drop target now. The case no longer announces a Wayland failure, names the kill switch, and holds Wayland to one check more
+    # than X11 (the source is not told the drop failed)
+    assert D.WAYLAND_DROP_KILL_SWITCH == "PHOSPHOR_WAYLAND_DND" and "fails until" not in src and "expected to fail" not in src
+    assert '"failed" not in events' in src and "no drop target)" not in src
+    log = ("12:00 [INFO] wayland_dnd hop=enter accepted=true reading=true\nother line\n12:00 [INFO] wayland_dnd hop=data bytes=41 usable=true\n"
+           "x wayland_dnd hop=drop waiting_for_data=false\nx wayland_dnd hop=finish accepted=true finished=true\nx wayland_dnd hop=leave\n")
+    assert D.wl_dnd_hops(log) == ["enter accepted=true reading=true", "data bytes=41 usable=true", "drop waiting_for_data=false",
+                                  "finish accepted=true finished=true", "leave"]
+    assert D.wl_dnd_hops("") == [] and D.wl_dnd_hops(None) == [] and D.wl_dnd_hops("wayland_dnd hop=off reason=kill_switch") == ["off reason=kill_switch"]
+    assert "wl_dnd_hops(ctx.log_since(log_off))" in src and '"wayland_dnd_hops"' in src
 
 
 # ---------------------------------------------------------------- IME
