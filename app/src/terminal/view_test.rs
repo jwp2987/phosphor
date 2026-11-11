@@ -37096,3 +37096,7 @@ fn give_control_back_action_hands_the_held_command_to_the_agent() {
         });
     })
 }
+
+/// #2080: Shift+Page Up / Page Down / Home / End under a running command.
+#[path = "view/scrollback_keys_view_tests.rs"]
+mod scrollback_keys_view_tests;

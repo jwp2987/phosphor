@@ -34598,6 +34598,16 @@ impl TerminalView {
         }
     }
 
+    /// #2080: a shifted navigation key under a running command scrolls the scrollback. Nothing is
+    /// written to the pty: the plain key stays the program's, and the alternate screen never gets
+    /// here (see `scrollback_keys`).
+    fn scrollback_key(&mut self, key: scrollback_keys::ScrollbackKey, ctx: &mut ViewContext<Self>) {
+        warpui::input_order::log_hop("scrollback_key", || {
+            scrollback_keys::scrollback_key_hop_detail(key)
+        });
+        self.update_scroll_position_locking(key.scroll_update(), ctx);
+    }
+
     fn move_home(&mut self, ctx: &mut ViewContext<Self>) {
         if self.nav_key_goes_to_pty(
             (self.is_long_running() && !self.agent_owns_command_pty())
@@ -39059,6 +39069,7 @@ impl TypedActionView for TerminalView {
             | PageDown
             | Home
             | End
+            | ScrollbackKey(_)
             | KeyboardSelectText(_)
             | ContextMenu(_)
             | SplitRight(_)
@@ -39406,6 +39417,7 @@ impl TypedActionView for TerminalView {
             PageDown => self.page_down(ctx),
             Home => self.move_home(ctx),
             End => self.move_end(ctx),
+            ScrollbackKey(key) => self.scrollback_key(*key, ctx),
             KeyboardSelectText(direction) => self.keyboard_select_text(ctx, direction),
             SelectBookmarkUp => match input_mode {
                 InputMode::PinnedToBottom | InputMode::Waterfall => self.bookmark_up(ctx),
@@ -42479,6 +42491,8 @@ mod give_up_to_pty;
 mod paste_queue;
 mod prompt_notice;
 mod route_facts;
+/// #2080: Shift+Page Up / Page Down / Home / End scroll the scrollback under a running command.
+mod scrollback_keys;
 mod ssh_edges;
 mod ssh_queue;
 mod ssh_typeahead;
