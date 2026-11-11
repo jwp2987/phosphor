@@ -116,7 +116,13 @@ guards:
     - 'if command -v pwsh >/dev/null; then ./script/check_pwsh_parse; else echo "SKIPPED check_pwsh_parse: no pwsh on this runner (it runs in script/precheck)"; fi'
     - ./script/check_test_results
     # #1522: the real-app harness's offline self-test (parsers, registries, report exit codes); pure Python, no app or display.
-    - python3 script/realapp/appci/selftest.py
+    # #2086 / #2089 / #2090: --require makes two of its checks load-bearing BY NAME: the run fails when either was not among the checks that ran and
+    # passed (the lines that register a selftest_*.py file sit at selftest.py's tail, where hand merges have already dropped lines once).
+    #   every_check_function_is_registered_2086   no asserting self-test function without its @check line
+    #   r15_proving_lab_is_one_list               cases.py holds ONE `PROVING_LAB = ` statement and ci_seq.py reads the same list
+    - python3 script/realapp/appci/selftest.py --require every_check_function_is_registered_2086,r15_proving_lab_is_one_list
+    # the tier driver's own self-test (pure: reads this file and cases.py, no network): the fix-tier lab job gets every PROVING_LAB entry once
+    - python3 script/ci/ci_seq.py --self-test
     # #1495: the release gate's offline fixtures (pass, failed job, wrong sha / tier, KNOWN, NOREF, missing platform).
     - python3 script/ci/test_check_release_gate.py
     # Large deletions. There are no pull requests here, so the base is the
@@ -1273,6 +1279,10 @@ app-test-macos:
   allow_failure: true
   resource_group: mac-gui
   timeout: 4h   # r18e0: the full tier (both modes, soak) was killed at 90m with ~47 cases unrun; run.py also stops itself early (appci/deadline.py, CI_JOB_TIMEOUT)
+  variables:
+    # owner 2026-11-11: the ssh wrapper is pinned on macOS too, as on app-test-linux-wayland and app-test-windows (#2066), so ssh_connect_typing_wrapper
+    # and ssh_nested_typeahead_wrapper run here instead of SKIP with NEEDS. The jobs that extend this one (the lab, the reuse variant) inherit it.
+    APPCI_SSH_WRAPPER: "1"
   needs:
     - job: build-macos-arm64
       artifacts: false
@@ -1424,6 +1434,9 @@ app-test-lab-linux:
     GIT_DEPTH: "1"
     APPCI_LAB: local
     APPCI_CASES: "lab_*"
+    # owner 2026-11-11: the lab jobs run with the loopback fake embeddings provider (script/fake_embeddings.py, started by run.py and configured as the
+    # BYOP provider by profile.py), so lab_codebase_index_remote is JUDGED; without it the case SKIPs in every tier. Also on the Mac and Windows lab jobs.
+    APPCI_FAKE_EMBEDDINGS: "1"
     # CI's dev build is a bundled build with no pinned helper digest (see "Build jobs" above): it refuses every helper upload by design, so the upload /
     # upgrade / never arms are UNVERIFIABLE here, with that reason, instead of a certain failure (or a vacuous pass for `never`). The pre-installed
     # `helper` arms do run. Remove this line when the dev build pins the lab helper's digest (docs/design/r12-policy.md 3, open decision).
@@ -1445,7 +1458,8 @@ app-test-lab-linux:
 # NOT re-mapped here (re-mapping would put the token into the job's variable list/expansion). lab.py reads them from the environment through ci_env.get,
 # prints only whether they are set, and a job on an unprotected ref SKIPs the lab cases with that reason. No `set -x` anywhere near them.
 # Round 15 (#2063; docs/design/r12-macssh.md 4, docs/design/r15-tiers.md): ci_seq.py plays these two in the candidate and release tiers, after that platform's
-# app tests, with APPCI_LAB_MATRIX=quick and APPCI_FAKE_MODEL=1.
+# app tests, with APPCI_LAB_MATRIX=quick and APPCI_FAKE_MODEL=1. Round 16 (owner 2026-11-11): in the CANDIDATE tier it also passes APPCI_CASES = the
+# PROVING_LAB globs (what the fix tier's Linux lab job plays), not the quick matrix of every family, for now (ci_seq.LAB_PLAT_PROVING_ONLY_TIERS).
 #
 # The helper (#2062, docs/design/r12-macssh.md 4, docs/design/r15-lab.md): these two machines have no helper cache and cannot build a Linux musl binary, so
 # they take the `lab-helper` job's artifact (helper-artifacts/: the binary, its version line for a machine that cannot start it, its key). The helper is a
@@ -1469,7 +1483,8 @@ app-test-lab-macos:
   variables:
     APPCI_LAB: fixed
     APPCI_LAB_SLOT: mac
-    APPCI_CASES: "lab_*"
+    APPCI_CASES: "lab_*"   # the job's own default; in the candidate tier ci_seq.py passes the PROVING_LAB globs instead (owner 2026-11-11, lab_tier_vars)
+    APPCI_FAKE_EMBEDDINGS: "1"   # as app-test-lab-linux: lab_codebase_index_remote is judged
     APPCI_APP_PINNED_DIGESTS: "0"
 
 app-test-lab-windows:
@@ -1484,7 +1499,8 @@ app-test-lab-windows:
   variables:
     APPCI_LAB: fixed
     APPCI_LAB_SLOT: windows
-    APPCI_CASES: "lab_*"
+    APPCI_CASES: "lab_*"   # the job's own default; in the candidate tier ci_seq.py passes the PROVING_LAB globs instead (owner 2026-11-11, lab_tier_vars)
+    APPCI_FAKE_EMBEDDINGS: "1"   # as app-test-lab-linux: lab_codebase_index_remote is judged
     APPCI_APP_PINNED_DIGESTS: "0"
 
 # Real-use replay (Wave 1.5 #3, docs/testing.md "Real-use replay"): a seeded "day of use" in one long case per session mode, against the fake ssh lab at
@@ -1494,6 +1510,7 @@ app-test-replay-linux:
   extends: app-test-lab-linux
   variables:
     APPCI_CASES: "lab_replay*"
+    APPCI_FAKE_EMBEDDINGS: "0"   # the replay's profile stays as it was: the embeddings provider is for the lab job this one extends, not for the replay
     APPCI_FAKE_MODEL: "1"
     APPCI_LAB_MATRIX: "quick"
     APPCI_REPLAY_MINUTES: "15"

@@ -23,8 +23,11 @@ CLOSE_PANE = os.environ.get("APPCI_KEY_CLOSE", "ctrl+shift+w")
 # macOS: Phosphor's close shortcut is Cmd-W (app/src/util/bindings.rs: CloseCurrentSession = cmd_or_ctrl_shift("w"), which is "cmd-w" on macOS;
 # CloseWindow is cmd-shift-W) and its quit is Cmd-Q. htype2 never carries them (backend.MacBackend.NEVER_CMD, owner rule: Cmd-W / Cmd-Q hit the wrong app).
 # Since #2061 (r14-test-gaps T32) the backend sends exactly those chords to the app under test only (MacBackend.app_chord through mac/tools/appkey).
-# APPCI_KEY_CLOSE stays EMPTY on macOS for now (mac/ci/app_test.sh): the cases written against "no close key" keep their Ctrl-D / palette paths until
-# the chord path has a passing run; the cases that need the chords ask close_key(ctx) / quit_key(ctx) below. A case must never call be.key("").
+# APPCI_KEY_CLOSE starts EMPTY on macOS (mac/ci/app_test.sh): the cases written against "no close key" keep their Ctrl-D / palette paths until
+# the chord path is proven IN THE SAME RUN (owner 2026-11-11): the job names the key in APPCI_KEY_CLOSE_WHEN_PROVEN ("cmd+w") and
+# proven_close_key() below makes it APPCI_KEY_CLOSE / CLOSE_PANE when mac_pointer_chord_proof has passed, and takes it back when a later proof (the
+# other session mode's) does not. The cases that need the chords ask close_key(ctx) / quit_key(ctx) below. A case must never call be.key("").
+CLOSE_WHEN_PROVEN_ENV = "APPCI_KEY_CLOSE_WHEN_PROVEN"
 NO_CLOSE_WHY = ("no keyboard close-pane/tab shortcut is usable on this platform (APPCI_KEY_CLOSE empty, and on macOS the app-only chord path, "
                 "MacBackend.app_chord / mac/tools/appkey, is not available in this run)")
 NOW = lambda ctx: "now" if ctx.be.name == "mac" else "date +%s.%N"     # BSD date has no %N; ~/bin/now is written by profile.py
@@ -46,6 +49,28 @@ def close_tab_best_effort(ctx, r):
     else:
         ctx.be.key("ctrl+d")
         r.note("no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)")
+
+
+def proven_close_key(be, passed, environ=None):
+    """owner 2026-11-11 (docs/design/r10-r15-w4mac.md, "Setting APPCI_KEY_CLOSE=cmd+w ... one line later"): the macOS close key is given to the run
+    ONLY when mac_pointer_chord_proof passed earlier in the same run. mac/ci/app_test.sh exports APPCI_KEY_CLOSE="" and names the key in
+    APPCI_KEY_CLOSE_WHEN_PROVEN; the proof case calls this at its start (passed=False: nothing proven yet in this pass) and at its end (passed = the
+    case has no failed check). The key becomes APPCI_KEY_CLOSE and CLOSE_PANE only when `passed` AND the chord half set be.app_chords_proven to True
+    (Cmd-W closed a tab); otherwise a key THIS function gave earlier (the other session mode's proof) is taken back. Without the variable (every other
+    platform, a hand run) nothing changes, and a close key the job set itself is never touched. -> the close key now in force."""
+    global CLOSE_PANE
+    environ = os.environ if environ is None else environ
+    key = environ.get(CLOSE_WHEN_PROVEN_ENV, "")
+    if not key:
+        return CLOSE_PANE
+    if passed and getattr(be, "app_chords_proven", None) is True:
+        if not environ.get("APPCI_KEY_CLOSE"):
+            environ["APPCI_KEY_CLOSE"] = CLOSE_PANE = key
+            be.close_key_from_proof = True
+    elif getattr(be, "close_key_from_proof", False):
+        environ["APPCI_KEY_CLOSE"] = CLOSE_PANE = ""
+        be.close_key_from_proof = False
+    return CLOSE_PANE
 
 
 def mac_chords_why_not(ctx):

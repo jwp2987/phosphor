@@ -91,12 +91,17 @@ export APPCI_KEY_NEWTAB="cmd+t" APPCI_KEY_NEWWIN="cmd+n"
 # editor_memory_7mb: the palette is cmd+p on macOS. Phosphor's close-pane/tab shortcut on macOS is Cmd-W (app/src/util/bindings.rs CloseCurrentSession =
 # cmd_or_ctrl_shift("w"), "cmd-w" on macOS) and its quit is Cmd-Q. htype2 never carries either. Since round 15 (#2061) the backend sends them to the app
 # under test only (MacBackend.app_chord through the appkey tool; APPCI_MAC_CHORD_VIA=hid switches its delivery from CGEvent.postToPid to the HID tap), and the
-# cases written for it ask cases_robust.close_key / quit_key. APPCI_KEY_CLOSE still stays EMPTY here until that path has a passing run, so every case written
+# cases written for it ask cases_robust.close_key / quit_key. APPCI_KEY_CLOSE still STARTS EMPTY here (see below for when the run gets the key), so every case written
 # against "no close key" behaves as before: it SKIPs with the reason (soak) or notes it (flood_typing_latency ends its throw-away tab with Ctrl-D); none
 # may pass the empty value to be.key(). Setting APPCI_KEY_CLOSE="cmd+w" here is then the one-line change that gives them the key. editor_memory_7mb (#1607/#1407) closes its code
 # pane through the COMMAND palette instead: cmd+p (CustomAction::CommandPalette = cmd_or_ctrl_shift("p"); cmd+shift+p is the navigation palette), then
 # 'Close Current Session' (the same PaneGroupAction::RemoveActive the chord is bound to); the case proves it by the app's buffer_dropped log line.
+# Owner 2026-11-11 (docs/design/r10-r15-w4mac.md): the close key is given to the run ONLY when mac_pointer_chord_proof passed earlier in the same run. A
+# shell variable cannot know that (the proof is a case inside run.py), so the job names the key here and the proof case, when it has PASSED, makes it
+# APPCI_KEY_CLOSE for the cases after it (appci/cases_robust.proven_close_key; a failed, skipped or unselected proof leaves APPCI_KEY_CLOSE empty, and a
+# failed proof in the second session mode takes the key back). A hand-set APPCI_KEY_CLOSE_WHEN_PROVEN="" keeps the old behaviour.
 export APPCI_KEY_PALETTE="cmd+p" APPCI_KEY_CLOSE="" APPCI_KEY_CMD_PALETTE="cmd+p"
+export APPCI_KEY_CLOSE_WHEN_PROVEN="${APPCI_KEY_CLOSE_WHEN_PROVEN-cmd+w}"
 # #1482: ktap observes every Return at the annotated session tap (which process macOS targets) and passes it through unchanged;
 # enter_route.py joins that with Phosphor's own mac_enter trace afterwards. Optional: a failure to start is reported, never fatal.
 "$TOOLS/ktap" "$OUT/ktap.log" > "$OUT/ktap.stdout" 2>&1 & KTAP=$!; echo "ktap $KTAP" >> "$OUT/pids"

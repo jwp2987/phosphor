@@ -119,6 +119,10 @@ LAB_HELPER_JOB = "lab-helper"
 # rows, about 10 h at the 43 s a row the committed lab runs took: more than the job's 6 h, so it stays a hand play.
 LAB_CANDIDATE_MATRIX = "shells=bash,zsh,fish,nu;lat=lan,150;helper=nohelper,helper,upload,upgrade,never;faults=1;scenarios=1"
 LAB_PLAT_MATRIX = "quick"                       # macOS and Windows: the client side of the same remote
+# Owner 2026-11-11 ("Mac/Win lab in candidate: PROVING_LAB only", for now): in these tiers the Mac and Windows lab jobs get APPCI_CASES = the PROVING_LAB
+# globs, exactly what the fix tier's Linux lab job plays (lab_fix_vars), instead of their own `lab_*` (the quick matrix of every family, about 340 rows a
+# platform, never played there). The release tier is not named by the decision and keeps the job's own `lab_*`; add "release" here to change that.
+LAB_PLAT_PROVING_ONLY_TIERS = ("candidate",)
 # The lab jobs keep their own APPCI_CASES ("lab_*"). That glob never sweeps in the replay (run.py plays lab_replay* only when --cases names it), so the
 # replay is played once, by its own job.
 X11_MODES = "terminal,agent"                    # #2058: the X11 pass runs BOTH session modes (agent mode had never run there)
@@ -128,9 +132,16 @@ NOT_PLAYABLE = "not playable"
 LAB_HELPER_TOOL_RX = re.compile(r"lab_helper: ERROR (?:(\S+) is missing for this user|the (\S+) rust target is not installed)")
 
 
-def lab_tier_vars(plat):
-    """the play-time variables of a candidate / release lab job on platform plat (the fix tier's are lab_fix_vars)"""
-    return {"APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": LAB_CANDIDATE_MATRIX if plat == LINUX else LAB_PLAT_MATRIX}
+def lab_tier_vars(plat, tier="candidate", globs=None):
+    """the play-time variables of a candidate / release lab job on platform plat (the fix tier's are lab_fix_vars). Linux: every family (the job's own
+    `lab_*` under LAB_CANDIDATE_MATRIX). macOS / Windows: the quick matrix, and in LAB_PLAT_PROVING_ONLY_TIERS only the PROVING_LAB globs (`globs`, read
+    from cases.py when None). With no glob at all APPCI_CASES is NOT passed: an empty play-time value would replace the job's `lab_*` with nothing."""
+    v = {"APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": LAB_CANDIDATE_MATRIX if plat == LINUX else LAB_PLAT_MATRIX}
+    if plat != LINUX and tier in LAB_PLAT_PROVING_ONLY_TIERS:
+        globs = proving_lab_globs() if globs is None else globs
+        if globs:
+            v["APPCI_CASES"] = ",".join(globs)
+    return v
 
 
 def box_app_sequence(tier, reuse=False, lab_globs=None):
@@ -569,6 +580,22 @@ def self_test_r15(yml, src):
          "release = candidate plus the heavy suites, which follow the lab"),
         (lab_tier_vars(LINUX) == {"APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": LAB_CANDIDATE_MATRIX} and all('APPCI_CASES: "lab_*"' in job_block(j) for j in LAB_APP.values())
          and lab_tier_vars(MAC)["APPCI_LAB_MATRIX"] == "quick" == lab_tier_vars(WIN)["APPCI_LAB_MATRIX"], "candidate lab variables: every family on the box, the quick matrix on Mac and Windows, the scripted model"),
+        # round 16 (owner 2026-11-11)
+        (lab_tier_vars(MAC, "candidate", g) == lab_fix_vars(g) == lab_tier_vars(WIN, "candidate", g) and lab_tier_vars(MAC) == lab_tier_vars(MAC, "candidate")
+         and lab_tier_vars(MAC)["APPCI_CASES"] == ",".join(proving_lab_globs()) != "lab_*",
+         "candidate, Mac and Windows lab jobs: the PROVING_LAB globs only (what the fix tier's lab job plays), quick matrix, scripted model"),
+        ("APPCI_CASES" not in lab_tier_vars(MAC, "release", g) and "APPCI_CASES" not in lab_tier_vars(WIN, "release", g) and LAB_PLAT_PROVING_ONLY_TIERS == ("candidate",)
+         and "APPCI_CASES" not in lab_tier_vars(LINUX, "candidate", g) and "APPCI_CASES" not in lab_tier_vars(LINUX, "release", g),
+         "the release tier and the Linux lab job keep the job's own lab_* (the decision names the candidate tier, Mac and Windows)"),
+        ("APPCI_CASES" not in lab_tier_vars(MAC, "candidate", ()), "no PROVING_LAB glob: APPCI_CASES is not passed empty (the job's lab_* stays)"),
+        ("lvars = lab_tier_vars(p, tier)" in src, "the driver passes its tier to the Mac / Windows lab variables"),
+        (all(re.search(r'^    APPCI_FAKE_EMBEDDINGS: "1"', job_block(j), re.M) for j in LAB_APP.values()) and re.search(r'^    APPCI_FAKE_EMBEDDINGS: "0"', job_block(REPLAY_JOB), re.M)
+         and "APPCI_FAKE_EMBEDDINGS" not in job_block("app-test-linux-wayland") + job_block("app-test-macos") + job_block("app-test-windows"),
+         "APPCI_FAKE_EMBEDDINGS=1 on the three lab jobs (lab_codebase_index_remote is judged), not on the replay or the ordinary app jobs"),
+        (all(re.search(r'^    APPCI_SSH_WRAPPER: "1"', job_block(j), re.M) for j in ("app-test-linux-wayland", "app-test-macos", "app-test-windows")),
+         "the ssh wrapper is pinned on the Wayland, macOS and Windows app jobs (the *_wrapper cases run on all three)"),
+        ("selftest.py --require every_check_function_is_registered_2086,r15_proving_lab_is_one_list" in job_block("guards") and "script/ci/ci_seq.py --self-test" in job_block("guards"),
+         "the guards job requires the #2086 and #2089 / #2090 checks by name and runs this self-test"),
         (all(k in LAB_CANDIDATE_MATRIX for k in ("upload", "upgrade", "never", "faults=1", "scenarios=1")), "the candidate matrix has the upload / upgrade / never arms, the faults and the scenario users"),
         ("APPCI_LAB: fixed" in job_block(LAB_APP[MAC]) and "APPCI_LAB: fixed" in job_block(LAB_APP[WIN]) and "APPCI_LAB: local" in job_block(LAB_APP[LINUX]),
          "the Mac and Windows lab jobs attach to the box's fixed slot (APPCI_LAB=fixed)"),
@@ -1137,7 +1164,9 @@ def main():
         if LAB_APP[p] not in SKIP and BUILD[p] in watch_of and timeline.get(BUILD[p], ("",))[0] == "success":
             lab_helper_done.wait()
             if ensure_lab_image():
-                play_wait(LAB_APP[p], dict(appvars, **lab_tier_vars(p)), "the lab from %s, quick matrix, fake model" % p)
+                lvars = lab_tier_vars(p, tier)
+                play_wait(LAB_APP[p], dict(appvars, **lvars), "the lab from %s, %s, quick matrix, fake model" % (
+                    p, "the PROVING_LAB globs only" if "APPCI_CASES" in lvars else "the job's own lab_*"))
             else:
                 timeline[LAB_APP[p]] = (LAB_IMAGE_FAIL, None)
         run_suites([n for n in plat_suites(p, tier == "release") if n not in units])

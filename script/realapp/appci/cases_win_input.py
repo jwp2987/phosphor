@@ -48,8 +48,8 @@ def _need_windows_pane(ctx, r, pane):
         r.skip("runs in the %s pane" % pane)
 
 
-WRAPPER_PIN_NEEDS = ("this job does not pin the ssh wrapper. NEEDS: APPCI_SSH_WRAPPER=1 in the job's variables (.gitlab-ci.yml sets it for app-test-linux-wayland and "
-                     "app-test-windows; a hand run exports it), so that profile.py writes warpify.ssh.enable_ssh_warpification and enable_legacy_ssh_wrapper "
+WRAPPER_PIN_NEEDS = ("this job does not pin the ssh wrapper. NEEDS: APPCI_SSH_WRAPPER=1 in the job's variables (.gitlab-ci.yml sets it for app-test-linux-wayland, "
+                     "app-test-macos and app-test-windows; a hand run exports it), so that profile.py writes warpify.ssh.enable_ssh_warpification and enable_legacy_ssh_wrapper "
                      "explicitly (#1884)")
 
 
@@ -63,8 +63,9 @@ def _wrapper_variant(ctx, r, base):
     """#2066: these two cases were SKIP in every pane of every run, because nothing set APPCI_SSH_WRAPPER=1 and they refused every pane but Windows Git
     Bash. The wrapper's announcement and verdict are handled by the same code on every platform (terminal/view.rs ssh_on_wrapper_announced /
     ssh_on_wrapper_verdict), so they run in any pane whose shell has the wrapper once the job pins it: the Windows Git Bash pane (the born-owned ConPTY
-    window, #1884; the one-connection managed ssh is switched on by in_msys_managed_ssh, #2051, since it is off by default) and the Linux pane (the
-    ControlMaster wrapper). The PowerShell pane has no wrapper (winmap.py)."""
+    window, #1884; the one-connection managed ssh is switched on by in_msys_managed_ssh, #2051, since it is off by default), the Linux pane and, since
+    round 16 (owner 2026-11-11: the wrapper is pinned on app-test-macos too), the macOS pane (the ControlMaster wrapper on both). The PowerShell pane
+    has no wrapper (winmap.py)."""
     if ctx.win and ctx.pane != "gitbash":
         r.skip("runs in the gitbash pane (the PowerShell pane's ssh is not the bash wrapper)")
     if os.environ.get("APPCI_SSH_WRAPPER", "") != "1":
@@ -83,13 +84,13 @@ def _wrapper_variant(ctx, r, base):
 
 @case("ssh_connect_typing_wrapper", order=30)
 def c_ssh_connect_typing_wrapper(ctx, r):
-    """#1884: ssh_connect_typing with the managed-ssh wrapper pinned on (Windows Git Bash pane, Linux pane)"""
+    """#1884: ssh_connect_typing with the managed-ssh wrapper pinned on (Windows Git Bash pane, Linux pane, macOS pane)"""
     _wrapper_variant(ctx, r, cases.c_ssh)
 
 
 @case("ssh_nested_typeahead_wrapper", order=30)
 def c_ssh_nested_typeahead_wrapper(ctx, r):
-    """#1884: ssh_nested_typeahead with the managed-ssh wrapper pinned on (Windows Git Bash pane, Linux pane)"""
+    """#1884: ssh_nested_typeahead with the managed-ssh wrapper pinned on (Windows Git Bash pane, Linux pane, macOS pane)"""
     _wrapper_variant(ctx, r, cases.c_ssh_nested)
 
 

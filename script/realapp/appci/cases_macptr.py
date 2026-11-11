@@ -10,6 +10,8 @@
 #       chords    Cmd-H is refused, and Cmd-W is refused while the reference terminal is the target (controls, nothing is sent); Cmd-W closes a
 #                 tab this case opened (the pane that answers is the first tab again). The result is kept on the backend
 #                 (app_chords_proven): after a FAILED proof no later case sends an app chord again in this run (cases_robust.mac_chords_why_not).
+#       close key the job names the macOS close key in APPCI_KEY_CLOSE_WHEN_PROVEN; it becomes APPCI_KEY_CLOSE for the cases after this one only
+#                 when this case PASSED (cases_robust.proven_close_key; owner 2026-11-11), and a later failed proof takes it back.
 # Cmd-Q is not sent here (it needs a relaunch): quit_24_tabs and agent_restart_quit_* are its cases.
 import os, sys, time
 
@@ -160,6 +162,7 @@ def c_mac_pointer_chord_proof(ctx, r):
     their controls. Runs before every case that uses them; a failed chord half switches the chord path off for the rest of the run."""
     if not U.mac(ctx):
         r.skip(MAC_ONLY)
+    R.proven_close_key(ctx.be, False)          # nothing is proven yet in this pass: a close key the other mode's proof gave is taken back first
     for t in ("mptr", "appkey", "ocrw"):
         r.check(bool(MP.tool(ctx.be, t)), MP.missing_tool_reason(ctx.be, t))
     ctx.reset()
@@ -170,3 +173,10 @@ def c_mac_pointer_chord_proof(ctx, r):
     _chord_half(ctx, r)
     C.effect_run(ctx, r, "mpcp_end", 3, 0.0)
     r.check(ctx.app.alive(), "the app is not alive after the proof")
+    # owner 2026-11-11: the close key (APPCI_KEY_CLOSE_WHEN_PROVEN, set by mac/ci/app_test.sh) is given to the rest of the run only by a proof that
+    # PASSED, here, as its last step. A proof that failed, skipped or raised never reaches a grant, so every later case keeps its no-close-key path.
+    key = R.proven_close_key(ctx.be, not r.fails)
+    r.metric("close_key_after_proof", key)
+    if os.environ.get(R.CLOSE_WHEN_PROVEN_ENV):
+        r.note("close key for the cases after this one: %s" % (("%s (APPCI_KEY_CLOSE, given by this proof)" % key) if key else
+                                                                 "none (the proof did not pass: APPCI_KEY_CLOSE stays empty)"))
