@@ -7,8 +7,10 @@ $BASH_COMMAND, freezing the shell before a big paste ran. A value over 8 KiB now
 pipeline. This extracts the real functions from bash_body.sh and runs them from a DEBUG trap (where
 the hook runs and bash holds $BASH_COMMAND at the trapped command) on
 
-  * a 3 MB multi-line command with quotes, backslashes, tabs, CRs and non-ASCII: the escaped text
-    must decode, as JSON, to exactly the command (nothing truncated or altered), in under 3 s;
+  * a 1.4 MB and a 2.8 MB multi-line command with quotes, backslashes, tabs, CRs and non-ASCII: the
+    escaped text must decode, as JSON, to exactly the command (nothing truncated or altered), and
+    doubling the size must not more than triple the time (linear ~2x, quadratic ~4x; the control is
+    measured in the same run), with the 2.8 MB case under 10 s;
   * a 20 KB and a short command, covering the path on each side of the threshold.
 
 On the pre-fix code the 3 MB case takes minutes (the test times out and fails).
@@ -95,7 +97,37 @@ def lines(n):
 
 check("short", "'short'", 2)
 check("20KB", "'" + lines(300) + "'", 2)
-check("3MB", "'" + lines(40000) + "'", 3)
+
+
+def linear_in_size():
+    """What #1255 is about is the GROWTH: the pre-fix code is quadratic (1 MB 5.4 s, 3 MB minutes).
+    A fixed wall-clock line alone judged the CI box's speed and load instead (r14a and r15a guards:
+    3 MB took 3.06 s and 3.25 s next to an app-test job; the laptop takes 1.94 s, and 0.7/1.4/2.8/5.7 MB
+    take 0.48/0.95/1.94/3.83 s, i.e. linear). So the control is in the same run on the same machine:
+    the 1.4 MB command, then the 2.8 MB one. Linear doubles the time (ratio ~2), quadratic quadruples it
+    (~4): a ratio over 3.0 is a FAIL. The 2.8 MB time is also capped at 10 s (the pre-fix code takes
+    minutes) and printed every run, so a slower machine is visible without being judged as the app."""
+    half, full = "'" + lines(20000) + "'", "'" + lines(40000) + "'"
+    t_half, t_full = [], []
+    for _ in range(2):  # median of two each: one slow sample from a neighbouring job cannot decide
+        for lit, acc in ((half, t_half), (full, t_full)):
+            got, s = run(lit, 10)
+            if got is None:
+                failures.append(f"{len(lit) // 1024} KB: no result after {s:.1f}s (cap 10s)")
+                return
+            if got != ": " + lit:
+                failures.append(f"{len(lit) // 1024} KB: escaped command does not round-trip")
+            acc.append(s)
+    a, b = min(t_half), min(t_full)
+    ratio = b / a if a > 0 else float("inf")
+    print(f"3MB: {b:.2f}s, 1.4MB: {a:.2f}s, ratio {ratio:.2f} (linear ~2, quadratic ~4; FAIL over 3.0 or over 10s)")
+    if ratio > 3.0:
+        failures.append(f"3MB: escaping grows faster than linear: {a:.2f}s at 1.4 MB, {b:.2f}s at 2.8 MB (ratio {ratio:.2f} > 3.0)")
+    if b > 10:
+        failures.append(f"3MB: took {b:.2f}s (cap 10s)")
+
+
+linear_in_size()
 
 if failures:
     print("\n".join("FAIL: " + f for f in failures))
