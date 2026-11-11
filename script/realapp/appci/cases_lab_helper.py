@@ -102,12 +102,39 @@ def _with_pre(fn, arm, pre):
 
 
 # ------------------------------------------------------------------ small lab helpers
-def daemons(lab, user):
-    out = lab.ssh(user, "pgrep -u $(id -u) -f 'phosphor-remote.* daemon' | wc -l")
-    try:
-        return int(out.stdout.strip())
-    except ValueError:
+# #2163: the daemon pattern is self-match-proof. The ssh wrapper's own `bash -c '<script>'` carries the pattern text in its command line, so a plain
+# 'phosphor-remote.* daemon' matches that wrapper too (and counted one daemon too many). `[p]hosphor-remote.* daemon` matches the daemon's command line and
+# not its own text (the bracket class never reads `[p]`), and pgrep never lists itself.
+DAEMON_PATTERN = "[p]hosphor-remote.* daemon"
+
+
+def parse_pids(text):
+    """pure: the sorted pids in `pgrep` output (one per line); non-numeric lines are ignored"""
+    return sorted(int(x) for x in (text or "").split() if x.isdigit())
+
+
+def daemon_pids(lab, user):
+    """[pid] of this user's helper daemons, or None when the count could not be read"""
+    out = lab.ssh(user, "pgrep -u $(id -u) -f '%s'; true" % DAEMON_PATTERN)
+    if out.returncode not in (0, None):
         return None
+    return parse_pids(out.stdout)
+
+
+def daemons(lab, user):
+    pids = daemon_pids(lab, user)
+    return None if pids is None else len(pids)
+
+
+def kill_daemons(ctx, r, lab, user):
+    """#2163: kill this user's helper daemons left by earlier cases (the lab kills a user's processes only at lease release, and a daemon idles 10 minutes),
+    BEFORE the case connects, so the count the case judges is its own. SIGKILL by pid; waits until none is left; a daemon that survives is noted."""
+    for pid in daemon_pids(lab, user) or []:
+        lab.ssh(user, "kill -9 %d; true" % pid)
+    left = ctx.until(lambda: daemon_pids(lab, user) == [], 10.0, step=0.25)
+    if not left:
+        r.note("helper daemons of %s still running before the case: %r" % (user, daemon_pids(lab, user)))
+    return bool(left)
 
 
 def new_channels(lab, size0):
@@ -296,6 +323,7 @@ def c_idle_exit(ctx, r, arm):
     """The helper's daemon exits by itself after its grace period (daemon/server.rs GRACE_PERIOD, 10 min) with no proxy connected: connect, `exit`, wait. Slow: only with
     APPCI_LAB_SLOW=1 (a candidate/release run)."""
     lab, u = ctx.lab, arm["user"]
+    kill_daemons(ctx, r, lab, u)
     if CL.connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
@@ -315,11 +343,13 @@ def c_reconnect(ctx, r, arm):
     """After `lab drop rst` the pane is local; ssh again: the helper session is re-established against the SAME single daemon (no duplicate), files unchanged, features still
     routed to the helper."""
     lab, u = ctx.lab, arm["user"]
+    kill_daemons(ctx, r, lab, u)                      # #2163: the daemons of earlier cases are not this case's
     if CL.connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     settle(ctx, arm, 2.0)
     files0 = CL.server_helper_files(lab, arm)
+    pids0 = daemon_pids(lab, u)
     lab.drop(u, "rst")
     up = ctx.until(lambda: ctx.where_now() == "local", 30, step=0.5)
     r.check(bool(up), "no local prompt after the connection was reset")
@@ -327,8 +357,9 @@ def c_reconnect(ctx, r, arm):
         ctx.reset()
         return
     settle(ctx, arm, 2.0)
-    n = daemons(lab, u)
-    r.check(n == 1, "after the reconnect there are %s helper daemons, expected exactly 1 (no duplicate)" % n)
+    pids1 = daemon_pids(lab, u)
+    r.check(pids1 is not None and len(pids1) == 1, "after the reconnect there are %s helper daemons (pids %r), expected exactly 1 (no duplicate)" % (None if pids1 is None else len(pids1), pids1))
+    r.check(pids0 is not None and len(pids0) == 1 and pids0 == pids1, "the reconnect did not attach to the SAME daemon: pids %r before, %r after" % (pids0, pids1))
     r.check(CL.server_helper_files(lab, arm) == files0, "the helper files changed across the reconnect: %r -> %r" % (files0, CL.server_helper_files(lab, arm)))
     session_ok(ctx, r, arm, "reconnect: ")
     CL.finish_remote(ctx, r)
@@ -390,10 +421,15 @@ def fam_body(cap):
             ctx.reset()
             return
         settle(ctx, arm, 2.0)
+        if CL.plain_gate(ctx, r, arm, off, "the %s family routes of the managed session" % cap):             # #2160
+            return
+        CL.wait_helper_takeover(ctx, r, arm, off)                                                           # #2164
         drive = DRIVERS[cap]                    # #2068: a family with no driver is not registered at all (_register_families)
         size0 = lab.sshd_since(0)["size"]
         c0 = len(ctx.remote.commands())
+        watch = CL.ChannelWatch(ctx, lab, size0, ctx.log_size()).start()
         prompts, seen = drive(ctx, r, arm, fx)
+        watch.stop(r)
         calls = new_channels(lab, size0)
         r.metric("exec_channels", calls)
         r.metric("prompts", prompts)
@@ -478,12 +514,17 @@ def c_helper_killed(ctx, r, arm):
     uid = CL.unique(ctx)
     br = "br" + uid
     lab.tree(u, {"README": "x\n"}, dir="kil" + uid, git=True, branch=br)
+    kill_daemons(ctx, r, lab, u)                      # #2163: only this case's own daemon is counted and killed
+    off0 = ctx.log_size()
     if CL.connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     settle(ctx, arm, 2.0)
-    r.check(daemons(lab, u) == 1, "no single helper daemon to kill")
-    lab.ssh(u, "pkill -9 -u $(id -u) -f 'phosphor-remote.* daemon'; true")
+    CL.wait_helper_takeover(ctx, r, arm, off0)
+    pids = daemon_pids(lab, u)
+    r.check(pids is not None and len(pids) == 1, "no single helper daemon to kill: pids %r" % (pids,))
+    for pid in pids or []:
+        lab.ssh(u, "kill -9 %d; true" % pid)
     time.sleep(1.0 + 2 * CL.rtt_s(arm))
     size0 = lab.sshd_since(0)["size"]
     off = ctx.log_size()

@@ -9129,6 +9129,8 @@ import selftest_r21_wlpanes  # noqa: E402  (round 21 Wayland, #2143 #2144 #2145 
 CHECKS.extend(selftest_r21_wlpanes.CHECKS)
 import selftest_r21_relaynote  # noqa: E402  (round 21, #2142: the two notes of a Phosphorize click that waits behind a relay; own file)
 CHECKS.extend(selftest_r21_relaynote.CHECKS)
+import selftest_r22_labcases  # noqa: E402  (round 22, #2160 #2163 #2164 #2165: the plain-session gate on managed-session lab cases, the self-match-proof daemon count, the helper-takeover wait and per-channel evidence, the chips OCR read; own file)
+CHECKS.extend(selftest_r22_labcases.CHECKS)
 
 
 def missing_required(required, passed):

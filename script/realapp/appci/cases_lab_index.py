@@ -57,6 +57,8 @@ def c_codebase_index_remote(ctx, r, arm):
         ctx.reset()
         return
     time.sleep(1.0 + 2 * rt)
+    if CL.plain_gate(ctx, r, arm, off, "the remote codebase index of the managed session"):             # #2160
+        return
     ctx.be.type("cd %s" % repo, CL.type_pace(ctx), enter=True)
     first = ctx.until(lambda: bool(syncs(ctx.log_since(off))), 40 + 10 * rt, step=0.25)
     if not first:
