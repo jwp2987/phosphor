@@ -3347,6 +3347,12 @@ run).
   button and every other save are the same action, and the pin has no banner at all for a file changed by another
   program (#2087), so the save overwrites. Here every save through the editor asks first while the banner shows; only
   the banner's own Overwrite button writes at once. Off: `PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0`.
+- **Enter on that question is Cancel, never Overwrite** (owner decision 2026-11-11, `docs/design/r10-r16-smallapp.md`
+  section 1). The in-app dialog gives Enter to its first button everywhere else; this question comes up with Cancel
+  selected (`AlertDialogWithCallbacks::with_enter_button`, `OverwriteAnswer::enter_button`), so Enter and Escape both
+  write nothing and drop nothing. Overwrite is a click, or Tab then Enter. Off:
+  `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0`.
+  <!-- markers: keep:with_enter_button keep:enter_is_cancel_never_overwrite -->
 
 A re-pin diff that folds `unsaved_code_changes` back under the setting, or points the banner button back at
 `SaveFile`, is drift to reject. Tests: `app/src/quit_warning/mod_tests.rs`, `app/src/workspace/native_modal_tests.rs`,

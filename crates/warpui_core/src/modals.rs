@@ -46,9 +46,22 @@ pub struct AlertDialogWithCallbacks<F> {
     /// Whether the dialog offers the "don't ask again" checkbox at all. When `false` the checkbox
     /// is not shown and `on_disable` is never run (#2092: a question no setting switches off).
     pub can_disable: bool,
+    /// Which button Enter presses when the in-app dialog comes up. `None` (the default): the
+    /// first button, and the dialog has no keyboard selection. `Some(i)`: button `i` starts
+    /// selected, Enter presses the selected button and Tab / Shift-Tab move the selection
+    /// (owner decision 2026-11-11 for the editor's overwrite question: Enter must cancel).
+    /// The platform-native alert does not look at this.
+    pub enter_button: Option<usize>,
 }
 
 impl<F> AlertDialogWithCallbacks<F> {
+    /// Enter presses button `index` (not the first one) until Tab / Shift-Tab move the
+    /// selection. See [`Self::enter_button`].
+    pub fn with_enter_button(mut self, index: usize) -> Self {
+        self.enter_button = Some(index);
+        self
+    }
+
     /// The dialog offers no "don't ask again" checkbox and never runs `on_disable`.
     pub fn without_disable(mut self) -> Self {
         self.can_disable = false;
@@ -104,6 +117,7 @@ impl AlertDialogWithCallbacks<AppModalCallback> {
             button_data,
             on_disable: Box::new(on_disable),
             can_disable: true,
+            enter_button: None,
         }
     }
 }
@@ -141,6 +155,7 @@ impl<V: View> AlertDialogWithCallbacks<ViewModalCallback<V>> {
             button_data,
             on_disable: Box::new(on_disable),
             can_disable: true,
+            enter_button: None,
         }
     }
 }

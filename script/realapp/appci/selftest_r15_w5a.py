@@ -281,8 +281,23 @@ def r15_editor_daily_parts():
     assert W.save_ask_verdict(["asked"], False)[0] == "overwrote", "asked but the disk changed before any answer: still a silent write"
     assert W.save_ask_verdict(["asked", "overwrite"], False)[0] == "overwrote", "an answer nobody gave"
     assert W.save_ask_verdict(["not_shown"], True)[0] == "not_shown" and W.save_ask_verdict([], True)[0] == "nothing"
+    # owner decision 2026-11-11: Enter alone on the question is Cancel, never Overwrite
+    assert W.enter_alone_verdict(["cancel"], True)[0] == "cancelled"
+    assert W.enter_alone_verdict(["overwrite"], False)[0] == "overwrote", "the behaviour before the decision (Enter = the first button) fails"
+    assert W.enter_alone_verdict(["overwrite"], True)[0] == "overwrote", "an overwrite answer fails even when the disk read came too early"
+    assert W.enter_alone_verdict(["cancel"], False)[0] == "overwrote", "the disk decides: it changed"
+    assert W.enter_alone_verdict([], False)[0] == "overwrote"
+    assert W.enter_alone_verdict(["reload"], True)[0] == "reloaded" and W.enter_alone_verdict([], True)[0] == "no_answer"
+    assert W.enter_alone_verdict(["asked"], True)[0] == "no_answer", "the question's own line is not an answer"
+    assert W.SAVE_ASK_ANSWERS == ("overwrite", "reload", "cancel")
+    keys = []
+    W.press_overwrite(type("Ctx", (), {"be": type("Be", (), {"key": staticmethod(keys.append)})})())
+    assert keys == ["Tab", "Return"], "Overwrite is chosen explicitly: Tab from Cancel, then Enter"
     sc = _src("app", "src", "code", "save_conflict.rs")
     assert 'format!("editor_save_ask outcome={outcome}")' in sc and "PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK" in sc
+    assert "PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS" in sc and "fn enter_button(" in sc
+    nm = _src("app", "src", "workspace", "native_modal.rs")
+    assert 'FixedBinding::new("tab", NativeModalAction::SelectNext' in nm and "enter_button_index(self.selected_button)" in nm, "Tab moves the question's selection; Enter presses it"
     for word in ('"overwrite"', '"reload"', '"cancel"'):
         assert word in sc, word
     lce = _src("app", "src", "code", "local_code_editor.rs")
@@ -294,9 +309,13 @@ def r15_editor_daily_parts():
     s = inspect.getsource(W._arm_close_question)
     assert "r.unverifiable(" not in s and "PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK" in s, "#2092: a profile with the quit warning off no longer excuses a missing close question"
     s = inspect.getsource(W._arm_external)
-    assert s.index('_wait_save_ask(ctx, off, "asked", 5)') < s.index('ctx.be.key("Escape")') < s.index('ctx.be.key("Return")'), "ask, Cancel, ask again, Overwrite"
+    assert (s.index('_wait_save_ask(ctx, off, "asked", 5)') < s.index('ctx.be.key("Escape")') < s.index('ctx.be.key("Return")') < s.index("enter_alone_verdict(")
+            < s.index("press_overwrite(ctx)")), "ask, Escape cancels, ask again, Enter alone cancels, ask again, Tab+Enter overwrites"
+    assert s.count('ctx.be.key("Return")') == 1, "the only bare Enter in the arm is the one that must cancel"
+    assert s.count('_wait_save_ask(ctx, off, "asked", 5)') == 3 and 'state == "cancelled"' in s and "after_enter == ext2" in s
     assert 'state == "asked"' in s and '"overwrite" in ev and end == want' in s and "R.disk(path) == ext2" in s
-    assert '"asked" in save_ask_events' in inspect.getsource(W.close_editor), "macOS: a save before the close answers the overwrite question"
+    s = inspect.getsource(W.close_editor)
+    assert '"asked" in save_ask_events' in s and "press_overwrite(ctx)" in s, "macOS: a save before the close answers the overwrite question with Overwrite (Tab, Enter)"
     # the app's side of those strings
     gbm = _src("app", "src", "code", "global_buffer_model.rs")
     assert 'format!("editor_disk outcome={outcome} external={external} flagged={flagged}")' in gbm and 'target: "editor_disk"' in gbm

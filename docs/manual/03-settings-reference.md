@@ -564,8 +564,11 @@ Two questions have no setting that switches them off:
 - **Saving over a file that changed on disk.** When another program changed a file while the editor had unsaved
   edits, a banner says so. A save in that state (`ctrl-S` / `cmd-S`, or "Save" on a close question) asks:
   **Overwrite** writes the editor's text over what is on disk, **Reload** drops the unsaved edits and loads what is on
-  disk, **Cancel** does neither. Enter is Overwrite, Escape is Cancel. The banner's own **Overwrite** button writes at
-  once. (`PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0` puts back the save that overwrote without asking.)
+  disk, **Cancel** does neither. The question comes up with **Cancel** selected: Enter is Cancel and so is Escape, so
+  a key typed into a question that just appeared loses nothing. To overwrite, click **Overwrite** or press Tab (the
+  selection moves from Cancel to Overwrite) and then Enter; Shift-Tab moves the other way, to Reload. The banner's own
+  **Overwrite** button writes at once. (`PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0` puts back the save that overwrote
+  without asking; `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0` puts Enter back on Overwrite.)
 
 ### Internal state (no TOML key)
 

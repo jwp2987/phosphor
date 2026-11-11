@@ -1,4 +1,7 @@
-use super::{OverwriteAnswer, save_ask_trace, save_conflict_ask_enabled_for, save_must_ask};
+use super::{
+    OverwriteAnswer, overwrite_enter_cancels_enabled_for, save_ask_trace,
+    save_conflict_ask_enabled_for, save_must_ask,
+};
 
 /// #2092 part 2, the owner's decision of 2026-11-11: a save while the disk-conflict banner shows
 /// asks before it overwrites the file changed on disk, never silently.
@@ -33,8 +36,9 @@ fn no_question_where_nobody_can_answer() {
     assert!(!save_must_ask(true, true, false));
 }
 
-/// The button order is part of the behaviour: the in-app dialog gives Enter to the first button
-/// and Escape to the last. Escape must be the answer that loses nothing.
+/// The button order is part of the behaviour: the in-app dialog gives Escape to the last button.
+/// Escape must be the answer that loses nothing. (Until the owner's decision of 2026-11-11 Enter
+/// was the first button, Overwrite; Enter is now pinned by the tests below.)
 #[test]
 fn the_buttons_are_overwrite_reload_cancel_and_escape_loses_nothing() {
     assert_eq!(
@@ -77,4 +81,47 @@ fn the_trace_line_format() {
         save_ask_trace(OverwriteAnswer::Cancel.trace_name()),
         "editor_save_ask outcome=cancel"
     );
+}
+
+/// Owner decision 2026-11-11: Enter on the overwrite question is Cancel, never Overwrite. The
+/// question comes up with Cancel selected, and Cancel writes nothing and drops nothing.
+#[test]
+fn enter_is_cancel_never_overwrite() {
+    let enter = OverwriteAnswer::enter_button(true).expect("the question has a selection");
+    assert_eq!(OverwriteAnswer::BUTTONS[enter], OverwriteAnswer::Cancel);
+    assert_ne!(OverwriteAnswer::BUTTONS[enter], OverwriteAnswer::Overwrite);
+    assert!(OverwriteAnswer::BUTTONS[enter].ends_the_save_without_writing());
+    // Enter and Escape are the same answer: Escape is the dialog's last button.
+    assert_eq!(enter, OverwriteAnswer::BUTTONS.len() - 1);
+}
+
+/// Overwrite stays reachable by keyboard: the dialog's Tab moves the selection one button on and
+/// wraps (`workspace/native_modal_tests.rs` `tab_and_shift_tab_move_the_selection_and_wrap`), so
+/// from Cancel one Tab is Overwrite and one Shift-Tab is Reload. The app case `editor_daily`
+/// presses Tab then Enter to overwrite.
+#[test]
+fn one_tab_from_the_enter_button_is_overwrite() {
+    let count = OverwriteAnswer::BUTTONS.len();
+    let enter = OverwriteAnswer::enter_button(true).expect("the question has a selection");
+    assert_eq!(
+        OverwriteAnswer::BUTTONS[(enter + 1) % count],
+        OverwriteAnswer::Overwrite
+    );
+    assert_eq!(
+        OverwriteAnswer::BUTTONS[(enter + count - 1) % count],
+        OverwriteAnswer::Reload
+    );
+}
+
+/// `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0` is the behaviour before the decision: no keyboard
+/// selection, so the dialog gives Enter to its first button, Overwrite.
+#[test]
+fn the_kill_switch_puts_enter_back_on_overwrite() {
+    assert_eq!(OverwriteAnswer::enter_button(false), None);
+    assert_eq!(OverwriteAnswer::BUTTONS[0], OverwriteAnswer::Overwrite);
+
+    assert!(overwrite_enter_cancels_enabled_for(None));
+    assert!(overwrite_enter_cancels_enabled_for(Some("1")));
+    assert!(overwrite_enter_cancels_enabled_for(Some("")));
+    assert!(!overwrite_enter_cancels_enabled_for(Some("0")));
 }

@@ -7,6 +7,9 @@
 //! wrote the buffer over the other change without a word. Now it asks: Overwrite, Reload or
 //! Cancel. The banner's own "Overwrite" button is the explicit answer and does not ask again.
 //!
+//! Owner decision 2026-11-11 (second one): Enter on the question is Cancel, never Overwrite. The
+//! question comes up with Cancel selected; Overwrite is a click, or Tab then Enter.
+//!
 //! This file is the part with no view in it, so it can be unit tested: the rule, the kill switch,
 //! the button order and the trace line the app tests read.
 
@@ -22,14 +25,31 @@ pub(super) enum OverwriteAnswer {
 }
 
 impl OverwriteAnswer {
-    /// The dialog's buttons, in order. The in-app dialog (`workspace::native_modal`) gives Enter
-    /// to the first button and Escape to the last, so Escape is always the answer that loses
-    /// nothing.
+    /// The dialog's buttons, in order. The in-app dialog (`workspace::native_modal`) gives
+    /// Escape to the last button, so Escape is always the answer that loses nothing. Enter is
+    /// [`Self::enter_button`].
     pub(super) const BUTTONS: [OverwriteAnswer; 3] = [
         OverwriteAnswer::Overwrite,
         OverwriteAnswer::Reload,
         OverwriteAnswer::Cancel,
     ];
+
+    /// The button Enter presses when the question comes up (owner decision 2026-11-11): Cancel,
+    /// so an Enter typed into a question that just appeared writes nothing and drops nothing.
+    /// From Cancel, the last button, one Tab wraps to Overwrite, so "Tab, Enter" overwrites and
+    /// Shift-Tab reaches Reload.
+    ///
+    /// `enter_cancels == false` is the kill switch ([`overwrite_enter_cancels_enabled`]): `None`,
+    /// which the dialog reads as "no keyboard selection, Enter is the first button" (Overwrite),
+    /// the behaviour before the decision.
+    pub(super) fn enter_button(enter_cancels: bool) -> Option<usize> {
+        if !enter_cancels {
+            return None;
+        }
+        Self::BUTTONS
+            .iter()
+            .position(|answer| *answer == OverwriteAnswer::Cancel)
+    }
 
     /// The word in the trace line.
     pub(super) fn trace_name(self) -> &'static str {
@@ -63,6 +83,24 @@ pub(super) fn save_conflict_ask_enabled() -> bool {
 
 /// The kill switch's rule: on unless the variable is exactly `0`.
 pub(super) fn save_conflict_ask_enabled_for(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
+/// Env kill switch: `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0` puts Enter back on the
+/// question's first button, Overwrite. Read once per run.
+pub(super) fn overwrite_enter_cancels_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        overwrite_enter_cancels_enabled_for(
+            std::env::var("PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// The kill switch's rule: on unless the variable is exactly `0`.
+pub(super) fn overwrite_enter_cancels_enabled_for(value: Option<&str>) -> bool {
     value != Some("0")
 }
 
