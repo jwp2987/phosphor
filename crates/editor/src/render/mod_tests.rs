@@ -438,6 +438,23 @@ fn first_size(width: f32, height: f32) -> SizeInfo {
     }
 }
 
+/// What the render model holds for a document nothing has been laid out for.
+const NOTHING_LAID_OUT: &str = r#"
+-------- 0.00px / 0 characters --------
+Trailing Newline (1 characters, 1 lines, 32.00px tall)
+"#;
+
+/// What it holds once the paragraph `FIRST_PARAGRAPH` has been laid out. The paragraph REPLACES
+/// the empty document's trailing-newline block, so the number of blocks is 1 before and after:
+/// a block count cannot tell "held" from "laid out" (that was these tests' first oracle, and it
+/// failed with the hold working). The block's kind and character count can.
+const FIRST_PARAGRAPH_LAID_OUT: &str = r#"
+-------- 0.00px / 0 characters --------
+Paragraph (28 characters, 1 lines, 32.00px tall)
+"#;
+
+const FIRST_PARAGRAPH: &str = "first paragraph of the file";
+
 /// Types one paragraph into the buffer and waits until the render model has handled the edit
 /// (laid it out, or queued it).
 async fn insert_and_settle(state: &TestState, text: &str, app: &mut App) {
@@ -470,14 +487,11 @@ fn test_first_size_hold_lays_out_at_the_first_width_and_not_before() {
             .render
             .update(&mut app, |render, _| render.hold_layout_until_first_size());
 
-        insert_and_settle(&state, "first paragraph of the file", &mut app).await;
+        insert_and_settle(&state, FIRST_PARAGRAPH, &mut app).await;
+        // Nothing may be laid out before the first size.
+        state.assert_rendered(&app, NOTHING_LAID_OUT);
         state.render.read(&app, |render, _| {
             assert!(render.holding_layout_for_first_size());
-            assert_eq!(
-                render.blocks(),
-                1,
-                "nothing may be laid out before the first size (only the trailing newline)"
-            );
             assert!(
                 render.next_render_buffer_version().is_none(),
                 "a held edit is not published as laid out"
@@ -492,19 +506,19 @@ fn test_first_size_hold_lays_out_at_the_first_width_and_not_before() {
         });
         state.render.read(&app, |render, _| {
             assert!(render.holding_layout_for_first_size());
-            assert_eq!(render.blocks(), 1);
         });
+        state.assert_rendered(&app, NOTHING_LAID_OUT);
+        assert_eq!(events.layout_updated.get(), 0);
+        assert_eq!(events.needs_resize.get(), 0);
 
         // The first real width: the held edit is laid out inside this call.
         state.render.update(&mut app, |render, ctx| {
             render.set_viewport_size(first_size(400., 300.), ctx)
         });
+        // (The held edit must be laid out by the first size.)
+        state.assert_rendered(&app, FIRST_PARAGRAPH_LAID_OUT);
         state.render.read(&app, |render, _| {
             assert!(!render.holding_layout_for_first_size());
-            assert!(
-                render.blocks() > 1,
-                "the held edit must be laid out by the first size"
-            );
             assert!(render.next_render_buffer_version().is_some());
             assert_eq!(render.viewport().width().as_f32(), 400.);
         });
@@ -545,10 +559,10 @@ fn test_without_the_first_size_hold_an_edit_is_laid_out_on_arrival() {
     App::test((), |mut app| async move {
         let state = TestState::new(&mut app);
         let events = HoldEvents::watch(&state.render, &mut app);
-        insert_and_settle(&state, "first paragraph of the file", &mut app).await;
+        insert_and_settle(&state, FIRST_PARAGRAPH, &mut app).await;
+        state.assert_rendered(&app, FIRST_PARAGRAPH_LAID_OUT);
         state.render.read(&app, |render, _| {
             assert!(!render.holding_layout_for_first_size());
-            assert!(render.blocks() > 1);
             assert!(render.next_render_buffer_version().is_some());
         });
         assert!(events.layout_updated.get() >= 1);

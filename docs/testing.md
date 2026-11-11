@@ -7021,6 +7021,10 @@ afterwards), `test_without_the_first_size_hold_an_edit_is_laid_out_on_arrival` (
 **Expectation change in an existing test, stated:** `test_file_notebook_mermaid_blocks_default_to_rendered` read the laid-out content right after
 `layout_complete()`; with the hold the content exists only after the viewer's first frame, so the test now also waits (bounded, 2000 yields) for the
 hold to be released. Its assertions are unchanged.
+**Round 18 (`docs/design/r18-firstsize.md`): the two `test_first_size_hold_*` failures of round 14 were a TEST fault.** They judged "laid out" by
+`RenderState::blocks() > 1`, but one typed paragraph replaces the empty document's trailing-newline block: the count is 1 before and after (the
+trace shows the hold releasing and the paragraph laid out). Both tests now judge the described content (`assert_rendered`): `Trailing Newline` while
+nothing is laid out, `Paragraph (28 characters, ...)` once it is. Do not use a block count to tell an empty render model from a laid out one.
 
 **#2091: `gpu_lost_device_recovers` (`appci/cases_r15_w5c.py`; `PROVING`; Linux, both modes).** The third oracle of T48. The app is relaunched with
 `PHOSPHOR_TEST_GPU_LOSE_DEVICE_FILE=<work dir>/phosphor-test-lose-gpu-device` (2.6); the launch log must have `TEST HOOK armed` (else UNVERIFIABLE:
