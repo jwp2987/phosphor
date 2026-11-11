@@ -84,12 +84,12 @@ def c_git_write_remote(ctx, r, arm):
 
     # ---- 3. stage ONE hunk of two (git apply --cached --recount -, the patch as base64 on stdin), then take it back out with --reverse
     g("sed -i.bak -e 1s/1/ONE/ -e 20s/20/TWENTY/ a.txt && rm -f a.txt.bak")
-    apply = "printf %%s %s | { base64 -d 2>/dev/null || base64 -D; } | %s apply --cached --recount %s-" % (base64.b64encode(PATCH.encode()).decode(), GIT, "%s")
-    rc, out, err = g(apply % "")
+    apply = "printf %%s %s | { base64 -d 2>/dev/null || base64 -D; } | %s apply --cached --recount {flag}-" % (base64.b64encode(PATCH.encode()).decode(), GIT)
+    rc, out, err = g(apply.replace("{flag}", ""))
     cached = g("%s diff --cached" % GIT)[1]
     r.check(rc == 0 and "+ONE" in cached and "TWENTY" not in cached, "exactly the first hunk must be staged: rc=%s %r %r" % (rc, err[-200:], cached[-300:]))
     r.check("TWENTY" in g("%s diff" % GIT)[1], "the second hunk must stay unstaged")
-    rc, out, err = g(apply % "--reverse ")
+    rc, out, err = g(apply.replace("{flag}", "--reverse "))
     r.check(rc == 0 and g("%s diff --cached" % GIT)[1].strip() == "", "--reverse did not take the hunk back out: %r" % err[-200:])
 
     # ---- 4. discard: restore the modified file, remove an untracked one

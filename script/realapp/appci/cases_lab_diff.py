@@ -79,7 +79,7 @@ def c_diff_panel_remote(ctx, r, arm):
     uid = CL.unique(ctx)
     fx = "diffp_%s" % uid
     repo = CL.work(arm, fx)
-    lab.tree(u, {"%s/a.txt" % fx: "one\n", "%s/src/b.txt" % fx: "b\n", "%s/.gitignore" % fx: "*.log\n"}, git=True)
+    lab.tree(u, {"a.txt": "one\n", "src/b.txt": "b\n", ".gitignore": "*.log\n"}, dir=fx, git=True)
     # an uncommitted edit and an untracked file, made before the app looks
     rc, out, err = CLG.run(lab, arm, "cd %s && echo two >> a.txt && echo u > untracked.txt" % repo)
     r.check(rc == 0, "fixture edit failed: %r" % err[-200:])
@@ -185,7 +185,7 @@ def c_gh_chip_remote(ctx, r, arm):
     uid = CL.unique(ctx)
     fx = "ghchip_%s" % uid
     repo = CL.work(arm, fx)
-    lab.tree(u, {"%s/a.txt" % fx: "one\n"}, git=True)
+    lab.tree(u, {"a.txt": "one\n"}, dir=fx, git=True)
     rc, out, err = install_gh(lab, arm, FAKE_GH)
     r.check(rc == 0, "could not install the fake gh: %r" % err[-200:])
 

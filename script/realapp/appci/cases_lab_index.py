@@ -50,7 +50,7 @@ def c_codebase_index_remote(ctx, r, arm):
     uid = CL.unique(ctx)
     fx = "idx_%s" % uid
     repo = CL.work(arm, fx)
-    lab.tree(u, {"%s/src/lib.rs" % fx: "pub fn one() {}\n", "%s/a.txt" % fx: "alpha beta gamma\n", "%s/notes.md" % fx: "# notes\nsome words here\n"}, git=True)
+    lab.tree(u, {"src/lib.rs": "pub fn one() {}\n", "a.txt": "alpha beta gamma\n", "notes.md": "# notes\nsome words here\n"}, dir=fx, git=True)
     off = ctx.log_size()
     n_provider = len(provider_log(ctx))
     if CL.connect_or_fail(ctx, r, arm) is None:

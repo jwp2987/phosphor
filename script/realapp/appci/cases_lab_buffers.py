@@ -79,7 +79,7 @@ def c_remote_edit(ctx, r, arm):
     name = "zz_%s.txt" % tok
     repo, path = CL.work(arm, fx), CL.work(arm, "%s/%s" % (fx, name))
     staged = "staged %s" % tok
-    lab.tree(u, {"%s/%s" % (fx, name): staged + "\n"}, git=True)
+    lab.tree(u, {name: staged + "\n"}, dir=fx, git=True)
     off = ctx.log_size()
     if CL.connect_or_fail(ctx, r, arm) is None:
         ctx.reset()

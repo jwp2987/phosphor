@@ -148,7 +148,7 @@ def c_file_tree_remote(ctx, r, arm):
     uid = CL.unique(ctx)
     fx = "tree_%s" % uid
     repo = CL.work(arm, fx)
-    lab.tree(u, {"%s/src/lib.rs" % fx: "", "%s/a.txt" % fx: "", "%s/.gitignore" % fx: "*.log\n"}, git=True)
+    lab.tree(u, {"src/lib.rs": "", "a.txt": "", ".gitignore": "*.log\n"}, dir=fx, git=True)
     off = ctx.log_size()
     if CL.connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
