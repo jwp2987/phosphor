@@ -22,6 +22,13 @@
 //! KILL SWITCH. `PHOSPHOR_AGENT_TURN_SELF_HEAL=0` (also `off`, `false`, `no`): faults are still
 //! logged (`hop=agent_turn_stuck ... healed=0`), nothing is healed.
 //!
+//! A REPLY A PANE CLOSE STOPPED IS NOT JUDGED FOR UNSETTLED CALLS (#2103). The close erases the
+//! conversation's finished results on purpose (#848: nothing stale goes out after an undo), and
+//! erased is not lost: those calls were settled and then discarded. The fact outlasts the
+//! close itself (`suspended_for_close` ends at the undo), so the controller remembers the reply
+//! the close stopped ([`TurnFacts::reply_discarded_for_close`]) until the conversation has a
+//! newer one. The agent fuzzer's oracle makes the same exception (`Oracle::tab_closed`).
+//!
 //! NOT COVERED, on purpose: "the turn is in progress and nothing is held". That shape is also a
 //! new, empty conversation, a turn waiting for the network, a monitored command and a parked
 //! send, and telling those apart by reading was not possible; the user's Stop is the way out of
@@ -31,7 +38,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::ai::agent::conversation::AIConversation;
 use crate::ai::agent::{
-    AIAgentAction, AIAgentActionId, AIAgentOutputStatus, FinishedAIAgentOutput,
+    AIAgentAction, AIAgentActionId, AIAgentExchangeId, AIAgentOutputStatus, FinishedAIAgentOutput,
 };
 
 use super::action_model::BlocklistAIActionModel;
@@ -85,6 +92,10 @@ pub struct TurnFacts {
     pub unsettled: usize,
     /// [`ids_hash`] of those calls.
     pub unsettled_ids: u64,
+    /// The conversation's last reply is the one a pane close stopped: the close erased its
+    /// calls' results on purpose, so a call of it with no status and no result is discarded,
+    /// not lost (#2103). Parked actions are judged all the same.
+    pub reply_discarded_for_close: bool,
 }
 
 /// The fault in `facts`, if any. Parked actions come first: queueing them is the lighter heal,
@@ -98,7 +109,7 @@ pub fn judge(facts: &TurnFacts) -> Option<TurnFault> {
             count: facts.parked,
         });
     }
-    if facts.unsettled > 0 && !facts.stream_in_flight {
+    if facts.unsettled > 0 && !facts.stream_in_flight && !facts.reply_discarded_for_close {
         return Some(TurnFault::UnsettledCalls {
             count: facts.unsettled,
             ids: facts.unsettled_ids,
@@ -188,6 +199,15 @@ pub fn self_heal_enabled_from(value: Option<&str>) -> bool {
 pub fn self_heal_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| self_heal_enabled_from(std::env::var(SELF_HEAL_ENV).ok().as_deref()))
+}
+
+/// The conversation's last exchange: the reply [`unsettled_actions`] reads. The controller
+/// remembers it when a pane close discards the conversation's results (#2103).
+pub fn last_exchange_id(conversation: &AIConversation) -> Option<AIAgentExchangeId> {
+    conversation
+        .all_exchanges()
+        .last()
+        .map(|exchange| exchange.id)
 }
 
 /// The tool calls of the conversation's last reply, when that reply finished cleanly, that have

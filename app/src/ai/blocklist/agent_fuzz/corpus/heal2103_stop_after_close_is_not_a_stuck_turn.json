@@ -1,0 +1,57 @@
+{
+  "v": 1,
+  "name": "heal2103_stop_after_close_is_not_a_stuck_turn",
+  "seed": 0,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "mixed",
+        "text": "",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "write_to_long_running_shell_command",
+            "args": {
+              "kind": "refers_to",
+              "cmd": "c0"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "env": {
+    "commands": {
+      "c0": {
+        "kind": "quick",
+        "out": "ok"
+      }
+    }
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "ctrl_c"
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "close_tab"
+      },
+      "timing": "fast"
+    },
+    {
+      "op": {
+        "kind": "stop"
+      },
+      "timing": "fast"
+    }
+  ]
+}
