@@ -2955,6 +2955,18 @@ latency tables, soak CSVs). `script/ci/ci_seq.py` ends every run by printing the
 it for you. CI never pushes: the coordinator commits (`git add test-results && git commit`). Re-running for the same pipeline
 replaces only that run's directory, so collect again once a still-running pipeline finishes.
 
+**Usage suites, set-up jobs, the tier (round 15, #2064; `docs/design/r15-tiers.md`; worked, unproven).** The candidate tier has played
+`integration-linux: [1]`..`[3]`, `integration-linux-pwsh`, `usage-test-linux` and `usage-test-macos` since #1502 and the collector already parsed the
+integration traces (`unit/integration-linux_1.json` ...), but it had no branch for `usage-test-*`: a row in the job table and no result. `parse_usage`
+reads the usage suite's NDJSON rows from the job trace (`crates/usage_suite/src/report.rs`) into `unit/usage-test-<plat>.json` in the shape of a nextest
+suite, so the unit totals, the NEW / FIXED lists and `check_test_results`' "every failure has an issue" rule apply to it; a failed scenario is named
+`usage-<surface> <scenario>`; every skipped scenario is kept with its reason and listed in the README ("skipped scenarios (not coverage)"); a trace with
+no summary line, or whose summary disagrees with its rows, says so in a note; no row at all is not a result (the trace's error lines are kept).
+`lab-helper` and `sshlab-image` keep their ERROR lines (`manifest.json` `setup`, shown in the README when red). The run's tier is `--tier`, else the
+ordinary app runs' own `meta.tier` (`smoke` / `full` / `release`; lab and replay rows do not count), else inferred from which jobs ran: the integration
+suite having run marks a candidate. A long x11 run used to mark one, which the fix tier now has too (#2058). `python3 script/ci/collect_results.py
+--self-test` checks these parts (no network).
+
 **Layout.**
 
     test-results/INDEX.md                          one row per run + "vs previous run" sections (generated)

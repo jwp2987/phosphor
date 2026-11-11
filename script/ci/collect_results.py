@@ -3,6 +3,7 @@
 # result is kept in the repo for regression review"). The coordinator commits the output; CI never pushes.
 #
 #   python3 script/ci/collect_results.py <pipeline_id | build/ref | ref> [--out test-results] [--tier fix|candidate|release]
+#   python3 script/ci/collect_results.py --self-test        (the pure parts: usage-suite parsing, tier inference; no network)
 #
 # Writes <out>/<YYYY-MM-DD>_<ref-sanitized>_<pipeline>/ with manifest.json, unit/<job>.json, app/<platform>/..., README.md, and
 # rebuilds <out>/INDEX.md. Idempotent: re-running for a pipeline replaces that run's directory only (a still-running pipeline can be
@@ -32,6 +33,11 @@ UNIT_JOBS = ("test-linux", "test-warpui-core", "test-workspace-rest", "integrati
     tuple("%s-%s" % (n, p) for p in PLATS for n in ("test", "test-warpui-core", "test-workspace-rest", "test-shuttle-loom"))
 NUMBERS_JOBS = ("bench", "fuzz-smoke", "mutants", "mutants-warpui-core") + tuple("%s-%s" % (n, p) for p in PLATS for n in ("bench", "fuzz-smoke", "mutants", "mutants-warpui-core"))
 GUARD_JOBS = ("guards", "advisories", "licenses")
+# round 15 (#2064): the usage / acceptance suite (script/usage-test). It prints one NDJSON object per scenario and a final {"summary": ...} on stdout
+# (crates/usage_suite/src/report.rs); the job had a row in the job table and no result. Archived as unit/<job>.json in the shape of a nextest suite.
+USAGE_JOBS = ("usage-test-linux", "usage-test-macos")
+# round 15 (#2063): the two lab set-up jobs keep their ERROR lines (a lab-helper that lacks its build tools says which, #2062)
+SETUP_JOBS = ("lab-helper", "sshlab-image")
 RELEASE_JOBS = ("test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core") + tuple("%s-%s" % (n, p) for p in PLATS for n in ("test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"))
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 PREFIX = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z \d\d[OE]\+? ?")
@@ -118,6 +124,72 @@ def parse_unit(lines):
     if d["run"] is None:                                     # compile error / early abort: keep the cause
         d["errors"] = [l.strip()[:200] for l in lines if re.match(r"\s*(error(\[E\d+\])?:|ERROR)", l)][:8]
     return d
+
+
+def parse_usage(lines):
+    """usage-test-* trace -> the parse_unit shape. Rows: {"surface","scenario","status": pass|fail|skip,"duration_ms","reason","failure_detail",...};
+    last line {"summary": {"total","passed","failed","skipped","surfaces"}}. A failed scenario becomes a failure named `usage-<surface> <scenario>`
+    (so NEW / FIXED work like for a unit test); EVERY skip is kept with its reason (a skip that is not listed reads as coverage). No summary line (the
+    suite died first): the rows seen so far are counted and a note says so; no row at all: run stays None and the trace's error lines are kept."""
+    d = {"summary_line": None, "duration_s": None, "run": None, "passed": 0, "failed": 0, "timed_out": 0, "skipped": 0, "slow": 0, "flaky": 0,
+         "failures": [], "regressions": [], "notes": [], "skips": [], "surfaces": {}}
+    rows, summ = {}, None
+    for l in lines:
+        t = l.strip()
+        if not (t.startswith("{") and t.endswith("}")):
+            continue
+        try:
+            o = json.loads(t)
+        except ValueError:
+            continue
+        if not isinstance(o, dict):
+            continue
+        if isinstance(o.get("summary"), dict):
+            summ, d["summary_line"] = o["summary"], t[:300]
+        elif isinstance(o.get("scenario"), str) and o.get("status") in ("pass", "fail", "skip"):
+            rows[(str(o.get("surface", "")), o["scenario"])] = o
+    cnt = {"pass": 0, "fail": 0, "skip": 0}
+    for (surface, name), o in sorted(rows.items()):
+        cnt[o["status"]] += 1
+        d["surfaces"][surface] = d["surfaces"].get(surface, 0) + 1
+        secs = round((o.get("duration_ms") or 0) / 1000.0, 3)
+        if o["status"] == "fail":
+            d["failures"].append({"kind": "FAIL", "crate": "usage-" + surface, "test": name, "seconds": secs, "detail": str(o.get("failure_detail") or "")[:600]})
+        elif o["status"] == "skip":
+            d["skips"].append({"surface": surface, "scenario": name, "reason": str(o.get("reason") or "no reason given")[:300]})
+    if rows or summ:
+        d["passed"], d["failed"], d["skipped"] = cnt["pass"], cnt["fail"], cnt["skip"]
+        d["run"] = cnt["pass"] + cnt["fail"]                 # like nextest's "N tests run": skipped scenarios did not run
+        d["duration_s"] = round(sum((o.get("duration_ms") or 0) for o in rows.values()) / 1000.0, 1)
+    if summ is None and rows:
+        d["notes"].append("no summary line in the trace: the suite did not finish; %d scenario rows counted" % len(rows))
+    elif summ is not None and (summ.get("passed"), summ.get("failed"), summ.get("skipped")) != (cnt["pass"], cnt["fail"], cnt["skip"]):
+        d["notes"].append("the suite's summary (%s passed, %s failed, %s skipped) differs from its rows (%d, %d, %d): the rows are what is recorded (trace cut?)" % (
+            summ.get("passed"), summ.get("failed"), summ.get("skipped"), cnt["pass"], cnt["fail"], cnt["skip"]))
+    if d["run"] is None:
+        d["errors"] = [l.strip()[:200] for l in lines if re.match(r"\s*(error(\[E\d+\])?:|ERROR)", l)][:8]
+    return d
+
+
+def tier_from_app_meta(app):
+    """the tier the app runs recorded themselves (results.json meta.tier = APPCI_TIER: smoke | full | release) -> fix | candidate | release | None"""
+    # the ordinary app-test rows only: a lab or replay job played by hand has no APPCI_TIER and would read as "full"
+    seen = {str((i.get("meta") or {}).get("tier") or "") for k, i in (app or {}).items() if not k.startswith(("lab-", "replay-"))}
+    for mark, tier in (("release", "release"), ("full", "candidate"), ("smoke", "fix")):
+        if mark in seen:
+            return tier
+    return None
+
+
+def infer_tier(status_of):
+    """Tier from which jobs ran, when neither --tier nor an app run says. status_of: {job name: status}. Round 15: a long x11 run no longer means
+    "candidate" (the fix tier plays x11 too, #2058); the integration suite does (candidate and release only, #1502)."""
+    ran = lambda n: status_of.get(n) not in (None, "manual", "created", "skipped", "waiting_for_resource", "pending")
+    if any(ran(n) for n in RELEASE_JOBS):
+        return "release"
+    if all(ran(n) for n in ("test-linux", "test-warpui-core", "test-workspace-rest")) and any(ran(n) for n in status_of if n.startswith("integration-linux")):
+        return "candidate"
+    return "fix"
 
 
 def parse_check(lines):
@@ -456,6 +528,12 @@ def render_readme(m, hist):
             L += ["", "## %s failures" % n, ""]
             L += ["- `%s %s` %s (%.1fs)" % (f["crate"], f["test"], f["kind"], f["seconds"]) for f in j.get("failures", [])]
             L += ["- error: " + e for e in j.get("errors", [])]
+        if j.get("skips"):                                    # round 15 (#2064): the usage suite's skipped scenarios, each with its reason
+            L += ["", "## %s skipped scenarios (%d; not coverage)" % (n, len(j["skips"])), ""]
+            L += ["- `%s %s`: %s" % (x["surface"], x["scenario"], x["reason"].replace("|", "/")) for x in j["skips"]]
+    for n, j in sorted(m.get("setup", {}).items()):          # round 15 (#2063): lab-helper / sshlab-image when red, with what they said
+        if j.get("failing_lines"):
+            L += ["", "## %s (%s)" % (n, j.get("status")), ""] + ["- " + x for x in j["failing_lines"]]
     for p, i in sorted(m.get("app", {}).items()):
         L += ["", "## app %s (%s%s)" % (p, i["job"], ", REUSED build" if i["reuse"] else ""), ""]
         if i.get("reused_build"):
@@ -510,18 +588,22 @@ def rebuild(out):
 # ---- main ---------------------------------------------------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="archive one GitLab pipeline's test results under test-results/")
-    ap.add_argument("pipeline", help="pipeline id, or a build/<ref> (its newest pipeline)")
+    ap.add_argument("pipeline", nargs="?", help="pipeline id, or a build/<ref> (its newest pipeline)")
     ap.add_argument("--out", default="test-results")
-    ap.add_argument("--tier", choices=["fix", "candidate", "release"], help="override the inferred tier")
+    ap.add_argument("--tier", choices=["fix", "candidate", "release"], help="the tier that was played (ci_seq.py passes it); else the app runs' own meta.tier, else inferred")
+    ap.add_argument("--self-test", action="store_true", help="check the pure parts (usage-suite parsing, tier inference) and exit")
     a = ap.parse_args()
+    if a.self_test:
+        return self_test()
+    if not a.pipeline:
+        ap.error("pipeline is required")
     pl = resolve(a.pipeline)
     pid = pl["id"]
     jobs = all_jobs(pid)
     by = {}
     for j in jobs:
         by.setdefault(j["name"], j)
-    ran = lambda n: n in by and by[n]["status"] not in ("manual", "created", "skipped", "waiting_for_resource", "pending")
-    tier = a.tier or ("release" if any(ran(n) for n in RELEASE_JOBS) else "candidate" if all(ran(n) and by[n]["status"] != "skipped" for n in ("test-linux", "test-warpui-core", "test-workspace-rest")) and ran("app-test-linux-x11") and by["app-test-linux-x11"].get("duration", 0) > 120 else "fix")
+    tier = a.tier or infer_tier({n: j["status"] for n, j in by.items()})       # refined below from the app runs' own meta.tier when --tier is not given
     date = pl["created_at"][:10]
     d = os.path.join(a.out, "%s_%s_%s" % (date, sanitize(pl["ref"]), pid))
     if os.path.isdir(d):
@@ -554,6 +636,16 @@ def main():
                 x = parse_numbers(trace(j["id"]))
                 x.update(job=n, status=j["status"], duration=j.get("duration"))
                 dump_scrubbed(x, os.path.join(d, "unit", sanitize(n) + ".json"))
+            elif n in USAGE_JOBS:
+                u = parse_usage(trace(j["id"]))
+                u.update(job=n, status=j["status"], duration=j.get("duration"))
+                dump_scrubbed(u, os.path.join(d, "unit", sanitize(n) + ".json"))
+                man["unit"][n] = u
+            elif n in SETUP_JOBS:
+                g = parse_guards(trace(j["id"]), j["status"])
+                g.update(job=n, status=j["status"], duration=j.get("duration"))
+                dump_scrubbed(g, os.path.join(d, "unit", sanitize(n) + ".json"))
+                man.setdefault("setup", {})[n] = g
             elif n in GUARD_JOBS or n in ("check-macos", "check-windows"):
                 g = parse_guards(trace(j["id"]), j["status"])
                 g.update(job=n, status=j["status"], duration=j.get("duration"))
@@ -566,6 +658,8 @@ def main():
         except Exception as e:                                # one broken job must not lose the rest of the run
             man["jobs"][n]["note"] = "collect error: %s" % str(e)[:120]
             man["notes"].append("%s: %s" % (n, str(e)[:200]))
+    if not a.tier:
+        man["tier"] = tier_from_app_meta(man["app"]) or tier
     size = dir_size(d)
     if size > WARN_BYTES:
         man["notes"].append("run dir is %.1f MB (> 5 MB soft limit)" % (size / 1e6))
@@ -581,6 +675,52 @@ def main():
         print("WARNING: possible leaks remain: %s" % leaks[:5], file=sys.stderr)
         return 2
     return 0
+
+
+def self_test():
+    """`collect_results.py --self-test`: the pure parts added in round 15 (#2064). Exit 0 = all pass."""
+    rows = []
+    usage = [
+        "$ ./script/usage-test --surface both",
+        '{"surface":"gui","scenario":"typeahead_basic","status":"pass","duration_ms":1200,"tags":["core"]}',
+        '{"surface":"gui","scenario":"ssh_login","status":"fail","duration_ms":30500,"tags":[],"retries":1,"failure_detail":"assertion failed: prompt seen"}',
+        '{"surface":"tui","scenario":"usage_tui_open","status":"skip","tags":["needs-byop"],"reason":"needs --include-byop"}',
+        '{"surface":"tui","scenario":"usage_tui_type","status":"pass","duration_ms":300,"tags":[]}',
+        "not json {", '{"other": 1}',
+        '{"summary":{"total":4,"passed":2,"failed":1,"skipped":1,"surfaces":{"gui":2,"tui":2}}}',
+    ]
+    u = parse_usage(usage)
+    rows.append(((u["run"], u["passed"], u["failed"], u["skipped"]) == (3, 2, 1, 1) and u["surfaces"] == {"gui": 2, "tui": 2} and not u["notes"], "usage suite: rows counted, summary agrees"))
+    rows.append((u["failures"] == [{"kind": "FAIL", "crate": "usage-gui", "test": "ssh_login", "seconds": 30.5, "detail": "assertion failed: prompt seen"}], "a failed scenario is a named failure (NEW / FIXED work on it)"))
+    rows.append((u["skips"] == [{"surface": "tui", "scenario": "usage_tui_open", "reason": "needs --include-byop"}], "every skipped scenario is kept with its reason"))
+    cut = parse_usage(usage[:3])
+    rows.append((cut["run"] == 2 and cut["failed"] == 1 and any("did not finish" in n for n in cut["notes"]), "no summary line: the rows seen are counted and the note says the suite did not finish"))
+    lied = parse_usage(usage[:2] + ['{"summary":{"total":4,"passed":4,"failed":0,"skipped":0}}'])
+    rows.append((lied["passed"] == 1 and lied["failed"] == 0 and any("differs from its rows" in n for n in lied["notes"]), "a summary that disagrees with the rows is noted; the rows are recorded"))
+    dead = parse_usage(["error: could not compile `usage_suite`", "ERROR xvfb-run is missing on this runner"])
+    rows.append((dead["run"] is None and len(dead["errors"]) == 2, "no row at all: not a result (run None), the error lines are kept"))
+    m = {"unit": {"usage-test-linux": u}}
+    rows.append((unit_totals(m) == {"passed": 2, "failed": 1, "skipped": 1, "run": 3, "jobs": 1} and unit_failure_set(m) == {"usage-gui ssh_login"}, "the usage suite counts in the unit totals and the failure set"))
+    md = render_readme({"ref": "build/x", "commit": "0" * 40, "pipeline": 1, "jobs": {}, "unit": {"usage-test-linux": u},
+                        "setup": {"lab-helper": {"status": "failed", "failing_lines": ["lab_helper: ERROR zig is missing for this user"]}}, "app": {}}, [])
+    rows.append(("## usage-test-linux failures" in md and "`usage-gui ssh_login` FAIL" in md and "## usage-test-linux skipped scenarios (1; not coverage)" in md
+                 and "`tui usage_tui_open`: needs --include-byop" in md and "## lab-helper (failed)" in md and "zig is missing" in md, "the README shows the failure, the skip with its reason, and a red lab-helper's own words"))
+    units = {"test-linux": "success", "test-warpui-core": "success", "test-workspace-rest": "failed"}
+    rows.append((infer_tier(dict(units, **{"app-test-linux-x11": "success"})) == "fix", "all three unit suites and a long x11 run is still the fix tier (#2058: the fix tier plays x11)"))
+    rows.append((infer_tier(dict(units, **{"integration-linux: [2]": "failed"})) == "candidate" and infer_tier(dict(units, **{"integration-linux: [1]": "manual"})) == "fix", "the integration suite having run is what marks a candidate run"))
+    rows.append((infer_tier(dict(units, **{"mutants-macos": "success"})) == "release" and infer_tier({}) == "fix", "a release-only suite marks a release run; nothing ran = fix"))
+    rows.append(([tier_from_app_meta({"wayland": {"meta": {"tier": t}}}) for t in ("smoke", "full", "release", "")] == ["fix", "candidate", "release", None]
+                 and tier_from_app_meta({"a": {"meta": {"tier": "smoke"}}, "b": {"meta": {"tier": "full"}}}) == "candidate" and tier_from_app_meta({}) is None,
+                 "the app runs' own meta.tier names the tier"))
+    rows.append((tier_from_app_meta({"lab-wayland": {"meta": {"tier": "full"}}, "wayland": {"meta": {"tier": "smoke"}}}) == "fix" and tier_from_app_meta({"replay-wayland": {"meta": {"tier": "full"}}}) is None,
+                 "a lab or replay row does not name the tier"))
+    rows.append((all(n in USAGE_JOBS for n in ("usage-test-linux", "usage-test-macos")) and "lab-helper" in SETUP_JOBS, "the job lists"))
+    bad = 0
+    for ok, what in rows:
+        bad += 0 if ok else 1
+        print("%s %s" % ("ok  " if ok else "FAIL", what))
+    print("self-test: %s" % ("FAILED (%d)" % bad if bad else "all passed"))
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
