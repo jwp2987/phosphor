@@ -40,8 +40,11 @@ def r19_mac_local_network_prompt_is_recognised_exactly():
 @check
 def r19_mac_auto_allow_is_off_unless_the_machine_switch_is_on():
     """without APPCI_MAC_AUTO_ALLOW_LOCAL_NETWORK=1 the harness never clicks; with it, only for UserNotificationCenter"""
+    import ci_env
     b = backend.MacBackend.__new__(backend.MacBackend)
     old = os.environ.pop(b.AUTO_ALLOW_ENV, None)
+    real_file = ci_env._file
+    ci_env._file = lambda: {}  # this machine's ci.env must not decide the test
     try:
         assert b.auto_allow_local_network("UserNotificationCenter") is False
         os.environ[b.AUTO_ALLOW_ENV] = "0"
@@ -49,11 +52,18 @@ def r19_mac_auto_allow_is_off_unless_the_machine_switch_is_on():
         os.environ[b.AUTO_ALLOW_ENV] = "1"
         for owner in ("SecurityAgent", "CoreServicesUIAgent", "UniversalAccessAuthWarn"):
             assert b.auto_allow_local_network(owner) is False, owner
+        # the machine-local file is how the Mac runner turns it on (not exported into the job's environment)
+        os.environ.pop(b.AUTO_ALLOW_ENV, None)
+        ci_env._file = lambda: {b.AUTO_ALLOW_ENV: "1"}
+        assert ci_env.get(b.AUTO_ALLOW_ENV) == "1"
+        assert b.auto_allow_local_network("SecurityAgent") is False
     finally:
+        ci_env._file = real_file
         os.environ.pop(b.AUTO_ALLOW_ENV, None)
         if old is not None:
             os.environ[b.AUTO_ALLOW_ENV] = old
     src = open(os.path.join(HERE, "backend.py"), encoding="utf-8").read()
+    assert "ci_env.get(self.AUTO_ALLOW_ENV)" in src, "read through ci_env (the Mac's ci.env is not exported)"
     assert 'click button "Allow" of window 1' in src and "is_phosphor_local_network_prompt(texts, buttons)" in src
     assert src.index("is_phosphor_local_network_prompt(texts, buttons)") < src.index('click button "Allow" of window 1'), \
         "the question is judged before anything is clicked"

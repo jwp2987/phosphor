@@ -927,7 +927,8 @@ class MacBackend(Backend):
     def auto_allow_local_network(self, owner):
         """True when the Local Network question for Phosphor was on screen and was answered Allow (and is gone); False otherwise,
         and the caller reports the dialog as before. Only with AUTO_ALLOW_ENV=1 and only for UserNotificationCenter."""
-        if os.environ.get(self.AUTO_ALLOW_ENV) != "1" or owner.lower().replace(" ", "") != "usernotificationcenter":
+        import ci_env  # the machine-local ci.env is read here, not exported into the job's environment (environment wins)
+        if ci_env.get(self.AUTO_ALLOW_ENV) != "1" or owner.lower().replace(" ", "") != "usernotificationcenter":
             return False
         se = 'tell application "System Events" to tell process "UserNotificationCenter" to '
         try:
