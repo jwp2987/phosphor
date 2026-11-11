@@ -20183,6 +20183,191 @@ fn stale_bootstrap_timer_from_an_earlier_connect_does_not_fail_a_later_one() {
     })
 }
 
+/// What [`bootstrap_give_up_under_the_helper_question`] saw.
+struct HelperQuestionGiveUp {
+    /// The session was judged failed by the give-up that expired while the question was up.
+    failed_under_question: bool,
+    /// pty writes made by that expiry.
+    writes_under_question: usize,
+    /// The question took the give-up off the clock.
+    paused_under_question: bool,
+    /// A give-up was armed afresh when the question was answered.
+    armed_at_answer: bool,
+    /// That one, expiring with no `Bootstrapped`, judged the session failed.
+    failed_after_answer: bool,
+}
+
+/// #2127: an ssh session whose remote shell sent `InitShell`, with a line typed during the
+/// connect held, the give-up armed as the `SSH` hook arms it, and then the app's own "install
+/// the remote helper?" question shown. The give-up armed before the question expires while it
+/// is still up (a person takes longer than 7 s to answer), the question is answered ("continue
+/// without"), and the give-up that is current after the answer expires too.
+fn bootstrap_give_up_under_the_helper_question(switch_on: bool) -> HelperQuestionGiveUp {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        let remote_session = SessionId::from(167303092612202);
+        let armed_before_question = terminal.update(&mut app, |view, ctx| {
+            view.bootstrap_give_up_pauses_for_helper_question = switch_on;
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            assert_eq!(
+                view.model.lock().pending_session_id(),
+                Some(remote_session),
+                "precondition: the remote session is the pending one"
+            );
+            // What `ModelEvent::SSH` does for a bash remote.
+            view.start_bootstrap_timer(BOOTSTRAP_FAILED_DURATION, ctx);
+            let arm = BootstrapTimerArm {
+                generation: view.bootstrap_timer_generation,
+                session: Some(remote_session),
+            };
+            // No helper on the host and `always_ask`: the app asks and holds the bootstrap.
+            view.show_ssh_remote_server_choice_block(remote_session, ctx);
+            assert!(view.ssh_helper_question_showing());
+            arm
+        });
+        let writes_before = pty_writes.borrow().len();
+        // 7 s pass with the question still on screen.
+        let (failed_under_question, paused_under_question, generation_under_question) = terminal
+            .update(&mut app, |view, ctx| {
+                view.on_bootstrap_timer_fired(armed_before_question, ctx);
+                (
+                    view.ssh_bootstrap_failed_session == Some(remote_session),
+                    view.bootstrap_give_up_paused_for_helper_question == Some(remote_session),
+                    view.bootstrap_timer_generation,
+                )
+            });
+        let writes_under_question = pty_writes.borrow().len() - writes_before;
+        // The answer: "continue without".
+        let card = terminal
+            .read(&app, |view, _| view.active_ssh_remote_server_choice_block())
+            .expect("the question is still showing");
+        card.update(&mut app, |_, ctx| {
+            ctx.emit(SshRemoteServerChoiceViewEvent::Skip { remember: false });
+        });
+        let (armed_at_answer, failed_after_answer) = terminal.update(&mut app, |view, ctx| {
+            assert!(
+                !view.ssh_helper_question_showing(),
+                "the answer takes the question off the screen"
+            );
+            assert_eq!(
+                view.bootstrap_give_up_paused_for_helper_question, None,
+                "a pause never outlives its question"
+            );
+            let armed_at_answer = view.bootstrap_timer_generation != generation_under_question;
+            // No `Bootstrapped` follows: the give-up that is current now expires.
+            let arm = BootstrapTimerArm {
+                generation: view.bootstrap_timer_generation,
+                session: view.model.lock().pending_session_id(),
+            };
+            view.on_bootstrap_timer_fired(arm, ctx);
+            (
+                armed_at_answer,
+                view.ssh_bootstrap_failed_session == Some(remote_session),
+            )
+        });
+        HelperQuestionGiveUp {
+            failed_under_question,
+            writes_under_question,
+            paused_under_question,
+            armed_at_answer,
+            failed_after_answer,
+        }
+    })
+}
+
+/// #2127: the bootstrap give-up is a net for a bootstrap that never completes. While the app's
+/// own remote-helper question waits for a person the bootstrap has not even been written, so a
+/// give-up that expires then judges nothing: the session is not marked failed and not a byte is
+/// written to the pty (before #2127 the held line was written to the remote shell's raw,
+/// unbootstrapped prompt and the session was marked failed, for a wait the app itself caused).
+/// The answer arms the give-up afresh, and it still judges a bootstrap that then never comes.
+#[test]
+fn bootstrap_give_up_does_not_judge_a_session_waiting_for_the_helper_answer() {
+    let seen = bootstrap_give_up_under_the_helper_question(true);
+    assert!(
+        seen.paused_under_question,
+        "showing the question takes the give-up off the clock"
+    );
+    assert!(
+        !seen.failed_under_question,
+        "a session waiting for the user's answer is not a failed bootstrap"
+    );
+    assert_eq!(
+        seen.writes_under_question, 0,
+        "the expiry under the question writes nothing to the pty"
+    );
+    assert!(
+        seen.armed_at_answer,
+        "the give-up is armed afresh at the answer"
+    );
+    assert!(
+        seen.failed_after_answer,
+        "a bootstrap that never completes after the answer is still judged"
+    );
+}
+
+/// #2127, the kill switch (`PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION=0`): the clock
+/// runs through the question as it did before, so the expiry under the question judges the
+/// session failed. This is also the control of the test above: the same scenario does show the
+/// failure when the pause is off.
+#[test]
+fn bootstrap_give_up_runs_through_the_helper_question_with_the_kill_switch() {
+    let seen = bootstrap_give_up_under_the_helper_question(false);
+    assert!(!seen.paused_under_question);
+    assert!(
+        seen.failed_under_question,
+        "switch off: the give-up judges the session while the question is up, as before #2127"
+    );
+    assert!(
+        !seen.armed_at_answer,
+        "switch off: the answer arms nothing (the session was judged once)"
+    );
+}
+
+#[test]
+fn helper_question_pause_rule() {
+    let asked = SessionId::from(2127);
+    let other = SessionId::from(2128);
+    assert!(helper_question_pauses_bootstrap_give_up(
+        true,
+        asked,
+        Some(asked),
+        None
+    ));
+    // The kill switch.
+    assert!(!helper_question_pauses_bootstrap_give_up(
+        false,
+        asked,
+        Some(asked),
+        None
+    ));
+    // The armed give-up belongs to another pending session, or to none.
+    assert!(!helper_question_pauses_bootstrap_give_up(
+        true,
+        asked,
+        Some(other),
+        None
+    ));
+    assert!(!helper_question_pauses_bootstrap_give_up(
+        true, asked, None, None
+    ));
+    // Already judged: a setup is judged once.
+    assert!(!helper_question_pauses_bootstrap_give_up(
+        true,
+        asked,
+        Some(asked),
+        Some(asked)
+    ));
+    assert!(bootstrap_give_up_paused_by_helper_question_from(None));
+    assert!(bootstrap_give_up_paused_by_helper_question_from(Some("1")));
+    assert!(!bootstrap_give_up_paused_by_helper_question_from(Some(
+        " 0 "
+    )));
+}
+
 /// #1566: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes, the
 /// second expiry fails the session and writes the held keys to the pty in typed order, with no
 /// `stty sane` (owner decision 2026-11-09, #1996; under #1577 this test expected the held text

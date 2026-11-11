@@ -985,6 +985,29 @@ struct BootstrapTimerArm {
 
 /// Duration before we consider a session to have failed bootstrapping.
 const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
+
+/// Environment variable that, set to `0`, lets the bootstrap give-up clock run on while the
+/// app's own "install the remote helper?" question waits for its answer, as before #2127.
+const BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION_ENV: &str =
+    "PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION";
+
+/// The kill switch of #2127 for a given value of the variable: on unless it says `0`.
+fn bootstrap_give_up_paused_by_helper_question_from(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
+/// #2127, the pure rule: whether showing the remote-helper question for `question_session`
+/// takes the bootstrap give-up off the clock. It does when the switch is on, the question is
+/// about the session whose bootstrap is pending (the one the armed give-up would judge), and
+/// that session was not already judged failed (a judgement is made once per setup).
+fn helper_question_pauses_bootstrap_give_up(
+    enabled: bool,
+    question_session: SessionId,
+    pending_session: Option<SessionId>,
+    failed_session: Option<SessionId>,
+) -> bool {
+    enabled && pending_session == Some(question_session) && failed_session != Some(question_session)
+}
 /// #1566: how much longer the bootstrap give-up waits, once, when the pending session is
 /// demonstrably progressing (its bootstrap prompt's `Precmd` was seen) and only `Bootstrapped`
 /// is outstanding. A logged give-up net; `Bootstrapped` itself ends the wait.
@@ -3736,6 +3759,15 @@ pub struct TerminalView {
     bootstrap_timer_generation: u64,
     /// The arm of the timer callback currently running, so the grace re-arm keeps its identity.
     bootstrap_timer_arm_in_flight: Option<BootstrapTimerArm>,
+    /// #2127: the pending session whose bootstrap give-up is off the clock because the app's
+    /// own "install the remote helper?" question is waiting for the user's answer (the stashed
+    /// bootstrap is not written until then, so there is nothing for the net to judge). Set when
+    /// the question is shown, taken when it leaves the screen (answered, withdrawn with its
+    /// session, cleared): the give-up is then armed afresh, so its clock starts at the answer.
+    bootstrap_give_up_paused_for_helper_question: Option<SessionId>,
+    /// The kill switch of #2127 (`PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION=0`, read
+    /// once per pane): off, the give-up clock runs through the question as before.
+    bootstrap_give_up_pauses_for_helper_question: bool,
     /// The edge-driven ssh phase (#1424 step 7): fed by the events that are its edges
     /// (`view/ssh_edges.rs`); in `table` mode the facts carry its phase and the key path no longer
     /// refreshes the connect gate.
@@ -5658,6 +5690,13 @@ impl TerminalView {
             bootstrap_grace_used_session: None,
             bootstrap_timer_generation: 0,
             bootstrap_timer_arm_in_flight: None,
+            bootstrap_give_up_paused_for_helper_question: None,
+            bootstrap_give_up_pauses_for_helper_question:
+                bootstrap_give_up_paused_by_helper_question_from(
+                    std::env::var(BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION_ENV)
+                        .ok()
+                        .as_deref(),
+                ),
             ssh_phase: input_queue::SshPhaseMachine::default(),
             ssh_give_ups: 0,
             ssh_hold_block_id: None,
@@ -20834,6 +20873,68 @@ impl TerminalView {
         self.redetermine_global_focus(ctx);
         // The dialog now owns input: an edge of the ssh phase.
         self.ssh_on_setup_changed(ctx);
+        self.pause_bootstrap_give_up_for_helper_question(session_id);
+    }
+
+    /// #2127: the app now waits for a person. The bootstrap of `session_id` is held by
+    /// `RemoteServerController` until the question is answered, so the give-up armed at the
+    /// `SSH` hook has nothing to judge: it is superseded here and armed afresh when the
+    /// question leaves the screen ([`Self::resume_bootstrap_give_up_after_helper_question`]).
+    /// No timer is added: a wait the app caused is simply not on the clock.
+    fn pause_bootstrap_give_up_for_helper_question(&mut self, session_id: SessionId) {
+        let pending = self.model.lock().pending_session_id();
+        if !helper_question_pauses_bootstrap_give_up(
+            self.bootstrap_give_up_pauses_for_helper_question,
+            session_id,
+            pending,
+            self.ssh_bootstrap_failed_session,
+        ) {
+            log::info!(
+                "bootstrap give-up: left running under the remote-helper question of session \
+                 {session_id:?} (switch on: {}, pending {pending:?}, already failed {:?}) (#2127)",
+                self.bootstrap_give_up_pauses_for_helper_question,
+                self.ssh_bootstrap_failed_session
+            );
+            return;
+        }
+        self.cancel_bootstrap_failed_timer();
+        self.bootstrap_give_up_paused_for_helper_question = Some(session_id);
+        log::info!(
+            "bootstrap give-up: off the clock while the remote-helper question of session \
+             {session_id:?} waits for its answer (#2127)"
+        );
+    }
+
+    /// #2127: the remote-helper question left the screen (`left`: the session it was about, or
+    /// `None` when every block was cleared). If it had taken the bootstrap give-up off the
+    /// clock, the give-up is armed afresh for the full duration: the event is the answer, the
+    /// timer stays the net for a bootstrap that then never completes. A session that is no
+    /// longer the pending one has nothing left to judge (as for a stale timer, #1566).
+    fn resume_bootstrap_give_up_after_helper_question(
+        &mut self,
+        left: Option<SessionId>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(paused) = self.bootstrap_give_up_paused_for_helper_question else {
+            return;
+        };
+        if left.is_some_and(|session_id| session_id != paused) {
+            return;
+        }
+        self.bootstrap_give_up_paused_for_helper_question = None;
+        let pending = self.model.lock().pending_session_id();
+        if pending != Some(paused) {
+            log::info!(
+                "bootstrap give-up: the remote-helper question of session {paused:?} is gone \
+                 and so is its pending session (pending {pending:?}); nothing to arm (#2127)"
+            );
+            return;
+        }
+        log::info!(
+            "bootstrap give-up: the remote-helper question of session {paused:?} left the \
+             screen; armed afresh for {BOOTSTRAP_FAILED_DURATION:?} from now (#2127)"
+        );
+        self.start_bootstrap_timer(BOOTSTRAP_FAILED_DURATION, ctx);
     }
 
     /// Whether the "install the remote helper?" question is on screen (#2122: the failure
@@ -21037,6 +21138,9 @@ impl TerminalView {
             .retain(|rich_content| !view_ids_to_remove.contains(&rich_content.view_id()));
         // The dialog no longer owns input: an edge of the ssh phase.
         self.ssh_on_setup_changed(ctx);
+        // #2127: answered (the Install / Skip handlers come through here before they tell the
+        // controller) or withdrawn with its session: the give-up clock starts now.
+        self.resume_bootstrap_give_up_after_helper_question(Some(session_id), ctx);
         ctx.notify();
     }
 
@@ -25894,6 +25998,17 @@ impl TerminalView {
     /// later one. A new arm supersedes every earlier timer.
     fn start_bootstrap_timer(&mut self, duration: Duration, ctx: &mut ViewContext<Self>) {
         self.bootstrap_timer_generation = self.bootstrap_timer_generation.wrapping_add(1);
+        // #2127: while the remote-helper question waits for its answer the bootstrap is held
+        // by the app, so no give-up is armed for it (earlier arms are superseded all the same).
+        // The question leaving the screen arms it.
+        if self.bootstrap_give_up_paused_for_helper_question.is_some()
+            && self.ssh_helper_question_showing()
+        {
+            warpui::input_order::log_hop("bootstrap_give_up_not_armed", || {
+                "the remote-helper question is waiting for its answer".to_owned()
+            });
+            return;
+        }
         let arm = BootstrapTimerArm {
             generation: self.bootstrap_timer_generation,
             session: self.model.lock().pending_session_id(),
@@ -30146,6 +30261,8 @@ impl TerminalView {
         }
 
         self.rich_content_views.clear();
+        // #2127: a remote-helper question went with the rest; its pause must not outlive it.
+        self.resume_bootstrap_give_up_after_helper_question(None, ctx);
 
         self.update_input_prompt_suggestions_banner_state(ctx);
 
