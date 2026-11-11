@@ -196,3 +196,64 @@ Unit: `active_ai/mod_test.rs` `every_active_ai_request_shares_the_ssh_rule`;
 `settings/ai_tests.rs` `next_command_and_prompt_suggestions_in_ssh_default_off`.
 App: `lab_agent_suggestions_ssh.bash.lan.nohelper` (agent mode, fake model, `PROVING_LAB`):
 per-purpose local control, then silence on the ssh pane.
+
+## 4. #2095: an unreadable fallback store is told to the user; release-notes line for #1932
+
+### Today (by reading, `crates/warpui_extras/src/secure_storage/linux.rs`)
+
+* `read_fallback_value` returns an error that is not `NotFound` for a blob that does not
+  decrypt (lost key file, `K` blob with the keyring away, damage, an unknown header). But
+  `fallback_entry` logs a warning and answers `Absent`, and `read_value` then asks the keyring
+  and maps every failure to `NotFound`. Every caller sees "never saved".
+* A blob that exists but cannot be OPENED or READ (permission denied, I/O error) was mapped to
+  `NotFound` at the first line (`File::open(..).map_err(|_| NotFound)`), so it was not even
+  logged.
+
+### Fix
+
+* `secure_storage::unreadable` (new, all platforms, no dependencies beyond the crate's
+  `async-channel`): a process-wide count with `record()` (true and a message to subscribers for
+  the first of the run), `seen()`, `count()`, `subscribe()`. It holds a number: no key, no path,
+  no value can reach the notice through it.
+* `fallback_entry` calls `record()` in its unreadable branch. The read result is unchanged
+  (the keyring copy if there is one, else `NotFound`): callers and their error handling are not
+  touched, the blob stays in place.
+* `read_fallback_value`: only `ErrorKind::NotFound` / `NotADirectory` on open means "no blob"
+  (`fallback_blob_is_absent`); any other open or read failure is an error naming the file and
+  the error kind.
+* App: `app/src/secure_storage_notice.rs`, singleton `UnreadableSecureStorageNotice`, the twin
+  of `KeyringNotice` (#1805): subscribes, waits for a window through the window manager's
+  events (no timer), one toast (`common-secure-storage-unreadable`, en / ja / zh-CN, 15 s),
+  counted as shown only when a toast stack confirms it. Once per launch (`OncePerLaunch`).
+  The text is a fixed sentence with no arguments.
+* Manual (`05-ai-agent.md`, "Where credentials are stored"): the notice, and the downgrade
+  limit.
+* Release notes: there is no drafting file in the repo (the release body is `git-cliff` output,
+  `.gitlab-ci.yml` `release-meta`; known issues have been added by hand at release time), so
+  `docs/release-notes-draft.md` is new, with the downgrade line under v0.1.18 and one line each
+  for this notice and the #2094 switches.
+
+### Rejected
+
+* **Return a distinct error (`Error::Unreadable`) from `read_value`.** Every caller matches on
+  `NotFound` to mean "nothing stored, carry on" (provider secrets, MCP tokens, the proxy
+  password); a new variant would turn start-up reads into hard errors in code this task does
+  not own. The notice needs the fact, not a new control path.
+* **Name the affected credential in the notice.** The key names are internal
+  (`AgentProviderSecrets`), and the rule is no secret text; the log has the key and the cause.
+* **Offer "delete and start over" in the toast.** The blob reads again when its key is back;
+  deleting is the one thing that makes the loss permanent.
+* **Record only when the keyring had no copy either.** The fallback holds a value only when
+  the keyring could not take it, so a keyring copy is older: the user should still hear that
+  the newer value could not be opened ("missing or out of date").
+* **A kill switch.** The change adds a toast and a log line; no read returns something else
+  than before, except a blob the process cannot open, which was `NotFound` at the fallback
+  layer and is still `NotFound` from `read_value`.
+
+### Risk
+
+* With the keyring down and a `K` blob present, two notices appear in one launch (keyring
+  unavailable; stored credentials could not be opened). Both are true; they have different ids.
+* Windows and macOS never record (their stores have no such fallback); the model is idle there.
+* Not compiled: `spawn_stream_local` with a `()` item, `ErrorKind::NotADirectory`, the
+  `super::super::unreadable` paths in `linux_test.rs`.

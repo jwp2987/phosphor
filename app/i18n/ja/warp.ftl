@@ -3411,6 +3411,7 @@ common-refresh = 更新
 common-resource-not-found-or-access-denied = リソースが見つからないか、アクセスが拒否されました
 common-settings-write-failed = 設定の変更を保存できませんでした。次回 Phosphor を起動すると失われる可能性があります。
 common-keyring-unavailable = OS キーチェーンを利用できないため、保存された認証情報 (API キー、プロキシのパスワード) がこのセッションでは使えない場合があります。その他の機能は通常どおり動作します。クリックするとキーチェーンを再試行します。
+common-secure-storage-unreadable = 保存済みの認証情報 (API キー、プロキシのパスワード) の一部はこのコンピューターに保存されていますが、開けませんでした。このセッションでは使えないか、古い値になっている場合があります。削除されたものはありません。今すぐ必要な場合は入力し直してください。詳細はログにあります。
 workspace-close-session = セッションを閉じる
 workspace-auto-reload = 自動再読み込み
 workspace-add-new-repo = {" "}+ 新しいリポジトリを追加

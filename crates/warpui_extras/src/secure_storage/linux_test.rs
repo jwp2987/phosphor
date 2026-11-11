@@ -1002,3 +1002,100 @@ fn a_malformed_keyring_secret_is_not_replaced() {
     assert_eq!(storage.read_value("key").expect("read"), "value");
     super::availability::reset_for_test();
 }
+
+// ---- #2095: a fallback store that exists but cannot be opened is told to the user ----
+
+/// A read that finds a blob it cannot open (here: its key file is gone) still returns "not
+/// found" to the caller, as before, but it is recorded process-wide, once, so the app can show
+/// its one notice. A value that was simply never saved records nothing, and neither does a blob
+/// that reads.
+#[test]
+fn an_unreadable_fallback_is_recorded_for_the_notice_and_a_missing_one_is_not() {
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    super::super::unreadable::reset_for_test();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let writer = storage_without_keyring(temp_dir.path());
+    writer.write_fallback_value("key", "value").expect("write");
+    let key_file = writer.key_file().expect("key file path");
+    let blob_path = writer.fallback_file("key").expect("path");
+    let blob = std::fs::read(&blob_path).expect("blob");
+    let changes = super::super::unreadable::subscribe();
+
+    // Never saved, and a blob that reads: nothing to tell.
+    let reader = storage_without_keyring(temp_dir.path());
+    assert!(matches!(
+        reader.read_value("never-saved"),
+        Err(Error::NotFound)
+    ));
+    assert_eq!(reader.read_value("key").expect("read"), "value");
+    assert!(!super::super::unreadable::seen());
+    assert!(changes.try_recv().is_err());
+
+    // The key file is lost: the blob is there and cannot be opened.
+    std::fs::remove_file(&key_file).expect("lose the key file");
+    let reader = storage_without_keyring(temp_dir.path());
+    assert!(matches!(reader.read_value("key"), Err(Error::NotFound)));
+    assert!(
+        super::super::unreadable::seen(),
+        "an unreadable store is recorded, not a silent 'not found'"
+    );
+    assert_eq!(
+        changes.try_recv(),
+        Ok(()),
+        "subscribers hear of the first one"
+    );
+
+    // More unreadable reads are counted and tell nobody again (one notice per launch).
+    assert!(matches!(reader.read_value("key"), Err(Error::NotFound)));
+    assert!(changes.try_recv().is_err());
+    assert_eq!(super::super::unreadable::count(), 2);
+
+    // The blob is left exactly as it was, and no key file was made up.
+    assert_eq!(std::fs::read(&blob_path).expect("blob"), blob);
+    assert!(!key_file.exists());
+
+    super::super::unreadable::reset_for_test();
+    super::availability::reset_for_test();
+}
+
+/// A blob the process may not open (mode 000) exists: that is an error, not "not found", and it
+/// is recorded like one that does not decrypt. Skipped for root, which opens anything.
+#[test]
+fn a_fallback_file_that_cannot_be_opened_is_not_reported_as_missing() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    super::super::unreadable::reset_for_test();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let storage = storage_without_keyring(temp_dir.path());
+    storage.write_fallback_value("key", "value").expect("write");
+    let blob_path = storage.fallback_file("key").expect("path");
+    std::fs::set_permissions(&blob_path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::File::open(&blob_path).is_ok() {
+        // Running as root: the file opens whatever its mode, so there is nothing to test.
+        std::fs::set_permissions(&blob_path, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod back");
+        return;
+    }
+
+    assert!(
+        matches!(storage.read_fallback_value("key"), Err(Error::Unknown(_))),
+        "a file that is there and cannot be opened is an error"
+    );
+    assert!(matches!(storage.read_value("key"), Err(Error::NotFound)));
+    assert!(super::super::unreadable::seen());
+
+    assert!(super::fallback_blob_is_absent(std::io::ErrorKind::NotFound));
+    assert!(super::fallback_blob_is_absent(
+        std::io::ErrorKind::NotADirectory
+    ));
+    assert!(!super::fallback_blob_is_absent(
+        std::io::ErrorKind::PermissionDenied
+    ));
+
+    std::fs::set_permissions(&blob_path, std::fs::Permissions::from_mode(0o600))
+        .expect("chmod back");
+    super::super::unreadable::reset_for_test();
+    super::availability::reset_for_test();
+}

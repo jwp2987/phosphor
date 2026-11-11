@@ -5422,6 +5422,16 @@ Changed tests, same assertions: `test_encrypt_decrypt_returns_same_value`, `test
 
 App: `keyring_unavailable_startup` (#1805) is unchanged. The change adds no keyring call at startup and no log line it judges; in its `absent` / `hang` launches a credential write now also creates `<state dir>/dev.phosphor.Phosphor-secure-storage.key`. There is no app case for the migration (it needs a state directory seeded by an older build).
 
+### #2095: a fallback store that exists but cannot be opened is told to the user (round 16, `docs/design/r16-agent2.md` section 4)
+
+Follow-up to #1932, owner decision 2026-11-11. No kill switch: the notice adds a toast and changes no read result (see the design note).
+
+- Unit, `crates/warpui_extras/src/secure_storage/linux_test.rs`: `an_unreadable_fallback_is_recorded_for_the_notice_and_a_missing_one_is_not` (a value never saved and a blob that reads record nothing; a blob whose key file is lost still reads as "not found" for the caller but is recorded, subscribers hear of it once, later ones are only counted, the blob is untouched and no key file is made up) and `a_fallback_file_that_cannot_be_opened_is_not_reported_as_missing` (a mode-000 blob is an error at the fallback layer, not `NotFound`; skipped when the process can open it anyway, i.e. root). `unreadable_record_tests.rs` `the_first_unreadable_store_of_a_run_is_reported_once`.
+- Unit, `app/src/secure_storage_notice_tests.rs`: `an_unreadable_store_shows_one_notice_per_launch`, `the_notice_stays_due_until_a_workspace_displayed_it`, `the_notice_text_carries_no_secret_and_no_path` (the string exists in en, ja, zh-CN and takes no arguments).
+- Changed expectation: none. `read_fallback_value` now returns an error instead of `NotFound` for a blob that exists and cannot be opened or read (permission, I/O); the existing tests only read blobs that are absent (still `NotFound`) or present and openable.
+- No app case: it needs a state directory with a blob and no key file before launch. The log line an app case can wait for is `Showing the secure-storage-unreadable notice` (the twin of `KEYRING_NOTICE_LINE` in `cases_ui.py`). Not written.
+- Worked, unproven: nothing was compiled or run.
+
 ### #1982: no query prediction request from an ssh pane by default
 
 - Unit: `app/src/ai/agent_providers/active_ai/mod_test.rs` `a_query_prediction_is_not_requested_in_an_ssh_session_unless_allowed` (the decision `nld_predict::allowed_for_session`: local yes; ssh no; unknown session no; everything yes when the setting is on). `app/src/settings/ai_tests.rs` `natural_language_autosuggestions_in_ssh_default_off`.

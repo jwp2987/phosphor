@@ -2482,7 +2482,9 @@ upstream's behavior is actually a defect rather than a preference.
   readable by any process of the user (only a keyring defends against that); builds before this
   change cannot read the new blobs (a downgrade shows keyring-less users no stored credentials
   until they upgrade again); a `K` blob needs the keyring to be read. A re-pin must not bring
-  the literal back as a write key.
+  the literal back as a write key. **Since #2095 (2026-11-11):** a blob that exists and cannot
+  be opened is recorded (`secure_storage::unreadable`) and the app shows one notice per launch
+  (`app/src/secure_storage_notice.rs`); upstream reads it as "not found" and says nothing.
   <!-- markers: keep:KEYRING_INSTALL_SECRET_KEY keep:migrate_legacy_fallback keep:key_source_for_writing -->
 
 - **No query prediction request from an ssh session unless the user turns it on** (`#1982`,

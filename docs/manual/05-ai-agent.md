@@ -74,6 +74,19 @@ fallback file from being read on its own, but not a program running as you,
 which can read both files. Only a Secret Service keyring protects against that.
 Do not delete the key file: the values sealed with it cannot be read without
 it, and back it up together with the fallback files.
+
+If a fallback file is there but cannot be opened (its key file is missing, it
+was written while a keyring was running and the keyring is not answering now,
+it is damaged, or a newer version wrote it), Phosphor shows one notice per
+launch saying that saved credentials could not be opened. Nothing is deleted:
+the file reads again once its key is back. Until then the affected keys show
+as not set; entering one again saves it with the key available now. The log
+names which stored item could not be opened and why, never its contents.
+
+Downgrade limit: versions before 0.1.18 cannot read the fallback files this
+version writes. After going back to an older version on a machine with no
+keyring, stored credentials show as not set (the files stay on disk and read
+again after upgrading).
 Keys are never written to `settings.toml`, and they are not synced anywhere.
 
 `settings.toml` itself lives at:

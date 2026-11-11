@@ -488,9 +488,28 @@ impl SecureStorage {
     fn read_fallback_value(&self, key: &str) -> Result<FallbackValue, Error> {
         let fallback_file = self.fallback_file(key)?;
 
-        let mut file = std::fs::File::open(&fallback_file).map_err(|_| Error::NotFound)?;
+        // Only a blob that is not there is "not found". One that is there and cannot be opened
+        // or read (permissions, an I/O error) is an error like one that cannot be decrypted
+        // (#2095); the message names the kind of failure, never the contents.
+        let mut file = std::fs::File::open(&fallback_file).map_err(|err| {
+            if fallback_blob_is_absent(err.kind()) {
+                Error::NotFound
+            } else {
+                Error::Unknown(anyhow!(
+                    "cannot open the fallback file {}: {}",
+                    fallback_file.display(),
+                    err.kind()
+                ))
+            }
+        })?;
         let mut data = Vec::new();
-        file.read_to_end(&mut data).map_err(|_| Error::NotFound)?;
+        file.read_to_end(&mut data).map_err(|err| {
+            Error::Unknown(anyhow!(
+                "cannot read the fallback file {}: {}",
+                fallback_file.display(),
+                err.kind()
+            ))
+        })?;
         Self::tighten_fallback_permissions(&file, &fallback_file);
         let value = match self.fallback_decrypt(&data) {
             Some(Ok(value)) => {
@@ -604,6 +623,11 @@ impl SecureStorage {
 
     /// What the fallback holds for `key`. An unreadable blob is reported and treated as absent,
     /// so the keyring copy (if any) is used, as before. The blob itself is left in place.
+    ///
+    /// "Reported" is the log line and, since #2095, the process-wide record the app turns into
+    /// one notice per launch ([`super::unreadable`]): without it the caller sees "not found" (or
+    /// an older keyring copy) and the user is never told that a saved value is there but could
+    /// not be opened. Only the fact is recorded, never the key or anything of the value.
     fn fallback_entry(&self, key: &str) -> FallbackEntry {
         if self.tombstone_file(key).is_ok_and(|path| path.exists()) {
             return FallbackEntry::Removed;
@@ -616,6 +640,7 @@ impl SecureStorage {
                     "Unreadable secure-storage fallback for {}/{key} ({err:#}); using the keyring",
                     self.service_name
                 );
+                super::unreadable::record();
                 FallbackEntry::Absent
             }
         }
@@ -641,6 +666,16 @@ impl SecureStorage {
         }
         result
     }
+}
+
+/// Whether a failure to open a fallback blob means there is no blob: the file, or a directory on
+/// the way to it, does not exist. Anything else (permission denied, an I/O error) is a blob that
+/// exists and cannot be opened.
+fn fallback_blob_is_absent(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }
 
 impl super::SecureStorage for SecureStorage {

@@ -3806,6 +3806,11 @@ common-settings-write-failed = Couldn't save your settings change. It may be los
 # cannot be used, so stored credentials are unavailable while the app keeps working.
 # Clicking the toast retries the keyring. (app/src/keyring_notice.rs, #1805)
 common-keyring-unavailable = The OS keyring isn't available, so saved credentials (API keys, proxy password) may be missing this session. Everything else works. Click to try the keyring again.
+# Shown once per launch when a saved credential is on disk but could not be opened (its
+# key is in an OS keyring that does not answer, its key file is missing, the file is damaged,
+# or a newer version wrote it). Nothing is deleted. A fixed sentence: it must never take
+# arguments. (app/src/secure_storage_notice.rs, #2095)
+common-secure-storage-unreadable = Some saved credentials (API keys, proxy password) are stored on this computer but could not be opened, so they may be missing or out of date this session. Nothing was deleted. Enter them again if you need them now; the log has the details.
 workspace-close-session = Close session
 workspace-auto-reload = Auto-reload
 workspace-add-new-repo = {" "}+ Add new repo

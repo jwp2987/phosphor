@@ -3413,6 +3413,7 @@ common-refresh = 刷新
 common-resource-not-found-or-access-denied = 资源不存在或无访问权限
 common-settings-write-failed = 无法保存您的设置更改。下次启动 Phosphor 时它可能会丢失。
 common-keyring-unavailable = 系统密钥库不可用，本次会话中已保存的凭据（API 密钥、代理密码）可能无法使用。其他功能正常。点击可重试密钥库。
+common-secure-storage-unreadable = 部分已保存的凭据（API 密钥、代理密码）仍存放在这台电脑上，但无法打开，本次会话中可能缺失或不是最新。没有删除任何内容。如果现在需要，请重新输入；详情见日志。
 workspace-close-session = 关闭会话
 workspace-auto-reload = 自动重载
 workspace-add-new-repo = {" "}+ 添加新仓库
