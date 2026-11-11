@@ -1725,8 +1725,13 @@ impl LocalCodeEditorView {
         let Some(file_id) = self.file_id() else {
             return false;
         };
+        // #2087: also when another program changed the file on disk while this buffer had
+        // unsaved edits. That refused update changes no version, so the comparison below alone
+        // never showed the banner for it and the next save silently replaced the other change.
+        let global_buffer = GlobalBufferModel::as_ref(app);
         self.has_unsaved_changes(app)
-            && self.base_content_version != GlobalBufferModel::as_ref(app).base_version(file_id)
+            && (self.base_content_version != global_buffer.base_version(file_id)
+                || global_buffer.disk_changed_under_edits(file_id))
     }
     /// Save the file to the local file system.
     /// This will only return an error immediately if there is a failure in the sync part of the call.

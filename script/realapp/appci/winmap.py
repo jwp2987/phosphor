@@ -370,3 +370,28 @@ KILL_SWITCH_SMOKE = ("mode_proof", "paste_instant_enter", "tab_enter", "ctrl_c_d
 def smoke_for(dest, smoke):
     """The smoke case names for destination mode `dest` ('table' | 'shadow' | 'legacy')."""
     return tuple(n for n in smoke if n in KILL_SWITCH_SMOKE) if dest == "legacy" else tuple(smoke)
+
+
+# ---------------------------------------------------------------- round 15 wave 5 part A (#2076, #2077; docs/design/r15-w5a.md)
+# Separate statements on purpose (sibling branches edit the tables above; these merge without touching them).
+# T41: zero_network_startup now has a Windows trace (nettrace.py: `netstat -ano` polled for the app's job members, proven by a control connection).
+# Nothing in it depends on the pane's shell and one run is about four minutes, so it runs once, in the Git Bash pane.
+NOT_WINDOWS.pop("zero_network_startup", None)
+GITBASH_ONLY["zero_network_startup"] = "the network trace does not depend on the pane's shell and one run is about 4 minutes: runs once, in the Git Bash pane (#2076 T41)"
+# #2077: the launch half needs only a relaunch on a rewritten settings file; the page half is played and, where the page shows no action, reported as not judged
+NOT_WINDOWS.pop("network_gate_switch", None)
+GITBASH_ONLY["network_gate_switch"] = "the gate does not depend on the pane's shell (three relaunches): runs once, in the Git Bash pane (#2077)"
+NOT_WINDOWS["claude_plugin_offline"] = ("#2077: the bundled Claude plugin ships bash hooks only (no Windows hook scripts), so there is nothing of it to run in a Windows pane; "
+                                        "by design, no machine change makes it run here")
+NOT_WINDOWS["agent_plugins_offline"] = ("#2077: the Gemini plugin ships bash hooks only. NEEDS (harness, not built) for the Codex plugin's PowerShell hooks: a console capture "
+                                        "for what they write, and a per-process network block, which on Windows is a firewall rule of an elevated runner")
+NOT_WINDOWS["keyring_unavailable_startup"] = ("#1805 / #2077: the no-keyring variants are D-Bus session configs of the Linux launcher. Windows keeps secrets in DPAPI-protected "
+                                              "files: there is no service that can be absent; by design, no machine change makes it run here")
+NOT_WINDOWS["keychain_startup_macos"] = "T42 (#1977): the macOS keychain. Windows keeps secrets in DPAPI-protected files; by design, no machine change makes it run here"
+for _n in ("agent_gate_deny_allow", "network_gate_notice"):
+    NOT_WINDOWS[_n] = "#2077: NEEDS (harness, not built): pointer synthesis in the Windows backend (mouse SendInput, r14-test-gaps T31) and an OCR engine, for the toast's Allow link"
+for _n in ("agent_gate_off_live", "agent_gate_key_never_leaves"):
+    NOT_WINDOWS[_n] = ("#2077: not ported. NEEDS (harness, not built): the polled trace (nettrace.py) in place of the strace oracle, the app's live settings file "
+                       "(cases_robust.live_settings_file) for the edits made while it runs, and for the page switch the pointer (r14-test-gaps T31)")
+# T45: tab counts from the app log (both panes), the prompt log where the pane has one. T50: the file is handed over the named pipe as editor_edit_save does
+BOTH.update({"keybinding_rebind", "editor_daily"})

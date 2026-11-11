@@ -8314,6 +8314,8 @@ import selftest_desk  # noqa: E402  (round 15 wave 4: cases_desk.py, notify_reco
 CHECKS.extend(selftest_desk.CHECKS)
 import selftest_r15_w5b  # noqa: E402  (round 15 wave 5 part B: cases_install.py, prev_artifact.py, wininstall.py, the pane-shell passes)
 CHECKS.extend(selftest_r15_w5b.CHECKS)
+import selftest_r15_w5a  # noqa: E402  (round 15 wave 5 part A: cases_r15_w5a.py, nettrace.py; its checks live in their own file)
+CHECKS.extend(selftest_r15_w5a.CHECKS)
 
 
 def main():

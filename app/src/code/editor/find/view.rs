@@ -50,6 +50,14 @@ pub const PRESERVE_CASE_TOOLTIP: &str = "Preserve case";
 pub const FIND_PLACEHOLDER_TEXT: &str = "Find";
 pub const REPLACE_PLACEHOLDER_TEXT: &str = "Replace";
 
+/// #2088: the keyboard path to the replace row and to "Replace all" (Ctrl-Alt-R / Ctrl-Alt-Enter,
+/// Cmd-Option-R / Cmd-Option-Enter on macOS). Neither chord is bound in the single-line editors
+/// the find bar holds, so the find bar is the first view that takes them.
+pub const TOGGLE_REPLACE_BINDING_NAME: &str = "find:toggle_replace";
+pub const REPLACE_ALL_BINDING_NAME: &str = "find:replace_all";
+pub const TOGGLE_REPLACE_KEY: &str = "alt-cmdorctrl-r";
+pub const REPLACE_ALL_KEY: &str = "alt-cmdorctrl-enter";
+
 #[derive(Default)]
 struct ButtonMouseStates {
     match_up: MouseStateHandle,
@@ -98,6 +106,10 @@ pub enum FindAction {
     CmdShiftG,
     SelectAll,
     ToggleReplaceOpen,
+    /// #2088: the replace row opened or closed by key. Unlike the click on the arrow
+    /// ([`FindAction::ToggleReplaceOpen`]) it moves the keyboard focus: to the replace field when
+    /// the row opens, back to the find field when it closes.
+    ToggleReplaceFromKeyboard,
     ReplaceAll,
     TogglePreserveCase,
     /// The find input was clicked, so it should become editable and take focus again.
@@ -125,6 +137,23 @@ pub fn init(app: &mut AppContext) {
         .with_context_predicate(id!("CodeEditorFind"))
         .with_mac_key_binding("cmd-shift-G")
         .with_linux_or_windows_key_binding("shift-f3"),
+        // #2088: until these two, the replace row opened only by a click on the arrow and
+        // "Replace all" was a button only, so a keyboard user could find but not replace. Both
+        // are editable: `none` in keybindings.yaml removes one.
+        EditableBinding::new(
+            TOGGLE_REPLACE_BINDING_NAME,
+            crate::t!("keybinding-desc-find-toggle-replace"),
+            FindAction::ToggleReplaceFromKeyboard,
+        )
+        .with_context_predicate(id!("CodeEditorFind"))
+        .with_key_binding(TOGGLE_REPLACE_KEY),
+        EditableBinding::new(
+            REPLACE_ALL_BINDING_NAME,
+            crate::t!("keybinding-desc-find-replace-all"),
+            FindAction::ReplaceAll,
+        )
+        .with_context_predicate(id!("CodeEditorFind"))
+        .with_key_binding(REPLACE_ALL_KEY),
     ])
 }
 
@@ -923,6 +952,14 @@ impl CodeEditorFind {
     pub fn find_editor_position_id_for_test(&self) -> &str {
         &self.find_editor_position_id
     }
+
+    pub fn replace_editor_for_test(&self) -> ViewHandle<EditorView> {
+        self.replace_editor.clone()
+    }
+
+    pub fn is_replace_open_for_test(&self) -> bool {
+        self.is_replace_open
+    }
 }
 
 impl Entity for CodeEditorFind {
@@ -943,6 +980,15 @@ impl TypedActionView for CodeEditorFind {
             FindAction::ReplaceAll => ctx.emit(Event::ReplaceAll),
             FindAction::ToggleReplaceOpen => {
                 self.is_replace_open = !self.is_replace_open;
+                ctx.notify();
+            }
+            FindAction::ToggleReplaceFromKeyboard => {
+                self.is_replace_open = !self.is_replace_open;
+                if self.is_replace_open {
+                    ctx.focus(&self.replace_editor);
+                } else {
+                    ctx.focus(&self.find_editor);
+                }
                 ctx.notify();
             }
             FindAction::TogglePreserveCase => {

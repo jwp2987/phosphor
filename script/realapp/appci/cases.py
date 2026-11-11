@@ -130,6 +130,9 @@ PROVING = (
     # launched, joined by a second launch, `phosphor <path>`, uninstalled with the user's data kept; the upgrade from the previous release fetched from
     # the project's package registry; and the pane-shell case of the Windows pwsh7 / cmd / wsl passes, which no tier had ever played
     "installer_smoke", "upgrade_from_previous_release", "startup_shell_pane",
+    # round 15 wave 5 part A (docs/design/r14-test-gaps.md T42, T45, T50; design docs/design/r15-w5a.md; #2076): the macOS keychain at start
+    # (#1977), a keybindings.yaml change taking effect, and the code editor's find and replace / close question / file changed on disk (#2087, #2088)
+    "keychain_startup_macos", "keybinding_rebind", "editor_daily",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -6509,3 +6512,4 @@ import cases_r15_defects  # noqa: E402,F401  (round 15, #2080 / #2081: scroll_ke
 import cases_r15_w5c  # noqa: E402,F401  (round 15 wave 5c, T48: gpu_real_render; T47 / T49 / #2071 changed cases that already existed)
 import cases_desk  # noqa: E402,F401  (r15 wave 4, T35/T37/T38/T39: scale_matrix, desktop_notification, desktop_notification_agent_question, drag_drop_file, ime_compose)
 import cases_install  # noqa: E402,F401  (#2076 / #1546, round 15 wave 5 part B: installer_smoke, upgrade_from_previous_release)
+import cases_r15_w5a  # noqa: E402,F401  (r15 wave 5 part A, T42/T45/T50: keychain_startup_macos, keybinding_rebind, editor_daily)

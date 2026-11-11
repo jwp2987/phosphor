@@ -33,6 +33,43 @@ cfg_if::cfg_if! {
     }
 }
 
+/// Env kill switch (#2087): `PHOSPHOR_EDITOR_DISK_CONFLICT=0` puts back the behaviour before the
+/// fix: a file changed on disk under unsaved edits is not remembered and the editor shows no
+/// banner for it. Read once per run.
+fn disk_conflict_flag_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        disk_conflict_flag_enabled_for(
+            std::env::var("PHOSPHOR_EDITOR_DISK_CONFLICT")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// The kill switch's rule: on unless the variable is exactly `0`.
+fn disk_conflict_flag_enabled_for(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
+/// A hash of a file's text, to tell a save's own echo from another program's change (#2087)
+/// without keeping a second copy of the file.
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The trace line of a file-watcher report for an open file (target `editor_disk`, debug; the
+/// app tests read it). `outcome` is `reloaded` (the buffer took the disk's text) or `conflict`
+/// (the buffer has unsaved edits and kept them); `external` is whether the text was another
+/// program's change rather than the echo of this editor's own save; `flagged` is whether the
+/// file is now one the editor shows its conflict banner for. No path, no content.
+fn disk_event_trace(outcome: &str, external: bool, flagged: bool) -> String {
+    format!("editor_disk outcome={outcome} external={external} flagged={flagged}")
+}
+
 /// State for a shared buffer including the file ID and buffer handle.
 #[derive(Debug, Clone)]
 pub struct BufferState {
@@ -336,6 +373,19 @@ pub struct GlobalBufferModel {
     /// line ended how; a save gives each line its own ending back from it
     /// ([`Self::text_to_save`]). Files with one line ending have no entry.
     mixed_ending_disk_text: HashMap<FileId, String>,
+    /// #2087: a hash of the text the last save of each file wrote. The file watcher reports that
+    /// save back as a change; a reported text with this hash is the save's own echo, not
+    /// another program's change.
+    written_text_hash: HashMap<FileId, u64>,
+    /// #2087: files whose reload of another program's change is still being diffed in the
+    /// background. If the user types before it lands the reload is dropped, and the buffer then
+    /// holds edits on text the disk no longer has.
+    external_reload_pending: HashSet<FileId>,
+    /// #2087: files another program changed on disk while the buffer had unsaved edits, so the
+    /// change was not taken. The editor shows its conflict banner from this
+    /// ([`Self::disk_changed_under_edits`]). A file leaves when the buffer and the disk agree
+    /// again: a save, a reload, a discard.
+    disk_changed_under_edits: HashSet<FileId>,
     /// The `trim` verdicts of the drop events, in order (for tests).
     #[cfg(test)]
     pub(crate) dropped_with_trim: Vec<(FileId, bool)>,
@@ -371,6 +421,9 @@ impl GlobalBufferModel {
             trim_on_drop_of: HashSet::new(),
             drop_watched: HashMap::new(),
             mixed_ending_disk_text: HashMap::new(),
+            written_text_hash: HashMap::new(),
+            external_reload_pending: HashSet::new(),
+            disk_changed_under_edits: HashSet::new(),
             #[cfg(test)]
             dropped_with_trim: Vec::new(),
         }
@@ -401,6 +454,44 @@ impl GlobalBufferModel {
         };
         self.note_disk_text(file_id, &content);
         content
+    }
+
+    /// Records `content` as the text a save of `file_id` is writing (#2087).
+    fn note_written_text(&mut self, file_id: FileId, content: &str) {
+        self.written_text_hash.insert(file_id, text_hash(content));
+    }
+
+    /// Whether `content`, reported by the file watcher as what the disk now holds, is another
+    /// program's change (#2087): anything but the text this editor's own last save wrote.
+    fn is_external_disk_text(&self, file_id: FileId, content: &str) -> bool {
+        self.written_text_hash.get(&file_id) != Some(&text_hash(content))
+    }
+
+    /// A reported disk text is about to be loaded into a buffer that has no unsaved edits.
+    fn note_disk_reload_started(&mut self, file_id: FileId, external: bool) {
+        if external {
+            self.external_reload_pending.insert(file_id);
+        } else {
+            self.external_reload_pending.remove(&file_id);
+        }
+    }
+
+    /// A reported disk text was NOT taken because the buffer has unsaved edits. Another
+    /// program's change is remembered so the editor can say so; the echo of our own save is not
+    /// (the buffer is that text plus what the user typed since).
+    fn note_disk_update_refused(&mut self, file_id: FileId, external: bool) {
+        let flagged = external && disk_conflict_flag_enabled();
+        if flagged {
+            self.disk_changed_under_edits.insert(file_id);
+        }
+        log::debug!(target: "editor_disk", "{}", disk_event_trace("conflict", external, flagged));
+    }
+
+    /// Whether another program changed `file_id` on disk while its buffer had unsaved edits, and
+    /// the two have not been brought together since (#2087). Always `false` with the kill switch
+    /// `PHOSPHOR_EDITOR_DISK_CONFLICT=0`.
+    pub fn disk_changed_under_edits(&self, file_id: FileId) -> bool {
+        disk_conflict_flag_enabled() && self.disk_changed_under_edits.contains(&file_id)
     }
 
     /// Client-app only: subscribes to `RemoteServerManager`'s buffer push events,
@@ -635,6 +726,9 @@ impl GlobalBufferModel {
 
         self.buffers.remove(&file_id);
         self.mixed_ending_disk_text.remove(&file_id);
+        self.written_text_hash.remove(&file_id);
+        self.external_reload_pending.remove(&file_id);
+        self.disk_changed_under_edits.remove(&file_id);
         log::debug!(
             target: "code::buffer_lifecycle",
             "unregister (cleanup): registered={}",
@@ -734,6 +828,9 @@ impl GlobalBufferModel {
             });
 
             state.set_base_content_version(new_version);
+            // #2087: the buffer is what the disk holds.
+            self.external_reload_pending.remove(&file_id);
+            self.disk_changed_under_edits.remove(&file_id);
 
             ctx.emit(GlobalBufferModelEvent::BufferLoaded {
                 file_id,
@@ -758,6 +855,10 @@ impl GlobalBufferModel {
             });
 
             state.set_base_content_version(new_version);
+            // #2087: the buffer is what the disk holds.
+            let external = self.external_reload_pending.remove(&file_id);
+            self.disk_changed_under_edits.remove(&file_id);
+            log::debug!(target: "editor_disk", "{}", disk_event_trace("reloaded", external, false));
 
             ctx.emit(GlobalBufferModelEvent::BufferUpdatedFromFileEvent {
                 file_id,
@@ -828,6 +929,15 @@ impl GlobalBufferModel {
         // diff rather than incorrectly bumping the server version.
         if !buffer.as_ref(ctx).version_match(&base_version) {
             log::info!("Buffer version changed during diff parsing, aborting apply");
+            // #2087: the user typed while the reload was being diffed, so the reload is dropped.
+            // If it was another program's change, the buffer now holds edits on text the disk
+            // no longer has: the same conflict as a change that arrives after the typing.
+            let external = self.external_reload_pending.remove(&file_id);
+            let flagged = external && disk_conflict_flag_enabled();
+            if flagged {
+                self.disk_changed_under_edits.insert(file_id);
+            }
+            log::debug!(target: "editor_disk", "{}", disk_event_trace("conflict", external, flagged));
             ctx.emit(GlobalBufferModelEvent::BufferUpdatedFromFileEvent {
                 file_id,
                 success: false,
@@ -876,6 +986,10 @@ impl GlobalBufferModel {
         });
 
         state.set_base_content_version(new_version);
+        // #2087: the buffer is what the disk holds.
+        let external = self.external_reload_pending.remove(&file_id);
+        self.disk_changed_under_edits.remove(&file_id);
+        log::debug!(target: "editor_disk", "{}", disk_event_trace("reloaded", external, false));
 
         if let Some(char_offset_edits) = char_offset_edits {
             // Upstream 25bb50823 ("Fix spurious unsaved diff state", #10823): a
@@ -945,8 +1059,11 @@ impl GlobalBufferModel {
                 if self.buffers.contains_key(id) {
                     self.note_disk_text(*id, content);
                 }
+                // #2087: another program's change, or the echo of this editor's own save.
+                let external = self.is_external_disk_text(*id, content);
                 if let Some(buffer) = self.buffer_handle_for_id(*id, ctx) {
                     if buffer.as_ref(ctx).version_match(base_version) {
+                        self.note_disk_reload_started(*id, external);
                         self.populate_buffer_with_read_content(
                             *id,
                             content,
@@ -977,6 +1094,7 @@ impl GlobalBufferModel {
                                 *base_version
                             );
                             let actual_version = buffer.as_ref(ctx).version();
+                            self.note_disk_reload_started(*id, external);
                             self.populate_buffer_with_read_content(
                                 *id,
                                 content,
@@ -1004,6 +1122,11 @@ impl GlobalBufferModel {
                                 );
                             }
 
+                            // #2087: until this, nothing remembered that the disk moved on, so
+                            // the editor showed no banner and the next save wrote the older
+                            // text over the other program's change without a word.
+                            self.note_disk_update_refused(*id, external);
+
                             ctx.emit(GlobalBufferModelEvent::BufferUpdatedFromFileEvent {
                                 file_id: *id,
                                 success: false,
@@ -1019,6 +1142,10 @@ impl GlobalBufferModel {
                 if let Some(state) = self.buffers.get_mut(id) {
                     state.set_base_content_version(*version);
                 }
+                // #2087: the disk holds the buffer's text again (the user's overwrite, if the
+                // banner was up).
+                self.external_reload_pending.remove(id);
+                self.disk_changed_under_edits.remove(id);
                 ctx.emit(GlobalBufferModelEvent::FileSaved { file_id: *id });
             }
             FileModelEvent::FailedToSave { id, error } => {
@@ -1043,6 +1170,8 @@ impl GlobalBufferModel {
         ctx: &mut ModelContext<Self>,
     ) -> Result<(), FileSaveError> {
         let content = self.text_to_save(file_id, content);
+        // #2087: the watcher will report this write back; it must not read as a conflict.
+        self.note_written_text(file_id, &content);
         FileModel::handle(ctx).update(ctx, |file_model, ctx| {
             file_model.save(file_id, content, version, ctx)
         })
@@ -1060,6 +1189,8 @@ impl GlobalBufferModel {
     ) -> Result<(), FileSaveError> {
         // #1956: the renamed file is the same lines; each keeps its own ending.
         let content = self.text_to_save(file_id, content);
+        // #2087: as in `save`, the watcher's report of this write is not another program's.
+        self.note_written_text(file_id, &content);
         FileModel::handle(ctx).update(ctx, |file_model, ctx| {
             file_model.rename_and_save(file_id, new_path, content, version, ctx)
         })

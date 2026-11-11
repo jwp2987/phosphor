@@ -35,7 +35,7 @@ use warpui::{
     WindowId, WindowInvalidation, keymap::Keystroke, platform::WindowStyle,
 };
 
-use crate::code::editor::find::view::CodeEditorFind;
+use crate::code::editor::find::view::{CodeEditorFind, FindAction};
 use crate::editor::{EditorAction, EditorView};
 
 // Await render/layout completion for a CodeEditorView in tests.
@@ -2580,5 +2580,60 @@ fn test_vim_system_register_visual_paste_waits_for_the_read() {
         // `a` becomes `Z`; the held `x` applies after it. `0` first so the result does not
         // depend on where the cursor is left after a visual paste.
         wait_for_buffer_text(&editor, "bc", &mut app).await;
+    });
+}
+
+/// #2088: the replace row opens and closes by key, and the keyboard focus follows it (the click
+/// on the arrow leaves the focus where it is). The two bindings parse and are the ones documented.
+#[test]
+fn test_keyboard_toggle_opens_the_replace_row_and_moves_focus() {
+    use crate::code::editor::find::view::{
+        REPLACE_ALL_BINDING_NAME, REPLACE_ALL_KEY, TOGGLE_REPLACE_BINDING_NAME, TOGGLE_REPLACE_KEY,
+    };
+
+    assert_eq!(TOGGLE_REPLACE_BINDING_NAME, "find:toggle_replace");
+    assert_eq!(REPLACE_ALL_BINDING_NAME, "find:replace_all");
+    let toggle = Keystroke::parse(TOGGLE_REPLACE_KEY).expect("the toggle key parses");
+    let replace_all = Keystroke::parse(REPLACE_ALL_KEY).expect("the replace-all key parses");
+    assert!(toggle.alt && !toggle.shift && toggle.key == "r");
+    assert!(replace_all.alt && !replace_all.shift && replace_all.key == "enter");
+    // Ctrl on Linux and Windows, Cmd on macOS: never both, never neither.
+    assert!(toggle.ctrl != toggle.cmd && replace_all.ctrl != replace_all.cmd);
+
+    App::test((), |mut app| async move {
+        initialize_code_editor_app(&mut app);
+        let editor = add_code_editor(FIND_BAR_TEST_TEXT, &mut app);
+        editor.update(&mut app, |view, ctx| {
+            view.handle_action(&CodeEditorViewAction::ShowFindBar, ctx);
+        });
+        let find_bar = find_bar(&editor, &app);
+        let find_editor = find_bar.read(&app, |find_bar, _| find_bar.find_editor_for_test());
+        let replace_editor = find_bar.read(&app, |find_bar, _| find_bar.replace_editor_for_test());
+        assert!(!find_bar.read(&app, |find_bar, _| find_bar.is_replace_open_for_test()));
+
+        // The click on the arrow: the row opens, the focus does not move to it.
+        find_bar.update(&mut app, |find_bar, ctx| {
+            find_bar.handle_action(&FindAction::ToggleReplaceOpen, ctx);
+        });
+        assert!(find_bar.read(&app, |find_bar, _| find_bar.is_replace_open_for_test()));
+        assert!(!replace_editor.read(&app, |_, ctx| replace_editor.is_focused(ctx)));
+        find_bar.update(&mut app, |find_bar, ctx| {
+            find_bar.handle_action(&FindAction::ToggleReplaceOpen, ctx);
+        });
+        assert!(!find_bar.read(&app, |find_bar, _| find_bar.is_replace_open_for_test()));
+
+        // The key: the row opens with the focus in the replace field.
+        find_bar.update(&mut app, |find_bar, ctx| {
+            find_bar.handle_action(&FindAction::ToggleReplaceFromKeyboard, ctx);
+        });
+        assert!(find_bar.read(&app, |find_bar, _| find_bar.is_replace_open_for_test()));
+        assert!(replace_editor.read(&app, |_, ctx| replace_editor.is_focused(ctx)));
+
+        // The key again: the row closes and the find field has the focus back.
+        find_bar.update(&mut app, |find_bar, ctx| {
+            find_bar.handle_action(&FindAction::ToggleReplaceFromKeyboard, ctx);
+        });
+        assert!(!find_bar.read(&app, |find_bar, _| find_bar.is_replace_open_for_test()));
+        assert!(is_find_input_focused(&find_editor, &app));
     });
 }

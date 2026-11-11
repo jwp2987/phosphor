@@ -2349,6 +2349,8 @@ keybinding-desc-project-buttons-create-new-project = Create new project
 # Find view binding desc
 keybinding-desc-find-next-occurrence = Find the next occurrence of your search query
 keybinding-desc-find-prev-occurrence = Find the previous occurrence of your search query
+keybinding-desc-find-toggle-replace = Show or hide the replace field of the find bar
+keybinding-desc-find-replace-all = Replace all matches of your search query
 
 # Notebook file / notebook binding desc
 keybinding-desc-notebook-focus-terminal-input-from-file = Focus Terminal Input from File

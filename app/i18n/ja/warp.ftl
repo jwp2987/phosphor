@@ -2066,6 +2066,8 @@ keybinding-desc-project-buttons-create-new-project = 新規プロジェクトを
 # Find view binding desc
 keybinding-desc-find-next-occurrence = 検索クエリの次の出現箇所を検索
 keybinding-desc-find-prev-occurrence = 検索クエリの前の出現箇所を検索
+keybinding-desc-find-toggle-replace = 検索バーの置換フィールドを表示または非表示
+keybinding-desc-find-replace-all = 検索クエリに一致するすべての箇所を置換
 
 # Notebook file / notebook binding desc
 keybinding-desc-notebook-focus-terminal-input-from-file = ファイルからターミナル入力にフォーカス
