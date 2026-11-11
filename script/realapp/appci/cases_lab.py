@@ -314,6 +314,78 @@ def agent_connect(ctx, r, arm):
     return False
 
 
+def plain_session_feature_limit(shell, log_text, feature):
+    """pure: plain_session_limit for a TERMINAL-mode case about a remote feature of the managed session (the code-review panel, the remote editor, the git
+    dialog). Same premise, read from the app log of this connect; None = judge the arm in full."""
+    if plain_session_limit(shell, log_text) is None:
+        return None
+    return ("KNOWN LIMITATION (owner decision, #2019): the host's login shell is %s, which gets a plain ssh session by decision (the app log of this connect "
+            "has '%s' and no managed-session line); %s needs a managed session. Not judged; see %s" % (shell, PLAIN_SESSION_HOOK, feature, PLAIN_SESSION_DECLINED))
+
+
+# ---- round 15 (#2063): keyboard drivers for the panels the lab cases had called unreachable. The command palette runs an action by its name; the names are
+# the English keybinding descriptions (app/i18n/en/warp.ftl: keybinding-desc-workspace-toggle-right-panel, -toggle-project-explorer), pinned by the self-test.
+PALETTE_CODE_REVIEW = "Toggle code review"
+PALETTE_PROJECT_EXPLORER = "Toggle project explorer"
+HOOK_RIGHT_PANEL = re.compile(r"hop=right_panel open=(true|false) repo_context=(true|false)")     # workspace/view/right_panel.rs right_panel_trace_line (trace only)
+
+
+def right_panel_states(text):
+    """[open: bool] of every right-panel state change the app logged in `text`, in order"""
+    return [m.group(1) == "true" for m in HOOK_RIGHT_PANEL.finditer(text)]
+
+
+def palette_run(ctx, text, tag=None):
+    """the command palette by keyboard: open it, type the action's name, Enter. With `tag`, a screenshot of the filtered palette first (the evidence of which
+    entry Enter ran)."""
+    import cases_ui as U
+    ctx.be.guard()
+    ctx.be.key(U.K(ctx, "palette"))
+    time.sleep(1.0)
+    ctx.be.type(text, 15)
+    time.sleep(0.9)
+    if tag:
+        ctx.shot(tag)
+    ctx.be.key("Return")
+    time.sleep(0.9)
+
+
+def open_code_review(ctx, off, tag):
+    """open the code-review (right) panel by keyboard and say what the app logged about it: 'open' (hop=right_panel open=true after this call), 'unknown' (no
+    hop=right_panel line: a build before the trace line, or the palette entry did not run). A panel that was already open is toggled CLOSED by the first
+    Enter (the app says open=false): it is then toggled once more."""
+    for attempt in (1, 2):
+        mark = ctx.log_size()
+        palette_run(ctx, PALETTE_CODE_REVIEW, "%s_palette_%d" % (tag, attempt))
+        st = ctx.until(lambda: right_panel_states(ctx.log_since(mark)), 4, step=0.1) or []
+        if not st:
+            return "unknown"
+        if st[-1]:
+            return "open"
+    return "unknown"
+
+
+def close_code_review(ctx, r, tag):
+    """close the panel this case opened (the next case must find the window as every other case leaves it); closing gives the focus back to the terminal
+    (Workspace::update_right_panel_open_state). A close the app does not confirm is a note on the row, with the screenshot."""
+    mark = ctx.log_size()
+    palette_run(ctx, PALETTE_CODE_REVIEW)
+    st = ctx.until(lambda: right_panel_states(ctx.log_since(mark)), 4, step=0.1) or []
+    if st and st[-1]:                   # it was closed already and this opened it: once more
+        palette_run(ctx, PALETTE_CODE_REVIEW)
+    elif not st:
+        ctx.shot("%s_close_unconfirmed" % tag)
+        r.note("the code-review panel was asked to close by the palette and the app logged no hop=right_panel line (shots/*%s_close_unconfirmed.png)" % tag)
+
+
+def hold_line(gate):
+    """a line for the remote shell that keeps the foreground busy (no prompt comes back) until the file `gate` exists; the harness creates it over its own ssh
+    connection, so the prompt can be made to return WITHOUT a key typed into the app (the terminal need not have the focus). `sh -c '...'` with no `!`, no
+    `$` and no backslash: bash, zsh, dash, ash, fish, nu and pwsh all hand the quoted text to sh unchanged."""
+    assert re.fullmatch(r"[\w./-]+", gate), gate
+    return "sh -c 'until [ -e %s ]; do sleep 0.2; done'" % gate
+
+
 def finish_remote(ctx, r, label=""):
     """every lab case ends with the pane provably LOCAL"""
     ok = CR.leave(ctx)

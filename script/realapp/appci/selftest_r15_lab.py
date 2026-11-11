@@ -197,3 +197,129 @@ def r15_lab_helper_from_the_artifact():
     assert "lab_helper.py artifact" in linux and "lab_helper.py path" in linux
     doc = _read("docs", "testing.md")
     assert "helper-artifacts/NEEDS.txt" in doc and "APPCI_LAB_HELPER_ARTIFACTS" in doc and "needs: lab-helper" in doc
+
+
+@check
+def r15_lab_panel_drivers_pure_parts():
+    """#2063: the three lab families that ended "no keyboard path / no pointer click" now have drivers. Their pure parts, each fed the wrong result it must
+    not accept, and the app text they rest on (palette entries, button words, the two app log lines), read from the sources."""
+    # the app's words
+    ftl = _read("app", "i18n", "en", "warp.ftl")
+    assert "\nkeybinding-desc-workspace-toggle-right-panel = %s\n" % CL.PALETTE_CODE_REVIEW in ftl
+    assert "\nkeybinding-desc-workspace-toggle-project-explorer = %s\n" % CL.PALETTE_PROJECT_EXPLORER in ftl
+    assert "\ncommon-commit = %s\n" % CLG.COMMIT_WORD in ftl and "\ncommon-confirm = %s\n" % CLG.CONFIRM_WORD in ftl
+    rp = _read("app", "src", "workspace", "view", "right_panel.rs")
+    assert 'format!("hop=right_panel open={open} repo_context={repo_context}")' in rp, "right_panel_trace_line changed: cases_lab.HOOK_RIGHT_PANEL reads it"
+    view = _read("app", "src", "workspace", "view.rs")
+    assert "right_panel::right_panel_trace_line(" in view and '"Opening remote file: host={host} path={path} target={target:?}"' in view
+    tree = _read("app", "src", "code", "file_tree", "view.rs")
+    assert "(selected_item.index + 1).min(root_dir.items.len().saturating_sub(1))" in tree, "the file tree's Down no longer stops at the last row: lab_remote_edit relies on it"
+    # the right panel's trace line
+    log = "x hop=right_panel open=true repo_context=false\ny hop=right_panel open=false repo_context=true\nhop=right_panel open=maybe repo_context=true\n"
+    assert CL.right_panel_states(log) == [True, False] and CL.right_panel_states("hop=diff_state event=snapshot") == []
+    # no snapshot: a FAIL only when the app said the panel is open
+    assert CLD.panel_no_snapshot_verdict("open")[0] == "fail" and "hop=right_panel open=true" in CLD.panel_no_snapshot_verdict("open")[1]
+    for opened in ("unknown", None):
+        v, msg = CLD.panel_no_snapshot_verdict(opened)
+        assert v == "noref" and "NEEDS:" in msg, (opened, v, msg)
+
+    # open_code_review: an already-open panel is toggled closed by the first Enter and opened by the second; no trace line is 'unknown'
+    class Be:
+        name = "wayland"
+
+        def __init__(self, answers):
+            self.answers, self.keys, self.typed = list(answers), [], []
+
+        def guard(self):
+            pass
+
+        def key(self, spec, **_kw):
+            self.keys.append(spec)
+
+        def type(self, text, *_a, **_kw):
+            self.typed.append(text)
+
+    def ctx_for(answers):
+        be = Be(answers)
+        state = {"log": "", "n": 0}
+
+        def log_size():
+            return len(state["log"])
+
+        def log_since(off):
+            return state["log"][off:]
+
+        def until(pred, timeout=1, step=0.1):
+            # the app "answers" one palette run per poll: the next scripted line is appended once per Return seen
+            while state["n"] < be.keys.count("Return") and be.answers:
+                state["log"] += be.answers.pop(0)
+                state["n"] += 1
+            return pred()
+        return types.SimpleNamespace(be=be, win=False, log_size=log_size, log_since=log_since, until=until, shot=lambda tag: None), be
+    real_sleep, CL.time.sleep = CL.time.sleep, lambda _s: None
+    try:
+        ctx, be = ctx_for(["hop=right_panel open=true repo_context=false\n"])
+        assert CL.open_code_review(ctx, 0, "t") == "open" and be.typed == [CL.PALETTE_CODE_REVIEW]
+        ctx, be = ctx_for(["hop=right_panel open=false repo_context=false\n", "hop=right_panel open=true repo_context=false\n"])
+        assert CL.open_code_review(ctx, 0, "t") == "open" and be.typed == [CL.PALETTE_CODE_REVIEW] * 2, be.typed
+        ctx, be = ctx_for([""])
+        assert CL.open_code_review(ctx, 0, "t") == "unknown" and len(be.typed) == 1
+        ctx, be = ctx_for(["hop=right_panel open=false repo_context=false\n", "hop=right_panel open=false repo_context=false\n"])
+        assert CL.open_code_review(ctx, 0, "t") == "unknown"
+    finally:
+        CL.time.sleep = real_sleep
+    # the held foreground: one sh word list every login shell passes on unchanged; a path with shell syntax in it is refused, not typed
+    assert CL.hold_line("/work/u_bash/go_ab12") == "sh -c 'until [ -e /work/u_bash/go_ab12 ]; do sleep 0.2; done'"
+    assert not any(ch in CL.hold_line("/work/u_nu/go_x") for ch in "!$\\\"`")
+    for bad in ("/work/a b", "/work/a;rm", "/work/$(x)", "/work/a'b"):
+        try:
+            CL.hold_line(bad)
+            raise RuntimeError("hold_line accepted %r" % bad)
+        except AssertionError:
+            pass
+    # a fish / nu login shell: the decided plain session, read from the log of the connect; every other shell is judged
+    plain = "x Received PlainSSHFallback hook\n"
+    for shell in ("fish", "nu"):
+        why = CL.plain_session_feature_limit(shell, plain, "the code-review panel of a remote repository")
+        assert why and "#2019" in why and "DECLINED.md" in why and "the code-review panel" in why, why
+        assert CL.plain_session_feature_limit(shell, plain + "Received ManagedSSHSessionStarting hook\n", "f") is None
+        assert CL.plain_session_feature_limit(shell, "", "f") is None
+    for shell in ("bash", "zsh", "dash", "ash", "pwsh"):
+        assert CL.plain_session_feature_limit(shell, plain, "f") is None, shell
+    # lab_remote_edit: the app's own line is the proof that the file opened; another file is not it
+    opened = "Opening remote file: host=h1 path=/work/u_bash/edit_ab/zz_ab.txt target=CodeEditor(SplitPane)\n"
+    assert CLB.opened_remote(opened, "zz_ab.txt") and not CLB.opened_remote(opened, "ab.txt") and not CLB.opened_remote(opened, "zz_cd.txt")
+    assert not CLB.opened_remote("Opening file: /tmp/zz_ab.txt\n", "zz_ab.txt")
+    # ... and the conflict: the host's change must survive the save
+    assert CLB.conflict_verdict("E1_staged x\noutside_x", "outside_x", "E2_") is None, "the save was refused: fine"
+    assert CLB.conflict_verdict("E2_E1_staged x\noutside_x", "outside_x", "E2_") is None, "the editor took the change in first: fine"
+    assert "REPLACED" in CLB.conflict_verdict("E2_E1_staged x", "outside_x", "E2_")
+    assert "neither" in CLB.conflict_verdict("", "outside_x", "E2_")
+    assert CLB.expected_backend({"helper": "nohelper"}) == "shell" and CLB.expected_backend({"helper": "upload"}) == "helper"
+    assert CLB.routes("hop=backend_route family=buffers backend=shell reason=caps\nhop=backend_route family=git_write backend=helper reason=caps\n") == [("shell", "caps")]
+    # lab_git_write_remote, the app layer: every way it can end
+    V = CLG.app_commit_verdict
+    assert V("driven", "", ["shell"], "shell", True)[0] == "pass"
+    assert V("driven", "", ["helper"], "shell", True)[0] == "fail" and "helper backend" in V("driven", "", ["helper"], "shell", True)[1]
+    assert V("nopointer", "mac", ["helper", "shell"], "helper", False)[0] == "fail", "a call on the wrong backend fails however the driver fared"
+    assert V("driven", "", ["shell"], "shell", False)[0] == "fail", "the app tried and the commit is not on the host"
+    assert V("driven", "", [], "shell", True)[0] == "fail", "committed with no route line: the route is not logged"
+    for how, detail, word in (("nopointer", "mac", "NEEDS: pointer synthesis"), ("nopanel", "", "NEEDS: an app build"), ("nobutton", "Confirm", "'Confirm'"), ("driven", "", "not judged")):
+        v, msg = V(how, detail, [], "shell", False)
+        assert v == "noref" and word in msg, (how, v, msg)
+    assert [m.group(1) for m in CLG.HOOK_REMOTE_OP.finditer("hop=backend_route family=git_write backend=shell reason=caps\nhop=backend_route family=git_read backend=helper x\n")] == ["shell"]
+    # drive_commit without a pointer backend decides nothing and clicks nothing
+    for name, win in (("mac", False), ("windows", True)):
+        be = Be([])
+        be.name = name
+        assert CLG.drive_commit(types.SimpleNamespace(be=be, win=win), None, {"lat_ms": 0}, "m", 0)[0] == "nopointer" and not be.keys and not be.typed
+    # the three cases are still registered on both arms, terminal mode, and the stale claims are gone from the sources
+    reg = {c["name"]: c for c in cases.CASES}
+    for n in ("lab_diff_panel_remote.bash.lan.nohelper", "lab_diff_panel_remote.bash.lan.upload", "lab_remote_edit.zsh.lan.nohelper", "lab_git_write_remote.bash.lan.nohelper"):
+        assert n in reg and reg[n]["modes"] == ("terminal",), n
+    for f in ("cases_lab_diff.py", "cases_lab_buffers.py", "cases_lab_git.py"):
+        src = open(os.path.join(HERE, f), encoding="utf-8").read()
+        assert "no keyboard path" not in src and "no pointer click on the file tree" not in src, f
+    doc = _read("docs", "testing.md")
+    for word in ("hop=right_panel", CL.PALETTE_CODE_REVIEW, CL.PALETTE_PROJECT_EXPLORER, "lab_remote_edit", "panel_no_snapshot_verdict", "app_commit_verdict"):
+        assert word in doc, word

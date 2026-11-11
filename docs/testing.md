@@ -5834,3 +5834,21 @@ Harness finding, not changed here (#2082): `app.py` sets `PHOSPHOR_APPCI_FIND_FI
   question, `r12-policy.md` 3 item 3). Self-test `r15_every_lab_family_is_in_a_tier`: a lab family is in `PROVING_LAB` or in that dict, never both, so a
   new family cannot be registered and never played.
 - **`codebase_index_remote`** still SKIPs unless the job sets `APPCI_FAKE_EMBEDDINGS=1` (no tier does; reported, not changed).
+
+### Three drivers that did not exist
+
+The three cases ended UNVERIFIABLE with "no keyboard path" / "no pointer click on the file tree". The first of those was not true.
+
+| case | driver | oracle | UNVERIFIABLE when |
+|---|---|---|---|
+| `lab_diff_panel_remote` | the command palette's `Toggle code review` (`cases_lab.open_code_review`). The app answers `hop=right_panel open=<bool> repo_context=<bool>` (trace only, `workspace/view/right_panel.rs`, format pinned by a unit test). Nothing is typed into the app after the panel opens: the prompt the shell backend refreshes on is made to return from outside (`cases_lab.hold_line`: the foreground waits for a file the harness creates over its own ssh connection) | as before: the snapshot's source and files; an edit from outside is pushed by the helper, and without the helper appears only after the next prompt. New: panel open and no `hop=diff_state` snapshot is a FAIL (`panel_no_snapshot_verdict`) | the app logged no `hop=right_panel` line (a build without it); a fish / nu login shell (#2019) |
+| `lab_remote_edit` | a repository with one file; the palette's `Toggle project explorer` (it takes the focus), Down x4 (the selection stops at the last row), Enter | the app's `Opening remote file: ... path=<the file>` line, then: a typed edit saved with Ctrl/Cmd-S is in the host's file, byte for byte; every `hop=backend_route family=buffers` line names the arm's backend; after a change made on the host from a second connection and a second save, the host's change is still in the file (`conflict_verdict`: a save that replaces it fails) | the app did not log that it opened the file (nothing is typed then); a fish / nu login shell |
+| `lab_git_write_remote`, app layer | the panel by the palette, then the pointer: the `Commit` button, the message, the dialog's `Confirm` (the dialog binds Escape only). Linux backends | `app_commit_verdict`: the host's last commit carries the typed message AND the app logged `hop=backend_route family=git_write backend=<shell|helper>` for the arm. A call on the wrong backend, a call with no commit, or a commit with no route line is a FAIL | no pointer (macOS, Windows: `NEEDS: pointer synthesis`); the panel not confirmed open; a button the OCR did not find; clicks made and no git call (whether the dialog opened is not known) |
+
+Each driver leaves the window as it found it (the panel toggled closed, the editor pane closed after undoing unsaved typing, the file tree closed); a
+close the app does not confirm is a note on the row with a screenshot. Self-test `r15_lab_panel_drivers_pure_parts`: every verdict function is fed the
+results it must reject, `open_code_review` is run against a scripted app (an already-open panel is toggled twice; no trace line is `unknown`), and the
+palette entries, the button words, the two app lines and the file tree's clamp are read from the app's sources.
+
+Not built: the app-driven push / pull / stage / discard (the host layer and `contract_tests.rs` hold them); the helper families' own gaps
+(`lab_helper_policy`, `lab_helper_scp_fallback`, the write half of `lab_helper_killed` end UNVERIFIABLE by their own text).

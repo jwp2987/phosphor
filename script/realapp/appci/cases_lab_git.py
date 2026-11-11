@@ -7,13 +7,17 @@
 #     (fish and nu parse the outer line), and does the right thing on the real host: commit chain + push to the bare origin, a fast-forward pull, `git apply
 #     --cached --recount -` staging ONE hunk of two, a discard, the in-progress guard, and a remote that needs credentials fails fast with git's own words while a
 #     GIT_ASKPASS that would leave a marker is never run.
-#  2. APP layer [hook]: the same operations driven in the app (code review > commit / push / pull / stage / discard) must log
-#     `hop=backend_route family=git_write backend=<shell|helper>` (crates/remote_server/src/backend/router.rs, route_log_line) with backend=shell on `nohelper` and
-#     backend=helper on `upload`. The code-review git dialog has no keyboard path the harness can use yet, so that layer is UNVERIFIABLE, never a pass; the log
-#     lines it will read are pinned by the self-test.
+#  2. APP layer (round 15, #2063): ONE of those operations, a commit, is made in the app the way a user makes it: the code-review panel is opened by keyboard
+#     (the command palette's "Toggle code review"; the app answers hop=right_panel open=true), the panel's `Commit` button and the dialog's `Confirm` button
+#     are clicked (the dialog has no key binding of its own: git_dialog/mod.rs binds Escape only), the message is typed between the two. Oracle: the host's
+#     last commit carries that message AND the app logged `hop=backend_route family=git_write backend=<shell|helper>` (crates/remote_server/src/backend/
+#     router.rs) with backend=shell on `nohelper` and backend=helper on `upload` (app_commit_verdict). Buttons are found by OCR and pressed with the Linux
+#     pointer, so on macOS and Windows this layer is UNVERIFIABLE with `NEEDS: pointer synthesis`, and a button the OCR did not find is UNVERIFIABLE too; it
+#     is never a pass and never a guess. push / pull / stage / discard through the app stay with the host layer and contract_tests.rs.
 import base64, os, re, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cases  # noqa: E402
 import cases_lab as CL  # noqa: E402
 from cases_lab import lab_case, connect_or_fail, finish_remote, unique, work, rtt_s  # noqa: E402
 
@@ -111,17 +115,99 @@ def c_git_write_remote(ctx, r, arm):
     r.check(time.time() - t0 < 30, "the failing push took %.1f s: something waited for a login" % (time.time() - t0))
     r.check(run(lab, arm, "test -e %s && echo ran || echo clean" % marker)[1].strip() == "clean", "the askpass helper ran: credentials prompted")
 
-    # ---- 7. [hook] the app layer (see the header)
+    # ---- 7. the app layer (see the header): one commit made in the app's code-review panel
+    off = ctx.log_size()
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     time.sleep(1.0 + 2 * rt)
-    ctx.be.type("cd %s" % repo, CL.type_pace(ctx), enter=True)
-    time.sleep(0.5 + rt)
-    seen = [("", m.group(1), "") for m in HOOK_REMOTE_OP.finditer(ctx.log_since(0))]
+    why = CL.plain_session_feature_limit(arm["shell"], ctx.log_since(off), "the code-review git dialog of a remote repository")
+    if why:
+        r.metric("plain_session_by_decision", arm["shell"])
+        r.unverifiable(why)
+        finish_remote(ctx, r)
+        return
     want = "helper" if arm["helper"] == "upload" else "shell"
-    if not seen:
-        r.unverifiable("no keyboard path to the code-review git dialog: the app-driven commit/push/pull/stage/discard were not run (the host layer above did)")
+    msg = "lab%s" % unique(ctx, 7)
+    g("echo drv > drv_%s.txt" % msg)                                   # something to commit
+    ctx.be.type("cd %s" % repo, CL.type_pace(ctx), enter=True)
+    time.sleep(1.5 + 2 * rt)
+    how, detail = drive_commit(ctx, r, arm, msg, off)
+    subject = lambda: g("git log -1 --format=%s")[1].strip()
+    if how == "driven":
+        ctx.until(lambda: subject() == msg, 20 + 6 * rt, step=0.5)
+    seen = [m.group(1) for m in HOOK_REMOTE_OP.finditer(ctx.log_since(off))]
+    verdict, text = app_commit_verdict(how, detail, seen, want, subject() == msg)
+    if verdict == "fail":
+        r.check(False, text)
+    elif verdict == "noref":
+        r.unverifiable(text)
     else:
-        r.check(all(b == want for _, b, _ in seen), "operations ran on %r, expected every one on the %s backend" % (seen, want))
+        r.note(text)
+    if how in ("driven", "nobutton"):
+        ctx.be.guard()
+        ctx.be.key("Escape")                                            # a dialog still open is cancelled (git_dialog: escape = Cancel)
+        time.sleep(0.4)
+    if how in ("driven", "nobutton"):
+        CL.close_code_review(ctx, r, "lab_git_write")
+    ctx.reset()
     finish_remote(ctx, r)
+
+
+COMMIT_WORD, CONFIRM_WORD = "Commit", "Confirm"       # app/i18n/en/warp.ftl common-commit / common-confirm: the panel's button and the dialog's (self-test pins both)
+
+
+def drive_commit(ctx, r, arm, msg, off):
+    """the commit a user makes in the code-review panel: open the panel (keyboard), click `Commit`, type the message, click `Confirm`.
+    -> (how, detail): 'nopointer' (this backend has no pointer: the buttons cannot be pressed), 'nopanel' (the app did not say the panel opened),
+    'nobutton' (a button was not found on screen), 'driven' (both clicks were made). Only 'driven' goes on to the oracle; nothing here is a verdict."""
+    import cases_ui as U
+    if ctx.win or ctx.be.name not in ("x11", "wayland"):
+        return "nopointer", ctx.be.name
+    try:
+        m = U.mouse_or_skip(ctx, r)
+    except cases.Skip as e:
+        return "nopointer", str(e)
+    if CL.open_code_review(ctx, off, "lab_git_write") != "open":
+        return "nopanel", ""
+    time.sleep(2.0 + 4 * CL.rtt_s(arm))
+    for word, tag, after in ((COMMIT_WORD, "lab_git_write_panel", lambda: ctx.be.type(msg, 15)), (CONFIRM_WORD, "lab_git_write_dialog", None)):
+        ws, _p = U.words(ctx, tag)
+        hits = [w for w in ws if w[0].strip() == word]
+        if not hits:
+            return "nobutton", word
+        w = hits[-1] if word == CONFIRM_WORD else hits[0]
+        m.click(w[1], w[2])
+        time.sleep(1.2)
+        if after:
+            after()
+            time.sleep(0.6)
+    return "driven", ""
+
+
+def app_commit_verdict(how, detail, routed, want, committed):
+    """pure: the app layer's verdict. ('pass' | 'fail' | 'noref', text). `routed`: the backends of the app's git_write calls; `committed`: the host's last
+    commit carries the message that was typed.
+      * a git_write call on the wrong backend is a FAIL however the driver fared;
+      * a commit on the host through the right backend is the pass;
+      * the app routed a git_write call and the host has no such commit: the app tried and it did not land, FAIL;
+      * nothing routed and nothing committed: the driver did not reach the dialog (or could not: no pointer). UNVERIFIABLE with what is missing."""
+    wrong = sorted({b for b in routed if b != want})
+    if wrong:
+        return "fail", "the app's git write ran on the %s backend, expected every one on %s (%d call(s))" % (", ".join(wrong), want, len(routed))
+    if committed and routed:
+        return "pass", "the commit made in the code-review panel is on the host, through the %s backend (%d git_write call(s))" % (want, len(routed))
+    if committed:
+        return "fail", "[hook] the commit typed in the app is on the host and the app logged no `hop=backend_route family=git_write` line: the route is not logged"
+    if routed:
+        return "fail", "the app sent %d git_write call(s) to the %s backend and the host's last commit is not the one typed in the dialog" % (len(routed), want)
+    if how == "nopointer":
+        return "noref", ("the code-review git dialog is reached by its buttons only (no key binding opens it) and this backend has no pointer (%s): the app-driven "
+                         "commit was not run; the host layer above did. NEEDS: pointer synthesis in this backend (docs/design/r14-test-gaps.md H1 Windows, H2 macOS)" % detail)
+    if how == "nopanel":
+        return "noref", ("the app did not log hop=right_panel open=true after the palette's '%s': the panel's Commit button was not looked for. NEEDS: an app build "
+                         "with the round 15 trace line (workspace/view/right_panel.rs)" % CL.PALETTE_CODE_REVIEW)
+    if how == "nobutton":
+        return "noref", "the word %r was not found on screen (OCR; shots/*lab_git_write_*.png): the pointer could not be placed, the app-driven commit was not run" % detail
+    return "noref", ("the pointer clicked `%s` and `%s` and the app made no git_write call: whether the dialog opened is not known (shots/*lab_git_write_*.png); "
+                     "not judged" % (COMMIT_WORD, CONFIRM_WORD))
