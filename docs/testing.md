@@ -7624,6 +7624,10 @@ proves #2126; `lab_nohelper_sh_login_profile` does.
 | unit | `available_shells_test.rs`: `legacy_startup_shell_name_is_resolved_while_the_scan_is_unfinished`, `legacy_startup_shell_name_uses_the_finished_scan_as_before` | no finished scan: one direct lookup of the name, the named shell; a finished scan decides as before and nothing is resolved directly; `Default` and a custom path are untouched |
 | unit | `integration_testing::subshell::util::tests`: `motd_marker_is_the_start_of_the_first_plain_line`, `a_typed_ssh_runs_the_legacy_wrapper_in_this_fork` | what the MotD assertion looks for; the fact the ssh scenarios are gated on |
 | integration | `test_ssh_with_shell_override` (new second step `test -n "$ZSH_VERSION"`; needs zsh), `assert_motd_shown` (this machine's MotD), the four scenarios of #2128 | see section 2.2 |
+## Round 20: the remote-helper question and install (design `docs/design/r20-helperq.md`; #2134, #2135; nothing compiled or run when written)
+- **Scenario removed.** `test_open_launch_config_from_add_tab_menu_legacy` (gated on `FeatureFlag::ShellSelector` off, which no build of
+  this fork has; its own TODO, CORE-2300) is deleted from `launch_configs.rs`, the `integration_tests!` list and `register_tests()`: one
+  `INTEG-SKIP` line fewer per run. Owner decision 2026-11-11.
 ## Round 19: three owner decisions of 2026-11-11 in the harness (design `docs/design/r19-decide-tests.md`; #2114, #2120, #2126; harness only; no app run when written)
 Self-tests: `appci/selftest_r19_decide.py` (seven checks; each rule is fed the input it exists for and the inputs on which it must still FAIL).
 `run.py --self-test` and `script/ci/ci_seq.py --self-test` pass. No case was added, none moved between lists.
