@@ -7566,8 +7566,8 @@ reason. On a machine without the evidence directory the line is printed but next
 ### The three scenarios of #2122 (all TEST faults; no assertion changed)
 - `test_ssh_with_shell_override`: the app asked whether to install the remote helper (`always_ask`, the default) and held the bootstrap for
   an answer no scenario gives. All ssh scenarios now set `never_install` (`ssh.rs` `without_helper_question`). Fails as before if the remote
-  bash does not bootstrap, the session is not remote, or the login-shell check fails. Seen, not changed: the trace shows `/bin/bash` started
-  although the scenario sets the startup shell to zsh; if the runner has no zsh the override is never exercised.
+  bash does not bootstrap, the session is not remote, or the login-shell check fails. The trace showed `/bin/bash` started
+  although the scenario sets the startup shell to zsh: an APP defect, #2133 (r19-integfix below).
 - `test_command_xray_hover`: runs with `terminal.input.completions_open_while_typing` set to false. The hover x-ray is not shown while a
   suggestions menu is visible and this fork opens the as-you-type menu by default (the pin does not). Verdict by reading, probable: the next
   run's `hop=suggestions_mode` / `hop=xray_hover` lines confirm or refute it. The product question is #2129.
@@ -7583,6 +7583,9 @@ rows), `ci_seq.py --self-test` (3 new rows on the job blocks).
 - **#2127, APP.** The 7 s bootstrap give-up no longer runs while the app's own "install the remote helper?" question waits: showing the
   question supersedes the armed give-up, the question leaving the screen (answered, withdrawn with its session, cleared) arms it afresh.
   No timer was added. Kill switch `PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION=0` (read once per pane).
+- **#2133, APP.** A legacy `session.startup_shell_override` that names a shell is resolved directly while the shell scan is unfinished, so
+  the first tab starts it. Log: `startup shell: the legacy override names "zsh" and the shell scan has not finished; resolved directly: found`.
 
 | layer | tests | what they pin |
 | view | `view_test.rs`: `bootstrap_give_up_does_not_judge_a_session_waiting_for_the_helper_answer`, `bootstrap_give_up_runs_through_the_helper_question_with_the_kill_switch`, `helper_question_pause_rule` | an ssh session with a held line, the give-up armed as the `SSH` hook arms it, the question shown: the give-up armed before the question expires and judges nothing (session not marked failed, no pty write); "continue without" arms a new give-up, which still judges a bootstrap that never comes. The first fails on the code before this change; the second is its control (switch off: the old judgement) |
+| unit | `available_shells_test.rs`: `legacy_startup_shell_name_is_resolved_while_the_scan_is_unfinished`, `legacy_startup_shell_name_uses_the_finished_scan_as_before` | no finished scan: one direct lookup of the name, the named shell; a finished scan decides as before and nothing is resolved directly; `Default` and a custom path are untouched |

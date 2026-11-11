@@ -451,3 +451,64 @@ fn saved_shell_the_finished_scan_does_not_list_is_still_used() {
         }
     });
 }
+
+/// #2133: a legacy `startup_shell_override` that names a shell must start that shell in the
+/// first tab too. Before the background scan has finished there is no list to find the name in
+/// (the lookup ran against the empty stand-in and answered the system default); the name is
+/// then resolved directly.
+#[test]
+fn legacy_startup_shell_name_is_resolved_while_the_scan_is_unfinished() {
+    let asked = std::cell::RefCell::new(Vec::new());
+    let got =
+        AvailableShells::legacy_startup_shell_preference(StartupShell::Zsh, None, |command| {
+            asked.borrow_mut().push(command.to_owned());
+            Some(PathBuf::from("/opt/shells/zsh"))
+        });
+    assert_eq!(
+        got,
+        NewSessionShell::Executable("/opt/shells/zsh".to_owned()),
+        "the named shell, not the system default, while the scan is unfinished"
+    );
+    assert_eq!(
+        *asked.borrow(),
+        vec!["zsh".to_owned()],
+        "one lookup, of that name"
+    );
+
+    // The shell is not installed: the system default, as before.
+    assert_eq!(
+        AvailableShells::legacy_startup_shell_preference(StartupShell::Fish, None, |_| None),
+        NewSessionShell::SystemDefault
+    );
+}
+
+/// #2133: a finished scan decides exactly as it did (the direct lookup is not consulted), and
+/// the values that never went through the scan are untouched.
+#[test]
+fn legacy_startup_shell_name_uses_the_finished_scan_as_before() {
+    fn unused(_: &str) -> Option<PathBuf> {
+        panic!("a finished scan answers; nothing is resolved directly")
+    }
+    let scan = bash_scan();
+    assert_eq!(
+        AvailableShells::legacy_startup_shell_preference(StartupShell::Bash, Some(&scan), unused),
+        NewSessionShell::Executable("/bin/bash".to_owned())
+    );
+    assert_eq!(
+        AvailableShells::legacy_startup_shell_preference(StartupShell::Zsh, Some(&scan), unused),
+        NewSessionShell::SystemDefault,
+        "a finished scan that does not list the shell: the system default, as before"
+    );
+    assert_eq!(
+        AvailableShells::legacy_startup_shell_preference(StartupShell::Default, None, unused),
+        NewSessionShell::SystemDefault
+    );
+    assert_eq!(
+        AvailableShells::legacy_startup_shell_preference(
+            StartupShell::Custom("/usr/local/bin/xonsh".to_owned()),
+            None,
+            unused
+        ),
+        NewSessionShell::Custom("/usr/local/bin/xonsh".to_owned())
+    );
+}
