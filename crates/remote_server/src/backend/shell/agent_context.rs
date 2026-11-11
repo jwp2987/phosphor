@@ -62,7 +62,19 @@ impl ShellBackend {
         let read = |name: &str| {
             frame
                 .section(name)
-                .filter(|s| s.success())
+                .filter(|s| {
+                    if !s.success() {
+                        // Losing a whole section silently hid the host's skills (#2152). Stderr
+                        // is discarded to keep the records unframed-noise free, so the exit
+                        // status and any stdout are what there is to report.
+                        log::warn!(
+                            "agent context: the `{name}` section exited {} on the host and was dropped (output: {:?})",
+                            s.exit,
+                            s.text().chars().take(200).collect::<String>()
+                        );
+                    }
+                    s.success()
+                })
                 .map(spec::parse_records)
                 .unwrap_or_default()
         };

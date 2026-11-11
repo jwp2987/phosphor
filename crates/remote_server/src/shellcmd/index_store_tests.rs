@@ -67,6 +67,8 @@ fn append_cuts_a_torn_tail_and_refuses_a_shorter_file() {
 #[test]
 fn stale_vector_files_are_dropped_except_the_kept_one() {
     let cmd = drop_other_vectors_command(false, "/d", "vectors-keep.bin");
-    assert!(cmd.contains("vectors-*.bin"), "{cmd}");
+    // No glob (zsh aborts on an unmatched one, #2152): the names are filtered from `ls`.
+    assert!(cmd.contains("grep '^vectors-.*\\.bin$'"), "{cmd}");
+    assert!(!cmd.contains("in vectors-*.bin"), "{cmd}");
     assert!(cmd.contains("!= 'vectors-keep.bin'"), "{cmd}");
 }

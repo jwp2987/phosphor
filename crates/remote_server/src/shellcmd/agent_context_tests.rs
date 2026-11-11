@@ -220,3 +220,126 @@ fn only_commands_naming_a_skill_or_rule_location_may_change_the_context() {
         assert!(!command_may_change_agent_context(no), "{no}");
     }
 }
+
+/// Runs `script` under `shell -c` with `HOME` set; `None` when that shell is not installed.
+fn run_under(shell: &str, home: &std::path::Path, script: &str) -> Option<(i32, Vec<u8>)> {
+    let out = match std::process::Command::new(shell)
+        .arg("-c")
+        .arg(script)
+        .env("HOME", home)
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => panic!("{shell}: {e}"),
+    };
+    Some((out.status.code().unwrap_or(-1), out.stdout))
+}
+
+/// #2152: zsh ends a script on an unmatched glob, and the shell backend drops a section that
+/// exits non-zero, so a host with any missing skill root lost every skill. The script must give
+/// the same answer in every POSIX-ish shell, with roots missing, empty or holding odd entries.
+#[test]
+fn skills_script_survives_missing_roots_in_every_shell() {
+    let home = tempfile::tempdir().unwrap();
+    let h = home.path();
+    let write = |rel: &str, body: &str| {
+        let p = h.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    // `.agents/skills`, `.warp/skills`... mostly absent; one present root is empty, one holds a
+    // directory with no SKILL.md and a stray file.
+    write(".claude/skills/alpha/SKILL.md", "alpha body");
+    write(".codex/skills/beta gamma/SKILL.md", "beta body");
+    std::fs::create_dir_all(h.join(".cursor/skills")).unwrap();
+    write(".gemini/skills/nothing/README.md", "x");
+    write(".gemini/skills/stray.txt", "x");
+    write(".opencode/skills/.hidden/SKILL.md", "hidden body");
+    let script = skills_command(ShellKind::Posix).unwrap();
+    let mut ran = 0;
+    for shell in ["sh", "bash", "zsh", "dash", "ksh"] {
+        let Some((code, stdout)) = run_under(shell, h, &script) else {
+            continue;
+        };
+        ran += 1;
+        assert_eq!(code, 0, "{shell} exited {code}");
+        let files = parse_records(&ParsedSection {
+            name: "skills".into(),
+            output: stdout,
+            exit: code,
+        });
+        let mut got: Vec<(String, Vec<u8>)> =
+            files.into_iter().map(|f| (f.path, f.bytes)).collect();
+        got.sort();
+        let root = h.display();
+        let want = vec![
+            (
+                format!("{root}/.claude/skills/alpha/SKILL.md"),
+                b"alpha body".to_vec(),
+            ),
+            (
+                format!("{root}/.codex/skills/beta gamma/SKILL.md"),
+                b"beta body".to_vec(),
+            ),
+            (
+                format!("{root}/.opencode/skills/.hidden/SKILL.md"),
+                b"hidden body".to_vec(),
+            ),
+        ];
+        let mut want = want;
+        want.sort();
+        assert_eq!(got, want, "{shell}");
+    }
+    assert!(ran > 0, "no shell binary was available to run the script");
+}
+
+#[test]
+fn skills_script_with_no_roots_at_all_is_empty_and_succeeds_in_every_shell() {
+    let home = tempfile::tempdir().unwrap();
+    let script = skills_command(ShellKind::Posix).unwrap();
+    for shell in ["sh", "bash", "zsh", "dash", "ksh"] {
+        let Some((code, stdout)) = run_under(shell, home.path(), &script) else {
+            continue;
+        };
+        assert_eq!(code, 0, "{shell}");
+        assert!(stdout.is_empty(), "{shell}: {stdout:?}");
+    }
+}
+
+/// The vector-file scripts had the same unmatched-glob hazard (#2152): an empty directory must
+/// not abort them under zsh.
+#[test]
+fn vector_file_scripts_survive_an_empty_directory_in_every_shell() {
+    use crate::shellcmd::index_store::{drop_other_vectors_command, list_vectors_command};
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let drop_cmd = drop_other_vectors_command(false, d, "vectors-keep.bin");
+    let list_cmd = list_vectors_command(false, d);
+    for shell in ["sh", "bash", "zsh", "dash", "ksh"] {
+        for (name, cmd) in [("drop", &drop_cmd), ("list", &list_cmd)] {
+            let Some((code, stdout)) = run_under(shell, dir.path(), cmd) else {
+                continue;
+            };
+            assert_eq!(code, 0, "{shell} {name}");
+            assert!(stdout.is_empty(), "{shell} {name}: {stdout:?}");
+        }
+    }
+    std::fs::write(dir.path().join("vectors-keep.bin"), "kept").unwrap();
+    std::fs::write(dir.path().join("vectors-old.bin"), "old").unwrap();
+    for shell in ["sh", "bash", "zsh"] {
+        let Some((code, stdout)) = run_under(shell, dir.path(), &list_cmd) else {
+            continue;
+        };
+        assert_eq!(code, 0, "{shell}");
+        let text = String::from_utf8_lossy(&stdout);
+        assert!(
+            text.contains("vectors-keep.bin 4 ") && text.contains("vectors-old.bin 3 "),
+            "{shell}: {text}"
+        );
+    }
+    if run_under("sh", dir.path(), &drop_cmd).is_some() {
+        assert!(dir.path().join("vectors-keep.bin").exists());
+        assert!(!dir.path().join("vectors-old.bin").exists());
+    }
+}
