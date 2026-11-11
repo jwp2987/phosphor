@@ -13,6 +13,7 @@
 //! | `PHOSPHOR_BARE_ENTER_HOLDS_LINES` | #1999: lines typed behind a bare deferred Enter held for an unready shell are written to the pty at once, and the bare Enter later |
 //! | `PHOSPHOR_KEEP_DEFERRED_ENTER_KEYS_WITH_LINE` | #2000: a deferred Enter kept unrun on an event path releases the keys typed behind it (complete lines go to the pty while its own line stays in the input) |
 //! | `PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF` | #1991: a subshell setup line written to a line editor is judged by the echo filter again (the R9 flush on "nothing echoed", R7 blind, the filter armed) |
+//! | `PHOSPHOR_SSH_UNBOOTSTRAPPED_PLAIN` | #2120 (`docs/design/r19-shssh.md`): the `SSH` hook of a remote login shell the remote command does not bootstrap (sh, dash, ash, ksh, ...) announces a managed session again: the keys typed in that session are held for a first prompt that never comes |
 
 use std::sync::OnceLock;
 
@@ -30,6 +31,8 @@ pub const KEEP_DEFERRED_ENTER_KEYS_WITH_LINE_ENV: &str =
     "PHOSPHOR_KEEP_DEFERRED_ENTER_KEYS_WITH_LINE";
 /// #1991.
 pub const SUBSHELL_LINE_EDITOR_PROOF_ENV: &str = "PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF";
+/// #2120.
+pub const SSH_UNBOOTSTRAPPED_PLAIN_ENV: &str = "PHOSPHOR_SSH_UNBOOTSTRAPPED_PLAIN";
 
 /// Whether a kill switch with this value leaves its fix on: everything but `0`, `off`, `false`
 /// and `no` (any case, surrounding blanks ignored) does, an unset variable included.
@@ -88,6 +91,13 @@ pub fn keep_deferred_enter_keys_with_line() -> bool {
 pub fn subshell_line_editor_proof() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     read_switch(SUBSHELL_LINE_EDITOR_PROOF_ENV, &ON)
+}
+
+/// #2120: the `SSH` hook of a login shell the remote command does not bootstrap is the plain
+/// verdict of the connect window, and announces no session.
+pub fn ssh_unbootstrapped_plain() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    read_switch(SSH_UNBOOTSTRAPPED_PLAIN_ENV, &ON)
 }
 
 #[cfg(test)]

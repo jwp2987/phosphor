@@ -4240,6 +4240,22 @@ impl ansi::Handler for TerminalModel {
                 log::warn!("Rejected SSH hook with zero remote_session_id");
                 return;
             }
+            // #2120: the remote command prints this hook for every login shell and bootstraps
+            // only bash and zsh. For any other shell (sh, dash, ash, ksh, ...) it runs
+            // `exec "$SHELL"` next: no InitShell will take a pending session, so none is kept
+            // (it would hold the keys of the whole session for a first prompt that never comes,
+            // turn Ctrl-C into ssh's `~.` and be taken by the next unrelated InitShell of the
+            // pane), and the session id nobody will use is not registered. The event still goes
+            // out: it is where the view ends the wrapper's hold (`ssh_on_remote_plain_login`).
+            if !crate::terminal::input_queue::ssh_hook_announces_session(&remote_shell) {
+                log::info!(
+                    "SSH hook for a login shell the remote command does not bootstrap \
+                     ({remote_shell}): a plain login, no remote session is pending"
+                );
+                self.event_proxy
+                    .send_terminal_event(Event::SSH(remote_shell));
+                return;
+            }
             // The SSH hook is emitted by the *local* (already registered) shell and carries the
             // ID that same wrapper minted from /dev/urandom and baked into the remote shell's
             // `WARP_SESSION_ID`. Registering it here means the remote session's hooks are

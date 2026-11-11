@@ -4194,3 +4194,79 @@ fn exit_shell_removes_the_sessions_typeahead_mode() {
     assert!(!terminal.typeahead_mode_by_session.contains_key(&session));
     assert!(terminal.typeahead_mode_by_session.contains_key(&other));
 }
+
+/// #2120: the remote command prints the `SSH` hook for every login shell and bootstraps only bash
+/// and zsh. The hook of any other login shell (sh, dash, ash, ksh: the remote command runs
+/// `exec "$SHELL"` next) announces no session: nothing is pending (a pending hook held every key
+/// of that session for a first prompt that never comes and made Ctrl-C ssh's `~.`), its session
+/// id is not registered, and the event still tells the view which shell it is. The hook of bash
+/// and zsh is unchanged.
+#[test]
+fn an_ssh_hook_for_a_shell_the_remote_command_does_not_bootstrap_announces_no_session() {
+    for shell in ["sh", "dash", "ash", "ksh", "mksh"] {
+        let (mut model, event_rx) = model_with_title_events();
+        let remote = SessionId::from(167303092612202u64);
+        Handler::ssh(
+            &mut model,
+            SSHValue {
+                remote_shell: shell.to_owned(),
+                remote_session_id: Some(167303092612202),
+                ..Default::default()
+            },
+        );
+        assert!(
+            !model.has_pending_ssh_session(),
+            "{shell}: no remote session will come"
+        );
+        assert!(!model.is_registered_session(remote), "{shell}");
+        let events = drain_events(&event_rx);
+        let hooks: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::SSH(remote_shell) => Some(remote_shell),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hooks, vec![&shell.to_owned()], "{shell}: {events:?}");
+    }
+    for shell in ["bash", "zsh"] {
+        let (mut model, event_rx) = model_with_title_events();
+        let remote = SessionId::from(167303092612202u64);
+        Handler::ssh(
+            &mut model,
+            SSHValue {
+                remote_shell: shell.to_owned(),
+                remote_session_id: Some(167303092612202),
+                ..Default::default()
+            },
+        );
+        assert!(model.has_pending_ssh_session(), "{shell}");
+        assert!(model.is_registered_session(remote), "{shell}");
+        let events = drain_events(&event_rx);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::SSH(remote_shell) if remote_shell == shell)),
+            "{shell}: {events:?}"
+        );
+    }
+}
+
+/// #2120: a second hook that announces no session leaves the pending session of the first one
+/// alone (the first announcement stands).
+#[test]
+fn an_unbootstrapped_shells_ssh_hook_does_not_clear_a_pending_session() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.ssh(SSHValue {
+        remote_shell: "bash".to_owned(),
+        remote_session_id: Some(167303092612202),
+        ..Default::default()
+    });
+    assert!(terminal.has_pending_ssh_session());
+    terminal.ssh(SSHValue {
+        remote_shell: "dash".to_owned(),
+        remote_session_id: Some(167303092612203),
+        ..Default::default()
+    });
+    assert!(terminal.has_pending_ssh_session());
+}

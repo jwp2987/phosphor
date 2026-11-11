@@ -220,6 +220,10 @@ PROVING_FAKE += ("desktop_notification_agent_question",)
 # brought back by the undo key: the result is in no later request, the close kept its call's status, nothing reads as a stuck turn. Scripted model.
 PROVING += ("agent_close_undo_call_status",)
 PROVING_FAKE += ("agent_close_undo_call_status",)
+# #2120 (round 19; docs/design/r19-shssh.md): lab_nohelper_sh_login_keys, keys typed in an ssh session to a host whose login shell the remote command
+# does not bootstrap (dash, busybox ash) reach that shell. The `lab_nohelper_*` glob above plays its bash arm (the control); the quick matrix has no
+# dash / ash shell, so the two arms that prove the issue are named exactly (an exact name runs whatever the matrix says).
+PROVING_LAB += ("lab_nohelper_sh_login_keys.dash.lan.nohelper", "lab_nohelper_sh_login_keys.ash.lan.nohelper")
 # Lab families the fix tier's lab job does NOT play, each with the reason (self-test r15_every_lab_family_is_in_a_tier: a lab family is in PROVING_LAB
 # or here, so a new one cannot be registered and never played, which is what #2063 found for 18 of them).
 LAB_NOT_IN_FIX_TIER = {
