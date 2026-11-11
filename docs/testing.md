@@ -7047,6 +7047,48 @@ Run: `python3 script/realapp/appci/run.py --cases md_viewer_first_frame,gpu_lost
 What the next run should show: `md_viewer_first_frame` PASS in both modes with a first size near the pane size and `suspicious_image_paints` 0;
 `gpu_lost_device_recovers` PASS in both modes on Wayland and X11 with the adapter named, and `frames_after_rebuild_before_input` (0 confirms #2101).
 
+## Round 18: a stop while a tool batch is still preprocessing (design `docs/design/r18-stoppre.md`; #2104; nothing compiled or run when written)
+
+A reply's tool calls are preprocessed as one batch before any is queued. A Stop (or a pane close's stop, or a new turn) that dropped a batch
+still in preprocessing used to leave its calls with no status and no result until the batch's future came back (never, for a hung apply,
+#1894): the turn watch (#1967) then logged a false `hop=agent_turn_stuck fault=unsettled_calls`, the late result recorded a second
+cancelled result, and a late result arriving while a pane was closed was never discarded by the close (#848). Now the calls are cancelled
+when the batch is dropped and the late result is dropped. Kill switch `PHOSPHOR_STOP_SETTLES_PREPROCESSING=0` (the old behaviour). App
+log, once per late batch: `hop=agent_late_preprocess_result dropped=<n> recorded=<m> conversation=<id>`; each call cancelled at the stop
+logs `hop=agent_action id=<id> kind=<tool> status=cancelled` like any cancelled action.
+
+- **Test hold (new, test-only): `BlocklistAIActionModel::set_preprocess_hold_for_test` / `release_held_preprocessing_for_test`.** While
+  the hold is on, every batch queued waits on one more preprocess future that resolves when the test releases it (or when the model goes
+  away). That is "still preprocessing" for as long as a test wants, and a hung apply when it never releases. Not a timer.
+- **Unit, `ai/blocklist/action_model/preprocess_tests.rs`** (the batch bookkeeping, no app):
+  `abandon_all_settling_returns_the_calls_of_batches_still_preprocessing` (a cancel hands back the kept copies of every batch still
+  preprocessing, in queue order, next to the parked actions; `abandon_all`, the kill switch's arm, returns the parked ones only; fails on
+  the old code, where a batch knew ids only), `a_batch_that_came_back_is_not_handed_back_as_preprocessing` (and its late result is still
+  reported as stale, #1894), `take_actions_of_abandoned_hands_the_calls_back_once_and_keeps_the_markers` (the new-turn site, #1859).
+- **Unit, `ai/blocklist/controller_tests.rs`, module `stop_while_preprocessing_2104`** (a real controller and action model, the batch
+  queued through `queue_actions` and held in preprocessing):
+  - `a_stop_gives_the_calls_of_a_preprocessing_batch_their_cancelled_result_at_the_stop`: `cancel_conversation_progress(ManuallyCancelled)`
+    with the hold never released; in the same call each call is `Finished` cancelled with one result, in the reply's order; the turn ends
+    `Cancelled`. Fails on the old code (no status).
+  - `the_late_result_of_a_stopped_batch_is_dropped`: stop, then a second writer at the same calls (`cancel_discarded_actions`, what the
+    #1967 heal used), then the batch is released: exactly one result per call. Fails on the old code (two).
+  - `a_pane_close_discards_the_cancelled_results_of_a_preprocessing_batch`: suspend, discard, stop (the view's order), the batch
+    released while the pane is closed, undo: no finished result is left to ride on a later request, each call shows cancelled and is
+    held as discarded-by-close (#2103). Fails on the old code (the late result was recorded behind the close).
+  - `a_new_turn_settles_the_calls_of_an_earlier_batch_that_is_still_preprocessing`: a second `queue_actions` gives up on the first
+    batch; its calls are cancelled then, the late result adds nothing, the new batch leaves preprocessing untouched. Fails on the old
+    code.
+  - `with_the_kill_switch_off_a_stop_leaves_the_preprocessing_calls_to_their_late_result`: the switch's values, and the old arm driven
+    with the flag passed in (`cancel_all_pending_actions_with(.., false, ..)`): no status at the stop, one result when the batch comes
+    back. It is also the positive control of the late-result test: the same release and the same wait DO deliver a late result here.
+  - `a_stop_reports_the_preprocessing_calls_it_cancelled`: `CancelledPendingActions { cancelled_any: true, dropped_preprocessing: true }`.
+- **Not covered:** the cards' look after a stop during preprocessing (a cancelled card, as before by the "orphaned" rule; no log line
+  tells the two apart), and no app case: holding a batch in preprocessing needs a hung diff apply, which the app cases cannot stage.
+  The first run with a slow remote apply that the user stops is the app-level evidence: `hop=agent_action ... status=cancelled` for
+  the call at the stop, no `hop=agent_turn_stuck`, and at most one `hop=agent_late_preprocess_result` afterwards.
+- **What the next run should show.** The nine new unit tests pass. Run (on the box, in the usual `-p warp -p warp_tui --lib --features warp/gui`
+  unit run): the filters `stop_while_preprocessing_2104` and `action_model::preprocess::tests`.
+
 ## Round 18: a pane close keeps the status of the calls whose results it discards (design `docs/design/r18-retire.md`; #2103, #848; nothing compiled or run when written)
 
 Owner decision 2026-11-11, with its condition: the results a close discards are kept for the calls' STATUS only (cards, turn bookkeeping) and
@@ -7073,7 +7115,8 @@ that discards something: `hop=agent_close_discard conversation=<id> results=<n> 
   judges strictly more. A call with no status and no result after a close is a finding. Corpus `heal2103_stop_after_close_is_not_a_stuck_turn`
   must still pass: its call's cancelled result is kept at the close, so the later Stop finds nothing unsettled.
 - **The r18-agentheal guard stays** (`replies_discarded_for_close`, `a_reply_a_close_stopped_is_not_judged_for_unsettled_calls`): the kept
-  status does not cover a batch that was still preprocessing when the close's stop dropped it, nor the kill switch's arm.
+  status does not cover a batch that was still preprocessing when the close's stop dropped it, nor the kill switch's arm. (Since #2104
+  the close's stop cancels those calls too, see the section above; the guard is then the cover for the two kill switches only.)
 - **App case `agent_close_undo_call_status`** (`appci/cases_agent_close_undo.py`; agent mode, scripted model; `cases.PROVING` and
   `PROVING_FAKE`; settings declared in `case_settings.py`; Windows: Git Bash pane). A new tab; ONE reply with a command (approved by keyboard,
   prints a token that is not in its command line) and a question (`fake_model.py` trigger "Please run scripted command KEY then ask me a

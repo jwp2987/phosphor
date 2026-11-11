@@ -4244,3 +4244,426 @@ fn without_a_close_the_finished_result_travels_with_the_next_prompt() {
         });
     });
 }
+
+/// #2104: a stop (or a pane close's stop, or a new turn) while a batch of tool calls is still
+/// PREPROCESSING. The batch is held there by the action model's test hold
+/// (`set_preprocess_hold_for_test`): the stand-in for a slow diff apply, and for a hung one
+/// (#1894) when the test never releases it.
+///
+/// Before #2104 the stop dropped the batch and left its calls with no status and no result
+/// until the batch's future came back; the late result was then recorded without a look at what
+/// the call already had, and without a `FinishedAction`.
+mod stop_while_preprocessing_2104 {
+    use std::time::Duration;
+
+    use super::super::super::action_model::{
+        CancelledPendingActions, stop_settles_preprocessing_enabled,
+    };
+    use super::*;
+
+    type Controller = super::super::BlocklistAIController;
+    type ConversationId = crate::ai::agent::conversation::AIConversationId;
+
+    fn command(id: &str, task_id: &TaskId) -> AIAgentAction {
+        AIAgentAction {
+            id: AIAgentActionId::from(id.to_owned()),
+            task_id: task_id.clone(),
+            action: shell_command(),
+            requires_result: false,
+        }
+    }
+
+    fn ids(names: &[&str]) -> Vec<AIAgentActionId> {
+        names
+            .iter()
+            .map(|name| AIAgentActionId::from((*name).to_owned()))
+            .collect()
+    }
+
+    /// Queues `names` as ONE reply's batch, the way the controller does when a stream ends
+    /// (`queue_actions`), and holds it in preprocessing.
+    fn queue_held_batch(
+        controller: &mut Controller,
+        conversation_id: ConversationId,
+        task_id: &TaskId,
+        names: &[&str],
+        ctx: &mut warpui::ModelContext<Controller>,
+    ) -> Vec<AIAgentAction> {
+        let actions: Vec<AIAgentAction> = names.iter().map(|name| command(name, task_id)).collect();
+        let queued = actions.clone();
+        controller.action_model.update(ctx, |action_model, ctx| {
+            action_model.set_preprocess_hold_for_test(true);
+            action_model.queue_actions(queued, conversation_id, ctx);
+        });
+        let action_model = controller.action_model.as_ref(ctx);
+        for action in &actions {
+            assert!(
+                action_model
+                    .get_action_status(&action.id)
+                    .is_some_and(|status| status.is_preprocessing()),
+                "precondition: {} is still preprocessing",
+                action.id
+            );
+        }
+        actions
+    }
+
+    /// How many finished, unsent results `id` has in the conversation.
+    fn result_count(
+        controller: &Controller,
+        conversation_id: ConversationId,
+        id: &AIAgentActionId,
+        app: &warpui::AppContext,
+    ) -> usize {
+        controller
+            .action_model
+            .as_ref(app)
+            .get_finished_action_results(conversation_id)
+            .map_or(0, |results| {
+                results.iter().filter(|result| &result.id == id).count()
+            })
+    }
+
+    /// Lets the main loop turn: posted events are handled, and a released batch's preprocess
+    /// result arrives. Long enough for both by a wide margin (the kill-switch test is the
+    /// control: the same wait there DOES bring the late result).
+    async fn let_the_main_loop_turn() {
+        for _ in 0..8 {
+            for _ in 0..32 {
+                futures_lite::future::yield_now().await;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// Fails on the old code at the first assertion after the stop: the calls had no status.
+    #[test]
+    fn a_stop_gives_the_calls_of_a_preprocessing_batch_their_cancelled_result_at_the_stop() {
+        App::test((), |mut app| async move {
+            let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+            assert!(
+                stop_settles_preprocessing_enabled(),
+                "precondition: the kill switch is not set in the test environment"
+            );
+            let names = ["pre-a", "pre-b"];
+            controller.update(&mut app, |controller, ctx| {
+                queue_held_batch(controller, conversation_id, &root_task_id, &names, ctx);
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+                // In the same call, with the batch's future still out (the hold was never
+                // released: a hung apply).
+                for id in ids(&names) {
+                    assert!(
+                        controller
+                            .action_model
+                            .as_ref(ctx)
+                            .get_action_status(&id)
+                            .is_some_and(|status| status.is_cancelled()),
+                        "{id} must be cancelled AT the stop, not when its batch comes back"
+                    );
+                    assert_eq!(result_count(controller, conversation_id, &id, ctx), 1);
+                }
+                let order: Vec<String> = controller
+                    .action_model
+                    .as_ref(ctx)
+                    .get_finished_action_results(conversation_id)
+                    .map(|results| results.iter().map(|r| r.id.to_string()).collect())
+                    .unwrap_or_default();
+                assert_eq!(order, names, "the results are in the reply's order");
+            });
+            let_the_main_loop_turn().await;
+            controller.update(&mut app, |controller, ctx| {
+                assert!(
+                    matches!(
+                        BlocklistAIHistoryModel::as_ref(ctx)
+                            .conversation(&conversation_id)
+                            .expect("conversation should exist")
+                            .status(),
+                        ConversationStatus::Cancelled
+                    ),
+                    "the stop ends the turn (#1944), now through the cancelled calls' own \
+                     FinishedAction"
+                );
+                assert!(
+                    !controller
+                        .action_model
+                        .as_ref(ctx)
+                        .has_unfinished_actions_for_conversation(conversation_id)
+                );
+            });
+        });
+    }
+
+    /// The batch's future comes back after the stop, and after a second writer has been at the
+    /// same calls (`cancel_discarded_actions`, which is what the #1967 heal used): each call
+    /// still has exactly ONE result.
+    ///
+    /// Fails on the old code: the stop recorded nothing, `cancel_discarded_actions` recorded
+    /// one result per call, and the late preprocess result recorded a second
+    /// (`record_stale_cancelled` checked nothing).
+    #[test]
+    fn the_late_result_of_a_stopped_batch_is_dropped() {
+        App::test((), |mut app| async move {
+            let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+            let names = ["late-a", "late-b"];
+            controller.update(&mut app, |controller, ctx| {
+                let actions =
+                    queue_held_batch(controller, conversation_id, &root_task_id, &names, ctx);
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+                controller.action_model.update(ctx, |action_model, ctx| {
+                    action_model.cancel_discarded_actions(
+                        actions,
+                        conversation_id,
+                        Some(CancellationReason::ManuallyCancelled),
+                        ctx,
+                    );
+                    for id in ids(&names) {
+                        assert!(
+                            action_model
+                                .awaits_late_preprocess_result_for_test(conversation_id, &id),
+                            "{id}: the batch's future is still out"
+                        );
+                    }
+                    assert_eq!(
+                        action_model.release_held_preprocessing_for_test(),
+                        1,
+                        "one batch was held"
+                    );
+                });
+            });
+            let_the_main_loop_turn().await;
+            controller.update(&mut app, |controller, ctx| {
+                for id in ids(&names) {
+                    assert_eq!(
+                        result_count(controller, conversation_id, &id, ctx),
+                        1,
+                        "{id}: one result, whatever came back late"
+                    );
+                    assert!(
+                        !controller
+                            .action_model
+                            .as_ref(ctx)
+                            .awaits_late_preprocess_result_for_test(conversation_id, &id),
+                        "{id}: the late result arrived and was dropped"
+                    );
+                }
+            });
+        });
+    }
+
+    /// A pane close (#848) with a batch still preprocessing, in the view's order
+    /// (`suspend_agent_work_for_close`: suspend, discard, stop), the batch's future coming back
+    /// while the pane is closed, then the undo. Nothing of the stopped reply is left to ride
+    /// on the user's next prompt, and each call shows as cancelled (#2103).
+    ///
+    /// Fails on the old code: the late result was recorded while the pane was closed, with no
+    /// `FinishedAction`, so the close never discarded it and it was still there after the undo.
+    #[test]
+    fn a_pane_close_discards_the_cancelled_results_of_a_preprocessing_batch() {
+        App::test((), |mut app| async move {
+            let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+            let names = ["closed-a", "closed-b"];
+            controller.update(&mut app, |controller, ctx| {
+                queue_held_batch(controller, conversation_id, &root_task_id, &names, ctx);
+                controller.set_suspended_for_close(true);
+                controller.discard_pending_work_for_close(conversation_id, ctx);
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+            });
+            // The stop's `FinishedAction`s reach the suspended branch, which discards.
+            let_the_main_loop_turn().await;
+            controller.update(&mut app, |controller, ctx| {
+                let released = controller.action_model.update(ctx, |action_model, _| {
+                    action_model.release_held_preprocessing_for_test()
+                });
+                assert_eq!(released, 1, "one batch was held");
+            });
+            // The batch's future comes back while the pane is still closed.
+            let_the_main_loop_turn().await;
+            controller.update(&mut app, |controller, ctx| {
+                controller.set_suspended_for_close(false);
+                let action_model = controller.action_model.as_ref(ctx);
+                assert!(
+                    action_model
+                        .get_finished_action_results(conversation_id)
+                        .is_none_or(|results| results.is_empty()),
+                    "#848: nothing of the stopped reply is left to ride on a later request: {:?}",
+                    action_model.get_finished_action_results(conversation_id)
+                );
+                for id in ids(&names) {
+                    assert!(
+                        action_model
+                            .get_action_status(&id)
+                            .is_some_and(|status| status.is_cancelled()),
+                        "{id} shows as cancelled on the restored pane"
+                    );
+                    assert!(action_model.is_result_discarded_by_close(&id));
+                }
+            });
+        });
+    }
+
+    /// A new turn's batch gives up on an earlier batch that is still preprocessing
+    /// (`queue_actions`, #1859). The earlier calls are settled then, not when their future
+    /// comes back, and the late result adds nothing; the new batch is not touched.
+    ///
+    /// Fails on the old code at the first assertion: the earlier calls had no result yet.
+    #[test]
+    fn a_new_turn_settles_the_calls_of_an_earlier_batch_that_is_still_preprocessing() {
+        App::test((), |mut app| async move {
+            let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+            let earlier = ["earlier-a", "earlier-b"];
+            let newer = AIAgentActionId::from("newer".to_owned());
+            controller.update(&mut app, |controller, ctx| {
+                queue_held_batch(controller, conversation_id, &root_task_id, &earlier, ctx);
+                let next = vec![command("newer", &root_task_id)];
+                controller.action_model.update(ctx, |action_model, ctx| {
+                    action_model.queue_actions(next, conversation_id, ctx);
+                });
+                for id in ids(&earlier) {
+                    assert!(
+                        controller
+                            .action_model
+                            .as_ref(ctx)
+                            .get_action_status(&id)
+                            .is_some_and(|status| status.is_cancelled()),
+                        "{id} is cancelled when the new turn gives up on its batch"
+                    );
+                    assert_eq!(result_count(controller, conversation_id, &id, ctx), 1);
+                }
+                assert!(
+                    controller
+                        .action_model
+                        .as_ref(ctx)
+                        .get_action_status(&newer)
+                        .is_some_and(|status| status.is_preprocessing()),
+                    "the new turn's batch is preprocessing"
+                );
+                let released = controller.action_model.update(ctx, |action_model, _| {
+                    action_model.release_held_preprocessing_for_test()
+                });
+                assert_eq!(released, 2, "both batches were held");
+            });
+            let_the_main_loop_turn().await;
+            controller.update(&mut app, |controller, ctx| {
+                for id in ids(&earlier) {
+                    assert_eq!(
+                        result_count(controller, conversation_id, &id, ctx),
+                        1,
+                        "{id}: the late result of the earlier batch adds nothing"
+                    );
+                }
+                let status = controller
+                    .action_model
+                    .as_ref(ctx)
+                    .get_action_status(&newer);
+                assert!(
+                    status.as_ref().is_some_and(|status| {
+                        !status.is_preprocessing() && !status.is_cancelled()
+                    }),
+                    "the new turn's call left preprocessing and was not cancelled: {status:?}"
+                );
+            });
+        });
+    }
+
+    /// The kill switch's arm (`PHOSPHOR_STOP_SETTLES_PREPROCESSING=0`): the stop drops the
+    /// batch and its calls have nothing until the batch's future comes back, which then records
+    /// their cancelled result, as before #2104. Driven with the flag passed in, so the test
+    /// does not depend on the process environment.
+    ///
+    /// It is also the control for `the_late_result_of_a_stopped_batch_is_dropped`: the same
+    /// release and the same wait DO deliver a late result here.
+    #[test]
+    fn with_the_kill_switch_off_a_stop_leaves_the_preprocessing_calls_to_their_late_result() {
+        use crate::ai::blocklist::action_model::stop_settles_preprocessing_enabled_from as enabled;
+
+        assert!(enabled(None));
+        assert!(enabled(Some("1")));
+        for off in ["0", " 0 ", "off", "FALSE", "no"] {
+            assert!(!enabled(Some(off)), "{off:?} turns it off");
+        }
+
+        App::test((), |mut app| async move {
+            let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+            let names = ["old-a", "old-b"];
+            controller.update(&mut app, |controller, ctx| {
+                queue_held_batch(controller, conversation_id, &root_task_id, &names, ctx);
+                let cancelled = controller.action_model.update(ctx, |action_model, ctx| {
+                    action_model.cancel_all_pending_actions_with(
+                        conversation_id,
+                        Some(CancellationReason::ManuallyCancelled),
+                        false,
+                        ctx,
+                    )
+                });
+                assert_eq!(
+                    cancelled,
+                    CancelledPendingActions {
+                        cancelled_any: false,
+                        dropped_preprocessing: true,
+                    }
+                );
+                for id in ids(&names) {
+                    assert!(
+                        controller
+                            .action_model
+                            .as_ref(ctx)
+                            .get_action_status(&id)
+                            .is_none(),
+                        "{id}: no status until the batch comes back (the old behaviour)"
+                    );
+                }
+                controller.action_model.update(ctx, |action_model, _| {
+                    action_model.release_held_preprocessing_for_test();
+                });
+            });
+            let_the_main_loop_turn().await;
+            controller.update(&mut app, |controller, ctx| {
+                for id in ids(&names) {
+                    assert_eq!(
+                        result_count(controller, conversation_id, &id, ctx),
+                        1,
+                        "{id}: the late result records the cancelled result"
+                    );
+                }
+            });
+        });
+    }
+
+    /// The switch on, the same call: what it reports to the stop (#1944 reads it).
+    #[test]
+    fn a_stop_reports_the_preprocessing_calls_it_cancelled() {
+        App::test((), |mut app| async move {
+            let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+            controller.update(&mut app, |controller, ctx| {
+                queue_held_batch(controller, conversation_id, &root_task_id, &["only"], ctx);
+                let cancelled = controller.action_model.update(ctx, |action_model, ctx| {
+                    action_model.cancel_all_pending_actions_with(
+                        conversation_id,
+                        Some(CancellationReason::ManuallyCancelled),
+                        true,
+                        ctx,
+                    )
+                });
+                assert_eq!(
+                    cancelled,
+                    CancelledPendingActions {
+                        cancelled_any: true,
+                        dropped_preprocessing: true,
+                    }
+                );
+            });
+        });
+    }
+}

@@ -125,6 +125,7 @@ impl PendingPreprocessedActions {
                 self.0[current_index].action_ids
             );
             self.0[current_index].status = PreprocessActionStatus::Done { actions };
+            self.0[current_index].held = Vec::new();
             vec![]
         } else {
             // All actions before this one are done: process them all.
@@ -226,18 +227,49 @@ impl PendingPreprocessedActions {
 
     /// Drops every batch (cancel). Returns the actions of batches that had finished
     /// preprocessing but were still parked, so the caller can give them cancel results.
+    ///
+    /// The calls of a batch that is still preprocessing are NOT returned: this is what a stop
+    /// did before #2104, kept for the kill switch. See [`Self::abandon_all_settling`].
     pub fn abandon_all(&mut self) -> Vec<AIAgentAction> {
-        let mut parked = Vec::new();
+        self.abandon_all_settling().parked
+    }
+
+    /// #2104: [`Self::abandon_all`] that also hands back the calls of the batches that were
+    /// still preprocessing, from the copies the batch keeps
+    /// ([`Self::insert_preprocess_actions`]). The caller gives every returned action its
+    /// cancelled result now, at the stop: the batch's future may come back much later or
+    /// never (a hung apply, #1894), and until then nothing else would hold these calls. Both
+    /// lists are in queue order.
+    pub fn abandon_all_settling(&mut self) -> AbandonedBatches {
+        let mut abandoned = AbandonedBatches::default();
         for batch in self.0.drain(..) {
-            if let PreprocessActionStatus::Done { actions } = batch.status {
-                parked.extend(actions);
+            match batch.status {
+                PreprocessActionStatus::Pending => abandoned.preprocessing.extend(batch.held),
+                PreprocessActionStatus::Abandoned => {}
+                PreprocessActionStatus::Done { actions } => abandoned.parked.extend(actions),
             }
         }
-        parked
+        abandoned
+    }
+
+    /// #2104: the kept copies of the calls of every batch [`Self::abandon_pending`] gave up
+    /// on, taken out (a second call returns nothing). The markers stay in place so later
+    /// batches still drain in order; the caller settles the returned calls now instead of
+    /// when, or if, the batch's future comes back.
+    pub fn take_actions_of_abandoned(&mut self) -> Vec<AIAgentAction> {
+        let mut actions = Vec::new();
+        for batch in self.0.iter_mut() {
+            if matches!(batch.status, PreprocessActionStatus::Abandoned) {
+                actions.append(&mut batch.held);
+            }
+        }
+        actions
     }
 
     /// Inserts a batch of actions that need to be preprocessed. Returns a [`PreprocessId`] that
-    /// uniquely identifies the batch.
+    /// uniquely identifies the batch. The batch knows the ids only, so a cancel cannot settle
+    /// its calls while it is preprocessing: the action model uses
+    /// [`Self::insert_preprocess_actions`].
     pub fn insert_preprocess_action_batch(
         &mut self,
         action_ids: HashSet<AIAgentActionId>,
@@ -246,9 +278,32 @@ impl PendingPreprocessedActions {
         self.0.push_back(PreprocessActionBatch::new(
             preprocess_id.clone(),
             action_ids,
+            Vec::new(),
         ));
         preprocess_id
     }
+
+    /// #2104: [`Self::insert_preprocess_action_batch`] for `actions`, keeping a copy of each.
+    /// The originals travel with the batch's preprocess future; the copies are what a stop
+    /// (or a new turn) cancels while that future is still out.
+    pub fn insert_preprocess_actions(&mut self, actions: &[AIAgentAction]) -> PreprocessId {
+        let preprocess_id = PreprocessId::new();
+        self.0.push_back(PreprocessActionBatch::new(
+            preprocess_id.clone(),
+            actions.iter().map(|action| action.id.clone()).collect(),
+            actions.to_vec(),
+        ));
+        preprocess_id
+    }
+}
+
+/// What [`PendingPreprocessedActions::abandon_all_settling`] dropped.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct AbandonedBatches {
+    /// Actions that had finished preprocessing and were parked behind another batch.
+    pub parked: Vec<AIAgentAction>,
+    /// Actions of batches that were still preprocessing (the batch's kept copies).
+    pub preprocessing: Vec<AIAgentAction>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -270,6 +325,10 @@ struct PreprocessActionBatch {
     status: PreprocessActionStatus,
     /// Action IDs associated with this batch.
     action_ids: HashSet<AIAgentActionId>,
+    /// #2104: a copy of each action of the batch, in queue order, for as long as the batch is
+    /// not done (the originals are in the hands of its preprocess future). Empty for a batch
+    /// inserted by ids alone, and once taken.
+    held: Vec<AIAgentAction>,
 }
 
 impl PreprocessActionBatch {
@@ -277,11 +336,16 @@ impl PreprocessActionBatch {
         self.action_ids.contains(action_id)
     }
 
-    fn new(preprocess_id: PreprocessId, action_ids: HashSet<AIAgentActionId>) -> Self {
+    fn new(
+        preprocess_id: PreprocessId,
+        action_ids: HashSet<AIAgentActionId>,
+        held: Vec<AIAgentAction>,
+    ) -> Self {
         Self {
             id: preprocess_id,
             status: PreprocessActionStatus::Pending,
             action_ids,
+            held,
         }
     }
 }

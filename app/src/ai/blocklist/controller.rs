@@ -1067,14 +1067,17 @@ pub struct BlocklistAIController {
     ///
     /// Since the close keeps the status of the calls whose results it discards
     /// (`discard_finished_results_for_close`), those calls are settled by their status and
-    /// need none of this. It stays for the two cases that leaves:
-    /// * calls of a batch that was still PREPROCESSING at the close. The close's stop drops
-    ///   the batch (`cancel_all_pending_actions`, `abandon_all`) and its calls get their
-    ///   cancelled result only when the batch's future comes back, if it ever does (#1894).
-    ///   Until then they have no status and no result, and they are dropped on purpose, not
-    ///   lost: healing them would log a false `hop=agent_turn_stuck` after the undo;
-    /// * the kill switch (`PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0`), with which the close erases
-    ///   the results as it did before and every call of the reply is in that state.
+    /// need none of this. Since #2104 that includes the calls of a batch that was still
+    /// PREPROCESSING at the close: the close's stop cancels them then
+    /// (`cancel_all_pending_actions`), each emits `FinishedAction`, and the suspended branch
+    /// discards those results with the others. It stays for the kill switches:
+    /// * `PHOSPHOR_STOP_SETTLES_PREPROCESSING=0`: the close's stop drops such a batch and its
+    ///   calls get their cancelled result only when the batch's future comes back, if it ever
+    ///   does (#1894). Until then they have no status and no result, and they are dropped on
+    ///   purpose, not lost: healing them would log a false `hop=agent_turn_stuck` after the
+    ///   undo;
+    /// * `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0`, with which the close erases the results as it
+    ///   did before and every call of the reply is in that state.
     replies_discarded_for_close: HashMap<AIConversationId, crate::ai::agent::AIAgentExchangeId>,
     /// #2029: conversations whose last reply finished cleanly with no actions but is followed
     /// up by the app itself (its tool call was answered locally with an error, and the model
@@ -5989,6 +5992,10 @@ impl BlocklistAIController {
             // preprocessing (a slow diff apply, #1894) yields no synchronous result and no
             // `FinishedAction`, so the conversation stayed `InProgress` with nothing held until
             // the user typed (#1944).
+            // Since #2104 the stop cancels the calls of a batch that is still preprocessing
+            // like any other (`cancelled_any`), so that turn ends through their
+            // `FinishedAction`; the `dropped_preprocessing` arm below is reached only with
+            // `PHOSPHOR_STOP_SETTLES_PREPROCESSING=0`. The deferred-follow-up arm is unchanged.
             // Written here only in exactly that case -- a batch still preprocessing was
             // dropped, and nothing else will report:
             // * an action cancelled just now emitted `FinishedAction`, and a cancelled running

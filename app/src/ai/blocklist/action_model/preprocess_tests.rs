@@ -279,3 +279,138 @@ fn parked_count_counts_only_done_batches_with_nothing_pending_ahead() {
     let (queued, stale) = actions.handle_preprocess_actions_result_with_stale(first, Vec::new());
     assert!(queued.is_empty() && stale.is_empty());
 }
+
+/// #2104: a batch inserted with its actions keeps a copy of each, and a cancel hands back the
+/// copies of every batch that is still preprocessing, next to the parked actions, in queue
+/// order. `abandon_all` (the kill switch's arm) still returns the parked ones only.
+///
+/// Fails on the old code, where a batch knew ids only and a cancel could return nothing for it.
+#[test]
+fn abandon_all_settling_returns_the_calls_of_batches_still_preprocessing() {
+    let (a, b, parked_id, c) = (
+        generate_new_action_id(),
+        generate_new_action_id(),
+        generate_new_action_id(),
+        generate_new_action_id(),
+    );
+    let build = || {
+        let mut actions = PendingPreprocessedActions::default();
+        let _first = actions.insert_preprocess_actions(&[
+            create_test_action(a.clone()),
+            create_test_action(b.clone()),
+        ]);
+        let parked_batch =
+            actions.insert_preprocess_actions(&[create_test_action(parked_id.clone())]);
+        let _last = actions.insert_preprocess_actions(&[create_test_action(c.clone())]);
+        let queued = actions.handle_preprocess_actions_result(
+            parked_batch,
+            vec![create_test_action(parked_id.clone())],
+        );
+        assert!(queued.is_empty(), "parked behind the first batch");
+        actions
+    };
+
+    let mut actions = build();
+    assert!(actions.contains(&a) && actions.contains(&c));
+    let abandoned = actions.abandon_all_settling();
+    let ids = |list: &[AIAgentAction]| {
+        list.iter()
+            .map(|action| action.id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&abandoned.parked), vec![parked_id.clone()]);
+    assert_eq!(
+        ids(&abandoned.preprocessing),
+        vec![a.clone(), b.clone(), c.clone()],
+        "every call of every batch still preprocessing, in queue order"
+    );
+    assert_eq!(actions.0.len(), 0);
+    assert!(!actions.has_pending());
+
+    let mut actions = build();
+    let parked = actions.abandon_all();
+    assert_eq!(ids(&parked), vec![parked_id.clone()]);
+    assert_eq!(actions.0.len(), 0);
+
+    // A batch inserted by ids alone has no copies to hand back (the older entry point).
+    let mut actions = PendingPreprocessedActions::default();
+    let _ = batch_of(&mut actions);
+    let abandoned = actions.abandon_all_settling();
+    assert!(abandoned.parked.is_empty() && abandoned.preprocessing.is_empty());
+}
+
+/// #2104: the copies are of batches that are still out. A batch that came back (queued, or
+/// parked as `Done`) hands back nothing as "preprocessing", and its late-result bookkeeping is
+/// unchanged: a result for a batch a cancel dropped is still handed back as stale (#1894); the
+/// action model decides what to do with it.
+#[test]
+fn a_batch_that_came_back_is_not_handed_back_as_preprocessing() {
+    let mut actions = PendingPreprocessedActions::default();
+    let done_id = generate_new_action_id();
+    let done = actions.insert_preprocess_actions(&[create_test_action(done_id.clone())]);
+    let queued =
+        actions.handle_preprocess_actions_result(done, vec![create_test_action(done_id.clone())]);
+    assert_eq!(queued.len(), 1);
+    assert!(actions.abandon_all_settling().preprocessing.is_empty());
+
+    let late_id = generate_new_action_id();
+    let late = actions.insert_preprocess_actions(&[create_test_action(late_id.clone())]);
+    assert_eq!(actions.abandon_all_settling().preprocessing.len(), 1);
+    let (queue, stale) = actions.handle_preprocess_actions_result_with_stale(
+        late,
+        vec![create_test_action(late_id.clone())],
+    );
+    assert!(queue.is_empty());
+    assert_eq!(stale.len(), 1);
+    assert_eq!(stale[0].id, late_id);
+}
+
+/// #2104: a new turn gives up on the batches still preprocessing (`abandon_pending`, #1859).
+/// Their calls can be taken, once, to be settled then; the markers stay so that later batches
+/// still drain in order and the late result is still recognised.
+#[test]
+fn take_actions_of_abandoned_hands_the_calls_back_once_and_keeps_the_markers() {
+    let mut actions = PendingPreprocessedActions::default();
+    let (old_a, old_b, new_id) = (
+        generate_new_action_id(),
+        generate_new_action_id(),
+        generate_new_action_id(),
+    );
+    let old = actions.insert_preprocess_actions(&[
+        create_test_action(old_a.clone()),
+        create_test_action(old_b.clone()),
+    ]);
+    assert!(
+        actions.take_actions_of_abandoned().is_empty(),
+        "nothing is abandoned yet"
+    );
+    let abandoned_ids = actions.abandon_pending();
+    assert_eq!(abandoned_ids.len(), 2);
+    let new = actions.insert_preprocess_actions(&[create_test_action(new_id.clone())]);
+
+    let taken = actions.take_actions_of_abandoned();
+    assert_eq!(
+        taken
+            .iter()
+            .map(|action| action.id.clone())
+            .collect::<Vec<_>>(),
+        vec![old_a.clone(), old_b.clone()]
+    );
+    assert!(actions.take_actions_of_abandoned().is_empty(), "taken once");
+    assert_eq!(actions.0.len(), 2, "the abandoned marker stays");
+
+    // The new batch is not held up by the marker, and its own copies were not taken.
+    let queued =
+        actions.handle_preprocess_actions_result(new, vec![create_test_action(new_id.clone())]);
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].id, new_id);
+    // The old batch's late result is stale, as before (its marker went when the new batch
+    // drained past it).
+    let (queue, stale) = actions.handle_preprocess_actions_result_with_stale(
+        old,
+        vec![create_test_action(old_a), create_test_action(old_b)],
+    );
+    assert!(queue.is_empty());
+    assert_eq!(stale.len(), 2);
+    assert_eq!(actions.0.len(), 0);
+}

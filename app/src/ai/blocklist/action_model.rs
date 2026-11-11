@@ -293,9 +293,16 @@ pub(super) struct CancelledPendingActions {
     /// At least one action got its cancelled result in the call. Each one emits `FinishedAction`,
     /// so the controller's subscriber decides the turn's end.
     pub cancelled_any: bool,
-    /// At least one batch was still preprocessing and was dropped. Its actions are held by the
-    /// preprocess future, so they have no result yet (`record_stale_cancelled` records one,
-    /// silently, if the future ever resolves) and no `FinishedAction` is emitted for them.
+    /// At least one batch was still preprocessing and was dropped.
+    ///
+    /// Since #2104 its calls got their cancelled result in the call, from the batch's kept
+    /// copies, like every other cancelled action (so `cancelled_any` is true as well, and each
+    /// emitted `FinishedAction`); what the batch's future brings back later is dropped.
+    ///
+    /// With the kill switch off ([`stop_settles_preprocessing_enabled`]) it is as before: the
+    /// actions are held by the preprocess future, so they have no result yet
+    /// (`record_stale_cancelled` records one, silently, if the future ever resolves) and no
+    /// `FinishedAction` is emitted for them.
     pub dropped_preprocessing: bool,
 }
 
@@ -375,6 +382,33 @@ pub(crate) fn close_keeps_call_status_enabled() -> bool {
 
 /// [`close_keeps_call_status_enabled`] with the variable's value passed in (tests).
 pub(crate) fn close_keeps_call_status_enabled_from(value: Option<&str>) -> bool {
+    !matches!(
+        value
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("0" | "off" | "false" | "no")
+    )
+}
+
+/// Kill switch for #2104: `PHOSPHOR_STOP_SETTLES_PREPROCESSING=0` (also `off`, `false`, `no`)
+/// restores what a stop (and a new turn) did with a batch that was still preprocessing: its
+/// calls got no result until the batch's future came back, if it ever did, and that late result
+/// was recorded without a look at what the call already had.
+pub(crate) const STOP_SETTLES_PREPROCESSING_ENV: &str = "PHOSPHOR_STOP_SETTLES_PREPROCESSING";
+
+/// Whether the calls of a batch that is still preprocessing are settled when the batch is
+/// dropped (#2104): they are, unless the kill switch says off. Read at each stop, each new turn
+/// and each late preprocess result, not cached: all three are rare.
+pub(crate) fn stop_settles_preprocessing_enabled() -> bool {
+    stop_settles_preprocessing_enabled_from(
+        std::env::var(STOP_SETTLES_PREPROCESSING_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// [`stop_settles_preprocessing_enabled`] with the variable's value passed in (tests).
+pub(crate) fn stop_settles_preprocessing_enabled_from(value: Option<&str>) -> bool {
     !matches!(
         value
             .map(|value| value.trim().to_ascii_lowercase())
@@ -572,6 +606,22 @@ pub struct BlocklistAIActionModel {
     /// ids are only unique within one), so the `hop=agent_action`
     /// line is written when an action's state CHANGES and never per frame.
     hop_state: HashMap<(AIConversationId, AIAgentActionId), (&'static str, &'static str)>,
+
+    /// #2104: the calls whose batch was dropped while it was still preprocessing (a stop, a
+    /// pane close's stop, a new turn) and that were settled THEN, from the batch's kept copies.
+    /// The batch's future still holds the original actions; when it comes back, they are
+    /// dropped here instead of getting a second result (`drop_late_preprocess_results`), and
+    /// the entry goes. An entry whose future never comes back (a hung apply, #1894) stays: one
+    /// id per such call. Keyed by conversation as well, because action ids are only unique
+    /// within one.
+    settled_while_preprocessing: HashSet<(AIConversationId, AIAgentActionId)>,
+
+    /// Test-only: while `Some`, every batch queued waits on one more preprocess future, which
+    /// resolves when its sender here is dropped ([`Self::release_held_preprocessing_for_test`]).
+    /// This is a batch that is "still preprocessing" for as long as a test wants, and a hung
+    /// apply (#1894) when the test never releases it.
+    #[cfg(any(test, feature = "test-util"))]
+    preprocess_hold_for_test: Option<Vec<futures::channel::oneshot::Sender<()>>>,
 }
 
 impl BlocklistAIActionModel {
@@ -636,6 +686,9 @@ impl BlocklistAIActionModel {
             full_command_shown: HashMap::new(),
             commands_being_edited: HashMap::new(),
             hop_state: HashMap::new(),
+            settled_while_preprocessing: HashSet::new(),
+            #[cfg(any(test, feature = "test-util"))]
+            preprocess_hold_for_test: None,
         }
     }
 
@@ -1531,6 +1584,38 @@ impl BlocklistAIActionModel {
         self.mark_action_running_for_test(conversation_id, &action_id);
     }
 
+    /// Test-only (#2104; the agent fuzzer's `env.preprocess`): from now on every batch queued
+    /// stays in preprocessing until [`Self::release_held_preprocessing_for_test`] is called
+    /// (`hold = true`), or batches preprocess as usual again (`hold = false`, which also
+    /// releases what is held).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_preprocess_hold_for_test(&mut self, hold: bool) {
+        self.preprocess_hold_for_test = hold.then(Vec::new);
+    }
+
+    /// Test-only: lets every batch held by [`Self::set_preprocess_hold_for_test`] finish
+    /// preprocessing; each batch's result arrives on a later turn of the main loop, as a real
+    /// preprocess future's does. Batches queued afterwards are held again. Returns how many
+    /// batches were released.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn release_held_preprocessing_for_test(&mut self) -> usize {
+        self.preprocess_hold_for_test
+            .as_mut()
+            .map_or(0, |held| held.drain(..).count())
+    }
+
+    /// Test-only: whether `action_id` of `conversation_id` was settled when its batch was
+    /// dropped while preprocessing and the batch's future has not come back yet (#2104).
+    #[cfg(test)]
+    pub(crate) fn awaits_late_preprocess_result_for_test(
+        &self,
+        conversation_id: AIConversationId,
+        action_id: &AIAgentActionId,
+    ) -> bool {
+        self.settled_while_preprocessing
+            .contains(&(conversation_id, action_id.clone()))
+    }
+
     /// Queues the `actions` in the given iterator for the given conversation,
     /// to be dispatched in the order in which they appear in the iterator.
     pub(super) fn queue_actions(
@@ -1551,7 +1636,19 @@ impl BlocklistAIActionModel {
                 // preprocessing but were parked behind an abandoned batch are CANCELLED, never
                 // executed. Nothing from an old turn runs on its own.
                 let stale = batches.release_ready();
+                // #2104: the calls of the batches just given up on are settled now as well,
+                // from the batches' kept copies, not when (or if) their futures come back:
+                // one rule for every dropped batch, and no result is recorded later behind
+                // the back of whatever the pane is doing then (a close, a later turn).
+                let still_preprocessing = if stop_settles_preprocessing_enabled() {
+                    batches.take_actions_of_abandoned()
+                } else {
+                    Vec::new()
+                };
                 self.record_stale_cancelled(conversation_id, stale);
+                let still_preprocessing =
+                    self.mark_settled_while_preprocessing(conversation_id, still_preprocessing);
+                self.record_stale_cancelled(conversation_id, still_preprocessing);
                 // #1894: a hung apply of an abandoned batch is cancelled too, or it stays hung
                 // and its cancel sender leaks until a conversation cancel.
                 self.executor.update(ctx, |executor, ctx| {
@@ -1578,19 +1675,31 @@ impl BlocklistAIActionModel {
                 .map(|(index, action)| (action.id.clone(), index))
                 .collect(),
         );
-        let mut preprocess_future = Vec::with_capacity(actions.len());
-        let mut action_ids = HashSet::with_capacity(actions.len());
+        let mut preprocess_future: Vec<BoxFuture<'static, ()>> =
+            Vec::with_capacity(actions.len() + 1);
 
         for action in actions.iter() {
-            action_ids.insert(action.id.clone());
             preprocess_future.push(self.preprocess_action(action, conversation_id, ctx));
         }
+        #[cfg(any(test, feature = "test-util"))]
+        {
+            if let Some(held) = self.preprocess_hold_for_test.as_mut() {
+                let (release, released) = futures::channel::oneshot::channel::<()>();
+                held.push(release);
+                preprocess_future.push(Box::pin(async move {
+                    // Resolves when the sender is dropped: a release, or the model going away.
+                    let _ = released.await;
+                }));
+            }
+        }
 
+        // #2104: the batch keeps a copy of each action. The originals go with the future
+        // below; the copies are what a stop cancels while that future is still out.
         let preprocess_id = self
             .pending_preprocessed_actions
             .entry(conversation_id)
             .or_default()
-            .insert_preprocess_action_batch(action_ids);
+            .insert_preprocess_actions(&actions);
 
         ctx.spawn(join_all(preprocess_future), move |me, _, ctx| {
             me.handle_preprocess_actions_results(conversation_id, preprocess_id, actions, ctx);
@@ -1678,9 +1787,97 @@ impl BlocklistAIActionModel {
             .map(|(conversation_id, _)| *conversation_id)
     }
 
+    /// #2104: whether `action_id` already has a finished, unsent result in `conversation_id`.
+    fn has_finished_result(
+        &self,
+        conversation_id: AIConversationId,
+        action_id: &AIAgentActionId,
+    ) -> bool {
+        self.finished_action_results
+            .get(&conversation_id)
+            .is_some_and(|results| results.iter().any(|result| &result.id == action_id))
+    }
+
+    /// #2104: `actions` are the kept copies of calls whose batch was just dropped while it was
+    /// still preprocessing. Notes every one of them, so that what the batch's future brings
+    /// back later is dropped ([`Self::drop_late_preprocess_results`]), and returns the ones
+    /// that still owe the conversation a result: all but a call that already has one (in a
+    /// shared session the sharer's result can arrive while the viewer still preprocesses).
+    fn mark_settled_while_preprocessing(
+        &mut self,
+        conversation_id: AIConversationId,
+        actions: Vec<AIAgentAction>,
+    ) -> Vec<AIAgentAction> {
+        let mut owed = Vec::with_capacity(actions.len());
+        for action in actions {
+            self.settled_while_preprocessing
+                .insert((conversation_id, action.id.clone()));
+            if !self.has_finished_result(conversation_id, &action.id) {
+                owed.push(action);
+            }
+        }
+        owed
+    }
+
+    /// #2104: `stale` are the actions a preprocess future brought back for a batch that is
+    /// gone or was given up on. Takes out the ones that must NOT get a result now and returns
+    /// the rest:
+    /// * a call settled when its batch was dropped (`settled_while_preprocessing`): it has had
+    ///   its one cancelled result, which may have been sent, or discarded by a pane close,
+    ///   since. A second result here would be a duplicate in the next request, and, arriving
+    ///   while the pane is closed, a result the close never saw and never discarded (#848);
+    /// * a call that already has a finished, unsent result for any other reason.
+    ///
+    /// Whatever per-action state the late preprocess left in the executor (a diff that failed
+    /// to apply because the stop cancelled it) is released, as it is for every finished
+    /// action. Logged once per late batch. With the kill switch off nothing is taken out.
+    fn drop_late_preprocess_results(
+        &mut self,
+        conversation_id: AIConversationId,
+        stale: Vec<AIAgentAction>,
+        ctx: &mut ModelContext<Self>,
+    ) -> Vec<AIAgentAction> {
+        if stale.is_empty() {
+            return stale;
+        }
+        let guard_results = stop_settles_preprocessing_enabled();
+        let mut owed = Vec::with_capacity(stale.len());
+        let mut dropped = Vec::new();
+        for action in stale {
+            let settled = self
+                .settled_while_preprocessing
+                .remove(&(conversation_id, action.id.clone()));
+            if settled || (guard_results && self.has_finished_result(conversation_id, &action.id)) {
+                dropped.push(action.id);
+            } else {
+                owed.push(action);
+            }
+        }
+        if !dropped.is_empty() {
+            // A count only, never an action's arguments.
+            log::info!(
+                "hop=agent_late_preprocess_result dropped={} recorded={}                  conversation={conversation_id:?}: the batch was dropped while it was still                  preprocessing and its calls were settled then (#2104)",
+                dropped.len(),
+                owed.len()
+            );
+            self.executor.update(ctx, |executor, ctx| {
+                for action_id in &dropped {
+                    executor.discard_action_state(action_id, ctx);
+                }
+            });
+        }
+        owed
+    }
+
     /// Gives stale earlier-turn actions a `cancelled` result without executing them. The result
     /// is recorded directly (no `FinishedAction` event, no status write): the new turn is
     /// starting, and these results ride on the next request like any other cancelled call.
+    ///
+    /// Callers: a new turn (`queue_actions`), for the earlier turn's parked actions and, since
+    /// #2104, the calls of its batches that were still preprocessing; and a late preprocess
+    /// result (`handle_preprocess_actions_results`) for what
+    /// [`Self::drop_late_preprocess_results`] left, which since #2104 is nothing unless the
+    /// kill switch is off.
     fn record_stale_cancelled(
         &mut self,
         conversation_id: AIConversationId,
@@ -1767,6 +1964,9 @@ impl BlocklistAIActionModel {
             .handle_preprocess_actions_result_with_stale(preprocess_id, actions);
         // #1894: actions in hand whose batch was abandoned (cancel / new turn) or is gone never
         // execute, and still owe the conversation a cancelled result.
+        // #2104: unless they were settled when the batch was dropped. Then this late result
+        // is dropped: the call has had its one result.
+        let stale = self.drop_late_preprocess_results(conversation_id, stale, ctx);
         self.record_stale_cancelled(conversation_id, stale);
 
         self.enqueue_preprocessed_actions(conversation_id, actions_to_enqueue, ctx);
@@ -1976,6 +2176,27 @@ impl BlocklistAIActionModel {
         reason: Option<CancellationReason>,
         ctx: &mut ModelContext<Self>,
     ) -> CancelledPendingActions {
+        let settle_preprocessing = stop_settles_preprocessing_enabled();
+        self.cancel_all_pending_actions_with(conversation_id, reason, settle_preprocessing, ctx)
+    }
+
+    /// [`Self::cancel_all_pending_actions`] with the #2104 kill switch's reading passed in
+    /// (tests drive both arms without touching the process environment).
+    ///
+    /// `settle_preprocessing`: the calls of a batch that is still preprocessing get their
+    /// cancelled result HERE, like the parked, queued and blocked ones, through the same path
+    /// (`cancel_pending_action`: a result, a `FinishedAction`, the executor's per-action state
+    /// released). Before #2104 they were left with no status and no result until the batch's
+    /// future came back, which a hung apply never does (#1894); in between the turn watch
+    /// (#1967) read them as calls nothing holds, and a pane close could not discard a result
+    /// that did not exist yet (#848).
+    pub(super) fn cancel_all_pending_actions_with(
+        &mut self,
+        conversation_id: AIConversationId,
+        reason: Option<CancellationReason>,
+        settle_preprocessing: bool,
+        ctx: &mut ModelContext<Self>,
+    ) -> CancelledPendingActions {
         self.executor.update(ctx, |executor, ctx| {
             executor.cancel_all_running_async_actions_for_conversation(conversation_id, reason, ctx)
         });
@@ -1987,11 +2208,15 @@ impl BlocklistAIActionModel {
             .pending_preprocessed_actions
             .get(&conversation_id)
             .is_some_and(|batches| batches.has_pending());
-        let parked_actions = self
-            .pending_preprocessed_actions
-            .get_mut(&conversation_id)
-            .map(|batches| batches.abandon_all())
-            .unwrap_or_default();
+        let (parked_actions, preprocessing_actions) =
+            match self.pending_preprocessed_actions.get_mut(&conversation_id) {
+                Some(batches) if settle_preprocessing => {
+                    let abandoned = batches.abandon_all_settling();
+                    (abandoned.parked, abandoned.preprocessing)
+                }
+                Some(batches) => (batches.abandon_all(), Vec::new()),
+                None => (Vec::new(), Vec::new()),
+            };
         let mut cancelled_any = !parked_actions.is_empty();
         for action in parked_actions {
             log::warn!(
@@ -2012,6 +2237,27 @@ impl BlocklistAIActionModel {
                 cancelled_any = true;
                 self.cancel_pending_action(conversation_id, action, reason, ctx);
             }
+        }
+
+        // #2104: the calls of the batches that were still preprocessing, last: the queue is
+        // empty by now, so settling one cannot start (or block on) a queued action of the
+        // turn being stopped. The results are sorted back into the reply's order as always.
+        let preprocessing_actions =
+            self.mark_settled_while_preprocessing(conversation_id, preprocessing_actions);
+        for action in preprocessing_actions {
+            log::info!(
+                "hop=agent_action id={} status=preprocessing cancelled with its batch still \
+                 preprocessing; what the batch's future brings back is dropped (#2104)",
+                action.id
+            );
+            // Its `hop=agent_action ... status=cancelled` line names the tool, as for a
+            // queued action (an action that never left preprocessing has no kind on record).
+            self.hop_state.insert(
+                (conversation_id, action.id.clone()),
+                (hop_kind(&action.action), ""),
+            );
+            cancelled_any = true;
+            self.cancel_pending_action(conversation_id, action, reason, ctx);
         }
         CancelledPendingActions {
             cancelled_any,

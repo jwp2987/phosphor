@@ -716,6 +716,11 @@ upstream's behavior is actually a defect rather than a preference.
     (before, both had no status and showed as cancelled). The model is still told, by the
     next request's preflight, that those calls were interrupted. Kill switch
     `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` erases them as before.
+    Since #2104 the stop also cancels, then and there, the calls of a batch that was still
+    preprocessing (they used to get their cancelled result whenever the batch's future came
+    back, with no event, so a result could appear in a closed pane after the close had
+    discarded everything and ride on the next prompt after an undo); the late preprocess
+    result is dropped. Kill switch `PHOSPHOR_STOP_SETTLES_PREPROCESSING=0`.
   - Only a command this conversation's agent requested and is still driving gets Ctrl-C
     (and a copy parked in the PTY write queue is dropped). The user's own command, one the
     agent was tagged into or that the user took over, and the idle prompt are left alone.

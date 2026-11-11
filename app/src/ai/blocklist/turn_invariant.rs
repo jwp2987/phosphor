@@ -26,13 +26,24 @@
 //! conversation's finished results on purpose (#848: nothing stale goes out after an undo). Since
 //! the owner's decision of 2026-11-11 the calls of those results keep their status (the action
 //! model holds the discarded results for display only), so they are settled by the ordinary
-//! reading and the fuzzer's oracle no longer excepts a closed tab. What is left for this rule:
-//! the calls of a batch that was still preprocessing when the close's stop dropped it (no status
-//! until its future comes back, #1894), and every call of the reply when the kill switch
-//! `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` makes the close erase the results as before. Dropped on
-//! purpose is not lost. The fact outlasts the close itself (`suspended_for_close` ends at the
-//! undo), so the controller remembers the reply the close stopped
-//! ([`TurnFacts::reply_discarded_for_close`]) until the conversation has a newer one.
+//! reading and the fuzzer's oracle no longer excepts a closed tab. Since #2104 the same holds for
+//! the calls of a batch that was still preprocessing when the close's stop dropped it: the stop
+//! cancels them then, and the close discards those results like the others. What is left for
+//! this rule is the two kill switches: `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` (the close erases
+//! the results as before, so every call of the reply has no status) and
+//! `PHOSPHOR_STOP_SETTLES_PREPROCESSING=0` (a batch still preprocessing is dropped with no
+//! result until its future comes back, #1894). Dropped on purpose is not lost. The fact
+//! outlasts the close itself (`suspended_for_close` ends at the undo), so the controller
+//! remembers the reply the close stopped ([`TurnFacts::reply_discarded_for_close`]) until the
+//! conversation has a newer one.
+//!
+//! A PLAIN STOP WHILE A BATCH IS PREPROCESSING (#2104) needs no rule here. The stop gives the
+//! batch's calls their cancelled result itself (`cancel_all_pending_actions`), so they are
+//! settled by the ordinary reading before the first hop. Before #2104 they had no status and no
+//! result until the batch's future came back, this watch read them as lost after three hops and
+//! logged a false `hop=agent_turn_stuck`: the sentence above about a batch "between its
+//! preprocess future and the queue" being held by a future was not true of a batch a stop had
+//! dropped. With `PHOSPHOR_STOP_SETTLES_PREPROCESSING=0` that false report is back.
 //!
 //! NOT COVERED, on purpose: "the turn is in progress and nothing is held". That shape is also a
 //! new, empty conversation, a turn waiting for the network, a monitored command and a parked
@@ -98,9 +109,10 @@ pub struct TurnFacts {
     /// [`ids_hash`] of those calls.
     pub unsettled_ids: u64,
     /// The conversation's last reply is the one a pane close stopped: a call of it with no
-    /// status and no result was dropped by the close on purpose (a batch still preprocessing,
-    /// or, with the kill switch off, every call whose result the close erased), not lost
-    /// (#2103). Parked actions are judged all the same.
+    /// status and no result was dropped by the close on purpose, not lost (#2103). Since
+    /// #2104 that is only reachable with a kill switch off (the close erased the results, or
+    /// its stop left a batch that was still preprocessing unsettled). Parked actions are
+    /// judged all the same.
     pub reply_discarded_for_close: bool,
 }
 
