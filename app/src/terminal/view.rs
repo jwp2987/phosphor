@@ -6,6 +6,7 @@ pub mod block_onboarding;
 pub(crate) mod blocklist_filter;
 mod bookmarks;
 mod fork_restore_persist;
+mod grid_resize_hop;
 pub mod init;
 pub mod inline_banner;
 pub mod load_ai_conversation;
@@ -26649,6 +26650,14 @@ impl TerminalView {
 
         // Update model with new size info.
         self.model.lock().resize(size_update);
+        if size_update.rows_or_columns_changed() {
+            // Trace only (app test resize_reflow_output): the grid the pty is about to be given.
+            grid_resize_hop::log(
+                size_update.new_size.rows(),
+                size_update.new_size.columns(),
+                self.view_id,
+            );
+        }
         self.find_model.update(ctx, |find_model, ctx| {
             find_model.rerun_find_on_active_grid(ctx);
         });
