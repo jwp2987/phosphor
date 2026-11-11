@@ -1092,7 +1092,7 @@ impl AppContext {
         let disable_callback: AppModalCallback = if can_disable {
             alert_data.on_disable
         } else {
-            Box::new(|_| {})
+            Box::new(|_: &mut AppContext| {})
         };
         let response_data = PlatformModalResponseData {
             button_callbacks,

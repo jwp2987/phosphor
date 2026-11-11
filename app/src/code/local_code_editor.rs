@@ -1850,7 +1850,7 @@ impl LocalCodeEditorView {
                  this editor and loads what is on disk."
             ),
             buttons,
-            |_| {},
+            |_: &mut AppContext| {},
         )
         .without_disable();
 
