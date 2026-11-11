@@ -25,9 +25,12 @@
 #   * "Please ask me a question <TAG>" (#1851) -> one ask_user_question call (one multiple-choice question, options "alpha" / "beta", TAG in the question text);
 #     after the answer the turn after the tool result is "Done." like any other;
 #   * "Please run a slow command then ask me a question <TAG>" (#1858) -> ONE reply with two calls: run_shell_command `sleep 8`, then ask_user_question;
+#   * "Please run scripted command <KEY>" (round 14, agent_autorun_permissions) -> one run_shell_command call with SCRIPTED_COMMANDS[KEY], a command the
+#     case registered beforehand. The prompt the case TYPES is plain prose: a command with `;`, `|` or `$(...)` typed into the input could be routed to
+#     the shell by its syntax and run there, which would read as "ran with no card". An unknown key -> the text "NO-SCRIPTED-COMMAND <KEY>";
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
 # Trigger order in reply_for (no trigger shadows another): plan, tool-result "Done.", stream long reply, follow up check, call mcp tool, show this image,
-# run a slow command then ask me a question, ask me a question, run / read / create / delete / edit exactly, STREAMLONG (sticky), SLOW, fallback.
+# run a slow command then ask me a question, ask me a question, run scripted command, run / read / create / delete / edit exactly, STREAMLONG (sticky), SLOW, fallback.
 # Every trigger and every fault `match` reads the text the USER typed (prompt_text): never the app's <environment_context> message, and never the
 # <attached_context> block the app puts in front of the prompt (the blocks run since the last query, with their output; #2045).
 # Fault injection (#1831, cases_agent_resilience.py): fake.inject(kind, times=1, match=None, **kw) arms a fault that the next `times` /api/chat requests
@@ -51,6 +54,17 @@
 # what the model was SENT, i.e. the command output the app handed back (`tool`) and every user message (`users`), so a case can prove the model's next request
 # carried the output of an interactive command and that no key typed into a program leaked into the conversation.
 # Endpoints: POST /api/chat (NDJSON stream), POST /api/show, GET /api/tags. The server counts requests (fake.requests) for the oracle.
+# Anthropic wire (round 14, agent_anthropic_wire): the same server also answers the Anthropic Messages API. A POST whose path ends in /messages (the app
+# posts <base_url>/v1/messages for a provider with api_type = "anthropic") is read as an Anthropic request (anthropic_to_messages: `system`, text /
+# tool_use / tool_result content blocks -> the role/content list every trigger reads), answered by the SAME reply_for, and written back as the Anthropic
+# event stream (anthropic_events: message_start, content_block_start / _delta / _stop for the text and for each tool_use with its input as
+# input_json_delta pieces, message_delta with the stop_reason, message_stop), or as one message object when the request says "stream": false.
+# Faults on that wire: status (an Anthropic error object), disconnect (kw after = text deltas sent before the cut), delay. Any other fault kind has
+# no Anthropic form here: the request is answered 501 and listed in fake.unknown, never answered as if no fault were armed.
+# fake.seen holds one {t, wire, purpose, text} per POST of EITHER wire and EVERY purpose (text = every message's content, the system prompt and
+# tool-call arguments included): seen_with(token) is the oracle for "this text reached this provider through any request at all".
+# A title request whose user text holds "conversation tag <TAG>" is answered "Tagged <TAG>" (agent_conversation_resume finds its conversation by it).
+# A second instance (agent_model_switch: two providers on two ports) is started with start(active=False), which leaves ACTIVE alone.
 import json, os, re, select, socket, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -66,6 +80,8 @@ FOLLOW_RE = re.compile(r"follow up check (\w+)")
 MCP_RE = re.compile(r"call mcp tool (\S+) on (\S+)(?: with (\{.*\}))?\s*$", re.S)
 ASKCMD_RE = re.compile(r"run a slow command then ask me a question(?:\s+(\w+))?")      # #1858: [run_shell_command sleep, ask_user_question] in ONE reply
 ASKQ_RE = re.compile(r"ask me a question(?:\s+(\w+))?")
+SCRIPT_RE = re.compile(r"run scripted command (\w+)")
+SCRIPTED_COMMANDS = {}       # KEY -> shell command, registered by a case before it types "Please run scripted command KEY"
 MARK_RE = re.compile(r"\[(\w+):(\d{4}|END)\]")
 STREAM_CHUNKS, STREAM_GAP_S = 240, 0.05
 
@@ -233,8 +249,16 @@ def classify_purpose(path, req):
     return "UNKNOWN_PURPOSE"
 
 
-def purpose_reply(purpose):
-    """pure: the scripted answer of a non-chat purpose, shaped like reply_for's"""
+TITLE_TAG_RE = re.compile(r"conversation tag (\w+)")
+
+
+def purpose_reply(purpose, messages=None):
+    """pure: the scripted answer of a non-chat purpose, shaped like reply_for's. A title request whose user text names a "conversation tag <TAG>"
+    gets the title "Tagged <TAG>", so a case can find its own conversation in the app's conversation list; every other title is the fixed one."""
+    if purpose == "title" and messages:
+        m = TITLE_TAG_RE.search("\n".join(c for c in user_texts(messages) if isinstance(c, str)))
+        if m:
+            return {"text": "Tagged %s" % m.group(1), "tool": None}
     return {"text": PURPOSE_TEXT[purpose], "tool": None}
 
 
@@ -382,6 +406,12 @@ def reply_for(messages, tools=None):
     m = ASKQ_RE.search(text)
     if m:
         return {"text": "", "tool": ask_question_call(m.group(1)), "ask_question": True}
+    m = SCRIPT_RE.search(text)
+    if m:
+        cmd = SCRIPTED_COMMANDS.get(m.group(1))
+        if cmd is None:
+            return {"text": "NO-SCRIPTED-COMMAND %s" % m.group(1), "tool": None}
+        return {"text": "", "tool": {"name": "run_shell_command", "arguments": {"command": cmd, "is_read_only": False, "uses_pager": False, "is_risky": False}}}
     m = ASK_RE.search(text)
     if m:
         return {"text": "", "tool": {"name": "run_shell_command", "arguments": {"command": m.group(1), "is_read_only": False, "uses_pager": False, "is_risky": False}}}
@@ -444,6 +474,132 @@ def stream_lines(model, reply, chunk=6):
     return out
 
 
+# ---------------------------------------------------------------- the Anthropic Messages wire (pure parts)
+def is_anthropic_path(path):
+    """pure: is this URL path the Anthropic Messages endpoint (<base>/v1/messages; the app's genai adapter posts `{base_url}messages`)"""
+    return (path or "").split("?")[0].rstrip("/").endswith("/messages")
+
+
+def _ant_text(content):
+    """pure: the text of an Anthropic `content` value: a string, or the text blocks of a block list joined; anything else as JSON"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join((b.get("text") or "") if isinstance(b, dict) and b.get("type") == "text" else json.dumps(b) for b in content)
+    return "" if content is None else json.dumps(content)
+
+
+def anthropic_to_messages(req):
+    """pure: the messages of an Anthropic Messages request body as the role/content list reply_for and every oracle read: `system` (a string or text
+    blocks) -> one system message; a user turn's text blocks -> one user message (joined by a blank line, as the app joins attachment and prompt);
+    each tool_result block -> its own tool message, in order, BEFORE the text of the same turn (Anthropic puts the results first); an assistant turn's
+    text -> its content and its tool_use blocks -> tool_calls."""
+    out = []
+    sysm = (req or {}).get("system")
+    stext = sysm if isinstance(sysm, str) else "\n\n".join((b.get("text") or "") for b in (sysm or []) if isinstance(b, dict))
+    if stext:
+        out.append({"role": "system", "content": stext})
+    for m in (req or {}).get("messages") or []:
+        role, c = m.get("role"), m.get("content")
+        if isinstance(c, str):
+            out.append({"role": role, "content": c})
+            continue
+        texts, calls = [], []
+        for b in c or []:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "text":
+                texts.append(b.get("text") or "")
+            elif b.get("type") == "tool_result":
+                out.append({"role": "tool", "content": _ant_text(b.get("content")), "tool_use_id": b.get("tool_use_id")})
+            elif b.get("type") == "tool_use":
+                calls.append({"id": b.get("id"), "function": {"name": b.get("name"), "arguments": b.get("input")}})
+        if role == "assistant":
+            msg = {"role": "assistant", "content": "".join(texts)}
+            if calls:
+                msg["tool_calls"] = calls
+            out.append(msg)
+        elif texts:
+            out.append({"role": role or "user", "content": "\n\n".join(texts)})
+    return out
+
+
+def anthropic_request(req):
+    """pure: an Anthropic request body as the Ollama-shaped request the handler works on ({model, messages, tools, stream})"""
+    return {"model": (req or {}).get("model"), "messages": anthropic_to_messages(req), "stream": (req or {}).get("stream"),
+            "tools": [{"function": {"name": t.get("name")}} for t in (req or {}).get("tools") or [] if isinstance(t, dict)]}
+
+
+def _reply_calls(reply):
+    return ([reply["tool"]] if reply.get("tool") else []) + list(reply.get("tools_after") or [])
+
+
+def anthropic_events(model, reply, chunk=6, call_ids=None):
+    """pure: [(event name, data dict)] of one streamed Anthropic answer: message_start; the text as one text block (content_block_start, one
+    text_delta per `chunk` characters or per reply chunk, content_block_stop); each tool call as one tool_use block whose input arrives as TWO
+    input_json_delta pieces (the client must join them); message_delta with stop_reason tool_use / end_turn; message_stop.
+    call_ids: the id of each tool_use block (the server passes unique ones; default toolu_fake_<n>)."""
+    ev = [("message_start", {"type": "message_start", "message": {"id": "msg_fake", "type": "message", "role": "assistant", "model": model, "content": [],
+                                                                  "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 0}}})]
+    i = 0
+    t = reply.get("text") or ""
+    pieces = reply.get("chunks") or [t[k:k + chunk] for k in range(0, len(t), chunk)]
+    if pieces:
+        ev.append(("content_block_start", {"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}}))
+        for p in pieces:
+            ev.append(("content_block_delta", {"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": p}}))
+        ev.append(("content_block_stop", {"type": "content_block_stop", "index": i}))
+        i += 1
+    calls = _reply_calls(reply)
+    for n, c in enumerate(calls):
+        js = c["arguments"] if isinstance(c["arguments"], str) else json.dumps(c["arguments"])
+        cid = call_ids[n] if call_ids else "toolu_fake_%d" % n
+        ev.append(("content_block_start", {"type": "content_block_start", "index": i, "content_block": {"type": "tool_use", "id": cid, "name": c["name"], "input": {}}}))
+        for part in (js[:len(js) // 2], js[len(js) // 2:]):
+            if part:
+                ev.append(("content_block_delta", {"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": part}}))
+        ev.append(("content_block_stop", {"type": "content_block_stop", "index": i}))
+        i += 1
+    ev.append(("message_delta", {"type": "message_delta", "delta": {"stop_reason": "tool_use" if calls else "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 1}}))
+    ev.append(("message_stop", {"type": "message_stop"}))
+    return ev
+
+
+def sse(events):
+    """pure: the text/event-stream bytes of [(event, data)]"""
+    return "".join("event: %s\ndata: %s\n\n" % (name, json.dumps(data)) for name, data in events).encode()
+
+
+def anthropic_message_body(model, reply, call_ids=None):
+    """pure: the single JSON object of a NON-streaming Anthropic answer ("stream": false: titles and the other one-shot purposes)"""
+    content = [{"type": "text", "text": reply.get("text") or ""}] if (reply.get("text") or not _reply_calls(reply)) else []
+    for n, c in enumerate(_reply_calls(reply)):
+        content.append({"type": "tool_use", "id": call_ids[n] if call_ids else "toolu_fake_%d" % n, "name": c["name"],
+                        "input": c["arguments"] if isinstance(c["arguments"], dict) else {}})
+    return json.dumps({"id": "msg_fake", "type": "message", "role": "assistant", "model": model, "content": content,
+                       "stop_reason": "tool_use" if _reply_calls(reply) else "end_turn", "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+
+def anthropic_error_body(code):
+    """pure: the JSON error object of a `status` fault on the Anthropic wire"""
+    kind = {429: "rate_limit_error", 401: "authentication_error", 529: "overloaded_error"}.get(int(code), "api_error")
+    return json.dumps({"type": "error", "error": {"type": kind, "message": "fake model fault: HTTP %d" % int(code)}}).encode()
+
+
+ANTHROPIC_FAULTS = ("status", "disconnect", "delay")        # the fault kinds that have an Anthropic-wire form
+
+
+def seen_text(messages):
+    """pure: everything a request's messages carry as one text: each message's content (a non-string as JSON) and its tool-call arguments. The oracle
+    for "did this token reach this provider in ANY request" (fake.seen / seen_with)."""
+    out = []
+    for m in messages or []:
+        c = m.get("content")
+        out.append(c if isinstance(c, str) else json.dumps(c))
+        if m.get("tool_calls"):
+            out.append(json.dumps(m["tool_calls"]))
+    return "\n".join(out)
+
 
 class FakeModel:
     ACTIVE = None                                   # the instance run.py started (same object as the module global ACTIVE)
@@ -458,6 +614,9 @@ class FakeModel:
         self.streams, self.followups, self.tool_results, self.tools_seen, self.mcp_missing, self.user_turns = {}, {}, [], set(), [], []   # #1833/#1834
         self.lock = threading.Lock()
         self.headers = []        # lower-cased header dict of every request, for the provider-key oracle (a provider's extra_headers sentinel must arrive here)
+        self.seen = []           # one {t, wire, purpose, text} per POST of either wire and every purpose (seen_text): see seen_with
+        self.call_seq = 0        # tool_use ids of the Anthropic wire are unique per reply
+        self.by_wire = {"ollama": 0, "anthropic": 0}      # CHAT requests per wire: agent_anthropic_wire proves its prompts came on the Anthropic one
         self.log_path = os.environ.get("APPCI_FAKE_MODEL_LOG") or None
         owner = self
 
@@ -496,9 +655,15 @@ class FakeModel:
                     req = json.loads(self.rfile.read(n) or b"{}")
                 except ValueError:
                     return self._send(400, b'{"error":"bad json"}')
-                purpose = classify_purpose(self.path, req)
+                wire = "anthropic" if is_anthropic_path(self.path) else "ollama"
+                if wire == "anthropic":           # the same triggers, faults and oracles: the request is read into the shape they all use
+                    req = anthropic_request(req)
+                purpose = classify_purpose("/api/chat" if wire == "anthropic" else self.path, req)
                 with owner.lock:
                     owner.by_purpose[purpose] = owner.by_purpose.get(purpose, 0) + 1
+                    owner.seen.append({"t": time.time(), "wire": wire, "purpose": purpose, "text": seen_text(req.get("messages"))})
+                    if purpose == "chat":
+                        owner.by_wire[wire] += 1
                 if purpose == "show":
                     return self._send(200, json.dumps({"model_info": {"general.context_length": 32768}, "capabilities": ["completion", "tools"]}).encode())
                 if purpose == "UNKNOWN_PURPOSE":
@@ -533,8 +698,10 @@ class FakeModel:
                     elif msgs:
                         owner.user_turns.append((time.time(), msgs[-1].get("content") or ""))
                 fault = owner._take(user_prompt(msgs), purpose)
+                if wire == "anthropic":
+                    return self._anthropic(req, purpose, fault, msgs)
                 if purpose != "chat" and not fault:
-                    reply = purpose_reply(purpose)
+                    reply = purpose_reply(purpose, msgs)
                     if req.get("stream") is False:
                         return self._send(200, one_shot_body(req.get("model") or "fake-model", reply).encode())
                     return self._send(200, ("\n".join(stream_lines(req.get("model") or "fake-model", reply)) + "\n").encode(), "application/x-ndjson")
@@ -614,7 +781,7 @@ class FakeModel:
                             owner.aborted += 1
                         return
                 if purpose != "chat":                                    # a non-chat purpose whose fault was a `delay`: then the normal purpose answer
-                    reply = purpose_reply(purpose)
+                    reply = purpose_reply(purpose, msgs)
                     if req.get("stream") is False:
                         return self._send(200, one_shot_body(req.get("model") or "fake-model", reply).encode())
                     return self._send(200, ("\n".join(stream_lines(req.get("model") or "fake-model", reply)) + "\n").encode(), "application/x-ndjson")
@@ -657,6 +824,84 @@ class FakeModel:
                 rec["broken"] = True
             rec["t1"] = time.time()
 
+        def _anthropic(self, req, purpose, fault, msgs):
+            """the answer on the Anthropic wire (the request is already recorded): a fault that has an Anthropic form, else the same scripted reply as
+            the Ollama wire, as an event stream or (\"stream\": false) one message object"""
+            model = req.get("model") or "fake-model"
+            if fault:
+                kind, kw = fault["kind"], fault["kw"]
+                if kind not in ANTHROPIC_FAULTS:
+                    owner.unknown.append({"path": self.path, "model": model, "system_head": "fault %s has no Anthropic-wire form" % kind})
+                    sys.stderr.write("fake_model: fault %s has no Anthropic-wire form (%s)\n" % (kind, self.path))
+                    return self._send(501, json.dumps({"type": "error", "error": {"type": "api_error", "message": "fake model: fault %s has no Anthropic-wire form" % kind}}).encode())
+                owner.fired.append(kind)
+                if kind == "status":
+                    body = anthropic_error_body(kw.get("code", 500))
+                    self.send_response(int(kw.get("code", 500)))
+                    if kw.get("retry_after") is not None:
+                        self.send_header("Retry-After", str(kw["retry_after"]))
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if kind == "disconnect":                                  # message_start, the text block's start and `after` text deltas, then the cut
+                    events = anthropic_events(model, {"text": drip_text(40), "tool": None})
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Content-Length", str(100000))        # promises more than is sent: the cut is a protocol error, not a clean end
+                    self.end_headers()
+                    self.wfile.write(sse(events[:2 + int(kw.get("after", 2))]))
+                    self.wfile.flush()
+                    self.close_connection = True
+                    try:
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    return
+                if kind == "delay" and not self._wait_or_hangup(float(kw.get("secs", 30))):
+                    return
+            reply = reply_for(msgs, req.get("tools")) if purpose == "chat" else purpose_reply(purpose, msgs)
+            if purpose == "chat":
+                if reply.get("mcp_missing"):
+                    owner.mcp_missing.append(reply["mcp_missing"])
+                if reply.get("check"):
+                    owner.followups[reply["check"]["tag"]] = dict(reply["check"], verdict=check_verdict(reply["check"]), t=time.time())
+                owner.log.append((time.time(), (reply["tool"]["arguments"].get("command") if reply["tool"] and isinstance(reply["tool"]["arguments"], dict) else None)))
+            with owner.lock:
+                owner.call_seq += 1
+                base = owner.call_seq
+            ids = ["toolu_fake_%d_%d" % (base, n) for n in range(len(_reply_calls(reply)))]       # unique per reply, as a real provider's are
+            if req.get("stream") is False:
+                return self._send(200, anthropic_message_body(model, reply, ids).encode())
+            events = anthropic_events(model, reply, call_ids=ids)
+            if not (reply.get("chunks") or reply.get("stream")):
+                if reply.get("slow") or owner.delay_s:
+                    time.sleep(3.0 if reply.get("slow") else owner.delay_s)
+                return self._send(200, sse(events), "text/event-stream")
+            # a long reply on an open, close-delimited stream, one text delta per gap (as _stream does for the Ollama wire)
+            gap = reply["gap_ms"] / 1000.0 if reply.get("chunks") else STREAM_GAP_S
+            rec = dict(total=sum(1 for n, d in events if n == "content_block_delta" and d["delta"]["type"] == "text_delta"), sent=0, finished=False, broken=False, t0=time.time(), t1=None)
+            if reply.get("tag"):
+                owner.streams[reply["tag"]] = rec
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            try:
+                for name, data in events:
+                    self.wfile.write(sse([(name, data)]))
+                    self.wfile.flush()
+                    if name == "content_block_delta" and data["delta"]["type"] == "text_delta":
+                        rec["sent"] += 1
+                        time.sleep(gap)
+                rec["finished"] = True
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                rec["broken"] = True
+            rec["t1"] = time.time()
+
+        H._anthropic = _anthropic
         H._stream = _stream
         self._handler = H
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -692,6 +937,11 @@ class FakeModel:
         """how many prompts the app actually sent (a request whose last message is a user turn) that contain `token`"""
         return sum(1 for t in self.fresh if token in t)
 
+    def seen_with(self, token, since=0, wire=None, purpose=None):
+        """the fake.seen rows from index `since` on whose text holds `token` (optionally of one wire / purpose): every request of any purpose that
+        carried it. `since` = len(fake.seen) taken before the step."""
+        return [x for x in list(self.seen)[since:] if token in x["text"] and (wire is None or x["wire"] == wire) and (purpose is None or x["purpose"] == purpose)]
+
     def go_down(self):
         """connection refused: the listening socket is closed (a running answer is not touched)"""
         if self.up:
@@ -714,10 +964,12 @@ class FakeModel:
                 best = results
         return best
 
-    def start(self):
+    def start(self, active=True):
+        """serve. active=False: a SECOND provider beside the run's own (agent_model_switch): ACTIVE keeps naming the run's fake model"""
         global ACTIVE
-        ACTIVE = self
-        FakeModel.ACTIVE = self
+        if active:
+            ACTIVE = self
+            FakeModel.ACTIVE = self
         self.thread.start()
         return self
 

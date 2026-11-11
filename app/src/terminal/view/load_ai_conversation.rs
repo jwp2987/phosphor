@@ -586,6 +586,9 @@ impl TerminalView {
         // because AI block creation relies on the action result for an action existing in order to determine
         // what the state should be.
         let blocks_created = ai_block_params.len();
+        // AI blocks put into this pane per conversation, for the `hop=conversation_restored`
+        // trace lines below (a few conversations per pane at most, so a list is enough).
+        let mut restored_per_conversation: Vec<(AIConversationId, usize)> = Vec::new();
         for params in ai_block_params {
             let conversation_id = params.conversation_id;
             let command_block_index = params.command_block_index;
@@ -619,6 +622,13 @@ impl TerminalView {
             }
 
             self.create_and_insert_ai_block(params, ctx);
+            match restored_per_conversation
+                .iter_mut()
+                .find(|(id, _)| *id == conversation_id)
+            {
+                Some((_, count)) => *count += 1,
+                None => restored_per_conversation.push((conversation_id, 1)),
+            }
 
             // A read-only view of a live conversation never enters the conversation's agent view
             // (that would move liveness off the pane that is running it, #988), so its AI blocks
@@ -634,6 +644,19 @@ impl TerminalView {
                         .update_agent_view_conversation_id_for_rich_content(view_id, None);
                 }
             }
+        }
+
+        // Trace only (no behaviour): which conversation's earlier turns this pane now holds, for
+        // the real-app test of reopening a conversation after a restart on a machine with no
+        // OCR. Formatted only when input-order logging is on.
+        for (conversation_id, ai_blocks) in &restored_per_conversation {
+            warpui::input_order::log_hop("conversation_restored", || {
+                conversation_restored_detail(
+                    &conversation_id.to_string(),
+                    *ai_blocks,
+                    is_restoring_on_startup,
+                )
+            });
         }
 
         // Restored command blocks are inserted into the block list without going through the
@@ -1681,6 +1704,43 @@ fn command_block_indices_for_exchanges<'a>(
         &command_blocks,
         &exchange_timestamps,
     )
+}
+
+/// The detail of the `hop=conversation_restored` log line: `conv=<conversation id>
+/// ai_blocks=<n> startup=<0|1>`. Logged once per conversation whose earlier turns were put back
+/// into a pane as AI blocks: at startup with session restore on (`startup=1`), or when a stored
+/// conversation is opened again from the conversation list (`startup=0`). `conv` is the same id
+/// `hop=turn` prints, so a test can tell that the turns it sees are the reopened conversation's.
+/// Ids and counts only, never the conversation's text.
+fn conversation_restored_detail(
+    conversation_id: &str,
+    ai_blocks: usize,
+    on_startup: bool,
+) -> String {
+    format!(
+        "conv={conversation_id} ai_blocks={ai_blocks} startup={}",
+        u8::from(on_startup)
+    )
+}
+
+#[cfg(test)]
+mod conversation_restored_log_tests {
+    use super::conversation_restored_detail;
+
+    /// The real-app case `agent_conversation_resume` reads this line with
+    /// `hop=conversation_restored conv=(\S+) ai_blocks=(\d+) startup=([01])`: the three fields,
+    /// in this order, single-space separated.
+    #[test]
+    fn conversation_restored_detail_names_conversation_count_and_origin() {
+        assert_eq!(
+            conversation_restored_detail("0b6f-conv", 3, true),
+            "conv=0b6f-conv ai_blocks=3 startup=1"
+        );
+        assert_eq!(
+            conversation_restored_detail("0b6f-conv", 1, false),
+            "conv=0b6f-conv ai_blocks=1 startup=0"
+        );
+    }
 }
 
 #[cfg(test)]

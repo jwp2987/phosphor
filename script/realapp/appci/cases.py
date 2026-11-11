@@ -86,11 +86,16 @@ PROVING = (
     "editor_memory_7mb", "flood_scrollback_find",
     # #1989 / #1988: Alt-. is the editor's last argument; with a program in front Alt-. / Alt-R / Ctrl-R reach it as ESC . / ESC r / 0x12 (Linux backends)
     "ui_readline_keys",
+    # round 14 wave 2 (docs/design/r14-test-gaps.md 7.1 T11-T15, cases_agent_w2.py): model switch by keyboard between two fake providers, the Anthropic
+    # wire format, the safe allow list (auto-run) against rm / `;` / `$(...)` / a pipe to sh, a conversation reopened after a restart, a block's output
+    # as context with redaction off and on. All need the scripted model (PROVING_FAKE).
+    "agent_model_switch", "agent_anthropic_wire", "agent_autorun_permissions", "agent_conversation_resume", "agent_block_context",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
 PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_interactive_", "agent_noninteractive_", "agent_latency_", "agent_fault_", "agent_restart_",
-                                                         "agent_gate_", "agent_question_")) or n in ("agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming", "network_gate_notice"))
+                                                         "agent_gate_", "agent_question_")) or n in ("agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming", "network_gate_notice",
+                                                                                                      "agent_model_switch", "agent_anthropic_wire", "agent_autorun_permissions", "agent_conversation_resume", "agent_block_context"))
 # The PROVING lab cases (cases_lab*.py, the fake ssh lab). Globs, as --cases takes them. The fix tier plays app-test-lab-linux with these
 # (script/ci/ci_seq.py LAB_FIX_CASES), Linux only, APPCI_FAKE_MODEL=1, APPCI_LAB_MATRIX=quick.
 # #1970 / #1983 (round 10): the slow-link and Ctrl-C lab cases had existed since 2026-11-08 but no tier ever played them. lab_enter_no_network_wait is new;
@@ -6425,3 +6430,4 @@ import cases_agent_latency  # noqa: E402,F401  (#1828: agent_latency_key, agent_
 import cases_win_handover  # noqa: E402,F401  (#1882/#1883/#1891: ps_read_host_secure, gitbash_precmd_secret; Windows secrets and interactive reads on ConPTY)
 import cases_precmd_secret  # noqa: E402,F401  (#1923: precmd_secret_honor_ps1, a bash precmd `read -s` with the app's prompt and with honor PS1 on)
 import cases_wrap_vtabs  # noqa: E402,F401  (#1976: ui_copy_wrapped_output / _drag, copy of soft-wrapped lines; #1990: ui_vertical_tabs_many / _panel_click)
+import cases_agent_w2  # noqa: E402,F401  (round 14 wave 2, T11-T15: agent_model_switch, agent_anthropic_wire, agent_autorun_permissions, agent_conversation_resume, agent_block_context)

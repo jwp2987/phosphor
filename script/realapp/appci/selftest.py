@@ -7206,6 +7206,10 @@ def gitbash_bootstrap_in_command_2051():
     assert ("`%s`" % n) in doc and "gitbash_bootstrap_in_command_2051" in doc and "PHOSPHOR_MSYS_SSH_BOOTSTRAP=typed" in doc
 
 
+import selftest_agent_w2  # noqa: E402  (round 14 wave 2: cases_agent_w2.py and the fake model's Anthropic wire)
+CHECKS.extend(selftest_agent_w2.CHECKS)
+
+
 def main():
     failed = 0
     for f in CHECKS:
