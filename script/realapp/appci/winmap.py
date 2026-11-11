@@ -109,6 +109,16 @@ GITBASH_ONLY = {
     # the two cases depends on the pane's shell: one pane is enough, and the fake-model pass of the Git Bash pane is the one that carries them
     "mcp_basic": "the MCP path does not depend on the pane's shell: runs once, in the Git Bash pane's fake-model pass (#2065)",
     "agent_mcp_faults": "the MCP path does not depend on the pane's shell: runs once, in the Git Bash pane's fake-model pass (#1834, #2065)",
+    # r15 wave 4 (#2060; r14-test-gaps T31): the Windows pointer is SendInput (winapi.Pointer), every position comes from the app's find hook (no OCR)
+    "ui_mouse_select_copy": "T31: the token is printed by bash `printf` and the command is checked against rec.log: runs in the Git Bash pane (pointer by SendInput, position from the app's find hook)",
+    "ui_copy_wrapped_drag": "T31 (#1976): `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (pointer by SendInput, positions from the app's find hook)",
+    "ui_vertical_tabs_panel_click": "T31 (#1990): every tab's `cd`, `echo` and `pwd -W` lines are bash and are checked against rec.log: runs in the Git Bash pane (panel rows from the app's find hook, clicked by SendInput)",
+    "selection_modes": "T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's find hook)",
+    "context_menu_actions": "T31 (r14 T27): the block is printed by bash `printf`, the pasted line is `echo ... >>` checked against rec.log: runs in the Git Bash pane (pointer by SendInput, positions from the app's find hook)",
+    # r15 wave 4 (#2060; r14-test-gaps T33): the window size is SetWindowPos read back; the live settings rewrite uses the file the app reads (cases_ui.settings_path)
+    "ui_resize_typing": "T33: the wrapped 150-character command is checked against rec.log: runs in the Git Bash pane (window size by SetWindowPos)",
+    "resize_reflow_output": "T33 (r14 T26): a bash SIGWINCH trap, `stty size` and vim: runs in the Git Bash pane (window size by SetWindowPos)",
+    "ui_vertical_tabs_many": "T33 (#1990): every tab's `cd`, `echo` and `pwd -W` lines are bash and are checked against rec.log: runs in the Git Bash pane (the panel is switched on in the settings file the app reads)",
 }
 # PowerShell-only: the same idea as a case that already exists for the other pane
 PS_ONLY = {
@@ -122,12 +132,12 @@ PS_ONLY = {
 }
 # not on Windows at all, with the reason
 NOT_WINDOWS = {
-    # round 14 wave 3a (T21 to T25): the Windows backend has no pointer synthesis (mouse SendInput, gap H1 / T31) and no OCR; the pane case's probe is POSIX
-    "link_and_path_click": "T21: no pointer synthesis in the Windows backend yet (mouse SendInput, T31); the recording opener is a POSIX xdg-open and the trace is strace",
-    "selection_modes": "T22: no pointer synthesis in the Windows backend yet (mouse SendInput, T31) and no OCR engine to place it",
+    # round 14 wave 3a (T21 to T25). The Windows pointer exists since r15 wave 4 (SendInput, T31: selection_modes moved to GITBASH_ONLY); the cases
+    # left here need something else that is not built for Windows, named in each reason
+    "link_and_path_click": "T21: not ported: the recording opener is a POSIX xdg-open on the app's PATH and the network trace is strace (the pointer itself exists since r15 wave 4)",
     "primary_and_middle_click": "T23: the PRIMARY selection is an X11 / Wayland concept; Windows has one clipboard",
-    "wheel_scroll": "T24: no pointer or wheel synthesis in the Windows backend yet (mouse SendInput, T31), no OCR engine, and bytes_reader.py needs termios",
-    "pane_resize_maximize": "T25: not ported: the probe is POSIX `sh -c 'echo $PPID $(stty size)'` and the divider drag needs the pointer (T31); the Git Bash pane is a follow-up",
+    "wheel_scroll": "T24: not ported: the scroll position is read from the screen by OCR (no OCR engine on the VM) and bytes_reader.py needs termios (the wheel event itself exists since r15 wave 4: winapi.mouse_wheel_event)",
+    "pane_resize_maximize": "T25: not ported: the probe is POSIX `sh -c 'echo $PPID $(stty size)'` and the divider drag is judged by a SIGWINCH logger written for a POSIX tty; the Git Bash pane is a follow-up (the pointer exists since r15 wave 4)",
     "agent_interactive_vim": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
     "agent_interactive_ssh": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
     "agent_interactive_ssh_takeover": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
@@ -158,17 +168,12 @@ NOT_WINDOWS = {
     "intl_ime_japanese": "macOS input methods (TISSelectInputSource). NEEDS: a Windows IME arm in the harness (not built; r14-test-gaps T39)",
     "intl_ime_pinyin": "macOS input methods (TISSelectInputSource). NEEDS: a Windows IME arm in the harness (not built; r14-test-gaps T39)",
     "intl_deadkey_option": "macOS Option dead keys",
-    "ui_mouse_select_copy": "no pointer synthesis in the Windows backend yet (xdotool / sway seat on Linux)",
-    "ui_right_click_paste": "no pointer synthesis in the Windows backend yet",
-    "ui_copy_wrapped_drag": "#1976: no pointer synthesis in the Windows backend yet (the keyboard half, ui_copy_wrapped_output, runs in the Git Bash pane)",
+    "ui_right_click_paste": "not ported: it falls back to OCR for the menu entry and has never passed anywhere (r14-test-gaps F13); on Windows the same path is context_menu_actions (the input's Paste entry, placed from the app's find hook)",
     "ui_readline_keys": "#1989: Alt-. / Alt-R are sent as X11 / Wayland key names; the Windows chord for them is not mapped yet (the binding itself is unit-tested per platform)",
-    "ui_vertical_tabs_many": "#1990: not yet ported: switches the panel on by rewriting the settings file while the app runs (as ui_settings_live), and the Windows config path is not wired into cases_ui.settings_path",
-    "ui_vertical_tabs_panel_click": "#1990: no pointer synthesis in the Windows backend yet, and the settings rewrite of ui_vertical_tabs_many",
     "ui_drag_drop_file": "no way to synthesize a drag source on Windows from the harness. NEEDS: a harness capability that is not built (an OLE drag source; r14-test-gaps T38)",
-    "ui_resize_typing": "no window resize implementation in the Windows backend yet",
-    "ui_split_panes": "needs OCR word boxes + pointer synthesis; neither exists in the Windows backend yet",
+    "ui_split_panes": "not ported: the prompt.log count of new panes and exit_nested have not been reviewed for a Windows pane (keyboard only; the note here used to name OCR and the pointer, which the case does not use)",
     "ui_startup_time": "not yet ported: reads the Linux log format / paths",
-    "ui_settings_live": "not yet ported: rewrites the Linux settings path while the app runs",
+    "ui_settings_live": "not yet ported: the settings file the app reads on Windows is wired since r15 wave 4 (cases_ui.settings_path), but the case's theme / font steps and screenshot thresholds have not been run or reviewed there (its vertical-tabs step runs through ui_vertical_tabs_many)",
     "upgrade_from_v0_1_17": "#1546: Linux first: the seed paths (~/.config/phosphor), the secret-tool keyring helper and the AppImage fetch are the Linux ones; the table and fixture are platform-neutral (docs/testing.md 2.18)",
     "keyring_unavailable_startup": "#1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)",
     "quit_24_tabs": "not yet ported: Linux quit key and log check",
@@ -176,12 +181,12 @@ NOT_WINDOWS = {
     "flood_typing_latency": "not yet ported: POSIX flood and pty arrival reader",
     "flood_scrollback_find": "needs OCR (tesseract) and the Linux find flow",
     "soak": "not yet ported: samples /proc",
-    "alt_screen_mouse_reporting": "no pointer synthesis in the Windows backend yet, and the receiving program needs python3 termios (#1537)",
+    "alt_screen_mouse_reporting": "not ported: the receiving program needs python3 termios (#1537), which a Windows pane does not have (the pointer exists since r15 wave 4)",
     "scroll_keys_position": "#2072: the scroll position is read from the screen by OCR and the Windows runner has no OCR engine; the app logs no scroll-position hop yet (T34's grid hop would serve)",
     "sudo_su_real_shell": "sudo/su/ksu do not exist in a Windows pane (#1536)",
     "sudo_su_real_shell": "sudo/su/ksu do not exist in a Windows pane (#1536); by design, no machine change makes it run here",
     "ssh_drop_reconnect": "not yet ported: the `~.` escape and `kill -9 $$` need verifying against the msys/Win32 ssh clients (#1535)",
-    "settings_ui_toggle_persists": "r14 T17: the Windows backend has no verified Ctrl-, chord, and the case hand-edits the settings file while the app runs (the Windows config path is not wired into cases_ui.settings_path)",
+    "settings_ui_toggle_persists": "r14 T17: the Windows backend has no verified Ctrl-, chord (the settings file the app reads is wired since r15 wave 4, cases_ui.settings_path; the case has not been reviewed for Windows)",
     "cb_settings_ui_open": "the Windows backend has no verified Ctrl-, chord and the page is not OCR-able there",
     "cb_settings_migration": "needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle); the Windows relaunch is the separate runner flow",
     "cb_report_problem": "the Windows Downloads folder is a known folder, not under the scratch HOME, so the bundle does not land where the case looks (set PHOSPHOR_DIAG_BUNDLE_DIR in the app's environment to enable)",
@@ -196,10 +201,8 @@ NOT_WINDOWS = {
     "network_gate_switch": "needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle) and the Linux profile layout",
     "claude_plugin_offline": "Wave N: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the plugin's hook scripts are bash+jq",
     "agent_plugins_offline": "needs `unshare -rn` (Linux network namespaces) and the Linux pty; the Codex and Gemini hook scripts are bash+jq and write to /dev/tty",
-    "resize_reflow_output": "r14 T26: no window resize call in the Windows backend yet (SetWindowPos, r14-test-gaps T33); the SIGWINCH trap and `stty size` are POSIX",
-    "context_menu_actions": "r14 T27: no pointer synthesis in the Windows backend yet (mouse SendInput, r14-test-gaps T31)",
-    "tab_pointer_use": "r14 T28: no pointer synthesis in the Windows backend yet (r14-test-gaps T31), and the live settings rewrite of ui_vertical_tabs_many",
-    "minimize_fullscreen": "r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33)",
+    "tab_pointer_use": "r14 T28: not ported in r15 wave 4 (r14-test-gaps T31 names five cases, this is not one): the pointer, the middle button and the live settings rewrite now exist; the shell-pid probe (`$$` against os.kill) is POSIX",
+    "minimize_fullscreen": "r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33 built the resize only)",
 }
 
 
@@ -267,6 +270,14 @@ FIX_TIER = {
 # a case that exists only in one mode/pane of the fix tier (key_loss_control: Git Bash terminal only; it is also GITBASH_ONLY above)
 FIX_ONLY_IN = {"key_loss_control": (("terminal", "gitbash"),), "enter_loss_control": (("terminal", "powershell"), ("terminal", "gitbash"))}
 FULL_OPTS = dict(cases=None, ref=True, ft_gaps=(0.0, 0.25), cc_short=False)
+# r15 wave 4 (#2060): full-tier cases whose WINDOWS arm is new (the pointer by SendInput, the window size by SetWindowPos) and has never run. They are
+# older than cases.PROVING on Linux / macOS and stay full-tier there; on Windows they join every fix-tier pass (owner rule 2026-11-09: what is new
+# runs in the fix tier until it has passed) and SKIP with their reason in the PowerShell pane. Leaving this tuple is the owner's decision, like
+# PROVING. Each name must be a registered case outside SMOKE and PROVING (selftest).
+PROVING_WINDOWS = (
+    "ui_mouse_select_copy",
+    "ui_resize_typing",
+)
 
 
 def tier_plan(platform, tier, mode, pane, smoke, proving=()):
@@ -277,6 +288,7 @@ def tier_plan(platform, tier, mode, pane, smoke, proving=()):
         return None, dict(FULL_OPTS)
     o = dict(FIX_TIER[platform][mode])
     names = [n for n in smoke if o["cases"] is None or n in o["cases"]] + [n for n in proving if n not in smoke]
+    names += [n for n in PROVING_WINDOWS if platform == "windows" and n not in names]
     names = [n for n in names if n not in FIX_ONLY_IN or (mode, pane) in FIX_ONLY_IN[n]]
     return names, o
 

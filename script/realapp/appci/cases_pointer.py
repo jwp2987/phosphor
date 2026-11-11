@@ -3,7 +3,8 @@
 #   link_and_path_click        Linux. A printed URL, an OSC 8 link and a `file:line` path, each hovered and Ctrl+clicked. A recording `xdg-open` first on the
 #                              app's PATH holds exactly the URL / the link's target; the path reaches the recorder as the absolute path, or the file's own text
 #                              at the clicked line is drawn. The whole launch runs under `strace`: no destination beyond loopback and the configured model.
-#   selection_modes            Linux. Double click = the word, triple click = the line, a drag over two blocks, Shift+click = the block range (copy-output of
+#   selection_modes            Linux; Windows Git Bash pane (r15 wave 4, #2060: SendInput, positions from the app's find hook only). Double click = the
+#                              word, triple click = the line, a drag over two blocks, Shift+click = the block range (copy-output of
 #                              three blocks; control: one block after the plain click), a drag while a program rewrites its last line ten times a second.
 #   primary_and_middle_click   Linux. `terminal.copy_on_select` off, then on (written live, restored): PRIMARY holds a dragged and a double-clicked
 #                              selection, CLIPBOARD only when the setting is on; a middle click in the input pastes PRIMARY (the received line proves it).
@@ -341,9 +342,11 @@ PALETTE_DIVIDER_LEFT = "move divider left"      # app/i18n/en/warp.ftl keybindin
 
 # ================================================================ shared steps
 def linux_pointer_or_skip(ctx, r, name):
-    """the Linux pointer (xdotool, or the Wayland virtual pointer / sway seat); macOS and Windows SKIP naming the missing capability"""
+    """the Linux pointer (xdotool, or the Wayland virtual pointer / sway seat) for the cases that are Linux-only for another reason too (PRIMARY, the
+    recording xdg-open, termios); macOS SKIPs naming the missing tool. Windows has a pointer since r15 wave 4 (cases_ui.mouse_or_skip), which the
+    cases ported to it call directly; these are not ported and say so."""
     if ctx.win:
-        r.skip("%s: no pointer synthesis in the Windows backend yet (mouse SendInput, gap H1)" % name)
+        r.skip("%s: not ported to the Windows pointer (winmap.NOT_WINDOWS names what else the case needs there)" % name)
     return U.mouse_or_skip(ctx, r)
 
 
@@ -361,6 +364,14 @@ def locate_many(ctx, r, tag, tokens, since=None):
             out[t] = h
         else:
             missing.append(t)
+    if missing and U.is_windows(ctx):
+        # Windows: the hook is the only source of a position, so its lines are waited for (a give-up net); no screen read follows
+        ctx.until(lambda: all(U._hook_word(ctx, t, since) for t in missing), 3.0, step=0.1)
+        for t in list(missing):
+            h = U._hook_word(ctx, t, since)
+            if h:
+                out[t] = h
+                missing.remove(t)
     if missing:
         ws, _ = U.words(ctx, tag)
         for t in missing:
@@ -398,12 +409,18 @@ def print_file(ctx, r, fname, text, tokens=()):
 
 
 class Held:
-    """a modifier held while the pointer acts: `with Held(ctx, "ctrl"): mouse.click(...)`. The body must end within `ms` on Wayland."""
+    """a modifier held while the pointer acts: `with Held(ctx, "ctrl"): mouse.click(...)`. The body must end within `ms` on Wayland. Windows: the
+    backend's own key-down / key-up (SendInput), the release sent whatever the body raised."""
 
     def __init__(self, ctx, mod, ms=1500):
-        self.ctx, self.mod, self.ms, self.proc, self.up = ctx, mod, ms, None, None
+        self.ctx, self.mod, self.ms, self.proc, self.up, self.win = ctx, mod, ms, None, None, False
 
     def __enter__(self):
+        if U.is_windows(self.ctx):
+            self.ctx.be.mod_hold(self.mod, True)
+            self.win = True
+            time.sleep(0.25)
+            return self
         down, self.up = hold_argv(self.ctx.be.name, self.mod, self.ms)
         if self.up:
             self.ctx.be.refocus()
@@ -414,7 +431,9 @@ class Held:
         return self
 
     def __exit__(self, *_):
-        if self.up:
+        if self.win:
+            self.ctx.be.mod_hold(self.mod, False)
+        elif self.up:
             subprocess.run(self.up, timeout=10)
         elif self.proc:
             try:
@@ -609,8 +628,8 @@ def c_selection_modes(ctx, r):
     block 2 = the rest of line 1 ... the start of line 2; a plain click on block 1 then copy-output = line 1 (control), Shift+click on block 3
     then copy-output = the three lines (the app's Shift+click is the block range); a drag over two words of a running program's first line while
     its last line is rewritten ten times a second = those words. The clipboard is set to a sentinel before every copy."""
-    m = linux_pointer_or_skip(ctx, r, "selection_modes")
-    U.need_tesseract(r)
+    m = U.mouse_or_skip(ctx, r)                         # Linux, and Windows since r15 wave 4 (SendInput; positions from the find hook only)
+    U.need_tesseract(r, ctx)
     words = distinct_words(ctx.rng, 16)
     la, lb, lc, ls = (" ".join(words[i:i + 4]) for i in (0, 4, 8, 12))
     tok = ctx.tok(5).lower()

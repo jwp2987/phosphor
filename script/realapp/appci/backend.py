@@ -1109,7 +1109,8 @@ class WindowsBackend(Backend):
     NAMED = {"return": 0x0D, "enter": 0x0D, "tab": 0x09, "escape": 0x1B, "esc": 0x1B, "backspace": 0x08, "delete": 0x2E, "del": 0x2E,
              "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28, "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
              "insert": 0x2D, "space": 0x20, "pause": 0x13, "break": 0x03, "cancel": 0x03,     # ctrl+break = VK_CANCEL (#1888)
-             "scrollbreak": 0x03}
+             "scrollbreak": 0x03,
+             "prior": 0x21, "next": 0x22}     # the X keysym names of PageUp / PageDown, as the shared cases spell the tab keys (`ctrl+Next`, cases_wrap_vtabs.KX)
     # #1906: the two keys that are VK_CANCEL, as (vk, scan code, extended), never left to MapVirtualKey. With Ctrl held the Break key sends scan E0 46
     # (extended) and ScrollLock sends scan 46 (not extended); Windows gives both VK_CANCEL and a console reads both as Ctrl+Break. Rounds 8 and 9 sent
     # `ctrl+break` as scan 46 WITHOUT the extended flag (MapVirtualKey drops the E0 prefix and VK_CANCEL was not in EXTENDED): that is Ctrl+ScrollLock,
@@ -1451,6 +1452,168 @@ class WindowsBackend(Backend):
         ph = self.pid_fn() if self.pid_fn else None
         if ph:
             self._focus_pid(ph)
+
+    # ------------------------------------------------------------ pointer and window size (r15 wave 4, #2060; r14-test-gaps T31 / T33)
+    # The pointer acts only on the Phosphor window this run started: never while the reference console is driven (guard_override), and a button goes
+    # down only when the top-level window under the pointer belongs to that pid. winapi.Pointer reads every move back, so a pointer that did not
+    # arrive is a PointerError (harness / machine), not a click the app ignored. Pointer calls are lines in <run>/inject.log (`ptr ...`); they are not
+    # records in self.calls: the key accounting (injacct) counts keys.
+    _ptr = None
+    RESIZE_WAIT = 2.0        # seconds a posted SetWindowPos / ShowWindow is waited for before the rectangle is taken as it is (a give-up net)
+
+    def _app_hwnd(self):
+        ph = self.pid_fn() if self.pid_fn else None
+        return self.w.main_window(ph) if ph else None
+
+    def _ptr_log(self, text):
+        if self.inject_log:
+            try:
+                with open(self.inject_log, "a") as f:
+                    f.write("ptr wall=%.3f %s\n" % (time.time(), text))
+            except OSError:
+                pass
+
+    def pointer(self):
+        if self._ptr is None:
+            self._ptr = self.w.Pointer()
+        return self._ptr
+
+    def client_origin(self):
+        """(x, y) on screen of the app window's client area (what the app's `appci_find` positions are relative to), or None"""
+        rc = self.w.client_rect_screen(self._app_hwnd())
+        return (rc[0], rc[1]) if rc else None
+
+    def _ptr_guard(self):
+        if self.guard_override:
+            raise RuntimeError("the pointer is for the Phosphor window only: refusing while the reference console is the target")
+        self.guard()
+
+    def ptr_move(self, x, y):
+        self._ptr_guard()
+        pos = self.pointer().move(x, y)
+        self._ptr_log("move %d %d at=%d,%d" % (int(x), int(y), pos[0], pos[1]))
+
+    def ptr_button(self, button, down):
+        """press or release a button where the pointer is. A press is refused unless the window under the pointer is Phosphor's; a release always goes out."""
+        if down:
+            self._ptr_guard()
+            pos = self.w.cursor_pos()
+            ph = self.pid_fn() if self.pid_fn else None
+            pid = self.w.root_window_at(pos[0], pos[1])[1] if pos else 0
+            if not pos or pid != ph:
+                raise RuntimeError("the window under the pointer at %s belongs to %r (pid %s), not Phosphor (pid %s): refusing to click" % (
+                    pos, self.w.proc_name(pid), pid, ph))
+        self.pointer().button(button, down)
+        self._ptr_log("button %d %s" % (button, "down" if down else "up"))
+
+    def ptr_wheel(self, steps):
+        self._ptr_guard()
+        self.pointer().wheel(steps)
+        self._ptr_log("wheel %+d" % steps)
+
+    def ptr_ready(self):
+        """None when the pointer can be used on the app window, else why not. The proof is a move to the middle of the window's client area, read
+        back, with the window under it Phosphor's (a hover: nothing is clicked)."""
+        h = self._app_hwnd()
+        rc = self.w.client_rect_screen(h)
+        if not rc or rc[2] < 100 or rc[3] < 100:
+            return "the app window's client area could not be read (ClientToScreen / GetClientRect gave %r)" % (rc,)
+        x, y = rc[0] + rc[2] // 2, rc[1] + rc[3] // 2
+        try:
+            self.ptr_move(x, y)
+        except Exception as e:
+            return str(e)
+        ph = self.pid_fn() if self.pid_fn else None
+        pid = self.w.root_window_at(x, y)[1]
+        if pid != ph:
+            return "the middle of the app window (%d, %d) is covered by a window of %r (pid %s)" % (x, y, self.w.proc_name(pid), pid)
+        return None
+
+    def mod_hold(self, mod, down):
+        """hold or release one modifier (ctrl / shift / alt) around pointer actions; outside the injector records, like the Linux tools' held modifier"""
+        if mod not in self.MODVK:
+            raise ValueError("unknown modifier %r" % (mod,))
+        if down:
+            self.guard()
+        if self._send([self._vkev(self.MODVK[mod], up=not down)]) != 1:
+            raise RuntimeError("SendInput refused the %s key %s" % (mod, "press" if down else "release"))
+        held = self.__dict__.setdefault("_mods_held", set())
+        (held.add if down else held.discard)(mod)
+        self._ptr_log("mod %s %s" % (mod, "down" if down else "up"))
+
+    def release_held(self):
+        """release every pointer button and modifier still down (a case that died between press and release) -> what was released, [] when nothing
+        was held. run.py calls it after every case (post_case_invariants): a held button or Shift would bend every later key and click. Never raises."""
+        out = []
+        try:
+            ptr = self._ptr
+            for b in sorted(getattr(ptr, "held", ()) or ()):
+                out.append("mouse button %d" % b)
+            if out:
+                ptr.release_all()
+            for mod in sorted(self.__dict__.get("_mods_held", ())):
+                out.append("the %s key" % mod)
+                self._send([self._vkev(self.MODVK[mod], up=True)])
+            self.__dict__["_mods_held"] = set()
+        except Exception as e:
+            out.append("(release failed: %r)" % (e,))
+        return out
+
+    def window_save(self):
+        """the app window as it is now, for window_restore: dict(hwnd, rect=(x, y, w, h), zoomed), or None without a window"""
+        h = self._app_hwnd()
+        rect = self.w.window_rect(h) if h else None
+        return dict(hwnd=h, rect=rect, zoomed=self.w.is_zoomed(h)) if rect else None
+
+    def window_size(self):
+        rect = self.w.window_rect(self._app_hwnd())
+        return (rect[2], rect[3]) if rect else None
+
+    def _await_rect(self, h, done):
+        """the window's rectangle once done(rect) holds; the last one read after RESIZE_WAIT (SetWindowPos is posted, not awaited)"""
+        t = time.time()
+        rect = self.w.window_rect(h)
+        while not (rect and done(rect)) and time.time() - t < self.RESIZE_WAIT:
+            time.sleep(0.01)
+            rect = self.w.window_rect(h)
+        return rect
+
+    def window_resize(self, w, h):
+        """give the app window the outer size (w, h) in pixels -> None, or why it did not take. A maximised window is restored first (it keeps its
+        size otherwise); the result is read back from GetWindowRect (winapi.resize_verdict: Windows may clamp the size, a change is the proof)."""
+        hw = self._app_hwnd()
+        before = self.w.window_rect(hw) if hw else None
+        if not before:
+            return "the app has no window"
+        if self.w.user32.IsIconic(hw) or self.w.is_zoomed(hw):
+            self.w.show_window(hw, self.w.SW_RESTORE)
+            before = self._await_rect(hw, lambda r: not self.w.is_zoomed(hw)) or before
+        if (before[2], before[3]) == (int(w), int(h)):
+            return None
+        if not self.w.set_window_rect(hw, w, h):
+            return "SetWindowPos(%d, %d) failed: GetLastError %d" % (w, h, self.ct.get_last_error())
+        after = self._await_rect(hw, lambda r: (r[2], r[3]) != (before[2], before[3]))
+        err = self.w.resize_verdict(before[2:], (int(w), int(h)), after[2:] if after else None)
+        self._ptr_log("resize asked=%dx%d got=%s%s" % (w, h, "%dx%d" % after[2:] if after else "?", " ERR" if err else ""))
+        return err
+
+    def window_restore(self, saved):
+        """put the window back as window_save found it (place, size, maximised) and give it the keyboard; never raises"""
+        try:
+            if not saved or not saved.get("rect"):
+                return
+            hw, (x, y, w, h) = saved["hwnd"], saved["rect"]
+            if saved.get("zoomed"):
+                self.w.show_window(hw, self.w.SW_MAXIMIZE)
+            else:
+                if self.w.is_zoomed(hw):
+                    self.w.show_window(hw, self.w.SW_RESTORE)
+                    self._await_rect(hw, lambda r: not self.w.is_zoomed(hw))
+                self.w.set_window_rect(hw, w, h, x, y)
+                self._await_rect(hw, lambda r: tuple(r) == (x, y, w, h))
+            self.refocus()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ windows, screenshots, clipboard
     def window_rect(self, pid=None):

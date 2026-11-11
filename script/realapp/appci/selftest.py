@@ -367,7 +367,8 @@ def reference_forgiveness_is_capped():
 def tier_plan_shape():
     assert winmap.tier_plan("windows", None, "terminal", "gitbash", cases.SMOKE)[0] is None
     names, o = winmap.tier_plan("windows", "smoke", "agent", "powershell", cases.SMOKE)
-    assert names and set(names) <= set(cases.SMOKE) and "key_loss_control" not in names and not o["ref"]
+    # r15 wave 4 (#2060): plus winmap.PROVING_WINDOWS, the older cases whose Windows arm is new
+    assert names and set(names) <= set(cases.SMOKE) | set(winmap.PROVING_WINDOWS) and "key_loss_control" not in names and not o["ref"]
     names, o = winmap.tier_plan("windows", "smoke", "terminal", "gitbash", cases.SMOKE)
     assert "key_loss_control" in names and o["ref"]
 
@@ -6796,7 +6797,8 @@ def wrapped_copy_and_vertical_tabs_pure_parts_1976_1990():
     names = ("ui_copy_wrapped_output", "ui_copy_wrapped_drag", "ui_vertical_tabs_many", "ui_vertical_tabs_panel_click")
     reg = {c["name"]: c for c in cases.CASES}
     assert all(n in cases.PROVING and n not in cases.SMOKE and n not in cases.PROVING_FAKE and reg[n]["gui"] and reg[n]["modes"] == ("terminal", "agent") for n in names)
-    assert "ui_copy_wrapped_output" in winmap.GITBASH_ONLY and all(n in winmap.NOT_WINDOWS for n in names[1:])
+    # r15 wave 4 (#2060): the pointer (SendInput) and the settings file the app reads exist on Windows, so all four run in the Git Bash pane
+    assert all(n in winmap.GITBASH_ONLY and n not in winmap.NOT_WINDOWS for n in names)
     src = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
     assert all(("`%s`" % n) in src for n in names), "docs/testing.md does not describe every new case"
 
@@ -8272,12 +8274,17 @@ def r14_window_use_cases_pure_parts():
     for n in names:
         if n == "focus_cycle":
             assert winmap.skip_reason(n, "powershell") is None and winmap.skip_reason(n, "gitbash") is None
+        elif n in ("resize_reflow_output", "context_menu_actions"):
+            # r15 wave 4 (#2060): SetWindowPos and the SendInput pointer exist, so these two run in the Git Bash pane (selftest_w4win.py has the rest)
+            assert winmap.skip_reason(n, "gitbash") is None and "Git Bash" in winmap.skip_reason(n, "powershell"), n
         else:
             assert n in winmap.NOT_WINDOWS and "r14-test-gaps T3" in winmap.skip_reason(n, "gitbash"), n
 import selftest_pointer  # noqa: E402  (round 14 wave 3a: cases_pointer.py; its checks live in their own file)
 CHECKS.extend(selftest_pointer.CHECKS)
 import selftest_registered  # noqa: E402  (#2086: every check function of the selftest*.py files is registered)
 CHECKS.extend(selftest_registered.CHECKS)
+import selftest_w4win  # noqa: E402  (round 15 wave 4, #2060: the Windows pointer and window size)
+CHECKS.extend(selftest_w4win.CHECKS)
 
 
 def main():
