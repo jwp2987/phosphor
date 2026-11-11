@@ -5225,3 +5225,37 @@ App: `keyring_unavailable_startup` (#1805) is unchanged. The change adds no keyr
 - Unit: `app/src/ai/agent_providers/active_ai/mod_test.rs` `a_query_prediction_is_not_requested_in_an_ssh_session_unless_allowed` (the decision `nld_predict::allowed_for_session`: local yes; ssh no; unknown session no; everything yes when the setting is on). `app/src/settings/ai_tests.rs` `natural_language_autosuggestions_in_ssh_default_off`.
 - App: `lab_agent_nld_predict_ssh` (`appci/cases_agent_remote.py`; one arm, `bash.lan.nohelper`, agent mode, fake model; in `cases.PROVING_LAB`, so the fix tier's lab job plays it). Each side first runs `echo` so the pane has a completed block (a prediction's context), then types a partial agent prompt with NO Enter. Local pane (control): an `nld_predict` request must reach the fake model within 10 s (`fake_model.by_purpose`, the model server's own count). ssh pane: none in 5 s (the debounce is 250 ms). `nld_verdict`: no control request makes the case UNVERIFIABLE (never a pass: predictions may be off, unconfigured, or the pane lookup of the new gate may be failing everywhere); any request from the ssh pane is a FAIL. Also checked: the unsent prompt never reached the remote shell (`rec.log`). The setting's ON side has no app case (it needs a settings write and a relaunch inside a lab arm); the unit test covers the decision. Self-test: `fake_model_plan_and_agent_remote_pure_parts` (verdict table, the arm's registration).
 - Run: `APPCI_FAKE_MODEL=1 python3 script/realapp/appci/run.py --cases 'lab_agent_nld_predict_ssh.*'`.
+
+## Round 14, wave 1 (first half): five new app cases (`appci/cases_r14_w1a.py`; design `docs/design/r14-w1a.md`; #2072; nothing compiled or run when written)
+
+Source: `docs/design/r14-test-gaps.md` 7.1, T1 to T5. All five are in `cases.PROVING` (fix tier until the owner graduates them), run in both
+modes, type at 10 to 25 ms per key with an instant Enter, and judge the exact line the shell received. The received line comes from
+`cases_r14_w1a.Received`: `rec.log` where the pane's shell has the rc hook, PSReadLine's history file in the Windows PowerShell pane. When
+that record is missing the row is NOREF, never a pass on the effect file alone. Cost is an estimate per platform pass, both modes together;
+the first run records the real numbers.
+
+| case | checks | platforms | est. min |
+|---|---|---|---|
+| `history_up_recall` | Three commands; Up, Up, Enter runs the second again once; Up, an edit at the end of the line, Enter runs the edited line; Up then Down gives an empty line and a new command runs alone. The record holds exactly those six lines; the effect files hold exactly their tokens. | Wayland, X11, macOS, Windows PowerShell, Windows Git Bash (cmd.exe pane: SKIP, no record) | 2 |
+| `scroll_keys_position` | 500 numbered lines, then a background job printing ten lines a second. PageUp three times: the view moved up, and after 3 s of new output the same numbered lines are on screen and none of the new ones. Block-up then Home: the view is above that, and 3 s later the screen has not changed. One typed key: one of the job's last lines is on screen. The command that key starts is exact. | Wayland, X11, macOS (OCR). Windows: SKIP, no OCR engine and no scroll-position hop | 3 |
+| `find_basic` | Ten blocks of 30 lines, a token three times on one line of the third. A query that is nowhere: `hop=find_state` says 0 (control). The token: 3 matches; the match is on screen (the app's `hop=find_scroll` geometry; with OCR a neighbour word that was not on screen before); Enter moves the focus, Shift+Enter returns it; after Escape a typed command reaches the shell exactly and the record holds nothing else. | Wayland, X11, macOS (OCR and log); Windows Git Bash (log only). PowerShell pane: SKIP (needs `rec.log`) | 2 |
+| `tab_lifecycle_keys` | A tab running a loop that appends a line twice a second: the close key asks (app log line), Escape keeps the tab and the loop, the close key and Enter close the tab and the loop is gone within the undo-close window (60 s) plus 15 s; on POSIX the tab's shell pid is gone too. A second tab in its own directory with one command: close key (no question), undo key (`ctrl+alt+t`, `APPCI_KEY_REOPEN`): the tab is back in its directory and nothing ran again. Tab counts from `hop=tab_activate`. | Wayland, X11, both Windows panes. macOS: SKIP (no usable close key; the question is a native dialog) | 3 |
+| `routing_table_powershell` | The PowerShell rows of the routing corpus, a command on PATH, two shell-structure lines (#1560), the prose lines, the installed-head English lines and, in agent mode, the mistyped-command lines (#1980). Shell = the exact line in PSReadLine's history; agent = not in the history and the app logged an agent-routed Enter. A line in neither is LOST. | Windows PowerShell pane only (the Git Bash pane has `routing_table`) | 3 |
+
+Notes for whoever reads the first run:
+
+- **A new trace line.** `hop=find_state event=<query|next> count=<n> focused=<index|none> scanning=<bool>` is logged after a Find query edit and
+  after next / previous (`TerminalView::log_find_state`; format pinned by `find_state_hop_detail_format_is_pinned` in
+  `app/src/terminal/find/model_tests.rs` and by the self-test). Trace only: nothing is read unless input-order logging is on. Counts only,
+  never the query.
+- **`scroll_keys_position` streams from a background job** because, while a foreground command runs, PageUp and Home are written to that
+  program and no key scrolls the scrollback (#2080, filed from reading the code; an owner question). The case therefore does not cover a
+  foreground stream. Its scroll-to-top step is block-up then Home (Home alone moves the cursor in the input).
+- **`tab_lifecycle_keys` waits for the undo-close window.** A tab closed with a running command keeps its shell for
+  `general.undo_close.grace_period` (60 s) so the close can be undone; "the loop is gone" is judged at 75 s (`APPCI_UNDO_CLOSE_WAIT_S`).
+  The close / undo half runs inside that wait. Escape and Enter are sent only after the app logged that it asked: without that line the case
+  fails and sends neither.
+- **macOS PageUp.** `backend.MacBackend.SPECIAL` gained `pageup` (116) and `pagedown` (121) for `scroll_keys_position`.
+- **Each oracle can fail.** The self-test `r14_w1a_wave1_cases_pure_parts_and_registry` feeds every verdict helper a wrong result (a recall
+  that picked another line, a merged line, a view that followed the output, a wait with no output, a focus that did not move, a loop that
+  keeps beating, prose in the shell) and pins the app texts and keys the cases depend on.

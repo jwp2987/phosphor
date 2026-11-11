@@ -25,6 +25,8 @@ BOTH = {
     "agent_restart_quit_stream", "agent_restart_quit_queued", "agent_restart_quit_blocked", "agent_restart_kill_stream", "agent_restart_kill_queued", "agent_restart_kill_blocked",
     "agent_question_answer", "agent_question_cut", "agent_question_nodone", "agent_question_trunc", "agent_question_empty", "agent_question_slow",   # #1851: the fake model on the host
     "agent_question_ctrl_c", "agent_question_steer", "agent_question_after_command", "agent_question_steer_at_end",
+    # #2072 (round 14 wave 1): the received line comes from rec.log or PSReadLine's history (cases_r14_w1a.Received); the cmd.exe pane skips itself
+    "history_up_recall", "tab_lifecycle_keys",
     "crash_kill9_restore", "crash_corrupt_db",       # #1541: taskkill /F /T + relaunch on the same profile (cases_robust.hard_kill; state under %LOCALAPPDATA%\\phosphor)
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
@@ -80,6 +82,7 @@ GITBASH_ONLY = {
     "ssh_gitbash_managed": "the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper",
     "ssh_gitbash_typeahead_managed": "keys typed during a one-connection managed ssh login stay managed (#1959): only the Git Bash pane has the wrapper",
     "ssh_gitbash_kill_switch": "the default and PHOSPHOR_MSYS_MANAGED_SSH=0 in the bash pane are plain ssh (#1933, #2051): only the Git Bash pane has the wrapper",
+    "find_basic": "#2072: `cat` of fixture files and the exact line after Escape from rec.log: runs in the Git Bash pane, judged from the app log (hop=find_state, hop=find_scroll) without OCR",
     "agent_approval": "uses rec.log and effect files in bash syntax: runs in the Git Bash pane (needs the CI model)",
 }
 # PowerShell-only: the same idea as a case that already exists for the other pane
@@ -88,6 +91,7 @@ PS_ONLY = {
     "ps_ctrl_scrolllock_break": "#1906: Ctrl+ScrollLock (the other VK_CANCEL key) to the same SIGBREAK receiver; the Git Bash pane's msys signals differ",
     "ps_fast_command_young_enter": "#1889: PowerShell's Add-Content lines and its ConPTY young-Enter window; the Git Bash pane has the prompt-hold gates instead",
     "agent_interactive_password": "#1882: the hand-over on ConPTY is the PowerShell bootstrap's Read-Host marker; bash `read -s` in a Git Bash pane announces nothing (no termios), so the POSIX form of the case does not apply there",
+    "routing_table_powershell": "#2072: the routing table judged from PSReadLine's history file; the Git Bash pane has routing_table (rec.log)",
     "ps_read_host_secure": "#1882/#1891: Read-Host -AsSecureString is PowerShell; the Git Bash twin is gitbash_precmd_secret",
 }
 # not on Windows at all, with the reason
@@ -141,6 +145,7 @@ NOT_WINDOWS = {
     "flood_scrollback_find": "needs OCR (tesseract) and the Linux find flow",
     "soak": "not yet ported: samples /proc",
     "alt_screen_mouse_reporting": "no pointer synthesis in the Windows backend yet, and the receiving program needs python3 termios (#1537)",
+    "scroll_keys_position": "#2072: the scroll position is read from the screen by OCR and the Windows runner has no OCR engine; the app logs no scroll-position hop yet (T34's grid hop would serve)",
     "sudo_su_real_shell": "sudo/su/ksu do not exist in a Windows pane (#1536)",
     "ssh_drop_reconnect": "not yet ported: the `~.` escape and `kill -9 $$` need verifying against the msys/Win32 ssh clients (#1535)",
     "cb_settings_ui_open": "the Windows backend has no verified Ctrl-, chord and the page is not OCR-able there",

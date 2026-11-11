@@ -86,6 +86,9 @@ PROVING = (
     "editor_memory_7mb", "flood_scrollback_find",
     # #1989 / #1988: Alt-. is the editor's last argument; with a program in front Alt-. / Alt-R / Ctrl-R reach it as ESC . / ESC r / 0x12 (Linux backends)
     "ui_readline_keys",
+    # round 14, wave 1 of docs/design/r14-test-gaps.md 7.1 (#2072; cases_r14_w1a.py): Up-arrow history recall, scroll keys and the view holding its
+    # place, Find in an ordinary scrollback, tab close / cancel / confirm / undo by key, and the routing table in the Windows PowerShell pane
+    "history_up_recall", "scroll_keys_position", "find_basic", "tab_lifecycle_keys", "routing_table_powershell",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -6425,3 +6428,4 @@ import cases_agent_latency  # noqa: E402,F401  (#1828: agent_latency_key, agent_
 import cases_win_handover  # noqa: E402,F401  (#1882/#1883/#1891: ps_read_host_secure, gitbash_precmd_secret; Windows secrets and interactive reads on ConPTY)
 import cases_precmd_secret  # noqa: E402,F401  (#1923: precmd_secret_honor_ps1, a bash precmd `read -s` with the app's prompt and with honor PS1 on)
 import cases_wrap_vtabs  # noqa: E402,F401  (#1976: ui_copy_wrapped_output / _drag, copy of soft-wrapped lines; #1990: ui_vertical_tabs_many / _panel_click)
+import cases_r14_w1a  # noqa: E402,F401  (#2072: round 14 wave 1: history_up_recall, scroll_keys_position, find_basic, tab_lifecycle_keys, routing_table_powershell)
