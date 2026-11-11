@@ -5786,3 +5786,12 @@ Details a reader of a red row needs:
 Self-tests (`script/realapp/appci/selftest_pointer.py`, run by `run.py --self-test` and `selftest.py`): `pointer_cases_registry_r14_w3a` (PROVING only, both modes, Windows reasons, this section, the maximise key and the palette text against the app's sources), `pointer_fixture_and_screen_read_parts`, `pointer_sgr_and_reporting_parts`, `pointer_selection_and_clipboard_parts`, `pointer_link_opener_parts`, `pointer_pane_probe_parts`. Each judge is fed the wrong results it must reject (only the key arriving, arrow keys instead of wheel reports, a screen that did not move, the OSC 8 text opened instead of its target, a file opened at line 1, a maximise that did nothing, a divider that moved the other way).
 Run: `python3 script/realapp/appci/run.py --cases link_and_path_click,selection_modes,primary_and_middle_click,wheel_scroll,pane_resize_maximize`.
 Harness finding, not changed here (#2082): `app.py` sets `PHOSPHOR_APPCI_FIND_FILE` only in the Windows launcher, so the find hook (#1789) has never been on in a Linux or macOS run and every Linux pointer case has placed the pointer by OCR (r12a rows carry "app find hook gave no position"). The statement above in 2.8 that `app.py` sets it holds for Windows only.
+
+## Round 15: the defects the round 14 cases found (`appci/cases_r15_defects.py`; design `docs/design/r15-defects.md`; #2079 #2080 #2081 #2082; nothing compiled, no app run when written)
+
+Four issues filed while the round 14 cases were written. Three are app changes, each with a kill switch and unit tests; one is the
+harness. Worked, unproven: nothing was compiled and no app case has run.
+
+| issue | change | kill switch | unit tests | app case |
+|---|---|---|---|---|
+| #2079 | Alt-F / Alt-B (word motion) and Alt-Backspace (cut the word before the cursor) are defaults of the input editor on Linux and Windows; the code and notebook editors take the same Alt-F / Alt-B. `meta-f` / `meta-b` / `meta-backspace` stay as fixed bindings (an Alt key set to act as Meta). macOS unchanged | `PHOSPHOR_ALT_WORD_KEYS=0` (read at app start) | `util/bindings_tests.rs`: `test_alt_word_keys_kill_switch_is_off_only_for_zero`, `test_word_keys_default_bindings_per_platform` | `meta_and_word_keys` (existing; its Alt-B / Alt-F steps now expect a pass, and Alt-Backspace is a new step) |

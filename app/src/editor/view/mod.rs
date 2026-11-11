@@ -84,8 +84,11 @@ use crate::terminal::model::block::BlockId;
 use crate::themes::theme::Fill;
 use crate::ui_components::avatar::{Avatar, AvatarContent};
 use crate::util::bindings::{
-    CustomAction, INSERT_LAST_WORD_BINDING_NAME, LINUX_OR_WINDOWS_INSERT_LAST_WORD_KEYSTROKE,
-    MAC_INSERT_LAST_WORD_KEYSTROKE, cmd_or_ctrl_shift, keybinding_name_to_keystroke,
+    CustomAction, INSERT_LAST_WORD_BINDING_NAME, LINUX_OR_WINDOWS_CUT_WORD_LEFT_KEYSTROKE,
+    LINUX_OR_WINDOWS_INSERT_LAST_WORD_KEYSTROKE, MAC_INSERT_LAST_WORD_KEYSTROKE,
+    META_MOVE_BACKWARD_ONE_WORD_KEYSTROKE, META_MOVE_FORWARD_ONE_WORD_KEYSTROKE,
+    MOVE_BACKWARD_ONE_WORD_BINDING_NAME, MOVE_FORWARD_ONE_WORD_BINDING_NAME, alt_word_keys_enabled,
+    cmd_or_ctrl_shift, keybinding_name_to_keystroke, linux_or_windows_word_motion_keystrokes,
 };
 use crate::util::clipboard::clipboard_content_with_escaped_paths;
 use crate::util::color::{ContrastingColor, MinimumAllowedContrast};
@@ -491,6 +494,22 @@ pub fn init(ctx: &mut AppContext) {
         )]);
     }
 
+    // #2079: off macOS Alt-Backspace cuts the word before the cursor, as `meta-backspace` (an
+    // Alt key set to act as Meta) always did and as readline's `backward-kill-word` does. On macOS
+    // `alt-backspace` already is the default of `editor:delete_word_left`. Alt-F / Alt-B are the
+    // defaults of the editable word-motion bindings below. `PHOSPHOR_ALT_WORD_KEYS=0` turns the
+    // three off.
+    let alt_word_keys = alt_word_keys_enabled();
+    if alt_word_keys && !OperatingSystem::get().is_mac() {
+        ctx.register_fixed_bindings([FixedBinding::new(
+            LINUX_OR_WINDOWS_CUT_WORD_LEFT_KEYSTROKE,
+            EditorAction::CutWordLeft,
+            id!("EditorView") & !id!("IMEOpen"),
+        )]);
+    }
+    let (word_forward_key, word_backward_key) =
+        linux_or_windows_word_motion_keystrokes(alt_word_keys);
+
     // Register mac-only `FixedBinding`s.
     if OperatingSystem::get().is_mac() {
         ctx.register_fixed_bindings([
@@ -751,20 +770,24 @@ pub fn init(ctx: &mut AppContext) {
         .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
         .with_mac_key_binding("cmd-shift-down")
         .with_linux_or_windows_key_binding("ctrl-shift-end"),
+        // #2079: Alt-F / Alt-B on Linux and Windows, Option-F / Option-B as Meta on macOS (see
+        // the constants in `util/bindings.rs`). `meta-f` / `meta-b` stay fixed bindings above.
         EditableBinding::new(
-            "editor_view:move_forward_one_word",
+            MOVE_FORWARD_ONE_WORD_BINDING_NAME,
             crate::t!("keybinding-desc-editor-move-forward-one-word"),
             EditorAction::MoveForwardOneWord,
         )
         .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
-        .with_key_binding("meta-f"),
+        .with_mac_key_binding(META_MOVE_FORWARD_ONE_WORD_KEYSTROKE)
+        .with_linux_or_windows_key_binding(word_forward_key),
         EditableBinding::new(
-            "editor_view:move_backward_one_word",
+            MOVE_BACKWARD_ONE_WORD_BINDING_NAME,
             crate::t!("keybinding-desc-editor-move-backward-one-word"),
             EditorAction::MoveBackwardOneWord,
         )
         .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
-        .with_key_binding("meta-b"),
+        .with_mac_key_binding(META_MOVE_BACKWARD_ONE_WORD_KEYSTROKE)
+        .with_linux_or_windows_key_binding(word_backward_key),
         EditableBinding::new(
             "editor_view:move_to_paragraph_start",
             crate::t!("keybinding-desc-editor-move-to-paragraph-start"),
