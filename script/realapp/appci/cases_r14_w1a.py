@@ -114,8 +114,16 @@ def key_name(ctx, name):
     return name
 
 
-def select_all_key(ctx):
-    return "cmd+a" if U.mac(ctx) else "ctrl+a"
+FIELD_CLEAR_BACKSPACES = 64
+
+
+def clear_field(ctx):
+    """empty the single-line field that has the keyboard: End, then more BackSpaces than a query of this file has characters (a BackSpace in an
+    empty field does nothing). Not select-all + BackSpace: since round 16 (#2079) Ctrl-A is the start of the line in a text field off macOS and
+    select-all is Ctrl-Shift-A, which an older build gives to another action; End and BackSpace mean the same on every build and platform."""
+    ctx.be.key("End")
+    ctx.be.key("BackSpace", repeat=FIELD_CLEAR_BACKSPACES, delay_ms=12)
+    time.sleep(0.2)
 
 
 def need_app_log(ctx, r, what):
@@ -498,7 +506,7 @@ def c_find_basic(ctx, r):
         ctx.be.guard()
         ctx.be.key(os.environ.get("APPCI_KEY_FIND", "cmd+f" if U.mac(ctx) else "ctrl+shift+f"))
         time.sleep(0.8)
-        ctx.be.keys([select_all_key(ctx), "BackSpace"], delay_ms=30)      # an earlier Find's query may still be in the field
+        clear_field(ctx)                                                 # an earlier Find's query may still be in the field
         typed(ctx, absent, enter=False)
         ctx.until(lambda: (find_last_state(ctx, off, "query") or {}).get("scanning") is False, 6)
         none = find_last_state(ctx, off, "query")
@@ -508,7 +516,7 @@ def c_find_basic(ctx, r):
             ctx.shot("find_basic_open")
             return
         r.check(none["count"] == 0, "control: Find reports %d match(es) for a query that is nowhere in the scrollback" % none["count"])
-        ctx.be.keys([select_all_key(ctx), "BackSpace"], delay_ms=30)
+        clear_field(ctx)
         typed(ctx, token, enter=False)
         time.sleep(1.0)
         # the first Enter: the count the bar shows, and the match it focused (pressed again while the async scan is still counting)

@@ -243,6 +243,20 @@ def r15_keybinding_rebind_parts():
     s = inspect.getsource(W.c_keybinding_rebind)
     assert s.index('"control: the default new-tab chord') < s.index("text_a = ") < s.index("text_b = "), "the control runs before either arm"
     assert "_same_bytes(r, path, text_a" in s and "_same_bytes(r, path, text_b" in s and "R.fresh_app(ctx, r" in s
+    # round 16 (#1988): arm C gives Ctrl-R to new tab and leaves command search on its default; Alt-R is the history search
+    assert s.index("text_b = ") < s.index("text_c = keybindings_yaml([(NEW_TAB_ACTION, CTRL_R[0])])") and "_same_bytes(r, path, text_c" in s
+    assert 'alt_r_opens_search("control")' in s and 'alt_r_opens_search("arm_c")' in s and "seen is not True" in s
+    assert W.alt_r_playable("wayland", False) is None and W.alt_r_playable("windows", False) is None and W.alt_r_playable("mac", True) is None
+    assert "Option" in W.alt_r_playable("mac", False) and "Meta" in W.alt_r_playable("x11", True)
+    b = _src("app", "src", "util", "bindings.rs")
+    assert '= "alt-r";' in b and '= "meta-r";' in b and '"PHOSPHOR_ALT_R_HISTORY_SEARCH"' in b and '"PHOSPHOR_USER_BINDING_WINS"' in b
+    assert "pub const BINDINGS_YIELDING_TO_USER_BINDINGS: [&str; 1] = [COMMAND_SEARCH_BINDING_NAME];" in b
+    assert "mark_bindings_yielding_to_user_bindings(ctx);" in _src("app", "src", "lib.rs"), "launch marks command search after the user file is loaded"
+    assert '"input:search_command_history"' in _src("app", "src", "terminal", "input.rs")
+    for spec in (W.ALT_R,):
+        down, up, vk = backend.WindowsBackend._chord(wb, spec)
+        assert len(down) >= 2 and len(up) == len(down), spec
+        backend.MacBackend._kspec(mb, spec)
 
 
 @check

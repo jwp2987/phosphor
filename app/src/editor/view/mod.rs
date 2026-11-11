@@ -87,8 +87,10 @@ use crate::util::bindings::{
     CustomAction, INSERT_LAST_WORD_BINDING_NAME, LINUX_OR_WINDOWS_CUT_WORD_LEFT_KEYSTROKE,
     LINUX_OR_WINDOWS_INSERT_LAST_WORD_KEYSTROKE, MAC_INSERT_LAST_WORD_KEYSTROKE,
     META_MOVE_BACKWARD_ONE_WORD_KEYSTROKE, META_MOVE_FORWARD_ONE_WORD_KEYSTROKE,
-    MOVE_BACKWARD_ONE_WORD_BINDING_NAME, MOVE_FORWARD_ONE_WORD_BINDING_NAME, alt_word_keys_enabled,
+    MOVE_BACKWARD_ONE_WORD_BINDING_NAME, MOVE_FORWARD_ONE_WORD_BINDING_NAME,
+    MOVE_TO_LINE_END_KEYSTROKE, MOVE_TO_LINE_START_KEYSTROKE, alt_word_keys_enabled,
     cmd_or_ctrl_shift, keybinding_name_to_keystroke, linux_or_windows_word_motion_keystrokes,
+    readline_input_keys_enabled, with_select_all_default,
 };
 use crate::util::clipboard::clipboard_content_with_escaped_paths;
 use crate::util::color::{ContrastingColor, MinimumAllowedContrast};
@@ -211,8 +213,38 @@ impl fmt::Display for AutosuggestionLocation {
 pub const SELECT_UP_ACTION_NAME: &str = "editor_view:select_up";
 pub const SELECT_DOWN_ACTION_NAME: &str = "editor_view:select_down";
 
+/// Keymap context flag of an editor whose buffer holds no text (#2080: an empty terminal input
+/// leaves Shift+Home / Shift+End to the scrollback keys of the terminal view).
+pub const EDITOR_BUFFER_EMPTY_CONTEXT_KEY: &str = "EditorView_BufferEmpty";
+
+/// Where Shift+Home / Shift+End select to the line start / end: every editor, as always, except
+/// (#2080, round 16, with `scrollback_keys_at_prompt`) the terminal input while it is EMPTY.
+/// There is nothing to select in an empty input, so nothing is taken from the editor; the key
+/// goes on up the responder chain to the terminal view, whose scrollback bindings scroll to the
+/// top / the newest output at a prompt. The terminal input is the one editor that carries
+/// `TERMINAL_INPUT_PAGE_KEYS_HANDLED_BY_INPUT` (it leaves Page Up / Page Down to the terminal the
+/// same way); every other editor keeps both keys in every state.
+fn shift_home_end_selects_predicate(
+    scrollback_keys_at_prompt: bool,
+) -> warpui::keymap::ContextPredicate {
+    use warpui::keymap::macros::*;
+
+    let editor = id!("EditorView") & !id!("IMEOpen");
+    if scrollback_keys_at_prompt {
+        editor
+            & (!id!(flags::TERMINAL_INPUT_PAGE_KEYS_HANDLED_BY_INPUT)
+                | !id!(EDITOR_BUFFER_EMPTY_CONTEXT_KEY))
+    } else {
+        editor
+    }
+}
+
 pub fn init(ctx: &mut AppContext) {
     use warpui::keymap::macros::*;
+
+    // #2080: with the scrollback keys live at a prompt, an empty terminal input does not take
+    // Shift+Home / Shift+End (see `shift_home_end_selects_predicate`).
+    let scrollback_keys_at_prompt = crate::terminal::view::scrollback_keys::at_prompt_enabled();
 
     ctx.register_fixed_bindings(vec![
         // Below are default bindings that are similar to the behavior in all other text editors.
@@ -378,12 +410,12 @@ pub fn init(ctx: &mut AppContext) {
         FixedBinding::new(
             "shift-home",
             EditorAction::SelectToLineStart,
-            id!("EditorView") & !id!("IMEOpen"),
+            shift_home_end_selects_predicate(scrollback_keys_at_prompt),
         ),
         FixedBinding::new(
             "shift-end",
             EditorAction::SelectToLineEnd,
-            id!("EditorView") & !id!("IMEOpen"),
+            shift_home_end_selects_predicate(scrollback_keys_at_prompt),
         ),
         FixedBinding::new(
             "pageup",
@@ -523,8 +555,24 @@ pub fn init(ctx: &mut AppContext) {
         ]);
     }
 
-    // Register Linux-specific `FixedBinding`s.
-    if OperatingSystem::get().is_linux() {
+    // #2079 (owner decision 2026-11-11): off macOS Ctrl-A / Ctrl-E / Ctrl-Y are readline's keys
+    // in this editor (start of line, end of line, yank) and select-all is Ctrl-Shift-A. The
+    // defaults below that depend on it say so; `PHOSPHOR_READLINE_INPUT_KEYS=0` gives the IDE
+    // keys back (Ctrl-A selects all, Ctrl-E only offers the banner, Ctrl-Y deletes to the line
+    // start). Always false on macOS, whose defaults are unchanged.
+    let readline_keys = readline_input_keys_enabled();
+    // Gives an editable binding its readline key as the Linux / Windows default.
+    let readline_default = |binding: EditableBinding, keystroke: &str| {
+        if readline_keys {
+            binding.with_key_binding(keystroke)
+        } else {
+            binding
+        }
+    };
+
+    // Register Linux-specific `FixedBinding`s. With the readline keys Ctrl-E moves to the end of
+    // the line, so there is nothing for the banner to offer.
+    if OperatingSystem::get().is_linux() && !readline_keys {
         // The Emacs banner banner binding is registered as a `FixedBinding` so
         // that it doesn't get displayed under Settings --> Keyboard Shortcuts.
         ctx.register_fixed_bindings([FixedBinding::new(
@@ -617,13 +665,15 @@ pub fn init(ctx: &mut AppContext) {
         )
         .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
         .with_mac_key_binding("shift-ctrl-N"),
-        EditableBinding::new(
-            "editor_view:select_all",
-            crate::t!("keybinding-desc-editor-select-all"),
-            EditorAction::SelectAll,
-        )
-        .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
-        .with_custom_action(CustomAction::SelectAll),
+        // #2079: off macOS Ctrl-A is the start of the line, so select-all is Ctrl-Shift-A there.
+        with_select_all_default(
+            EditableBinding::new(
+                "editor_view:select_all",
+                crate::t!("keybinding-desc-editor-select-all"),
+                EditorAction::SelectAll,
+            )
+            .with_context_predicate(id!("EditorView") & !id!("IMEOpen")),
+        ),
         EditableBinding::new(
             "editor:select_to_line_start",
             crate::t!("keybinding-desc-editor-select-to-line-start"),
@@ -699,25 +749,30 @@ pub fn init(ctx: &mut AppContext) {
         )
         .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
         .with_key_binding("ctrl-f"),
-        EditableBinding::new(
-            "editor_view:move_to_line_start",
-            crate::t!("keybinding-desc-editor-move-to-line-start"),
-            EditorAction::MoveToLineStart,
-        )
-        .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
-        // Mac only so it doesn't conflict with "SelectAll" on Linux / Windows.
-        // VSCode does not have a default binding for this on non-Mac.
-        .with_mac_key_binding("ctrl-a"),
-        EditableBinding::new(
-            "editor_view:move_to_line_end",
-            crate::t!("keybinding-desc-editor-move-to-line-end"),
-            EditorAction::MoveToLineEnd,
-        )
-        .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
-        // Make this Mac-only so it is symmetric with ctrl-a for `MoveToLineStart`, which is Mac
-        // only because it would otherwise conflict with `SelectAll`. VSCode does not have a default
-        // binding for this on non-Mac.
-        .with_mac_key_binding("ctrl-e"),
+        // macOS, and since #2079 Linux / Windows too (readline's beginning-of-line; select-all
+        // moved to Ctrl-Shift-A there). With the kill switch it is Mac only again, so it doesn't
+        // conflict with "SelectAll" on Linux / Windows.
+        readline_default(
+            EditableBinding::new(
+                "editor_view:move_to_line_start",
+                crate::t!("keybinding-desc-editor-move-to-line-start"),
+                EditorAction::MoveToLineStart,
+            )
+            .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
+            .with_mac_key_binding(MOVE_TO_LINE_START_KEYSTROKE),
+            MOVE_TO_LINE_START_KEYSTROKE,
+        ),
+        // Symmetric with ctrl-a for `MoveToLineStart` (readline's end-of-line).
+        readline_default(
+            EditableBinding::new(
+                "editor_view:move_to_line_end",
+                crate::t!("keybinding-desc-editor-move-to-line-end"),
+                EditorAction::MoveToLineEnd,
+            )
+            .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
+            .with_mac_key_binding(MOVE_TO_LINE_END_KEYSTROKE),
+            MOVE_TO_LINE_END_KEYSTROKE,
+        ),
         // Match the behavior of both VSCode and Intellij by using `cmd-left/right` on Mac and
         // `home/end` on Windows and Linux. See https://www.jetbrains.com/help/idea/reference-keymap-win-default.html#caret_navigation.
         EditableBinding::new(
@@ -903,17 +958,26 @@ pub fn init(ctx: &mut AppContext) {
         .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
         // VSCode only binds a default binding on Mac, see https://github.com/microsoft/vscode/blob/ceda6cc4856841f1550a60327a3eaf3a1d0c306a/src/vs/editor/contrib/linesOperations/browser/linesOperations.ts#L657.
         .with_mac_key_binding("cmd-delete"),
-        EditableBinding::new(
-            "editor_view:delete_all_left",
-            crate::t!("keybinding-desc-editor-delete-all-left"),
-            EditorAction::DeleteAllLeft,
-        )
-        .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
-        // Intellij uses `ctrl-Y` to delete a line on Windows/Linux whereas VSCode uses
-        // `ctrl-shift-k`. We use the former because `ctrl-shift-k` would interfere with the binding
-        // to clear all blocks within the blocklist.
-        .with_mac_key_binding("cmd-backspace")
-        .with_linux_or_windows_key_binding("ctrl-y"),
+        {
+            let delete_all_left = EditableBinding::new(
+                "editor_view:delete_all_left",
+                crate::t!("keybinding-desc-editor-delete-all-left"),
+                EditorAction::DeleteAllLeft,
+            )
+            .with_context_predicate(id!("EditorView") & !id!("IMEOpen"))
+            .with_mac_key_binding("cmd-backspace");
+            if readline_keys {
+                // #2079: Ctrl-Y is readline's yank, the fixed `ctrl-y` binding above, which this
+                // default used to shadow off macOS. The action ships without a key there now
+                // (Ctrl-U clears the line).
+                delete_all_left
+            } else {
+                // Intellij uses `ctrl-Y` to delete a line on Windows/Linux whereas VSCode uses
+                // `ctrl-shift-k`. We use the former because `ctrl-shift-k` would interfere with
+                // the binding to clear all blocks within the blocklist.
+                delete_all_left.with_linux_or_windows_key_binding("ctrl-y")
+            }
+        },
         EditableBinding::new(
             "editor_view:insert_newline",
             crate::t!("keybinding-desc-editor-insert-newline"),
@@ -9721,6 +9785,10 @@ impl View for EditorView {
 
         if self.autosuggestion_state.is_some() {
             context.set.insert("Has_Autosuggestion");
+        }
+
+        if self.is_empty(ctx) {
+            context.set.insert(EDITOR_BUFFER_EMPTY_CONTEXT_KEY);
         }
 
         if let Some(vim_mode) = self.vim_mode(ctx) {

@@ -5,7 +5,7 @@
 Start-Transcript "$R\out\LJ_transcript.txt" -Force | Out-Null
 . C:\Users\@WINUSER@\r18ba\lat.ps1
 $o="$R\out\lat_r18ba_J.csv"; Remove-Item $o -ea 0
-function SizeRun($tag,$w,$hh,$y,$n){ $h=PhoWin; [void][W]::MoveWindow($h,24,24,$w,$hh,$true); Start-Sleep 2; Focus; [M]::Click(24+200,24+$hh-60); Start-Sleep 1; LatInit 700 200; LatRun "r18ba|$tag-key" 0 $y "zqxjkvwpyz" $n $o "^a{BACKSPACE}" 20 }
+function SizeRun($tag,$w,$hh,$y,$n){ $h=PhoWin; [void][W]::MoveWindow($h,24,24,$w,$hh,$true); Start-Sleep 2; Focus; [M]::Click(24+200,24+$hh-60); Start-Sleep 1; LatInit 700 200; LatRun "r18ba|$tag-key" 0 $y "zqxjkvwpyz" $n $o "{END}{BACKSPACE 30}" 20 }
 function Static($tag){ $h=PhoWin; [void][W]::MoveWindow($h,24,24,1232,712,$true); Start-Sleep 2; Shot "J_static_$tag"; Start-Sleep 1; Shot "J_static_${tag}_b" }
 $env:PHOSPHOR_WGPU_CLEAR_TO_BACKGROUND='0'
 FreshApp "info,warp::input_order=debug" 15

@@ -1137,7 +1137,9 @@ fn custom_action_updater(
                             .into_owned(),
                     );
                 }
-                changes.keystroke = Some(bindings::trigger_to_keystroke(binding.trigger));
+                // #1988: a binding that yields to a binding the user bound to its key gives up
+                // the key equivalent, so the key reaches the keymap and the user's binding.
+                changes.keystroke = Some(bindings::menu_keystroke_for_binding(binding, ctx));
             }
         });
 

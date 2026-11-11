@@ -18,8 +18,8 @@ use warpui::{
     Action,
     actions::StandardAction,
     keymap::{
-        BindingDescription, BindingLens, CustomTag, DescriptionContext, EditableBindingLens,
-        Keystroke, Trigger,
+        BindingDescription, BindingLens, CustomTag, DescriptionContext, EditableBinding,
+        EditableBindingLens, Keystroke, Trigger,
     },
 };
 use warpui::{AppContext, SingletonEntity};
@@ -105,7 +105,7 @@ pub fn alt_word_keys_enabled() -> bool {
 
 /// [`alt_word_keys_enabled`] with the variable's value passed in (tests).
 pub fn alt_word_keys_enabled_from(value: Option<&str>) -> bool {
-    value.is_none_or(|value| value.trim() != "0")
+    on_unless_zero(value)
 }
 
 /// The Linux and Windows defaults of the two editable word-motion bindings, `(forward,
@@ -124,6 +124,187 @@ pub fn linux_or_windows_word_motion_keystrokes(
             META_MOVE_BACKWARD_ONE_WORD_KEYSTROKE,
         )
     }
+}
+
+/// `true` unless the kill switch `variable` holds `0` (surrounding blanks ignored): the reading
+/// every on-by-default switch of this file has.
+fn on_unless_zero(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
+/// Name of the editable "Command search" binding of the terminal input (default `ctrl-r`).
+pub const COMMAND_SEARCH_BINDING_NAME: &str = "workspace:show_command_search";
+
+/// The built-in bindings that stand aside for a binding the user bound to the same chord
+/// (#1988, owner decision 2026-11-11: "Ctrl-R: the user's own binding wins over command search").
+/// Command search belongs to the input, the deepest view but one, so before this a `ctrl-r` the
+/// user gave to an action of the terminal, the pane group or the workspace never fired at the
+/// prompt. Command search stays on its other entry points (the command palette, the macOS menu
+/// item, its own binding moved to another key).
+pub const BINDINGS_YIELDING_TO_USER_BINDINGS: [&str; 1] = [COMMAND_SEARCH_BINDING_NAME];
+
+/// Environment variable that, set to `0`, lets command search keep `ctrl-r` over a binding the
+/// user bound to it, as before #1988 (see [`user_binding_wins_enabled`]).
+pub const USER_BINDING_WINS_ENV: &str = "PHOSPHOR_USER_BINDING_WINS";
+
+/// Whether [`BINDINGS_YIELDING_TO_USER_BINDINGS`] are marked as yielding: they are, unless the
+/// kill switch [`USER_BINDING_WINS_ENV`] says `0`. Read once, at launch.
+pub fn user_binding_wins_enabled() -> bool {
+    user_binding_wins_enabled_from(std::env::var(USER_BINDING_WINS_ENV).ok().as_deref())
+}
+
+/// [`user_binding_wins_enabled`] with the variable's value passed in (tests).
+pub fn user_binding_wins_enabled_from(value: Option<&str>) -> bool {
+    on_unless_zero(value)
+}
+
+/// Marks [`BINDINGS_YIELDING_TO_USER_BINDINGS`] in the keymap. Called at launch, after every
+/// view registered its bindings; done by name so the registration (`terminal/input.rs`) is not
+/// touched.
+pub fn mark_bindings_yielding_to_user_bindings(ctx: &mut AppContext) {
+    if !user_binding_wins_enabled() {
+        return;
+    }
+    for name in BINDINGS_YIELDING_TO_USER_BINDINGS {
+        if !ctx.mark_binding_yielding_to_user_bindings(name) {
+            log::warn!("binding {name} is not registered; it cannot yield to user bindings");
+        }
+    }
+    // #2079: Ctrl-A / Ctrl-E are new defaults off macOS. A `keybindings.yaml` written before
+    // them may already give one of those chords to another action (an explicit
+    // `editor_view:select_all: ctrl-a`, say); that line keeps winning over the new default.
+    if readline_input_keys_enabled() {
+        for name in READLINE_BINDINGS_YIELDING_TO_USER_BINDINGS {
+            ctx.mark_binding_yielding_to_user_bindings(name);
+        }
+    }
+}
+
+/// The key equivalent a macOS menu item shows for `binding`: its keystroke, or none while the
+/// binding stands aside for a binding the user bound to the same key (then the menu must not
+/// take the key before the keymap sees it; the item stays in the menu and works by pointer).
+pub fn menu_keystroke_for_binding(binding: BindingLens<'_>, ctx: &AppContext) -> Option<Keystroke> {
+    let keystroke = trigger_to_keystroke(binding.trigger)?;
+    if binding.yields_to_user_bindings && ctx.user_binding_claims_keystroke(&keystroke) {
+        return None;
+    }
+    Some(keystroke)
+}
+
+/// Name of the editable "Search command history" binding of the terminal input: command search
+/// filtered to history, the app's counterpart of the shell's reverse-i-search (#1988 option B).
+pub const HISTORY_SEARCH_BINDING_NAME: &str = "input:search_command_history";
+
+/// Default of [`HISTORY_SEARCH_BINDING_NAME`] on Linux and Windows: Alt-R. With a program in
+/// front the key is still that program's (`ESC r`): the binding lives in the input only.
+pub const LINUX_OR_WINDOWS_HISTORY_SEARCH_KEYSTROKE: &str = "alt-r";
+
+/// Default of [`HISTORY_SEARCH_BINDING_NAME`] on macOS: Option-R where an Option key is set to
+/// act as Meta. An Option key that is not Meta keeps typing the layout's character.
+pub const MAC_HISTORY_SEARCH_KEYSTROKE: &str = "meta-r";
+
+/// Environment variable that, set to `0`, ships the history search unbound again, as before
+/// #1988 (see [`alt_r_history_search_enabled`]).
+pub const ALT_R_HISTORY_SEARCH_ENV: &str = "PHOSPHOR_ALT_R_HISTORY_SEARCH";
+
+/// Whether the history search has its default key: it has, unless the kill switch
+/// [`ALT_R_HISTORY_SEARCH_ENV`] says `0`. Read when the bindings are registered.
+pub fn alt_r_history_search_enabled() -> bool {
+    alt_r_history_search_enabled_from(std::env::var(ALT_R_HISTORY_SEARCH_ENV).ok().as_deref())
+}
+
+/// [`alt_r_history_search_enabled`] with the variable's value passed in (tests).
+pub fn alt_r_history_search_enabled_from(value: Option<&str>) -> bool {
+    on_unless_zero(value)
+}
+
+/// The default "search command history" shortcut for the current platform, or none with the
+/// kill switch set.
+pub fn default_history_search_keystroke() -> Option<Keystroke> {
+    history_search_keystroke_for(alt_r_history_search_enabled())
+}
+
+/// [`default_history_search_keystroke`] with the switch passed in (tests).
+pub fn history_search_keystroke_for(enabled: bool) -> Option<Keystroke> {
+    if !enabled {
+        return None;
+    }
+    if OperatingSystem::get().is_mac() {
+        Keystroke::parse(MAC_HISTORY_SEARCH_KEYSTROKE).ok()
+    } else {
+        Keystroke::parse(LINUX_OR_WINDOWS_HISTORY_SEARCH_KEYSTROKE).ok()
+    }
+}
+
+/// The custom actions that have a default key but NO macOS menu item, mapped to that key. On
+/// macOS a custom-action binding is normally reached through its menu item's key equivalent and
+/// keeps its `Trigger::Custom`; one without a menu item would never fire, so the app converts
+/// exactly these to keystroke bindings at registration (`run_internal`, macOS only). Must stay
+/// empty for every action `app_menus.rs` builds an item for.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn mac_menuless_custom_tag_to_keystroke(custom: CustomTag) -> Option<Keystroke> {
+    match custom.into() {
+        CustomAction::HistorySearch => default_history_search_keystroke(),
+        _ => None,
+    }
+}
+
+/// Environment variable that, set to `0`, puts Ctrl-A / Ctrl-E / Ctrl-Y of the text editor back
+/// on the IDE keys off macOS, as before the #2079 decision (see [`readline_input_keys_enabled`]).
+pub const READLINE_INPUT_KEYS_ENV: &str = "PHOSPHOR_READLINE_INPUT_KEYS";
+
+/// Readline's Ctrl-A / Ctrl-E as the editor binds them (every platform since the #2079 decision;
+/// macOS always had them).
+pub const MOVE_TO_LINE_START_BINDING_NAME: &str = "editor_view:move_to_line_start";
+pub const MOVE_TO_LINE_END_BINDING_NAME: &str = "editor_view:move_to_line_end";
+pub const MOVE_TO_LINE_START_KEYSTROKE: &str = "ctrl-a";
+pub const MOVE_TO_LINE_END_KEYSTROKE: &str = "ctrl-e";
+/// Readline's yank: the fixed `ctrl-y` binding of the editor, which the Linux / Windows default
+/// of [`DELETE_ALL_LEFT_BINDING_NAME`] used to shadow.
+pub const YANK_KEYSTROKE: &str = "ctrl-y";
+pub const DELETE_ALL_LEFT_BINDING_NAME: &str = "editor_view:delete_all_left";
+/// Select all in a text editor, and where it moved to on Linux and Windows.
+pub const SELECT_ALL_BINDING_NAME: &str = "editor_view:select_all";
+pub const LINUX_OR_WINDOWS_SELECT_ALL_KEYSTROKE: &str = "ctrl-shift-A";
+
+/// Gives an editor's `editor_view:select_all` binding its default: the `SelectAll` custom action
+/// (Cmd-A on macOS through the menu, Ctrl-A elsewhere), or Ctrl-Shift-A on Linux and Windows
+/// with readline's Ctrl-A (#2079). The text editor, the code editor and the notebook editor all
+/// register a binding of this name and take the default from here, so the name has one default.
+/// The code and notebook editors also have a fixed `cmdorctrl-a` select-all, so Ctrl-A keeps
+/// selecting all in a file or a notebook; only the text editor gives Ctrl-A to the line start.
+pub fn with_select_all_default(binding: EditableBinding) -> EditableBinding {
+    if readline_input_keys_enabled() {
+        binding.with_key_binding(LINUX_OR_WINDOWS_SELECT_ALL_KEYSTROKE)
+    } else {
+        binding.with_custom_action(CustomAction::SelectAll)
+    }
+}
+
+/// The readline defaults that stand aside for a binding the user bound to the same chord, where
+/// they are new defaults ([`readline_input_keys_enabled`]; see
+/// [`mark_bindings_yielding_to_user_bindings`]). Not on macOS, where they always were the
+/// defaults and nothing changes.
+pub const READLINE_BINDINGS_YIELDING_TO_USER_BINDINGS: [&str; 2] = [
+    MOVE_TO_LINE_START_BINDING_NAME,
+    MOVE_TO_LINE_END_BINDING_NAME,
+];
+
+/// Whether Ctrl-A / Ctrl-E / Ctrl-Y are readline's keys in the text editor on this platform
+/// because of the #2079 decision (owner, 2026-11-11): start of line, end of line and yank, with
+/// select-all on Ctrl-Shift-A. True on Linux and Windows unless the kill switch
+/// [`READLINE_INPUT_KEYS_ENV`] says `0`; false on macOS, whose defaults (Ctrl-A / Ctrl-E move,
+/// Cmd-A selects all) are unchanged. Read when the bindings are registered.
+pub fn readline_input_keys_enabled() -> bool {
+    readline_input_keys_enabled_from(
+        OperatingSystem::get().is_mac(),
+        std::env::var(READLINE_INPUT_KEYS_ENV).ok().as_deref(),
+    )
+}
+
+/// [`readline_input_keys_enabled`] with the platform and the variable's value passed in (tests).
+pub fn readline_input_keys_enabled_from(is_mac: bool, value: Option<&str>) -> bool {
+    !is_mac && on_unless_zero(value)
 }
 
 // CustomActions are attached to menu items, and may be attached to Bindings.
@@ -388,6 +569,8 @@ pub fn custom_tag_to_keystroke(custom: CustomTag) -> Option<Keystroke> {
         CustomAction::Find => Keystroke::parse(cmd_or_ctrl_shift("f")).ok(),
         CustomAction::SelectAll => Keystroke::parse("cmdorctrl-a").ok(),
         CustomAction::CommandSearch => Keystroke::parse("ctrl-r").ok(),
+        // #1988 option B: Alt-R (Option-R as Meta on macOS) opens the history-only search.
+        CustomAction::HistorySearch => default_history_search_keystroke(),
         CustomAction::Workflows => Keystroke::parse("ctrl-shift-R").ok(),
         CustomAction::History => Keystroke::parse("up").ok(),
         CustomAction::IncreaseFontSize => Keystroke::parse("shift-cmdorctrl-+").ok(),
@@ -558,7 +741,6 @@ pub fn custom_tag_to_keystroke(custom: CustomTag) -> Option<Keystroke> {
         | CustomAction::ShowAppearance
         | CustomAction::SaveCurrentConfig
         | CustomAction::TriggerWelcomeBlock
-        | CustomAction::HistorySearch
         | CustomAction::DisableSyncTerminalInputs
         | CustomAction::ToggleSyncAllTerminalInputsInAllTabs
         | CustomAction::NewPersonalWorkflow

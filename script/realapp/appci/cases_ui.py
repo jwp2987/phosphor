@@ -742,7 +742,11 @@ def c_palette(ctx, r):
         wl_check(ctx, r, "no results" in flat2 or "create" in flat2 or "zzqqxx" in flat2, "nonsense filter shows neither 'No results', a 'Create ...' row nor the typed filter: the palette may have lost the keys", "OCR")
         if t is not None and not shown:
             r.note("control: no command row was readable in the UNFILTERED palette, so 'no command rows after the filter' is weak evidence here (OCR)")
-    ctx.be.keys(["ctrl+a", "BackSpace"], delay_ms=30) if not mac(ctx) else ctx.be.keys(["cmd+a", "BackSpace"], delay_ms=30)
+    # empty the filter: End + BackSpaces, not select-all + BackSpace (since round 16, #2079, Ctrl-A is the start of the line in a text field off
+    # macOS; End and BackSpace mean the same on every build and platform)
+    ctx.be.key("End")
+    ctx.be.key("BackSpace", repeat=48, delay_ms=12)
+    time.sleep(0.2)
     ctx.be.type("split pane right", 15)
     time.sleep(0.8)
     ctx.shot("palette_filtered")

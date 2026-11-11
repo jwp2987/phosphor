@@ -33655,7 +33655,11 @@ impl TerminalView {
                 self.handle_ctrl_c_input_event(*cleared_buffer_len, ctx);
             }
             InputEvent::EmacsBindingUsed => {
-                if OperatingSystem::get().is_linux() && self.should_show_emacs_bindings_banner(ctx)
+                // #2079: with readline's Ctrl-A / Ctrl-E as the defaults there is nothing for
+                // the banner to offer (select-all, now Ctrl-Shift-A, still emits this event).
+                if OperatingSystem::get().is_linux()
+                    && !crate::util::bindings::readline_input_keys_enabled()
+                    && self.should_show_emacs_bindings_banner(ctx)
                 {
                     self.show_emacs_bindings_banner(ctx);
                 }
@@ -42492,7 +42496,7 @@ mod paste_queue;
 mod prompt_notice;
 mod route_facts;
 /// #2080: Shift+Page Up / Page Down / Home / End scroll the scrollback under a running command.
-mod scrollback_keys;
+pub(crate) mod scrollback_keys;
 mod ssh_edges;
 mod ssh_queue;
 mod ssh_typeahead;

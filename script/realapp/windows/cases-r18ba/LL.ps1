@@ -8,7 +8,7 @@ FreshApp "info,warp::input_order=debug" 15
 Keys (Esc 'echo @(1,2,3).Count'); Start-Sleep -Milliseconds 1200; Shot L_typed
 Keys "{ENTER}"; Start-Sleep 3; Shot L_enter1
 Keys "{ENTER}"; Start-Sleep 3; Shot L_enter2
-Keys "^a{BACKSPACE}"; Start-Sleep -Milliseconds 500
+Keys "{END}{BACKSPACE 30}"; Start-Sleep -Milliseconds 500
 Keys (Esc 'echo hello @world'); Start-Sleep -Milliseconds 1200; Shot L_typed2
 Keys "{ENTER}"; Start-Sleep 3; Shot L_enter3
 SaveLog L_app

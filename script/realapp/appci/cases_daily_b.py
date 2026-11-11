@@ -503,10 +503,13 @@ def prompt_steps(t, family, meta):
     w = key_words(t, 4)
     add("alt_dot", "Alt-.", [("t", "echo %s " % w["b"]), ("k", dot, 1)], "echo %s %s" % (w["b"], w["d"]), skip=no_meta, seed="echo %s %s" % (w["a"], w["d"]))
     w = key_words(t, 5)
-    add("ctrl_a", "Ctrl-A", [("t", "%s %s" % (w["a"], w["b"])), ("k", "ctrl+a", 1), ("t", "echo ")], "echo %s %s" % (w["a"], w["b"]), default=None if mac else "echo")
+    # #2079 (owner decision 2026-11-11): Ctrl-A / Ctrl-E / Ctrl-Y are readline's keys on every platform. Until round 16 the Linux / Windows steps
+    # also accepted the app's IDE defaults (Ctrl-A selects all, Ctrl-E does not move, Ctrl-Y deletes to the line start) as `app_default`; they are
+    # failures now.
+    add("ctrl_a", "Ctrl-A", [("t", "%s %s" % (w["a"], w["b"])), ("k", "ctrl+a", 1), ("t", "echo ")], "echo %s %s" % (w["a"], w["b"]))
     w = key_words(t, 6)
     add("ctrl_e", "Ctrl-E", [("t", "echo %s %s" % (w["a"], w["c"])), ("k", "Left", L), ("t", w["b"] + " "), ("k", "ctrl+e", 1), ("t", " " + w["d"])],
-        "echo %s %s %s %s" % (w["a"], w["b"], w["c"], w["d"]), default=None if mac else "echo %s %s  %s%s" % (w["a"], w["b"], w["d"], w["c"]))
+        "echo %s %s %s %s" % (w["a"], w["b"], w["c"], w["d"]))
     w = key_words(t, 7)
     add("ctrl_k", "Ctrl-K", [("t", "echo %s %s %s %s" % (w["a"], w["b"], w["x"], w["d"])), ("k", "Left", 2 * L + 1), ("k", "ctrl+k", 1), ("t", w["c"])], "echo %s %s %s" % (w["a"], w["b"], w["c"]))
     w = key_words(t, 8)
@@ -514,10 +517,9 @@ def prompt_steps(t, family, meta):
     w = key_words(t, 9)
     add("ctrl_w", "Ctrl-W", [("t", "echo %s %s %s" % (w["a"], w["b"], w["x"])), ("k", "ctrl+w", 1), ("t", w["c"])], "echo %s %s %s" % (w["a"], w["b"], w["c"]))
     w = key_words(t, 10)
-    if mac:      # readline: Ctrl-K kills, Ctrl-Y yanks the killed text back where the cursor now is
-        add("ctrl_y", "Ctrl-Y", [("t", "echo %s %s" % (w["x"], w["a"])), ("k", "Left", L), ("k", "ctrl+k", 1), ("k", "Left", L + 1), ("k", "ctrl+y", 1)], "echo %s%s" % (w["a"], w["x"]))
-    else:        # the documented Linux / Windows default: Ctrl-Y deletes from the cursor to the line start
-        add("ctrl_y", "Ctrl-Y", [("t", "%s echo %s" % (w["j"], w["a"])), ("k", "Left", 5 + L), ("k", "ctrl+y", 1)], None, default="echo %s" % w["a"])
+    # readline: Ctrl-K kills, Ctrl-Y yanks the killed text back where the cursor now is (every platform since the #2079 decision; the Linux /
+    # Windows step used to expect "deletes to the line start")
+    add("ctrl_y", "Ctrl-Y", [("t", "echo %s %s" % (w["x"], w["a"])), ("k", "Left", L), ("k", "ctrl+k", 1), ("k", "Left", L + 1), ("k", "ctrl+y", 1)], "echo %s%s" % (w["a"], w["x"]))
     w = key_words(t, 11)
     add("home", "Home", [("t", "%s %s" % (w["a"], w["b"])), ("k", "Home", 1), ("t", "echo ")], "echo %s %s" % (w["a"], w["b"]))
     w = key_words(t, 12)
@@ -593,11 +595,12 @@ def _settings_text(ctx):
 def c_meta_and_word_keys(ctx, r):
     """T9 (r14-test-gaps G17). (1) At the prompt, one command per key: Alt-B, Alt-F, Alt-D, Alt-., Ctrl-A, E, K, U, W, Y, Home, End, Delete, Alt-Backspace, the
     word-left and word-right keys (Ctrl-arrows; Option-arrows on macOS). Each is built so a key that does nothing, types its letter or cuts the
-    wrong span gives another line; the line the shell received (rec.log; PSReadLine history in the PowerShell pane) must be the readline result or,
-    where the source documents a different default on purpose (Linux / Windows: Ctrl-A selects all, Ctrl-E does not move, Ctrl-Y deletes to the line
-    start), that default, named in the metric as `app_default`. Alt-B / Alt-F / Alt-Backspace are word keys off macOS since #2079 (round 15) and must pass. (2) The same
+    wrong span gives another line; the line the shell received (rec.log; PSReadLine history in the PowerShell pane) must be the readline result.
+    Since the #2079 decision (round 16) that holds for Ctrl-A / Ctrl-E / Ctrl-Y on Linux and Windows too: no step accepts an `app_default` any
+    more (the outcome stays in the classifier for a later documented default). Alt-B / Alt-F / Alt-Backspace are word keys off macOS since #2079
+    (round 15) and must pass. (2) The same
     keys into a raw reader: the exact bytes (bytes_reader.py; bytes_reader.sh in the Git Bash pane; not in the PowerShell pane, where a program
-    gets key records, not bytes). Runs late in a pass: Ctrl-A / Ctrl-E show the Linux "emacs bindings" banner."""
+    gets key records, not bytes). Runs late in a pass (historic: Ctrl-A / Ctrl-E showed the Linux "emacs bindings" banner before round 16)."""
     family = "mac" if ctx.be.name == "mac" else "other"
     meta = alt_is_meta(_settings_text(ctx))
     r.metric("alt_acts_as_meta", meta)
@@ -637,7 +640,7 @@ def c_meta_and_word_keys(ctx, r):
     r.metric("prompt_keys", rows)
     defaults = [x["key"] for x in rows if x["outcome"] == "app_default"]
     if defaults:
-        r.note("app default, not readline (documented in editor/view/mod.rs; an owner question, not a failure): %s" % ", ".join(defaults))
+        r.note("app default, not readline (documented in editor/view/mod.rs): %s" % ", ".join(defaults))
     if not_run:
         r.note("not run at the prompt: " + "; ".join(not_run))
     if ctx.pane == "powershell" and not any_recv:

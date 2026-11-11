@@ -497,13 +497,16 @@ pub fn init(app: &mut AppContext) {
         )
         .with_context_predicate(text_entry.clone())
         .with_mac_key_binding("shift-ctrl-N"),
-        EditableBinding::new(
-            "editor_view:select_all",
-            crate::t!("keybinding-desc-editor-select-all"),
-            CodeEditorViewAction::SelectAll,
-        )
-        .with_context_predicate(text_entry.clone())
-        .with_custom_action(CustomAction::SelectAll),
+        // #2079: the name's default is shared with the text editor (Ctrl-Shift-A off macOS). The
+        // fixed `cmdorctrl-a` above keeps Ctrl-A selecting all here.
+        crate::util::bindings::with_select_all_default(
+            EditableBinding::new(
+                "editor_view:select_all",
+                crate::t!("keybinding-desc-editor-select-all"),
+                CodeEditorViewAction::SelectAll,
+            )
+            .with_context_predicate(text_entry.clone()),
+        ),
         EditableBinding::new(
             "editor:select_to_line_start",
             crate::t!("keybinding-desc-editor-select-to-line-start"),

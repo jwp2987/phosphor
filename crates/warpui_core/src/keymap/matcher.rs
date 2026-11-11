@@ -266,6 +266,29 @@ impl Matcher {
         self.keymap.get_binding_by_name(name)
     }
 
+    /// Marks the editable bindings called `name` as yielding to the user's own bindings. See
+    /// [`EditableBinding::yielding_to_user_bindings`]. Returns whether such a binding exists.
+    pub fn mark_yielding_to_user_bindings(&mut self, name: &str) -> bool {
+        self.keymap.mark_yielding_to_user_bindings(name)
+    }
+
+    /// Whether an enabled binding the user bound (a custom trigger) to a chord beginning with
+    /// `keystroke` applies in one of `contexts`.
+    pub fn user_binding_claims(&self, keystroke: &Keystroke, contexts: &[Context]) -> bool {
+        self.keymap.user_binding_claims(keystroke, contexts)
+    }
+
+    /// Whether [`Self::push_keystroke_yielding`] must be told to skip the yielding bindings for
+    /// this key press: `contexts` are the contexts of the whole responder chain.
+    pub fn user_binding_outranks_default(
+        &self,
+        keystroke: &Keystroke,
+        contexts: &[Context],
+    ) -> bool {
+        self.keymap
+            .user_binding_outranks_default(keystroke, contexts)
+    }
+
     /// Returns an iterator of lenses to key bindings that apply to the given context.
     ///
     /// Key bindings are returned in precedence order, so the highest precedence key binding is
@@ -301,6 +324,21 @@ impl Matcher {
         view_id: EntityId,
         ctx: &Context,
     ) -> MatchResult {
+        self.push_keystroke_yielding(keystroke, view_id, ctx, false)
+    }
+
+    /// [`Self::push_keystroke`] for one step of a walk up the responder chain.
+    /// `user_binding_outranks_default` is [`Self::user_binding_outranks_default`] for the key and
+    /// the whole chain: when true, a binding marked as yielding is not matched as the first key
+    /// of a chord, so the walk reaches the view whose binding the user bound to it. No key is
+    /// held or dropped by this: the press is matched once per view, as before.
+    pub fn push_keystroke_yielding(
+        &mut self,
+        keystroke: Keystroke,
+        view_id: EntityId,
+        ctx: &Context,
+        user_binding_outranks_default: bool,
+    ) -> MatchResult {
         // #1482: an Enter that is consumed into, or clears, a pending chord never reaches its
         // action, so say so in the input-order log.
         let is_enter = matches!(keystroke.key.as_str(), "enter" | "numpadenter");
@@ -327,6 +365,9 @@ impl Matcher {
         // Only bindings whose trigger begins with the first pending keystroke can match, so look
         // at just those (in precedence order) rather than every binding.
         for binding in self.keymap.bindings_starting_with(&pending.keystrokes[0]) {
+            if user_binding_outranks_default && chord_len == 1 && binding.yields_to_user_bindings {
+                continue;
+            }
             if let Trigger::Keystrokes(keystrokes) = &binding.trigger {
                 if keystrokes.starts_with(&pending.keystrokes)
                     && binding.context_predicate.eval(ctx)

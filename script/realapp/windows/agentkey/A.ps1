@@ -10,10 +10,10 @@ FreshApp "info,warp::input_order=debug,warpui::frame_cause=debug" 14
 Rect
 [M]::Click(300,660); Start-Sleep 1
 Shot "A_ps0"
-LatRun "$L|ps-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|ps-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 [M]::Click(313,42); Start-Sleep 1; [M]::Click(330,159); Start-Sleep 5; Focus; Shot "A_agent_tab0"
 [M]::Click(300,660); Start-Sleep 1
-LatRun "$L|agent-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|agent-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 Shot "A_agent_tab"
 SaveLog "A_app"
 "done " + (Get-Content $o).Count

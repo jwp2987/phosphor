@@ -12,7 +12,7 @@ $R/launch.sh "$@"; sleep 11
 W=$(xdotool search --name "." | while read w; do xwininfo -id $w 2>/dev/null | grep -q "Width: 1[0-9][0-9][0-9]" && echo $w; done | head -1)
 xdotool windowsize $W 1600 1000; xdotool windowmove $W 0 0; xdotool windowfocus $W; sleep 1
 xdotool mousemove 900 924 click 1; sleep .5
-t "HANDOFF-$L"; xdotool key --delay 0 ctrl+a ctrl+shift+c; sleep .5
+t "HANDOFF-$L"; xdotool key --delay 0 ctrl+shift+a ctrl+shift+c; sleep .5
 echo "before quit: $(uv run --with python-xlib $REALAPP/bin/xget.py UTF8_STRING 2>/dev/null)"
 xdotool mousemove 1573 17 click 1; sleep 4
 echo "app procs left: $(ps -eo pid,cmd | grep "$(basename $(dirname $(dirname $BIN)))" | grep -v grep | wc -l)"

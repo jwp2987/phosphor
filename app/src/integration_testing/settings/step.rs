@@ -91,9 +91,16 @@ pub fn type_settings_search(query: &'static str) -> TestStep {
 
 /// Clears the settings search input by selecting all of it and deleting.
 pub fn clear_settings_search() -> TestStep {
+    // #2079: off macOS Ctrl-A is the start of the line in a text field and select-all is
+    // Ctrl-Shift-A (which the Integration channel also binds as a fixed key, `editor/view/mod.rs`).
+    let select_all = if warpui::platform::OperatingSystem::get().is_mac() {
+        "cmd-a"
+    } else {
+        "ctrl-shift-A"
+    };
     new_step_with_default_assertions("Clear settings search")
         .with_click_on_saved_position(SEARCH_EDITOR_POSITION_ID)
-        .with_keystrokes(&["cmdorctrl-a", "backspace"])
+        .with_keystrokes(&[select_all, "backspace"])
         .add_named_assertion("Search input is empty", |app, window_id| {
             let actual =
                 settings_view(app, window_id).read(app, |view, ctx| view.search_query(ctx));

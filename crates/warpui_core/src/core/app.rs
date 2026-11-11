@@ -2041,6 +2041,28 @@ impl AppContext {
         self.keystroke_matcher.set_custom_trigger(name, trigger);
     }
 
+    /// Marks the editable bindings called `name` as standing aside for a binding the user bound
+    /// to the same chord (see `EditableBinding::yielding_to_user_bindings`). Returns whether a
+    /// binding of that name is registered.
+    pub fn mark_binding_yielding_to_user_bindings(&mut self, name: &str) -> bool {
+        self.keystroke_matcher.mark_yielding_to_user_bindings(name)
+    }
+
+    /// Whether a binding the user bound to a chord beginning with `keystroke` applies in the
+    /// focused view of the active window or one of its ancestors. A macOS menu item whose
+    /// binding yields uses this to give up its key equivalent, so the key reaches the keymap.
+    pub fn user_binding_claims_keystroke(&self, keystroke: &Keystroke) -> bool {
+        let Some(window_id) = self.windows().active_window() else {
+            return false;
+        };
+        let Some(view_id) = self.focused_view_id(window_id) else {
+            return false;
+        };
+        let contexts = self.contexts_for_window_and_view(window_id, view_id);
+        self.keystroke_matcher
+            .user_binding_claims(keystroke, &contexts)
+    }
+
     pub(super) fn disable_key_bindings(&mut self, window_id: WindowId) {
         self.disabled_key_bindings_windows.insert(window_id);
     }
@@ -2470,13 +2492,24 @@ impl AppContext {
             });
         }
         let mut pending = false;
-        for (i, ctx) in context_chain.iter_mut().enumerate().rev() {
-            if is_composing {
+        if is_composing {
+            for ctx in context_chain.iter_mut() {
                 ctx.set.insert("IMEOpen");
             }
-            let match_result =
-                self.keystroke_matcher
-                    .push_keystroke(keystroke.clone(), responder_chain[i], ctx);
+        }
+        // A binding the user bound to this chord, in any view of the chain, outranks a built-in
+        // default marked as yielding (command search on ctrl-r): the deeper view's default would
+        // otherwise take the key before the walk reaches the user's binding.
+        let user_binding_outranks_default = self
+            .keystroke_matcher
+            .user_binding_outranks_default(keystroke, &context_chain);
+        for (i, ctx) in context_chain.iter_mut().enumerate().rev() {
+            let match_result = self.keystroke_matcher.push_keystroke_yielding(
+                keystroke.clone(),
+                responder_chain[i],
+                ctx,
+                user_binding_outranks_default,
+            );
             if is_enter {
                 let (result, action) = match &match_result {
                     MatchResult::None => ("none", String::new()),

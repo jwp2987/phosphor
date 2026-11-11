@@ -8,11 +8,17 @@ use warpui::{
 use crate::{
     terminal,
     util::bindings::{
-        CONTROL_CHARACTER_KEY_REGEX, INSERT_LAST_WORD_BINDING_NAME,
-        MOVE_BACKWARD_ONE_WORD_BINDING_NAME, MOVE_FORWARD_ONE_WORD_BINDING_NAME,
-        QUIT_APP_BINDING_NAME, alt_word_keys_enabled_from, default_insert_last_word_keystroke,
-        default_quit_keystroke, keybinding_name_to_display_string,
-        linux_or_windows_word_motion_keystrokes, trigger_to_keystroke,
+        BINDINGS_YIELDING_TO_USER_BINDINGS, COMMAND_SEARCH_BINDING_NAME,
+        CONTROL_CHARACTER_KEY_REGEX, DELETE_ALL_LEFT_BINDING_NAME, HISTORY_SEARCH_BINDING_NAME,
+        INSERT_LAST_WORD_BINDING_NAME, MOVE_BACKWARD_ONE_WORD_BINDING_NAME,
+        MOVE_FORWARD_ONE_WORD_BINDING_NAME, MOVE_TO_LINE_END_BINDING_NAME,
+        MOVE_TO_LINE_START_BINDING_NAME, QUIT_APP_BINDING_NAME, SELECT_ALL_BINDING_NAME,
+        alt_r_history_search_enabled_from, alt_word_keys_enabled_from,
+        default_history_search_keystroke, default_insert_last_word_keystroke,
+        default_quit_keystroke, history_search_keystroke_for, keybinding_name_to_display_string,
+        linux_or_windows_word_motion_keystrokes, mac_menuless_custom_tag_to_keystroke,
+        mark_bindings_yielding_to_user_bindings, readline_input_keys_enabled,
+        readline_input_keys_enabled_from, trigger_to_keystroke, user_binding_wins_enabled_from,
     },
     workspace::WorkspaceAction,
 };
@@ -348,11 +354,272 @@ fn test_insert_last_word_binding_default_and_no_collision() {
             } else {
                 assert_eq!(claimants("meta-."), vec![String::new()]);
             }
-            // #1988: Alt-R / Meta-R stay unbound, so a program that has the terminal receives
-            // them (`ESC r`) and they remain free for the owner's decision on the shell's
-            // history search.
-            assert_eq!(claimants("alt-r"), none);
-            assert_eq!(claimants("meta-r"), none);
+        });
+    });
+}
+
+// #1988 option B (owner decision 2026-11-11): Alt-R opens the app's history-only search; on
+// macOS it is Option-R with Option set to act as Meta. Round 14 pinned both keys as unbound
+// while the decision was open; this replaces that pin. The binding lives in the input only, so a
+// program that has the terminal still receives the key (`ESC r`).
+#[test]
+fn test_history_search_default_keystroke_per_platform_and_kill_switch() {
+    let expected = if OperatingSystem::get().is_mac() {
+        Keystroke::parse("meta-r").ok()
+    } else {
+        Keystroke::parse("alt-r").ok()
+    };
+    assert!(expected.is_some());
+    assert_eq!(history_search_keystroke_for(true), expected);
+    // `PHOSPHOR_ALT_R_HISTORY_SEARCH=0`: the binding ships unbound, as before.
+    assert_eq!(history_search_keystroke_for(false), None);
+    assert!(alt_r_history_search_enabled_from(None));
+    assert!(alt_r_history_search_enabled_from(Some("1")));
+    assert!(!alt_r_history_search_enabled_from(Some("0")));
+    assert!(!alt_r_history_search_enabled_from(Some(" 0 ")));
+
+    // macOS: the history search is the one custom action converted to a keystroke binding
+    // (it has no menu item). Command search and select-all have menu items and must not be.
+    use crate::util::bindings::CustomAction;
+    assert_eq!(
+        mac_menuless_custom_tag_to_keystroke(CustomAction::HistorySearch.into()),
+        default_history_search_keystroke()
+    );
+    assert_eq!(
+        mac_menuless_custom_tag_to_keystroke(CustomAction::CommandSearch.into()),
+        None
+    );
+    assert_eq!(
+        mac_menuless_custom_tag_to_keystroke(CustomAction::SelectAll.into()),
+        None
+    );
+}
+
+#[test]
+fn test_history_search_binding_default_and_no_collision() {
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+        app.update(terminal::init);
+        app.update(crate::editor::init);
+        // The input's own bindings (command search, history search) are registered apart
+        // from the terminal view's.
+        app.update(terminal::input::init);
+
+        app.update(|ctx| {
+            let binding = ctx
+                .editable_bindings()
+                .find(|binding| binding.name == HISTORY_SEARCH_BINDING_NAME)
+                .expect("the history search binding should be registered as editable");
+            assert_eq!(
+                trigger_to_keystroke(binding.trigger),
+                default_history_search_keystroke()
+            );
+            assert!(default_history_search_keystroke().is_some());
+
+            // The names of every binding whose default is `keystroke`.
+            let claimants = |keystroke: &str| -> Vec<String> {
+                let keystroke = Keystroke::parse(keystroke).ok();
+                ctx.get_key_bindings()
+                    .filter(|binding| trigger_to_keystroke(binding.trigger) == keystroke)
+                    .map(|binding| binding.name.to_string())
+                    .collect()
+            };
+            let none = Vec::<String>::new();
+            let only_history = vec![HISTORY_SEARCH_BINDING_NAME.to_string()];
+            if OperatingSystem::get().is_mac() {
+                assert_eq!(claimants("meta-r"), only_history);
+                assert_eq!(claimants("alt-r"), none);
+            } else {
+                assert_eq!(claimants("alt-r"), only_history);
+                // An Alt key set to act as Meta: exactly the one fixed binding (no name).
+                assert_eq!(claimants("meta-r"), vec![String::new()]);
+            }
+            // Command search keeps Ctrl-R.
+            let command_search = ctx
+                .editable_bindings()
+                .find(|binding| binding.name == COMMAND_SEARCH_BINDING_NAME)
+                .expect("command search should be registered as editable");
+            assert_eq!(
+                trigger_to_keystroke(command_search.trigger),
+                Keystroke::parse("ctrl-r").ok()
+            );
+        });
+    });
+}
+
+// #1988 (owner decision 2026-11-11): a binding the user bound to Ctrl-R wins over command
+// search. The keymap mechanics are tested in `warpui_core` (`matcher_test.rs`); here: the app
+// marks command search, by the name it is registered under, and (off macOS) the two readline
+// defaults that are new there.
+#[test]
+fn test_command_search_yields_to_a_user_binding() {
+    assert_eq!(
+        BINDINGS_YIELDING_TO_USER_BINDINGS,
+        [COMMAND_SEARCH_BINDING_NAME]
+    );
+    assert!(user_binding_wins_enabled_from(None));
+    assert!(user_binding_wins_enabled_from(Some("1")));
+    assert!(!user_binding_wins_enabled_from(Some("0")));
+    assert!(!user_binding_wins_enabled_from(Some(" 0 ")));
+
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+        app.update(terminal::init);
+        app.update(crate::editor::init);
+        app.update(terminal::input::init);
+
+        app.update(|ctx| {
+            let yields = |ctx: &warpui::AppContext| -> Vec<bool> {
+                ctx.get_key_bindings()
+                    .filter(|binding| binding.name == COMMAND_SEARCH_BINDING_NAME)
+                    .map(|binding| binding.yields_to_user_bindings)
+                    .collect()
+            };
+            // Registered, and not marked until launch marks it.
+            assert!(!yields(ctx).is_empty());
+            assert!(yields(ctx).iter().all(|yields| !yields));
+            mark_bindings_yielding_to_user_bindings(ctx);
+            assert!(yields(ctx).iter().all(|yields| *yields));
+            // Besides command search only the readline defaults that are NEW on this platform
+            // stand aside (#2079: a user file written before them keeps its Ctrl-A / Ctrl-E);
+            // on macOS nothing else does.
+            let mut others: Vec<&str> = ctx
+                .get_key_bindings()
+                .filter(|binding| binding.name != COMMAND_SEARCH_BINDING_NAME)
+                .filter(|binding| binding.yields_to_user_bindings)
+                .map(|binding| binding.name)
+                .collect();
+            others.sort_unstable();
+            others.dedup();
+            if readline_input_keys_enabled() {
+                assert_eq!(
+                    others,
+                    vec![
+                        MOVE_TO_LINE_END_BINDING_NAME,
+                        MOVE_TO_LINE_START_BINDING_NAME
+                    ]
+                );
+            } else {
+                assert_eq!(others, Vec::<&str>::new());
+            }
+
+            // Once the user moves command search itself, it is the user's binding and no
+            // longer stands aside (on its new key or on Ctrl-R).
+            ctx.set_custom_trigger(
+                COMMAND_SEARCH_BINDING_NAME.to_owned(),
+                Trigger::Keystrokes(vec![Keystroke::parse("ctrl-f12").unwrap()]),
+            );
+            assert!(yields(ctx).iter().all(|yields| !yields));
+        });
+    });
+}
+
+// #2079 (owner decision 2026-11-11): off macOS Ctrl-A / Ctrl-E / Ctrl-Y are readline's keys in
+// the text editor and select-all is Ctrl-Shift-A. macOS is unchanged. Before this the Linux /
+// Windows defaults were the IDE ones (Ctrl-A selects all, Ctrl-E unbound, Ctrl-Y deletes to the
+// line start), deliberately; the decision changed them.
+#[test]
+fn test_readline_input_keys_kill_switch_and_platforms() {
+    // Linux / Windows: on unless the switch says `0`.
+    assert!(readline_input_keys_enabled_from(false, None));
+    assert!(readline_input_keys_enabled_from(false, Some("1")));
+    assert!(!readline_input_keys_enabled_from(false, Some("0")));
+    assert!(!readline_input_keys_enabled_from(false, Some(" 0 ")));
+    // macOS: never (its defaults already are Ctrl-A / Ctrl-E, and Cmd-A selects all).
+    assert!(!readline_input_keys_enabled_from(true, None));
+    assert!(!readline_input_keys_enabled_from(true, Some("1")));
+}
+
+#[test]
+fn test_readline_input_keys_default_bindings_per_platform() {
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+        app.update(terminal::init);
+        app.update(crate::editor::init);
+
+        app.update(|ctx| {
+            // The names of every binding whose default is `keystroke` (a fixed binding has an
+            // empty name).
+            let claimants = |keystroke: &str| -> Vec<String> {
+                let keystroke = Keystroke::parse(keystroke).ok();
+                assert!(keystroke.is_some());
+                ctx.get_key_bindings()
+                    .filter(|binding| trigger_to_keystroke(binding.trigger) == keystroke)
+                    .map(|binding| binding.name.to_string())
+                    .collect()
+            };
+            let start = MOVE_TO_LINE_START_BINDING_NAME.to_string();
+            let end = MOVE_TO_LINE_END_BINDING_NAME.to_string();
+            let select_all = SELECT_ALL_BINDING_NAME.to_string();
+            let fixed = String::new();
+
+            // Every platform: Ctrl-A is the start of the line, Ctrl-E the end.
+            assert!(claimants("ctrl-a").contains(&start), "ctrl-a");
+            assert!(claimants("ctrl-e").contains(&end), "ctrl-e");
+            // Every platform: the fixed `ctrl-y` yank of the text editor exists.
+            assert!(claimants("ctrl-y").contains(&fixed), "ctrl-y");
+
+            if OperatingSystem::get().is_mac() {
+                assert!(!readline_input_keys_enabled());
+                // Unchanged: Cmd-A selects all (the menu's custom action).
+                assert!(claimants("cmd-a").contains(&select_all));
+                assert!(!claimants("ctrl-shift-A").contains(&select_all));
+            } else {
+                assert!(readline_input_keys_enabled());
+                // Select-all moved: no editor's `editor_view:select_all` defaults to Ctrl-A
+                // any more, all default to Ctrl-Shift-A.
+                assert!(!claimants("ctrl-a").contains(&select_all), "ctrl-a");
+                assert!(claimants("ctrl-shift-A").contains(&select_all));
+                let defaults: Vec<Option<Keystroke>> = ctx
+                    .editable_bindings()
+                    .filter(|binding| binding.name == SELECT_ALL_BINDING_NAME)
+                    .map(|binding| trigger_to_keystroke(binding.trigger))
+                    .collect();
+                assert!(!defaults.is_empty());
+                assert!(
+                    defaults
+                        .iter()
+                        .all(|key| *key == Keystroke::parse("ctrl-shift-A").ok()),
+                    "{defaults:?}"
+                );
+                // The text editor's "delete to the line start" no longer shadows the yank: at
+                // least one binding of the name (the text editor's) ships without a key.
+                let delete_defaults: Vec<Option<Keystroke>> = ctx
+                    .editable_bindings()
+                    .filter(|binding| binding.name == DELETE_ALL_LEFT_BINDING_NAME)
+                    .map(|binding| trigger_to_keystroke(binding.trigger))
+                    .collect();
+                assert!(delete_defaults.contains(&None), "{delete_defaults:?}");
+            }
+        });
+    });
+}
+
+// #2080 (owner decision 2026-11-11): the shifted scroll keys are editable bindings.
+#[test]
+fn test_scrollback_keys_are_editable_bindings() {
+    App::test((), |mut app| async move {
+        app.update(terminal::init);
+
+        app.update(|ctx| {
+            for (name, key) in [
+                ("terminal:scrollback_page_up", "shift-pageup"),
+                ("terminal:scrollback_page_down", "shift-pagedown"),
+                ("terminal:scrollback_top", "shift-home"),
+                ("terminal:scrollback_bottom", "shift-end"),
+            ] {
+                let default = ctx
+                    .editable_bindings()
+                    .find(|binding| binding.name == name)
+                    .and_then(|binding| trigger_to_keystroke(binding.trigger));
+                assert_eq!(default, Keystroke::parse(key).ok(), "{name}");
+            }
+            // The plain keys keep their own bindings.
+            let page_up = ctx
+                .editable_bindings()
+                .find(|binding| binding.name == "terminal:scroll_up_one_page")
+                .and_then(|binding| trigger_to_keystroke(binding.trigger));
+            assert_eq!(page_up, Keystroke::parse("pageup").ok());
         });
     });
 }

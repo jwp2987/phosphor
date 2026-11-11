@@ -14,7 +14,7 @@ FreshApp2 "info,warp::input_order=debug" 14
 [M]::Click(300,660); Start-Sleep 1
 Shot "LP_ps"
 "=== phosphor PS key->paint"
-LatRun "$L|ps-term-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|ps-term-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 "=== echo hi"
 for($k=0;$k -lt 30;$k++){ $res=[LT]::Burst(0,520,'echo hi',10,$true); Add-Content $o "$L|ps-term-echo-hi,$k,$res"; Start-Sleep -Milliseconds 2000 }
 "=== start stamps"

@@ -10,15 +10,15 @@ $env:WARP_USE_DIRECT_COMPOSITION="0"
 FreshApp "info,warp::input_order=debug" 14
 Rect
 [M]::Click(300,660); Start-Sleep 1
-LatRun "$L|ps1-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|ps1-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 [M]::Click(313,42); Start-Sleep 1; [M]::Click(330,159); Start-Sleep 5; Focus
 [M]::Click(300,660); Start-Sleep 1
-LatRun "$L|agent1-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|agent1-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 Shot "B_dc0_agent"
 [M]::Click(177,42); Start-Sleep 2; [M]::Click(300,660); Start-Sleep 1
-LatRun "$L|ps2-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|ps2-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 [M]::Click(385,42); Start-Sleep 2; [M]::Click(300,660); Start-Sleep 1
-LatRun "$L|agent2-key" 0 520 "zqxjkvwpyz" 40 $o "^a{BACKSPACE}" 20
+LatRun "$L|agent2-key" 0 520 "zqxjkvwpyz" 40 $o "{END}{BACKSPACE 30}" 20
 Shot "B_dc0_end"
 SaveLog "B_dc0_app"
 "done " + (Get-Content $o).Count

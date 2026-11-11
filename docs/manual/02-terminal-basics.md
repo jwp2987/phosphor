@@ -186,11 +186,23 @@ The input is a real multi-line editor, not a single-line readline.
 - **`↑` recalls the previous command.** There is no "history next" binding —
   `↓` is ordinary cursor movement.
 - `ctrl-R` opens **Command Search**, which searches history, workflows,
-  notebooks and environment variables together. (`input:search_command_history`,
-  which opens it pre-filtered to history only, ships unbound.)
+  notebooks and environment variables together.
+- **`alt-R` opens the history search** (`input:search_command_history`): Command
+  Search pre-filtered to command history, the app's counterpart of the shell's
+  reverse-i-search. On macOS the key is `option-R` with that Option key set to
+  act as Meta (`terminal.input.extra_meta_keys`); an Option key that is not Meta
+  keeps typing its character. The binding can be changed;
+  `PHOSPHOR_ALT_R_HISTORY_SEARCH=0` in the app's environment ships it unbound.
+- **Your own binding on `ctrl-R` wins.** If `keybindings.yaml` (or **Settings →
+  Keyboard shortcuts**) gives `ctrl-R` to another action, that action runs
+  wherever it applies, also at the prompt, and Command Search does not open.
+  Command Search stays reachable from the command palette, from the macOS menu,
+  on `alt-R` (history only), or on any key you move
+  `workspace:show_command_search` to. `PHOSPHOR_USER_BINDING_WINS=0` in the
+  app's environment gives `ctrl-R` back to Command Search at the prompt.
 - **Autosuggestions** (the greyed-out completion of what you are typing) are on
   by default (`terminal.input.autosuggestions.enabled`). Accept the whole
-  suggestion with `→`, or with `End` (`cmd-→` / `ctrl-E` on macOS); accept one
+  suggestion with `→`, with `End`, or with `ctrl-E` at the end of the line (`cmd-→` on macOS); accept one
   word with `alt-→` / `ctrl-→` or `meta-F`. There is no default key bound to the dedicated
   `editor_view:insert_autosuggestion` action — the **Settings → Features → Tab
   key behaviour** dropdown is what rebinds `tab` between "open completions menu"
@@ -219,7 +231,8 @@ The input is a real multi-line editor, not a single-line readline.
 - **The shell's own reverse-i-search.** `ctrl-R` is Command Search only while
   the input editor has the key. While a nested or remote shell without shell
   integration has the terminal, `ctrl-R` goes to that shell (`0x12`) and opens
-  its own search. `alt-R` is bound to nothing and is sent through as `ESC r`.
+  its own search, and `alt-R` is sent through to it as `ESC r`: the history
+  search above is bound in the input editor only.
 
 ### Vim mode
 
@@ -260,15 +273,17 @@ the "did you mean to use vim keybindings?" banner.
 
 **Emacs-style editing keys are always on. There is no setting to enable or
 disable them**, and `EmacsBindingsSettings` is not one: it is a Linux-only
-record of whether you dismissed a banner. That banner appears the first time you
-press `ctrl-E` on Linux and asks "did you intend `ctrl-A`/`ctrl-E` to move the
-cursor?", offering *Yes, use Emacs-style bindings* / *No, keep IDE bindings*.
+record of whether you dismissed a banner. That banner ("did you intend
+`ctrl-A`/`ctrl-E` to move the cursor?", offering *Yes, use Emacs-style
+bindings* / *No, keep IDE bindings*) belonged to the old Linux defaults; since
+v0.1.18 `ctrl-A` / `ctrl-E` move the cursor by default and it is shown only
+with `PHOSPHOR_READLINE_INPUT_KEYS=0`.
 
 The always-available emacs keys in the input editor:
 
 | Key | Action | Key | Action |
 |---|---|---|---|
-| `ctrl-A` | Start of line *(macOS only — on Linux/Windows `ctrl-A` is Select All)* | `ctrl-E` | End of line *(macOS only)* |
+| `ctrl-A` | Start of line | `ctrl-E` | End of line (at the end of the line: accept the autosuggestion) |
 | `ctrl-B` / `ctrl-F` | Character left / right | `ctrl-P` / `ctrl-N` | Line up / down |
 | `alt-B` / `alt-F` *(Linux/Windows)*, `meta-B` / `meta-F` | Word left / right | `meta-A` / `meta-E` | Paragraph start / end |
 | `alt-backspace` *(on Linux/Windows it cuts; on macOS it deletes)*, `meta-backspace` | Word before the cursor | | |
@@ -276,12 +291,20 @@ The always-available emacs keys in the input editor:
 | `ctrl-H` | Backspace | `ctrl-D` | Delete forward |
 | `ctrl-W` | Cut word left | `alt-D` | Cut word right |
 | `ctrl-K` | Cut to end of line | `ctrl-U` | Clear line and copy it |
-| `ctrl-Y` | Yank | `ctrl-J` | Insert newline |
+| `ctrl-Y` | Yank (paste the text the cut keys last removed) | `ctrl-J` | Insert newline |
 | `shift-ctrl-B`/`F`/`P`/`N`/`A`/`E` | Selecting variants *(macOS)* | `shift-meta-B` / `shift-meta-F` | Select word left / right |
 
-On Linux and Windows the `ctrl-A` / `ctrl-E` line-start/line-end bindings are
-deliberately **not** registered, because `ctrl-A` is Select All there and both
-are control characters the shell needs. `Home` and `End` do the job instead.
+`ctrl-A`, `ctrl-E` and `ctrl-Y` are readline's keys on every platform. On Linux
+and Windows that is the default since v0.1.18: before it `ctrl-A` selected
+everything, `ctrl-E` did nothing and `ctrl-Y` deleted to the start of the line.
+**Select All is `ctrl-shift-A` on Linux and Windows** (`cmd-A` on macOS, as
+always), and "delete to the start of the line" (`editor_view:delete_all_left`)
+ships without a key there; `ctrl-U` clears the line. This applies to the input
+editor and the app's other single-line text fields; in a file or a notebook
+`ctrl-A` still selects everything. A `keybindings.yaml` that already gives
+`ctrl-A` or `ctrl-E` to another action keeps doing so. All of these can be changed in **Settings →
+Keyboard shortcuts**, and `PHOSPHOR_READLINE_INPUT_KEYS=0` in the app's
+environment puts the old Linux / Windows defaults back.
 
 ### The `#` AI command search trigger
 
@@ -536,7 +559,7 @@ There is no "search across all blocks" surface other than the find bar.
 | Action | Binding |
 |---|---|
 | Page up / down | `pageup` / `pagedown` |
-| Page up / down, top / bottom **while a command runs** | `shift-pageup` / `shift-pagedown`, `shift-home` / `shift-end` |
+| Page up / down, top / bottom, **also while a command runs** | `shift-pageup` / `shift-pagedown`, `shift-home` / `shift-end` |
 | Scroll one line up / down | *(no default binding; `terminal:scroll_up_one_line` / `..._down_one_line` are remappable)* |
 | Scroll to top / bottom of the selected block | `cmd-shift-↑` / `cmd-shift-↓` (macOS), `ctrl-shift-↑` / `ctrl-shift-↓` |
 
@@ -551,8 +574,15 @@ Notes:
   `shift-pagedown` by a page, `shift-home` to the top, `shift-end` back to the
   newest output. The next key you type for the program returns to the bottom.
   A full-screen program (the alternate screen) keeps the shifted keys too.
-  These four are fixed bindings; `PHOSPHOR_SCROLLBACK_KEYS=0` in the app's
-  environment turns them off.
+- **The same four shifted keys scroll at a prompt.** `shift-pageup` /
+  `shift-pagedown` always do. `shift-home` / `shift-end` scroll to the top / the
+  newest output while the input is empty; in an input that holds text they
+  select to the start / end of the line, as in any text field.
+- The four are ordinary bindings you can change (`terminal:scrollback_page_up`,
+  `terminal:scrollback_page_down`, `terminal:scrollback_top`,
+  `terminal:scrollback_bottom`). `PHOSPHOR_SCROLLBACK_KEYS=0` in the app's
+  environment turns them off; `PHOSPHOR_SCROLLBACK_KEYS_AT_PROMPT=0` keeps them
+  to a running command.
 - In the alternate screen there is no scrollback of your own. Scrolling is
   translated into arrow-key sequences sent to the program, which is what makes
   the wheel work in `less` and `man`.
@@ -788,7 +818,7 @@ macOS and `ctrl-shift-X` elsewhere. A dash means the action ships with no key.
 | `workspace:toggle_files_palette` | Files palette | `cmd-O` | `ctrl-shift-O` |
 | `workspace:toggle_navigation_palette` | Navigation palette | `cmd-shift-P` | — |
 | `workspace:show_command_search` | Command search | `ctrl-R` | `ctrl-R` |
-| `input:search_command_history` | History search | — | — |
+| `input:search_command_history` | History search | `meta-R` (Option as Meta) | `alt-R` |
 | `input:open_completion_suggestions` | Completions menu | `tab` | `tab` |
 | `input:toggle_natural_language_command_search` | AI command search | ``ctrl-` `` | ``ctrl-` `` |
 | `workspace:open_global_search` | Global search | `cmd-shift-F` | `alt-shift-F` |
@@ -801,7 +831,8 @@ macOS and `ctrl-shift-X` elsewhere. A dash means the action ships with no key.
 | `terminal:ask_ai_assistant` | Attach the selection as agent context | `ctrl-shift-space` | `ctrl-shift-space` |
 | `editor_view:insert_newline` | Newline in the input | `ctrl-J` | `ctrl-J` |
 | `editor_view:insert_autosuggestion` | Accept the autosuggestion | — | — |
-| `editor_view:select_all` | Select all (input) | `cmd-A` | `ctrl-A` |
+| `editor_view:select_all` | Select all (input) | `cmd-A` | `ctrl-shift-A` |
+| `editor_view:move_to_line_start` / `_end` | Start / end of the line (input) | `ctrl-A` / `ctrl-E` | `ctrl-A` / `ctrl-E` |
 | `editor_view:add_cursor_above` / `_below` | Multi-cursor | `ctrl-shift-↑` / `↓` | `ctrl-shift-↑` / `↓` |
 | `editor_view:add_next_occurrence` | Cursor at next occurrence | `ctrl-G` | `ctrl-G` |
 | `editor_view:vim_exit_insert_mode` | Leave vim insert mode | `ctrl-[` | `ctrl-[` |

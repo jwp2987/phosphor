@@ -56,7 +56,7 @@ foreach($mode in 'term','agent'){
   $resp=@(); foreach($i in 1..10){ Start-Sleep -Milliseconds 500; $pp.Refresh(); $resp+=$pp.Responding }
   "bigpaste responding samples (every 0.5 s x10): $($resp -join ',') elapsed=$($sw.ElapsedMilliseconds) ms ws=$([int]($pp.WorkingSet64/1MB))MB"
   Shot "LT_${mode}_bigpaste"
-  [void][K]::Combo([byte[]]@(0x11),0x43); Start-Sleep 1; Keys "^a{BACKSPACE}"; Start-Sleep 2
+  [void][K]::Combo([byte[]]@(0x11),0x43); Start-Sleep 1; Keys "{END}{BACKSPACE 30}"; Start-Sleep 2
   Set-Clipboard "x"
   Shot "LT_${mode}_bigpaste_after"
   SaveLog "LT_${mode}_app"

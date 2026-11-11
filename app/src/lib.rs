@@ -1267,6 +1267,14 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
         crate::util::bindings::custom_tag_to_keystroke,
     );
 
+    // #1988: a custom action with a default key and no menu item (the history search on
+    // Option-R as Meta) has nothing to intercept its key on macOS, so exactly those become
+    // keystroke bindings there. Every action with a menu item keeps its custom trigger.
+    #[cfg(target_os = "macos")]
+    app_builder.convert_custom_triggers_to_keystroke_triggers(
+        crate::util::bindings::mac_menuless_custom_tag_to_keystroke,
+    );
+
     app_builder.run(move |ctx| {
         // Rotate the log files in the background.
         ctx.background_executor()
@@ -3061,6 +3069,8 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
     });
 
     keyboard::load_custom_keybindings(ctx);
+    // #1988: a binding the user bound to ctrl-r wins over command search.
+    crate::util::bindings::mark_bindings_yielding_to_user_bindings(ctx);
 
     IntervalTimer::handle(ctx).update(ctx, |timer, _ctx| {
         timer.mark_interval_end("KEYBINDINGS_LOADED");
