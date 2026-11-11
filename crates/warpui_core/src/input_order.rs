@@ -370,6 +370,28 @@ pub fn log_notify_cause(view: &'static str, cause: &'static str) {
     }
 }
 
+/// `input_order hop=desktop_notification title_chars=<n> body_chars=<n> t=...` (#2075, app test
+/// `desktop_notification`): one line per desktop notification handed to the OS. Counts only, never
+/// the title or the body (they hold the user's command line).
+fn desktop_notification_line(title: &str, body: &str) -> String {
+    hop_line(
+        "desktop_notification",
+        &format!(
+            "title_chars={} body_chars={}",
+            title.chars().count(),
+            body.chars().count()
+        ),
+    )
+}
+
+/// Logs that a desktop notification is being handed to the OS. Trace only: no behaviour depends
+/// on it, and nothing is counted or formatted when input-order logging is off.
+pub fn log_desktop_notification(title: &str, body: &str) {
+    if enabled() {
+        log::debug!(target: TARGET, "{}", desktop_notification_line(title, body));
+    }
+}
+
 /// The owner's budget for one item of main-thread UI work (#1191, #1219, #1301): a frame, an
 /// event dispatch or an action dispatch over this is logged as a `hop=ui_item` line so a real-app
 /// run can show which item broke the budget (the `SlowLog` lines only start at 16 ms).
@@ -796,6 +818,23 @@ mod tests {
         let line = hop_line("pty_write_partial", "wrote=1 of=5");
         assert!(
             line.starts_with("input_order hop=pty_write_partial wrote=1 of=5 t="),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn desktop_notification_lines_carry_counts_and_no_text() {
+        // The real-app harness counts these lines (script/realapp/appci/cases_desk.py, NOTIFY_HOP_RE).
+        let line = desktop_notification_line("sleep 6 finished after 6s", "Latest output: né");
+        let rest = line
+            .strip_prefix("input_order hop=desktop_notification title_chars=25 body_chars=17 t=")
+            .unwrap_or_else(|| panic!("{line}"));
+        assert!(
+            rest.contains('.') && rest.chars().all(|c| c.is_ascii_digit() || c == '.'),
+            "{line}"
+        );
+        assert!(
+            !line.contains("sleep") && !line.contains("Latest"),
             "{line}"
         );
     }
