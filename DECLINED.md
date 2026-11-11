@@ -197,6 +197,12 @@ drops the table — see the owner-approved section below); `word_block_editor`,
 auth / view_components / pane_group / settings stubs. The `IsTelemetryEnabled` setting and widget are
 unaffected.
 
+## cmd.exe as a pane shell — not supported
+
+| what | issue | note |
+|---|---|---|
+| **cmd.exe as a pane shell** | #2084 | **DECIDED 2026-11-11 (owner): not supported.** "I don't know that anyone uses cmd.exe anymore." The app has no cmd shell type; a cmd override falls back to the default shell (same at the pin). The Windows test passes are PowerShell 5.1, Git Bash, PowerShell 7 and WSL; cmd is not one of them (`APPCI_WIN_SHELLS`). Revisit only if a user asks for cmd.exe panes. |
+
 ## Voice input — recording exists, transcription is cloud and disabled
 
 | what | issue | note |

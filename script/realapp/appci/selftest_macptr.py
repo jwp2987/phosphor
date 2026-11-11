@@ -355,7 +355,17 @@ def macptr_case_gates_on_macos():
     assert qw.index('QuitScope::App => "Yes, quit",') < qw.index('crate::t!("common-cancel")') and "ctx.show_native_platform_modal(dialog);" in qw
     # the Mac launcher arms the find hook, as the Linux and Windows launchers do
     import app as appmod
-    assert '("PHOSPHOR_APPCI_FIND_FILE", os.path.join(self.home, "appci_find.txt"))' in inspect.getsource(appmod.MacApp.start)
+    # merged with #2082 (app.find_hook_env): this asserted a literal ("PHOSPHOR_APPCI_FIND_FILE", ...) pair in MacApp.start. The integrated launcher sets
+    # the same variable through find_hook_env, which also honours the APPCI_NO_FIND_HOOK=1 kill switch; a second, unconditional copy would defeat that
+    # switch, so there is one statement and the assertion names it, with the value it gives and that the literal copy is not back
+    start_src = inspect.getsource(appmod.MacApp.start)
+    assert "find_hook_env(self.home).items()" in start_src and '("PHOSPHOR_APPCI_FIND_FILE"' not in start_src
+    keep_sw = os.environ.pop("APPCI_NO_FIND_HOOK", None)
+    try:
+        assert appmod.find_hook_env("/h") == {"PHOSPHOR_APPCI_FIND_FILE": os.path.join("/h", "appci_find.txt")}
+    finally:
+        if keep_sw is not None:
+            os.environ["APPCI_NO_FIND_HOOK"] = keep_sw
     assert '"mac"' in inspect.getsource(U._hook_word) and "mac_window_origin(ctx)" in inspect.getsource(U._hook_word)
 
 

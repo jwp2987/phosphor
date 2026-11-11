@@ -132,6 +132,9 @@ PROVING = (
     "installer_smoke", "upgrade_from_previous_release", "startup_shell_pane",
     # round 15 wave 4, macOS harness (#2061, r14-test-gaps T32; cases_macptr.py): the Mac pointer tool and the app-only chords proven on the machine
     "mac_pointer_chord_proof",
+    # round 15 wave 5 part A (docs/design/r14-test-gaps.md T42, T45, T50; design docs/design/r15-w5a.md; #2076): the macOS keychain at start
+    # (#1977), a keybindings.yaml change taking effect, and the code editor's find and replace / close question / file changed on disk (#2087, #2088)
+    "keychain_startup_macos", "keybinding_rebind", "editor_daily",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -6556,3 +6559,4 @@ import cases_r15_w5c  # noqa: E402,F401  (round 15 wave 5c, T48: gpu_real_render
 import cases_desk  # noqa: E402,F401  (r15 wave 4, T35/T37/T38/T39: scale_matrix, desktop_notification, desktop_notification_agent_question, drag_drop_file, ime_compose)
 import cases_macptr  # noqa: E402,F401  (r15 wave 4, #2061: mac_pointer_chord_proof)
 import cases_install  # noqa: E402,F401  (#2076 / #1546, round 15 wave 5 part B: installer_smoke, upgrade_from_previous_release)
+import cases_r15_w5a  # noqa: E402,F401  (r15 wave 5 part A, T42/T45/T50: keychain_startup_macos, keybinding_rebind, editor_daily)

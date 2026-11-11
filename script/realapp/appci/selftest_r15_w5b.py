@@ -43,7 +43,8 @@ def r15_cases_registered_proving_and_classified():
     for n in NAMES[:2]:
         assert winmap.skip_reason(n, "powershell") is None and "PowerShell pane" in winmap.skip_reason(n, "gitbash"), n
     src = open(os.path.join(HERE, "cases.py"), encoding="utf-8").read()
-    assert src.rstrip().splitlines()[-1].startswith("import cases_install")
+    # the import line must exist; it need not be the last one (r15 w5a appends its own module import after it)
+    assert any(l.startswith("import cases_install") for l in src.splitlines())
     assert "warp::uri=info" in __import__("app").WINDOWS_RUST_LOG and __import__("app").rust_log_enabled(__import__("app").WINDOWS_RUST_LOG, "warp::uri", "info")
 
 
@@ -340,6 +341,7 @@ def r15_pane_shell_passes():
     yml = open(os.path.join(HERE, "..", "..", "..", ".gitlab-ci.yml"), encoding="utf-8").read()
     m = re.search(r"^app-test-windows:\n(.*?)(?=^\S)", yml, re.S | re.M)
     v = re.search(r'^    APPCI_WIN_SHELLS: "([^"]+)"', m.group(1), re.M) if m else None
-    assert v and v.group(1).split(",") == ["powershell", "gitbash", "pwsh7", "cmd", "wsl"], "app-test-windows no longer plays the pane-shell passes: startup_shell_pane would SKIP in every run again"
+    # cmd.exe left the list 2026-11-11 (owner, #2084 declined: not a supported pane shell); the other pane-shell passes must stay
+    assert v and v.group(1).split(",") == ["powershell", "gitbash", "pwsh7", "wsl"], "app-test-windows no longer plays the pane-shell passes: startup_shell_pane would SKIP in every run again"
     src = open(os.path.join(HERE, "run.py"), encoding="utf-8").read()
     assert "variant_pane_problem(variant, app)" in src and "winmap.VARIANT_NEEDS[variant]" in src and "none of its cases is selected, not started" in src

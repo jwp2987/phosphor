@@ -8320,6 +8320,8 @@ import selftest_macptr  # noqa: E402  (round 15 wave 4, #2061: the macOS pointer
 CHECKS.extend(selftest_macptr.CHECKS)
 import selftest_r15_lab  # noqa: E402  (round 15 lab: the helper artifact, the lab families and their drivers, kl3's keys; its checks live in their own file)
 CHECKS.extend(selftest_r15_lab.CHECKS)
+import selftest_r15_w5a  # noqa: E402  (round 15 wave 5 part A: cases_r15_w5a.py, nettrace.py; its checks live in their own file)
+CHECKS.extend(selftest_r15_w5a.CHECKS)
 
 
 def main():

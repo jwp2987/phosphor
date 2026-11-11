@@ -263,7 +263,7 @@ def open_network_kb(ctx, r):
     import cases_coverage_b as CB
     ctx.reset()
     time.sleep(0.3)
-    ctx.be.key(CB.SETTINGS_KEY["linux"])
+    ctx.be.key(CB.SETTINGS_KEY["mac" if ctx.be.name == "mac" else "linux"])      # round 15: network_gate_switch also runs on macOS (cmd+,)
     time.sleep(1.5)
     ctx.be.key(os.environ.get("APPCI_KEY_PALETTE", "ctrl+shift+p"))
     time.sleep(0.8)
@@ -349,7 +349,8 @@ def expect_denied(ctx, r, cap, url, tag, why):
 
 
 def origin_count(ctx, origin):
-    return open(R.settings_file(ctx), encoding="utf-8", errors="replace").read().count(origin)
+    """how often the settings file the RUNNING app writes holds `origin` (Linux: the profile's file; macOS / Windows: the app's own copy)"""
+    return open(R.live_settings_file(ctx), encoding="utf-8", errors="replace").read().count(origin)
 
 
 def expect_hop(ctx, r, off, action, why, host="localhost"):
@@ -419,9 +420,13 @@ def pointer_gate_switch(ctx, r, cap, url):
     expect_denied(ctx, r, cap, url, "q", "with the gate switched back on by pointer")
 
 
+NOT_PORTED_WHY = ("agent_gate: Linux only. NEEDS (harness, not built): on macOS a pointer tool (r14-test-gaps T32) for the toast and the page switch, a close key "
+                  "for the viewer tab, and the polled trace (nettrace.py) in place of the strace oracle; on Windows the pointer (T31) and the same two")
+
+
 def prelude(ctx, r):
     import cases_replay as CRP
-    R.need_linux_app(ctx, "agent_gate")
+    R.need_linux_app(ctx, NOT_PORTED_WHY)
     CRP.need_model(ctx, r)
 
 

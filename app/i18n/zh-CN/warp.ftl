@@ -2074,6 +2074,8 @@ keybinding-desc-project-buttons-create-new-project = 创建新项目
 # 查找视图 binding desc
 keybinding-desc-find-next-occurrence = 查找下一处匹配
 keybinding-desc-find-prev-occurrence = 查找上一处匹配
+keybinding-desc-find-toggle-replace = 显示或隐藏查找栏的替换框
+keybinding-desc-find-replace-all = 替换所有匹配项
 
 # Notebook 文件 / 笔记本 binding desc
 keybinding-desc-notebook-focus-terminal-input-from-file = 从文件切回终端输入

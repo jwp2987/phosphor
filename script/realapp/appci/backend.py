@@ -1303,6 +1303,11 @@ class MacBackend(Backend):
                 p.kill()
 
 
+# Round 15 (r14-test-gaps T45, keybinding_rebind): the function keys, as a separate statement. Every letter chord is one of the app's defaults, so a
+# rebind test needs a key nothing is bound to. macOS virtual key codes (kVK_F1 .. kVK_F12); a posted F-key is the key itself, not the media key.
+MacBackend.SPECIAL.update({"f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111})
+
+
 class WindowsBackend(Backend):
     """Windows 10/11, interactive desktop (the GitLab runner runs on the console). Everything is ctypes, no helper binary:
       keys        SendInput with real virtual-key codes AND scancodes (MapVirtualKey) for printable ASCII on a US layout (a static table, so the VM's
