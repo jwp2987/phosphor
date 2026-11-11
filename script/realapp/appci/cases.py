@@ -115,6 +115,10 @@ PROVING = (
     # round 14 wave 3a (docs/design/r14-test-gaps.md 7.1, T21 to T25): pointer and pane cases. Linux pointer for the first four (macOS and Windows SKIP
     # naming the missing pointer tool); pane_resize_maximize also runs on macOS by keyboard
     "link_and_path_click", "selection_modes", "primary_and_middle_click", "wheel_scroll", "pane_resize_maximize",
+    # round 15 (#2057, docs/design/r14-test-gaps.md 7.0 b, docs/design/r15-tiers.md): the daily-use slice of the full-tier cases. These 13 are OLD cases
+    # (registered before the PROVING rule), in the fix tier because no full-tier run has played them since the v0.1.17 RC. None needs the scripted model.
+    "session_restore", "crash_kill9_restore", "ui_resize_typing", "ui_split_panes", "ui_ctrl_r", "ui_ghost_accept", "ui_tab_menu",
+    "big_paste", "paste_multiline_prompt", "ssh_password_prompt", "remote_session_legacy", "alt_screen_programs", "agent_approval",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).

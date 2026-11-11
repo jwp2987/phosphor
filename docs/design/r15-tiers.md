@@ -1,7 +1,8 @@
 # Round 15: tier reach (#2056, #2057, #2058, #2063, #2064)
 
-Harness and CI only. No app code. Nothing was compiled or run on a test machine when this was written; only the two
-self-tests ran (`ci_seq.py --self-test`, `appci/run.py --self-test`, `collect_results.py --self-test`).
+Harness and CI only. No app code. Nothing was compiled or run on a test machine when this was written; only the
+self-tests ran (`ci_seq.py --self-test`, `appci/run.py --self-test`, `collect_results.py --self-test`), and `ci_seq.main()` against a
+scripted GitLab (every job answers at once; fix, fix with reuse, candidate, release, and the failure rows) to read the play order.
 
 Source: `docs/design/r14-test-gaps.md` 5.1 (G1, G2, G6, G7) and 7.0 a to f. Owner 2026-11-11: every gap is in the harness.
 

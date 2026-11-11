@@ -5047,8 +5047,12 @@ def lab_first_run_fixes_round10():
         arm = dict(name="lab_x.bash.lan.helper", user="u_bash", shell="bash", helper="helper", lat_ms=0, flavor="full")
         ran = []
         r = R()
-        CL._runner(lambda c, rr, a: ran.append(1), arm)(ctx, r)
-        assert not ran and "APPCI_LAB_HELPER_BIN" in r.msg, "the helper arm must stop at the missing binary"
+        # round 15 (#2063): the missing helper file is now a SKIP naming the machine change (it was r.unverifiable); the arm still stops and is still cleaned up
+        try:
+            CL._runner(lambda c, rr, a: ran.append(1), arm)(ctx, r)
+            raise AssertionError("the helper arm must stop at the missing binary")
+        except cases.Skip as e:
+            assert not ran and "APPCI_LAB_HELPER_BIN" in str(e) and "NEEDS:" in str(e), "the helper arm must stop at the missing binary and say what is needed: %s" % e
         assert ctx.remote is local and prof.remote is None and ctx.arm is None and ctx._lab_prev is None, "lab_prepare's swap was not undone on its early return"
         # a skip raised inside lab_prepare (no lab for this pass) is cleaned up too, and still propagates
         ctx2 = types.SimpleNamespace(lab=None, lab_why="no lab here", prof=prof, remote=local, arm=None, lab_helper_mode="nohelper")
@@ -7226,7 +7230,8 @@ def lab_helper_from_the_cache_r12():
         os.environ.pop("APPCI_LAB_HELPER_BIN", None)
         os.environ["PHOSPHOR_CI_HELPER_CACHE"] = os.path.join(d, "empty")
         ok, r, lab, arm = run("upload")                 # unset: a source build's arm goes on to the helper lookup, as before
-        assert ok is False and "lab-helper" in r.msg and "no pinned" not in r.msg, r.msg
+        # round 15 (#2063): that lookup's miss is a SKIP with NEEDS (it was r.unverifiable: ok False and the text in r.msg)
+        assert isinstance(ok, cases.Skip) and "lab-helper" in str(ok) and "NEEDS:" in str(ok) and "no pinned" not in str(ok) and r.msg is None, (ok, r.msg)
     finally:
         for k, v in keep.items():
             if v is None:
@@ -8271,6 +8276,8 @@ def r14_window_use_cases_pure_parts():
             assert n in winmap.NOT_WINDOWS and "r14-test-gaps T3" in winmap.skip_reason(n, "gitbash"), n
 import selftest_pointer  # noqa: E402  (round 14 wave 3a: cases_pointer.py; its checks live in their own file)
 CHECKS.extend(selftest_pointer.CHECKS)
+import selftest_r15_tiers  # noqa: E402  (round 15: the tier plan, #2056 #2057 #2058 #2063 #2064; its checks live in their own file)
+CHECKS.extend(selftest_r15_tiers.CHECKS)
 
 
 def main():

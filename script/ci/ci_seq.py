@@ -8,7 +8,9 @@
 #   (every tier: on the Linux box the unit suites run FIRST, the app tests wait for them, owner 2026-11-05; Mac/Windows have no unit suites in the fix tier)
 #   fix       (~1 h)   check-linux; test-linux with a nextest filter (--tests, or derived from the git diff);
 #                      test-warpui-core only when its crate changed, test-workspace-rest on every code change (#1496); builds for --platforms
-#                      (default: derived from the diff); app tests in SMOKE mode (APPCI_TIER=smoke). A platform whose
+#                      (default: derived from the diff); app tests in SMOKE mode (APPCI_TIER=smoke). Round 15 (#2058): on the Linux box that is
+#                      the Wayland job, THEN the X11 job in both session modes, THEN the lab job with the PROVING lab cases, one at a time
+#                      (box_app_sequence). A platform whose
 #                      app-affecting paths (APP_NONAFFECTING below, inverted) equal those of the newest earlier build/*
 #                      pipeline with a SUCCESSFUL, unexpired build job REUSES that build (app-test-*-reuse, job id passed as
 #                      APPCI_BUILD_JOB_ID) instead of building. --no-reuse forces builds. candidate/release ALWAYS build.
@@ -18,6 +20,9 @@
 #                      #1502: also the box's integration-linux (3 shards), integration-linux-pwsh and usage-test-linux (after the box
 #                      unit suites, before the app tests), and usage-test-macos on the Mac (with its unit suites). insta-snapshots
 #                      (it writes files) and check-macos/-windows (the builds cover them) are in no tier.
+#                      Round 15 (#2056, #2063): sshlab-image and lab-helper right after check-linux; on the box after the Wayland and X11 app
+#                      jobs the lab job with every lab family (LAB_CANDIDATE_MATRIX) and app-test-replay-linux; on the Mac and on Windows the
+#                      lab job (quick matrix, the fixed slot on the box) after that platform's app tests. `--dry-run` prints the plan.
 #   release   (~16 h)  candidate + on the box test-shuttle-loom, fuzz-smoke, bench, mutants, mutants-warpui-core, and on EACH of
 #                      macOS and Windows the same heavy set (-macos / -windows suffix), after that platform's unit suites. Every
 #                      suite runs on Linux, macOS and Windows ("the tests need to be the same on all boxes"); the one exception
@@ -70,18 +75,115 @@ def lab_image_skipped(doc):
 
 
 def proving_lab_globs(path=None):
-    """cases.PROVING_LAB, read from cases.py as a literal (this script imports no harness code)"""
+    """cases.PROVING_LAB, read from cases.py as a literal (this script imports no harness code). Round 15: the UNION of every literal assignment, in
+    order. cases.py assigns PROVING_LAB twice (two branches each added a glob to their own copy of the line); this function returned the first, Python keeps
+    the second, so the fix tier's lab job played lab_agent_nld_predict_ssh and not lab_raw_key_arrival. Both are owed a fix-tier run."""
     import ast
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "realapp", "appci", "cases.py")
-    for node in ast.parse(open(path).read()).body:
+    return proving_lab_globs_of(open(path).read())
+
+
+def proving_lab_globs_of(src):
+    import ast
+    out = []
+    for node in ast.parse(src).body:
         if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "PROVING_LAB" for t in node.targets):
-            return list(ast.literal_eval(node.value))
-    return []
+            try:
+                out += [g for g in ast.literal_eval(node.value) if g not in out]
+            except ValueError:
+                pass                            # not a literal (e.g. PROVING_LAB + (...)): the literal ones still count
+    return out
 
 
 def lab_fix_vars(globs=None):
     """the play-time variables of the fix tier's lab job"""
     return {"APPCI_CASES": ",".join(globs if globs is not None else proving_lab_globs()), "APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": "quick"}
+
+
+# ---- round 15: the tier plan of the app and lab jobs, as data (#2056, #2058, #2063; docs/design/r15-tiers.md) ------------------------------------------
+# One lab job per platform. The Linux one starts its own container on the box (APPCI_LAB=local); the Mac and Windows ones attach to the box's fixed slots
+# (APPCI_LAB=fixed, the job's own variable; docs/design/r12-macssh.md 4). LAB_FIX_JOB above is LAB_APP[LINUX]: the fix tier plays it with the PROVING globs.
+LAB_APP = {LINUX: "app-test-lab-linux", MAC: "app-test-lab-macos", WIN: "app-test-lab-windows"}
+REPLAY_JOB = "app-test-replay-linux"
+# The lab's `phosphor-remote` (script/ci/lab_helper.py): a no-op of seconds when this checkout's key is cached. Played right after check-linux in the
+# candidate and release tiers, BEFORE the unit suites: the Mac and Windows lab jobs take its artifact and can be ready before the box's suites end.
+LAB_HELPER_JOB = "lab-helper"
+# Candidate / release, Linux: every lab FAMILY at least once (appci self-test r15_candidate_lab_matrix_covers_every_family reads this constant), in the quick
+# set's four shells at LAN and 150 ms, with every helper arm, the fault arms and the scenario users: 372 arms, 509 rows. The `full` matrix is 626 arms / 831
+# rows, about 10 h at the 43 s a row the committed lab runs took: more than the job's 6 h, so it stays a hand play.
+LAB_CANDIDATE_MATRIX = "shells=bash,zsh,fish,nu;lat=lan,150;helper=nohelper,helper,upload,upgrade,never;faults=1;scenarios=1"
+LAB_PLAT_MATRIX = "quick"                       # macOS and Windows: the client side of the same remote
+# The lab jobs keep their own APPCI_CASES ("lab_*"). That glob never sweeps in the replay (run.py plays lab_replay* only when --cases names it), so the
+# replay is played once, by its own job.
+X11_MODES = "terminal,agent"                    # #2058: the X11 pass runs BOTH session modes (agent mode had never run there)
+NEEDS_PREFIX = "NEEDS: "                        # a status that starts with this names a machine change: verdict NEEDS (listed, never a pass, not a code failure)
+NOT_PLAYABLE = "not playable"
+# lab_helper.py's own messages for a missing build tool (missing_tools): the job installs nothing, so this is the owner's machine change (#2062)
+LAB_HELPER_TOOL_RX = re.compile(r"lab_helper: ERROR (?:(\S+) is missing for this user|the (\S+) rust target is not installed)")
+
+
+def lab_tier_vars(plat):
+    """the play-time variables of a candidate / release lab job on platform plat (the fix tier's are lab_fix_vars)"""
+    return {"APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": LAB_CANDIDATE_MATRIX if plat == LINUX else LAB_PLAT_MATRIX}
+
+
+def box_app_sequence(tier, reuse=False, lab_globs=None):
+    """The Linux box's app jobs in play order, as [(job, extra play-time variables)]. The driver plays them ONE AT A TIME, each waited for before the next
+    (owner: one app test at a time on a machine; the resource group only stops an overlap, it does not order). Wayland first, then X11 in both modes
+    (#2058: every tier), then the lab: the PROVING lab cases in the fix tier, every family in candidate / release, and there the replay last (#2063)."""
+    sfx = "-reuse" if reuse else ""
+    seq = [("app-test-linux-wayland" + sfx, {}), ("app-test-linux-x11" + sfx, {"APPCI_MODES": X11_MODES})]
+    if tier == "fix":
+        globs = proving_lab_globs() if lab_globs is None else lab_globs
+        if globs:
+            seq.append((LAB_FIX_JOB + sfx, lab_fix_vars(globs)))
+    else:
+        seq += [(LAB_APP[LINUX], lab_tier_vars(LINUX)), (REPLAY_JOB, {})]
+    return seq
+
+
+def is_lab_job(name):
+    return name.startswith(("app-test-lab-", "app-test-replay-"))
+
+
+def lab_helper_needs(trace):
+    """-> the NEEDS status of a failed lab-helper job whose trace shows a missing build tool, else None (any other failure is a FAIL)"""
+    tools = []
+    for m in LAB_HELPER_TOOL_RX.finditer(trace or ""):
+        t = m.group(1) or ("the %s rust target" % m.group(2))
+        if t not in tools:
+            tools.append(t)
+    if not tools:
+        return None
+    return NEEDS_PREFIX + "%s for the runner user on the Linux box (#2062); until then every lab helper arm SKIPs with NEEDS" % ", ".join(tools)
+
+
+def tier_plan(tier, plats=(LINUX, MAC, WIN), reuse=(), lab_globs=None, units=("test-linux", "test-warpui-core", "test-workspace-rest")):
+    """What a tier plays, per machine, in play order: {platform: [job names]}. `--dry-run` prints it and the self-test pins it. Built from the same
+    lists the driver uses (BOX_EXTRA, plat_suites, box_app_sequence, LAB_APP); `units` = the box unit suites the fix tier selected (all three otherwise).
+    Reuse (fix tier only) swaps a platform's build + app jobs for the -reuse app jobs."""
+    out = {}
+    if LINUX in plats:
+        r = tier == "fix" and LINUX in reuse
+        seq = ["check-linux"]
+        if tier != "fix" or (proving_lab_globs() if lab_globs is None else lab_globs):
+            seq.append(LAB_IMAGE_JOB)
+        if tier != "fix":
+            seq.append(LAB_HELPER_JOB)
+        seq += [] if r else [BUILD[LINUX]]
+        seq += list(units) + (BOX_EXTRA if tier != "fix" else [])
+        seq += [n for n, _ in box_app_sequence(tier, r, lab_globs)]
+        if tier == "release":
+            seq += HEAVY_SUFFIX
+        out[LINUX] = seq
+    for p in (MAC, WIN):
+        if p not in plats:
+            continue
+        if tier == "fix":
+            out[p] = [n + "-reuse" for n in APP[p]] if p in reuse else [BUILD[p]] + APP[p]
+            continue
+        out[p] = [BUILD[p]] + plat_suites(p, False) + APP[p] + [LAB_APP[p]] + [n for n in plat_suites(p, tier == "release") if n not in plat_suites(p, False)]
+    return out
 
 
 UNSUPPORTED = {"fuzz-smoke-windows": "cargo-fuzz works only on Unix-like systems (no Windows/MSVC)"}
@@ -408,8 +510,81 @@ def self_test():
     ):
         bad += 0 if ok else 1
         print("%s %s" % ("ok  " if ok else "FAIL", what))
+    bad += self_test_r15(yml, _src)
     print("self-test: %s" % ("FAILED (%d)" % bad if bad else "all passed"))
     return 1 if bad else 0
+
+
+def self_test_r15(yml, src):
+    """Round 15 (#2056, #2057, #2058, #2063, #2064): the tier plan. -> number of failed rows."""
+    def job_block(name):
+        m = re.search(r"^%s:\n(?:[ \t].*\n|\n)*" % re.escape(name), yml, re.M)
+        return m.group(0) if m else ""
+    g = ("lab_x.*",)
+    fix, cand, rel = tier_plan("fix", lab_globs=g), tier_plan("candidate", lab_globs=g), tier_plan("release", lab_globs=g)
+    before = lambda seq, a, b: a in seq and b in seq and seq.index(a) < seq.index(b)
+    x11 = job_block("app-test-linux-x11")
+    rows = [
+        # #2058: the fix tier plays x11, both modes, after wayland and before the lab; fresh and reused; the job no longer leaves in smoke
+        (box_app_sequence("fix", lab_globs=g) == [("app-test-linux-wayland", {}), ("app-test-linux-x11", {"APPCI_MODES": "terminal,agent"}), (LAB_FIX_JOB, lab_fix_vars(g))],
+         "fix tier, box: wayland, then x11 in both modes, then the PROVING lab cases"),
+        ([n for n, _ in box_app_sequence("fix", True, g)] == ["app-test-linux-wayland-reuse", "app-test-linux-x11-reuse", "app-test-lab-linux-reuse"],
+         "fix tier on a reused build: the same order with the -reuse jobs"),
+        ([n for n, _ in box_app_sequence("fix", lab_globs=())] == ["app-test-linux-wayland", "app-test-linux-x11"], "no PROVING lab glob: no lab job, x11 still played"),
+        (bool(x11) and "exit 77" not in "\n".join(l for l in x11.splitlines() if not l.lstrip().startswith("#")) and "--mode x11" in x11,
+         "app-test-linux-x11 runs in every tier (no exit 77 for APPCI_TIER=smoke)"),
+        (all(re.search(r"^%s:" % re.escape(n), yml, re.M) for n in ("app-test-linux-x11-reuse", LAB_APP[MAC], LAB_APP[WIN], REPLAY_JOB, LAB_HELPER_JOB)),
+         "every job the plan names exists in .gitlab-ci.yml"),
+        (("= (TIER" + "_SKIP, None)") not in src, "the driver marks no app job skipped by tier any more"),
+        (all(before(fix[LINUX], u, "app-test-linux-wayland") for u in ("test-linux", "test-warpui-core", "test-workspace-rest")), "fix tier: the box unit suites before the first app job"),
+        (fix[MAC] == [BUILD[MAC], "app-test-macos"] and fix[WIN] == [BUILD[WIN], "app-test-windows"] and LAB_HELPER_JOB not in fix[LINUX] and REPLAY_JOB not in fix[LINUX],
+         "fix tier: no lab job off the box, no helper build, no replay"),
+        (tier_plan("fix", reuse=(LINUX, MAC), lab_globs=g)[MAC] == ["app-test-macos-reuse"] and BUILD[LINUX] not in tier_plan("fix", reuse=(LINUX,), lab_globs=g)[LINUX],
+         "fix tier reuse: no build job for a reused platform"),
+        # #2056 / #2063 / #2064: the candidate tier
+        (cand[LINUX][-4:] == ["app-test-linux-wayland", "app-test-linux-x11", "app-test-lab-linux", "app-test-replay-linux"], "candidate, box: wayland, x11, the lab, the replay, in that order"),
+        (all(before(cand[LINUX], n, "app-test-linux-wayland") for n in BOX_EXTRA + ["test-linux", LAB_HELPER_JOB, LAB_IMAGE_JOB]),
+         "candidate, box: unit, integration and usage suites, the lab image and the lab helper before the first app job"),
+        (before(cand[LINUX], LAB_HELPER_JOB, "test-linux") and before(cand[LINUX], "check-linux", LAB_HELPER_JOB), "candidate: lab-helper right after check-linux (the Mac / Windows lab jobs take its artifact)"),
+        (all(n in cand[LINUX] for n in ["integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]", "integration-linux-pwsh", "usage-test-linux"]) and "usage-test-macos" in cand[MAC],
+         "candidate plays integration-linux (3 shards), -pwsh and usage-test-* (#2064)"),
+        (before(cand[MAC], "app-test-macos", LAB_APP[MAC]) and before(cand[MAC], "test-macos", "app-test-macos") and cand[MAC][-1] == LAB_APP[MAC],
+         "candidate, Mac: unit suites, app tests, then the lab"),
+        (before(cand[WIN], "app-test-windows", LAB_APP[WIN]) and cand[WIN][-1] == LAB_APP[WIN], "candidate, Windows: app tests, then the lab"),
+        (all(set(cand[p]) <= set(rel[p]) for p in cand) and before(rel[MAC], LAB_APP[MAC], "mutants-macos") and before(rel[LINUX], REPLAY_JOB, "mutants"),
+         "release = candidate plus the heavy suites, which follow the lab"),
+        (lab_tier_vars(LINUX) == {"APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": LAB_CANDIDATE_MATRIX} and all('APPCI_CASES: "lab_*"' in job_block(j) for j in LAB_APP.values())
+         and lab_tier_vars(MAC)["APPCI_LAB_MATRIX"] == "quick" == lab_tier_vars(WIN)["APPCI_LAB_MATRIX"], "candidate lab variables: every family on the box, the quick matrix on Mac and Windows, the scripted model"),
+        (all(k in LAB_CANDIDATE_MATRIX for k in ("upload", "upgrade", "never", "faults=1", "scenarios=1")), "the candidate matrix has the upload / upgrade / never arms, the faults and the scenario users"),
+        ("APPCI_LAB: fixed" in job_block(LAB_APP[MAC]) and "APPCI_LAB: fixed" in job_block(LAB_APP[WIN]) and "APPCI_LAB: local" in job_block(LAB_APP[LINUX]),
+         "the Mac and Windows lab jobs attach to the box's fixed slot (APPCI_LAB=fixed)"),
+        (all("job: lab-helper" in job_block(LAB_APP[p]) and "APPCI_LAB_HELPER_BIN" in job_block(LAB_APP[p]) and 'APPCI_APP_PINNED_DIGESTS: "0"' in job_block(LAB_APP[p]) for p in (MAC, WIN)),
+         "the Mac and Windows lab jobs take lab-helper's artifact and say the dev build pins no digest"),
+        (all(n in APP_RESULT_DIR for n in list(LAB_APP.values()) + [REPLAY_JOB, "app-test-linux-x11-reuse", "app-test-lab-linux-reuse"]) and not set(LAB_APP.values()) & set(sum(APP.values(), [])),
+         "lab, replay and reused jobs are checked for a run that judged nothing; the lab jobs are not platform app-test jobs (the release gate's list is unchanged)"),
+        ("app-test-lab-linux" not in sum(release_gate_jobs().values(), []) and LAB_HELPER_JOB not in sum(release_gate_jobs().values(), []), "the release gate's job list is not widened by this round (owner decision)"),
+        # the helper job without its build tools is a NEEDS, anything else a FAIL
+        (lab_helper_needs("x\nlab_helper: ERROR zig is missing for this user (the cli-linux release job installs it into $HOME/.local/zig-*; nothing is installed by this job)\n"
+                          "lab_helper: ERROR cargo-zigbuild is missing for this user (x)\n") == NEEDS_PREFIX + "zig, cargo-zigbuild for the runner user on the Linux box (#2062); until then every lab helper arm SKIPs with NEEDS",
+         "lab-helper without zig / cargo-zigbuild: a NEEDS status naming them and #2062"),
+        ("x86_64-unknown-linux-musl rust target" in (lab_helper_needs("lab_helper: ERROR the x86_64-unknown-linux-musl rust target is not installed (`rustup target add x`)") or ""), "the missing musl target is named too"),
+        (lab_helper_needs("lab_helper: ERROR the helper build failed") is None and lab_helper_needs("") is None and lab_helper_needs(None) is None, "a build failure is not a NEEDS"),
+        ([verdict(LAB_HELPER_JOB, NEEDS_PREFIX + "zig"), verdict(LAB_HELPER_JOB, "failed"), verdict(LAB_APP[MAC], "failed"), verdict(REPLAY_JOB, "failed"),
+          verdict(LAB_APP[WIN], "%s (created: a job it needs has not run)" % NOT_PLAYABLE), verdict(LAB_APP[MAC], "missing"), verdict("app-test-linux-x11", "failed")] == ["NEEDS"] + ["FAIL"] * 6,
+         "verdicts: NEEDS only for the named machine change; a red, unplayable or absent planned job is a FAIL"),
+        ("NEEDS" not in ("FAIL", "OFFLINE") and verdict(LAB_HELPER_JOB, "success") == "PASS", "a NEEDS row does not fail the tier and is not a pass"),
+        (is_lab_job("app-test-lab-linux-reuse") and is_lab_job(REPLAY_JOB) and not is_lab_job("app-test-linux-x11"), "lab jobs (image needed first) are told from the others"),
+        # the PROVING_LAB union
+        (proving_lab_globs_of('PROVING_LAB = ("a.*", "b.*")\nX = 1\nPROVING_LAB = ("a.*", "c.*")\n') == ["a.*", "b.*", "c.*"], "PROVING_LAB assigned twice: the fix tier plays the union"),
+        (proving_lab_globs_of('PROVING_LAB = ("a.*",)\nPROVING_LAB = PROVING_LAB + ("d.*",)\n') == ["a.*"], "a non-literal PROVING_LAB line is skipped, not fatal"),
+        ({"lab_agent_nld_predict_ssh.*", "lab_raw_key_arrival.*"} <= set(proving_lab_globs()), "both round 14 lab globs are played in the fix tier"),
+        ("def play_wait" in src and "status created" in src, "a planned job that is absent or stuck in `created` is reported, not waited for"),
+    ]
+    bad = 0
+    for ok, what in rows:
+        bad += 0 if ok else 1
+        print("%s %s" % ("ok  " if ok else "FAIL", what))
+    return bad
 
 
 def derive_env(before, head, suite):
@@ -673,6 +848,10 @@ def main():
     else:
         print("reuse: never in the %s tier; every platform builds" % tier)
     if a.dry_run:
+        units = [n for n, k in (("test-linux", "linux"), ("test-warpui-core", "core"), ("test-workspace-rest", "rest")) if k in suites]
+        print("plan (%s tier; per machine, in play order; a job in --skip is left out at run time):" % tier)
+        for p, names in tier_plan(tier, plats, reuse, units=units).items():
+            print("  %-8s %s" % (p, " -> ".join(names)))
         return 0
     fvars = {"TEST_FILTER": filt} if (tier == "fix" and filt) else None
     appvars = {"APPCI_TIER": app_tier_name(tier)}
@@ -750,9 +929,56 @@ def main():
         if err:      # #1517: a refused play used to read as started and the run then waited on a job that never ran
             sys.stderr.write("ERROR: play %s (job %s) failed: %s\n" % (name, j["id"], err))
             timeline[name] = ("play-failed", None)
-            summary(timeline, t_start); collect_hint(pid, a.collect)
+            summary(timeline, t_start); collect_hint(pid, a.collect, tier)
             sys.exit(2)
         return True
+
+    def play_wait(name, variables=None, what=""):
+        """Round 15: play a job the tier plan names and wait for it. Unlike play(), a job that is not there or cannot be played is REPORTED: play() returns
+        quietly for anything that is not `manual`, which is right for "already ran" and wrong for a job the plan promised. -> its final status."""
+        j = jobs().get(name)
+        if not j:
+            timeline[name] = ("missing", None)
+            print("%s: %s is not in this pipeline: not played (FAIL)" % (time.strftime("%H:%M"), name), flush=True)
+            return "missing"
+        if j["status"] == "created":
+            # a job whose `needs` have not run stays `created` and has no play button; waiting for it would never end
+            timeline[name] = ("%s (created: a job it needs has not run)" % NOT_PLAYABLE, None)
+            print("%s: %s cannot be played (status created: a job it needs has not run): FAIL" % (time.strftime("%H:%M"), name), flush=True)
+            return NOT_PLAYABLE
+        if play(name, variables):
+            print("%s: started %s%s" % (time.strftime("%H:%M"), name, " (%s)" % what if what else ""), flush=True)
+        st = wait(name)
+        print(name, st, flush=True)
+        return st
+
+    def run_box_apps(seq, base):
+        """the Linux box's app jobs, one at a time and in order (box_app_sequence); a lab job only when the lab image is there"""
+        for n, extra in seq:
+            if n in SKIP or (n.endswith("-reuse") and n[:-len("-reuse")] in SKIP):
+                continue
+            if is_lab_job(n) and not ensure_lab_image():
+                timeline[n] = (LAB_IMAGE_FAIL, None)
+                continue
+            play_wait(n, dict(base, **extra))
+
+    lab_helper_done = threading.Event()
+
+    def run_lab_helper():
+        """candidate / release: the lab helper for this checkout (#2063). A failure for a missing build tool is the owner's machine change (#2062): NEEDS."""
+        try:
+            if LAB_HELPER_JOB in SKIP:
+                return
+            st = play_wait(LAB_HELPER_JOB, None, "the lab's phosphor-remote; a no-op when cached")
+            if st == "failed":
+                j = jobs().get(LAB_HELPER_JOB, {})
+                _, trace = api_raw("projects/%s/jobs/%d/trace" % (PROJECT, j["id"])) if j.get("id") else (None, "")
+                needs = lab_helper_needs(trace)
+                if needs:
+                    timeline[LAB_HELPER_JOB] = (needs, j.get("duration"))
+                    print("%s: %s" % (LAB_HELPER_JOB, needs), flush=True)
+        finally:
+            lab_helper_done.set()
 
     lab_image_lock = threading.Lock()
     lab_image_state = []
@@ -787,8 +1013,8 @@ def main():
         if p in plats and p not in reuse and BUILD[p] not in SKIP and play(BUILD[p]):
             print("%s: started %s without waiting for check-linux (own machine)" % (time.strftime("%H:%M"), BUILD[p]), flush=True)
     # #1921: the lab image job is a seconds-long no-op on the box runner; queued behind the long box jobs it starved for 23 min. Play it NOW,
-    # at the front of the box queue (every lab job needs it).
-    if tier == "fix" and LINUX in plats and LAB_FIX_JOB not in SKIP and proving_lab_globs() and LAB_IMAGE_JOB in jobs():
+    # at the front of the box queue (every lab job needs it). Round 15: candidate and release play a lab job on every platform, so always there.
+    if (tier != "fix" or (LINUX in plats and LAB_FIX_JOB not in SKIP and proving_lab_globs())) and LAB_IMAGE_JOB in jobs():
         threading.Thread(target=ensure_lab_image, daemon=True).start()
     if reuse and all(p in reuse for p in plats):
         # every platform tests an app-identical earlier build: that commit's compile check already passed, so do not queue
@@ -797,24 +1023,35 @@ def main():
     else:
         s = wait("check-linux"); print("check-linux", s, flush=True)
     if s != "success":
-        summary(timeline, t_start); collect_hint(pid, a.collect); return 1
+        summary(timeline, t_start); collect_hint(pid, a.collect, tier); return 1
+    side_threads = []
+    if tier != "fix":                                   # #2063: before the builds and the unit suites (see LAB_HELPER_JOB)
+        side_threads.append(threading.Thread(target=run_lab_helper, daemon=True))
+        side_threads[-1].start()
+    else:
+        lab_helper_done.set()
+    # r18u31 / owner 2026-11-05: set when the box's unit (and integration / usage) suites are done; the Linux app jobs wait for it in every tier
+    box_units_done = threading.Event()
 
     # builds first (they are the long pole: macos ~21 min, windows ~38 min), tests alongside on the box
     builds = [BUILD[p] for p in plats if BUILD[p] not in SKIP and p not in reuse]
     reuse_started = []
     for p, r in reuse.items():          # no build to wait for: start these now (resource groups serialize them per machine)
         rv = dict(appvars, APPCI_BUILD_JOB_ID=str(r["job"]), APPCI_BUILD_PIPELINE_ID=str(r["pipeline"]), APPCI_BUILD_SHA=r["sha"], APPCI_BUILD_JOB_NAME=BUILD[p], APPCI_BUILD_REF=r.get("ref", ""))
+        if p == LINUX:
+            # Round 15 (#2058): the box plays its reused app jobs like its fresh ones: after the box unit suites (owner 2026-11-05; this path used to
+            # start them at once, beside the suites), one at a time, wayland, x11 in both modes, then the PROVING lab cases.
+            def box_reuse_apps(rv=rv):
+                box_units_done.wait()
+                run_box_apps(box_app_sequence(tier, True), rv)
+            side_threads.append(threading.Thread(target=box_reuse_apps, daemon=True))
+            side_threads[-1].start()
+            continue
         for n in APP[p]:
             if n in SKIP or n + "-reuse" not in jobs():
                 continue
-            if n == "app-test-linux-x11":
-                print("%s: smoke tier skips the x11 pass; not played" % n)
-                timeline[n + "-reuse"] = (TIER_SKIP, None); continue
             if play(n + "-reuse", rv):
                 reuse_started.append(n + "-reuse")
-        if p == LINUX and tier == "fix" and LAB_FIX_JOB not in SKIP and LAB_FIX_JOB + "-reuse" in jobs() and proving_lab_globs():
-            if ensure_lab_image() and play(LAB_FIX_JOB + "-reuse", dict(rv, **lab_fix_vars())):
-                reuse_started.append(LAB_FIX_JOB + "-reuse")
     for n in builds:
         play(n)
     # Each platform's tests start as soon as ITS build succeeds, not after the box test suites (those take ~1 h and
@@ -826,7 +1063,7 @@ def main():
     # r18u31: on the Linux box the unit suites (and the release tier's mutants, a ~4 h all-core job) ran alongside the
     # Wayland/X11 app tests; agent-mode tab_enter / tabs_streaming / compose failed under that load and passed on an idle
     # box. Candidate/release: the Linux app tests wait for the box unit suites, and the heavy suites wait for the app tests.
-    box_units_done = threading.Event()
+    # (box_units_done is made above, before the reuse path, which waits for it too since round 15)
 
     def run_suites(names):
         """Play the suite jobs one after the other on their machine; a suite that cannot exist there is reported, not played."""
@@ -844,26 +1081,24 @@ def main():
     def after_build(b):
         bs = wait(b)
         if bs != "success":
-            for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
+            mine = [n for n, _ in box_app_sequence(tier)] if p_of[b] == LINUX else APP[p_of[b]] + ([LAB_APP[p_of[b]]] if tier != "fix" else [])
+            for n in [t for t in mine if t not in SKIP and t in jobs()]:
                 timeline[n] = ("not run (%s %s)" % (b, bs), None)   # a build that failed leaves its app tests unrun: that is a failure, not a pass
             return
         if tier != "fix" and p_of[b] in PLAT_SUFFIX:
             run_suites(plat_suites(p_of[b], False))     # unit suites first, on the same machine, before its app tests
         elif p_of[b] not in PLAT_SUFFIX:
             box_units_done.wait()                       # the Linux box: its unit suites first, never alongside the app tests (ALL tiers, owner 2026-11-05; the fix tier used to start them alongside, 2026-11-10)
+        if p_of[b] == LINUX:
+            # Round 15 (#2058, #2063): wayland, then x11 in both modes, then the lab (fix: the PROVING lab cases, owner rule 2026-11-09; candidate /
+            # release: every family, then the replay), each waited for before the next is played
+            run_box_apps(box_app_sequence(tier), appvars)
+            return
         for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
-            if tier == "fix" and n == "app-test-linux-x11":
-                timeline[n] = (TIER_SKIP, None)
-                continue
             if play(n, appvars):
                 print("%s: %s succeeded, started %s" % (time.strftime("%H:%M"), b, n), flush=True)
                 with lock:
                     started.append(n)
-        if tier == "fix" and p_of[b] == LINUX and LAB_FIX_JOB not in SKIP and LAB_FIX_JOB in jobs() and proving_lab_globs():
-            if ensure_lab_image() and play(LAB_FIX_JOB, dict(appvars, **lab_fix_vars())):      # the PROVING lab cases (owner rule 2026-11-09), after the ordinary Linux app tests
-                print("%s: started %s (PROVING lab cases, quick matrix, fake model)" % (time.strftime("%H:%M"), LAB_FIX_JOB), flush=True)
-                with lock:
-                    started.append(LAB_FIX_JOB)
     watchers = [threading.Thread(target=after_build, args=(b,), daemon=True) for b in builds]
     for t in watchers:
         t.start()
@@ -882,6 +1117,14 @@ def main():
         units = plat_suites(p, False)
         if BUILD[p] not in watch_of:
             run_suites(units)                               # no build of ours to wait for (reused): units still run
+        # Round 15 (#2063): this platform's lab job, after its app tests and before its heavy suites, against the box's fixed slot. Only on a build of
+        # this pipeline that succeeded (after_build has already written the "not run" row for a failed one); the helper job first (its artifact).
+        if LAB_APP[p] not in SKIP and BUILD[p] in watch_of and timeline.get(BUILD[p], ("",))[0] == "success":
+            lab_helper_done.wait()
+            if ensure_lab_image():
+                play_wait(LAB_APP[p], dict(appvars, **lab_tier_vars(p)), "the lab from %s, quick matrix, fake model" % p)
+            else:
+                timeline[LAB_APP[p]] = (LAB_IMAGE_FAIL, None)
         run_suites([n for n in plat_suites(p, tier == "release") if n not in units])
     suite_threads = []
     if tier != "fix":
@@ -915,6 +1158,8 @@ def main():
         t.join()
     for t in suite_threads:
         t.join()                                            # the Mac/Windows suites are counted in the verdict like every other job
+    for t in side_threads:
+        t.join()                                            # the lab helper job; the box's reused app jobs
     for n in builds:
         print(n, timeline.get(n, ("?",))[0], flush=True)
     for n in started + reuse_started: print(n, wait(n), flush=True)
@@ -935,7 +1180,7 @@ def main():
     network_jobs(jobs, wait, timeline)
     check_app_results(jobs, timeline)
     summary(timeline, t_start)
-    collect_hint(pid, a.collect)
+    collect_hint(pid, a.collect, tier)
     return 0 if all(verdict(k, v[0]) not in ("FAIL", "OFFLINE") for k, v in timeline.items()) else 1
 
 
@@ -953,13 +1198,15 @@ def network_jobs(jobs, wait, timeline):
         print(n, timeline.get(n, (s,))[0], flush=True)
 
 
-def collect_hint(pid, auto):
-    """Every tier run ends by archiving its results (owner rule: every test result is kept in the repo). CI never pushes: the coordinator commits."""
+def collect_hint(pid, auto, tier=None):
+    """Every tier run ends by archiving its results (owner rule: every test result is kept in the repo). CI never pushes: the coordinator commits.
+    Round 15: the tier is passed on (the collector used to guess "candidate" from an x11 run of over 2 minutes, which the fix tier now has too)."""
     here = os.path.dirname(os.path.abspath(__file__))
-    cmd = "python3 script/ci/collect_results.py %d && git add test-results && git commit -m 'test-results: pipeline %d'" % (pid, pid)
+    targ = ["--tier", tier] if tier else []
+    cmd = "python3 script/ci/collect_results.py %d%s && git add test-results && git commit -m 'test-results: pipeline %d'" % (pid, " " + " ".join(targ) if targ else "", pid)
     if auto:
         print("\ncollecting results for pipeline %d ..." % pid, flush=True)
-        subprocess.run([sys.executable, os.path.join(here, "collect_results.py"), str(pid)])
+        subprocess.run([sys.executable, os.path.join(here, "collect_results.py"), str(pid)] + targ)
         print("now commit them:  git add test-results && git commit -m 'test-results: pipeline %d'" % pid, flush=True)
     else:
         print("\nto archive these results (the coordinator commits; CI never pushes):\n  " + cmd, flush=True)
@@ -1028,6 +1275,10 @@ def classify_network_job(job_id):
 
 
 APP_RESULT_DIR = {"app-test-lab-linux": "wayland", "app-test-linux-wayland": "wayland", "app-test-linux-x11": "x11", "app-test-macos": "macos", "app-test-windows": "windows"}
+# round 15 (#2063): the lab jobs of the other platforms and the replay are judged like an app job too (a green job that judged nothing is a FAIL)
+APP_RESULT_DIR.update({"app-test-lab-macos": "macos", "app-test-lab-windows": "windows", "app-test-replay-linux": "wayland"})
+# round 15: and so are the fix tier's reused jobs, which this check never looked at (their names were not in the table)
+APP_RESULT_DIR.update({n + "-reuse": d for n, d in list(APP_RESULT_DIR.items()) if n in ("app-test-linux-wayland", "app-test-linux-x11", "app-test-lab-linux", "app-test-macos", "app-test-windows")})
 
 
 def judged_nothing(doc):
@@ -1041,7 +1292,7 @@ def check_app_results(jobs, timeline):
     """Second line of defence behind run.py's own non-zero exit: a successful app job whose results.json judged nothing becomes a failure."""
     for n, d in APP_RESULT_DIR.items():
         j = jobs().get(n)
-        if n == LAB_FIX_JOB and j and j.get("id") and timeline.get(n, ("",))[0] in ("success", "failed"):
+        if is_lab_job(n) and j and j.get("id") and timeline.get(n, ("",))[0] in ("success", "failed"):
             st, text = api_raw("projects/%s/jobs/%d/artifacts/appci-out/%s/run/results.json" % (PROJECT, j["id"], d))
             try:
                 ldoc = json.loads(text) if st == 200 else None
@@ -1068,7 +1319,8 @@ def check_app_results(jobs, timeline):
 
 def verdict(name, status):
     """Per-job verdict. Every job in the timeline counts, app tests included (they are allow_failure in GitLab, so the
-    pipeline is green regardless; this verdict is the one that is not). Only an explicit tier skip is neutral; bench,
+    pipeline is green regardless; this verdict is the one that is not). Only an explicit tier skip is neutral (no job has one since round 15: the
+    fix tier plays the x11 job); a NEEDS status (a machine change, named) is listed apart and does not fail the tier; bench,
     mutants and fuzz are informational (not gating) and keep their status. Anything else that is not success fails."""
     if status in (TIER_SKIP, PLATFORM_UNSUPPORTED):
         return "SKIPPED"
@@ -1080,6 +1332,8 @@ def verdict(name, status):
         return "TIMEOUT"
     if status == NETWORK_FAIL:
         return "NETWORK"
+    if str(status).startswith(NEEDS_PREFIX):
+        return "NEEDS"                         # round 15: a machine change is needed (lab-helper without its build tools, #2062): listed, never a pass
     if name.startswith(("bench", "mutants", "fuzz")):
         return "INFO"
     return "FAIL"
@@ -1093,6 +1347,9 @@ def summary(timeline, t0):
     net = [k for k, (s, _) in timeline.items() if verdict(k, s) == "NETWORK"]
     off = [k for k, (s, _) in timeline.items() if verdict(k, s) == "OFFLINE"]
     print("overall: %s" % ("FAIL (%s)" % ", ".join(bad) if bad else "PASS"))
+    for k, (st, _) in timeline.items():
+        if verdict(k, st) == "NEEDS":
+            print("NEEDS a machine change (NOT a pass; what depends on it was skipped with the same reason): %s: %s" % (k, st[len(NEEDS_PREFIX):]))
     if off:
         print("RUNNER-OFFLINE (not a code failure; the runner never picked the job up): %s" % ", ".join(off))
     if net:
