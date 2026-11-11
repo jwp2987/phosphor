@@ -204,9 +204,16 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 `test_ssh_probe_cache`, `test_ssh_wrapper_forks`, `test_ssh_auth_once`, `test_ssh_raw_bootstrap_hook`, `test_local_counted_bootstrap`,
 `test_native_completions`, `test_cwd_listing`, and since round 14 `test_child_ps1` (#1907) and `test_init_shell_escaping`. The CI
 `guards` job runs `macos/test_create_warpctrl_wrapper`, `test_warpctrl_early_dispatch` and, since round 14, `test_child_ps1`
-(python3 + bash + sh, about 12 s). Run by NOTHING, by hand only (#2055): `test_fish_bootstrap`, `test_hook_forks`,
-`test_line_editor_markers`, `test_hijack_bootstrap`, `test_bash_preexec_large_command`, `test_zsh_hex_encoder`; all six passed
-when run directly on 2026-11-10. A harness nothing runs rots without a failure: `test_init_shell_escaping` had stopped matching the
+(python3 + bash + sh, about 12 s). Since round 17 (#2055) the six that nothing ran are wired: `test_hijack_bootstrap`,
+`test_bash_preexec_large_command` and `test_zsh_hex_encoder` (about 15 s together) are in that list (so also in `--fast`; the last one also runs inside
+`test_bootstrap_hook_equivalence`); `test_fish_bootstrap`, `test_hook_forks` and `test_line_editor_markers` (about 3.5 minutes together) run in the
+step "slow shell tests" AFTER the `--fast` exit, so only the full `precheck` pays for them. The CI `guards` job runs all six after `test_child_ps1`
+(its timeout is 15 minutes since then). In both places a harness runs only where the tools it cannot do without are installed
+(`shell_test_needs` in `precheck`, `run_harness` in the job: zsh + od + tr for `test_zsh_hex_encoder`, fish for `test_fish_bootstrap`, git + strace for
+`test_hook_forks`, python3 and bash for the rest); a missing tool prints `SKIPPED <harness>` with the tool's name, never a pass and never a failure.
+What the box has installed was not checked when this was wired: read the first `guards` log for `SKIPPED` lines. `precheck` also names the first
+`SKIPPED` line of a harness that skipped one shell of several by itself (it used to say "no built binary" for every such line).
+A harness nothing runs rots without a failure: `test_init_shell_escaping` had stopped matching the
 bootstrap text for exactly that reason. A new `script/test_*` goes into the `precheck` list in the same commit.
 
 | script | checks |
