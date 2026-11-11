@@ -224,6 +224,12 @@ PROVING_FAKE += ("agent_close_undo_call_status",)
 # does not bootstrap (dash, busybox ash) reach that shell. The `lab_nohelper_*` glob above plays its bash arm (the control); the quick matrix has no
 # dash / ash shell, so the two arms that prove the issue are named exactly (an exact name runs whatever the matrix says).
 PROVING_LAB += ("lab_nohelper_sh_login_keys.dash.lan.nohelper", "lab_nohelper_sh_login_keys.ash.lan.nohelper")
+# round 21 (#2138, owner decision 2026-11-11; docs/design/r21-chip.md; cases_chip.py): a prompt suggestion that arrives late is a chip on the editor's
+# first line and moves no visible output row. suggestion_chip_keeps_output: both modes, the pass's own model (no suggestion within the wait =
+# UNVERIFIABLE); agent_suggestion_chip_keeps_output: the scripted model answers the tagged block, so the chip comes on demand; its text is read from
+# the screen and a second chip is taken with the accept key.
+PROVING += ("suggestion_chip_keeps_output", "agent_suggestion_chip_keeps_output")
+PROVING_FAKE += ("agent_suggestion_chip_keeps_output",)
 # #2126 (round 19; docs/design/r19-loginshell.md): lab_nohelper_sh_login_profile, the dash / ash login shell of an ssh session is a LOGIN shell: it reads
 # ~/.profile (the lab's prompt hook lives only there). Exact names for the same reason as the line above: the quick matrix has no dash / ash; its bash
 # arm (the control) is played through `lab_nohelper_*`.
@@ -7019,3 +7025,4 @@ import cases_install  # noqa: E402,F401  (#2076 / #1546, round 15 wave 5 part B:
 import cases_r15_w5a  # noqa: E402,F401  (r15 wave 5 part A, T42/T45/T50: keychain_startup_macos, keybinding_rebind, editor_daily)
 import cases_r17_misc  # noqa: E402,F401  (round 17 misc, #2028: md_viewer_first_frame; #2091's gpu_lost_device_recovers is in cases_r15_w5c.py)
 import cases_agent_close_undo  # noqa: E402,F401  (round 18, #2103: agent_close_undo_call_status)
+import cases_chip  # noqa: E402,F401  (round 21, #2138: suggestion_chip_keeps_output, agent_suggestion_chip_keeps_output)

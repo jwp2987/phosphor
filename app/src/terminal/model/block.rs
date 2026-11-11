@@ -2066,6 +2066,13 @@ impl Block {
         self.header_grid.prompt_grid_columns()
     }
 
+    /// Columns taken by the last line of the left prompt: where the typed text starts when the
+    /// prompt is drawn inside the input editor (#2138: the room left for the prompt-suggestion
+    /// chip on that line).
+    pub fn lprompt_last_line_width_cols(&self) -> usize {
+        self.header_grid.lprompt_last_line_width_cols()
+    }
+
     pub fn prompt_grid_cell_height(&self) -> usize {
         self.header_grid.prompt_grid_cell_height()
     }

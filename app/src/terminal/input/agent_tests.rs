@@ -11,6 +11,7 @@ fn typing() -> AgentInputDisplayFacts {
         input_type_locked: false,
         suggestions_mode: std::mem::discriminant(&InputSuggestionsMode::Closed),
         shows_prompt_banner: false,
+        prompt_chip_width_bits: 0,
         attachment_chips: 0,
         shows_workflow_info: false,
         voltron_open: false,
@@ -22,6 +23,35 @@ fn typing() -> AgentInputDisplayFacts {
         shows_queued_prompts_panel: false,
         pane_height_bits: 600.0_f32.to_bits(),
     }
+}
+
+/// [`typing`] with a prompt suggestion drawn as a chip 304 px wide on the editor's first line.
+fn with_chip() -> AgentInputDisplayFacts {
+    AgentInputDisplayFacts {
+        shows_prompt_banner: true,
+        prompt_chip_width_bits: 304.0_f32.to_bits(),
+        ..typing()
+    }
+}
+
+/// #2138: the chip gets what the typed text leaves free, so a character that takes room from it
+/// renders the input again (rendered at 304 px, now 296 px), and one that does not (the chip is
+/// at its half-width cap, or there is no chip) does not.
+#[test]
+fn a_character_that_narrows_the_prompt_suggestion_chip_rerenders_the_agent_input() {
+    assert!(agent_input_edit_needs_render(
+        Some(with_chip()),
+        AgentInputDisplayFacts {
+            prompt_chip_width_bits: 296.0_f32.to_bits(),
+            ..with_chip()
+        },
+        true
+    ));
+    assert!(!agent_input_edit_needs_render(
+        Some(with_chip()),
+        with_chip(),
+        true
+    ));
 }
 
 #[test]
@@ -77,6 +107,14 @@ fn an_edit_that_changes_a_fact_the_agent_input_is_built_from_rerenders_it() {
             AgentInputDisplayFacts {
                 shows_prompt_banner: true,
                 ..typing()
+            },
+        ),
+        ("the prompt suggestion chip appeared (#2138)", with_chip()),
+        (
+            "the prompt suggestion chip got narrower (#2138)",
+            AgentInputDisplayFacts {
+                prompt_chip_width_bits: 296.0_f32.to_bits(),
+                ..with_chip()
             },
         ),
         (

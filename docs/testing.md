@@ -343,6 +343,7 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0` | Enter on the code editor's overwrite question is its first button, Overwrite, again, and Tab does nothing there (owner decision 2026-11-11; default: the question comes up with Cancel selected, Enter cancels, Tab then Enter overwrites). `app/src/code/save_conflict_tests.rs`, `app/src/workspace/native_modal_tests.rs`; app case `editor_daily` |
 | `PHOSPHOR_WORD_KEYS_XTERM=0` | Linux / Windows: Ctrl+Left / Ctrl+Right with a program in front write readline's `ESC b` / `ESC f` again (#2130, owner decision 2026-11-11; default: xterm's `CSI 1;5D` / `CSI 1;5C`; macOS Option+arrows are `ESC b` / `ESC f` either way). Read once per run. `escape_sequences_test.rs` `word_keys_are_xterm_ctrl_arrows_off_macos_and_meta_letters_on_macos`, `the_word_keys_kill_switch_is_off_only_for_zero`; app case `meta_and_word_keys` |
 | `PHOSPHOR_WIN_CTRL_C_COPY_CLEARS_IDLE=0` | Windows: a Ctrl-C that copied a text selection at an idle prompt keeps the selection again (#2131, owner decision 2026-11-11; default: the copy drops it, as it does with a command in front since #2117, which has no switch). `view_test.rs` `ctrl_c_copy_drops_the_text_selection_at_an_idle_prompt`, `the_idle_ctrl_c_copy_kill_switch_is_off_only_for_zero`; app case `selection_modes` |
+| `PHOSPHOR_PROMPT_SUGGESTION_CHIP=0` | a prompt suggestion is the banner above the prompt again: the input grows when it arrives and the block list moves (#2138, owner decision 2026-11-11; also `off`, `false`, `no`; read once; default: the suggestion is a chip at the right end of the editor's first line, a positioned child that adds no height, so no output row moves when it appears or goes). `app/src/terminal/input/suggestion_chip_tests.rs`, `app/src/terminal/view/suggestion_chip_view_tests.rs`; app cases `suggestion_chip_keeps_output`, `agent_suggestion_chip_keeps_output` |
 | `PHOSPHOR_CLOSE_QUESTION_KEYS=0` | Linux / Windows: the editor tab's close question (Save / Don't Save / Cancel) has no keyboard selection again: Tab and Space do nothing, Enter is Save (#2132, owner decision 2026-11-11; default: Save selected, Tab / Shift+Tab move, Enter / Space press, a focus ring). `quit_warning/mod_tests.rs`, `workspace/native_modal_tests.rs`; app case `editor_daily` |
 | `PHOSPHOR_CTRL_C_INTERRUPTS_ACTION=0` | agent, a tool that is running and is not a shell command (a read, a search, an MCP call): Ctrl-C and the Stop button both cancel that one action as a user stop again and leave the later actions of the reply queued (#2034; default: the key interrupts what runs and the turn goes on, the button and a stop of the running action by id stop the whole turn). `action_model_tests.rs` `ctrl_c_interrupts_action_kill_switch` |
 | `PHOSPHOR_DEFER_TURN_SUCCESS=0` | agent: the turn reads `success` again at the end of every reply without actions, also when the app is about to ask the model again by itself (a tool call it answered with an error), i.e. `success`, `in_progress`, `success` within a few ms (#2029; default: the status is held until that follow-up is decided, and written at once when it does not happen). `controller_tests.rs` `a_reply_that_left_a_local_error_result_expects_a_follow_up`, `agent_fuzz::turn_status_tests` |
@@ -2937,6 +2938,7 @@ profile never reads the owner's config and sets no vertical tabs; it describes t
 | nld_in_terminal | `agents.warp_agent.input.nld_in_terminal_enabled` | true | true in the agent pass; the terminal pass keeps the seed's value |
 | nld_predict_in_ssh | `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` | false | not touched: the seed's value, else the app default |
 | next_command_in_ssh | `agents.warp_agent.active_ai.intelligent_autosuggestions_in_ssh_enabled` | false | not touched: the seed's value, else the app default |
+| prompt_suggestions | `agents.warp_agent.active_ai.agent_mode_query_suggestions_enabled` | true | not touched: the seed's value, else the app default |
 | prompt_suggestions_in_ssh | `agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled` | false | not touched: the seed's value, else the app default |
 | vertical_tabs | `appearance.vertical_tabs.enabled` | false | not touched: the seed's value, else the app default |
 | vertical_tabs_primary_info | `appearance.vertical_tabs.primary_info` | command | not touched: the seed's value, else the app default |
@@ -3176,6 +3178,8 @@ one row per lab family, for every arm of it; the lab harness's own two settings 
 | `md_viewer_first_frame` | fix | keybindings_file = absent | - | - | as md_viewer: opened through the app's own open-file path; judged from the app log (the viewer's first-size line, no image painted without a width), OCR of the heading where there is an engine |
 | `gpu_lost_device_recovers` | fix | - | - | - | one launch compared with itself before and after the rebuilt renderer, so the seed's theme and text size cancel out; judged from the app log (the hook's line, the rebuild, frames) and two screenshots |
 | `agent_close_undo_call_status` | fix | agent_readonly_autorun = false, autosuggestions = true, completions_while_typing = true, keybindings_file = absent, safe_command_allowlist = false | - | providers, quit_warning | #2103: the command is approved at its card (AGENT_ASK); new tab, close and undo-close are the default chords; where the close key asks first (quit_warning) the case answers with Enter and notes it |
+| `suggestion_chip_keeps_output` | fix | autosuggestions = true, completions_while_typing = true, prompt_suggestions = true | - | providers | #2138: a prompt suggestion that arrives late is a chip on the editor's first line and moves no output row; positions from the find hook, the suggestion from the app log; Escape drops it in terminal mode. Whether a suggestion comes is the model's answer |
+| `agent_suggestion_chip_keeps_output` | fix | autosuggestions = true, completions_while_typing = true, keybindings_file = absent, prompt_suggestions = true | - | providers | #2138, scripted model: as suggestion_chip_keeps_output with a suggestion on demand; the chip's text is read from the screen (OCR) and a second chip is taken with the default accept chord (Alt+Shift+Enter, Ctrl+Enter on macOS) |
 | `rollover` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
 | `expert_fuzz` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
 | `arrows_behind_paste` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
@@ -7848,3 +7852,75 @@ block of `selftest.py` (R8).
 - **What the dialog cost.** The 45 terminal rows before it stand. Not played: `agent_close_undo_call_status`,
   `agent_lrc_no_false_takeover`, `cb_ui_action_latency`, `desktop_notification_agent_question`, `meta_and_word_keys`,
   `upgrade_over_previous`, and the whole agent pass.
+
+## Round 21: the prompt suggestion is a chip that moves no output row (design `docs/design/r21-chip.md`; #2138, owner decision 2026-11-11; nothing compiled, no app run when written)
+A model's prompt suggestion arrives seconds after the command it is about. It was a banner laid out only while it showed: the input
+grew, the block list moved by the banner's height, and a click meant for the output landed on the banner and started an agent
+conversation (round 15 macOS, job 17936839263: the same word at y 1276, then 1198). The rule now: **no visible output row moves when
+the suggestion appears or goes**, and no space is kept empty for it. The suggestion is a chip at the right end of the editor's first
+line, the one row all four input layouts have (`Input::render_input_box`); it is a positioned child of a stack, which adds nothing to
+the stack's size. It gets the room the typed text leaves free (at most half the editor, not drawn under 16 cells), so typing makes it
+narrower and then hides it; the accept key and Escape work as before. Kill switch `PHOSPHOR_PROMPT_SUGGESTION_CHIP=0` (section 2.6):
+the banner again. The banner-slot branch `fix/r21-banner` (an always-kept empty band) is not merged; its cases
+`suggestion_banner_keeps_output` / `agent_suggestion_banner_keeps_output` are these, renamed. Worked, unproven.
+
+Trace-only log lines (debug, the input-order log; flags and a width only, never the suggestion's text):
+- `input_order hop=prompt_chip shown=<0|1> hidden=<0|1> place=<chip|banner> drawn=<0|1> width=<px>`, one per
+  `Input::set_prompt_suggestions_banner_state`. `hidden=1` is a suggestion that is set but not drawn (a coding suggestion waiting for
+  its diff). `place=banner` is the kill switch. `drawn=0` with `place=chip` is a line with no room for the chip at that moment.
+- `input_order hop=prompt_chip_accept source=<Keybinding|Button>` when a visible suggestion is taken (`TerminalView::resolve_prompt_suggestion`).
+
+| layer | tests | what a failure means |
+|---|---|---|
+| unit (`cargo nextest -p warp --lib`, every test run) | `app/src/terminal/input/suggestion_chip_tests.rs`: `the_switch_is_on_unless_it_says_off`, `the_chip_is_the_placement_unless_the_switch_is_off_or_the_line_is_unknown`, `a_layout_with_nothing_else_on_the_line_is_the_default`, `an_empty_line_gives_the_chip_half_the_editor`, `typing_towards_the_chip_makes_it_narrower`, `the_chip_is_never_drawn_over_text`, `under_the_minimum_the_chip_is_not_drawn`, `a_narrow_pane_has_no_chip`, `a_right_prompt_takes_its_room_from_the_chip`, `sizes_that_are_not_known_yet_draw_no_chip`, `the_keystroke_needs_a_wide_chip`, `columns_are_display_columns_of_the_first_line`, `used_columns_are_prefix_buffer_and_ghost_text`; `app/src/terminal/input/agent_tests.rs`: `a_character_that_narrows_the_prompt_suggestion_chip_rerenders_the_agent_input` and two rows of `an_edit_that_changes_a_fact_the_agent_input_is_built_from_rerenders_it` | the room rule (`chip_max_width`), the placement table or the switch's parser changed; or the agent input no longer renders when the chip's width changes (#1962's skip would leave a stale chip over typed text) |
+| view test (same run) | `app/src/terminal/view/suggestion_chip_view_tests.rs` (child of `view_test.rs`): `a_late_prompt_suggestion_is_a_chip_that_moves_neither_the_output_nor_the_input` builds a frame with a finished block, reads the rectangles of the block list (`content_element_position_id`), the input (`save_position_id`), the editor row (`editor_save_position_id`) and the chip (`suggestion_chip_save_position_id`), sets a suggestion through `on_legacy_prompt_suggestion_generated`, builds a frame again, then with a suggestion twelve times as long, then after `clear_prompt_suggestions` | the input's height depends on the suggestion again (the old code: the input's rectangle is taller by the banner's box); or the chip is not drawn, lies outside the editor row, or is wider than half the input; or it is still drawn after the suggestion went. Each frame is built by a new presenter, so no rectangle is left over |
+| appci (`cases_chip.py`, PROVING) | `suggestion_chip_keeps_output` (both modes, the pass's own model), `agent_suggestion_chip_keeps_output` (PROVING_FAKE: the scripted model, agent mode) | see below |
+
+**The two app cases, one body.** No pointer; needs the find hook (#1789) and the input-order log; the scripted case also reads the screen.
+1. `cat suggestiontag_<TAG>.txt` prints four lines; the last holds a word registered with the find hook, so the app logs
+   `appci_find token=.. y0= ..` where it draws it and again whenever that place changes.
+2. The case waits for `hop=prompt_chip shown=1 hidden=0` (`APPCI_CHIP_WAIT_S`, default 45 s; 20 s with the scripted model).
+   Sightings logged before that line are "before the suggestion", sightings after it "with the suggestion" (log order, no clock). The
+   newest sighting of the same run of text (same left edge, right edge and height) at another y is a FAIL with the pixels and the
+   `place=` word.
+3. Scripted model only: the chip's text (`Explain chip <TAG>`, the tag in glyphs OCR does not confuse) is read from the `chip_shown`
+   screenshot. Read: pass. Not read, no OCR engine, `drawn=0`, or `place=banner`: UNVERIFIABLE, and the reason says whether the same
+   read found the printed row's word (a readable screen without the chip's text is one to look at; an unreadable screen is the
+   engine's). Never a FAIL from OCR alone. With the pass's own model the wording is the model's and is not read (a note).
+4. Terminal mode: Escape drops the suggestion (`shown=0`) and the judgement of step 2 is made for the chip going. In the agent view
+   Escape leaves the view, a layout change of its own, so that half is the view test's (a note in the row).
+5. Control: `echo bnctl_<TAG>` prints a new block, which moves the older rows; the hook must log the word at another y. If it does
+   not, "no new sighting" proves nothing about the run and the row is UNVERIFIABLE (the hook stopped logging, the row left the screen,
+   or a layout where older rows do not move, e.g. a waterfall input in a pane that is not full).
+6. Scripted model only: the file is printed again (the Enter of step 5 dropped the first suggestion), the second chip is awaited and
+   the accept key is pressed: Alt+Shift+Enter, Ctrl+Enter on macOS (the default chord of `terminal:accept_prompt_suggestions` with the
+   agent view feature; the case needs `keybindings_file = absent`). `hop=prompt_chip_accept source=Keybinding` within 5 s: pass. No
+   such line: FAIL. No second chip, or the `cat` did not reach the shell: UNVERIFIABLE (nothing for the key to take).
+- The row's verdict is the worst of the parts (FAIL, then UNVERIFIABLE, then PASS), with every part's reason.
+- No suggestion within the wait is UNVERIFIABLE ("the model offered no suggestion"), never a pass: with the pass's own model whether a
+  suggestion comes is the model's answer. No sighting before the suggestion is UNVERIFIABLE too.
+- Settings (`case_settings.py`): both need `prompt_suggestions` on (new named setting; the app default); the scripted one also the
+  default chords.
+- Windows: the Git Bash pane (`winmap.GITBASH_ONLY`: the fixture is printed with `cat` and confirmed from the bash prompt hook).
+- **Scripted model.** `fake_model.py` answers a prompt-suggestions request with `{"kind":"none"}` as before, except when the LAST
+  block of the request (the app's template lists the recent blocks as `- $ <command>`) names `suggestiontag_<TAG>`: then
+  `{"kind":"simple","query":"Explain chip <TAG>","should_plan_task":false}`, sent `SUGGESTION_DELAY_S` = 3 s late so the suggestion
+  arrives after the finished command's own layout has settled (the case of #2138). Only the last block: a tag left by an earlier
+  case puts no chip into later commands of the pass. Metric `prompt_suggestion_requests` (requests the scripted model received).
+- Metrics: `chip` = `place`, `drawn`, `width_px`, `row_before`, `row_showing`, `row_gone` (terminal mode), `control_moves`, `waited_s`,
+  `scripted`; `chip_text`, `chip_accept` (scripted).
+- To see the case fail on purpose: launch with `PHOSPHOR_PROMPT_SUGGESTION_CHIP=0` (the row moves by the banner's box and the message
+  says `place=banner`).
+
+Self-tests (`script/realapp/appci/selftest_r21_chip.py`, run by `run.py --self-test`): `r21_chip_cases_registered_proving_and_classified`,
+`r21_chip_app_strings_are_the_ones_the_case_reads` (the hops' fields, the switch's name and the accept chord are read from the Rust
+sources), `r21_chip_judge_passes_a_still_row_and_fails_each_move` (the round 15 numbers fail; each missing piece of evidence is
+UNVERIFIABLE), `r21_chip_text_and_accept_judges`, `r21_chip_case_body_reads_the_log_in_order`,
+`r21_fake_model_suggests_only_for_the_tagged_last_block`.
+
+Not covered: a pointer click on the chip (same `Hoverable::on_click` action as the banner's button, not played); the chip while text
+is typed towards it in an app case (the unit table and the agent-facts test cover the rule; no case types with a suggestion pending);
+the classic (PS1) and universal input layouts in an app case (one `render_input_box` for all four layouts and the view test cover the
+height; no pass runs those layouts, and the PS1 prompt's prefix and right-prompt inset are untested on a build); the input pinned to
+the top and the waterfall input; a same-line prompt that is not the shell's own (context chips inside the editor, only without the
+agent view feature) keeps the banner.

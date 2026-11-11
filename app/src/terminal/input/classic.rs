@@ -16,7 +16,9 @@ use crate::{
                 wrap_input_with_terminal_padding_and_focus_handler,
             },
             get_input_box_top_border_width,
+            suggestion_chip::{CHIP_GAP_CELLS, ChipLine},
         },
+        model::TerminalModel,
         settings::{SpacingMode, TerminalSettings},
         view::TerminalAction,
         warpify::render::{render_subshell_flag, render_subshell_flag_pole},
@@ -33,9 +35,53 @@ use warpui::{
     },
 };
 
-use super::{Input, SubshellRenderState, should_render_prompt_using_editor_decorator_elements};
+use super::{
+    Input, SubshellRenderState, should_render_prompt_using_editor_decorator_elements,
+    should_render_ps1_prompt,
+};
 
 impl Input {
+    /// What the classic layout draws on the editor's first text line besides the buffer (#2138:
+    /// the room left for the prompt-suggestion chip, `docs/design/r21-chip.md`).
+    ///
+    /// With the prompt on its own row: nothing. With the shell's own prompt drawn inside the
+    /// editor: the prompt's last line before the text, a right prompt at the line's end, and the
+    /// prompt's earlier rows above it. Any other prompt inside the editor has no width the input
+    /// can read, and that layout keeps the banner.
+    fn classic_chip_line(
+        &self,
+        model: &TerminalModel,
+        prompt_is_inside_editor: bool,
+        app: &AppContext,
+    ) -> ChipLine {
+        if !prompt_is_inside_editor {
+            return ChipLine::default();
+        }
+        if !should_render_ps1_prompt(model, app) {
+            return ChipLine {
+                first_line_known: false,
+                ..ChipLine::default()
+            };
+        }
+        let size_info = self.size_info(app);
+        let cell_width_px = size_info.cell_width_px().as_f32();
+        let block = model.block_list().active_block();
+        let rprompt_offset = block.rprompt_render_offset(&size_info);
+        // `rprompt_render_offset` is the grid's last column less the right prompt's width.
+        let rprompt_width_px = block.prompt_grid_columns().saturating_sub(1) as f32 * cell_width_px
+            - rprompt_offset.x();
+        ChipLine {
+            prefix_cols: block.lprompt_last_line_width_cols(),
+            right_inset_px: if rprompt_width_px > 0. {
+                rprompt_width_px + CHIP_GAP_CELLS * cell_width_px
+            } else {
+                0.
+            },
+            y_offset_px: rprompt_offset.y().max(0.),
+            first_line_known: true,
+        }
+    }
+
     /// Renders the classic input. This is used when the user has 'Honor PS1' enabled in settings,
     /// OR if `FeatureFlag::AgentView` is disabled and the user has 'Classic' input type selected
     /// in settings.
@@ -112,9 +158,15 @@ impl Input {
         );
         let mut column = Flex::column();
 
+        let chip_line = self.classic_chip_line(
+            &model,
+            should_render_prompt_using_editor_decorator_elements,
+            app,
+        );
+
         if matches!(input_mode, InputMode::PinnedToBottom | InputMode::Waterfall) {
             if let Some(banner) =
-                self.render_input_banner(appearance, app, input_mode, is_compact_mode)
+                self.render_input_banner(appearance, app, input_mode, is_compact_mode, chip_line)
             {
                 column.add_child(banner);
             }
@@ -137,7 +189,7 @@ impl Input {
             }
         }
 
-        column.add_child(self.render_input_box(show_vim_status, appearance, app));
+        column.add_child(self.render_input_box(show_vim_status, chip_line, appearance, app));
 
         if should_show_terminal_input_message_bar(&model, app) {
             column.add_child(
@@ -158,7 +210,7 @@ impl Input {
 
         if matches!(input_mode, InputMode::PinnedToTop) {
             if let Some(banner) =
-                self.render_input_banner(appearance, app, input_mode, is_compact_mode)
+                self.render_input_banner(appearance, app, input_mode, is_compact_mode, chip_line)
             {
                 column.add_child(banner);
             }

@@ -47,6 +47,8 @@ SETTINGS = {
                             "query predictions from an ssh pane (settings/ai.rs, #1982)"),
     "next_command_in_ssh": S("agents.warp_agent.active_ai.intelligent_autosuggestions_in_ssh_enabled", "false",
                              "next-command suggestions requested from an ssh pane (settings/ai.rs, #2094)"),
+    "prompt_suggestions": S("agents.warp_agent.active_ai.agent_mode_query_suggestions_enabled", "true",
+                            "prompt suggestions after a command: the chip on the editor's first line (settings/ai.rs, #2138)"),
     "prompt_suggestions_in_ssh": S("agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled", "false",
                                    "prompt suggestions requested from an ssh pane (settings/ai.rs, #2094)"),
     "vertical_tabs": S("appearance.vertical_tabs.enabled", "false", "the vertical tabs panel instead of the horizontal tab bar (workspace/tab_settings.rs)"),
@@ -500,6 +502,12 @@ decl("md_viewer_ai_answer", needs=INPUT, reads=MODEL, note="the real CI model's 
 decl("paste_agent_input cb_agent_pickers cb_agent_file_mention", needs=INPUT,
      note="the agent input itself (paste, / and @ pickers), judged from the app's own enter lines; no model is needed (the baseline's agent mode is)")
 # ---- UI by keyboard and pointer
+decl("suggestion_chip_keeps_output", needs=_merge(INPUT, dict(prompt_suggestions=True)), reads=MODEL,
+     note="#2138: a prompt suggestion that arrives late is a chip on the editor's first line and moves no output row; positions from the find hook, "
+          "the suggestion from the app log; Escape drops it in terminal mode. Whether a suggestion comes is the model's answer")
+decl("agent_suggestion_chip_keeps_output", needs=_merge(INPUT, KEYS, dict(prompt_suggestions=True)), reads=MODEL,
+     note="#2138, scripted model: as suggestion_chip_keeps_output with a suggestion on demand; the chip's text is read from the screen (OCR) and a "
+          "second chip is taken with the default accept chord (Alt+Shift+Enter, Ctrl+Enter on macOS)")
 decl("md_viewer_first_frame", needs=KEYS, note="as md_viewer: opened through the app's own open-file path; judged from the app log (the viewer's "
                                               "first-size line, no image painted without a width), OCR of the heading where there is an engine")
 decl("md_viewer_big", needs=KEYS, note="as md_viewer: opened through the app's own open-file path, OCR of the viewer")

@@ -9116,6 +9116,8 @@ import selftest_r19_decide_app  # noqa: E402  (round 19, owner decisions of 2026
 CHECKS.extend(selftest_r19_decide_app.CHECKS)
 import selftest_r19_macallow  # noqa: E402  (owner decision 2026-11-11: the harness answers macOS's Local Network question for Phosphor with APPCI_MAC_AUTO_ALLOW_LOCAL_NETWORK=1; own file)
 CHECKS.extend(selftest_r19_macallow.CHECKS)
+import selftest_r21_chip  # noqa: E402  (round 21, #2138: the prompt suggestion is a chip that moves no output row; cases_chip.py, fake_model.suggestion_tag)
+CHECKS.extend(selftest_r21_chip.CHECKS)
 
 
 def missing_required(required, passed):

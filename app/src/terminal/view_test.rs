@@ -37413,3 +37413,8 @@ fn give_control_back_action_hands_the_held_command_to_the_agent() {
 /// #2080: Shift+Page Up / Page Down / Home / End under a running command.
 #[path = "view/scrollback_keys_view_tests.rs"]
 mod scrollback_keys_view_tests;
+
+/// #2138: a prompt suggestion that arrives late is a chip on the editor's first line and moves
+/// no visible output row.
+#[path = "view/suggestion_chip_view_tests.rs"]
+mod suggestion_chip_view_tests;

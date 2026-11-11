@@ -101,8 +101,9 @@ when it comes, so the click of #2138 cannot land on it.
 ## Log
 
 `input_order hop=prompt_chip shown=<0|1> hidden=<0|1> place=<chip|banner> drawn=<0|1> width=<px>` from
-`set_prompt_suggestions_banner_state`. `drawn` and `width` are what the next render will use (0 when there is no room).
-No text of the suggestion.
+`set_prompt_suggestions_banner_state`. `drawn` and `width` are what the next render will use (0 when there is no room),
+computed for a first line that holds the buffer only. `input_order hop=prompt_chip_accept source=<Keybinding|Button>` from
+`TerminalView::resolve_prompt_suggestion` when a visible suggestion is taken. No text of the suggestion in either.
 
 ## Rejected
 
@@ -132,12 +133,14 @@ No text of the suggestion.
 
 - `input/suggestion_chip_tests.rs`: the switch's parser, the placement table, `chip_max_width` (empty line, typing shrinks
   it, the half-width cap, under the minimum, a line longer than the editor, prefix and right inset), display columns.
+- `input/agent_tests.rs`: a character that narrows the chip renders the agent input again; one that does not, does not.
 - `terminal/view/suggestion_chip_view_tests.rs`: the block list's and the input's rectangles before the suggestion, with
   it and after it goes are equal; with it, the chip has a rectangle inside the input's; after, it has none.
 - appci (`cases_chip.py`, PROVING / PROVING_FAKE): `suggestion_chip_keeps_output` (both modes, the pass's model; no
   suggestion within the wait is UNVERIFIABLE) and `agent_suggestion_chip_keeps_output` (scripted model, late answer). The
-  lowest output row's drawn y from the find hook before and with the chip; the chip's text read from the screen by OCR
-  (UNVERIFIABLE when it cannot be read); then the accept key, judged from the app's own log.
+  lowest output row's drawn y from the find hook before and with the chip; terminal mode: Escape drops it and the row is
+  read again. Scripted model: the chip's text read from the screen by OCR (UNVERIFIABLE when it cannot be read), then a
+  second chip taken with the accept key, judged from `hop=prompt_chip_accept source=Keybinding`.
 
 ## For the owner, on a build
 

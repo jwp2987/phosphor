@@ -4,6 +4,7 @@ use super::{
         add_command_xray_overlay, add_input_suggestions_overlays, add_voltron_overlay,
         add_workflow_info_overlay, wrap_input_with_terminal_padding_and_focus_handler,
     },
+    suggestion_chip::ChipLine,
 };
 use crate::{
     BlocklistAIHistoryModel,
@@ -50,6 +51,10 @@ pub(super) struct AgentInputDisplayFacts {
     /// Which menu, if any, is mounted (the kind; a menu's contents are its own view's).
     pub(super) suggestions_mode: std::mem::Discriminant<InputSuggestionsMode>,
     pub(super) shows_prompt_banner: bool,
+    /// Bits of the width of the prompt-suggestion chip on the editor's first line; 0 without a
+    /// chip. The chip gets what the typed text leaves free (#2138), so while one shows an edit
+    /// that changes the first line's length renders the input again.
+    pub(super) prompt_chip_width_bits: u32,
     pub(super) attachment_chips: usize,
     pub(super) shows_workflow_info: bool,
     pub(super) voltron_open: bool,
@@ -96,6 +101,9 @@ impl Input {
                 .prompt_suggestions_banner_state
                 .as_ref()
                 .is_some_and(|state| !state.should_hide),
+            prompt_chip_width_bits: self
+                .suggestion_chip_size(ChipLine::default(), app)
+                .map_or(0, |size| size.max_width.to_bits()),
             attachment_chips: self.attachment_chips.len(),
             shows_workflow_info: self
                 .workflows_state
@@ -174,9 +182,12 @@ impl Input {
 
         let mut column = Flex::column();
 
-        if let Some(banner) =
-            self.render_input_banner(appearance, app, input_mode, /*is_compact_mode=*/ false)
-        {
+        // #2138: the editor's first line holds the buffer only; a prompt suggestion is a chip on it.
+        let chip_line = ChipLine::default();
+
+        if let Some(banner) = self.render_input_banner(
+            appearance, app, input_mode, /*is_compact_mode=*/ false, chip_line,
+        ) {
             column.add_child(
                 Container::new(banner)
                     .with_margin_top(spacing::UDI_CHIP_MARGIN)
@@ -201,12 +212,14 @@ impl Input {
         let terminal_spacing = TerminalSettings::as_ref(app)
             .terminal_input_spacing(appearance.line_height_ratio(), app);
         column.add_child(
-            Container::new(self.render_input_box(/*show_vim_status=*/ false, appearance, app))
-                .with_margin_top(
-                    terminal_spacing.prompt_to_editor_padding
-                        * spacing::UDI_PROMPT_BOTTOM_PADDING_FACTOR,
-                )
-                .finish(),
+            Container::new(
+                self.render_input_box(/*show_vim_status=*/ false, chip_line, appearance, app),
+            )
+            .with_margin_top(
+                terminal_spacing.prompt_to_editor_padding
+                    * spacing::UDI_PROMPT_BOTTOM_PADDING_FACTOR,
+            )
+            .finish(),
         );
         column.add_child(
             SavePosition::new(

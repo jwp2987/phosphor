@@ -226,7 +226,8 @@ def user_prompt(messages):
 #   compaction         /api/chat    tasks/compaction_system.j2 "anchored context summarization"           the ## Goal ... sections
 #   next_command       /api/chat    active_ai/next_command_system.j2 "predict the most likely next shell command"   "echo fake-next"
 #   nld_predict        /api/chat    active_ai/nld_predict_system.j2 "complete a partial natural-language query"    "fake completion"
-#   prompt_suggestions /api/chat    active_ai/prompt_suggestions_system.j2 "Predict the single most useful follow-up"   {"kind":"none"}
+#   prompt_suggestions /api/chat    active_ai/prompt_suggestions_system.j2 "Predict the single most useful follow-up"   {"kind":"none"}; a suggestion
+#                                   only when the LAST block of the request names `suggestiontag_<TAG>` (suggestion_tag, #2138)
 #   relevant_files     /api/chat    active_ai/relevant_files_system.j2 "return ONLY the subset of paths"      {"paths":[]}
 #   workflow_metadata  /api/chat    active_ai/workflow_metadata_system.j2 "reusable, parameterized workflow"  the JSON object (no arguments)
 #   show / tags        /api/show, /api/tags (model metadata / model list)                                       fixed JSON
@@ -280,13 +281,48 @@ def classify_purpose(path, req):
 TITLE_TAG_RE = re.compile(r"conversation tag (\w+)")
 
 
+SUGGESTION_TAG_RE = re.compile(r"suggestiontag_([A-Za-z0-9]+)")
+SUGGESTION_BLOCK_MARK = "\n- $ "      # one per block in active_ai/prompt_suggestions_user.j2 ("# Recent command(s)", oldest first)
+
+
+def suggestion_tag(user_text):
+    """pure: the <TAG> of `suggestiontag_<TAG>` in the LAST block of a prompt-suggestions request (its command or its output), else None. Only the
+    last block: the request lists the recent blocks, and a tag left by an earlier case must not put a suggestion chip into every later command of the pass."""
+    text = "\n" + (user_text or "")
+    m = SUGGESTION_TAG_RE.search(text[text.rfind(SUGGESTION_BLOCK_MARK):] if SUGGESTION_BLOCK_MARK in text else "")
+    return m.group(1) if m else None
+
+
+SUGGESTION_DELAY_S = 3.0      # a tagged suggestion is answered this late (the handler sleeps): the suggestion under test is one that arrives AFTER the
+#                               finished command's own layout has settled, which is the case of #2138; an instant answer could land in the same frame
+
+
+def suggestion_delay(purpose, messages):
+    """pure: how long the handler waits before answering this request: SUGGESTION_DELAY_S for a tagged prompt-suggestions request, else 0"""
+    if purpose != "prompt_suggestions":
+        return 0.0
+    return SUGGESTION_DELAY_S if suggestion_tag("\n".join(c for c in user_texts(messages) if isinstance(c, str))) else 0.0
+
+
+def suggestion_reply_text(tag):
+    """pure: the suggestion the app shows as its prompt-suggestion chip (kind "simple": a chip, no code diff request). The case reads this text
+    from the screen (cases_chip.chip_label)."""
+    return json.dumps({"kind": "simple", "query": "Explain chip %s" % tag, "should_plan_task": False})
+
+
 def purpose_reply(purpose, messages=None):
     """pure: the scripted answer of a non-chat purpose, shaped like reply_for's. A title request whose user text names a "conversation tag <TAG>"
-    gets the title "Tagged <TAG>", so a case can find its own conversation in the app's conversation list; every other title is the fixed one."""
+    gets the title "Tagged <TAG>", so a case can find its own conversation in the app's conversation list; every other title is the fixed one.
+    A prompt-suggestions request whose last block names `suggestiontag_<TAG>` gets a suggestion (#2138: the chip on demand); every other one
+    stays {"kind":"none"}, so no other case of a fake-model pass sees a chip."""
     if purpose == "title" and messages:
         m = TITLE_TAG_RE.search("\n".join(c for c in user_texts(messages) if isinstance(c, str)))
         if m:
             return {"text": "Tagged %s" % m.group(1), "tool": None}
+    if purpose == "prompt_suggestions" and messages:
+        tag = suggestion_tag("\n".join(c for c in user_texts(messages) if isinstance(c, str)))
+        if tag:
+            return {"text": suggestion_reply_text(tag), "tool": None}
     return {"text": PURPOSE_TEXT[purpose], "tool": None}
 
 
@@ -717,6 +753,9 @@ class FakeModel:
                     sys.stderr.write("fake_model: UNKNOWN_PURPOSE %s model=%s system=%r\n" % (self.path, req.get("model"), str(sysm)[:80]))
                     return self._send(501, json.dumps({"error": "UNKNOWN_PURPOSE: the fake model does not answer %s" % self.path}).encode())
                 title = purpose == "title"
+                late = suggestion_delay(purpose, req.get("messages"))
+                if late:
+                    time.sleep(late)
                 if purpose == "chat":
                     owner.requests += 1
                 else:

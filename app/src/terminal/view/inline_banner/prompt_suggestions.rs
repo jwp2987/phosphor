@@ -119,7 +119,21 @@ pub struct PromptSuggestionBannerState {
     pub byop_action_id: Option<crate::ai::agent::AIAgentActionId>,
 }
 
+/// The compact form of the Prompt Suggestions button: the chip on the editor's first line
+/// (#2138, `docs/design/r21-chip.md`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PromptSuggestionChipSize {
+    /// The chip is exactly this tall: one line of the editor.
+    pub height: f32,
+    /// The chip is at most this wide; a longer label is cut at the box.
+    pub max_width: f32,
+    /// Whether the accept keystroke is drawn after the label.
+    pub shows_keystroke: bool,
+}
+
 /// Renders the Prompt Suggestions button, with appropriate hover and click effects.
+///
+/// With `chip` it is the compact form: one editor line tall and at most `max_width` wide.
 #[allow(clippy::too_many_arguments)]
 fn render_button(
     text: String,
@@ -130,10 +144,15 @@ fn render_button(
     on_click: Rc<impl Fn(&mut EventContext) + 'static>,
     prompt_alert_state: &PromptAlertState,
     should_shrink: bool,
+    chip: Option<PromptSuggestionChipSize>,
     appearance: &Appearance,
     app: &AppContext,
 ) -> Box<dyn Element> {
     let theme = appearance.theme();
+    let keystroke = match chip {
+        Some(chip) if !chip.shows_keystroke => None,
+        _ => keystroke,
+    };
     let is_button_disabled = matches!(
         prompt_alert_state,
         PromptAlertState::NoConnection
@@ -157,10 +176,15 @@ fn render_button(
         }
 
         let icon_size = appearance.monospace_font_size();
-        let button_height = app.font_cache().line_height(
-            appearance.monospace_font_size(),
-            appearance.line_height_ratio(),
-        ) + 14.;
+        let button_height = match chip {
+            Some(chip) => chip.height,
+            None => {
+                app.font_cache().line_height(
+                    appearance.monospace_font_size(),
+                    appearance.line_height_ratio(),
+                ) + 14.
+            }
+        };
         // Need this to have reasonable keyboard shortcut heights.
         // let keyboard_shortcut_icon_height = button_height - 6.;
         let mut icon_color = blended_colors::text_main(theme, theme.surface_1());
@@ -198,13 +222,22 @@ fn render_button(
             .with_child(text);
 
         if let Some(keystroke) = keystroke {
+            // In the chip the keystroke must fit inside one editor line.
+            let (keystroke_font_size, keystroke_height, keystroke_padding) = match chip {
+                Some(chip) => (
+                    (icon_size - 2.).max(8.),
+                    (chip.height - 2.).clamp(8., 20.),
+                    1.,
+                ),
+                None => (icon_size, 20., 3.),
+            };
             let style = UiComponentStyles {
                 font_family_id: Some(appearance.ui_font_family()),
-                font_size: Some(icon_size),
-                height: Some(20.),
+                font_size: Some(keystroke_font_size),
+                height: Some(keystroke_height),
 
                 border_radius: Some(CornerRadius::with_all(Radius::Pixels(3.))),
-                padding: Some(Coords::uniform(3.)),
+                padding: Some(Coords::uniform(keystroke_padding)),
                 margin: Some(Coords::default().left(KEYBOARD_SHORTCUT_MARGIN)),
 
                 font_color: Some(text_color),
@@ -264,9 +297,11 @@ fn render_button(
             }
         }
 
-        ConstrainedBox::new(stack.finish())
-            .with_height(button_height)
-            .finish()
+        let button = ConstrainedBox::new(stack.finish()).with_height(button_height);
+        match chip {
+            Some(chip) => button.with_max_width(chip.max_width).finish(),
+            None => button.finish(),
+        }
     })
     .with_cursor(Cursor::PointingHand);
 
@@ -317,6 +352,40 @@ impl PromptSuggestionsView {
     pub fn set_banner_state(&mut self, banner_state: PromptSuggestionBannerState) {
         self.banner_state = Some(banner_state);
     }
+
+    /// The suggestion as a chip for the editor's first line (#2138): the banner's button in its
+    /// compact form, with the banner's own click action. `None` without a suggestion.
+    ///
+    /// The input draws it in its own element tree (a positioned child of a stack, which adds
+    /// nothing to the input's height); this view is not mounted for it. The alert the banner
+    /// shows on its right is left out: the prompt and the footer show it.
+    pub fn render_chip(
+        &self,
+        size: PromptSuggestionChipSize,
+        app: &AppContext,
+    ) -> Option<Box<dyn Element>> {
+        let banner_state = self.banner_state.as_ref()?;
+        let appearance = Appearance::as_ref(app);
+        Some(render_button(
+            banner_state.prompt_suggestion.label().clone(),
+            WarpUIIcon::Oz,
+            0,
+            keybinding_name_to_keystroke(ACCEPT_PROMPT_SUGGESTION_KEYBINDING, app),
+            banner_state.accept_button_mouse_state.clone(),
+            Rc::new(move |ctx: &mut warpui::EventContext<'_>| {
+                ctx.dispatch_typed_action(TerminalAction::ResolvePromptSuggestion(
+                    PromptSuggestionResolution::Accept {
+                        interaction_source: InteractionSource::Button,
+                    },
+                ));
+            }),
+            self.prompt_alert.as_ref(app).state(),
+            true, // should_shrink
+            Some(size),
+            appearance,
+            app,
+        ))
+    }
 }
 
 impl Entity for PromptSuggestionsView {
@@ -361,6 +430,7 @@ impl View for PromptSuggestionsView {
                     }),
                     prompt_alert_state,
                     true, // should_shrink
+                    None,
                     appearance,
                     app,
                 ),

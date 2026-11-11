@@ -229,6 +229,11 @@ NOT_WINDOWS["freeze_and_wake"] = ("T36: specified for Linux and macOS; the freez
                                   "in the Windows backend (NtSuspendProcess in winapi.py), which is not built")
 # round 15 (cases_r15_defects.py), as statements of their own so sibling branches' additions to the tables above merge cleanly
 GITBASH_ONLY["scroll_keys_foreground"] = "#2080: the foreground program is a POSIX raw reader started from a bash script (bytes_reader.sh), with a bash job printing next to it: runs in the Git Bash pane"
+# round 21 (#2138; cases_chip.py), statements of their own
+GITBASH_ONLY["suggestion_chip_keeps_output"] = ("#2138: the fixture is printed with `cat` and its command is confirmed from the bash prompt hook; the chip's "
+                                                "layout does not depend on the pane's shell: runs in the Git Bash pane")
+GITBASH_ONLY["agent_suggestion_chip_keeps_output"] = ("#2138: as suggestion_chip_keeps_output (a `cat` confirmed from the bash prompt hook): runs once, in the "
+                                                      "Git Bash pane's fake-model pass")
 NOT_WINDOWS["primary_absent_clipboard_kept"] = "#2081: the PRIMARY selection (and a display without one) is an X11 / Wayland concept; Windows has one clipboard"
 # Round 15 wave 5c (docs/design/r15-w5c.md), as statements of their own so a merge with another branch's additions to the tables above stays line-wise.
 # T49: the soak no longer samples /proc (procsample.py: the app's Win32 job plus GetProcessTimes / GetProcessMemoryInfo, or one Get-Process): it runs

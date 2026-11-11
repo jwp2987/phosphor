@@ -25,6 +25,7 @@ pub mod rewind;
 pub mod skills;
 pub mod slash_command_model;
 pub mod slash_commands;
+mod suggestion_chip;
 mod suggestions_mode_menu;
 pub mod suggestions_mode_model;
 mod terminal;
@@ -5999,7 +6000,96 @@ impl Input {
             });
         }
 
+        // #2138: what the harness waits for. Flags and a width only, never the suggestion's
+        // text. `place` and `drawn` are those of a layout whose first line holds the buffer
+        // only (every layout but the classic one with the shell's prompt inside the editor).
+        let shown = self.prompt_suggestions_banner_state.is_some();
+        let hidden = self
+            .prompt_suggestions_banner_state
+            .as_ref()
+            .is_some_and(|state| state.should_hide);
+        let line = suggestion_chip::ChipLine::default();
+        let place = suggestion_chip::suggestion_placement(
+            suggestion_chip::suggestion_chip_enabled(),
+            line.first_line_known,
+        );
+        let width = self
+            .suggestion_chip_size(line, ctx)
+            .map(|size| size.max_width);
+        warpui::input_order::log_hop("prompt_chip", || {
+            format!(
+                "shown={} hidden={} place={} drawn={} width={:.0}",
+                u8::from(shown),
+                u8::from(hidden),
+                place.log_word(),
+                u8::from(width.is_some()),
+                width.unwrap_or(0.)
+            )
+        });
+
         notify_cause!(ctx, "set_prompt_suggestions_banner_state_2");
+    }
+
+    /// Whether a prompt suggestion is set and not hidden (a coding suggestion waiting for its
+    /// diff is hidden).
+    fn prompt_suggestion_is_visible(&self) -> bool {
+        self.prompt_suggestions_banner_state
+            .as_ref()
+            .is_some_and(|state| !state.should_hide)
+    }
+
+    /// The size of the prompt-suggestion chip on the editor's first line for this render, or
+    /// `None` when no chip is drawn: no visible suggestion, the banner is the placement (kill
+    /// switch, or a first line the input cannot measure), or the line has no room (#2138; the
+    /// rule is `suggestion_chip::chip_max_width`).
+    ///
+    /// Reads the buffer only while a suggestion is visible.
+    fn suggestion_chip_size(
+        &self,
+        line: suggestion_chip::ChipLine,
+        app: &AppContext,
+    ) -> Option<crate::terminal::view::inline_banner::PromptSuggestionChipSize> {
+        if !self.prompt_suggestion_is_visible()
+            || suggestion_chip::suggestion_placement(
+                suggestion_chip::suggestion_chip_enabled(),
+                line.first_line_known,
+            ) != suggestion_chip::SuggestionPlacement::Chip
+        {
+            return None;
+        }
+        let appearance = Appearance::as_ref(app);
+        let editor = self.editor.as_ref(app);
+        let cell_width_px = editor.em_width(app.font_cache(), appearance);
+        // The editor's width is not known before layout. This is at or under it in every input
+        // layout (terminal padding on both sides; the universal input's margins and border fit
+        // in the 16 px), so the chip can only come out narrower than the room there is.
+        let editor_width_px =
+            self.size_info(app).pane_width_px().as_f32() - 2. * *TERMINAL_VIEW_PADDING_LEFT - 16.;
+        let ghost_text = if editor.active_autosuggestion() {
+            editor.current_autosuggestion_text()
+        } else {
+            None
+        };
+        let used_cols =
+            suggestion_chip::used_cols(line.prefix_cols, &editor.buffer_text(app), ghost_text);
+        let max_width = suggestion_chip::chip_max_width(suggestion_chip::ChipRoom {
+            editor_width_px,
+            cell_width_px,
+            used_cols,
+            right_inset_px: line.right_inset_px,
+        })?;
+        Some(
+            crate::terminal::view::inline_banner::PromptSuggestionChipSize {
+                height: editor.line_height(app.font_cache(), appearance),
+                max_width,
+                shows_keystroke: suggestion_chip::chip_shows_keystroke(max_width, cell_width_px),
+            },
+        )
+    }
+
+    /// The position id of the prompt-suggestion chip (tests read its rectangle).
+    pub fn suggestion_chip_save_position_id(&self) -> String {
+        format!("prompt_suggestion_chip_{}", self.view_id)
     }
 
     pub fn maybe_set_prompt_suggestions_banner_state_should_hide(&mut self, should_hide: bool) {
@@ -18407,13 +18497,28 @@ impl Input {
     }
 
     /// Renders a banner that should stay next to the input box.
+    ///
+    /// #2138 (owner decision 2026-11-11): a prompt suggestion arrives seconds after the command
+    /// it is about, and an input that grew for its banner moved every visible output row under
+    /// the pointer. The suggestion is now a chip on the editor's first line
+    /// ([`Self::render_input_box`]), which changes no height, and this returns `None`. The banner
+    /// is still returned when the chip is not the placement: the kill switch, or a layout whose
+    /// first line (`line`) the input cannot measure (`suggestion_chip::suggestion_placement`).
     fn render_input_banner(
         &self,
         appearance: &Appearance,
         app: &AppContext,
         input_mode: InputMode,
         is_compact_mode: bool,
+        line: suggestion_chip::ChipLine,
     ) -> Option<Box<dyn Element>> {
+        if suggestion_chip::suggestion_placement(
+            suggestion_chip::suggestion_chip_enabled(),
+            line.first_line_known,
+        ) == suggestion_chip::SuggestionPlacement::Chip
+        {
+            return None;
+        }
         if let Some(prompt_suggestions_banner_state) = &self.prompt_suggestions_banner_state {
             if prompt_suggestions_banner_state.should_hide {
                 return None;
@@ -18505,9 +18610,15 @@ impl Input {
         .finish()
     }
 
+    /// Renders the editor row. Every input layout has it, so it is also where a prompt
+    /// suggestion is drawn (#2138): a chip at the right end of the editor's first line, as a
+    /// positioned child of a stack. A positioned child adds nothing to the stack's size, so the
+    /// row is exactly as tall with the chip as without it. `line` says what else the layout
+    /// draws on that line.
     fn render_input_box(
         &self,
         show_vim_status: bool,
+        line: suggestion_chip::ChipLine,
         appearance: &Appearance,
         app: &AppContext,
     ) -> Box<dyn Element> {
@@ -18558,6 +18669,32 @@ impl Input {
         .with_padding_right(*TERMINAL_VIEW_PADDING_LEFT)
         .with_padding_bottom(bottom_padding)
         .finish();
+
+        let chip = self.suggestion_chip_size(line, app).and_then(|size| {
+            self.prompt_suggestions_view
+                .as_ref(app)
+                .render_chip(size, app)
+        });
+        let input_box = match chip {
+            Some(chip) => {
+                let mut input_stack = warpui::elements::Stack::new();
+                input_stack.add_child(input_box);
+                input_stack.add_positioned_child(
+                    SavePosition::new(chip, &self.suggestion_chip_save_position_id()).finish(),
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(
+                            -(*TERMINAL_VIEW_PADDING_LEFT + line.right_inset_px.max(0.)),
+                            line.y_offset_px.max(0.),
+                        ),
+                        warpui::elements::ParentOffsetBounds::Unbounded,
+                        ParentAnchor::TopRight,
+                        ChildAnchor::TopRight,
+                    ),
+                );
+                input_stack.finish()
+            }
+            None => input_box,
+        };
 
         let input_editor_save_position_id = self.editor_save_position_id();
         SavePosition::new(

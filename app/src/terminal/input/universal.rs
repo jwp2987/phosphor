@@ -28,6 +28,7 @@ use super::{
         add_voltron_overlay, add_workflow_info_overlay,
         wrap_input_with_terminal_padding_and_focus_handler,
     },
+    suggestion_chip::ChipLine,
 };
 
 impl Input {
@@ -60,9 +61,12 @@ impl Input {
         let is_compact_mode = false;
         let mut column = Flex::column();
 
+        // #2138: the editor's first line holds the buffer only; a prompt suggestion is a chip on it.
+        let chip_line = ChipLine::default();
+
         if matches!(input_mode, InputMode::PinnedToBottom | InputMode::Waterfall) {
             if let Some(banner) =
-                self.render_input_banner(appearance, app, input_mode, is_compact_mode)
+                self.render_input_banner(appearance, app, input_mode, is_compact_mode, chip_line)
             {
                 column.add_child(
                     Container::new(banner)
@@ -91,7 +95,7 @@ impl Input {
         let terminal_spacing = TerminalSettings::as_ref(app)
             .terminal_input_spacing(appearance.line_height_ratio(), app);
         column.add_child(
-            Container::new(self.render_input_box(show_vim_status, appearance, app))
+            Container::new(self.render_input_box(show_vim_status, chip_line, appearance, app))
                 .with_margin_top(
                     terminal_spacing.prompt_to_editor_padding
                         * spacing::UDI_PROMPT_BOTTOM_PADDING_FACTOR,
@@ -102,7 +106,7 @@ impl Input {
 
         if matches!(input_mode, InputMode::PinnedToTop) {
             if let Some(banner) =
-                self.render_input_banner(appearance, app, input_mode, is_compact_mode)
+                self.render_input_banner(appearance, app, input_mode, is_compact_mode, chip_line)
             {
                 column.add_child(
                     Container::new(banner)

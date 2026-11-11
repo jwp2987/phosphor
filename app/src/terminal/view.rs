@@ -17343,6 +17343,12 @@ impl TerminalView {
             return false;
         }
 
+        // #2138: the suggestion is taken (the chip was clicked, or the accept key). The source
+        // only, never the suggestion's text.
+        warpui::input_order::log_hop("prompt_chip_accept", || {
+            format!("source={interaction_source:?}")
+        });
+
         let view = self.prompt_suggestion_view_type(ctx);
         let suggestion = &banner_state.prompt_suggestion;
         let prompt = suggestion.prompt.clone();

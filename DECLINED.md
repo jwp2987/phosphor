@@ -2556,6 +2556,22 @@ upstream's behavior is actually a defect rather than a preference.
   `PHOSPHOR_SKIP_REDUNDANT_COMPLETION_NOTIFY=0` restores the unconditional notify.
   <!-- markers: keep:completion_result_needs_render keep:skip_redundant_completion_notify_enabled -->
 
+- **A prompt suggestion is a chip on the editor's first line and moves no output row** (`#2138`,
+  2026-11-11, owner decision, `app/src/terminal/input.rs` `render_input_box`,
+  `render_input_banner`, `app/src/terminal/input/suggestion_chip.rs`; design
+  `docs/design/r21-chip.md`). **Upstream:** the suggestion is a banner that is a child of the
+  input only while it shows (`42effe840:app/src/terminal/input.rs:15642`), so when a model's
+  answer arrives, seconds after the command, the input grows by the banner's box, the block
+  list moves by that height under the pointer, and a click meant for the output lands on the
+  banner and starts an agent conversation. **We do:** the suggestion is a chip at the right end
+  of the editor's first line (the one row all four input layouts have), a positioned child of a
+  stack that adds no height; it gets the room the typed text leaves free and is not drawn when
+  there is none. Click, accept key and Escape are the banner's. No space is kept empty for it
+  (the owner turned down a permanent band). `PHOSPHOR_PROMPT_SUGGESTION_CHIP=0` restores the
+  banner and the growing input. A re-pin diff that puts the banner back into the layouts'
+  columns is drift to refuse.
+  <!-- markers: keep:suggestion_chip_size keep:suggestion_placement keep:chip_max_width -->
+
 ## Not done: evicting closed panes' AI conversations from memory (#843)
 
 Closing a pane drops the AI history model's per-view maps (live and cleared ids, active
