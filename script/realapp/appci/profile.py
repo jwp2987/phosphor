@@ -163,9 +163,12 @@ function global:prompt {
   "PS> "
 }
 """
-SH_HOOK = r"""# appci lab hook (dash / busybox ash): no history hook exists, so effect files only; the prompt is fixed
+SH_HOOK = r"""# appci lab hook (dash / busybox ash): no history hook exists, so effect files only. The prompt is fixed text; expanding it logs a P line
+# (#2126: every lab connect waits for a REMOTE prompt in prompt.log, cases_caseremote.connect, and this hook wrote none, so no dash / ash arm
+# could ever pass its connect step). Whole seconds: busybox date has no nanoseconds. labd sources this from ~/.profile only (rc_plan), so the P line is
+# also the proof that the session's shell is a login shell.
 PA_CTL="%(ctl)s"; export PA_CTL
-PS1='$ '
+PS1='$(printf "P\t%%s\n" "$(date +%%s)" >> "$PA_CTL/prompt.log")$ '
 cd "$APPCI_W" 2>/dev/null || true
 """
 FISH_LAB_TAIL = r"""# lab only: every lab connect waits for a REMOTE prompt in prompt.log (cases_caseremote.connect), and the scratch config above logs none: fish there

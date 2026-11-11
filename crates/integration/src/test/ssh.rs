@@ -138,7 +138,8 @@ fn verify_login_shell(shell: &str) -> TestStep {
     let command = match shell {
         "zsh" => "[[ -o login ]]",
         "fish" => "status --is-login",
-        // For other shells, we don't actually start a login shell but do source /etc/profile.
+        // Other shells: started with `-l` since #2126 and read /etc/profile themselves (a shell
+        // that refuses `-l` is not a login shell; the remote command sources /etc/profile then).
         _ => "test \"$WARP_PROFILE_LOADED\" = true",
     };
 

@@ -224,6 +224,10 @@ PROVING_FAKE += ("agent_close_undo_call_status",)
 # does not bootstrap (dash, busybox ash) reach that shell. The `lab_nohelper_*` glob above plays its bash arm (the control); the quick matrix has no
 # dash / ash shell, so the two arms that prove the issue are named exactly (an exact name runs whatever the matrix says).
 PROVING_LAB += ("lab_nohelper_sh_login_keys.dash.lan.nohelper", "lab_nohelper_sh_login_keys.ash.lan.nohelper")
+# #2126 (round 19; docs/design/r19-loginshell.md): lab_nohelper_sh_login_profile, the dash / ash login shell of an ssh session is a LOGIN shell: it reads
+# ~/.profile (the lab's prompt hook lives only there). Exact names for the same reason as the line above: the quick matrix has no dash / ash; its bash
+# arm (the control) is played through `lab_nohelper_*`.
+PROVING_LAB += ("lab_nohelper_sh_login_profile.dash.lan.nohelper", "lab_nohelper_sh_login_profile.ash.lan.nohelper")
 # Lab families the fix tier's lab job does NOT play, each with the reason (self-test r15_every_lab_family_is_in_a_tier: a lab family is in PROVING_LAB
 # or here, so a new one cannot be registered and never played, which is what #2063 found for 18 of them).
 LAB_NOT_IN_FIX_TIER = {

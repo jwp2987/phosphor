@@ -1493,6 +1493,250 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
     }
 }
 
+/// #2126: the remote command of every ssh wrapper (bash, zsh, fish) starts a login shell it does
+/// not bootstrap (sh, dash, ash, ksh, ...) AS a login shell, as sshd does for a plain `ssh host`:
+/// `"$SHELL" -l`, so the shell itself reads `/etc/profile` and `~/.profile`. Before, it was
+/// `exec "$SHELL"` after the command had sourced `/etc/profile`, and `~/.profile` was never read.
+///
+/// The real helper of each wrapper runs with a stub `ssh` that keeps the remote command; that
+/// command then runs as the server would run it (`<login shell> -c <command>`):
+/// - with stub login shells that record their `argv[0]` and arguments: one that takes `-l` is
+///   asked once whether it does (`-n -l -c :`, nothing is executed) and then started with `-l`;
+///   one that refuses `-l` is started the old way and its refusal is never shown;
+/// - with a real dash and a real busybox ash where installed: `~/.profile` is read exactly ONCE
+///   (so the `-n` question ran nothing of it) and `/etc/profile` is not sourced by the command;
+/// - with the kill switch `PHOSPHOR_SSH_LOGIN_SHELL=0` in the local shell: the old start, no
+///   question, `~/.profile` not read.
+/// The MotD is still printed by the command only (one chain in the text; the stubs print none),
+/// and the bash / zsh arms are the text they were.
+#[test]
+#[cfg(unix)]
+fn ssh_remote_command_starts_an_unbootstrapped_login_shell_as_a_login_shell() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::process::Command;
+
+    let write_executable = |path: &std::path::Path, text: &str| {
+        std::fs::write(path, text).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let real_shell = |names: &[&str]| -> Option<std::path::PathBuf> {
+        let path = std::env::var("PATH").unwrap_or_default();
+        names.iter().find_map(|name| {
+            path.split(':')
+                .map(|dir| std::path::Path::new(dir).join(name))
+                .find(|candidate| candidate.is_file())
+        })
+    };
+
+    for (name, source, kind) in [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+            0,
+        ),
+        (
+            "zsh",
+            include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+            1,
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+            2,
+        ),
+    ] {
+        if Command::new(name).arg("--version").output().is_err() {
+            eprintln!("skipping {name}: not installed");
+            continue;
+        }
+        let (open, close) = match kind {
+            0 => (
+                "        function warp_ssh_helper() {",
+                "\n        function __warp_ssh_impl",
+            ),
+            1 => (
+                "      function warp_ssh_helper() {",
+                "\n      function ssh() {",
+            ),
+            _ => ("    function warp_ssh_helper", "\n    function ssh\n"),
+        };
+        let from = source.find(open).unwrap();
+        let to = from + source[from..].find(close).unwrap();
+        let function = &source[from..to];
+
+        for switch_off in [false, true] {
+            let dir = std::env::temp_dir().join(format!(
+                "p2126-{name}-{}-{}",
+                std::process::id(),
+                if switch_off { "off" } else { "on" }
+            ));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(dir.join("bin")).unwrap();
+            std::fs::create_dir_all(dir.join("home")).unwrap();
+            // The stub ssh keeps the last argument of the call that carries the remote command
+            // (the session); config lookups and master commands fail, the rest succeeds.
+            write_executable(
+                &dir.join("bin/ssh"),
+                "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in -G|-O) exit 1;; esac; done\nfor a in \"$@\"; do last=\"$a\"; done\ncase \"$last\" in *TERM_PROGRAM*) printf '%s' \"$last\" > \"$OUT\";; esac\n",
+            );
+            let socket_dir = dir.join("s");
+            let prelude = if kind == 2 {
+                format!(
+                    "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR '{}'; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;",
+                    socket_dir.display()
+                )
+            } else {
+                format!(
+                    "init_shell_hook(){{ echo hook-$1; }}; warp_send_json_message(){{ :; }}; SSH_SOCKET_DIR='{}'; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;",
+                    socket_dir.display()
+                )
+            };
+            let script = format!("{prelude}\n{function}\nwarp_ssh_helper -p 22 user@host");
+            let mut command = Command::new(name);
+            if kind == 2 {
+                command.args(["--no-config", "-c", &script]);
+            } else {
+                command.args(["-c", &script]);
+            }
+            let out_file = dir.join("out");
+            command
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        dir.join("bin").display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .env("OUT", &out_file)
+                .env("HOME", dir.join("home"))
+                .env_remove("PHOSPHOR_SSH_LOGIN_SHELL")
+                .stdin(std::process::Stdio::null());
+            if switch_off {
+                command.env("PHOSPHOR_SSH_LOGIN_SHELL", "0");
+            }
+            command.output().unwrap();
+            let remote = std::fs::read_to_string(&out_file).unwrap_or_default();
+            let label = format!("{name}/switch_off={switch_off}");
+
+            // The text: one MotD chain, the login start before the old one, the two bootstrap
+            // arms as they were.
+            let at = |needle: &str| {
+                remote
+                    .find(needle)
+                    .unwrap_or_else(|| panic!("{label}: {needle:?} not in the command: {remote:?}"))
+            };
+            let question = format!(
+                "if test {} = 1 && $SHELL -n -l -c : </dev/null >/dev/null 2>&1; then\n    exec $SHELL -l\n  fi\n",
+                if switch_off { 0 } else { 1 }
+            );
+            let order = [
+                at("if test \"${SHELL##*/}\" != \"bash\" -a \"${SHELL##*/}\" != \"zsh\"; then"),
+                at("if test -r /etc/motd; then"),
+                at(&question),
+                at(
+                    "  if test -r /etc/profile; then\n    . /etc/profile\n  fi\n  exec $SHELL\nfi\n",
+                ),
+                at("exec -a bash bash --rcfile <(echo '"),
+                at("exec -l zsh -g"),
+            ];
+            assert!(
+                order.windows(2).all(|pair| pair[0] < pair[1]),
+                "{label}: order {order:?}"
+            );
+            assert_eq!(
+                remote.matches("test -r /etc/motd;").count(),
+                1,
+                "{label}: the MotD is printed in one place"
+            );
+            assert_eq!(remote.matches(". /etc/profile").count(), 1, "{label}");
+
+            // Stub login shells named `dash`: each records argv[0] and its arguments.
+            std::fs::write(dir.join("home/.hushlogin"), "").unwrap();
+            for (stub, refuses) in [("takes", false), ("refuses", true)] {
+                let stub_dir = dir.join(stub);
+                std::fs::create_dir_all(&stub_dir).unwrap();
+                let shell = stub_dir.join("dash");
+                write_executable(
+                    &shell,
+                    &format!(
+                        "#!/bin/sh\nprintf '%s|%s\\n' \"$0\" \"$*\" >> \"$REC\"\n{}",
+                        if refuses {
+                            "case \" $* \" in *\" -l \"*) echo 'Illegal option -l' >&2; exit 2;; esac\n"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+                let record = stub_dir.join("rec");
+                let output = Command::new("sh")
+                    .args(["-c", &remote])
+                    .env("SHELL", &shell)
+                    .env("HOME", dir.join("home"))
+                    .env("REC", &record)
+                    .stdin(std::process::Stdio::null())
+                    .output()
+                    .unwrap();
+                let recorded = std::fs::read_to_string(&record).unwrap_or_default();
+                let me = shell.display().to_string();
+                let expected = match (switch_off, refuses) {
+                    (true, _) => format!("{me}|\n"),
+                    (false, false) => format!("{me}|-n -l -c :\n{me}|-l\n"),
+                    (false, true) => format!("{me}|-n -l -c :\n{me}|\n"),
+                };
+                assert_eq!(
+                    recorded, expected,
+                    "{label}/{stub}: how the login shell started"
+                );
+                assert!(
+                    output.status.success(),
+                    "{label}/{stub}: the session's status is the shell's: {output:?}"
+                );
+                assert!(
+                    !String::from_utf8_lossy(&output.stderr).contains("Illegal option"),
+                    "{label}/{stub}: the question's refusal is never shown: {output:?}"
+                );
+            }
+
+            // Real shells: ~/.profile is read once by a login start, never by the old start.
+            for (real, candidates) in [("dash", &["dash"][..]), ("ash", &["ash", "busybox"][..])] {
+                let Some(binary) = real_shell(candidates) else {
+                    eprintln!("skipping {label}/{real}: not installed");
+                    continue;
+                };
+                let real_dir = dir.join(format!("real-{real}"));
+                let home = real_dir.join("home");
+                std::fs::create_dir_all(&home).unwrap();
+                // The login shell's name is the last path component (busybox reads it too).
+                let shell = real_dir.join(real);
+                std::os::unix::fs::symlink(&binary, &shell).unwrap();
+                std::fs::write(home.join(".hushlogin"), "").unwrap();
+                std::fs::write(
+                    home.join(".profile"),
+                    "echo profile-read >> \"$HOME/seen\"\n",
+                )
+                .unwrap();
+                let output = Command::new(&shell)
+                    .args(["-c", &remote])
+                    .env("SHELL", &shell)
+                    .env("HOME", &home)
+                    .env_remove("ENV")
+                    .stdin(std::process::Stdio::null())
+                    .output()
+                    .unwrap();
+                let seen = std::fs::read_to_string(home.join("seen")).unwrap_or_default();
+                assert_eq!(
+                    seen,
+                    if switch_off { "" } else { "profile-read\n" },
+                    "{label}/{real}: ~/.profile is read once by the login shell and by nothing \
+                     else: {output:?}"
+                );
+            }
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+}
+
 /// Round 10 (lab): the question the ssh wrappers ask a remote whose first probe answer is not
 /// definitive. One word list in single quotes with no backslash, quote or newline inside, so
 /// every login shell (POSIX or not) hands the same text to `sh`.

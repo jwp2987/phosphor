@@ -8221,6 +8221,55 @@ def lab_sh_login_keys_2120():
     assert "lab_nohelper_sh_login_keys" in doc and "lab_sh_login_keys_2120" in doc
 
 
+@check
+def lab_sh_login_profile_2126():
+    """#2126: lab_nohelper_sh_login_profile. The verdict passes only on the one typed line with the lab hook as $ENV and can fail (no ENV, a doubled line, another
+    value, nothing); the lab's sh hook logs a P line per prompt in a real dash (and busybox ash where installed), which is what the connect step waits
+    for; labd sources that hook from ~/.profile only; the dash / ash arms are registered in both modes and named exactly in PROVING_LAB; the three ssh
+    wrappers carry the login start and its kill switch."""
+    import re
+    import cases_lab as CL
+    import lab as labmod
+    import profile as P
+    v = CL.sh_login_profile_verdict
+    hook = "/etc/sshlab/hooks/hook.sh.u_dash"
+    assert v("pfabc", hook, ["pfabc %s" % hook]) is None
+    assert v("pfabc", hook, ["pfabc %s\n" % hook, ""]) is None
+    assert "not a login shell" in v("pfabc", hook, ["pfabc noenv"])
+    assert v("pfabc", hook, ["pfabc %s" % hook] * 2) and v("pfabc", hook, []) and v("pfabc", hook, ["pfabc /etc/other"]) and v("pfabc", hook, ["pfxyz %s" % hook])
+    root = os.path.join(HERE, "..", "..", "..")
+    labd = open(os.path.join(root, "script", "realapp", "sshlab", "rootfs", "usr", "local", "sbin", "labd.py"), encoding="utf-8").read()
+    assert """plan[".profile"] = 'ENV="%s"; export ENV\\n. "%s"\\n' % (hook, hook)""" in labd, "labd.rc_plan: the dash / ash hook is sourced from ~/.profile only"
+    assert 'hook = "/etc/sshlab/hooks/hook.%s.%s" % (hook_shell_key(sh), u)' in labd
+    tmpl = P.lab_hooks()["sh"]
+    assert "prompt.log" in tmpl and "%N" not in tmpl % {"ctl": "/x"}, "whole seconds: busybox date has no nanoseconds"
+    for binary, argv0 in (("dash", "dash"), ("busybox", "ash")):
+        path = shutil.which(binary)
+        if not path:
+            continue
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "hook"), "w").write(tmpl % {"ctl": d})
+            p = subprocess.run([argv0, "-i"], executable=path, input="echo one\necho two\n", capture_output=True, text=True, timeout=20,
+                               env=dict(os.environ, ENV=os.path.join(d, "hook"), APPCI_W=d))
+            lines = open(os.path.join(d, "prompt.log")).read().splitlines() if os.path.exists(os.path.join(d, "prompt.log")) else []
+            assert len(lines) == 3 and all(re.fullmatch(r"P\t\d+", l) for l in lines), (argv0, lines, p.stderr)      # two commands, three prompts
+            assert p.stdout.split()[-2:] == ["one", "two"], (argv0, p.stdout)                # busybox prints its banner first
+    names = {c["name"]: c for c in cases.CASES}
+    want = ["lab_nohelper_sh_login_profile.%s.lan.nohelper" % sh for sh in ("dash", "ash", "bash")]
+    assert sorted(n for n in names if n.startswith("lab_nohelper_sh_login_profile.")) == sorted(want)
+    assert all(names[n]["modes"] == ("terminal", "agent") for n in want), "both session modes"
+    assert set(want[:2]) <= set(cases.PROVING_LAB), "the dash / ash arms are named exactly: the quick matrix would leave them out"
+    quick = labmod.matrix_selection("quick")
+    assert not any(labmod.arm_selected(names[n]["arm"], quick) for n in want[:2]) and labmod.arm_selected(names[want[2]]["arm"], quick)
+    assert any(labmod.name_matches(g, want[2]) for g in cases.PROVING_LAB), "the bash control arm is played through the family glob"
+    assert v("pfabc", "control", ["pfabc control"]) is None and v("pfabc", "control", ["pfabc control"] * 2)
+    for f in ("bash_body.sh", "zsh_body.sh", "fish.sh"):
+        text = open(os.path.join(root, "app", "assets", "bundled", "bootstrap", f), encoding="utf-8").read()
+        assert """&& "'$SHELL'" -n -l -c : </dev/null >/dev/null 2>&1; then\n    exec "'$SHELL'" -l\n""" in text and "PHOSPHOR_SSH_LOGIN_SHELL" in text, f
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    assert "lab_nohelper_sh_login_profile" in doc and "lab_sh_login_profile_2126" in doc and "PHOSPHOR_SSH_LOGIN_SHELL=0" in doc
+
+
 @check      # #2086: this line was lost in a hand merge and the function never ran
 def r14_w1a_wave1_cases_pure_parts_and_registry():
     """#2072 (docs/design/r14-w1a.md): history_up_recall, scroll_keys_position, find_basic, tab_lifecycle_keys, routing_table_powershell. Each verdict
