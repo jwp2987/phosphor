@@ -3234,6 +3234,8 @@ Owner decisions on three key questions of the daily-user review. Design and evid
   would be read by that hidden search. It needs the prompt lent to the shell (terminal focus, the
   shell's line shown, the hand-off pty-owned until the next Preexec or prompt). Alt-R / Meta-R are
   left unbound (a test pins it) so either answer stays possible.
+  **Superseded 2026-11-11:** the owner chose option B (Alt-R opens the app's history search) and
+  decided that a user's own Ctrl-R binding wins over command search; see "Round 16: keys" below.
 ## Round 15: Alt word keys, Shift+Page keys under a running command, no PRIMARY-to-CLIPBOARD fallback — IMPROVED 2026-11-11 (#2079, #2080, #2081)
 
 Three places where this fork deliberately differs from the pin (each is byte-identical upstream at `42effe840`). Design and
@@ -3247,13 +3249,14 @@ upstream form of any of them.
   `alt-backspace` cuts the word before the cursor in the input editor, and the `meta-` forms stay as fixed bindings. macOS is
   unchanged (Option as Meta; an Option key that types characters keeps typing them). Kill switch `PHOSPHOR_ALT_WORD_KEYS=0`.
   NOT changed: the other Linux / Windows defaults that differ from readline on purpose (Ctrl-A selects all, Ctrl-E does not move,
-  Ctrl-Y deletes to the line start) stay an owner question.
+  Ctrl-Y deletes to the line start) stay an owner question. **Decided 2026-11-11: readline; see "Round 16: keys" below.**
 - **Shift+PageUp / PageDown / Home / End scroll the scrollback while a foreground command runs (#2080, IMPROVED).** Upstream has no
   key for it: the plain keys are written to the program and nothing else scrolls. The four shifted keys are fixed bindings of the
   terminal view, live only with a command running, outside the alternate screen (a full-screen program keeps them) and while the
   input editor does not have focus (`terminal/view/scrollback_keys.rs`). Nothing is written to the pty for them. The plain keys
   are unchanged everywhere. Kill switch `PHOSPHOR_SCROLLBACK_KEYS=0`. NOT done: the shifted keys at a prompt (PageUp / PageDown
-  scroll there already; Shift+Home / Shift+End select in the editor).
+  scroll there already; Shift+Home / Shift+End select in the editor). **Decided 2026-11-11: also at a prompt, and editable; see
+  "Round 16: keys" below.**
 - **A selection is never written to CLIPBOARD in PRIMARY's place (#2081, IMPROVED).** Upstream writes a PRIMARY-bound selection to
   the normal clipboard when the display has no primary selection, so with copy on select off every selection replaced what the
   user had copied. The write is dropped instead (`primary_write_outcome`, `warpui/.../linux/clipboard.rs`); copy on select on
@@ -3263,6 +3266,40 @@ upstream form of any of them.
 Tests: `util/bindings_tests.rs` (`test_word_keys_default_bindings_per_platform`), `terminal/view/scrollback_keys_tests.rs`,
 `terminal/view/scrollback_keys_view_tests.rs`, `clipboard_tests.rs` (`primary_write_tests`); appci `meta_and_word_keys`,
 `scroll_keys_foreground`, `primary_absent_clipboard_kept`.
+
+## Round 16: keys — Ctrl-R yields to the user, Alt-R history search, readline Ctrl-A / Ctrl-E / Ctrl-Y, shifted scroll keys at a prompt — IMPROVED 2026-11-11 (#1988, #2079, #2080)
+
+Owner decisions of 2026-11-11. Each differs from the pin (`42effe840`) on purpose; a re-pin must not restore the upstream form.
+Design and evidence: `docs/design/r10-r16-keys2.md`. Worked, unproven when written (nothing compiled or run).
+
+- **A binding the user bound to Ctrl-R wins over command search (#1988, IMPROVED).** Upstream matches a key in the deepest view
+  first, so command search (a binding of the input) took Ctrl-R from any action of the terminal, the pane group or the workspace the
+  user had put on it; only moving command search away helped. Command search is now marked as yielding
+  (`EditableBinding::yielding_to_user_bindings`, `util/bindings.rs` `BINDINGS_YIELDING_TO_USER_BINDINGS`): while it has its default
+  key and a binding with a user-set trigger on that key applies somewhere in the focused view's responder chain, it is not matched.
+  On macOS its menu item drops the key equivalent in that state. Nothing else is marked: every other pair of bindings keeps the
+  upstream order. Command search stays on the command palette, the macOS menu, Alt-R (history) and any key the user moves it to.
+  Kill switch `PHOSPHOR_USER_BINDING_WINS=0`. NOT done: the same rule for every built-in default (an owner question; it would change
+  which binding wins for every chord a user has reused).
+- **Alt-R opens the app's history search (#1988 option B, IMPROVED).** `input:search_command_history` shipped unbound upstream. Its
+  default is `alt-r` on Linux and Windows and `meta-r` on macOS (Option as Meta), in the input only: a program that has the terminal
+  still receives `ESC r`. On macOS that one custom action has no menu item, so it alone is registered as a keystroke binding
+  (`mac_menuless_custom_tag_to_keystroke`). Kill switch `PHOSPHOR_ALT_R_HISTORY_SEARCH=0`. DECLINED with it: option A, lending the
+  prompt to the shell's own reverse-i-search (a new hand-off state; `docs/design/r10-r14-keys.md` section 3).
+- **Ctrl-A / Ctrl-E / Ctrl-Y are readline's keys off macOS (#2079, IMPROVED).** Upstream, on Linux and Windows: Ctrl-A selects all,
+  Ctrl-E is unbound (Linux offers an "emacs bindings" banner), Ctrl-Y deletes to the line start. Now, in the text editor (the input
+  and the app's single-line fields): start of line, end of line, yank; `editor_view:select_all` defaults to Ctrl-Shift-A (in all
+  three editors, so the name has one default; the code and notebook editors keep their fixed Ctrl-A select-all);
+  `editor_view:delete_all_left` has no default key in the text editor; the banner and its Ctrl-E key are not registered. macOS is
+  unchanged. Kill switch `PHOSPHOR_READLINE_INPUT_KEYS=0`. Known cost: `ctrl-shift-A` is also the Linux / Windows default of "toggle
+  the conversation list" (a workspace binding), which the focused text editor now answers first; that panel stays on Alt-1 and its
+  button. NOT changed: the code and notebook editors' Ctrl-A / Ctrl-E / Ctrl-Y.
+- **Shift+PageUp / PageDown / Home / End also scroll at a prompt, and are editable (#2080, IMPROVED).** Round 15 bound them (fixed)
+  under a running command only. They are editable bindings now (`terminal:scrollback_page_up`, `_page_down`, `_top`, `_bottom`) and
+  live at a prompt too. Shift+Home / Shift+End reach them there only while the terminal input is empty; in an input that holds text
+  they still select to the line start / end (the editor's fixed keys, unchanged). The alternate screen keeps all four. Kill switches
+  `PHOSPHOR_SCROLLBACK_KEYS_AT_PROMPT=0` (round 15's reach) and `PHOSPHOR_SCROLLBACK_KEYS=0` (none).
+
 ## A remote host whose login shell is fish or nu gets a plain ssh session: no agent tools on that host (#2019) — DECIDED 2026-11-10
 `ssh <host>` from a Phosphor pane hands sshd a POSIX sh script as the remote command, and sshd runs it as
 `<login shell> -c <script>`. fish and nushell (also csh, tcsh, xonsh, elvish) parse the whole text before running any of
