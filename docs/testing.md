@@ -2544,7 +2544,7 @@ PowerShell pane). Self-test of the pure parts: `r14_w1b_pure_parts`.
 | case | platforms (elsewhere: SKIP with the reason) | what it does | what fails it | estimate, both modes |
 |---|---|---|---|---|
 | `agent_basics_powershell` (T6) | Windows PowerShell pane (`winmap.PS_ONLY`; Linux, macOS and Git Bash run `agent_input_exact` + `agent_mode_switch`) | prose into the agent input, Escape, one `Add-Content` line, back to the agent view (Ctrl+Shift+Enter), prose again | the agent text is not byte-exact in `hop=enter_begin buffer=.. input_type=AI`; the shell line is not exactly `(line, Shell)` in the app log, not the ONLY new PSReadLine history line, or its effect file is not exactly the token; a prose nonce in the history or in `hop=pty_write_bytes`; a view switch the log does not confirm. No new history line at all is NOREF, never a pass | 2 min |
-| `job_control` (T7) | Wayland, X11, macOS (`winmap.NOT_WINDOWS`) | `sleep <n>` (n unique to the run), Ctrl-Z, `jobs > a`, `bg`, `jobs > b`, `fg`, Ctrl-C, `jobs > c`; then `cat > f`, a line, Ctrl-Z, a shell command, `fg`, a line, Ctrl-D | the OS (`ps` stat) does not show the process stopped after Ctrl-Z, running after `bg`, running in front after `fg`, gone after Ctrl-C; a `jobs` file that is not stopped / running / absent; no prompt after a step; the shell's received lines are not exactly the typed ones; cat's file is not exactly the two lines (a key went to the wrong program) | 2 min |
+| `job_control` (T7) | Wayland, X11, macOS (`winmap.NOT_WINDOWS`) | `sleep <n>` (n unique to the run), Ctrl-Z, `jobs > a`, `bg`, `jobs > b`, `fg`, Ctrl-C, `jobs > c`; then a reader of the terminal writing to f (`READER_PROG`, a shell `read` loop: BSD `cat` exits on `fg` on macOS, round 14), a line, Ctrl-Z, a shell command, `fg`, a line, Ctrl-D | the OS (`ps` stat) does not show the process stopped after Ctrl-Z, running after `bg`, running in front after `fg`, gone after Ctrl-C; a `jobs` file that is not stopped / running / absent; no prompt after a step; the shell's received lines are not exactly the typed ones; the reader is not running in front after `fg` (nothing more is typed then); the reader's file is not exactly the two lines (a key went to the wrong program) | 2 min |
 | `hostile_output_recovers` (T8) | Wayland, X11, macOS, Git Bash pane (`winmap.GITBASH_ONLY`) | `cat` of a 2 MB binary file (seeded: the same bytes on every run, sha256 in the metric `hostile_bytes`), then `hostile_out.py script` (2000 window titles, a 1 MB OSC 8 link, mouse reporting left on, alternate screen never left). After each: Ctrl-C, Ctrl-U and one typed command | a typed command that is not exact (effect file and `rec.log`); `panicked at` in the app log; an `[ERROR]` line whose kind (digits masked) the launch had not logged before the case (kinds logged before too are a note); the largest `hop=ui_item` while typing AFTER the output at or over 16 ms and more than twice the same typing before it (control); Find (`hop=find_scroll`) matching the token before the output and not after, or matching a token that was never printed (control). A Find that matched nothing before the output is NOREF. The modes are switched off at the very end as cleanup, after the verdicts | 3 min |
 | `meta_and_word_keys` (T9) | all five (`winmap.BOTH`); the raw half not in the PowerShell pane | at the prompt, one command per key: Alt-B, Alt-F, Alt-D, Alt-., Ctrl-A, E, K, U, W, Y, Home, End, Delete, word-left, word-right (Ctrl-arrows; Option-arrows on macOS). Then each key into a raw reader (`bytes_reader.py`; `bytes_reader.sh` in the Git Bash pane, whose Python has no termios) | prompt: the received line is neither the readline result nor the documented app default; raw: the bytes differ from the encoder's (`ESC b`, `0x01`, `CSI H`, `CSI 3 ~`, `CSI 1;5 D` ...) | 3 min |
 | `first_run_defaults` (T10) | Wayland, X11, macOS, Windows PowerShell pane (`winmap.BOTH`; the Git Bash pane SKIPs: it exists only through a setting) | stops the app, moves the config directory aside (`~/.config/phosphor`; `~/.phosphor` on macOS; Windows: `WindowsApp.prepare` wipes the known folders), wipes the state directories, launches with NO settings file, and with no Escape and no click types the first command in the pass's view (at most one view-switch key first). Then the profile is put back and the app relaunched | no prompt in 90 s, or later than `APPCI_STARTUP_MAX` (20 s); the first command not received exactly; a key the injector sent missing from the app's key trace (`injacct`: a dialog or focus took it); a panic; an `[ERROR]` kind this pass's ordinary launch had not logged. macOS: a system dialog on screen fails it without a key being sent. Metric `first_run_view`: the view a default first run shows | 3 min |
@@ -6661,7 +6661,7 @@ Until this round the macOS backend had no pointer, no close key and no quit key,
 
 | tool | what it does | its own fence |
 |---|---|---|
-| `mptr.swift` | pointer by CGEvent: move, 1 to 3 clicks of the left / middle / right button, an 8-step left drag, wheel lines, modifiers held around the ops. `mptr info` prints the main display in points and pixels; `mptr owner X Y` the window a press would hit. Coordinates are points. | every press, drag end and wheel step is refused (exit 4) unless the TOPMOST on-screen window at that point belongs to the PID of the app under test; a point outside the main display is refused before anything is posted; modifiers are always released before exit. It writes the cursor position read back from the window server (`LOC`), which is the proof the events were accepted |
+| `mptr.swift` | pointer by CGEvent: move, 1 to 3 clicks of the left / middle / right button, an 8-step left drag, wheel lines, modifiers held around the ops. `mptr info` prints the main display in points and pixels; `mptr owner X Y` the window a press would hit. Coordinates are points. | every press, drag end and wheel step is refused (exit 4) unless the TOPMOST on-screen window at that point belongs to the PID of the app under test; a point outside the main display is refused before anything is posted; modifiers are always released before exit. The Dock's display-sized see-through backing window is looked through, and only at a point clear of the Dock bar and the menu bar (round 14, #2118, below); a refusal lists every window at the point. It writes the cursor position read back from the window server (`LOC`), which is the proof the events were accepted |
 | `appkey.swift` | sends Cmd-W, Cmd-Shift-W or Cmd-Q, and nothing else | refused unless the PID is running, its executable is inside the job's own `Phosphor.app` (`APPCI_MAC_BUNDLE`), and that PID is the frontmost application at that moment. Delivery is `CGEvent.postToPid` (the event goes to that one process whatever happens to the focus); `APPCI_MAC_CHORD_VIA=hid` posts at the HID tap instead, as `htype2` does for every other key |
 | `ocrw.swift` | Apple Vision with word boxes (`word<TAB>x<TAB>y<TAB>w<TAB>h`, image pixels), for placing the pointer. `ocr.swift` (lines only) is unchanged | reads a file, posts nothing |
 | `openrec.swift` | the recording URL handler of `link_and_path_click` and the query `openrec --handler URL` (which application would open it) | does nothing unless the OWNER installed it (below) |
@@ -7198,3 +7198,60 @@ re-read after the run and the run repeated if a login rewrote it meanwhile). `te
 test pane (`sh$ `) and the test asserts that it does; no assertion changed. Not covered in a view test: a prompt that soft-wraps staying `written`
 (the pure rule's `continues` cases cover it).
 What the next run should show: both PASS in test-linux.
+
+## Round 14 candidate: the copy, window and pointer rows (design `docs/design/r10-r19-copy.md`; #2117 #2118 #2119; nothing compiled or run when written)
+
+Candidate build/r14a `42ef67839`, pipeline 3052606915. Each failing row got a TEST-or-APP verdict from the job trace, the result rows, the macOS
+screenshots and app logs, and the code. The Wayland job uploaded no screenshots and no app logs and the Windows job no app log.
+
+| case | platform | verdict | what changed |
+|---|---|---|---|
+| `resize_reflow_output` (copies), `ui_copy_wrapped_output`, `minimize_fullscreen` (`mf_after_return`) | Wayland, macOS | TEST (#2118) | `cases_wrap_vtabs.leave_block_selection` |
+| `resize_reflow_output` (vim) | Wayland, macOS | TEST (#2118) | vim is judged against the app's grid while it is open |
+| `pane_resize_maximize` | Wayland | APP (#2119) | app fix; the case is unchanged |
+| `selection_modes` | Windows Git Bash pane | APP (#2117) and TEST | app fix; the case presses Ctrl-C twice on Windows |
+| `job_control` | macOS | TEST (#2118) | `READER_PROG` in place of `cat`; nothing typed for a reader that is not in front |
+| `flood_scrollback_find` | macOS | TEST (#2118) | the tail is a line of just 499999 or 499998 |
+| `mac_pointer_chord_proof`, `ui_mouse_select_copy`, `ui_copy_wrapped_drag`, `context_menu_actions`, `selection_modes`, `link_and_path_click` | macOS | TEST, the tool (#2118) | `mptr` looks through the Dock's backing window |
+| `minimize_fullscreen` (fullscreen off) | macOS | not decided | `judge_fullscreen_off` makes the next run decide |
+| `ui_copy_wrapped_drag` | Wayland agent | not decided (no log) | none; expected to follow the first row |
+
+- **A selected block stays selected.** The focus-input key clears a text selection only. With the agent view feature on, a block selected by
+  block-up stays selected as context for the next agent query (`terminal/view.rs` `focus_input_box`), the next block-up starts from it, and in
+  the agent view the lines typed next are not classified (a pending context block locks the input type), so they go to the agent. Both by design.
+  A case that selects a block by key calls `leave_block_selection(ctx)` before `back_to_input`: block-down from the newest block clears the
+  selection and focuses the input (`select_more_recent_block`; `navigate_agent_transcript` in the agent view). `copy_last_block_output` and
+  `ui_copy_wrapped_output` also press it three times before their block-up, for a block another case left selected. `APPCI_KEY_BLOCK_DOWN`
+  overrides the key (`ctrl+down`, macOS `cmd+down`). The copies are still compared byte for byte.
+- **vim's size.** A full-screen program's grid is larger than the block list's. `_vim_during_resize` compares what vim wrote with the app's
+  latest `hop=grid_resize` while vim is still open, not with `stty size` typed after `:q!`. No hop for the resize: UNVERIFIABLE. It fails when vim
+  reports another size than the grid it was given (not told of the resize).
+- **`job_control` part 2.** On macOS a terminal `read` returns EINTR after stop and continue and BSD `cat` exits. The reader is
+  `sh jc_reader_<t>.sh <file>` (`cases_daily_b.READER_PROG`) on Linux too. After `fg` the OS must show the reader running and no new prompt before
+  the second line and Ctrl-D are typed; otherwise the case fails there and types nothing (in round 14 the Ctrl-D closed the shell, the window and
+  the app, which read as APP DIED).
+- **`flood_scrollback_find`.** `cases_robust.FLOOD_TAIL_LINE` no longer accepts a line of just 500000: the flood's command header holds
+  `seq 1 500000`, stays on screen under the marker after the Find, and Apple Vision returned a text box that was only that number. The command
+  holds neither 499999 nor 499998.
+- **`mptr` and the Dock.** The Dock process keeps one see-through window the size of the display at the Dock window level; every click was refused
+  with "the topmost window there belongs to Dock (pid N, layer 20)". `ownerAt` skips a window only when its owner is `Dock`, its layer is the Dock
+  level, its bounds cover the whole main display and the point is inside the main screen's `visibleFrame`. A point on the Dock bar or the menu
+  bar is still refused. The out file gets a `NOTE` line when the window was looked through; a refusal lists every window at the point, front to
+  back, with bounds. Nothing for the owner to do. The NEEDS_OWNER that ended the same run is another thing: the `UserNotificationCenter` dialog
+  "Allow Phosphor to find devices on local networks?" (3.3), which the owner allows once in the runner's GUI session.
+- **Fullscreen off on macOS.** `Window.fullscreen(False)`'s error is kept and `Window.fullscreen_state()` reads the window's `AXFullScreen`
+  back. `judge_fullscreen_off`: size back: pass; the request refused: UNVERIFIABLE (and the case's final size check with it); accepted and the
+  window still fullscreen, or the window says it left and the grid did not follow: FAIL with which. Metric `fullscreen_off`.
+- **`selection_modes` on Windows (#2117).** With text selected in the block list, Ctrl-C is a copy on Windows by design. `stream_arm` presses it
+  twice there: the first must put the dragged text on the clipboard and leave the program ticking (`ctrl_c_copy_errors`), the second must bring
+  the prompt back. On every platform "Ctrl-C did not end the streaming program" is now a check. App side: the copy drops the text selection when a
+  command is in front (`ctrl_c_copy_drops_text_selection`), else no later Ctrl-C reached the program.
+- **`pane_resize_maximize` (#2119).** The app moved the keyboard to the pane under a mouse release whose press was in another pane. The case's
+  check "after the divider drag the probe ran in the right pane's shell" is the proof of the fix and is not changed.
+
+| layer | test | asserts |
+|---|---|---|
+| unit | `block_list_element.rs` `foreign_left_mouse_up_is_ignored_by_an_unfocused_pane_only` | a release with no press of its own is ignored by an unfocused pane, kept by the focused one, and a click on an unfocused pane still counts (#2119) |
+| unit | `view_test.rs` `ctrl_c_copy_drops_the_text_selection_only_with_a_command_in_front` | the Windows copy drops the selection with a command in front, keeps it at an idle prompt (#2117) |
+| appci self-test | `r19_copy_window_pointer_faults` | every corrected judge passes the right result and fails the wrong one; the source facts each correction rests on |
+| app | `pane_resize_maximize`, `selection_modes`, and the rows of the table above | as described |

@@ -300,6 +300,20 @@ def cos_profile_block(text):
     return None
 
 
+def ctrl_c_copy_errors(clip, dragged, sentinel, ticks_before, ticks_after, streaming):
+    """Windows, the Ctrl-C pressed with a text selection up while a program runs -> [what is wrong], [] when it did what the design says: it COPIES
+    the selection (`clip` is the text the copy key gave for the same selection, `dragged`) and is NOT an interrupt (the program's tick counter still
+    advances; judged only when the program was proven to be streaming before)."""
+    errs = []
+    if clip == sentinel:
+        errs.append("nothing was copied (the clipboard kept its sentinel): the key was not the copy")
+    elif clip.strip("\n") != dragged.strip("\n"):
+        errs.append("the clipboard holds %r, the copy key gave %r for the same selection" % (clip[:60], dragged[:60]))
+    if streaming and not ticks_after > ticks_before:
+        errs.append("the program stopped (ticks %d -> %d): the key interrupted it instead of copying" % (ticks_before, ticks_after))
+    return errs
+
+
 def stream_script(line, tick_file, ticks=200):
     """a POSIX sh script: prints `line`, then rewrites ONE line (carriage return, no new row) ten times a second and records the tick number, so
     output streams while nothing on screen moves"""
@@ -799,6 +813,7 @@ def stream_arm(ctx, r, m, line, ws, tok):
             return int((ctx.lines(tick) or ["-1"])[0])
         except ValueError:
             return -1
+    dragged, streaming = None, False                       # dragged: the text the copy key gave after the drag (None: no drag was made)
     try:
         if not r.check(bool(ctx.until(lambda: ticks() >= 3, 10)), "`sh %s` did not start streaming (no tick file): the streaming drag was not run" % script):
             return
@@ -808,6 +823,7 @@ def stream_arm(ctx, r, m, line, ws, tok):
         a0, b1 = word_spans(line)[ws[1]][0], word_spans(line)[ws[2]][1]
         t0 = ticks()
         got = copy_after(ctx, lambda: m.drag(found[ws[1]][3] + 1, found[ws[1]][2], found[ws[2]][4] - 1, found[ws[2]][2]), tag="sm_stream")
+        dragged = got
         t1 = ticks()
         time.sleep(0.5)
         t2 = ticks()
@@ -815,11 +831,28 @@ def stream_arm(ctx, r, m, line, ws, tok):
         if not (t0 < t1 < t2):
             r.unverifiable("the program was not streaming through the drag and the copy (ticks %d, %d, %d): the streaming drag was not judged" % (t0, t1, t2))
             return
+        streaming = True
         err = "nothing was copied (the clipboard kept its sentinel)" if got == SENTINEL else WV.judge_drag_copy(got, line, a0, b1)
         ptr_check(ctx, r, got, err, "drag over %r..%r while the program streamed (ticks %d -> %d) + copy: %s" % (ws[1], ws[2], t0, t1, err))
     finally:
+        # Windows: a Ctrl-C with text selected in the block list is a COPY, by design, and is not sent as the interrupt (terminal/view.rs
+        # ctrl_c_internal). Round 14 (r14a) pressed one Ctrl-C here with the drag's selection still up: the program ran on to its last tick and the
+        # lines typed next went into it. The user's sequence is played instead: the first Ctrl-C copies and the program keeps running, the second
+        # ends it. Before #2117 the copy left the selection up and NO Ctrl-C ever reached the program; the second press proves that fix.
+        two_step = U.is_windows(ctx) and dragged not in (None, SENTINEL)
+        if two_step:
+            ctx.be.clip_set(SENTINEL)
+            ta = ticks()
+            ctx.be.key("ctrl+c")
+            time.sleep(0.8)
+            first, tb = clip_now(ctx), ticks()
+            r.metric("ctrl_c_copy_ticks", [ta, tb])
+            for err in ctrl_c_copy_errors(first, dragged, SENTINEL, ta, tb, streaming):
+                r.check(False, "Windows, Ctrl-C with text selected while the program runs: %s" % err)
         ctx.be.key("ctrl+c")
-        ctx.until(lambda: ctx.prof.prompts() > prompts0, 8)
+        ended = bool(ctx.until(lambda: ctx.prof.prompts() > prompts0, 8))
+        r.check(ended, "Ctrl-C did not end the streaming program: no prompt within 8 s%s" % (
+            " (the SECOND Ctrl-C: the first copied the selection; if this one copied too, the copy did not drop the selection, #2117)" if two_step else ""))
         time.sleep(1.6 if ctx.mode == "agent" else 0.4)        # past the agent view's exit-confirmation window before any later Ctrl-C
         if ctx.prof.commands():
             have = ctx.await_commands(mark, 1)

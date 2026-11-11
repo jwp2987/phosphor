@@ -1,7 +1,7 @@
 # appci/cases_daily_b.py (#2072; docs/design/r14-test-gaps.md 7.1 wave 1, T6-T10; design note docs/design/r10-r14-w1b.md).
 # Five daily-use cases, all in cases.PROVING:
 #   agent_basics_powershell   T6   Windows PowerShell pane: agent prose byte-exact, a shell line exact in PSReadLine history, nothing of the prose in the shell
-#   job_control               T7   Linux, macOS: Ctrl-Z / bg / jobs / fg / Ctrl-C judged from the OS process state, `cat` across a stop
+#   job_control               T7   Linux, macOS: Ctrl-Z / bg / jobs / fg / Ctrl-C judged from the OS process state, a terminal reader across a stop
 #   hostile_output_recovers   T8   all but the PowerShell pane: 2 MB of binary output and a script that leaves the terminal in a bad state
 #   meta_and_word_keys        T9   all five: the readline keys at the prompt (the line the shell received) and into a raw reader (the bytes)
 #   first_run_defaults        T10  all five (the Git Bash pane SKIPs): a first run with no config and no state
@@ -177,11 +177,27 @@ def ps_rows():
         return []
 
 
-def _kill_leftovers(ctx, sleep_cmd):
-    """cleanup by exact pid: the case's own `sleep <unique n>`, and a `cat` whose parent is the pane's root shell"""
-    root = getattr(ctx, "root_pid", None)
-    for pid, ppid, _s, a in ps_rows():
-        if a == sleep_cmd or (a == "cat" and root is not None and ppid == root):
+# The reader of job_control part 2. NOT `cat`: on macOS a terminal read returns EINTR after a stop and continue and BSD cat exits on it
+# ("cat: stdin: Interrupted system call", in every terminal). Round 14 (r14a, macOS): `fg` ended 2 ms after it began with no byte from the app,
+# the second line and the Ctrl-D were typed at the shell prompt, and the Ctrl-D closed the shell, the last window and with it the app. A shell
+# `read` loop retries EINTR (bash 3.2 zread, dash readcmd). The redirect on the loop creates the file at once; printf is a builtin, so a line
+# is in the file as soon as it is read.
+READER_PROG = """#!/bin/sh
+while IFS= read -r l; do
+  printf '%s\\n' "$l"
+done > "$1"
+"""
+
+
+def reader_cmd(script, out):
+    """pure: the typed line (and the process's args as `ps` shows them) of the part-2 reader"""
+    return "sh %s %s" % (script, out)
+
+
+def _kill_leftovers(ctx, sleep_cmd, reader=None):
+    """cleanup by exact pid: the case's own `sleep <unique n>`, and its own reader (args unique to this run)"""
+    for pid, _ppid, _s, a in ps_rows():
+        if a == sleep_cmd or (reader is not None and a == reader):
             try:
                 os.kill(pid, signal.SIGKILL)
             except OSError:
@@ -192,7 +208,7 @@ def _kill_leftovers(ctx, sleep_cmd):
 def c_job_control(ctx, r):
     """T7 (r14-test-gaps G15). (1) `sleep <n>` (n unique to this run), Ctrl-Z, `jobs > a`, `bg`, `jobs > b`, `fg`, Ctrl-C, `jobs > c`: the OS says
     the process is stopped after Ctrl-Z, running after `bg`, still there in front after `fg`, gone after Ctrl-C; the three `jobs` files say stopped,
-    running, absent; a prompt comes back after each step; the shell received exactly the six lines. (2) `cat > f`, a line, Ctrl-Z, a shell command,
+    running, absent; a prompt comes back after each step; the shell received exactly the six lines. (2) a reader of the terminal writing to f (READER_PROG), a line, Ctrl-Z, a shell command,
     `fg`, a second line, Ctrl-D: the file holds exactly the two lines, the shell command ran in the shell, and no text line reached the shell as a
     command. Linux and macOS (POSIX job control; winmap gives the Windows reason)."""
     if ctx.win or C.plat().startswith("windows"):
@@ -204,7 +220,11 @@ def c_job_control(ctx, r):
     sleep_cmd = "sleep %d" % n
     fa, fb, fc = "jc_a_%s.txt" % t, "jc_b_%s.txt" % t, "jc_c_%s.txt" % t
     fcat, fmid = "jc_cat_%s.txt" % t, "jc_mid_%s.txt" % t
+    freader = "jc_reader_%s.sh" % t
+    reader = reader_cmd(freader, fcat)
     ctx.rm(fa, fb, fc, fcat, fmid)
+    with open(os.path.join(ctx.W, freader), "w", newline="\n") as f:
+        f.write(READER_PROG)
 
     def typed(text):
         ctx.be.type(text, ctx.rng.randint(10, 25), enter=True)
@@ -252,40 +272,47 @@ def c_job_control(ctx, r):
         r.check(got == want, "part 1: the shell received %r, expected exactly %r" % (got, want))
         ctx.shot("job_control_sleep")
 
-        # (2) cat across a stop
+        # (2) a reader of the terminal across a stop (READER_PROG: a shell read loop, not cat)
         before, mid, after = "zqbefore%s" % t, "zqmid%s" % t, "zqafter%s" % t
         mark = ctx.cmd_mark()
         p0 = ctx.prompts()
-        typed("cat > %s" % fcat)
+        typed(reader)
         if not ctx.until(lambda: os.path.exists(os.path.join(ctx.W, fcat)), 8):
-            r.check(False, "`cat > %s` never started (shell received %r)" % (fcat, ctx.cmds_since(mark)[:2]))
+            r.check(False, "`%s` never started (shell received %r)" % (reader, ctx.cmds_since(mark)[:2]))
             return
         time.sleep(0.5)
         typed(before)
-        r.check(bool(ctx.until(lambda: ctx.lines(fcat) == [before], 5)), "the line typed into cat before the stop: file holds %r, expected [%r]" % (ctx.lines(fcat), before))
+        r.check(bool(ctx.until(lambda: ctx.lines(fcat) == [before], 5)), "the line typed into the reader before the stop: file holds %r, expected [%r]" % (ctx.lines(fcat), before))
         ctx.be.key("ctrl+z")
-        if not r.check(bool(ctx.until(lambda: ctx.prompts() > p0, 8)), "no prompt came back within 8 s after Ctrl-Z with cat in front (cat was not stopped)"):
+        if not r.check(bool(ctx.until(lambda: ctx.prompts() > p0, 8)), "no prompt came back within 8 s after Ctrl-Z with the reader in front (it was not stopped)"):
             ctx.be.key("ctrl+d")
             return
-        line_then_prompt("echo %s >> %s" % (mid, fmid), "the command typed while cat is stopped")
-        r.check(ctx.lines(fmid) == [mid], "the shell command typed while cat was stopped: %s holds %r, expected [%r]" % (fmid, ctx.lines(fmid), mid))
+        line_then_prompt("echo %s >> %s" % (mid, fmid), "the command typed while the reader is stopped")
+        r.check(ctx.lines(fmid) == [mid], "the shell command typed while the reader was stopped: %s holds %r, expected [%r]" % (fmid, ctx.lines(fmid), mid))
         p = ctx.prompts()
         typed("fg")
         time.sleep(1.2)
+        # the reader must be back in front BEFORE anything is typed for it: a line and a Ctrl-D typed with the shell in front run as a command
+        # and close the shell (r14a, macOS: the last window closed and the app quit)
+        back = proc_state(ps_rows(), reader)
+        if not r.check(back == "running" and ctx.prompts() == p,
+                       "`fg` did not bring the stopped reader back in front: the OS says it is %s, prompts %d -> %d (expected running and no new prompt); "
+                       "the second line and Ctrl-D were NOT typed" % (back, p, ctx.prompts())):
+            return
         typed(after)
-        r.check(bool(ctx.until(lambda: ctx.lines(fcat) == [before, after], 5)), "after `fg` the second line: cat's file holds %r, expected %r" % (ctx.lines(fcat), [before, after]))
+        r.check(bool(ctx.until(lambda: ctx.lines(fcat) == [before, after], 5)), "after `fg` the second line: the reader's file holds %r, expected %r" % (ctx.lines(fcat), [before, after]))
         ctx.be.key("ctrl+d")
-        r.check(bool(ctx.until(lambda: ctx.prompts() > p, 8)), "no prompt came back within 8 s after Ctrl-D ended cat")
-        want = ["cat > %s" % fcat, "echo %s >> %s" % (mid, fmid), "fg"]
+        r.check(bool(ctx.until(lambda: ctx.prompts() > p, 8)), "no prompt came back within 8 s after Ctrl-D ended the reader")
+        want = [reader, "echo %s >> %s" % (mid, fmid), "fg"]
         got = ctx.await_commands(mark, len(want), 5.0)
-        r.check(got == want, "part 2: the shell received %r, expected exactly %r (a text line here was typed for cat and reached the shell)" % (got, want))
+        r.check(got == want, "part 2: the shell received %r, expected exactly %r (a text line here was typed for the reader and reached the shell)" % (got, want))
         r.check(ctx.lines(fmid) == [mid], "%s holds %r after the case, expected [%r]: a key went to the wrong program" % (fmid, ctx.lines(fmid), mid))
         ctx.shot("job_control_cat")
     finally:
-        _kill_leftovers(ctx, sleep_cmd)
+        _kill_leftovers(ctx, sleep_cmd, reader)
         time.sleep(0.3)
         ctx.reset()
-        ctx.rm(fa, fb, fc, fcat, fmid)
+        ctx.rm(fa, fb, fc, fcat, fmid, freader)
 
 
 # ---------------------------------------------------------------- T8 hostile_output_recovers

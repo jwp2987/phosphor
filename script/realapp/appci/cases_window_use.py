@@ -87,6 +87,38 @@ def find_rows(text, phrase, origin=(0, 0), scale=1.0):
     return out
 
 
+def vim_grid_expected(grid_open, resize_hop):
+    """the (rows, cols) a full-screen program open across a window resize must report: the app's latest grid while the program was still open.
+    `resize_hop` is the grid apply_size() saw right after the resize; a later hop before the program wrote its size (a second layout pass) wins."""
+    return tuple(grid_open) if grid_open else tuple(resize_hop)
+
+
+def parse_ax_bool(rc, out, err):
+    """osascript's answer for a boolean Accessibility attribute -> (True | False, None), or (None, why) when the call failed or said something else"""
+    word = (out or "").strip().lower()
+    if rc == 0 and word in ("true", "false"):
+        return word == "true", None
+    return None, (err or "").strip() or "osascript exit %s, answer %r" % (rc, (out or "")[:40])
+
+
+def judge_fullscreen_off(before, back, off_err, ax_state, ax_why):
+    """the fullscreen-off step -> ("pass" | "fail" | "noref", text). `before` / `back` = `stty size` before fullscreen and after the off request;
+    `off_err` = the error of the off request (None when it was accepted); `ax_state` / `ax_why` = Window.fullscreen_state() after it.
+    The size came back: pass. It did not: a request the system refused is NOREF (the harness did not get the window out of fullscreen; nothing
+    about the app is known); an accepted request with the window still fullscreen, or a window that says it left fullscreen with the grid not
+    back, is a FAIL saying which. No readable state (other backends; ax_why says why): the plain size comparison, a FAIL."""
+    if back == before:
+        return "pass", ""
+    if off_err:
+        return "noref", "the fullscreen-off request was refused (%s): the window was not taken out of fullscreen by the harness, so the size after it (%r, %r before fullscreen) is not judged" % (off_err, back, before)
+    if ax_state is True:
+        return "fail", ("fullscreen off: the request (the window's Accessibility fullscreen attribute set to false, not the user's key) was accepted but the window still "
+                        "says it is fullscreen; `stty size` is %r, it was %r before fullscreen" % (back, before))
+    if ax_state is False:
+        return "fail", "fullscreen off: the window says it left fullscreen, but `stty size` is %r, it was %r before fullscreen (the grid did not follow)" % (back, before)
+    return "fail", "fullscreen off: `stty size` is %r, it was %r before fullscreen (window state: %s)" % (back, before, ax_why)
+
+
 def stream_lines(tag, n):
     return ["%s line %d" % (tag, i) for i in range(1, n + 1)]
 
@@ -253,12 +285,17 @@ def write_stream_script(ctx):
 
 
 def copy_last_block_output(ctx, r, tag):
-    """select the newest block (block-up key) and copy its output -> text, V.SENTINEL when nothing was copied; the input has the keyboard again after"""
+    """select the newest block (block-up key) and copy its output -> text, V.SENTINEL when nothing was copied; no block is selected and the input has
+    the keyboard again after. r14a (Wayland, macOS): the focus-input key does not clear a selected block, so the SECOND call here selected the block
+    above the newest one (an empty `stty size > file` block: "0 chars on the clipboard") and, in the agent view, the lines typed after it went to
+    the agent. The selection is now left with block-down (V.leave_block_selection), before and after."""
     try:
+        V.leave_block_selection(ctx, 3)
         ctx.be.key(V.KX(ctx, "block_up"))
         time.sleep(0.6)
         return V.clip_after(ctx, V.KX(ctx, "copy_output"), tag)
     finally:
+        V.leave_block_selection(ctx)
         V.back_to_input(ctx, r)
 
 
@@ -460,6 +497,15 @@ class Window:
                              % (app_pid(self.ctx) or 0, "true" if on else "false"))
         return None if rc == 0 else err
 
+    def fullscreen_state(self):
+        """macOS: the window's own AXFullScreen attribute -> (True | False, None), or (None, why) when it cannot be read. Other backends: (None, why):
+        the cases judge fullscreen there by `stty size` alone."""
+        if self.be != "mac":
+            return None, "not read on %s" % self.be
+        rc, out, err = _osa('tell application "System Events" to get value of attribute "AXFullScreen" of window 1 of (first process whose unix id is %d)'
+                            % (app_pid(self.ctx) or 0))
+        return parse_ax_bool(rc, out, err)
+
     def restore(self):
         try:
             if self.be == "windows":
@@ -655,9 +701,10 @@ def _vim_during_resize(ctx, r, win, off, sizes):
     ctx.be.type("vim -u NONE -N", ctx.rng.randint(10, 25), enter=True)
     time.sleep(1.5)
     w, h = sizes["vim"]
-    how, a, _b = apply_size(ctx, win, w, h, off, "rr_vim")
+    how, a, b = apply_size(ctx, win, w, h, off, "rr_vim")
     ctx.be.type(":call writefile([&lines.' '.&columns],'wu_vim.txt')", ctx.rng.randint(10, 25), enter=True)
     ctx.until(lambda: ctx.lines("wu_vim.txt"), 8)
+    grid_open = (grid_hops(ctx.log_since(off)) or [None])[-1]     # the app's grid while vim is still open (its full-screen grid)
     ctx.shot("rr_vim_asked")
     ctx.be.type(":q!", ctx.rng.randint(10, 25), enter=True)
     CVA.wait_program_exited(ctx, p0)
@@ -666,9 +713,18 @@ def _vim_during_resize(ctx, r, win, off, sizes):
         r.unverifiable("the window did not take %dx%d while vim was open (%s): vim's size after a resize is not judged" % (w, h, a))
         return
     now = pane_size(ctx, "rr_aftervim")
-    r.metric("vim", dict(window=[w, h], vim=list(seen or ()), stty=list(now or ())))
+    r.metric("vim", dict(window=[w, h], vim=list(seen or ()), grid_while_open=list(grid_open or ()), stty_after_quit=list(now or ())))
     if r.check(seen is not None, "vim wrote no size (wu_vim.txt is %r): the `:call writefile` line did not reach it" % (ctx.lines("wu_vim.txt")[:1],)):
-        r.check(seen == now, "vim, open while the window was resized to %dx%d, reports %r lines x columns; the pty is %r" % (w, h, seen, now))
+        # r14a (Wayland, macOS): this compared vim's size with `stty size` typed AFTER vim had quit: "(37, 101) ... the pty is (36, 97)". A full-screen
+        # program's grid is larger than the block list's; the app log of that run has grid_resize rows=37 cols=101 while vim was open and
+        # rows=36 cols=97 after it quit. vim is judged against the grid it was given: the app's latest hop=grid_resize while it was still open.
+        if how != "hop" or grid_open is None:
+            r.unverifiable("vim reports %r lines x columns after the resize to %dx%d, but the app logged no hop=grid_resize line for that resize: "
+                           "what vim should have been told is not known (`stty size` after it quit, %r, is the block list's grid, not vim's)" % (seen, w, h, now))
+        else:
+            r.check(seen == vim_grid_expected(grid_open, (a, b)),
+                    "vim, open while the window was resized to %dx%d, reports %r lines x columns; the app's grid at that moment was %r "
+                    "(hop=grid_resize): vim was not told of the resize, or was told another size" % (w, h, seen, grid_open))
     if now:
         grid_matches(ctx, r, off, now, "after the resize with vim open")
 
@@ -1132,15 +1188,20 @@ def c_minimize_fullscreen(ctx, r):
     size0 = pane_size(ctx, "mf0")
     if not r.check(size0 is not None, "`stty size` gave no size before the window was touched: nothing can be compared"):
         return
+    off_refused = None
     try:
         _hide_under_stream(ctx, r, win, size0)
-        _fullscreen_twice(ctx, r, win)
+        off_refused = _fullscreen_twice(ctx, r, win)
     finally:
         win.restore()
         time.sleep(1.5)
         V.back_to_input(ctx, r)
     end = pane_size(ctx, "mf_end")
-    r.check(end == size0, "at the end `stty size` is %r, it was %r before the case" % (end, size0))
+    if off_refused and end != size0:
+        r.unverifiable("at the end `stty size` is %r, it was %r before the case: not judged, the fullscreen-off request was refused (%s) and the "
+                       "window may still be fullscreen" % (end, size0, off_refused))
+    else:
+        r.check(end == size0, "at the end `stty size` is %r, it was %r before the case" % (end, size0))
     U.exact_burst(ctx, r, "mf_after", 3)
     r.check(ctx.app.alive(), "the app died in the minimise / fullscreen case")
 
@@ -1218,6 +1279,8 @@ def _hide_under_stream(ctx, r, win, size0):
 
 
 def _fullscreen_twice(ctx, r, win):
+    """-> the error text when the fullscreen-off request was refused (the window may still be fullscreen: the caller does not judge the final
+    size), else None"""
     if win.be == "wayland":
         # a tiled sway window with no border already covers the output: made floating and smaller first, so fullscreen is a visible change
         err = win.resize(1000, 640)
@@ -1245,9 +1308,19 @@ def _fullscreen_twice(ctx, r, win):
             " (%s)" % err if err else "", before, full)):
         return                                                  # Window.restore() leaves fullscreen
     U.exact_burst(ctx, r, "mf_fullscreen", 3)
-    win.fullscreen(False)
+    off_err = win.fullscreen(False)
     time.sleep(2.5)
+    ax_state, ax_why = win.fullscreen_state()
     V.back_to_input(ctx, r)
     back = pane_size(ctx, "mf_fs2")
-    r.check(back == before, "fullscreen off: `stty size` is %r, it was %r before fullscreen" % (back, before))
+    ctx.shot("mf_fullscreen_off")
+    # r14a (macOS): `stty size` stayed at the fullscreen size and the window was still fullscreen at the end; the off request's error was dropped
+    # here, so "the request was refused" could not be told from "the app did not leave fullscreen". Both are recorded now.
+    r.metric("fullscreen_off", dict(back=list(back or ()), request_error=off_err, window_says_fullscreen=ax_state, state_error=ax_why))
+    verdict, why = judge_fullscreen_off(before, back, off_err, ax_state, ax_why)
+    if verdict == "noref":
+        r.unverifiable(why)
+    else:
+        r.check(verdict == "pass", why)
     U.exact_burst(ctx, r, "mf_fullscreen_off", 3)
+    return off_err if verdict == "noref" else None

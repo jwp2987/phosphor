@@ -16,9 +16,17 @@
 //   - every press, drag end and wheel is refused (exit 4, nothing posted for that op, modifiers released) unless the TOPMOST on-screen window at
 //     that point is owned by PID, the app under test. A click can therefore never land on another app, the Dock, the menu bar or a system dialog.
 //   - a point outside the main display is refused before anything is posted (exit 2).
+//   - the Dock's backing window is looked through (r19, #2118). The Dock process keeps ONE see-through window the size of the display at the Dock
+//     window level for as long as it runs; a press there reaches the window below it. Round 14 (r14a): every click of every pointer case was refused
+//     with "the topmost window there belongs to Dock (pid N, layer 20)" at points in the middle of the app window, with nothing over the app on the
+//     screenshots. It is skipped ONLY when all of this holds: owner "Dock", the Dock window level, bounds covering the whole main display, and the
+//     point inside the main screen's visibleFrame (the display minus what the Dock bar and the menu bar take). A point on the Dock bar or the menu
+//     bar is therefore still refused, and so is any other Dock-owned window (a smaller one, or one at another level). A refusal lists every window at
+//     the point, front to back, so a wrong guess here is readable from the job trace.
 // OUTFILE: "T0 mach_ms= epoch=", one "P <op> <x> <y> <mach_ms>" per posted action, "LOC x y" (the cursor read back from the window server after the
 // last op: the proof that the events were accepted), or "ERR <why>".
 import Foundation
+import AppKit
 import CoreGraphics
 
 let args = CommandLine.arguments
@@ -30,9 +38,24 @@ func cursor() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
 let mainBounds = CGDisplayBounds(CGMainDisplayID())
 
 let ignoreOwners = Set((ProcessInfo.processInfo.environment["APPCI_MAC_PTR_IGNORE_OWNERS"] ?? "").split(separator: ",").map { String($0) })
-/// (pid, owner name, layer) of the topmost on-screen window that contains `p`, front to back; nil when no window does
-func ownerAt(_ p: CGPoint) -> (Int, String, Int)? {
-  guard let arr = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+let dockLayer = Int(CGWindowLevelForKey(.dockWindow))
+/// the main display minus what the Dock bar and the menu bar take, in the top-left-origin point space CGWindowList uses; nil when AppKit names no screen
+let clearOfBars: CGRect? = {
+  guard let s = NSScreen.screens.first else { return nil }
+  let f = s.frame, v = s.visibleFrame
+  return CGRect(x: mainBounds.minX + (v.minX - f.minX), y: mainBounds.minY + (f.maxY - v.maxY), width: v.width, height: v.height)
+}()
+var lookedThroughDock = false
+/// the Dock's display-sized see-through backing window, at a point where the Dock draws nothing (see SAFETY above)
+func isDockBacking(_ own: String, _ layer: Int, _ r: CGRect, _ p: CGPoint) -> Bool {
+  guard own == "Dock", layer == dockLayer, r.contains(mainBounds.insetBy(dx: 1, dy: 1)), let c = clearOfBars else { return false }
+  return c.contains(p)
+}
+/// every on-screen window that contains `p`, front to back: (pid, owner name, layer, bounds). Windows of APPCI_MAC_PTR_IGNORE_OWNERS and fully
+/// transparent ones are left out; the Dock's backing window is NOT left out here (ownerAt skips it, a refusal shows it).
+func windowsAt(_ p: CGPoint) -> [(Int, String, Int, CGRect)] {
+  guard let arr = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
+  var found: [(Int, String, Int, CGRect)] = []
   for w in arr {
     guard let b = w[kCGWindowBounds as String] as? [String: Any] else { continue }
     func d(_ k: String) -> Double { (b[k] as? NSNumber)?.doubleValue ?? 0 }
@@ -40,9 +63,26 @@ func ownerAt(_ p: CGPoint) -> (Int, String, Int)? {
     let alpha = (w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
     let own = (w[kCGWindowOwnerName as String] as? String) ?? ""
     if alpha <= 0 || !r.contains(p) || ignoreOwners.contains(own) { continue }
-    return ((w[kCGWindowOwnerPID as String] as? NSNumber)?.intValue ?? -1, own, (w[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0)
+    found.append(((w[kCGWindowOwnerPID as String] as? NSNumber)?.intValue ?? -1, own, (w[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0, r))
+  }
+  return found
+}
+/// (pid, owner name, layer) of the topmost on-screen window that contains `p` and would take a press there; nil when no window does
+func ownerAt(_ p: CGPoint) -> (Int, String, Int)? {
+  for w in windowsAt(p) {
+    if isDockBacking(w.1, w.2, w.3, p) { lookedThroughDock = true; continue }
+    return (w.0, w.1, w.2)
   }
   return nil
+}
+/// the windows at `p` for a refusal message: "owner (pid N, layer L, x,y,w,h)" front to back, at most eight
+func describeWindowsAt(_ p: CGPoint) -> String {
+  var ws: [String] = []
+  for w in windowsAt(p).prefix(8) {
+    let rect = String(Int(w.3.minX)) + "," + String(Int(w.3.minY)) + "," + String(Int(w.3.width)) + "," + String(Int(w.3.height))
+    ws.append(w.1 + " (pid " + String(w.0) + ", layer " + String(w.2) + ", " + rect + ")")
+  }
+  return ws.isEmpty ? "none" : ws.joined(separator: " > ")
 }
 
 if args.count >= 2 && args[1] == "info" {
@@ -116,6 +156,7 @@ func finish(_ code: Int32, _ why: String?) -> Never {
   sl(60)                                   // as htype2 (#1482): the hand-off to the window server is asynchronous
   let c = cursor()
   out += "LOC \(c.x) \(c.y)\n"
+  if lookedThroughDock { out += "NOTE looked through the Dock's display-sized backing window\n" }
   if let w = why { out += "ERR \(w)\n"; err(w) }
   try? out.write(toFile: outPath, atomically: true, encoding: .utf8)
   exit(code)
@@ -126,7 +167,10 @@ func mustOwn(_ p: CGPoint, _ what: String) {
   if o?.0 != pid {
     var whose = "no window"
     if let w = o { whose = w.1 + " (pid " + String(w.0) + ", layer " + String(w.2) + ")" }
-    finish(4, "refused \(what) at (\(p.x), \(p.y)): the topmost window there belongs to \(whose), not to pid \(pid)")
+    var clear = "unknown"
+    if let c = clearOfBars { clear = String(Int(c.minX)) + "," + String(Int(c.minY)) + "," + String(Int(c.width)) + "," + String(Int(c.height)) }
+    let stack = describeWindowsAt(p)
+    finish(4, "refused \(what) at (\(p.x), \(p.y)): the topmost window there belongs to \(whose), not to pid \(pid); windows at the point, front to back: \(stack); area clear of the Dock bar and the menu bar: \(clear)")
   }
 }
 func moveTo(_ p: CGPoint) { mouse(.mouseMoved, p, .left); sl(20) }

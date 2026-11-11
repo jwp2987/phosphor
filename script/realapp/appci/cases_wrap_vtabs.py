@@ -30,10 +30,14 @@ TAB_HOP_RE = re.compile(r"hop=tab_activate index=(\d+) count=(\d+)")
 
 
 def KX(ctx, name):
-    """key spec of an app action on this platform (app/src/util/bindings.rs): SelectBlockAbove = cmdorctrl-up, CopyBlockOutput = cmdorctrl-alt-shift-C,
-    FocusInput = cmd_or_ctrl_shift("l") (it also clears the selection), ActivateNextTab / ActivatePreviousTab"""
+    """key spec of an app action on this platform (app/src/util/bindings.rs): SelectBlockAbove = cmdorctrl-up, SelectBlockBelow = cmdorctrl-down,
+    CopyBlockOutput = cmdorctrl-alt-shift-C, FocusInput = cmd_or_ctrl_shift("l"), ActivateNextTab / ActivatePreviousTab.
+    FocusInput clears a TEXT selection only. A selected BLOCK stays selected (terminal/view.rs focus_input_box: with the agent view feature on it is
+    context for the next agent query, by design), so the next block-up starts from it and, in the agent view, the lines typed next are not classified
+    (a pending context block locks the input type). leave_block_selection() is the way out (round 14, #2118)."""
     m = U.mac(ctx)
     return {"block_up": os.environ.get("APPCI_KEY_BLOCK_UP", "cmd+up" if m else "ctrl+up"),
+            "block_down": os.environ.get("APPCI_KEY_BLOCK_DOWN", "cmd+down" if m else "ctrl+down"),
             "copy_output": "cmd+alt+shift+c" if m else "ctrl+alt+shift+c",
             "focus_input": "cmd+l" if m else "ctrl+shift+l",
             "next_tab": "cmd+shift+]" if m else "ctrl+Next",
@@ -188,8 +192,22 @@ def clip_after(ctx, key, tag):
     return got
 
 
+def leave_block_selection(ctx, presses=2):
+    """the user's way out of a block selection made by key: block-down. With the newest block selected and in view it clears the selection and
+    focuses the input (terminal/view.rs select_more_recent_block; in the agent view navigate_agent_transcript past the newest item does the same). With
+    an older block selected it moves one block down; with the newest block not fully in view the first press only scrolls; with nothing selected
+    it does nothing. `presses` = 2 after this helper's own block-up (scroll, then clear); more to walk down from a selection another case left."""
+    try:
+        for _ in range(presses):
+            ctx.be.key(KX(ctx, "block_down"))
+            time.sleep(0.25)
+    except Exception:
+        pass
+
+
 def back_to_input(ctx, r):
-    """clear the block / text selection and focus the input (FocusInput), and re-enter the agent view when the keys of this case left it (as agent_code_recycle)"""
+    """clear the TEXT selection and focus the input (FocusInput), and re-enter the agent view when the keys of this case left it (as
+    agent_code_recycle). A selected block is NOT cleared by this (see KX): a case that selected one by key calls leave_block_selection() first."""
     try:
         ctx.be.key(KX(ctx, "focus_input"))
         time.sleep(0.4)
@@ -238,6 +256,7 @@ def c_copy_wrapped_output(ctx, r):
         return
     lines, _spans, cols, _pick, _seen = fx
     try:
+        leave_block_selection(ctx, 3)             # a block an earlier case left selected: block-up would start from it
         ctx.be.key(KX(ctx, "block_up"))
         time.sleep(0.6)
         # copy = the selected block's command and output (the key agent_code_recycle already proves); the printed text starts at the long line
@@ -261,6 +280,7 @@ def c_copy_wrapped_output(ctx, r):
         else:
             r.check(False, "the copy-output key (%s) left the clipboard unchanged although the block was selected (the copy key copied it)" % KX(ctx, "copy_output"))
     finally:
+        leave_block_selection(ctx)                # r14a (Wayland agent): the block left selected sent three of the four lines below to the agent
         back_to_input(ctx, r)
     U.exact_burst(ctx, r, "after_wrap_copy", 4)
 
