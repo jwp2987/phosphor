@@ -433,7 +433,8 @@ def c_ready_relay_shape(ctx, r):
     (with the local tty raw) says the shell is ready. Needs a passwordless sudo on the runner; skips otherwise."""
     need_posix(ctx, r)
     if not shutil.which("sudo") or subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
-        r.skip("no passwordless sudo on this runner (sudo -n true failed)")
+        r.skip("no passwordless sudo on this runner (`sudo -n true` failed). NEEDS: a sudoers entry on this test machine that lets the CI user run sudo without a password, "
+               "with `Defaults use_pty` in effect (owner: machine change; the harness never edits sudoers). Has never run on any machine")
     f = "lab_relay.txt"
     ctx.rm(f)
     off = ctx.log_size()
@@ -496,7 +497,8 @@ def c_ready_docker_t_without_i(ctx, r):
     exactly once after docker exits. Needs a usable docker with the alpine image already present (never pulled); skips otherwise."""
     need_posix(ctx, r)
     if not shutil.which("docker") or subprocess.run(["docker", "image", "inspect", "alpine"], capture_output=True).returncode != 0:
-        r.skip("docker with a local alpine image is not available (never pulled by the harness)")
+        r.skip("docker with a local alpine image is not available (`docker image inspect alpine` failed). NEEDS: docker usable by the CI user on this test machine and the "
+               "`alpine` image pulled once by hand (owner: machine change; the harness never pulls an image). Has never run on any machine")
     f = "lab_docker.txt"
     ctx.rm(f)
     off = ctx.log_size()

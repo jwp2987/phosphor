@@ -752,10 +752,12 @@ def c_dnd(ctx, r):
     shell sees ONE argument equal to the real path. Needs a synthesized drag SOURCE, which xdotool/swaymsg cannot be: on X11 only, with
     `dragon-drop` (https://github.com/mwh/dragon, package dragon-drop) installed; everywhere else the case skips."""
     if ctx.be.name != "x11":
-        r.skip("%s: no way to synthesize a drag source (XDND needs a client that owns the drag; Wayland wl_data_device likewise)" % ctx.be.name)
+        r.skip("%s: the harness has no drag source for this display system. NEEDS: a harness capability that is not built (a client that owns the drag: wl_data_device on "
+               "Wayland, a pasteboard drag on macOS, OLE drag on Windows; r14-test-gaps T38). Only the X11 arm exists, and it needs the dragon-drop package" % ctx.be.name)
     dd = shutil.which("dragon-drop") or shutil.which("dragon")
     if not dd:
-        r.skip("no drag source tool on this box (package: dragon-drop / dragon)")
+        r.skip("no drag source tool on this box. NEEDS: the package dragon-drop (binary `dragon-drop` or `dragon`) installed on the Linux test machine (owner: machine "
+               "change). Has never run on any machine")
     need_tesseract(r)
     m = mouse_or_skip(ctx, r)
     path = os.path.join(ctx.W, "dnd file %s.txt" % ctx.tok(4).lower())

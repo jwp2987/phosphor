@@ -508,7 +508,8 @@ def c_upgrade_over_previous(ctx, r):
     if ctx.app is None or not hasattr(ctx.app, "stop"):
         r.skip("sim backend: no app process")
     if not (fixture or prev_bin):
-        r.skip("no previous-release data: set APPCI_PREV_FIXTURE (state tarball) or APPCI_PREV_BIN (previous release binary; macOS also APPCI_PREV_BUNDLE) -- where CI gets the previous release's artifact is the owner's decision (#1546)")
+        r.skip("no previous-release data. NEEDS: APPCI_PREV_FIXTURE (state tarball) or APPCI_PREV_BIN (previous release binary; macOS also APPCI_PREV_BUNDLE) set for the job "
+               "-- where CI gets the previous release's artifact is the owner's decision (#1546). Has never run on any machine")
     if fixture and not os.path.isfile(fixture):
         r.skip("APPCI_PREV_FIXTURE=%s does not exist" % fixture)
     if not fixture and not os.path.isfile(prev_bin):

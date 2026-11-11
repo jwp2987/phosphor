@@ -379,7 +379,8 @@ def c_sudo_su(ctx, r):
     else:
         r.unverifiable("ksu: not installed or no Kerberos ticket (package krb5-user + kinit)")
     if not ran:
-        r.skip("no privilege boundary could run here: passwordless sudo and root-for-su are both absent")
+        r.skip("no privilege boundary could run here: passwordless sudo and root-for-su are both absent. NEEDS: a sudoers entry on this test machine that lets the CI user "
+               "run sudo without a password (owner: machine change); the su half also needs the runner to be root, the ksu half a Kerberos realm. Has never run on any machine")
 
 
 # ------------------------------------------------------------------ #1535 ssh drop + reconnect

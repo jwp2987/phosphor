@@ -6287,6 +6287,27 @@ def inspect_source(fn):
 
 
 @check
+def always_skip_cases_say_what_they_need():
+    """#2066 / #2067 (owner 2026-11-10): the cases that SKIP on every machine stay registered, and each skip says exactly what machine change or harness
+    capability would make it run (`NEEDS:`), so the row cannot be read as coverage or as "not applicable"."""
+    need = {"cases_subshell_ready.py": ["sudoers entry", "`alpine` image pulled once"], "cases_coverage_a.py": ["sudoers entry"],
+            "cases_ui.py": ["package dragon-drop", "a client that owns the drag"], "cases_shells.py": ["APPCI_WIN_SHELLS=powershell,gitbash,pwsh7,cmd", "PowerShell 7 installed"],
+            "cases_caseintl.py": ["ibus or fcitx5", "NEEDS_OWNER"], "cases_coverage_b.py": ["APPCI_PREV_FIXTURE", "#1546"], "cases_win_input.py": ["NEEDS: APPCI_SSH_WRAPPER=1"]}
+    for f, words in need.items():
+        src = open(os.path.join(HERE, f), encoding="utf-8").read()
+        assert "NEEDS:" in src, f
+        for w in words:
+            assert w in src, "%s: the skip no longer names %r" % (f, w)
+    for n in ("subshell_ready_relay_shape", "subshell_ready_docker_t_without_i", "sudo_su_real_shell", "ui_drag_drop_file", "startup_shell_pane", "upgrade_over_previous",
+              "intl_ime_japanese", "intl_ime_pinyin", "ssh_connect_typing_wrapper", "ssh_nested_typeahead_wrapper"):
+        assert any(c["name"] == n for c in cases.CASES), "%s must stay registered (owner: do not remove always-SKIP cases)" % n
+    for n in ("ui_drag_drop_file", "intl_ime_japanese", "intl_ime_pinyin"):
+        assert "NEEDS:" in winmap.NOT_WINDOWS[n], n
+    for n in ("subshell_ready_relay_shape", "subshell_ready_docker_t_without_i", "sudo_su_real_shell"):
+        assert "by design" in winmap.NOT_WINDOWS[n], n
+
+
+@check
 def ssh_wrapper_cases_have_a_job_that_pins_them():
     """#2066: the two *_wrapper ssh cases were SKIP everywhere: no job set APPCI_SSH_WRAPPER=1, and they refused every pane but Windows Git Bash. The CI
     jobs that carry them set the variable (read from .gitlab-ci.yml, so removing it fails here), the cases run on Linux and in the Git Bash pane with the

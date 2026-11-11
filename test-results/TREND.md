@@ -139,6 +139,42 @@ Cases whose name matches lost/reordered keys, secrets, typeahead or exactness. N
 - **windows** `ssh_nested_typeahead` (agent@gitbash): the line typed behind a nested ssh ran exactly once remotely: []", "ssh_nested_typeahead (inner): T77_lsj8mr n...
 - **windows** `ssh_nested_typeahead` (terminal@gitbash): the line typed behind a nested ssh ran exactly once remotely: []", "ssh_nested_typeahead (inner): T191_kr7tz8 ...
 
+## PROVING cases never judged (NOT coverage)
+
+Registered in `cases.PROVING` and played by the fix tier, but never PASS or FAIL in any of the 56 committed run(s) read. A case here has
+tested nothing yet, whatever the run's pass count says. Reason = the newest row's.
+
+**Never judged on any platform (5):**
+
+- `agent_mcp_faults`
+  - macos: SKIP: precondition: the healthy control server's tool was not offered to the model or the call never returned (servers seen: []; starts (0, 0)): the app did not load ~/.warp/.mcp.json, so no fault could be injected
+  - wayland: SKIP: precondition: the healthy control server's tool was not offered to the model or the call never returned (servers seen: []; starts (0, 0)): the app did not load ~/.warp/.mcp.json, so no fault could be injected
+  - windows: SKIP: not run on Windows: #1834: the fake MCP servers are configured through the HOME-relative ~/.warp/.mcp.json, which the Windows profile does not use in this harness
+- `ssh_connect_typing_wrapper`
+  - macos: SKIP: Windows only (ConPTY)
+  - wayland: SKIP: Windows only (ConPTY)
+  - windows: SKIP: set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)
+- `ssh_nested_typeahead_wrapper`
+  - macos: SKIP: Windows only (ConPTY)
+  - wayland: SKIP: Windows only (ConPTY)
+  - windows: SKIP: set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)
+- `subshell_ready_docker_t_without_i`
+  - macos: SKIP: docker with a local alpine image is not available (never pulled by the harness)
+  - wayland: SKIP: docker with a local alpine image is not available (never pulled by the harness)
+  - windows: SKIP: not run on Windows: docker -t without -i against a Linux pty (#1679 step 3)
+- `subshell_ready_relay_shape`
+  - macos: SKIP: no passwordless sudo on this runner (sudo -n true failed)
+  - wayland: SKIP: no passwordless sudo on this runner (sudo -n true failed)
+  - windows: SKIP: not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3)
+
+**Judged elsewhere, never on macos (24):** `agent_gate_deny_allow` (SKIP), `agent_gate_key_never_leaves` (SKIP), `agent_gate_off_live` (SKIP), `agent_plugins_offline` (SKIP), `agent_restart_quit_blocked` (SKIP), `agent_restart_quit_queued` (SKIP), `agent_restart_quit_stream` (SKIP), `claude_plugin_offline` (SKIP), `gitbash_long_osc_reaches_app` (SKIP), `gitbash_precmd_secret` (SKIP), `keyring_unavailable_startup` (SKIP), `network_gate_notice` (SKIP), `network_gate_switch` (SKIP), `precmd_secret_honor_ps1` (NOREF), `ps_ctrl_break` (SKIP), `ps_ctrl_scrolllock_break` (SKIP), `ps_fast_command_young_enter` (SKIP), `ps_read_host_secure` (SKIP), `ssh_gitbash_kill_switch` (SKIP), `ssh_gitbash_managed` (SKIP), `ssh_gitbash_typeahead_managed` (SKIP), `ui_copy_wrapped_drag` (SKIP), `ui_vertical_tabs_panel_click` (SKIP), `zero_network_startup` (SKIP)
+
+**Judged elsewhere, never on wayland (12):** `ctrl_c_flood_ab` (SKIP), `gitbash_long_osc_reaches_app` (SKIP), `gitbash_precmd_secret` (SKIP), `latency_paint_ab` (SKIP), `ps_ctrl_break` (SKIP), `ps_ctrl_scrolllock_break` (SKIP), `ps_fast_command_young_enter` (SKIP), `ps_read_host_secure` (SKIP), `ssh_gitbash_kill_switch` (SKIP), `ssh_gitbash_managed` (SKIP), `ssh_gitbash_typeahead_managed` (SKIP), `subshell_ready_unsupported_tcsh` (SKIP)
+
+**Judged elsewhere, never on windows (38):** `agent_edit_accept` (SKIP), `agent_edit_conflict` (SKIP), `agent_edit_endings` (SKIP), `agent_edit_reject` (SKIP), `agent_edit_touch_only` (SKIP), `agent_gate_deny_allow` (SKIP), `agent_gate_key_never_leaves` (SKIP), `agent_gate_off_live` (SKIP), `agent_interactive_less` (SKIP), `agent_interactive_ssh` (SKIP), `agent_interactive_vim` (SKIP), `agent_multitab_streaming` (SKIP), `agent_noninteractive_no_takeover` (SKIP), `agent_plugins_offline` (SKIP), `agent_restart_quit_blocked` (SKIP), `agent_restart_quit_queued` (SKIP), `agent_restart_quit_stream` (SKIP), `cb_report_problem` (SKIP), `claude_plugin_offline` (SKIP), `ctrl_c_flood_ab` (SKIP), `ctrl_c_no_esc_i_local` (SKIP), `keyring_unavailable_startup` (SKIP), `latency_paint_ab` (SKIP), `network_gate_notice` (SKIP), `network_gate_switch` (SKIP), `subshell_ready_exec_fish_rc` (SKIP), `subshell_ready_secret_after_probe` (SKIP), `subshell_ready_secret_after_prompt` (SKIP), `subshell_ready_unsupported_tcsh` (SKIP), `subshell_ready_vim_typeahead` (SKIP), `subshell_ready_zsh_newuser_install` (SKIP), `subshell_sh_probe` (SKIP), `subshell_sh_probe_empty_ps1` (SKIP), `ui_completions_as_you_type_local` (NOREF), `ui_copy_wrapped_drag` (SKIP), `ui_vertical_tabs_many` (SKIP), `ui_vertical_tabs_panel_click` (SKIP), `zero_network_startup` (SKIP)
+
+**No row in any committed run (5):** `agent_interactive_ssh_takeover`, `latency_echo_ab`, `mcp_basic`, `ssh_gitbash_bootstrap_in_command`, `ui_readline_keys`
+
 ## Unit tests (newest run)
 
 - `test-linux`: `ai::agent_providers::tools::web_runtime::websearch_tests::real_exa_anonymous_search`
