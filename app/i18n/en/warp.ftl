@@ -1018,6 +1018,8 @@ settings-ai-prompt-suggestions-label = Prompt Suggestions
 settings-ai-suggested-code-banners-label = Suggested Code Banners
 settings-ai-natural-language-autosuggestions-label = Natural Language Autosuggestions
 settings-ai-natural-language-autosuggestions-in-ssh-label = Natural Language Autosuggestions in SSH Sessions
+settings-ai-next-command-in-ssh-label = Next Command in SSH Sessions
+settings-ai-prompt-suggestions-in-ssh-label = Prompt Suggestions in SSH Sessions
 settings-ai-git-operations-autogen-label = Commit & Pull Request Generation
 
 # Permissions dropdown options
@@ -1812,6 +1814,8 @@ settings-ai-prompt-suggestions-description = Let AI suggest natural language pro
 settings-ai-suggested-code-banners-description = Let AI suggest code diffs and queries as inline banners in the blocklist, based on recent commands and their outputs.
 settings-ai-natural-language-autosuggestions = Let AI suggest natural language autosuggestions, based on recent commands and their outputs.
 settings-ai-natural-language-autosuggestions-in-ssh-description = Also request them while the pane is in an SSH session. Each pause in typing sends the text of the input to the model provider. Off by default.
+settings-ai-next-command-in-ssh-description = Also ask the model while the session is an SSH session. Each request sends recent commands and what you have typed to the model provider. Off by default; suggestions from your history still appear.
+settings-ai-prompt-suggestions-in-ssh-description = Also ask the model while the pane is in an SSH session. Each request sends the finished command and a summary of its output to the model provider. Off by default.
 settings-ai-git-operations-autogen-description = Let AI generate commit messages and pull request titles and descriptions.
 
 # =============================================================================
@@ -3802,6 +3806,11 @@ common-settings-write-failed = Couldn't save your settings change. It may be los
 # cannot be used, so stored credentials are unavailable while the app keeps working.
 # Clicking the toast retries the keyring. (app/src/keyring_notice.rs, #1805)
 common-keyring-unavailable = The OS keyring isn't available, so saved credentials (API keys, proxy password) may be missing this session. Everything else works. Click to try the keyring again.
+# Shown once per launch when a saved credential is on disk but could not be opened (its
+# key is in an OS keyring that does not answer, its key file is missing, the file is damaged,
+# or a newer version wrote it). Nothing is deleted. A fixed sentence: it must never take
+# arguments. (app/src/secure_storage_notice.rs, #2095)
+common-secure-storage-unreadable = Some saved credentials (API keys, proxy password) are stored on this computer but could not be opened, so they may be missing or out of date this session. Nothing was deleted. Enter them again if you need them now; the log has the details.
 workspace-close-session = Close session
 workspace-auto-reload = Auto-reload
 workspace-add-new-repo = {" "}+ Add new repo

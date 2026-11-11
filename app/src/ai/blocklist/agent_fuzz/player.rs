@@ -69,7 +69,9 @@ pub struct EmittedTurn {
     /// result). These are the ids the stream delivered, in order, up to the first call of a
     /// tool that gets no early card: a call is shown early only when every call before it was.
     /// An id repeated in the reply is listed once (a repeat updates the same card); "" is an id
-    /// the app invents. The app may have shown any leading part of this list (a call whose
+    /// the app invents. Since #2054 the app shows no NEW card after a chunk that may repeat an id
+    /// (`chat_stream::may_repeat_call_id`), so that the repeat, renamed at the `End`, is recorded
+    /// where it was emitted; this list does not model that and stays the upper bound. The app may have shown any leading part of this list (a call whose
     /// arguments do not parse, or that is refused at dispatch, also ends the run), so I4 accepts
     /// a prefix of it for a reply that broke or was cut. Empty when nothing was delivered.
     pub early_call_ids: Vec<String>,

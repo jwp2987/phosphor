@@ -12,6 +12,7 @@ pub mod background;
 mod imp;
 mod noop;
 mod unavailable;
+pub mod unreadable;
 
 // Treat this as a noop on web, as there is no backing storage which is "secure".
 #[cfg(target_family = "wasm")]

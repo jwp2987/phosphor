@@ -2482,18 +2482,47 @@ upstream's behavior is actually a defect rather than a preference.
   readable by any process of the user (only a keyring defends against that); builds before this
   change cannot read the new blobs (a downgrade shows keyring-less users no stored credentials
   until they upgrade again); a `K` blob needs the keyring to be read. A re-pin must not bring
-  the literal back as a write key.
+  the literal back as a write key. **Since #2095 (2026-11-11):** a blob that exists and cannot
+  be opened is recorded (`secure_storage::unreadable`) and the app shows one notice per launch
+  (`app/src/secure_storage_notice.rs`); upstream reads it as "not found" and says nothing.
   <!-- markers: keep:KEYRING_INSTALL_SECRET_KEY keep:migrate_legacy_fallback keep:key_source_for_writing -->
 
 - **No query prediction request from an ssh session unless the user turns it on** (`#1982`,
   2026-11-10, owner decision, `app/src/ai/agent_providers/active_ai/mod.rs`
-  `nld_predict::allowed_for_session`, `app/src/settings/ai.rs`). **Upstream:** the ghosted
+  `allowed_for_session` (shared with #2094 since round 16), `app/src/settings/ai.rs`). **Upstream:** the ghosted
   completion of an agent prompt is requested at every typing pause in any session. **We do:**
   in an ssh session (and when the pane's session is not known) the request is not built unless
   `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` is true
   (default false; a switch on the AI settings page). Each request carries the input buffer to
   the model provider, which on a remote session is traffic and context the user did not ask for.
   <!-- markers: keep:allowed_for_session keep:NaturalLanguageAutosuggestionsInSshEnabled -->
+
+- **No next-command or prompt-suggestion request from an ssh session unless the user turns it
+  on** (`#2094`, 2026-11-11, owner decision, `app/src/ai/agent_providers/active_ai/mod.rs`
+  `allowed_for_session`, `next_command::resolve_for_session`, `prompt_suggestions::dispatch`,
+  `app/src/ai/predict/next_command_model.rs`, `app/src/settings/ai.rs`). **Upstream:** after a
+  command finishes (and while a command is typed) the model is asked for the next command and
+  for a prompt suggestion in any session. **We do:** in an ssh session (and when the session is
+  not known) neither request is built unless
+  `agents.warp_agent.active_ai.intelligent_autosuggestions_in_ssh_enabled` /
+  `agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled` is true (default false; a
+  switch under each parent on the AI settings page). The requests carry remote commands, a
+  summary of remote output and the typed prefix to the model provider, which the user did not
+  ask for. History and completer suggestions and the static prompt suggestions need no request
+  and are unchanged.
+  <!-- markers: keep:resolve_for_session keep:IntelligentAutosuggestionsInSshEnabled keep:PromptSuggestionsInSshEnabled -->
+
+- **A completion result that changes nothing does not re-render the input** (`#1995`,
+  2026-11-11, owner decision, `app/src/terminal/input.rs`
+  `handle_completion_suggestions_results`, `completion_result_needs_render`). **Upstream:** the
+  handler ends in an unconditional `ctx.notify()`
+  (`42effe840:app/src/terminal/input.rs:12682`), so with completions as you type every result
+  that answers the current buffer re-renders `Input`, menu or no menu (measured here: `Input`
+  beside the editor in 16-31 % of terminal-mode key frames, 0.98 ms against 0.65 ms frame
+  build). **We do:** a result with nothing to show notifies only when a menu was up, the stale
+  flag was set, or it answers a Tab; a result with suggestions notifies as before.
+  `PHOSPHOR_SKIP_REDUNDANT_COMPLETION_NOTIFY=0` restores the unconditional notify.
+  <!-- markers: keep:completion_result_needs_render keep:skip_redundant_completion_notify_enabled -->
 
 ## Not done: evicting closed panes' AI conversations from memory (#843)
 

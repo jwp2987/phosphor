@@ -71,6 +71,7 @@ mod remote_server;
 mod resource_limits;
 mod safe_triangle;
 mod search_bar;
+mod secure_storage_notice;
 mod server;
 mod server_time;
 mod session_management;
@@ -2000,6 +2001,8 @@ fn initialize_app(
     ctx.add_singleton_model(|_| ToastStack);
     // #1805: one non-modal notice if the OS keyring turns out to be unusable this run.
     ctx.add_singleton_model(keyring_notice::KeyringNotice::new);
+    // #2095: one notice per launch if a stored credential exists but could not be opened.
+    ctx.add_singleton_model(secure_storage_notice::UnreadableSecureStorageNotice::new);
     // The network gate decision log (Settings > Network) and the denial notice read it.
     ctx.add_singleton_model(network_gate_log::NetworkGateLog::new);
     ctx.add_singleton_model(network_gate_notice::NetworkGateNotice::new);

@@ -4761,7 +4761,7 @@ def lab_cases_registry_and_selection():
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
     base.discard("lab_freeze_and_wake")       # r15 wave 4 core (#2075): its registration is checked in selftest_w4core.py (a separate line: the set below is shared)
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_enter_no_network_wait", "lab_raw_key_arrival", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop", "lab_agent_nld_predict_ssh"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_enter_no_network_wait", "lab_raw_key_arrival", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop", "lab_agent_nld_predict_ssh", "lab_agent_suggestions_ssh"}
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_", "lab_git_write_remote")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -5849,6 +5849,21 @@ def fake_model_plan_and_agent_remote_pure_parts():
     assert [c["name"] for c in nld] == ["lab_agent_nld_predict_ssh.bash.lan.nohelper"] and nld[0]["modes"] == ("agent",) and nld[0]["lab"], nld
     assert AR.nld_requests(type("F", (), {"by_purpose": {"nld_predict": 4, "chat": 9}})()) == 4 and AR.nld_requests(type("F", (), {"by_purpose": {}})()) == 0
     assert all(c["modes"] == ("agent",) and c["lab"] for c in cases.CASES if c["name"].startswith("lab_agent_remote_"))
+    # #2094: next-command and prompt suggestions on an ssh pane, each purpose judged only against its own local control
+    both, none = {"next_command": 1, "prompt_suggestions": 2}, {"next_command": 0, "prompt_suggestions": 0}
+    assert AR.suggestions_verdict(both, none) == ("pass", "", {"next_command": "pass", "prompt_suggestions": "pass"})
+    v, why, per = AR.suggestions_verdict(both, {"next_command": 0, "prompt_suggestions": 3})
+    assert v == "fail" and "3 prompt_suggestions" in why and per == {"next_command": "pass", "prompt_suggestions": "fail"}, (v, why, per)
+    v, why, per = AR.suggestions_verdict({"next_command": 1, "prompt_suggestions": 0}, {"next_command": 0, "prompt_suggestions": 5})
+    assert v == "pass" and per == {"next_command": "pass", "prompt_suggestions": "no_control"}, "a purpose with no control is not judged, and its ssh requests are not a verdict"
+    assert AR.suggestions_verdict(none, none)[0] == "unverifiable" and AR.suggestions_verdict(none, both)[0] == "unverifiable", "no control at all: never a pass"
+    assert AR.suggestions_verdict({"next_command": 1, "prompt_suggestions": 0}, {"next_command": 2, "prompt_suggestions": 0})[0] == "fail"
+    f = type("F", (), {"by_purpose": {"next_command": 4, "chat": 9}})()
+    assert AR.suggestion_requests(f) == {"next_command": 4, "prompt_suggestions": 0}
+    assert AR.suggestion_deltas({"next_command": 1}, {"next_command": 4, "prompt_suggestions": 2}) == {"next_command": 3, "prompt_suggestions": 2}
+    sug = [c for c in cases.CASES if c["name"].startswith("lab_agent_suggestions_ssh")]
+    assert [c["name"] for c in sug] == ["lab_agent_suggestions_ssh.bash.lan.nohelper"] and sug[0]["modes"] == ("agent",) and sug[0]["lab"], sug
+    assert "lab_agent_suggestions_ssh.*" in cases.PROVING_LAB
 
 
 @check

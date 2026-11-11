@@ -1,0 +1,77 @@
+{
+  "v": 1,
+  "name": "i4_repeat_id_emitted_late_other_tool",
+  "seed": 20541,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "literal",
+              "id": "call_fixed"
+            },
+            "name": "grep",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "file_glob",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "literal",
+              "id": "call_fixed"
+            },
+            "name": "file_glob",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "grep",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {}
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "on_card"
+    }
+  ]
+}

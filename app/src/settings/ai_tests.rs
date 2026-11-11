@@ -1629,3 +1629,20 @@ fn natural_language_autosuggestions_in_ssh_default_off() {
     );
     assert!(*NaturalLanguageAutosuggestionsInSshEnabled::new(Some(true)).value());
 }
+
+/// #2094 (owner decision 2026-11-11): next-command suggestions and prompt suggestions follow the
+/// #1982 rule. Their requests carry commands and output to the model provider, so in ssh sessions
+/// they are off unless the user turns them on.
+#[test]
+fn next_command_and_prompt_suggestions_in_ssh_default_off() {
+    assert!(
+        !*IntelligentAutosuggestionsInSshEnabled::new(None).value(),
+        "an unset intelligent_autosuggestions_in_ssh_enabled is false"
+    );
+    assert!(*IntelligentAutosuggestionsInSshEnabled::new(Some(true)).value());
+    assert!(
+        !*PromptSuggestionsInSshEnabled::new(None).value(),
+        "an unset prompt_suggestions_in_ssh_enabled is false"
+    );
+    assert!(*PromptSuggestionsInSshEnabled::new(Some(true)).value());
+}

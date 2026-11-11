@@ -872,6 +872,8 @@ settings-ai-prompt-suggestions-label = プロンプト候補
 settings-ai-suggested-code-banners-label = コード候補バナー
 settings-ai-natural-language-autosuggestions-label = 自然言語オートサジェスト
 settings-ai-natural-language-autosuggestions-in-ssh-label = SSH セッションでの自然言語オートサジェスト
+settings-ai-next-command-in-ssh-label = SSH セッションでの次のコマンド
+settings-ai-prompt-suggestions-in-ssh-label = SSH セッションでのプロンプト候補
 settings-ai-git-operations-autogen-label = コミット & プルリクエスト生成
 
 # Permissions dropdown options
@@ -1566,6 +1568,8 @@ settings-ai-prompt-suggestions-description = 最近のコマンドと出力に�
 settings-ai-suggested-code-banners-description = 最近のコマンドと出力に基づき、ブロック一覧のインラインバナーとして AI にコード差分とクエリを提案させます。
 settings-ai-natural-language-autosuggestions = 最近のコマンドと出力に基づき、AI に自然言語の自動候補を提案させます。
 settings-ai-natural-language-autosuggestions-in-ssh-description = ペインが SSH セッション中でも候補を要求します。入力が止まるたびに、入力欄のテキストがモデルプロバイダーに送信されます。既定ではオフです。
+settings-ai-next-command-in-ssh-description = セッションが SSH セッション中でもモデルに問い合わせます。リクエストのたびに、最近のコマンドと入力中のテキストがモデルプロバイダーに送信されます。既定ではオフです。履歴からの候補は引き続き表示されます。
+settings-ai-prompt-suggestions-in-ssh-description = ペインが SSH セッション中でもモデルに問い合わせます。リクエストのたびに、完了したコマンドとその出力の要約がモデルプロバイダーに送信されます。既定ではオフです。
 settings-ai-git-operations-autogen-description = コミットメッセージ、プルリクエストのタイトルと説明を AI に生成させます。
 # =============================================================================
 # SECTION: ai (Owner: agent-ai)
@@ -3407,6 +3411,7 @@ common-refresh = 更新
 common-resource-not-found-or-access-denied = リソースが見つからないか、アクセスが拒否されました
 common-settings-write-failed = 設定の変更を保存できませんでした。次回 Phosphor を起動すると失われる可能性があります。
 common-keyring-unavailable = OS キーチェーンを利用できないため、保存された認証情報 (API キー、プロキシのパスワード) がこのセッションでは使えない場合があります。その他の機能は通常どおり動作します。クリックするとキーチェーンを再試行します。
+common-secure-storage-unreadable = 保存済みの認証情報 (API キー、プロキシのパスワード) の一部はこのコンピューターに保存されていますが、開けませんでした。このセッションでは使えないか、古い値になっている場合があります。削除されたものはありません。今すぐ必要な場合は入力し直してください。詳細はログにあります。
 workspace-close-session = セッションを閉じる
 workspace-auto-reload = 自動再読み込み
 workspace-add-new-repo = {" "}+ 新しいリポジトリを追加

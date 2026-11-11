@@ -285,7 +285,9 @@ you configure yourself.
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
 | `agents.warp_agent.active_ai.intelligent_autosuggestions_enabled` | boolean | `true` | AI-powered command autosuggestions. |
+| `agents.warp_agent.active_ai.intelligent_autosuggestions_in_ssh_enabled` | boolean | `false` | Whether the model is also asked for a next command while the session is an ssh session (or one the app cannot identify). Each request sends recent commands, similar history and what is typed to the model provider, so in ssh sessions it is off unless turned on (#2094). Suggestions from your own history need no request and still appear. Not synced. |
 | `agents.warp_agent.active_ai.agent_mode_query_suggestions_enabled` | boolean | `true` | Prompt suggestions in agent mode. (The key name is legacy — the feature was renamed, the key was not, so existing files keep working.) |
+| `agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled` | boolean | `false` | Whether the model is also asked for a prompt suggestion while the pane is in an ssh session (or one the app cannot identify). Each request sends the finished command and a summary of its output to the model provider, so in ssh sessions it is off unless turned on (#2094). Not synced. |
 | `agents.warp_agent.active_ai.code_suggestions_enabled` | boolean | `true` | AI code suggestions. |
 | `agents.warp_agent.active_ai.natural_language_autosuggestions_enabled` | boolean | `true` | Ghosted-text autosuggestions while typing an AI prompt. Schema-gated on the `PredictAMQueries` flag. |
 | `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` | boolean | `false` | Whether those autosuggestions are also requested while the pane is in an ssh session. Each request sends the text of the input to the model provider at a typing pause, so in ssh sessions it is off unless turned on (#1982). Not synced. Same flag. |
