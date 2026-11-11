@@ -593,6 +593,28 @@ const HISTORY_DETAILS_VIEW_WIDTH_REQUIREMENT: f32 = 1100.;
 
 const MIN_BUFFER_LEN_TO_SHOW_COMPLETIONS_WHILE_TYPING: usize = 2;
 
+/// `hop=input_tab branch=<name> ...` (#2122, log only): which branch a Tab took in
+/// `Input::input_tab`. A Tab that "did nothing" in a kept integration log is one of these
+/// branches. Never any typed text: lengths and flags (#2040).
+fn log_input_tab_branch(branch: &str, detail: impl FnOnce() -> String) {
+    warpui::input_order::log_hop("input_tab", || {
+        let detail = detail();
+        if detail.is_empty() {
+            format!("branch={branch}")
+        } else {
+            format!("branch={branch} {detail}")
+        }
+    });
+}
+
+/// The trigger's name for a `hop=xray_ask_refused` line (the type has no `Debug`).
+fn xray_trigger_name(trigger: &CommandXRayTrigger) -> &'static str {
+    match trigger {
+        CommandXRayTrigger::Hover => "hover",
+        CommandXRayTrigger::Keystroke => "keystroke",
+    }
+}
+
 /// The number of lines in a submitted buffer, as the confirmation dialog states it.
 pub(crate) fn submitted_line_count(command: &str) -> usize {
     command.lines().count()
@@ -11568,6 +11590,10 @@ impl Input {
             EditorEvent::TryToShowXRay(token_at) => {
                 if self.ai_input_model.as_ref(ctx).is_ai_input_enabled() {
                     // Don't show command x-ray for AI queries.
+                    // Log only (#2122): why an ask for the x-ray went no further.
+                    warpui::input_order::log_hop("xray_ask_refused", || {
+                        "reason=ai_input".to_owned()
+                    });
                     return;
                 }
 
@@ -11592,7 +11618,17 @@ impl Input {
                                     ctx
                                 );
                                 self.start_xray_at_offset(offset, CommandXRayTrigger::Hover, ctx);
+                            } else {
+                                // Log only (#2122, #2129).
+                                warpui::input_order::log_hop("xray_ask_refused", || {
+                                    "trigger=hover reason=visible_menu".to_owned()
+                                });
                             }
+                        } else {
+                            // Log only (#2122).
+                            warpui::input_order::log_hop("xray_ask_refused", || {
+                                "trigger=hover reason=no_text_at_point".to_owned()
+                            });
                         }
                     }
                 }
@@ -14126,6 +14162,14 @@ impl Input {
                         input.show_xray(description, trigger, ctx);
                     },
                 );
+        } else {
+            // Log only (#2122): the ask went no further, there is no session to complete in.
+            warpui::input_order::log_hop("xray_ask_refused", || {
+                format!(
+                    "trigger={} reason=no_session_context",
+                    xray_trigger_name(&trigger)
+                )
+            });
         }
     }
 
@@ -14148,6 +14192,14 @@ impl Input {
             self.editor.update(ctx, move |editor, ctx| {
                 editor.set_command_x_ray(description);
                 notify_cause!(ctx, "show_xray_2");
+            });
+        } else {
+            // Log only (#2122): the completer had nothing to say about the token.
+            warpui::input_order::log_hop("xray_ask_refused", || {
+                format!(
+                    "trigger={} reason=no_description",
+                    xray_trigger_name(&trigger)
+                )
             });
         }
         notify_cause!(ctx, "show_xray_3");
@@ -14256,6 +14308,7 @@ impl Input {
             self.suggestions_mode_model.as_ref(ctx).mode(),
             InputSuggestionsMode::AIContextMenu { .. }
         ) {
+            log_input_tab_branch("ai_context_menu_accept", String::new);
             self.accept_ai_context_menu_item(ctx);
             return;
         }
@@ -14326,6 +14379,15 @@ impl Input {
                 if common_prefix.len() > current_word.len()
                     && common_prefix.starts_with(current_word)
                 {
+                    // Lengths only (#2040).
+                    log_input_tab_branch("menu_insert_common_prefix", || {
+                        format!(
+                            "prefix_len={} word_len={} single={}",
+                            common_prefix.len(),
+                            current_word.len(),
+                            u8::from(is_single_prefix_suggestion)
+                        )
+                    });
                     self.insert_completion_prefix_into_editor(
                         ctx,
                         &common_prefix,
@@ -14339,6 +14401,7 @@ impl Input {
                     return;
                 }
             }
+            log_input_tab_branch("menu_select_next", String::new);
             self.input_suggestions.update(ctx, |suggestions, ctx| {
                 suggestions.select_next(ctx);
             });
@@ -14347,13 +14410,22 @@ impl Input {
             InputSuggestionsMode::StaticWorkflowEnumSuggestions { .. }
                 | InputSuggestionsMode::DynamicWorkflowEnumSuggestions { .. }
         ) {
+            log_input_tab_branch("workflow_enum_select_next", String::new);
             self.input_suggestions.update(ctx, |suggestions, ctx| {
                 suggestions.select_next(ctx);
             });
         } else if is_tab_bound_to_open_completions && self.cursor_positioned_for_completion(ctx) {
+            log_input_tab_branch("open_completions", String::new);
             self.open_completion_suggestions(CompletionsTrigger::Keybinding, ctx);
         } else {
-            // Otherwise, pass the tab down to the editor
+            // Otherwise, pass the tab down to the editor. With Tab bound to the completions
+            // the cursor was not positioned for one.
+            log_input_tab_branch("to_editor", || {
+                format!(
+                    "tab_opens_completions={}",
+                    u8::from(is_tab_bound_to_open_completions)
+                )
+            });
             self.editor.update(ctx, |input, ctx| input.handle_tab(ctx));
         }
     }
