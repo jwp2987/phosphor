@@ -3395,3 +3395,30 @@ run).
 A re-pin diff that folds `unsaved_code_changes` back under the setting, or points the banner button back at
 `SaveFile`, is drift to reject. Tests: `app/src/quit_warning/mod_tests.rs`, `app/src/workspace/native_modal_tests.rs`,
 `app/src/code/save_conflict_tests.rs`; appci `editor_daily`.
+
+## The legacy destination chain, its kill switch and the shadow comparison — REMOVED 2026-11-11 (#1353 step 8)
+
+Owner direction (2026-11-01, "delete the old holders, we're in git with tags"; 2026-11-11, step 8
+goes into round 14, merged last so it can be dropped alone). The destination table
+(`app/src/terminal/input_queue/table.rs`, #1424) has decided every key since 2026-11-02; what was
+left of the code it replaced is gone. This is a deliberate removal, not drift to restore, and
+`IMPROVED`-style reading applies: one place states where an input goes.
+
+- **`PHOSPHOR_QUEUE_DESTINATION`** selects nothing. `legacy` (the kill switch) and `shadow` (the
+  comparison log) no longer exist; any value but `table` is refused with one log line
+  (`input_queue/facts.rs`, `note_retired_destination_switch`). The revert path is the merge
+  commit of `fix/r17-step8`, not a switch.
+- **The legacy chain**: the bodies of `typed_characters_on_terminal`, `keydown_on_terminal` and
+  `control_sequence_on_terminal`, `replay_held_key`, `route_after_enter_input`,
+  `deliver_ssh_held`, `hold_input_during_ssh_connect` / `swallow_input_during_ssh_setup`, the
+  legacy branch of `paste()`, and `pane_key::route_typed` / `after_pty_attempt` with their unit
+  and snapshot tests.
+- **The shadow comparison**: `input_queue/shadow.rs`, `kh_dest_disagree`, `kh_ssh_phase_disagree`,
+  the appci `dest_disagree` row and the narrowed `KILL_SWITCH_SMOKE` pass of the fix tier.
+- **`PHOSPHOR_PERF_AGENT_KEY`**: the switch chose between two forms of a probe only the legacy
+  typed path ran (`typed_on_settled_ai_target`); the table's facts ask the non-allocating form.
+
+Not removed, and not legacy: `delivering` / `requeue_request` (a key a stage holds from inside a
+delivery), the bytes take-and-write of the hand-off's and the PowerShell gate's keys,
+`paste_routing` (three writers read it), `refresh_ssh_connect_gate` (the events and the signal
+rows use it). Design note and the full list: `docs/design/r17-step8.md`.

@@ -81,7 +81,6 @@ use window_footer_bar::render_window_footer_bar;
 
 use super::CLIAgent;
 use super::cli_agent;
-use super::input_queue::shadow::{DestClass, note_leaf as note_shadow_leaf};
 use super::input_queue::table::{Class, Outcome};
 use super::input_queue::{self, GateKeysThen, PowershellKeysThen};
 use super::paste_sequencer::{PasteFailure, paste_backstop};
@@ -260,6 +259,7 @@ use crate::env_vars::{
 use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::pane_group::ssh_split::{PendingRemoteCd, SplitFollowUp};
 use crate::persistence::{self, FinishedCommandMetadata};
+use crate::safe_error;
 use crate::server::ids::{ObjectUid, SyncId};
 #[cfg(feature = "local_fs")]
 use crate::settings::import::model::ImportedConfigModel;
@@ -354,7 +354,6 @@ use crate::workspace::{
 use crate::workspace::{ForkAIConversationParams, ForkFromExchange, ForkedConversationDestination};
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::{AIAgentActionResultType, report_if_error};
-use crate::{safe_error, safe_warn};
 use warp_core::execution_mode::AppExecutionMode;
 
 use crate::terminal::shared_session::protocol::{
@@ -519,17 +518,19 @@ use crate::terminal::model::{
     ansi::{ClearMode, Handler},
     blocks::BlockListPoint,
 };
-use crate::terminal::pane_key::{
-    self, KeyClass, KeyTarget, PaneFocusFacts, PaneKeyMode, TailAction, TypedRoute,
-};
+use crate::terminal::pane_key::{self, KeyClass, KeyTarget, PaneFocusFacts, PaneKeyMode};
 use crate::terminal::view::inline_banner::{
     AgentModeSetupSpeedbumpBannerAction, AgentModeSetupSpeedbumpBannerState,
     AliasExpansionBannerState, NotificationsDiscoveryBannerState, NotificationsErrorBannerState,
     PromptSuggestionBannerState, VimModeBannerState, render_agent_mode_setup_banner,
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
+// The tests name `HeldInput` through `use super::*`; the view itself no longer builds one (the
+// table's executors do, `view/dest_table.rs`).
+#[cfg(test)]
+use crate::terminal::view::ssh_typeahead::HeldInput;
 use crate::terminal::view::ssh_typeahead::{
-    HeldInput, SSH_TYPEAHEAD_PRECMD_WAIT_CAP, SshTypeaheadPush, delivery_waits_for_first_precmd,
+    SSH_TYPEAHEAD_PRECMD_WAIT_CAP, SshTypeaheadPush, delivery_waits_for_first_precmd,
     held_inputs_from_tty_bytes,
 };
 use crate::terminal::waterfall_gap_element::WaterfallGapElement;
@@ -3638,8 +3639,6 @@ pub struct TerminalView {
     output_listeners: Vec<async_channel::Sender<()>>,
     /// The queue side of the ssh hold: the open gate and what it holds.
     ssh_iq: ssh_queue::SshQueueState,
-    /// A held paste whose text the paste handler has still to store.
-    ssh_paste_to_hold: bool,
     /// Since when delivery has waited for the remote shell's first Precmd to be processed, so
     /// the held Enter is not refused as `HistoryNotAppendable` (#1332). Only the give-up cap
     /// reads it: delivery itself is driven by the prompt's events (#1348).
@@ -5601,7 +5600,6 @@ impl TerminalView {
             win_prompt_notice: prompt_notice::PromptNoticeWatch::default(),
             output_listeners: Vec::new(),
             ssh_iq: ssh_queue::SshQueueState::new(),
-            ssh_paste_to_hold: false,
             ssh_typeahead_precmd_wait_since: None,
             ssh_typeahead_deadline_armed: None,
             ssh_interrupt_held_gate_notified: false,
@@ -10705,6 +10703,10 @@ impl TerminalView {
     /// decision, not in edit mode). Keys typed while one of them holds focus are routed as if
     /// the terminal held it, instead of being dropped. The pending approval card is not here:
     /// it has its own route (#1028).
+    ///
+    /// The whole set, for the tests: the key path asks only whether the FOCUSED view is a member
+    /// ([`Self::focused_settled_ai_target`], no list per key, #1267).
+    #[cfg_attr(not(test), allow(dead_code))]
     fn settled_ai_focus_view_ids(&self, app: &AppContext) -> Vec<EntityId> {
         let mut ids = Vec::new();
         for metadata in self
@@ -10742,33 +10744,6 @@ impl TerminalView {
                         .is_settled_action_card(focused, app)
             });
         is_member.then_some(focused)
-    }
-
-    /// Whether the window's focus is exactly on one of [`Self::settled_ai_focus_view_ids`].
-    fn typed_on_settled_ai_target(&self, ctx: &mut ViewContext<Self>) -> bool {
-        let started = log::log_enabled!(log::Level::Debug).then(std::time::Instant::now);
-        let Some(focused) = ctx.focused_view_id(ctx.window_id()) else {
-            return false;
-        };
-        // Wave P: no Vec over every block and card per key; the same answer as the list's
-        // `contains` (see `focused_settled_ai_target`).
-        let on_target = if crate::terminal::model_lock_trace::perf_agent_key_enabled() {
-            self.focused_settled_ai_target(ctx) == Some(focused)
-        } else {
-            self.settled_ai_focus_view_ids(ctx).contains(&focused)
-        };
-        if let Some(started) = started {
-            log::debug!(
-                "hop=perf_agent_key_probe settled_target_us={} ai_blocks={} on_target={}",
-                started.elapsed().as_micros(),
-                self.rich_content_views
-                    .iter()
-                    .filter(|view| view.ai_block_metadata().is_some())
-                    .count(),
-                on_target as u8
-            );
-        }
-        on_target
     }
 
     /// Whether the window's focus is exactly on an AI block (the block itself, not a child of
@@ -11347,69 +11322,12 @@ impl TerminalView {
         if matches!(bytes, [0x03] | [0x04] | [0x1a] | [0x1c]) {
             self.end_keys_follow_editor("signal", ctx);
         }
-        // #1424: in `table` mode the table decides a live sequence (step 5).
-        if self.arrives_via_table()
-            && let Ok(sequence) = std::str::from_utf8(bytes)
-        {
-            self.arrive_via_table(dest_table::Arrival::Seq(sequence), ctx);
-            return;
-        }
-        // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
-        let class = match bytes {
-            [0x03] => Class::Signal(input_queue::SignalKind::Interrupt),
-            [0x04] => Class::Signal(input_queue::SignalKind::Eof),
-            _ => Class::Seq,
-        };
-        let shadow = self.shadow_begin(class, ctx);
-        self.control_sequence_on_terminal_legacy(bytes, ctx);
-        self.shadow_end(shadow);
-    }
-
-    fn control_sequence_on_terminal_legacy(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
-        let _key_path = KeyPathScope::enter(&self.key_path_depth);
-        // #1292: during an ssh connect these are held with the typed keys, in order, not written
-        // into the bootstrap. Abort keys always pass.
-        if !is_abort_key(bytes)
-            && let Ok(sequence) = std::str::from_utf8(bytes)
-            && self.hold_input_during_ssh_connect(Some(sequence), true, ctx)
-        {
-            note_shadow_leaf(DestClass::Held);
-            return;
-        }
-        // #1179: arrows, Home/End, Page keys etc. never reach an agent-driven command's pty (the
-        // bytes would be read as typeahead by the shell after it ends and then wiped). Ctrl-C /
-        // Ctrl-D keep their own route to the command.
-        if !is_abort_key(bytes) && self.agent_owns_command_pty() {
-            safe_warn!(
-                safe: ("agent owns the command pty. ignoring control seq on terminal."),
-                full: ("agent owns the command pty. ignoring control seq on terminal: {}", warpui::input_order::describe_bytes(bytes))
-            );
-            note_shadow_leaf(DestClass::Dropped);
-            return;
-        }
-        // #1852: a ^C / ^D that arrives as a sequence voids an Enter that waits on the input queue
-        // and the keys behind it, as on the key path (`keydown_on_terminal_legacy`) and as the
-        // table does for either arrival (`execute_arrival_signal`). ^Z / ^\ leave them alone.
-        if is_abort_key(bytes) && self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
-            self.input
-                .update(ctx, |input, ctx| input.abort_enter_queue(ctx));
-        }
-        if self.is_long_running()
-            || self.typeahead_handoff_routes_keys_to_pty()
-            || self.forwards_keys_during_subshell_bootstrap(is_abort_key(bytes))
-        {
-            self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_bytes(bytes)), ctx);
-            self.write_user_bytes_to_pty(bytes.to_owned(), ctx);
-            // Noted after the write: a write the pane queue held noted `Held` first (first wins).
-            note_shadow_leaf(DestClass::Pty);
-        } else if self.apply_key_to_editor_after_handoff(bytes, ctx) {
-            note_shadow_leaf(DestClass::Editor);
-        } else {
-            note_shadow_leaf(DestClass::Dropped);
-            safe_warn!(
-                safe: ("command not long-running. ignoring control seq on terminal."),
-                full: ("command not long-running. ignoring control seq on terminal: {}", warpui::input_order::describe_bytes(bytes))
-            )
+        // #1424: the table decides a live sequence (step 5; the only path since #1353 step 8).
+        match std::str::from_utf8(bytes) {
+            Ok(sequence) => self.arrive_via_table(dest_table::Arrival::Seq(sequence), ctx),
+            // Bytes that are not text (an 8-bit sequence): decided by the same rows, written as
+            // bytes.
+            Err(_) => self.arrive_sequence_bytes_via_table(bytes, ctx),
         }
     }
 
@@ -11621,284 +11539,8 @@ impl TerminalView {
         if matches!(characters, "\u{3}" | "\u{4}" | "\u{1a}" | "\u{1c}") {
             self.end_keys_follow_editor("signal", ctx);
         }
-        // #1424: in `table` mode the table decides a live key (step 5).
-        if self.arrives_via_table() {
-            self.arrive_via_table(dest_table::Arrival::Key(characters), ctx);
-            return;
-        }
-        // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
-        let class = match characters {
-            "\u{3}" => Class::Signal(input_queue::SignalKind::Interrupt),
-            "\u{4}" => Class::Signal(input_queue::SignalKind::Eof),
-            "\u{1a}" => Class::Signal(input_queue::SignalKind::Suspend),
-            "\u{1c}" => Class::Signal(input_queue::SignalKind::Quit),
-            "\r" | "\n" => Class::Enter,
-            _ => Class::Control,
-        };
-        let shadow = self.shadow_begin(class, ctx);
-        self.keydown_on_terminal_legacy(characters, ctx);
-        self.shadow_end(shadow);
-    }
-
-    fn keydown_on_terminal_legacy(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
-        let _key_path = KeyPathScope::enter(&self.key_path_depth);
-        self.reprobe_interactive_latch_on_key();
-        // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
-        if is_ssh_interrupt_key(characters) {
-            // #1001: an interrupt must not land in the middle of the remote bootstrap script, nor
-            // in the connect window before the remote session is announced (#983/#1001).
-            if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold)
-                || self.ssh_gate_holds_interrupt()
-                || (characters == "\u{4}" && self.ssh_connect_holds_eot())
-            {
-                self.note_ssh_interrupt_held(ctx);
-                // Dropped today (the toast says "held"); the table holds it (OD-5).
-                note_shadow_leaf(DestClass::Dropped);
-                return;
-            }
-            // The interrupt passes straight through; what was typed before it is stale, as the
-            // tty's own input flush on ^C would make it.
-            self.reset_ssh_typeahead();
-        } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
-            note_shadow_leaf(if self.ssh_typeahead_holding {
-                DestClass::Held
-            } else {
-                DestClass::Swallowed
-            });
-            return;
-        }
-        // #1353 phase 3: the same on the input queue, while an Enter's gate holds it.
-        if self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
-            if is_abort_key(characters.as_bytes()) {
-                self.input
-                    .update(ctx, |input, ctx| input.abort_enter_queue(ctx));
-            } else if characters == "\r" || characters == "\n" {
-                let queued = self.input.update(ctx, |input, ctx| {
-                    input.queue_behind_enter(AfterEnterInput::Enter, ctx)
-                });
-                if queued {
-                    note_shadow_leaf(DestClass::Held);
-                    return;
-                }
-            }
-        }
-        // #1051: a Ctrl-C during a PowerShell subshell setup has its own rules.
-        if characters == "\u{3}" && self.powershell_setup_hold != PowerShellSetupHold::Off {
-            note_shadow_leaf(DestClass::Pty);
-            self.ctrl_c_during_powershell_setup(ctx);
-            return;
-        }
-        // #1048: Enter (and every other non-abort key) typed during a PowerShell subshell setup
-        // joins the held keys, whatever block is active; abort keys keep their own path below.
-        if !is_abort_key(characters.as_bytes()) && self.holds_keys_for_powershell_subshell_setup() {
-            note_shadow_leaf(DestClass::Held);
-            self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
-            return;
-        }
-        // #1179: control keys (Enter, Backspace, ...) typed while the agent drives its command
-        // are not written to that command either; only Ctrl-C / Ctrl-D (stop / EOF) are.
-        let agent_owns_key = !is_abort_key(characters.as_bytes()) && self.agent_owns_command_pty();
-        if (self.is_long_running() && !agent_owns_key)
-            || self.typeahead_handoff_routes_keys_to_pty()
-            || self.forwards_keys_during_subshell_bootstrap(is_abort_key(characters.as_bytes()))
-            || (is_abort_key(characters.as_bytes())
-                && self.ssh_bootstrap_interrupt_route()
-                    == Some(SshBootstrapInterruptRoute::Forward))
-        {
-            self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
-            self.highlighted_link.invalidate();
-            // #1001: a Ctrl-C between the SSH hook and InitShell aborts the connect (`~.`).
-            let abort = (characters == "\u{3}")
-                .then(|| self.ssh_pre_init_abort_bytes())
-                .flatten();
-            if characters == "\u{3}" && abort.is_none() && self.ssh_connect_sigint_applies() {
-                // #1178/#1253: the SIGINT path marks the ssh command interrupted too (left in the
-                // model's inbox, which applies it before it parses the next bytes).
-                self.leave_user_wrote_in_model_inbox(false, true);
-                ctx.emit(Event::SigintForegroundToPty);
-            } else if let Some(abort) = abort {
-                self.write_user_bytes_to_pty(abort, ctx);
-            } else {
-                self.report_possible_typeahead(characters);
-                self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
-            }
-            // Noted after the write: a write the pane queue held noted `Held` first (first wins).
-            note_shadow_leaf(DestClass::Pty);
-        } else if self.apply_key_to_editor_after_handoff(characters.as_bytes(), ctx) {
-            note_shadow_leaf(DestClass::Editor);
-        } else {
-            note_shadow_leaf(DestClass::Dropped);
-            // When it's not a long-running command, we want to clear the selected block
-            // and focus the editor. We specifically don't want to insert
-            // anything into the input box. Characters that belong there should go through
-            // `typed_characters_on_terminal` rather than through here.
-            self.clear_selected_blocks(ctx);
-            self.clear_selected_text(ctx);
-
-            self.update_scroll_position_locking(ScrollPositionUpdate::AfterKeydownOnTerminal, ctx);
-            self.redetermine_global_focus(ctx);
-        }
-    }
-
-    /// Control sequences (arrows, Tab, Esc, ...) take `control_sequence_on_terminal`, which never
-    /// calls this, so they are not swallowed, unlike printable characters: the control path
-    /// cannot form a command line, and dropping them would also eat the keys the setup dialog
-    /// itself consumes. `keydown_on_terminal` / `typed_characters_on_terminal` exempt the
-    /// interrupt bytes (Ctrl-C, Ctrl-D, Ctrl-Z, Ctrl-\) so the user can always abort a hung
-    /// connect. Only printable runs, Enter and pastes are held (#983, #1292).
-    ///
-    /// True while the SSH remote-server setup owns the session: the
-    /// install/continue dialog is up, or the check/install/connect is in
-    /// flight. The remote shell is not bootstrapped yet, and the bootstrap
-    /// script is injected into it as soon as setup resolves, so any byte the
-    /// user types now lands in the middle of that script. A stray Enter also
-    /// completes a block, which advances the bootstrap stage machine early
-    /// (the `next_stage` error storm and the pane stuck at "Starting
-    /// shell...", #917). Keystrokes are therefore never written to the pty
-    /// then: from the Enter on `ssh` until the remote shell shows its first
-    /// prompt they are HELD, exactly as typed, and replayed to the remote
-    /// shell once it is ready (#1292). Only while the setup DIALOG is up are
-    /// keys dropped, with focus handed back to the dialog so the next key
-    /// drives it.
-    fn swallow_input_during_ssh_setup(
-        &mut self,
-        characters: Option<&str>,
-        ctx: &mut ViewContext<Self>,
-    ) -> bool {
-        self.hold_input_during_ssh_connect(characters, false, ctx)
-    }
-
-    /// `control_sequence` marks an escape sequence (arrows, Tab, ...): held like typing, but
-    /// never swallowed while the setup dialog is up, which consumes those keys itself.
-    fn hold_input_during_ssh_connect(
-        &mut self,
-        characters: Option<&str>,
-        control_sequence: bool,
-        ctx: &mut ViewContext<Self>,
-    ) -> bool {
-        // The dialog only owns input while it belongs to the pending session. A choice block left
-        // behind by an earlier, abandoned connect must not swallow the keys of a later ssh
-        // command (host-key / password prompts) (#976).
-        let pending_now = self.model_facts().pending_session_id;
-        // Any block (not just the first) may be the current one: stale ones can precede it.
-        let dialog_up = choice_block_owns_input(
-            self.rich_content_views
-                .iter()
-                .filter_map(|view| match view.metadata() {
-                    Some(RichContentMetadata::SshRemoteServerChoiceBlock { handle }) => {
-                        Some(handle.as_ref(ctx).session_id())
-                    }
-                    _ => None,
-                }),
-            pending_now,
-        );
-        let setup_in_flight = FeatureFlag::SshRemoteServer.is_enabled()
-            && pending_now.is_some_and(|sid| {
-                self.sessions
-                    .as_ref(ctx)
-                    .remote_server_setup_state(sid)
-                    .is_some_and(|state| state.is_in_progress())
-            });
-        // #983: the window between the remote shell announcing itself (pending session) and its
-        // bootstrap finishing is the same hazard as the setup itself. Without this, keys typed
-        // during connect were dropped while setup was in flight but delivered once it resolved,
-        // so a typed command was cut in two (head lost or in the local shell, tail in the remote
-        // shell). Drop the whole run instead. Passwords and host-key prompts happen before the
-        // pending session exists, so they are unaffected.
-        //
-        // Bounded by an event, not by age (#1808): the held keys stay held while the session is
-        // pending, and a pending session whose bootstrap-failed give-up fired no longer holds
-        // (that net hands the keys back to the editor as text; a stale pending session left by
-        // a failed su/sudo -i must not eat a later plain ssh's typing).
-        let gate_armed = self.refresh_ssh_connect_gate();
-        // #1348: the gate released since the last event (a ceiling passed, a failed connect):
-        // hand over what is held before this key is judged, so it lands behind the held ones.
-        if !gate_armed && self.ssh_typeahead_holding {
-            self.deliver_ssh_typeahead_if_ready("key", ctx);
-        }
-        let pending_sid = if gate_armed || self.has_pending_ssh_command() {
-            self.model_facts().pending_session_id
-        } else {
-            None
-        };
-        let ssh_bootstrapping =
-            ssh_bootstrap_swallow_active(pending_sid, self.ssh_bootstrap_failed_session);
-        // #983 / #976: before the remote shell announces itself there is no pending session. Until
-        // ssh OWNS the tty (`CommandBecameInteractive` for the window's block, #1611, #1612,
-        // #1621) a key written to the pty could reach the local shell's line editor, so the whole
-        // run is held; at the ownership event the held keys go to ssh (or the termios guard
-        // discards them) and every later key passes straight through, as in a plain terminal.
-        // Nothing here reads the screen: a prompt's answers reach ssh because ssh owns the tty,
-        // not because the prompt was recognised.
-        let ssh_connecting_silently = pending_now.is_none() && self.ssh_connect_gate_drops_keys();
-        let gate_drops =
-            dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
-        self.log_ssh_drop_state(if gate_drops {
-            "key_gate_holds"
-        } else {
-            "key_gate_open"
-        });
-        // #1345: the facts this key was decided on.
-        warpui::input_order::log_key_hop("kh_hold_entry", || {
-            format!(
-                "gate_drops={gate_drops} dialog_up={dialog_up} holding={} held_bytes={} \
-                 control_sequence={control_sequence} gate_armed={gate_armed} \
-                 pending_session={} tty_owned={}",
-                self.ssh_typeahead_holding,
-                self.ssh_held_bytes(),
-                pending_now.is_some(),
-                self.ssh_connect_gate.as_ref().is_some_and(|g| g.tty_owned),
-            )
-        });
-        if dialog_up {
-            if control_sequence {
-                return false;
-            }
-            // The setup dialog owns the keyboard (#917): keys are for it, not for the remote
-            // shell, so they are dropped and focus goes back to the dialog.
-            self.redetermine_global_focus(ctx);
-            if !self.ssh_setup_drop_notified {
-                self.ssh_setup_drop_notified = true;
-                self.show_ssh_typing_toast(
-                    "Typing is ignored while the SSH setup prompt is open",
-                    ctx,
-                );
-            }
-            return true;
-        }
-        if !gate_drops && !self.ssh_typeahead_holding {
-            self.ssh_setup_drop_notified = false;
-            warpui::input_order::log_key_hop("kh_hold_exit", || {
-                format!(
-                    "branch=gate_open_live gate_armed={gate_armed} pending_session={}",
-                    pending_now.is_some()
-                )
-            });
-            return false;
-        }
-        // #1292: hold the key. Once anything is held every later key is held too, even where the
-        // gate alone would let it through, so order is kept; the held keys go to ssh once it owns
-        // the tty, or to the managed remote shell once it shows its first prompt.
-        // Keys the editor offered came before this one: they are already in the queue.
-        self.set_ssh_typeahead_holding(true);
-        match characters {
-            Some(chars) => {
-                let input = if control_sequence {
-                    HeldInput::Seq(chars.to_owned())
-                } else {
-                    HeldInput::from_chars(chars)
-                };
-                let outcome = self.ssh_hold_push(input, ctx);
-                self.note_ssh_typeahead_outcome(&outcome, ctx);
-            }
-            // The paste handler stores the text; only it has the clipboard.
-            None => self.ssh_paste_to_hold = true,
-        }
-        self.schedule_ssh_typeahead_give_up(ctx);
-        warpui::input_order::log_key_hop("kh_hold_exit", || {
-            format!("branch=held held_bytes={}", self.ssh_held_bytes())
-        });
-        true
+        // #1424: the table decides a live key (step 5; the only path since #1353 step 8).
+        self.arrive_via_table(dest_table::Arrival::Key(characters), ctx);
     }
 
     /// Tells the user once that the held keys were too many to keep (#1292).
@@ -12587,7 +12229,6 @@ impl TerminalView {
             format!("tty_owned=true held_bytes={}", self.ssh_held_bytes())
         });
         self.set_ssh_typeahead_holding(false);
-        self.ssh_paste_to_hold = false;
         self.ssh_typeahead_precmd_wait_since = None;
         if self.ssh_held_is_empty() {
             self.ssh_hold_clear();
@@ -12625,7 +12266,6 @@ impl TerminalView {
         self.ssh_release_held_locally = false;
         self.ssh_hold_clear();
         self.set_ssh_typeahead_holding(false);
-        self.ssh_paste_to_hold = false;
         self.ssh_typeahead_precmd_wait_since = None;
     }
 
@@ -12688,7 +12328,6 @@ impl TerminalView {
                 )
             });
             self.set_ssh_typeahead_holding(false);
-            self.ssh_paste_to_hold = false;
             self.ssh_typeahead_precmd_wait_since = None;
             if self.ssh_held_is_empty() {
                 self.ssh_hold_clear();
@@ -12758,47 +12397,6 @@ impl TerminalView {
         });
     }
 
-    /// Delivers one held control key the way the same key typed now would be routed: to the pty
-    /// where the pty takes typed text (Enter included, as after a deferred Enter), else to the
-    /// input editor, where Enter submits the line it holds.
-    fn replay_held_key(&mut self, key: &str, ctx: &mut ViewContext<Self>) {
-        // #1424: every held key is judged with the Enter class (it goes where the text before it
-        // went, `replayed_enter_goes_to_pty`), whatever the key is.
-        let shadow = self.shadow_begin(Class::Enter, ctx);
-        self.replay_held_key_legacy(key, ctx);
-        self.shadow_end(shadow);
-    }
-
-    fn replay_held_key_legacy(&mut self, key: &str, ctx: &mut ViewContext<Self>) {
-        if self.replayed_enter_goes_to_pty(ctx) {
-            note_shadow_leaf(DestClass::Pty);
-            self.report_possible_typeahead(key);
-            self.write_user_bytes_to_pty(key.as_bytes().to_vec(), ctx);
-            return;
-        }
-        let action = match key {
-            "\r" | "\n" | "\r\n" => {
-                note_shadow_leaf(DestClass::Editor);
-                self.input.update(ctx, |input, ctx| input.input_enter(ctx));
-                return;
-            }
-            "\u{7f}" | "\u{8}" => EditorAction::Backspace,
-            "\u{15}" => EditorAction::DeleteAllLeft,
-            "\u{17}" => EditorAction::DeleteWordLeft,
-            "\u{b}" => EditorAction::DeleteAllRight,
-            _ => {
-                note_shadow_leaf(DestClass::Dropped);
-                return;
-            }
-        };
-        note_shadow_leaf(DestClass::Editor);
-        self.input.update(ctx, |input, ctx| {
-            input
-                .editor()
-                .update(ctx, |editor, ctx| editor.handle_action(&action, ctx))
-        });
-    }
-
     /// The connect is over (#1292). With the remote shell at its first prompt the held keys are
     /// delivered to it, exactly as if typed there now. Otherwise the connect failed or ended
     /// without a remote shell and the keys were typed for a session that never came up: they are
@@ -12817,7 +12415,6 @@ impl TerminalView {
             )
         });
         self.set_ssh_typeahead_holding(false);
-        self.ssh_paste_to_hold = false;
         self.ssh_typeahead_precmd_wait_since = None;
         if self.ssh_held_is_empty() {
             self.ssh_hold_clear();
@@ -13154,20 +12751,6 @@ impl TerminalView {
         });
     }
 
-    /// #1123: one input_order line describing the ssh drop state, for telling a gate miss from
-    /// a typeahead hand-off loss in a capture. Lengths only, never the typed text.
-    fn log_ssh_drop_state(&self, what: &str) {
-        if warpui::input_order::enabled() {
-            log::debug!(
-                target: warpui::input_order::TARGET,
-                "ssh_drop {what} holding={} held_bytes={} gate_armed={}",
-                self.ssh_typeahead_holding,
-                self.ssh_held_bytes(),
-                self.ssh_connect_gate.is_some()
-            );
-        }
-    }
-
     /// Counts only, never the held keys.
     fn log_ssh_typeahead_delivery(&self, inputs: usize) {
         if warpui::input_order::enabled() {
@@ -13253,14 +12836,10 @@ impl TerminalView {
     }
 
     /// The event that shows an ssh running (preexec, the pending ssh host just set) arms the
-    /// connect window: by the edge machine in `table` mode, and in `legacy` here too, by the event
-    /// rather than the first terminal-routed key (#1565, #1424 step 7).
+    /// connect window, by the edge machine: the event, not the first terminal-routed key (#1565,
+    /// #1424 step 7).
     fn arm_ssh_connect_gate_at_preexec(&mut self, ctx: &mut ViewContext<Self>) {
-        if Self::ssh_events_own_the_gate() {
-            self.ssh_arm_gate_at_event(ctx);
-        } else {
-            self.refresh_ssh_connect_gate();
-        }
+        self.ssh_arm_gate_at_event(ctx);
     }
 
     /// Makes the gate consistent with the model and says whether it is still armed. Lazily arms
@@ -14023,185 +13602,12 @@ impl TerminalView {
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
     ///
-    /// The ordered rows that decide where it goes (ssh choice card, ssh interrupt, ssh setup hold,
-    /// enter queue, PowerShell setup hold, approval card, agent-owned pty, pty, hidden input box)
-    /// are `pane_key::route_typed`; this function acts on its answer.
+    /// The ordered rows that decide where it goes (ssh choice card, ssh setup hold, enter queue,
+    /// PowerShell setup hold, approval card, agent-owned pty, pty, hidden input box) are the
+    /// destination table's (`input_queue/table.rs`, #1424): `arrive_via_table` decides once and
+    /// executes the plan. The only path since #1353 step 8.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
-        // #1424: in `table` mode the table decides live text (step 5).
-        if self.arrives_via_table() {
-            self.arrive_via_table(dest_table::Arrival::Typed(characters), ctx);
-            return;
-        }
-        // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
-        let shadow = self.shadow_begin(Class::Typed, ctx);
-        self.typed_characters_on_terminal_legacy(characters, ctx);
-        self.shadow_end(shadow);
-    }
-
-    fn typed_characters_on_terminal_legacy(
-        &mut self,
-        characters: &str,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let _key_path = KeyPathScope::enter(&self.key_path_depth);
-        self.reprobe_interactive_latch_on_key();
-        // #1345: the terminal view received typed characters (a live key or the held ones being
-        // delivered); `chars` is a count, never the text.
-        warpui::input_order::log_key_hop("kh_terminal_typed_entry", || {
-            format!(
-                "chars={} ssh_holding={} gate_armed={}",
-                characters.chars().count(),
-                self.ssh_typeahead_holding,
-                self.ssh_connect_gate.is_some()
-            )
-        });
-        let route = {
-            let mut probes = TypedKeyProbes {
-                view: &mut *self,
-                ctx: &mut *ctx,
-                characters,
-            };
-            pane_key::route_typed(is_ssh_interrupt_key(characters), &mut probes)
-        };
-        let tail = match route {
-            // #1087: while the SSH-extension choice card holds focus the input editor is hidden
-            // and the card only takes arrows/Enter, so printable keys went nowhere, silently.
-            // They now show the card's "choose an option first" hint. They are not buffered for
-            // the session: see `SshRemoteServerChoiceView::typed_before_choice`.
-            TypedRoute::SshChoiceCardHint => {
-                note_shadow_leaf(DestClass::Hint);
-                if let Some(choice_card) = self.ssh_choice_card_holding_keys(ctx) {
-                    choice_card.update(ctx, |card, ctx| card.note_typed_before_choice(ctx));
-                }
-                return;
-            }
-            // Held, queued or swallowed by the probe that answered yes.
-            TypedRoute::SshInterruptHeld => {
-                // Dropped today (the toast says "held"); the table holds it (OD-5).
-                note_shadow_leaf(DestClass::Dropped);
-                return;
-            }
-            TypedRoute::SshSetupHeld => {
-                note_shadow_leaf(if self.ssh_typeahead_holding {
-                    DestClass::Held
-                } else {
-                    DestClass::Swallowed
-                });
-                return;
-            }
-            TypedRoute::QueuedBehindEnter => {
-                note_shadow_leaf(DestClass::Held);
-                return;
-            }
-            // #1048: during a PowerShell subshell setup every key joins the held keys, whatever
-            // block is active (after the setup's first `Precmd` the editor would take it and drop
-            // its Enter).
-            TypedRoute::PowerShellHeld => {
-                note_shadow_leaf(DestClass::Held);
-                let bytes = characters.as_bytes().to_vec();
-                if self.input_is_synced() {
-                    self.write_passive_input_to_pty(bytes, ctx);
-                } else {
-                    self.write_user_bytes_to_pty(bytes, ctx);
-                }
-                return;
-            }
-            TypedRoute::Deliver(tail) => tail,
-        };
-        let mut written_to_pty = false;
-        if tail.try_pty {
-            self.highlighted_link.invalidate();
-            self.report_possible_typeahead(characters);
-            let bytes = characters.as_bytes().to_vec();
-            // #1855: synced input is passive in both modes (it never takes over an agent's command).
-            written_to_pty = if self.input_is_synced() {
-                self.write_passive_input_to_pty(bytes, ctx)
-            } else {
-                self.write_user_bytes_to_pty(bytes, ctx)
-            };
-        }
-        warpui::input_order::log_key_hop("kh_terminal_typed_routed", || {
-            format!(
-                "written_to_pty={written_to_pty} approval_card={} agent_owns_typing={}",
-                tail.approval_card, tail.agent_owns_typing
-            )
-        });
-        if written_to_pty && tail.settled_ai_target {
-            self.focus_terminal(ctx);
-        }
-        // The pty refused the bytes for another reason (e.g. the alt screen) and the input is
-        // hidden: keep the old behaviour and drop them. Not when the agent owns the command
-        // (#1179): those keys are the user's steer text, buffered in the input (shown, with the
-        // text, once it is visible) instead of discarded.
-        let action = {
-            let mut probes = TypedKeyProbes {
-                view: &mut *self,
-                ctx: &mut *ctx,
-                characters,
-            };
-            pane_key::after_pty_attempt(&tail, written_to_pty, &mut probes)
-        };
-        note_shadow_leaf(match action {
-            TailAction::Done => DestClass::Pty,
-            TailAction::InsertIntoEditor => DestClass::Editor,
-            TailAction::DropHiddenInput => DestClass::Dropped,
-        });
-        if action == TailAction::InsertIntoEditor {
-            // We should only insert typed characters into the input box buffer.
-            // When input_sequence is triggered on KeyDown, we should focus
-            // on the input area and let the editor view handle the TypedCharacters
-            // event. When it is triggered on TypedCharacters, we should pass
-            // the received string down to input view.
-
-            // Only clear selected blocks and text if we're not in AI mode since in AI mode we
-            // don't want to clear the selected blocks or text (context) when we start typing.
-            // When `FeatureFlag::AgentView` is enabled, blocks are attachable as AI context in
-            // terminal mode. Selections are preserved so they can be attached to the query when
-            // entering the agent view.
-            if !self.ai_render_context.borrow().is_ai_input_enabled
-                && !FeatureFlag::AgentView.is_enabled()
-            {
-                self.clear_selected_blocks(ctx);
-                self.clear_selected_text(ctx);
-            }
-
-            self.update_scroll_position_locking(ScrollPositionUpdate::AfterTypedCharacters, ctx);
-            // #1028: keys typed while the approval card holds focus move focus to the input
-            // with them, so a following Enter submits the follow-up instead of reaching the
-            // card's Enter -> Run binding.
-            if tail.approval_card || tail.settled_ai_target {
-                self.focus_input_box(ctx);
-            }
-            self.input
-                .update(ctx, |input, ctx| input.system_insert(characters, ctx));
-            warpui::input_order::log_key_hop("kh_terminal_inserted", || {
-                format!(
-                    "buffer_chars={}",
-                    self.input.as_ref(ctx).buffer_text(ctx).chars().count()
-                )
-            });
-            if self.focus_reclaim_active(ctx) {
-                // Keys that arrive before the card's replacement settles keep going to the
-                // input, so focus has to follow them there.
-                self.place_focus_after_card_resolved(ctx);
-            }
-        }
-    }
-
-    /// #1217: whether a replayed Enter goes to the pty: exactly when `typed_characters_on_terminal`
-    /// would have written the text before it there. Printable keys that belong to the agent's
-    /// input (a pending approval card or an AI block awaiting confirmation holds focus, or the
-    /// agent drives the running command, #1179) take their Enter with them to the editor.
-    fn replayed_enter_goes_to_pty(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        if self.typed_on_approval_card(ctx)
-            || self.typed_on_ai_block_awaiting_confirmation(ctx)
-            || self.agent_owns_command_pty()
-        {
-            return false;
-        }
-        self.should_write_typed_chars_to_pty(ctx)
-            || self.is_long_running()
-            || self.typeahead_handoff_routes_keys_to_pty()
+        self.arrive_via_table(dest_table::Arrival::Typed(characters), ctx);
     }
 
     /// Routes what the user typed behind an Enter that waited for its classification verdict
@@ -14230,43 +13636,6 @@ impl TerminalView {
             return;
         }
         self.settle_enter_queue(ctx);
-    }
-
-    /// Routes one key that was typed behind an Enter that waited, as if it had just been typed.
-    /// Called by the pane queue's drain when it delivers the entry (`PtyQueueHost`), so the write
-    /// it makes passes through the paste stage (the queue is mid-drain) and the Enter it replays
-    /// that waits again hands its gate back to the drain ([`Input::take_stashed_gate`]).
-    fn route_after_enter_input(&mut self, input: &AfterEnterInput, ctx: &mut ViewContext<Self>) {
-        // Legacy-only (#1587): `PtyQueueHost::deliver_entry` (view/paste_queue.rs) reaches this only
-        // when the destination mode is not Table; Table uses `deliver_replayed_entry_table`.
-        debug_assert!(
-            input_queue::destination_mode() != input_queue::DestinationMode::Table,
-            "legacy-only path (#1587)"
-        );
-        match input {
-            AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
-            AfterEnterInput::Enter => {
-                // #1424: the shadow comparison for the replayed Enter (class Enter, origin Replay).
-                let shadow = self.shadow_begin(Class::Enter, ctx);
-                if self.replayed_enter_goes_to_pty(ctx) {
-                    // #1571: the text before this Enter went through `typed_characters_on_terminal`,
-                    // which holds it while an ssh connects (the command the held line started);
-                    // the Enter joins it there, in order, instead of reaching the tty first.
-                    if self.swallow_input_during_ssh_setup(Some("\r"), ctx) {
-                        note_shadow_leaf(DestClass::Held);
-                        self.shadow_end(shadow);
-                        return;
-                    }
-                    note_shadow_leaf(DestClass::Pty);
-                    self.report_possible_typeahead("\r");
-                    self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
-                } else {
-                    note_shadow_leaf(DestClass::Editor);
-                    self.input.update(ctx, |input, ctx| input.input_enter(ctx));
-                }
-                self.shadow_end(shadow);
-            }
-        }
     }
 
     /// #1353 phase 3: the Enter whose gate holds keys has run. They are released (in order, by the
@@ -14484,16 +13853,14 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let bytes: Cow<'static, [u8]> = data.into();
-        // #1424 (step 6): the agent origin's row (D13). In `table` mode the table refuses the write
-        // while a setup gate or the ssh remote setup owns the pty; in `shadow` mode it is compared
-        // with what the legacy gate below did.
+        // #1424 (step 6): the agent origin's row (D13). The table refuses the write while a setup
+        // gate or the ssh remote setup owns the pty.
         let row = self.begin_origin_row(Class::AgentWrite, input_queue::Origin::Agent, ctx);
         if row.refused() {
             log::warn!(
                 "refused {} agent byte(s) for the pty: a setup owns it (#1431, row D13)",
                 bytes.len()
             );
-            self.end_origin_row(row, false);
             return;
         }
         // #1431: the agent answers a prompt (or quits a pager) in a command it drives; while an
@@ -14506,7 +13873,6 @@ impl TerminalView {
                 "refused {} agent byte(s) for the pty: {gate} is in progress (#1431)",
                 bytes.len()
             );
-            self.end_origin_row(row, false);
             return;
         }
         // #1178: a ^C the agent writes into its command interrupts it.
@@ -14533,7 +13899,6 @@ impl TerminalView {
             )
         });
         ctx.emit(Event::WriteAgentInputToPty { bytes, mode: *mode });
-        self.end_origin_row(row, true);
     }
 
     /// Writes a shared session viewer's bytes to the pty.
@@ -14549,10 +13914,9 @@ impl TerminalView {
     #[cfg(test)]
     pub fn write_viewer_bytes_to_pty(&mut self, bytes: Vec<u8>, ctx: &mut ViewContext<Self>) {
         let is_ctrl_c = bytes == [0x03];
-        // #1424: the viewer origin (the full destination rows apply; shadow compares them).
-        let row = self.begin_origin_row(Class::Raw, input_queue::Origin::Viewer, ctx);
+        // #1424: the viewer origin (the plan is logged; the writer's stages apply the rows).
+        let _ = self.begin_origin_row(Class::Raw, input_queue::Origin::Viewer, ctx);
         let forwarded = self.write_user_bytes_to_pty(bytes, ctx);
-        self.end_origin_row(row, forwarded);
         if forwarded && is_ctrl_c && FeatureFlag::CtrlCCancelsThirdPartyHarness.is_enabled() {
             let terminal_view_id = self.view_id;
             CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
@@ -14891,7 +14255,6 @@ impl TerminalView {
         // and, as that shape flipped from key to key, out of order. Every key is held instead.
         if !is_queue_signal_key(&bytes) && self.holds_keys_for_powershell_subshell_setup() {
             input_queue::trace::hold(input_queue::trace::legacy::SUBSHELL_SETUP, bytes.len());
-            note_shadow_leaf(DestClass::Held);
             self.hold_powershell_keys(bytes.into_owned(), takes_over_agent_control, ctx);
             return true;
         }
@@ -15106,7 +14469,6 @@ impl TerminalView {
                 let row = self.begin_origin_row(Class::Raw, input_queue::Origin::Synced, ctx);
                 let written =
                     !row.refused() && self.write_passive_input_to_pty(err.into_bytes(), ctx);
-                self.end_origin_row(row, written);
                 if !written {
                     self.synced_in_flight = self.synced_in_flight.saturating_sub(len);
                 }
@@ -26347,7 +25709,6 @@ impl TerminalView {
                 });
                 self.ssh_release_held_locally = false;
                 self.set_ssh_typeahead_holding(false);
-                self.ssh_paste_to_hold = false;
                 self.ssh_typeahead_precmd_wait_since = None;
                 self.ssh_hold_hand_back_unexecuted_text(ctx);
                 // The hold is over: its overflow state goes with it (the gate is detached).
@@ -27286,103 +26647,53 @@ impl TerminalView {
     }
 
     fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
-        let table_mode = input_queue::destination_mode() == input_queue::DestinationMode::Table;
-        // #1853: in `table` mode ONE phase source decides the paste and the keys around it, the
-        // ssh edge machine through the table's plan; the legacy probe (and the legacy refreshers
-        // it runs) is not consulted, or a paste could be judged "open" while the keys typed just
+        // #1853: ONE phase source decides the paste and the keys around it, the ssh edge machine
+        // through the table's plan, or a paste could be judged "open" while the keys typed just
         // before it are held and reach the pty ahead of them.
-        let table_plan = if table_mode {
-            // #1895: a window released without a hand-over hands over BEFORE the paste is judged,
-            // as `arrive_via_table` does for a key, so the paste lands behind the held keys.
-            if self.ssh_handover_after_release {
-                self.deliver_ssh_typeahead_if_ready("released_before_key", ctx);
+        // #1895: a window released without a hand-over hands over BEFORE the paste is judged, as
+        // `arrive_via_table` does for a key, so the paste lands behind the held keys.
+        if self.ssh_handover_after_release {
+            self.deliver_ssh_typeahead_if_ready("released_before_key", ctx);
+        }
+        // #1424 (step 6): the table routes a paste (the destination rows, on facts that take no
+        // blocking model lock).
+        let (plan, needs_bracketed_paste) = self.paste_plan_via_table(ctx);
+        match plan.outcome {
+            // Held behind the ssh connect, in typed order with the held keys.
+            Outcome::Hold(input_queue::GateKind::SshConnect) => {
+                self.ssh_ensure_window_for_hold(ctx);
+                self.set_ssh_typeahead_holding(true);
+                self.schedule_ssh_typeahead_give_up(ctx);
+                self.hold_ssh_paste(middle_click, ctx);
+                return;
             }
-            let routing_shadow = self.shadow_begin(Class::Paste, ctx);
-            let planned = self.paste_plan_via_table(ctx);
-            match planned.0.outcome {
-                // Held behind the ssh connect, in typed order with the held keys.
-                Outcome::Hold(input_queue::GateKind::SshConnect) => {
-                    self.shadow_end(routing_shadow);
-                    self.ssh_ensure_window_for_hold(ctx);
-                    self.set_ssh_typeahead_holding(true);
-                    self.schedule_ssh_typeahead_give_up(ctx);
-                    self.hold_ssh_paste(middle_click, ctx);
-                    return;
-                }
-                Outcome::Swallow(_) => {
-                    self.shadow_end(routing_shadow);
-                    self.redetermine_global_focus(ctx);
-                    self.show_error_toast(
-                        "Paste ignored \u{2014} the ssh setup prompt is open".to_string(),
-                        ctx,
-                    );
-                    return;
-                }
-                Outcome::Hint => {
-                    self.shadow_end(routing_shadow);
-                    if let Some(choice_card) = self.ssh_choice_card_holding_keys(ctx) {
-                        choice_card.update(ctx, |card, ctx| card.note_typed_before_choice(ctx));
-                    }
-                    return;
-                }
-                Outcome::Drop(why) => {
-                    self.shadow_end(routing_shadow);
-                    log::info!("input queue: a paste was dropped: why={why:?}");
-                    return;
-                }
-                // A PowerShell / subshell setup hold: the paste is a queue entry behind the
-                // setup's gate and the keys held before it, delivered in order.
-                _ => Some((planned, routing_shadow)),
+            Outcome::Swallow(_) => {
+                // Only the setup dialog drops a paste; say why nothing happened (#1255).
+                self.redetermine_global_focus(ctx);
+                self.show_error_toast(
+                    "Paste ignored \u{2014} the ssh setup prompt is open".to_string(),
+                    ctx,
+                );
+                return;
             }
-        } else {
-            // A paste is typed text: it is held exactly when typing would be (#1292).
-            if self.swallow_input_during_ssh_setup(None, ctx) {
-                if std::mem::take(&mut self.ssh_paste_to_hold) {
-                    self.hold_ssh_paste(middle_click, ctx);
-                } else {
-                    // Only the setup dialog drops a paste now; say why nothing happened (#1255).
-                    self.show_error_toast(
-                        "Paste ignored \u{2014} the ssh setup prompt is open".to_string(),
-                        ctx,
-                    );
+            Outcome::Hint => {
+                if let Some(choice_card) = self.ssh_choice_card_holding_keys(ctx) {
+                    choice_card.update(ctx, |card, ctx| card.note_typed_before_choice(ctx));
                 }
                 return;
             }
-            None
-        };
+            Outcome::Drop(why) => {
+                log::info!("input queue: a paste was dropped: why={why:?}");
+                return;
+            }
+            // A PowerShell / subshell setup hold: the paste is a queue entry behind the setup's
+            // gate and the keys held before it, delivered in order.
+            _ => {}
+        }
         // #1179: an agent-driven command's pty takes no user bytes, so a paste is steer text for
-        // the agent's input, exactly as typed characters are. Computed before the model lock.
-        let agent_owns_pty = self.agent_owns_command_pty();
-        // #1424 (step 6): in `table` mode the table routes a paste (the destination rows, on facts
-        // that take no blocking model lock); in `shadow` mode it is compared with the legacy route.
-        let (routing_shadow, (should_paste_in_input, needs_bracketed_paste)) = match table_plan {
-            Some(((plan, bracketed), routing_shadow)) => (
-                routing_shadow,
-                (
-                    matches!(plan.outcome, Outcome::EditorInsert | Outcome::AgentInput),
-                    bracketed,
-                ),
-            ),
-            None => (
-                self.shadow_begin(Class::Paste, ctx),
-                self.paste_routing(agent_owns_pty, ctx),
-            ),
-        };
-        // A paste made while the pane queue holds input waits behind it, whichever way it routes.
-        let queue_holds = self
-            .paste_queue
-            .queue
-            .try_peek()
-            .is_some_and(|queue| queue.holds_keys())
-            && !self.only_ssh_gates_open();
-        note_shadow_leaf(if queue_holds {
-            DestClass::Held
-        } else if should_paste_in_input {
-            DestClass::Editor
-        } else {
-            DestClass::Pty
-        });
-        self.shadow_end(routing_shadow);
+        // the agent's input, exactly as typed characters are (rows D1 / D2).
+        let should_paste_in_input =
+            matches!(plan.outcome, Outcome::EditorInsert | Outcome::AgentInput);
 
         let is_cli_agent_paste =
             !should_paste_in_input && !middle_click && self.has_active_cli_agent_session(ctx);
@@ -34405,10 +33716,7 @@ impl TerminalView {
                     );
                 }
             }
-        } else if self.nav_key_goes_to_pty(
-            self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty(),
-            ctx,
-        ) {
+        } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             self.on_ssh_warpification_key_event(None, ctx);
             let sequence = self.build_cursor_key_sequence(&[EscCodes::ARROW_UP]);
             self.write_passive_input_to_pty(sequence, ctx);
@@ -34565,20 +33873,14 @@ impl TerminalView {
                     self.select_less_recent_block(false /* is_cmd_down */, ctx);
                 }
             }
-        } else if self.nav_key_goes_to_pty(
-            self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty(),
-            ctx,
-        ) {
+        } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             let sequence = self.build_cursor_key_sequence(&[EscCodes::ARROW_DOWN]);
             self.write_passive_input_to_pty(sequence, ctx);
         }
     }
 
     fn page_up(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.nav_key_goes_to_pty(
-            self.is_long_running() && !self.agent_owns_command_pty(),
-            ctx,
-        ) {
+        if self.is_long_running() && !self.agent_owns_command_pty() {
             // Note: We explicitly use the CSI prefix, as the terminal we are impersonating
             // (`xterm-256color`) has the escape sequence for page up defined with that prefix
             let sequence = EscCodes::build_escape_sequence_with_c1(C1::CSI, EscCodes::PAGE_UP);
@@ -34589,10 +33891,7 @@ impl TerminalView {
     }
 
     fn page_down(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.nav_key_goes_to_pty(
-            self.is_long_running() && !self.agent_owns_command_pty(),
-            ctx,
-        ) {
+        if self.is_long_running() && !self.agent_owns_command_pty() {
             // Note: We explicitly use the CSI prefix, as the terminal we are impersonating
             // (`xterm-256color`) has the escape sequence for page down defined with that prefix
             let sequence = EscCodes::build_escape_sequence_with_c1(C1::CSI, EscCodes::PAGE_DOWN);
@@ -34613,11 +33912,9 @@ impl TerminalView {
     }
 
     fn move_home(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.nav_key_goes_to_pty(
-            (self.is_long_running() && !self.agent_owns_command_pty())
-                || self.typeahead_handoff_routes_keys_to_pty(),
-            ctx,
-        ) {
+        if (self.is_long_running() && !self.agent_owns_command_pty())
+            || self.typeahead_handoff_routes_keys_to_pty()
+        {
             let sequence = self.build_cursor_key_sequence(b"H");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {
@@ -34626,11 +33923,9 @@ impl TerminalView {
     }
 
     fn move_end(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.nav_key_goes_to_pty(
-            (self.is_long_running() && !self.agent_owns_command_pty())
-                || self.typeahead_handoff_routes_keys_to_pty(),
-            ctx,
-        ) {
+        if (self.is_long_running() && !self.agent_owns_command_pty())
+            || self.typeahead_handoff_routes_keys_to_pty()
+        {
             let sequence = self.build_cursor_key_sequence(b"F");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {
@@ -40337,112 +39632,6 @@ impl Drop for KeyPathScope {
     }
 }
 
-/// The questions `pane_key::route_typed` asks about a key on the terminal destination, answered
-/// by the view. A probe that answers yes has already acted (held, queued or swallowed the key).
-struct TypedKeyProbes<'a, 'b> {
-    view: &'a mut TerminalView,
-    ctx: &'a mut ViewContext<'b, TerminalView>,
-    characters: &'a str,
-}
-
-impl pane_key::TypedRouteProbes for TypedKeyProbes<'_, '_> {
-    fn ssh_choice_card_up(&mut self) -> bool {
-        self.view.ssh_choice_card_holding_keys(self.ctx).is_some()
-    }
-
-    fn ssh_interrupt_held(&mut self) -> bool {
-        // #1001: an interrupt must not land in the middle of the remote bootstrap script, nor in
-        // the connect window before the remote session is announced (#983/#1001).
-        let held = self.view.ssh_bootstrap_interrupt_route()
-            == Some(SshBootstrapInterruptRoute::Hold)
-            || self.view.ssh_gate_holds_interrupt()
-            || (self.characters == "\u{4}" && self.view.ssh_connect_holds_eot());
-        if held {
-            self.view.note_ssh_interrupt_held(self.ctx);
-        }
-        held
-    }
-
-    fn ssh_interrupt_passes(&mut self) {
-        // The interrupt passes straight through; what was typed before it is stale, as the tty's
-        // own input flush on ^C would make it.
-        self.view.reset_ssh_typeahead();
-    }
-
-    fn ssh_setup_holds_key(&mut self) -> bool {
-        self.view
-            .swallow_input_during_ssh_setup(Some(self.characters), self.ctx)
-    }
-
-    fn enter_queue_takes_key(&mut self) -> bool {
-        // #1353 phase 3: behind an Enter whose gate is open on the input queue, in the same order.
-        if !self
-            .view
-            .input
-            .as_ref(self.ctx)
-            .enter_queue_holds_keys(self.ctx)
-        {
-            return false;
-        }
-        let characters = self.characters;
-        // #1900: synced input keeps its origin behind the Enter's gate (a relay must stay passive
-        // when it is delivered).
-        if self.view.held_input_origin() == input_queue::Origin::Synced {
-            return self.view.queue_synced_behind_enter(
-                AfterEnterInput::Text(characters.to_string()),
-                None,
-                self.ctx,
-            );
-        }
-        self.view.input.update(self.ctx, |input, ctx| {
-            input.queue_behind_enter(AfterEnterInput::Text(characters.to_string()), ctx)
-        })
-    }
-
-    fn note_warpification_key(&mut self) {
-        self.view.on_ssh_warpification_key_event(
-            Some(SshKeyEvent::from_chars(self.characters)),
-            self.ctx,
-        );
-    }
-
-    fn powershell_setup_holds(&mut self) -> bool {
-        self.view.holds_keys_for_powershell_subshell_setup()
-    }
-
-    fn on_approval_card(&mut self) -> bool {
-        // #1028: while the pending approval card holds focus, printable keys are for the agent
-        // input (a follow-up), never the running command underneath, even when the pty would take
-        // them. #1095: so is an AI block that holds focus itself while one of its actions awaits
-        // confirmation (its Enter approves).
-        self.view.typed_on_approval_card(self.ctx)
-            || self.view.typed_on_ai_block_awaiting_confirmation(self.ctx)
-    }
-
-    fn on_settled_ai_target(&mut self) -> bool {
-        // #1095: focus left on a settled action card or an AI block takes no printable keys;
-        // route them as if the terminal held focus, and let focus follow them.
-        self.view.typed_on_settled_ai_target(self.ctx)
-    }
-
-    fn agent_owns_typing(&mut self) -> bool {
-        // #1179: an agent-driven command's pty takes no user bytes; the text is for the agent's
-        // input. Ctrl-C / Ctrl-D keep their own route to the command.
-        !is_abort_key(self.characters.as_bytes()) && self.view.agent_owns_command_pty()
-    }
-
-    fn pty_takes_input(&mut self) -> bool {
-        self.view.should_write_typed_chars_to_pty(self.ctx)
-    }
-
-    fn input_box_visible(&mut self) -> bool {
-        // From the key snapshot: the exact state when the model is free, else the copy the model
-        // published after its last parse. A key never waits for the pty reader (#1440).
-        let facts = self.view.read_key_snapshot().input_box;
-        self.view.is_input_box_visible_with(&facts, self.ctx)
-    }
-}
-
 impl View for TerminalView {
     fn ui_name() -> &'static str {
         "Terminal"
@@ -41727,11 +40916,11 @@ fn is_abort_key(bytes: &[u8]) -> bool {
     matches!(bytes, [0x03] | [0x04])
 }
 
-/// The keys the pane QUEUE jumps for (#1424, OD-1): Ctrl-C and Ctrl-D, and in `table` mode Ctrl-Z
-/// and Ctrl-\ too (`paste_queue::queue_signal_of`). The writer's stages use this where they used
+/// The keys the pane QUEUE jumps for (#1424, OD-1): Ctrl-C, Ctrl-D, Ctrl-Z and Ctrl-\
+/// (`paste_queue::signal_of`). The writer's stages use this where they used
 /// `is_abort_key`; the PowerShell abort machine (`AfterAbort`) stays Ctrl-C / Ctrl-D only.
 fn is_queue_signal_key(bytes: &[u8]) -> bool {
-    paste_queue::queue_signal_of(bytes).is_some()
+    paste_queue::signal_of(bytes).is_some()
 }
 
 /// Pure routing rule for a pane whose subshell bootstrap is announced but unfinished (#960):
@@ -42168,11 +41357,6 @@ fn output_has_visible_text(output: &str) -> bool {
     output
         .chars()
         .any(|c| !c.is_whitespace() && !c.is_control())
-}
-
-/// Keys that always reach ssh (Ctrl-C, Ctrl-D, Ctrl-Z, Ctrl-\) so a hung connect can be aborted.
-fn is_ssh_interrupt_key(characters: &str) -> bool {
-    matches!(characters, "\u{3}" | "\u{4}" | "\u{1a}" | "\u{1c}")
 }
 
 /// Whether typing is still held for a pending ssh bootstrap (#983, #1808). Pure: held while a

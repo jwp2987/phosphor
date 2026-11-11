@@ -38,90 +38,71 @@
 //! `view/paste_queue.rs`. The old holders and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are
 //! gone; the revert path is git.
 //!
-//! DESTINATION TABLE (#1424, steps 1-6 of the approved design). Where an input goes is still
-//! decided by the chain of predicates inside delivery (`route_typed`, `keydown_on_terminal`,
-//! `after_paste_stage`, `deliver_replayed_entry`, ...). The replacement is one pure function,
+//! DESTINATION TABLE (#1424; the ONLY destination path since #1353 step 8). Where an input goes
+//! is decided by one pure function,
 //! [`table::decide`]`(intent, &RouteFacts, pin) -> Plan { outcome, effects, on_refused, row }`
 //! (`table.rs`: every hold row H1-H10, destination row D1-D13, signal row P1-P2 and origin row, the
-//! four per-class pty predicates exactly as legacy computes them, the gate x class matrix of H8
-//! including #1423's editor exemption, and `signal_plan` per gate and signal). What exists
-//! and what does not:
-//!  - LIVE (changes no behaviour): the facts and the stamp. [`RouteFacts`] is built by
-//!    `TerminalView::build_route_facts` (`view/route_facts.rs`) without a blocking lock and without
-//!    `in_key_path()`, from a consistent read of the two published model cells (a `facts_gen` in
-//!    both, a reader retry until they agree), the pane's [`PaneRouteState`] and live reads. Every
-//!    entry carries a [`Stamp`] taken at the sink (`on_pane_key_event`) -- the model gen it saw, the
-//!    focus chain, the focus epoch -- through the deferred mailbox (`Deferred::Offer { .. stamp }`)
-//!    and follow-ups, so a key judged later still has the classification it had when typed (the
-//!    focus rows). [`SshPhase`], [`SubshellPhase`] and [`PsPhase`] are DERIVED read-only
-//!    from the legacy fields; no refresher moved off the key path.
-//!  - SHADOW (step 3, `shadow.rs`, `view/dest_table.rs`): in `shadow` mode the legacy entry points
-//!    (`typed_characters_on_terminal`, `keydown_on_terminal`, `control_sequence_on_terminal`, the
-//!    replayed Enter / held key) ask the table what it would decide, with the stamp and the facts
-//!    of the same moment, BEFORE the legacy chain runs; the chain notes the destination class it
-//!    reached at its leaf; a difference is logged as `kh_dest_disagree row=.. legacy=.. table=..
-//!    flags=..` (`input_order` target, debug, counts and flags only, never text), tagged
-//!    `expected=OD1|OD5|B3|B7|B13|B14` where the cause is a known bug or a deliberate change.
-//!    Shadow proves DESTINATIONS only and changes no behaviour. It runs when the mode is `shadow`
-//!    and `RUST_LOG=warp::input_order=debug` is on.
-//!  - DELIVERY THROUGH THE TABLE (step 4, the #1415 fix, `view/dest_table.rs`, ONLY in `table`
-//!    mode): text and Enters replayed behind an Enter that waited (`EntryKind::Text` /
-//!    `Enter`) and every ssh-held input (`EntryKind::Held`, all five classes) are no longer
-//!    delivered by calling the legacy chain (`typed_characters_on_terminal` & co., which could hold
-//!    the input again from inside the delivery). `TerminalView::deliver_via_table` runs the legacy
-//!    ssh refreshers (the lazy arming of the connect gate), builds the facts of
-//!    that moment (no gate covers a delivered entry), decides ONCE with the entry's own stamp, and
-//!    executes the plan with the leaf writers legacy ended in (`write_user_bytes_to_pty_after_paste_
-//!    stage`, the editor's insert / Enter, a requeue under the `SshConnect` gate for a hold).
-//!    A `HELD_SIGNAL` entry is executed (the signal goes to the pty through the leaf, after the
-//!    keys typed before it).
-//!  - ARRIVAL OF TERMINAL KEYS (step 5, `view/dest_table.rs`, ONLY in `table` mode): the three
-//!    entry points a live key arrives at (`typed_characters_on_terminal`, `keydown_on_terminal`,
+//! four per-class pty predicates, the gate x class matrix of H8 including #1423's editor exemption,
+//! and `signal_plan` per gate and signal). The chain of predicates it replaced (`route_typed`, the
+//! bodies of `typed_characters_on_terminal` / `keydown_on_terminal` /
+//! `control_sequence_on_terminal`, `hold_input_during_ssh_connect`, the legacy deliveries), its kill
+//! switch (`PHOSPHOR_QUEUE_DESTINATION=legacy`) and the `shadow` comparison were removed in step 8
+//! (`docs/design/r17-step8.md`). What exists:
+//!  - THE FACTS AND THE STAMP. [`RouteFacts`] is built by `TerminalView::build_route_facts`
+//!    (`view/route_facts.rs`) without a blocking lock and without `in_key_path()`, from a
+//!    consistent read of the two published model cells (a `facts_gen` in both, a reader retry
+//!    until they agree), the pane's [`PaneRouteState`] and live reads. Every entry carries a
+//!    [`Stamp`] taken at the sink (`on_pane_key_event`) -- the model gen it saw, the focus chain,
+//!    the focus epoch -- through the deferred mailbox (`Deferred::Offer { .. stamp }`) and
+//!    follow-ups, so a key judged later still has the classification it had when typed (the focus
+//!    rows). [`SubshellPhase`] and [`PsPhase`] are DERIVED read-only from the view's fields;
+//!    [`SshPhase`] is the edge-driven machine's.
+//!  - DELIVERY (step 4, the #1415 fix, `view/dest_table.rs`): text and Enters replayed behind an
+//!    Enter that waited (`EntryKind::Text` / `Enter`) and every ssh-held input (`EntryKind::Held`,
+//!    all five classes). `TerminalView::deliver_via_table` builds the facts of that moment (no gate
+//!    covers a delivered entry), decides ONCE with the entry's own stamp, and executes the plan
+//!    with the leaf writers (`write_user_bytes_to_pty_after_paste_stage`, the editor's insert /
+//!    Enter, a requeue under the `SshConnect` gate for a hold). A `HELD_SIGNAL` entry is executed
+//!    (the signal goes to the pty through the leaf, after the keys typed before it).
+//!  - ARRIVAL OF TERMINAL KEYS (step 5, `view/dest_table.rs`): the three entry points a live key
+//!    arrives at (`typed_characters_on_terminal`, `keydown_on_terminal`,
 //!    `control_sequence_on_terminal`) hand the input to `TerminalView::arrive_via_table`. It takes
-//!    the stamp first, runs the legacy refreshers, builds the facts WITH the queue's (open gates,
-//!    queued entries, the mailbox), decides once and executes the plan with the same leaf writers.
-//!    The idle path is the plan `Pty` executed at once; a key a gate holds (H5-H8) is offered as
-//!    destination-neutral content (`Text`, `Enter`, a `Held` key) that the queue's delivery decides
-//!    again when the gate opens; the keys behind the hand-off's gates and the PowerShell setup are
-//!    written through the legacy writer, which holds them as bytes (those gates give bytes back).
-//!    ^Z and ^\ are signals for the queue (`paste_queue::queue_signal_of`), and a signal in the ssh
-//!    setup window is held as a `HELD_SIGNAL` entry (`ssh_hold_push_signal`). The H8 matrix
+//!    the stamp first, runs the refreshers a key needs, builds the facts WITH the queue's (open
+//!    gates, queued entries, the mailbox), decides once and executes the plan with the same leaf
+//!    writers. The idle path is the plan `Pty` executed at once; a key a gate holds (H5-H8) is
+//!    offered as destination-neutral content (`Text`, `Enter`, a `Held` key) that the queue's
+//!    delivery decides again when the gate opens; the keys behind the hand-off's gates and the
+//!    PowerShell setup are written through the writer, which holds them as bytes (those gates give
+//!    bytes back). ^Z and ^\ are signals for the queue (`paste_queue::signal_of`), and a signal in
+//!    the ssh setup window is held as a `HELD_SIGNAL` entry (`ssh_hold_push_signal`). The H8 matrix
 //!    (`table::gate_holds`) has its editor column (`InputQueue::editor_key_passes_gates_by_table`,
-//!    used by the editor's hold decision in `table` mode and compared with it in `shadow`).
-//!  - ORIGIN ROWS AND PASTE (step 6, `table` mode, compared in `shadow`): synced input
-//!    (`O-synced`: judged as synced input, refused for a pane with no running command), the paced
-//!    CLI-agent submit (`O-cli-submit`) and the shared-session viewer decide at their writers
-//!    (`begin_origin_row` / `end_origin_row`); the agent's write consults row D13 at its writer;
-//!    a terminal paste is routed by the destination rows (`paste_routing_via_table`) instead of
-//!    `paste_routing`'s blocking model lock; the navigation keys of the key bindings are compared
-//!    in `shadow` (`nav_key_goes_to_pty`). `view/dest_table.rs` audits every pty write call site
-//!    (routed or not, and why).
+//!    the editor's hold decision).
+//!  - ORIGIN ROWS AND PASTE (step 6): synced input (`O-synced`: judged as synced input, refused
+//!    for a pane with no running command), the paced CLI-agent submit (`O-cli-submit`) and the
+//!    shared-session viewer decide at their writers (`begin_origin_row`); the agent's write
+//!    consults row D13 at its writer; a terminal paste is routed by the destination rows
+//!    (`paste_plan_via_table`) instead of `paste_routing`'s blocking model lock.
+//!    `view/dest_table.rs` audits every pty write call site (routed or not, and why).
 //!  - PURE, NOT CALLED: `destination_for_fixed` (fixes B12, the inverted hidden-input branch of
 //!    `destination_for`), the `ReleasedFrom` origin (no producer yet),
 //!    `TypeaheadHandoff::peek_user_bytes_route`.
-//!  - THE SWITCH: `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`], parsed like
-//!    `PHOSPHOR_PANE_KEY`). Default `table` (unset or empty, owner 2026-11-02, a627d297c): the
-//!    table decides at delivery from the real facts (`view/route_facts.rs`, `view/dest_table.rs`);
-//!    `shadow` is legacy behaviour plus the comparison log; `legacy` turns the table off entirely
-//!    and is the kill switch. NOTE: `Host::facts` / `destination_for` below are the queue's own
-//!    coarse routing (which host drains an entry), not the destination decision, so the hosts'
-//!    constant facts are not the table's facts.
-//!  - DELIBERATE CHANGES encoded in the table, effective in `table` mode for the paths above (the
-//!    owner's decisions OD-1, OD-5): a held signal is delivered to the REMOTE shell. (OD-7, the
+//!  - NO SWITCH: `PHOSPHOR_QUEUE_DESTINATION` selects nothing any more. A value other than `table`
+//!    is refused with one log line ([`facts::note_retired_destination_switch`]). NOTE:
+//!    `Host::facts` / `destination_for` below are the queue's own coarse routing (which host drains
+//!    an entry), not the destination decision, so the hosts' constant facts are not the table's.
+//!  - THE OWNER'S DECISIONS encoded in the table (OD-1, OD-5): ^Z and ^\ jump the queue like ^C; a
+//!    signal typed in the ssh setup window is held and delivered to the REMOTE shell. (OD-7, the
 //!    H4 drop of a key stamped before an ssh prompt, is gone with the prompt latch: #1611, #1612,
 //!    #1621; the ssh connect reads nothing from the screen, see `DECLINED.md`.)
-//!    The ARRIVAL side (step 5): ^Z and ^\ jump the queue like ^C; a signal typed in the ssh setup
-//!    window is held instead of dropped.
-//!  - STEP 7 (edge-driven ssh phase): [`SshPhaseMachine`] (`ssh_phase.rs`) is fed by the events that
-//!    are its edges (`view/ssh_edges.rs`); `table` mode carries its phase in the facts and the key
-//!    path runs no ssh refresher; `shadow` reports `kh_ssh_phase_disagree`. The remote-setup
-//!    `SessionsEvent` is an edge. Every timer left in the ssh hand-over is a counted, logged
-//!    give-up. The focus epoch follows focus, owner-change edges clear the line pin
-//!    ([`InputQueue::clear_line_pin`]), and the gates nothing opened (`EditorFocusPending`,
-//!    `PtyRouteSettling`) are gone.
-//!  - NEXT (design step 8): the deletion of the legacy fields (`delivering`/`requeue_request`) and
-//!    of the legacy chain. Waits for a test round of `table` mode: until then `legacy` is the
-//!    owner's kill switch and must keep working (#1353).
+//!  - THE EDGE-DRIVEN SSH PHASE (step 7): [`SshPhaseMachine`] (`ssh_phase.rs`) is fed by the events
+//!    that are its edges (`view/ssh_edges.rs`); the facts carry its phase and the key path runs no
+//!    ssh refresher. The remote-setup `SessionsEvent` is an edge. Every timer left in the ssh
+//!    hand-over is a counted, logged give-up. The focus epoch follows focus, owner-change edges
+//!    clear the line pin ([`InputQueue::clear_line_pin`]), and the gates nothing opened
+//!    (`EditorFocusPending`, `PtyRouteSettling`) are gone.
+//!  - NOT DONE in step 8: `delivering` / `requeue_request` (a key a stage holds from inside a
+//!    delivery is requeued by the drain) and the bytes take-and-write of the hand-off's and the
+//!    PowerShell gate's keys are live parts of the one path, not legacy fields.
 //!
 //! BUSY QUEUE = DEFERRED OPERATION (one mechanism, #1416-#1419, #1425-#1428). The queue is held
 //! while a drain delivers (and while anyone holds a peek). An operation that needs it then must
@@ -150,7 +131,6 @@ mod destination;
 pub mod facts;
 mod gates;
 mod pane;
-pub mod shadow;
 pub mod ssh_phase;
 pub mod switches;
 pub mod table;
@@ -174,8 +154,8 @@ pub use destination::{
     pin_still_valid,
 };
 pub use facts::{
-    DestinationMode, FocusSnap, GateMask, PaneRouteState, PsPhase, QueueFacts, RouteFacts,
-    SshPhase, Stamp, SubshellPhase, destination_mode,
+    FocusSnap, GateMask, PaneRouteState, PsPhase, QueueFacts, RouteFacts, SshPhase, Stamp,
+    SubshellPhase,
 };
 pub use gates::{
     Gate, GateKind, GateSpec, GateToken, MULTILINE_DIALOG_KEY_FLAG, SignalPlan,
@@ -804,6 +784,11 @@ impl InputQueue {
     /// input the submit reads from is closed or cleared when the submit ends, so a key applied
     /// meanwhile would be lost with it. Every other gate (hand-off, Enter verdict, ssh, paste,
     /// display map, ...) holds the editor's keys, as before.
+    ///
+    /// The #1423 statement in its own words. The editor's hold decision reads the table's H8
+    /// matrix ([`Self::editor_key_passes_gates_by_table`]); the tests hold the matrix to this for
+    /// every set of gates.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn editor_keys_pass_gates(&self) -> bool {
         !self.gates.is_empty()
             && self.gates.iter().all(|gate| {
@@ -821,9 +806,9 @@ impl InputQueue {
     /// [`Self::editor_keys_pass_gates`] decided by the H8 matrix of the destination table (#1424,
     /// `table::gate_holds`) for an editor key of `class` ([`table::Class::EditKey`] for an editing
     /// key, `Enter` for one that submits, `Control` for one that completes): whether the open
-    /// gates let it act at once. The legacy answer needs the caller to exclude the keys that
+    /// gates let it act at once. That statement needs the caller to exclude the keys that
     /// submit or complete (`key_submits_or_completes`); the matrix has that as its class column.
-    /// Like the legacy function it is false with no gate open, and false with only the ssh gate
+    /// Like it, this is false with no gate open, and false with only the ssh gate
     /// open (the ssh hold takes the editor's keys itself before this question is asked).
     pub fn editor_key_passes_gates_by_table(&self, class: table::Class) -> bool {
         if self.gates.is_empty()

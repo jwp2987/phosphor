@@ -1,12 +1,12 @@
 //! The destination table (#1424, design revision 2 + 3): where one input goes, as ONE pure function.
 //!
-//! `decide(intent, &RouteFacts, pin) -> Plan { outcome, effects, on_refused, row }` replaces, in
-//! later steps, the chain of predicates that is spread over `route_typed`, `keydown_on_terminal`,
-//! `control_sequence_on_terminal`, `hold_input_during_ssh_connect`, `write_user_bytes_to_pty_inner`,
-//! `after_paste_stage`, `deliver_replayed_entry`, `deliver_ssh_held` and the editor's hold paths.
-//! In `PHOSPHOR_QUEUE_DESTINATION=table` it decides delivery (step 4), the arrival of terminal keys
-//! (step 5) and the origin writers and paste routing (step 6); in `shadow` (the default) legacy
-//! decides and the table is compared with it; `legacy` leaves it uncalled.
+//! `decide(intent, &RouteFacts, pin) -> Plan { outcome, effects, on_refused, row }` replaced the
+//! chain of predicates that was spread over `route_typed`, the bodies of the three terminal entry
+//! points, `hold_input_during_ssh_connect`, the legacy deliveries and the editor's hold paths. It
+//! decides delivery (step 4), the arrival of terminal keys (step 5) and the origin writers and
+//! paste routing (step 6), and since #1353 step 8 it is the only destination path: there is no
+//! legacy chain to fall back to and no shadow comparison. Where a comment below says "legacy" it
+//! names the predicate a row was taken from, which is how the rows were derived and tested.
 //!
 //! Pure means: no clock, no lock, no I/O, no allocation, no view state. Everything it needs is in
 //! the [`Intent`] (what the input is, where it came from, the [`Stamp`] it got at the sink) and the
@@ -343,7 +343,7 @@ impl std::fmt::Debug for Effects {
     }
 }
 
-/// The row that decided, for the log and the shadow comparison.
+/// The row that decided, for the log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     OSynced,
@@ -647,8 +647,8 @@ fn setup_and_queue_holds(i: &Intent, f: &RouteFacts, fx: Effects) -> Option<Plan
 /// Both then reach `write_user_bytes_to_pty_after_paste_stage`: the PowerShell hold, then D4/D5
 /// (the take-over; a command the agent still controls refuses the write) and the typeahead
 /// hand-off, which is the oracle ([`Effects::CONSULT_ORACLE`] on the `Pty` plan, exactly as for a
-/// typed key). The hand-off's `Held` answer is the hand-off writing the bytes later; the shadow
-/// calls both `Pty` ("handed to a hold of the hand-off"), so the plan needs no further fact for it.
+/// typed key). The hand-off's `Held` answer is the hand-off writing the bytes later: `Pty` to the
+/// table ("handed to a hold of the hand-off"), so the plan needs no further fact for it.
 fn decide_cli_submit(i: &Intent, f: &RouteFacts) -> Plan {
     // #1601: an open PowerShell setup holds the submit like every other key. It is released, once
     // and in typed order with the keys held with it, by the setup's closing event. It is checked
@@ -1083,10 +1083,31 @@ fn apply_pin(plan: Plan, i: &Intent, f: &RouteFacts, pin: Option<Destination>) -
     }
 }
 
+// ---- the facts of a delivery ------------------------------------------------------------------
+
+/// The subshell phase a DELIVERY is decided on. The queue delivered the entry, so no gate covers
+/// it, and the facts carry none; but the view's facts read a setup that is only ANNOUNCED as
+/// [`SubshellPhase::SetupHeld`] (the arrival's rule: the writer opens the setup gate with the first
+/// key, `prepare_subshell_gates`). A delivery cannot open a gate (the queue is mid-drain), so row
+/// H7 would answer `Hold` for a gate that does not exist, a plan no executor has a leaf for.
+/// Until #1353 step 8 that plan fell through to the legacy chain, which wrote the input where its
+/// own predicates pointed (the pty, else the editor). The same destination is decided by the
+/// table when the phase reads [`SubshellPhase::Announced`], which no row holds. True when the
+/// phase was changed. (Whether such an entry should be HELD for the setup instead is an open
+/// finding, `docs/design/r17-step8.md`.)
+pub fn delivery_reads_setup_as_announced(facts: &mut RouteFacts) -> bool {
+    if facts.subshell == SubshellPhase::SetupHeld && !facts.gates.has(GateKind::SubshellSetup) {
+        facts.subshell = SubshellPhase::Announced;
+        true
+    } else {
+        false
+    }
+}
+
 // ---- destination_for with the hidden-input branch fixed (B12) ---------------------------------
 
 /// [`super::destination_for`] with the inverted hidden-input branch fixed (B12), for the table's
-/// tests and the shadow comparison. The old function stays as it is for its callers.
+/// tests. The old function stays as it is for its callers.
 ///
 /// The old branch said: not `pty_takes_input` and the input box hidden: drop. Legacy
 /// (`after_pty_attempt`) never drops text because the pty does not take it: it inserts into the

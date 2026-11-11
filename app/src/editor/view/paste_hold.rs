@@ -461,7 +461,9 @@ pub(super) fn needs_fresh_display_map(key: &HeldPasteKey) -> bool {
 }
 
 /// Whether `action` submits the line or asks the shell to complete it: a key whose effect leaves
-/// the editor, which a pty setup gate must keep holding (#1423).
+/// the editor, which a pty setup gate must keep holding (#1423). The statement the tests hold
+/// [`editor_key_class`] to; the hold decision itself reads the class (the table's H8 matrix).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn key_submits_or_completes(action: &EditorAction) -> bool {
     matches!(
         action,

@@ -466,8 +466,8 @@ pub fn conpty_prompt_hold_env_enabled() -> bool {
 }
 
 /// Environment variable for the ENTER WINDOW of the ConPTY prompt hold (#1490, #1349): `1` turns it
-/// on, `0` off; unset, it follows `PHOSPHOR_QUEUE_DESTINATION=table`, which is the
-/// default mode (`legacy` and `shadow` leave the window off).
+/// on, `0` off; unset, it is on (it followed the `table` destination mode, which is the only one
+/// since #1353 step 8).
 ///
 /// The prompt hold covers the keys typed between a prompt's precmd and its line editor becoming
 /// ready. The enter window extends it BACKWARDS over the stretch before the precmd: from the moment
@@ -483,21 +483,18 @@ pub fn conpty_prompt_hold_env_enabled() -> bool {
 /// line editor (a running program's own Enter never opens it).
 pub const CONPTY_ENTER_HOLD_ENV: &str = "PHOSPHOR_CONPTY_ENTER_HOLD";
 
-/// Whether the enter window is on: the environment says so, else the `table` destination mode.
+/// Whether the enter window is on: the environment says so, else it is (the destination table
+/// decides every key).
 pub fn conpty_enter_hold_enabled() -> bool {
-    conpty_enter_hold_from(
-        std::env::var(CONPTY_ENTER_HOLD_ENV).ok().as_deref(),
-        crate::terminal::input_queue::destination_mode()
-            == crate::terminal::input_queue::DestinationMode::Table,
-    )
+    conpty_enter_hold_from(std::env::var(CONPTY_ENTER_HOLD_ENV).ok().as_deref(), true)
 }
 
-/// [`conpty_enter_hold_enabled`] on given inputs: `1` is on, any other value is off, unset follows
-/// the `table` mode.
-pub fn conpty_enter_hold_from(env: Option<&str>, table_mode: bool) -> bool {
+/// [`conpty_enter_hold_enabled`] on given inputs: `1` is on, any other value is off, unset is
+/// `when_unset` (on, in the app).
+pub fn conpty_enter_hold_from(env: Option<&str>, when_unset: bool) -> bool {
     match env {
         Some(value) => value.trim() == "1",
-        None => table_mode,
+        None => when_unset,
     }
 }
 

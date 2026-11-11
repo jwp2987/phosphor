@@ -108,13 +108,6 @@ pub fn echo_wakeup_floor_ms() -> u64 {
     if perf_echo_enabled() { 1 } else { 4 }
 }
 
-/// `PHOSPHOR_PERF_AGENT_KEY=0`: a typed key in agent mode again builds the list of every AI
-/// block and card to learn whether focus sits on one (O(blocks) allocations per key).
-pub fn perf_agent_key_enabled() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| !switch_off(std::env::var("PHOSPHOR_PERF_AGENT_KEY").ok()))
-}
-
 /// `PHOSPHOR_PERF_BLOCKLIST_WINDOW=0`: the block list's visible pass lays out each rich content
 /// (AI) block a second time, as it did before.
 pub fn perf_blocklist_window_enabled() -> bool {

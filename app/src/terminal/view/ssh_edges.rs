@@ -15,13 +15,11 @@
 //! | `HoldStarted` / `HoldEnded` | `set_ssh_typeahead_holding`, the one place the hold flag changes |
 //! | `Released` | `refresh_ssh_connect_gate` releasing the gate (an event, or a logged give-up), and a non-ssh command starting |
 //!
-//! In `shadow` mode the machine runs next to the legacy derivation and a difference is reported
-//! as `kh_ssh_phase_disagree` (debug, `input_order` target) and counted. In `table` mode the
-//! machine's phase is the one the facts carry, and the key path no longer refreshes the connect
-//! gate: the work those refreshers did on a key (arming the gate lazily, releasing it past its
-//! ceiling, handing over a hold whose gate is gone) is done by the
-//! events above and by the give-up timers, each of which is LOGGED ([`TerminalView::
-//! note_ssh_give_up`]).
+//! The machine's phase is the one the facts carry, and the key path does not refresh the connect
+//! gate: the work the refreshers once did on a key (arming the gate lazily, releasing it past its
+//! ceiling, handing over a hold whose gate is gone) is done by the events above and by the give-up
+//! timers, each of which is LOGGED ([`TerminalView::note_ssh_give_up`]). (The legacy derivation of
+//! the phase and its `shadow` comparison, `kh_ssh_phase_disagree`, went with #1353 step 8.)
 //!
 //! Timers that remain, and why (every one is a logged give-up, none is the release):
 //!  * the connect gate's ceiling and its post-bootstrap / post-block graces
@@ -35,51 +33,25 @@
 //! prompt" any more (the latch those fed failed review four times, #1611, #1612, #1621; see
 //! `DECLINED.md`).
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use chrono::Local;
 use instant::Instant;
 use warpui::ViewContext;
 
 use super::{TerminalView, choice_block_owns_input};
 use crate::features::FeatureFlag;
-use crate::terminal::input_queue::{
-    DestinationMode, SshEdge, SshObservation, SshPhase, SshRelease, destination_mode,
-};
+use crate::terminal::input_queue::{SshEdge, SshObservation, SshPhase, SshRelease};
 use crate::terminal::model::key_facts::KeyModelSnapshot;
 use crate::terminal::model::session::SessionId;
 use crate::terminal::model_events::{AnsiHandlerEvent, ModelEvent};
 use crate::terminal::view::rich_content::RichContentMetadata;
 
-/// How often the machine and the legacy derivation gave different phases (shadow mode). A test
-/// reads the difference around the code it runs; the log line carries the detail.
-static SSH_PHASE_DISAGREEMENTS: AtomicU64 = AtomicU64::new(0);
-
-/// Disagreements counted so far (process wide, like the other shadow counters).
-#[cfg(test)]
-pub(super) fn ssh_phase_disagreements() -> u64 {
-    SSH_PHASE_DISAGREEMENTS.load(Ordering::Relaxed)
-}
-
 impl TerminalView {
-    /// The machine is fed in every mode but `legacy` (the kill switch turns all of the table off).
-    fn ssh_machine_runs() -> bool {
-        destination_mode() != DestinationMode::Legacy
-    }
-
-    /// Whether the key path is free of the ssh refreshers: `table` mode only.
-    pub(super) fn ssh_events_own_the_gate() -> bool {
-        destination_mode() == DestinationMode::Table
-    }
-
     /// Feeds one edge.
     pub(super) fn ssh_edge(&mut self, edge: SshEdge) {
-        if Self::ssh_machine_runs() {
-            self.ssh_phase.apply(edge);
-            // The ssh phase moved: the line pinned to a destination is over.
-            if !matches!(edge, SshEdge::Observed(_) | SshEdge::BootstrapFailed) {
-                self.request_queue_pin_clear();
-            }
+        self.ssh_phase.apply(edge);
+        // The ssh phase moved: the line pinned to a destination is over.
+        if !matches!(edge, SshEdge::Observed(_) | SshEdge::BootstrapFailed) {
+            self.request_queue_pin_clear();
         }
     }
 
@@ -142,31 +114,23 @@ impl TerminalView {
         event: &ModelEvent,
         ctx: &mut ViewContext<Self>,
     ) {
-        if !Self::ssh_machine_runs() {
-            return;
-        }
         if !self.ssh_phase.is_active() && !Self::ssh_event_can_start_a_window(event) {
             return;
         }
         self.ssh_observe(ctx);
-        if Self::ssh_events_own_the_gate() {
-            self.ssh_arm_gate_at_event(ctx);
-        }
+        self.ssh_arm_gate_at_event(ctx);
     }
 
     /// As [`Self::ssh_observe_for_event`] for an output wakeup: only while the machine has
     /// something to watch (a window, a hold or a pending session).
     pub(super) fn ssh_observe_for_wakeup(&mut self, ctx: &mut ViewContext<Self>) {
-        if Self::ssh_machine_runs() && self.ssh_phase.is_active() {
+        if self.ssh_phase.is_active() {
             self.ssh_observe(ctx);
         }
     }
 
     /// Feeds the machine the facts of this moment.
     pub(super) fn ssh_observe(&mut self, ctx: &mut ViewContext<Self>) {
-        if !Self::ssh_machine_runs() {
-            return;
-        }
         let read = self.model_facts_nonblocking();
         let pending = read.snapshot.pending_session_id;
         let observation = SshObservation {
@@ -186,7 +150,7 @@ impl TerminalView {
     }
 
     /// An ssh recognised at preexec only (no submit saw it) arms the window HERE, at the event
-    /// that shows it running, instead of lazily on the first key (table mode).
+    /// that shows it running, instead of lazily on the first key.
     pub(super) fn ssh_arm_gate_at_event(&mut self, ctx: &mut ViewContext<Self>) {
         if self.ssh_connect_gate.is_none() {
             let snapshot = self.model_facts_nonblocking().snapshot;
@@ -227,17 +191,17 @@ impl TerminalView {
         // A release with no handler of its own to hand over (an agent write's lazy refresh, an
         // interrupt check) leaves the keys held behind a closed window: the next key or turn
         // hands them over (never a timer).
-        if Self::ssh_events_own_the_gate() && self.ssh_typeahead_holding {
+        if self.ssh_typeahead_holding {
             self.ssh_handover_after_release = true;
         }
     }
 
     /// A non-ssh command started while an unmanaged window was open: the window is stale. The
-    /// hold, if any, is handed over on the next turn (table mode): the event that releases the
+    /// hold, if any, is handed over on the next turn: the event that releases the
     /// window is the one that hands over, not the next key.
     pub(super) fn ssh_on_other_command_started(&mut self, ctx: &mut ViewContext<Self>) {
         self.note_ssh_gate_released(SshRelease::OtherCommand);
-        if Self::ssh_events_own_the_gate() && self.ssh_typeahead_holding {
+        if self.ssh_typeahead_holding {
             ctx.spawn(async {}, |me, _, ctx| {
                 me.deliver_ssh_typeahead_if_ready("command_started", ctx);
             });
@@ -255,7 +219,7 @@ impl TerminalView {
             self.ssh_give_up_in_progress = false;
             return;
         }
-        if Self::ssh_events_own_the_gate() && self.ssh_connect_gate.is_some() {
+        if self.ssh_connect_gate.is_some() {
             // Nothing is held, but the window must still end: no event came (and the key path no
             // longer releases it). The release is logged through `note_ssh_gate_released`.
             self.refresh_ssh_connect_gate();
@@ -265,13 +229,13 @@ impl TerminalView {
         }
     }
 
-    /// A key is about to be held for the connect (`table` mode) but its event has not armed the
+    /// A key is about to be held for the connect but its event has not armed the
     /// window yet: the published facts already show an ssh running (the pty reader got there before
     /// the view handled `CommandBecameInteractive`). The window is armed now, by the same arming the
     /// event does, so the hold has its gate and its give-up deadline. Idempotent; a key that
     /// overtook its event is the only caller.
     pub(super) fn ssh_ensure_window_for_hold(&mut self, ctx: &mut ViewContext<Self>) {
-        if Self::ssh_events_own_the_gate() && self.ssh_connect_gate.is_none() {
+        if self.ssh_connect_gate.is_none() {
             self.ssh_arm_gate_at_event(ctx);
         }
     }
@@ -279,7 +243,7 @@ impl TerminalView {
     /// Whether an ssh command the window was never armed for (recognised at preexec only) is
     /// running according to the published facts: the lazy-arming condition of
     /// `refresh_ssh_connect_gate`, read-only. The facts of a key that overtook its event carry the
-    /// phase the event will give them (`table` mode).
+    /// phase the event will give them.
     pub(super) fn ssh_window_would_arm(&self, snapshot: &KeyModelSnapshot) -> bool {
         if self.ssh_connect_gate.is_some()
             || self.warpify_state.get_pending_ssh_host().is_none()
@@ -304,47 +268,18 @@ impl TerminalView {
     /// release); `observed` is what the published cells say at THIS decision (a key can overtake
     /// the output wakeup that would have told the machine, so the decision folds the fresh
     /// observation into a COPY of the machine: idempotent, and the machine itself only changes at
-    /// events). In `table` mode that phase is the one the facts carry, with the window the event
-    /// is about to open already open (`would_arm`); in `shadow` mode the legacy derivation
-    /// (`derived`) is carried and a difference is reported (`kh_ssh_phase_disagree`).
+    /// events), with the window the event is about to open already open (`would_arm`).
     pub(super) fn ssh_phase_for_facts(
         &self,
-        derived: SshPhase,
         alt_screen: bool,
         would_arm: bool,
         observed: SshObservation,
     ) -> SshPhase {
-        let mode = destination_mode();
-        if mode == DestinationMode::Legacy {
-            return derived;
-        }
         let mut machine = self.ssh_phase.clone();
-        if mode == DestinationMode::Table && would_arm && !machine.armed() {
+        if would_arm && !machine.armed() {
             machine.apply(SshEdge::ConnectStart);
         }
         machine.apply(SshEdge::Observed(observed));
-        let machine = machine.phase(alt_screen);
-        if mode == DestinationMode::Table {
-            return machine;
-        }
-        if machine != derived {
-            SSH_PHASE_DISAGREEMENTS.fetch_add(1, Ordering::Relaxed);
-            warpui::input_order::log_key_hop("kh_ssh_phase_disagree", || {
-                format!(
-                    "legacy={} machine={}",
-                    phase_name(derived),
-                    phase_name(machine)
-                )
-            });
-        }
-        derived
-    }
-}
-
-/// A phase for the log.
-fn phase_name(phase: SshPhase) -> &'static str {
-    match phase {
-        SshPhase::Idle => "idle",
-        SshPhase::Holding => "holding",
+        machine.phase(alt_screen)
     }
 }

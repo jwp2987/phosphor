@@ -33,10 +33,10 @@
 //! Focus changes are not an ssh edge: the phase does not depend on focus. They reach the queue
 //! (`InputQueue::on_focus_changed`), which clears the line pin.
 //!
-//! The legacy fields stay (they are removed in step 8). Until then the machine runs next to
-//! them: in `table` mode (the default since 2026-11-02) the machine's phase is the one the facts
-//! carry and the key path no longer refreshes the gate; in `shadow` mode `kh_ssh_phase_disagree`
-//! reports a difference between the two phases.
+//! The machine's phase is the one the facts carry and the key path does not refresh the gate. The
+//! view's own gate fields (`ssh_connect_gate`, `ssh_typeahead_holding`) stay: the events write
+//! them and the signal rows read them. (The legacy derivation of the phase and its `shadow`
+//! comparison, `kh_ssh_phase_disagree`, went with #1353 step 8.)
 
 use super::facts::SshPhase;
 

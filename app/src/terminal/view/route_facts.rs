@@ -1,5 +1,5 @@
-//! Building [`RouteFacts`] (#1424): the shadow comparison (step 3) and, in `table` mode, the
-//! delivery of replayed and ssh-held inputs (step 4) decide on them.
+//! Building [`RouteFacts`] (#1424): every destination decision (an arriving key, a delivered
+//! entry, a paste, a writer of another origin) is made on them.
 //!
 //! The destination table (`input_queue/table.rs`) is pure; this is its only source of facts on the
 //! view side. The rules that make it safe to call from anywhere, including events that run outside
@@ -10,15 +10,13 @@
 //!   path always did) or, when the pty reader holds it, from a CONSISTENT read of the two
 //!   published cells ([`load_consistent`]: the facts and the snapshot of one publication). The
 //!   hand-off is read with `try_read`; busy means the last value read.
-//! * It reads the legacy ssh / subshell / PowerShell fields as they stand and DERIVES the phases
-//!   ([`SshPhase`], [`SubshellPhase`], [`PsPhase`]) from them. It does not run the legacy
-//!   refreshers (`refresh_ssh_connect_gate`, `ssh_connect_gate_drops_keys`, ...): those mutate
-//!   view state. Each has a read-only, non-blocking counterpart here. Nothing about the ssh
-//!   connect is read from the screen (#1611, #1612, #1621): the gate's ownership of the tty is
-//!   an event it recorded. The ssh phase has a second
-//!   source since design step 7, the edge-driven machine (`view/ssh_edges.rs`): in `table` mode
-//!   the facts carry the machine's phase and the key path runs no ssh refresher at all; in
-//!   `shadow` mode the derivation is carried and a difference is reported.
+//! * It reads the subshell / PowerShell fields as they stand and DERIVES the phases
+//!   ([`SubshellPhase`], [`PsPhase`]) from them. It does not run the refreshers
+//!   (`refresh_ssh_connect_gate`, `ssh_connect_gate_drops_keys`, ...): those mutate view state.
+//!   Each has a read-only, non-blocking counterpart here. Nothing about the ssh connect is read
+//!   from the screen (#1611, #1612, #1621): the gate's ownership of the tty is an event it
+//!   recorded. The ssh phase (`SshPhase`) is the edge-driven machine's (`view/ssh_edges.rs`,
+//!   design step 7); the key path runs no ssh refresher at all.
 //! * It mutates nothing but the idempotent cell refresh above.
 //!
 //! The tests (`view_test.rs`, `route_facts_*`) hold the model's lock on the test thread while
@@ -35,7 +33,7 @@ use super::{
 use crate::features::FeatureFlag;
 use crate::terminal::input_queue::facts::QueueFacts;
 use crate::terminal::input_queue::{
-    FocusSnap, GateKind, PsPhase, RouteFacts, SshObservation, SshPhase, SubshellPhase,
+    FocusSnap, GateKind, PsPhase, RouteFacts, SshObservation, SubshellPhase,
 };
 use crate::terminal::model::key_facts::{
     ConsistentRead, KeyFacts, KeyModelSnapshot, load_consistent,
@@ -190,11 +188,11 @@ impl TerminalView {
         } else if announced_age.is_some() && self.powershell_setup_hold == PowerShellSetupHold::Off
         {
             // An announced setup that governs input holds every non-signal key, whatever it is:
-            // the legacy writer opens the setup gate with the first key
-            // (`prepare_subshell_gates`, `setup_governs`), so the table reads that as the gate
-            // already held (the same holds in `table` mode, which opens the gate before it
-            // builds its facts). Without this a sequence (an arrow) read `Announced`, which no
-            // row holds, and went to the pty where the legacy chain held it (#1679 step 4).
+            // the writer opens the setup gate with the first key (`prepare_subshell_gates`,
+            // `setup_governs`; an arrival opens it before it builds its facts), so the table reads
+            // that as the gate already held. Without this a sequence (an arrow) read `Announced`,
+            // which no row holds, and went to the pty (#1679 step 4). A DELIVERY reads it back as
+            // `Announced` (`dest_table::delivery_reads_setup_as_announced`).
             SubshellPhase::SetupHeld
         } else if self.subshell_bootstrap_announced.is_some() {
             SubshellPhase::Announced
@@ -232,21 +230,11 @@ impl TerminalView {
             && (ssh_interrupt_must_wait
                 || (pending_now.is_none()
                     && (snapshot.has_pending_ssh_session || drops_keys || !awaits_an_answer)));
-        // Keys are held while a hold exists, and from the first key of a connect: the gate drops
-        // keys (ssh does not own the tty yet, bootstrap swallow, remote setup) with nothing held
-        // yet. Legacy `hold_input_during_ssh_connect` holds on `gate_drops || holding`; the
-        // dialog swallows instead (row H2 comes first, so it never reaches the hold). No prompt
-        // phase: nothing about the connect is read from the screen (#1611, #1612, #1621).
-        let gate_drops = ssh_setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
-        let derived_ssh = if self.ssh_typeahead_holding || (!ssh_dialog_up && gate_drops) {
-            SshPhase::Holding
-        } else {
-            SshPhase::Idle
-        };
-        // #1424 step 7: `table` mode carries the edge-driven machine's phase; `shadow` carries
-        // the derivation above and reports a difference (`kh_ssh_phase_disagree`).
+        // #1424 step 7: the facts carry the edge-driven machine's phase. Keys are held while a
+        // hold exists, and from the first key of a connect (ssh does not own the tty yet, the
+        // bootstrap swallow, the remote setup); the dialog swallows instead (row H2 comes first).
+        // No prompt phase: nothing about the connect is read from the screen (#1611, #1612, #1621).
         let ssh = self.ssh_phase_for_facts(
-            derived_ssh,
             alt_screen,
             self.ssh_window_would_arm(snapshot),
             SshObservation {
