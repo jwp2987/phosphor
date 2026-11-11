@@ -6,8 +6,8 @@
 //! | Reject | `cancel_action_with_id(.., Rejected)` (the Reject button, `controller_tests.rs`): not a stop, the step's results go back to the model at once when an earlier one finished (#1942) |
 //! | Edit | `set_pending_command_text` then Approve |
 //! | AnswerQuestion / SkipQuestion | stage the answers on `AskUserQuestionExecutor`, then `execute_action` by id (the question card) |
-//! | CtrlC | with no agent command running: the view's real Ctrl-C key handling (`TerminalView::press_ctrl_c_for_test` -> `handle_ctrl_c_input_event`). Into a running agent command: the ^C goes to the command and nowhere else, as in a pane with a pty (`TerminalView::interrupt_agent_command`, #850); the rig has no pty, so it ends the command the way the ^C would (`Rig::interrupt_commands`: exit 130, interrupted) |
-//! | Stop | `cancel_conversation_progress(.., ManuallyCancelled)` (the status bar's Stop button) |
+//! | CtrlC | with no agent command running: the view's real Ctrl-C key handling (`TerminalView::press_ctrl_c_for_test` -> `handle_ctrl_c_input_event`). That handling interrupts a running action that is not a command (a read, a search) and leaves the turn going (#2034, `BlocklistAIActionModel::interrupt_running_actions`); with nothing running it stops the turn. Into a running agent command: the ^C goes to the command and nowhere else, as in a pane with a pty (`TerminalView::interrupt_agent_command`, #850); the rig has no pty, so it ends the command the way the ^C would (`Rig::interrupt_commands`: exit 130, interrupted) |
+//! | Stop | `cancel_conversation_progress(.., ManuallyCancelled)`: what the status bar's Stop button does while a reply streams, a card waits or a tool runs (#2034). (In the app the button on a running agent COMMAND takes the view's Ctrl-C routing and interrupts the command; the rig has no pty and does not model that.) |
 //! | FollowUp | typed into the input, `maybe_queue_input_for_in_progress_conversation` decides; if it does not queue, a plain submit |
 //! | ModeSwitch / Escape | no controller entry point exists in a pty-less rig; recorded as no-ops |
 //! | TakeOver / GiveBack | `TerminalModel` hand-over, covered by `prompt_tests.rs` (needs a pty block) |
@@ -157,9 +157,10 @@ pub fn perform(app: &mut App, rig: &mut Rig, op: &Op) -> Option<&'static str> {
         }
         Op::AnswerQuestion { choice } => answer(app, rig, Some(*choice)),
         Op::SkipQuestion => answer(app, rig, None),
-        // Ctrl-C goes through the view's real key handling (blocked-turn cancel, running-command
-        // interrupt, agent-view exit rules); Stop is the status bar's button, which calls the
-        // controller directly.
+        // Ctrl-C goes through the view's real key handling (blocked-turn cancel, the interrupt
+        // of a running tool (#2034), agent-view exit rules); Stop is the controller's stop of
+        // the conversation, which is what the status bar's button comes to in every state the
+        // rig can be in (see the table above).
         //
         // A Ctrl-C typed while an agent command runs is that command's interrupt (#850, owner
         // decision 2026-11-10: the command is interrupted and the turn goes on). In the app the

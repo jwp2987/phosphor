@@ -349,6 +349,8 @@ decl("agent_interactive_ssh agent_interactive_ssh_takeover", needs=_merge(AGENT_
 decl("agent_latency_key agent_latency_enter agent_steer_fast", needs=INPUT, reads=MODEL)
 decl("agent_mcp_faults mcp_basic", needs=KEYS, sets=("mcp_config",), reads=MODEL + ("agent_readonly_autorun",),
      note="the MCP call is approved at its card where the profile shows one; the case notes when none was shown")
+decl("agent_ctrl_c_running_tool", needs=KEYS, sets=("mcp_config",), reads=MODEL + ("agent_readonly_autorun",),
+     note="#2034: the MCP call is approved at its card where the profile shows one; Ctrl-C and the question's Enter are the default keys")
 decl("agent_multitab_streaming", needs=_merge(INPUT, KEYS), reads=MODEL, note="tabs by their number keys: the tab layout (vertical_tabs: the seed's) is not read")
 decl("agent_gate_deny_allow agent_gate_off_live agent_gate_key_never_leaves", needs=KEYS, sets=("network_gate", "allowed_origins", "providers"),
      note="the gate and the origin list are written by the case (live and with the app stopped) and put back")

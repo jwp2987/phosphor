@@ -345,6 +345,53 @@ fn rejection_cancels_rest_of_turn(reason: CancellationReason) -> bool {
     )
 }
 
+/// Kill switch for #2034: `PHOSPHOR_CTRL_C_INTERRUPTS_ACTION=0` restores what Ctrl-C and Stop did
+/// with a running non-command action before: both cancelled that one action as a user stop and
+/// left the later actions of the reply queued.
+pub(crate) const CTRL_C_INTERRUPTS_ACTION_ENV: &str = "PHOSPHOR_CTRL_C_INTERRUPTS_ACTION";
+
+/// Whether the #2034 rule is on: it is, unless the kill switch says `0`.
+pub(crate) fn ctrl_c_interrupts_action_enabled() -> bool {
+    ctrl_c_interrupts_action_enabled_from(
+        std::env::var(CTRL_C_INTERRUPTS_ACTION_ENV).ok().as_deref(),
+    )
+}
+
+/// [`ctrl_c_interrupts_action_enabled`] with the variable's value passed in (tests).
+pub(crate) fn ctrl_c_interrupts_action_enabled_from(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
+/// An action that is a command in the pane's shell, or drives one. A Ctrl-C for it belongs to
+/// the pty (`TerminalView::interrupt_agent_command`, #850), never to
+/// [`BlocklistAIActionModel::interrupt_running_actions`].
+fn drives_a_shell_command(action: &AIAgentActionType) -> bool {
+    matches!(
+        action,
+        AIAgentActionType::RequestCommandOutput { .. }
+            | AIAgentActionType::WriteToLongRunningShellCommand { .. }
+            | AIAgentActionType::ReadShellCommandOutput { .. }
+            | AIAgentActionType::TransferShellCommandControlToUser { .. }
+    )
+}
+
+/// Whether a Ctrl-C can interrupt the running actions as actions (#2034). `running`: the
+/// executor's view of each action the model counts as running (`None`: the executor does not
+/// hold it, so cancelling it there would do nothing). True only when something runs, the
+/// executor holds all of it, and none of it is a shell command.
+fn ctrl_c_can_interrupt_actions<'a>(
+    running: impl IntoIterator<Item = Option<&'a AIAgentActionType>>,
+) -> bool {
+    let mut any = false;
+    for action in running {
+        match action {
+            Some(action) if !drives_a_shell_command(action) => any = true,
+            _ => return false,
+        }
+    }
+    any
+}
+
 /// Returns whether another action may join the currently running phase.
 ///
 /// Parallel phases only admit additional actions that classify into the same group and
@@ -1708,6 +1755,60 @@ impl BlocklistAIActionModel {
         self.rejected_by_user.contains(action_id)
     }
 
+    /// A Ctrl-C typed while actions of `conversation_id` run that are not shell commands (a read,
+    /// a search, an MCP call): the key interrupts what runs and the turn goes on, as it does for
+    /// a running command (#850, owner decision 2026-11-10; #2034). Every running action of the
+    /// conversation is cancelled (its work aborted, its result `cancelled`) with NO cancellation
+    /// reason: nobody stopped the turn. The later actions of the reply stay queued and come up
+    /// next, and the step ends by the ordinary end-of-step rule (`plan_finished_batch`, no
+    /// reason): its results go back to the model when any of them finished, and a step whose
+    /// only result is the interrupted action ends `Cancelled` with the reason shown (#1178).
+    /// This is exactly what the interrupted command's exit 130 does.
+    ///
+    /// Returns false, having done nothing, when this is not such a Ctrl-C: nothing runs, a
+    /// running action is a shell command (its ^C is the pty's), the executor does not hold a
+    /// running action, or the kill switch is off. The caller then does what it did before.
+    pub fn interrupt_running_actions(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        if !ctrl_c_interrupts_action_enabled() {
+            return false;
+        }
+        let running: Vec<AIAgentActionId> = self
+            .running_actions
+            .get(&conversation_id)
+            .map(|running| running.action_ids.clone())
+            .unwrap_or_default();
+        let interruptible = {
+            let executor = self.executor.as_ref(ctx);
+            ctrl_c_can_interrupt_actions(running.iter().map(|action_id| {
+                executor
+                    .async_executing_action(action_id)
+                    .map(|action| &action.action)
+            }))
+        };
+        if !interruptible {
+            return false;
+        }
+        log::info!(
+            "Ctrl-C: interrupting {} running action(s) of conversation {conversation_id:?}; \
+             the turn goes on (#2034)",
+            running.len()
+        );
+        // For the real-app cases (`agent_ctrl_c_running_tool`): the key took this path. A count
+        // only, never an action's arguments.
+        let count = running.len();
+        warpui::input_order::log_hop("agent_action_interrupt", || format!("count={count}"));
+        self.executor.update(ctx, |executor, ctx| {
+            for action_id in &running {
+                executor.cancel_running_async_action(action_id, None, ctx);
+            }
+        });
+        true
+    }
+
     /// Cancels one action by id: a card's Reject (`CancellationReason::Rejected`) or the status
     /// bar's Stop / Ctrl-C on the shown action (`ManuallyCancelled`).
     pub fn cancel_action_with_id(
@@ -1731,6 +1832,20 @@ impl BlocklistAIActionModel {
             } else {
                 reason
             };
+            if reason.is_user_stop() && ctrl_c_interrupts_action_enabled() {
+                // #2034: a stop stops the turn. Cancelling only the running action left the
+                // later actions of the reply queued, so their cards came up after the user had
+                // stopped the agent; a stop on a card that still waits has always cancelled
+                // them (#1799). Everything the conversation holds goes with the stop's reason:
+                // what runs (a running command is interrupted, #850), what is queued behind
+                // it, and what is still preprocessing.
+                log::info!(
+                    "Action {action_id:?} was stopped while it ran: cancelling the rest of \
+                     the turn with it (#2034)"
+                );
+                self.cancel_all_pending_actions(conversation_id, Some(reason), ctx);
+                return;
+            }
             self.executor.update(ctx, |executor, ctx| {
                 executor.cancel_running_async_action(action_id, Some(reason), ctx)
             });

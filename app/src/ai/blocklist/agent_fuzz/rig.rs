@@ -320,6 +320,16 @@ impl Rig {
         }
     }
 
+    /// Every action that is running now (the `Running` stage), commands and tools alike.
+    pub fn running_actions(&self, app: &App) -> Vec<AIAgentActionId> {
+        self.observe(app)
+            .snapshot
+            .into_iter()
+            .filter(|s| s.stage == PendingStage::Running)
+            .map(|s| s.action_id)
+            .collect()
+    }
+
     /// The agent's commands that are running now: actions in the `Running` stage that the
     /// shell command executor is waiting on. (A read or a grep that is running is not one.)
     pub fn running_commands(&self, app: &App) -> Vec<AIAgentActionId> {

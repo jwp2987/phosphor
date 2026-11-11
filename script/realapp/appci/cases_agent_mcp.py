@@ -430,3 +430,80 @@ def c_agent_mcp_faults(ctx, r):
         r.check(not panics(ctx.log_since(log0)), "panic somewhere in the MCP stages: %s" % panics(ctx.log_since(log0))[:2])
     finally:
         sess.leave()
+
+
+INTERRUPT_HOP = "hop=agent_action_interrupt"
+
+
+def interrupt_verdict(log_after_key, question_verdict, turn_state):
+    """pure (#2034): what a Ctrl-C typed while a tool that is not a shell command ran did, read from the log since the key and the question that was
+    queued behind the tool. -> (ok, why). ok needs BOTH: the key took the interrupt path (the app's `hop=agent_action_interrupt`), and the turn went
+    on (the question became answerable; a turn that reads cancelled, or a question that is gone, means the key stopped the turn)."""
+    if INTERRUPT_HOP not in log_after_key:
+        return False, "the key did not interrupt the running tool as an action (no %s after it); the turn is %r, the question %s" % (
+            INTERRUPT_HOP, turn_state, question_verdict)
+    if question_verdict != "answerable":
+        return False, "the tool was interrupted but the question behind it is %s (turn %r): the key stopped the turn instead of letting it go on" % (
+            question_verdict, turn_state)
+    return True, "interrupted, and the question behind the tool waits for its answer"
+
+
+@case("agent_ctrl_c_running_tool", modes=("agent",), order=97, gui=True)
+def c_agent_ctrl_c_running_tool(ctx, r):
+    """#2034: Ctrl-C while a tool that is not a shell command runs (an MCP call that never answers) interrupts THAT tool and the turn goes on, as it
+    does for a running command (#850). One reply holds the MCP call and a question behind it. The call is approved and reaches the server (its state
+    file), the key is pressed, and: the app logs `hop=agent_action_interrupt`; the question's card comes up and is answered; ONE follow-up carries the
+    step's results to the model; the turn ends `success`. A key that stopped the turn fails here: the question never becomes answerable and the turn
+    reads `cancelled`. Not covered: the Stop button on a running tool (it stops the turn; unit tests only)."""
+    import cases_agent_question as Q
+    import cases_agent_resilience as AR
+    fake = need_mcp(ctx, r, "agent_ctrl_c_running_tool")
+    sess = McpSession(ctx, r, "ctrl_c_tool", [("fxhang", "hang")])
+    try:
+        if not sess.enter():
+            return
+        log0 = ctx.log_size()
+        started = ctx.until(lambda: read_state(ctx, "fxhang")[0] >= 1, START_WAIT_S, step=0.5)
+        if not r.check(bool(started), "the app never started the MCP server from its global config within %d s of the relaunch (state %s)" % (
+                START_WAIT_S, read_state(ctx, "fxhang"))):
+            return
+        time.sleep(4)                                  # the tool list is built after the handshake (initialize, tools/list)
+        CA.wait_view_mode(ctx, "agent", 10)
+        if ctx.log_view_mode() != "agent":
+            r.skip("after the relaunch the pane is not in agent view (hop=view_mode %s)" % ctx.log_view_mode())
+        CA.fresh_conversation(ctx, r)
+        tok = "C" + ctx.tok(6).upper()
+        off, n_miss, n_res, calls0 = ctx.log_size(), len(fake.mcp_missing), len(fake.tool_results), read_state(ctx, "fxhang")[1]
+        CA.type_fast(ctx, "Please call mcp tool ping on fxhang then ask me a question %s" % tok)
+        running = drive(ctx, lambda: read_state(ctx, "fxhang")[1] > calls0 or len(fake.mcp_missing) > n_miss, 90, off)
+        if len(fake.mcp_missing) > n_miss:
+            r.unverifiable("the MCP tool was not offered to the model (server starts %s), so no tool was running for the Ctrl-C: nothing proven" % (
+                read_state(ctx, "fxhang"),))
+            return
+        if not r.check(bool(running) and read_state(ctx, "fxhang")[1] > calls0, "the MCP call never reached the server within 90 s (state %s): no tool was running" % (
+                read_state(ctx, "fxhang"),)):
+            ctx.shot("ctrl_c_tool_not_running")
+            return
+        time.sleep(1.0)
+        r.check(Q.verdict(ctx.log_since(off)) != "answerable", "the question was already answerable while the MCP call ran: it was not queued behind the call")
+        ctx.shot("ctrl_c_tool_running")
+        coff, t0 = ctx.log_size(), time.time()
+        ctx.be.key("ctrl+c")
+        ctx.ctrlc_ts.append(time.time())
+        ctx.until(lambda: INTERRUPT_HOP in ctx.log_since(coff) or AR.last_turn_state(ctx.log_since(coff)) in ("cancelled", "error", "success"), 8, step=0.25)
+        ctx.until(lambda: Q.verdict(ctx.log_since(off)) in ("answerable", "ended"), 15, step=0.5)
+        r.metric("ctrl_c_to_question_s", round(time.time() - t0, 2))
+        r.metric("ctrl_c_routes", CA.ctrl_c_routes(ctx.log_since(coff)))
+        ok, why = interrupt_verdict(ctx.log_since(coff), Q.verdict(ctx.log_since(off)), AR.last_turn_state(ctx.log_since(off)))
+        ctx.shot("ctrl_c_tool_after_key")
+        if r.check(ok, "Ctrl-C while the MCP call ran: %s" % why):
+            r.check(len(fake.tool_results) == n_res, "a request carried tool results to the model before the question was answered (%d): the step was not over" % (
+                len(fake.tool_results) - n_res))
+            r.check(Q.answer_card(ctx, r, off, "ctrl_c_tool"), "Enter did not answer the question's card")
+            state = AR.wait_turn(ctx, off, ("success", "error", "cancelled"), 60)
+            r.check(state == "success", "after the answer the turn ended %r, expected `success` (the step's results go back to the model)" % state)
+            r.check(len(fake.tool_results) - n_res == 1, "the step's results reached the model in %d request(s), expected exactly 1" % (len(fake.tool_results) - n_res))
+        r.check(ctx.app.alive(), "the app died")
+        r.check(not panics(ctx.log_since(log0)), "panic in the app log: %s" % panics(ctx.log_since(log0))[:2])
+    finally:
+        sess.leave()

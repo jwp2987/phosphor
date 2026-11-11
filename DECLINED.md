@@ -3216,6 +3216,20 @@ work to race and nothing drains the main queue, so such a read runs in place.
   which closed the question this entry left open): it interrupts the command and the turn goes
   on (#850). The later actions of the reply still come up, and the step ends by the rule
   above. The agent fuzzer holds the app to it (I2b / I2c, `agent_fuzz::ctrl_c_tests`).
+  **The same key on a running tool that is not a command does the same** (#2034, round 17,
+  the rule above applied; `BlocklistAIActionModel::interrupt_running_actions`): a Ctrl-C typed
+  while a read, a search or an MCP call runs (no reply streaming) interrupts what runs, with no
+  cancellation reason, and the turn goes on. **A stop of a running tool stops the turn:** the
+  status bar's Stop button there, and a stop of a running action by id (the card's Reject of a
+  running MCP call), cancel everything the turn holds, so no card comes up after a stop.
+  **Upstream** (and this fork until round 17) cancels only the one running action for both
+  controls and leaves the later actions queued. With nothing running (a card waits, a reply
+  streams) the key is a stop as before. On a running agent COMMAND the button still takes the
+  key's routing and interrupts the command (#850, unchanged). Kill switch
+  `PHOSPHOR_CTRL_C_INTERRUPTS_ACTION=0`. Tests: `ctrl_c_on_a_running_tool_interrupts_it_and_the_turn_goes_on`,
+  `stopping_a_running_tool_stops_the_rest_of_the_turn` (`terminal/view_test.rs`), app case
+  `agent_ctrl_c_running_tool`. A re-pin diff that restores the one-action cancel is drift to
+  reject.
   **Evidence:** `docs/design/agent-lifecycle-audit.md` finding 1; tests
   `a_user_stop_after_a_finished_result_sends_no_request`,
   `a_reject_after_a_finished_result_tells_the_model_at_once`, `agent_fuzz::stop_tests` (one

@@ -1131,6 +1131,8 @@ impl AIConversation {
             // saw a `success`/`error` turn.
             let conv = self.id.to_string();
             warpui::input_order::log_hop("turn", || format!("conv={conv} state={state}"));
+            #[cfg(test)]
+            status_trail_for_test::push(state);
         }
         self.status = status;
         ctx.emit(BlocklistAIHistoryEvent::UpdatedConversationStatus {
@@ -2260,6 +2262,23 @@ impl AIConversation {
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<BlocklistAIHistoryModel>,
     ) -> Result<(), UpdateConversationError> {
+        self.mark_request_completed_with(stream_id, terminal_view_id, true, ctx)
+    }
+
+    /// [`Self::mark_request_completed`], with the status left to the caller when
+    /// `publish_success` is false (#2029): the reply has no actions, but the controller has
+    /// already seen that it will ask the model again by itself (the reply's tool call was
+    /// answered locally with an error), so the turn is not over and must not read `Success`
+    /// for the moment between this stream's end and that request. The conversation stays
+    /// `InProgress`; whoever passed `false` owns writing the final status if the follow-up
+    /// does not happen (`BlocklistAIController::publish_turn_success_if_idle`).
+    pub fn mark_request_completed_with(
+        &mut self,
+        stream_id: &ResponseStreamId,
+        terminal_view_id: EntityId,
+        publish_success: bool,
+        ctx: &mut ModelContext<BlocklistAIHistoryModel>,
+    ) -> Result<(), UpdateConversationError> {
         let Some(new_exchanges) = self.added_exchanges_by_response.get(stream_id).cloned() else {
             log::error!("No pending request info for completed request.");
             return Err(UpdateConversationError::NoPendingRequest);
@@ -2301,7 +2320,7 @@ impl AIConversation {
         }
         self.write_updated_conversation_state(ctx);
 
-        if !has_new_actions {
+        if !has_new_actions && publish_success {
             // Update conversation-level status to success if the output has no actions.
             self.update_status(ConversationStatus::Success, terminal_view_id, ctx);
         }
@@ -5106,6 +5125,28 @@ impl ConversationStatus {
 
     pub fn is_error(&self) -> bool {
         matches!(self, ConversationStatus::Error)
+    }
+}
+
+/// Test-only: the turn states (`ConversationStatus::hop_state_name`) every conversation of this
+/// thread went through, in order: one entry per `hop=turn` line the app would log. A unit test
+/// runs its app on its own thread, so this is the test's own trail (#2029: "the turn never
+/// read `success` before its automatic follow-up").
+#[cfg(test)]
+pub(crate) mod status_trail_for_test {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static TRAIL: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn push(state: &'static str) {
+        TRAIL.with(|trail| trail.borrow_mut().push(state));
+    }
+
+    /// Empties the trail and returns what it held.
+    pub(crate) fn take() -> Vec<&'static str> {
+        TRAIL.with(|trail| std::mem::take(&mut *trail.borrow_mut()))
     }
 }
 

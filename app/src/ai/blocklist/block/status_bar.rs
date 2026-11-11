@@ -148,6 +148,51 @@ pub struct BlocklistAIStatusBar {
     /// The last `render` was known to return an empty element ([`Self::renders_nothing`] held
     /// when it ran) (#1962).
     rendered_nothing: std::cell::Cell<bool>,
+
+    /// #2034: the Stop button was pressed and the terminal view has not finished handling it.
+    /// The button goes through the view's Ctrl-C routing (a running command and a selection
+    /// are the view's to handle), and the routing comes back here through
+    /// [`Self::handle_ctrl_c`]; this is how that call knows it is the button and not the key.
+    /// Set in `handle_action`, cleared by [`Self::take_stop_button_press`].
+    stop_button_press: bool,
+}
+
+/// Which control asked to end what the agent is doing (#2034). They differ in one state: an
+/// action that is running and is not a shell command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopPress {
+    /// The Ctrl-C key: it interrupts what runs and the turn goes on, as for a running command
+    /// (#850, owner decision 2026-11-10).
+    CtrlC,
+    /// The Stop button (and a confirmed "cancel" in the summarization dialog): it stops the
+    /// turn.
+    StopButton,
+}
+
+/// What a [`StopPress`] does about the active action of the shown exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActiveActionStop {
+    /// Interrupt the running actions; the later actions of the reply come up.
+    InterruptRunning,
+    /// Stop the whole turn (`cancel_conversation_progress`).
+    StopTurn,
+    /// Cancel the action by id as a user stop: a card that still waits (the later actions go
+    /// with it, #1799), and everything when the #2034 kill switch is off.
+    CancelAction,
+}
+
+/// See [`ActiveActionStop`]. `is_running`: the active action runs (it is not a waiting card).
+/// `rule_on`: the #2034 kill switch is not off.
+pub(crate) fn active_action_stop(
+    press: StopPress,
+    is_running: bool,
+    rule_on: bool,
+) -> ActiveActionStop {
+    match (rule_on && is_running, press) {
+        (true, StopPress::CtrlC) => ActiveActionStop::InterruptRunning,
+        (true, StopPress::StopButton) => ActiveActionStop::StopTurn,
+        (false, _) => ActiveActionStop::CancelAction,
+    }
 }
 
 /// Whether the bar has to render again when the shell-mode input changes between empty and
@@ -365,7 +410,7 @@ impl BlocklistAIStatusBar {
             &summarization_cancel_dialog,
             |me, _, event, ctx| match event {
                 SummarizationCancelDialogEvent::ConfirmCancel => {
-                    me.cancel_active_request_or_action(ctx);
+                    me.cancel_active_request_or_action(StopPress::StopButton, ctx);
                     me.close_summarization_cancel_dialog(ctx);
                 }
                 SummarizationCancelDialogEvent::Continue => {
@@ -447,6 +492,7 @@ impl BlocklistAIStatusBar {
             summarization_cancel_dialog,
             latest_response_stream_id: None,
             is_summarization_cancel_dialog_open: false,
+            stop_button_press: false,
             hidden_render_pending: false,
             summarization_timer_handle: None,
             summarization_start_time: None,
@@ -512,7 +558,30 @@ impl BlocklistAIStatusBar {
         &self.summarization_cancel_dialog
     }
 
+    /// Whether the Stop button's press is still being handled (see `stop_button_press`), and
+    /// forgets it. The terminal view calls this once its Ctrl-C routing for the button is done,
+    /// whichever way the routing went.
+    pub fn take_stop_button_press(&mut self) -> bool {
+        std::mem::take(&mut self.stop_button_press)
+    }
+
+    /// The control behind the Ctrl-C routing that is running now: the Stop button while its
+    /// press is being handled, else the key.
+    fn current_stop_press(&self) -> StopPress {
+        if self.stop_button_press {
+            StopPress::StopButton
+        } else {
+            StopPress::CtrlC
+        }
+    }
+
+    /// [`Self::current_stop_press`] for callers outside this module.
+    pub fn current_stop_press_is_button(&self) -> bool {
+        self.current_stop_press() == StopPress::StopButton
+    }
+
     pub fn handle_ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
+        let press = self.current_stop_press();
         let Some(model) = self.active_exchange_model.as_ref() else {
             return;
         };
@@ -524,7 +593,7 @@ impl BlocklistAIStatusBar {
             // If the dialog is already open, treat Ctrl-C as confirm-cancel
             if self.is_summarization_cancel_dialog_open {
                 // Confirm cancel the running/pending action/request, then close the dialog overlay.
-                self.cancel_active_request_or_action(ctx);
+                self.cancel_active_request_or_action(press, ctx);
                 self.close_summarization_cancel_dialog(ctx);
                 return;
             }
@@ -534,7 +603,7 @@ impl BlocklistAIStatusBar {
         }
 
         // If summarization isn't active, fall back to canceling the running request/action directly
-        self.cancel_active_request_or_action(ctx);
+        self.cancel_active_request_or_action(press, ctx);
         ctx.notify();
     }
 
@@ -686,7 +755,14 @@ impl BlocklistAIStatusBar {
     /// Cancels either the in-flight request stream or a pending/running action if present.
     /// If neither is found but the conversation is still in progress (e.g., a subagent is running),
     /// cancels the entire conversation's progress.
-    fn cancel_active_request_or_action(&mut self, ctx: &mut ViewContext<Self>) {
+    ///
+    /// `press` matters in one state (#2034): an action that runs and is not a shell command (a
+    /// running command never gets here: its Ctrl-C and its Stop are the pty's, #850). The key
+    /// interrupts what runs and the turn goes on; the button stops the turn. Before, both
+    /// cancelled the one running action as a user stop and left the later actions of the reply
+    /// queued, so their cards came up after a Stop. A reply still streaming and a card that
+    /// waits are stopped by both, as they always were: nothing runs there to interrupt.
+    fn cancel_active_request_or_action(&mut self, press: StopPress, ctx: &mut ViewContext<Self>) {
         let Some(model) = self.active_exchange_model.as_ref() else {
             return;
         };
@@ -724,14 +800,58 @@ impl BlocklistAIStatusBar {
                 .filter(|id| actions.contains(id))
                 .cloned()
             {
-                self.action_model.update(ctx, |action_model, ctx| {
-                    action_model.cancel_action_with_id(
-                        conversation_id,
-                        &active_action_id,
-                        CancellationReason::ManuallyCancelled,
-                        ctx,
-                    );
-                });
+                let is_running = self
+                    .action_model
+                    .as_ref(ctx)
+                    .get_action_status(&active_action_id)
+                    .is_some_and(|status| status.is_running());
+                let mut stop = active_action_stop(
+                    press,
+                    is_running,
+                    crate::ai::blocklist::action_model::ctrl_c_interrupts_action_enabled(),
+                );
+                if stop == ActiveActionStop::InterruptRunning
+                    && !self.action_model.update(ctx, |action_model, ctx| {
+                        action_model.interrupt_running_actions(conversation_id, ctx)
+                    })
+                {
+                    // Not interruptible as an action (a shell command the view did not see as
+                    // one, an action the executor does not hold): what Ctrl-C did before.
+                    stop = ActiveActionStop::CancelAction;
+                }
+                match stop {
+                    ActiveActionStop::InterruptRunning => {}
+                    ActiveActionStop::StopTurn => {
+                        log::info!(
+                            "Stop: stopping the turn of conversation {conversation_id:?} while \
+                             an action runs (#2034)"
+                        );
+                        self.controller.update(ctx, |controller, ctx| {
+                            controller.cancel_conversation_progress(
+                                conversation_id,
+                                CancellationReason::ManuallyCancelled,
+                                ctx,
+                            );
+                        });
+                    }
+                    ActiveActionStop::CancelAction => {
+                        self.action_model.update(ctx, |action_model, ctx| {
+                            action_model.cancel_action_with_id(
+                                conversation_id,
+                                &active_action_id,
+                                CancellationReason::ManuallyCancelled,
+                                ctx,
+                            );
+                        });
+                    }
+                }
+            } else if press == StopPress::CtrlC
+                && self.action_model.update(ctx, |action_model, ctx| {
+                    action_model.interrupt_running_actions(conversation_id, ctx)
+                })
+            {
+                // #2034: actions this exchange does not show are running (#1799), none of them
+                // a shell command. The key interrupted them; the turn goes on.
             } else if model
                 .conversation(ctx)
                 .is_some_and(|c| c.status().is_in_progress() || c.status().is_blocked())
@@ -1376,6 +1496,8 @@ impl TypedActionView for BlocklistAIStatusBar {
                 });
             }
             BlocklistAIStatusBarAction::Stop => {
+                // #2034: the view's Ctrl-C routing handles the press; see `stop_button_press`.
+                self.stop_button_press = true;
                 ctx.emit(BlocklistAIStatusBarEvent::Stop);
             }
             BlocklistAIStatusBarAction::ForceRefreshAgentView { block_id } => {

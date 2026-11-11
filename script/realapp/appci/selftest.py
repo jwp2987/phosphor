@@ -6044,6 +6044,9 @@ def agent_question_pure_parts_and_fake_asks():
     queued_only = "hop=agent_action id=q2 kind=ask_user_question status=queued\nhop=turn conv=c1 state=error\n"
     assert aq.verdict(queued_only) == "hung" and aq.ask_open_ids(queued_only) == ["q2"], "a terminal turn with an ask action left open is a hang"
     assert aq.verdict("hop=turn conv=c1 state=error\n") == "ended"
+    # #2029: `success` and then more turn states with nobody acting = reported finished too early (round 10: success, in_progress, success)
+    assert aq.early_success(["success", "in_progress", "success"]) and aq.early_success(["blocked", "success", "in_progress"])
+    assert not aq.early_success(["in_progress", "success"]) and not aq.early_success(["blocked"]) and not aq.early_success([]) and not aq.early_success(["success"])
     r = FM.reply_for([{"role": "user", "content": "Please ask me a question Z9"}])
     assert r["tool"]["name"] == "ask_user_question" and "Z9" in r["tool"]["arguments"]["questions"][0]["question"]
     assert FM.reply_for([{"role": "user", "content": "Please ask me a question Z9"}, {"role": "tool", "content": "{}"}])["text"] == "Done."
@@ -6670,6 +6673,41 @@ def ssh_wrapper_cases_have_a_job_that_pins_them():
     ran, fails = run(False, None, True, "y hop=ssh_wrapper verdict managed=false tty_owned_deferred=false remote_plain=false\nz hop=ssh_wrapper verdict_ignored managed=true state=Off session_differs=false\n")
     assert ran == [1] and len(fails) == 3 and "verdicts seen" in fails[0] and "managed=false" in fails[0], fails
     assert len(run(False, None, True, "")[1]) == 2, "no hop at all fails the verdict and the announcement checks"
+
+
+@check
+def agent_ctrl_c_running_tool_pieces_2034():
+    """#2034: Ctrl-C while a tool that is not a shell command runs interrupts the tool and the turn goes on. The fake model's two-call reply (an MCP
+    call, then a question, in ONE reply), the case's verdict (it needs the app's interrupt hop AND the question still answerable: either alone is a
+    failure), and the registration (fix tier, fake pass, settings declared, Git Bash pane only on Windows)."""
+    import cases_agent_mcp as MC, case_settings, fake_model as FM
+    tools = [{"function": {"name": "mcp__fxhang__ping"}}]
+    prompt = [{"role": "user", "content": "Please call mcp tool ping on fxhang then ask me a question C7"}]
+    rep = FM.reply_for(prompt, tools)
+    assert rep["tool"] == {"name": "mcp__fxhang__ping", "arguments": {"text": "C7"}}, rep
+    assert [t["name"] for t in rep["tools_after"]] == ["ask_user_question"] and "C7" in rep["tools_after"][0]["arguments"]["questions"][0]["question"], rep
+    calls = json.loads(FM.stream_lines("m", rep)[0])["message"]["tool_calls"]
+    assert [c["function"]["name"] for c in calls] == ["mcp__fxhang__ping", "ask_user_question"], "one reply, the MCP call first: %s" % calls
+    missing = FM.reply_for(prompt, [])
+    assert missing["tool"] is None and missing["mcp_missing"] == ("fxhang", "ping") and missing["text"].startswith("NO-MCP-TOOL"), missing
+    # the older triggers keep their replies: the plain MCP call, the command-then-question, the plain question
+    plain = FM.reply_for([{"role": "user", "content": 'Please call mcp tool ping on fxok with {"text": "a"}'}], [{"function": {"name": "mcp__fxok__ping"}}])
+    assert plain["tool"]["name"] == "mcp__fxok__ping" and not plain.get("tools_after"), plain
+    assert FM.reply_for([{"role": "user", "content": "Please run a slow command then ask me a question Z8"}])["tool"]["name"] == "run_shell_command"
+    assert FM.reply_for([{"role": "user", "content": "Please ask me a question Z9"}])["tool"]["name"] == "ask_user_question"
+    hop = "input_order hop=agent_action_interrupt count=1 t=1.0\n"
+    assert MC.interrupt_verdict(hop, "answerable", "blocked")[0]
+    ok, why = MC.interrupt_verdict("input_order hop=ctrl_c_route route=cancel_conversation t=1.0\n", "ended", "cancelled")
+    assert not ok and "did not interrupt" in why, why
+    ok, why = MC.interrupt_verdict(hop, "ended", "cancelled")
+    assert not ok and "stopped the turn" in why, "interrupted but the question is gone: %s" % why
+    ok, why = MC.interrupt_verdict("", "answerable", "blocked")
+    assert not ok, "a question that is answerable without the interrupt hop proves nothing about the key"
+    n = "agent_ctrl_c_running_tool"
+    assert n in cases.PROVING and n in cases.PROVING_FAKE and n not in cases.SMOKE, n
+    assert [c["modes"] for c in cases.CASES if c["name"] == n] == [("agent",)], n
+    assert case_settings.declared(n) and "mcp_config" in case_settings.declaration(n)["sets"], n
+    assert winmap.skip_reason(n, "gitbash") is None and "Git Bash" in winmap.skip_reason(n, "powershell"), n
 
 
 @check

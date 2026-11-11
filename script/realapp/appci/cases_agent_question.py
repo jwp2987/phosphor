@@ -34,6 +34,12 @@ BOUND_S = 150            # longest a variant may take to END: the nodone close (
 
 
 # ---------------------------------------------------------------- pure parts (selftest rows)
+def early_success(states):
+    """pure (#2029): the turn read `success` and then went on with nobody acting: a `success` that is not the last turn state of an excerpt in which the
+    user did nothing after the prompt. Before the fix a tool call the app rejected read success, in_progress (the automatic follow-up), success."""
+    return "success" in list(states)[:-1]
+
+
 def ask_actions(text):
     """[(id, status)] of the ask_user_question hop=agent_action lines, in order"""
     return [(aid, st) for aid, kind, st in AR.action_hops(text) if kind == ASK_KIND]
@@ -138,6 +144,10 @@ def run_variant(ctx, r, tag, fault, **kw):
         r.metric("question_%s_seconds_to_end" % tag, round(waited, 1))
         ctx.shot("question_%s_state" % tag)
         log = ctx.log_since(off)
+        # #2029: nothing was typed or pressed since the prompt, so a `success` that the turn then left by itself was reported too early
+        states = [s for _c, s in AR.turn_states(log)]
+        r.check(not early_success(states), "%s: the turn read `success` and then went on by itself (turn states since the prompt: %r): it was reported finished "
+                "before its automatic follow-up was decided (#2029)" % (tag, states))
         r.check(v in ("answerable", "ended"),
                 "%s: the turn is neither answerable nor ended %.0f s after the prompt (bound %d s; last samples %r, last turn state %r, ask actions %r): the card hangs on 'Preparing question...'"
                 % (tag, waited, BOUND_S, got[-3:], AR.last_turn_state(log), ask_actions(log)))

@@ -12561,6 +12561,165 @@ fn suspended_controller_mid_batch_cancel_sends_nothing_and_unlocks_the_queue() {
     })
 }
 
+impl MidBatch {
+    /// Adds a tool that is really running (a grep whose execution never finishes) in front of
+    /// the command that waits for approval: the state in which Ctrl-C and Stop differ (#2034).
+    /// Returns the tool's id and its execution handle.
+    fn start_running_tool(
+        &self,
+        app: &mut App,
+    ) -> (AIAgentActionId, warpui::r#async::SpawnedFutureHandle) {
+        let conversation_id = self.conversation_id;
+        let task_id = BlocklistAIHistoryModel::handle(app).read(app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .expect("conversation should exist")
+                .get_root_task_id()
+                .clone()
+        });
+        let tool_id = AIAgentActionId::from("running-grep".to_owned());
+        let execution = self.action_model.update(app, |action_model, ctx| {
+            let execution = ctx.spawn(futures::future::pending::<()>(), |_, (), _| {});
+            action_model.start_running_async_action_for_test(
+                crate::ai::agent::AIAgentAction {
+                    id: tool_id.clone(),
+                    task_id,
+                    action: crate::ai::agent::AIAgentActionType::Grep {
+                        queries: vec!["needle".to_owned()],
+                        path: ".".to_owned(),
+                    },
+                    requires_result: true,
+                },
+                conversation_id,
+                Some(execution.clone()),
+                ctx,
+            );
+            execution
+        });
+        self.action_model.read(app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&tool_id)
+                    .is_some_and(|status| status.is_running()),
+                "precondition: the tool is a running async action"
+            );
+            assert!(
+                action_model
+                    .get_action_status(&self.blocked_action_id)
+                    .is_some_and(|status| !status.is_blocked() && !status.is_running()),
+                "precondition: the command is queued behind the running tool"
+            );
+        });
+        (tool_id, execution)
+    }
+}
+
+/// #2034: a Ctrl-C typed while a tool runs that is not a shell command (a read, a search, an MCP
+/// call) interrupts that tool and the turn goes on, as it does for a running command (#850,
+/// owner decision 2026-11-10). The tool's work is aborted and its result is `cancelled`; the
+/// command queued behind it is NOT cancelled with it and now waits for the user; nothing is
+/// sent yet. When the user then answers that card (a Reject here), the step's results go back
+/// to the model: nobody stopped the turn.
+///
+/// Red on the old code: the Ctrl-C cancelled the tool as a user stop (`ManuallyCancelled`).
+#[test]
+fn ctrl_c_on_a_running_tool_interrupts_it_and_the_turn_goes_on() {
+    App::test((), |mut app| async move {
+        let batch = mid_batch(&mut app).await;
+        let (tool_id, execution) = batch.start_running_tool(&mut app);
+        let conversation_id = batch.conversation_id;
+
+        let interrupted = batch.action_model.update(&mut app, |action_model, ctx| {
+            action_model.interrupt_running_actions(conversation_id, ctx)
+        });
+        let_subscribers_run().await;
+
+        assert!(interrupted, "a running grep is interrupted as an action");
+        assert!(
+            execution.abort_handle().is_aborted(),
+            "the tool's work is stopped, not left to finish"
+        );
+        batch.action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&tool_id)
+                    .is_some_and(|status| !status.is_running()),
+                "the interrupted tool has its result"
+            );
+            assert!(
+                action_model
+                    .get_action_status(&batch.blocked_action_id)
+                    .is_some_and(|status| status.is_blocked()),
+                "the command behind it was not cancelled: its card waits for the user"
+            );
+        });
+        assert_eq!(
+            *batch.sent_requests.borrow(),
+            0,
+            "nothing is sent while a card of the step still waits"
+        );
+        assert_ne!(
+            batch.status(&app),
+            Some(ConversationStatus::Cancelled),
+            "the key did not stop the turn"
+        );
+
+        // The user answers the remaining card; the step ends by the ordinary rule and the model
+        // is told (an earlier result of the step had finished).
+        batch.cancel_blocked_action(&mut app);
+        let_subscribers_run().await;
+        assert_eq!(
+            *batch.sent_requests.borrow(),
+            1,
+            "the turn went on: one follow-up carries the step's results"
+        );
+    })
+}
+
+/// #2034, the other half: a STOP of a running tool stops the turn. The command queued behind
+/// the tool goes with it (as it always has when the stop lands on a card that still waits,
+/// #1799), nothing is sent however much of the step had finished (#1942), and the turn ends
+/// `Cancelled`. `cancel_action_with_id(.., ManuallyCancelled)` on a running action is what the
+/// card's Reject of a running MCP call reaches; the status bar's Stop button goes through
+/// `cancel_conversation_progress`, which cancels the same set.
+///
+/// Red on the old code: only the tool was cancelled, and the command's card came up after the
+/// user had stopped the agent.
+#[test]
+fn stopping_a_running_tool_stops_the_rest_of_the_turn() {
+    App::test((), |mut app| async move {
+        let batch = mid_batch(&mut app).await;
+        let (tool_id, execution) = batch.start_running_tool(&mut app);
+        let conversation_id = batch.conversation_id;
+
+        batch.action_model.update(&mut app, |action_model, ctx| {
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &tool_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+        let_subscribers_run().await;
+
+        assert!(execution.abort_handle().is_aborted());
+        batch.action_model.read(&app, |action_model, _| {
+            assert!(
+                !action_model.has_unfinished_actions_for_conversation(conversation_id),
+                "nothing of the turn is left pending or running"
+            );
+            assert!(
+                action_model
+                    .get_action_status(&batch.blocked_action_id)
+                    .is_none_or(|status| !status.is_blocked()),
+                "no card comes up after a stop"
+            );
+        });
+        assert_eq!(*batch.sent_requests.borrow(), 0, "Stop means stop (#1942)");
+        assert_eq!(batch.status(&app), Some(ConversationStatus::Cancelled));
+    })
+}
+
 #[test]
 fn cmd_k_does_not_clear_buffer_when_agent_is_driving_command() {
     App::test((), |mut app| async move {

@@ -5,8 +5,8 @@
 //! |---|---|
 //! | I1 | every blocked action has an actionable card within delta; nothing pending sits neither blocked-with-card, runnable nor running for longer than delta; every tool call of the last finished reply has an action-model status or a result within delta (#1946) |
 //! | I2a | once the script is used up and the user has answered every card, the conversation is terminal within 5 s |
-//! | I2b | Stop, and Ctrl-C, leave it terminal within 2 s, nothing pending / running, no stream in flight. The one exception is a Ctrl-C typed into a running agent command: that is the command's interrupt and the turn goes on (#850, owner decision 2026-11-10). A Ctrl-C with any other action running (a read, a grep) is a stop like any other |
-//! | I2c | that Ctrl-C: the command it was typed into stops running within 2 s, and the action that waited behind it for the user's answer (a question; a command, with the allowlist off) is still held then: the key cancelled the command, not the turn. How the step ends afterwards is the ordinary end-of-step rule (results go back to the model when any result finished; a step whose only result is the interrupted command ends `Cancelled`, #1178); the cards that follow are the closing user's, and I2a still ends the turn |
+//! | I2b | Stop, and a Ctrl-C that has nothing to interrupt (a card waits, a reply streams), leave it terminal within 2 s, nothing pending / running, no stream in flight. A Ctrl-C typed while something RUNS is not a stop: it interrupts what runs and the turn goes on. That is the running agent command (#850, owner decision 2026-11-10) and, since #2034, equally a running tool that is not a command (a read, a search, an MCP call) when no reply is streaming: [`ctrl_c_interrupts`]. Rounds 12-16 held the second case to I2b (a stop), which was the app's inconsistency written down as a rule: the same key stopped the turn on a waiting card and one action on a running one |
+//! | I2c | that Ctrl-C: what it interrupted stops running within 2 s, and the action that waited behind it for the user's answer (a question; a command, with the allowlist off) is still held then: the key cancelled what ran, not the turn. How the step ends afterwards is the ordinary end-of-step rule (results go back to the model when any result finished; a step whose only result is the interrupted action ends `Cancelled`, #1178); the cards that follow are the closing user's, and I2a still ends the turn |
 //! | I3 | when the conversation is terminal, locked queued rows unlock within 2 s; unlocked rows of a conversation that succeeded are sent within 3 s (a cancel restores rows to the input instead: #690 / #1026, kept by #1799) |
 //! | I4 | each request carries exactly one tool message per emitted call id, in order, none extra and none orphaned (duplicates renamed `id#2`); the last request holds the calls of the replies to the requests before it, each in the form its state allows (the table on [`check_tool_messages`]): a reply the app committed is whole; one whose stream broke before the commit, or that the user cut (a message sent, Stop or Ctrl-C while it was still in flight), may be absent or there with only the calls shown early |
 //! | I5 | `prompt_tests.rs`: a command is handed to the user only if it reads the tty |
@@ -315,13 +315,14 @@ impl Oracle {
         }
     }
 
-    /// I2c, first half: after a Ctrl-C typed into a running agent command. That Ctrl-C is the
-    /// command's interrupt, not a stop of the conversation (#850, owner decision 2026-11-10:
-    /// "interrupts the command and the turn goes on"), so I2b does not apply; what must hold is
-    /// that the interrupt took: of the commands that were running at the key, at least one no
-    /// longer runs (a command runs alone, so that is the command). `was_running` is the
-    /// commands the key was typed into (`Rig::running_commands`), from just before the key.
-    /// The second half is [`Oracle::turn_goes_on`].
+    /// I2c, first half: after a Ctrl-C typed while something ran ([`ctrl_c_interrupts`]). That
+    /// Ctrl-C is an interrupt of what runs, not a stop of the conversation (#850, owner
+    /// decision 2026-11-10: "interrupts the command and the turn goes on"; #2034: the same for
+    /// a running tool), so I2b does not apply; what must hold is that the interrupt took: of
+    /// the actions that were running at the key, at least one no longer runs (a command runs
+    /// alone, so that is the command; a file edit whose save is in flight is left to finish,
+    /// so "all of them" is not asked). `was_running` is what the key interrupts, from just
+    /// before the key. The second half is [`Oracle::turn_goes_on`].
     pub fn interrupted(
         obs: &Obs,
         was_running: &[crate::ai::agent::AIAgentActionId],
@@ -431,6 +432,28 @@ impl Oracle {
             }
         }
         Ok(())
+    }
+}
+
+/// What a Ctrl-C interrupts (I2c); empty = it interrupts nothing and is a stop (I2b).
+///
+/// * `running_commands`: the agent commands running at the key (`Rig::running_commands`). The
+///   key is the command's ^C (#850). A command runs alone, so nothing else is looked at.
+/// * `running_actions`: everything running at the key (`Rig::running_actions`). With no command
+///   among it and no reply streaming, the key interrupts all of it (#2034).
+/// * `stream_in_flight`: a reply is still streaming. The key then cancels the reply, which is a
+///   stop, whatever tool runs beside it.
+pub fn ctrl_c_interrupts(
+    running_commands: Vec<crate::ai::agent::AIAgentActionId>,
+    running_actions: Vec<crate::ai::agent::AIAgentActionId>,
+    stream_in_flight: bool,
+) -> Vec<crate::ai::agent::AIAgentActionId> {
+    if !running_commands.is_empty() {
+        running_commands
+    } else if stream_in_flight {
+        Vec::new()
+    } else {
+        running_actions
     }
 }
 
@@ -1339,6 +1362,38 @@ mod tests {
         let moved_on = obs(vec![held("c1", PendingStage::Blocked)]);
         assert!(Oracle::interrupted(&moved_on, &was_running).is_ok());
         assert!(Oracle::stopped(&moved_on).is_err());
+    }
+
+    /// #2034: what a Ctrl-C interrupts. A running command takes the key alone; running tools
+    /// take it when no reply streams; with nothing running, or a reply still streaming, the key
+    /// interrupts nothing and is a stop (I2b).
+    ///
+    /// Red on the rule of rounds 12-16 (only a command was ever interrupted): the second
+    /// assertion returned nothing, and the runner then asked I2b of a key that, in the app,
+    /// leaves the later actions of the reply to come up.
+    #[test]
+    fn a_ctrl_c_interrupts_what_runs_and_is_a_stop_when_nothing_does() {
+        use crate::ai::agent::AIAgentActionId;
+
+        let id = |name: &str| AIAgentActionId::from(name.to_owned());
+        // A command: the pty's ^C, whatever else is listed as running.
+        assert_eq!(
+            ctrl_c_interrupts(vec![id("c0")], vec![id("c0")], false),
+            vec![id("c0")]
+        );
+        assert_eq!(
+            ctrl_c_interrupts(vec![id("c0")], vec![id("c0")], true),
+            vec![id("c0")]
+        );
+        // Tools (a parallel phase of reads), no reply streaming: all of them.
+        assert_eq!(
+            ctrl_c_interrupts(Vec::new(), vec![id("r0"), id("r1")], false),
+            vec![id("r0"), id("r1")]
+        );
+        // A reply still streams: the key cancels the reply. A stop.
+        assert!(ctrl_c_interrupts(Vec::new(), vec![id("r0")], true).is_empty());
+        // Nothing runs (a card waits): a stop.
+        assert!(ctrl_c_interrupts(Vec::new(), Vec::new(), false).is_empty());
     }
 
     /// Owner decision 2026-11-10 (#850, the question left open on #1942): a Ctrl-C typed into a

@@ -5086,7 +5086,17 @@ impl TerminalView {
                 });
                 ctx.emit(Event::SummarizationCancelDialogToggled { is_open: *is_open });
             }
-            BlocklistAIStatusBarEvent::Stop => me.ctrl_c(ctx),
+            // The Stop button takes the Ctrl-C routing (a running command, a selection). The
+            // status bar remembers that this pass is the button's, which matters where the two
+            // differ (#2034: an action that runs and is not a command); forget it once the
+            // routing is done, whichever way it went.
+            BlocklistAIStatusBarEvent::Stop => {
+                me.ctrl_c(ctx);
+                let status_bar = me.input.as_ref(ctx).agent_status_bar().clone();
+                status_bar.update(ctx, |status_bar, _| {
+                    status_bar.take_stop_button_press();
+                });
+            }
         });
 
         let (visible_rich_content_tx, visible_rich_content_rx) =
@@ -11060,8 +11070,24 @@ impl TerminalView {
             // stream is still active. Route Ctrl+C to the status bar to cancel it.
             self.cancel_active_conversation_via_status_bar(ctx);
         } else if let Some(conversation_id) = self.blocked_agent_turn_to_cancel(ctx) {
-            log_route("cancel_blocked_turn");
-            self.cancel_blocked_agent_turn(conversation_id, ctx);
+            // #2034: the key interrupts what runs (actions that are not shell commands) and
+            // the turn goes on; with nothing running, or for the Stop button, the turn stops.
+            let is_key = !self
+                .input
+                .as_ref(ctx)
+                .agent_status_bar()
+                .as_ref(ctx)
+                .current_stop_press_is_button();
+            if is_key
+                && self.ai_action_model.update(ctx, |action_model, ctx| {
+                    action_model.interrupt_running_actions(conversation_id, ctx)
+                })
+            {
+                log_route("interrupt_running_actions");
+            } else {
+                log_route("cancel_blocked_turn");
+                self.cancel_blocked_agent_turn(conversation_id, ctx);
+            }
         } else if self
             .passive_suggestions_models
             .legacy
