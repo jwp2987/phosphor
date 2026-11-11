@@ -1548,6 +1548,31 @@ impl<T: EventLoopSender> PtyController<T> {
         }
     }
 
+    /// #2153: a ^C was written while an exchange waits for its RESULTS. The user abandoned the
+    /// Tab (the shell's hook is interrupted and may never answer, and zsh may not run a Precmd
+    /// for it), so the exchange must not stay in flight for the 15 s net and refuse the next
+    /// Tab as "an exchange is already in flight". The exchange ends: its requesters see "no
+    /// answer" (closed channels) and nothing is written. A reply that still arrives is ignored
+    /// by the `CompletionsFinished` phase check, and it cannot be mistaken for a NEW exchange's
+    /// answer: the shell is single-threaded, so the new exchange's prompt event (which moves it
+    /// to awaiting-results) can only come after the old hook has returned, i.e. after any late
+    /// reply, which finds the new exchange still waiting for its prompt and is ignored there
+    /// (#770). An exchange still awaiting its prompt is not touched here: the write path
+    /// cancels it with its frame (design point b).
+    fn end_native_exchange_awaiting_results_on_interrupt(&mut self) {
+        if !matches!(
+            self.in_flight_native_completions_state,
+            Some(NativeShellCompletionsState::AwaitingResults { .. })
+        ) {
+            return;
+        }
+        log::info!(
+            "A ^C ends the native-completions exchange awaiting results (the Tab was abandoned)"
+        );
+        self.in_flight_native_completions_state = None;
+        self.native_attached_waiters.clear();
+    }
+
     /// #1801 (design point b): a write is about to go out while an exchange waits for its prompt.
     /// The cancel frame goes first: it ends the hook safely wherever it is (in its read, or at
     /// the prompt), and the write follows it in order. The Tab falls back to the completer.
@@ -3107,6 +3132,7 @@ impl<T: EventLoopSender> PtyController<T> {
             let now = std::time::Instant::now();
             self.ctrl_c_sent_at = Some(now);
             self.ctrl_c_next_command_at = Some(now);
+            self.end_native_exchange_awaiting_results_on_interrupt();
             self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         }
         // On a pty with the write queue, a paste and an agent write are their own job classes
