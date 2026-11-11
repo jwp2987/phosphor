@@ -3372,7 +3372,13 @@ one row per lab family, for every arm of it; the lab harness's own two settings 
   UserNotificationCenter / CoreServicesUIAgent / universalAccessAuthWarn / SecurityAgent; plus a Vision OCR for
   "Don't Allow" + "local network" once before the first key). On a hit it STOPS: exit 3 and `NEEDS_OWNER.txt` (in the artifacts
   root and in `run/`) naming the dialog; the owner answers it once in gitrunner's session (Screen Sharing / console), then the
-  job is re-run. The harness never clicks it. Idea, NOT implemented: a loopback forwarder (a tiny tcp relay started by the job on
+  job is re-run. **Owner decision 2026-11-11:** the owner cannot click it remotely and it came back with every build (r14a,
+  r15a), so with `APPCI_MAC_AUTO_ALLOW_LOCAL_NETWORK=1` in the Mac runner's machine-local `~gitrunner/.config/phosphor-ci/ci.env`
+  (never in the repo or GitLab variables) `MacBackend.auto_allow_local_network` answers exactly this question with Allow through
+  System Events: the dialog's texts must name "Phosphor" + "find devices" + "local network" and its buttons must be exactly
+  Allow / Don't Allow (`is_phosphor_local_network_prompt`), and the window must be gone afterwards; it logs `appci: macOS Local
+  Network question for Phosphor answered Allow by the harness`. Any other system dialog still stops the pass as NEEDS OWNER.
+  Self-test: `selftest_r19_macallow.py`. Idea, NOT implemented: a loopback forwarder (a tiny tcp relay started by the job on
   127.0.0.1:PORT forwarding to the Ollama host, with the profile's endpoint pointing at it) so the app only talks to 127.0.0.1,
   which needs no Local Network permission and would make the prompt impossible; the relay process (not the app) would then
   own the LAN connection, and it is a plain CLI child of the runner, which is not prompt-gated.

@@ -9082,6 +9082,8 @@ import selftest_r19_artifacts  # noqa: E402  (#2123: run_slim is made by the job
 CHECKS.extend(selftest_r19_artifacts.CHECKS)
 import selftest_r19_decide_app  # noqa: E402  (round 19, owner decisions of 2026-11-11 in the app: #2130 word keys, #2131 idle Ctrl-C copy, #2132 close question by keyboard; own file)
 CHECKS.extend(selftest_r19_decide_app.CHECKS)
+import selftest_r19_macallow  # noqa: E402  (owner decision 2026-11-11: the harness answers macOS's Local Network question for Phosphor with APPCI_MAC_AUTO_ALLOW_LOCAL_NETWORK=1; own file)
+CHECKS.extend(selftest_r19_macallow.CHECKS)
 
 
 def missing_required(required, passed):

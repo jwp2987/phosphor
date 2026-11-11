@@ -911,15 +911,55 @@ class MacBackend(Backend):
     # processes that own system prompts (Local Network, TCC, authorization). Any on-screen window of one of these means keys could be eaten.
     DIALOG_OWNERS = ("usernotificationcenter", "coreservicesuiagent", "universalaccessauthwarn", "securityagent", "tccd", "localnetworkprompt")
 
+    # Owner decision 2026-11-11: every ad-hoc-signed CI build re-asks macOS's Local Network question, and the owner cannot click it
+    # remotely. With APPCI_MAC_AUTO_ALLOW_LOCAL_NETWORK=1 (machine-local ci.env of the Mac runner ONLY, never the repo) the harness
+    # answers exactly that question, for Phosphor, with Allow. Any other system dialog still stops the pass as NEEDS OWNER.
+    AUTO_ALLOW_ENV = "APPCI_MAC_AUTO_ALLOW_LOCAL_NETWORK"
+
+    @staticmethod
+    def is_phosphor_local_network_prompt(texts, buttons):
+        """the dialog's static texts and button names are exactly the Local Network question about Phosphor"""
+        t = " ".join(texts).lower().replace("“", '"').replace("”", '"')
+        b = {x.replace("’", "'").strip().lower() for x in buttons}
+        return ('"phosphor"' in t and "local network" in t and "find devices" in t
+                and b == {"allow", "don't allow"})
+
+    def auto_allow_local_network(self, owner):
+        """True when the Local Network question for Phosphor was on screen and was answered Allow (and is gone); False otherwise,
+        and the caller reports the dialog as before. Only with AUTO_ALLOW_ENV=1 and only for UserNotificationCenter."""
+        if os.environ.get(self.AUTO_ALLOW_ENV) != "1" or owner.lower().replace(" ", "") != "usernotificationcenter":
+            return False
+        se = 'tell application "System Events" to tell process "UserNotificationCenter" to '
+        try:
+            texts = subprocess.run(["osascript", "-e", se + "get value of every static text of window 1"],
+                                   capture_output=True, timeout=20).stdout.decode(errors="replace").strip().split(", ")
+            buttons = subprocess.run(["osascript", "-e", se + "get name of every button of window 1"],
+                                     capture_output=True, timeout=20).stdout.decode(errors="replace").strip().split(", ")
+            if not self.is_phosphor_local_network_prompt(texts, buttons):
+                return False
+            subprocess.run(["osascript", "-e", se + 'click button "Allow" of window 1'], capture_output=True, timeout=20)
+            time.sleep(1.5)
+            left = subprocess.run(["osascript", "-e", se + "count windows"], capture_output=True, timeout=20).stdout.decode().strip()
+            ok = left == "0"
+            print("appci: macOS Local Network question for Phosphor answered Allow by the harness (%s=1): %s"
+                  % (self.AUTO_ALLOW_ENV, "dialog gone" if ok else "dialog STILL on screen"), flush=True)
+            return ok
+        except Exception as e:
+            print("appci: auto-allow of the Local Network question failed: %r" % (e,), flush=True)
+            return False
+
     def system_dialog(self, ocr=False):
         """description of a system dialog that is on screen, else None. Cheap path: WindowServer window list (the Local Network
         prompt is NOT frontmost per lsappinfo: the menu bar still says Phosphor, so the front-app check alone cannot see it).
-        ocr=True adds a Vision pass over a screenshot for 'Allow' + 'local network' (used once before the first key)."""
+        ocr=True adds a Vision pass over a screenshot for 'Allow' + 'local network' (used once before the first key).
+        The Local Network question about Phosphor is answered by the harness when AUTO_ALLOW_ENV=1 (owner decision 2026-11-11)."""
         try:
             r = subprocess.run([self._tool("winrect"), "list"], capture_output=True, timeout=15)
             for l in r.stdout.decode(errors="replace").splitlines():
                 f = l.split("\t")
                 if len(f) >= 2 and f[1].lower().replace(" ", "") in self.DIALOG_OWNERS:
+                    if self.auto_allow_local_network(f[1]):
+                        continue
                     return "window of %s (pid %s) on screen: %s" % (f[1], f[0], l[:160])
         except Exception:
             pass
@@ -943,7 +983,9 @@ class MacBackend(Backend):
         return NeedsOwner(
             "a macOS system dialog is in front and would take our keys: %s. The owner must click ALLOW once, in the gitrunner GUI session "
             "(Screen Sharing / the console as user gitrunner): the dialog reads 'Allow \"Phosphor\" to find devices on local networks?'. "
-            "A new ad-hoc-signed build can re-trigger it (docs/testing.md 3.3). The harness never clicks it. Then re-run the job." % what)
+            "A new ad-hoc-signed build can re-trigger it (docs/testing.md 3.3). The harness answers ONLY that question, and only with "
+            "APPCI_MAC_AUTO_ALLOW_LOCAL_NETWORK=1 in the Mac runner's machine-local ci.env (owner decision 2026-11-11); this dialog was "
+            "not that question, or the switch is off. Then re-run the job." % what)
 
     def guard(self):
         d = self.system_dialog()
