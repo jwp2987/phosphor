@@ -3228,6 +3228,35 @@ Owner decisions on three key questions of the daily-user review. Design and evid
   would be read by that hidden search. It needs the prompt lent to the shell (terminal focus, the
   shell's line shown, the hand-off pty-owned until the next Preexec or prompt). Alt-R / Meta-R are
   left unbound (a test pins it) so either answer stays possible.
+## Round 15: Alt word keys, Shift+Page keys under a running command, no PRIMARY-to-CLIPBOARD fallback — IMPROVED 2026-11-11 (#2079, #2080, #2081)
+
+Three places where this fork deliberately differs from the pin (each is byte-identical upstream at `42effe840`). Design and
+evidence: `docs/design/r15-defects.md`. Worked, unproven when written (nothing compiled or run). A re-pin must not restore the
+upstream form of any of them.
+
+- **Alt-F / Alt-B / Alt-Backspace are word keys on Linux and Windows (#2079, IMPROVED).** Upstream binds `meta-f` / `meta-b` /
+  `meta-backspace` only, which those platforms send only with an Alt key set to act as Meta, so with default settings the readline
+  word keys did nothing at the prompt. Same decision as Alt-. (#1989, above): the editable `editor_view:move_forward_one_word` /
+  `editor_view:move_backward_one_word` default to `alt-f` / `alt-b` off macOS (input editor, code editor, notebook editor), a fixed
+  `alt-backspace` cuts the word before the cursor in the input editor, and the `meta-` forms stay as fixed bindings. macOS is
+  unchanged (Option as Meta; an Option key that types characters keeps typing them). Kill switch `PHOSPHOR_ALT_WORD_KEYS=0`.
+  NOT changed: the other Linux / Windows defaults that differ from readline on purpose (Ctrl-A selects all, Ctrl-E does not move,
+  Ctrl-Y deletes to the line start) stay an owner question.
+- **Shift+PageUp / PageDown / Home / End scroll the scrollback while a foreground command runs (#2080, IMPROVED).** Upstream has no
+  key for it: the plain keys are written to the program and nothing else scrolls. The four shifted keys are fixed bindings of the
+  terminal view, live only with a command running, outside the alternate screen (a full-screen program keeps them) and while the
+  input editor does not have focus (`terminal/view/scrollback_keys.rs`). Nothing is written to the pty for them. The plain keys
+  are unchanged everywhere. Kill switch `PHOSPHOR_SCROLLBACK_KEYS=0`. NOT done: the shifted keys at a prompt (PageUp / PageDown
+  scroll there already; Shift+Home / Shift+End select in the editor).
+- **A selection is never written to CLIPBOARD in PRIMARY's place (#2081, IMPROVED).** Upstream writes a PRIMARY-bound selection to
+  the normal clipboard when the display has no primary selection, so with copy on select off every selection replaced what the
+  user had copied. The write is dropped instead (`primary_write_outcome`, `warpui/.../linux/clipboard.rs`); copy on select on
+  still writes CLIPBOARD through its own write. Kill switch `PHOSPHOR_PRIMARY_FALLS_BACK_TO_CLIPBOARD=1`. NOT changed: the read
+  side (a middle click on such a display pastes CLIPBOARD); it destroys nothing and is a separate question.
+
+Tests: `util/bindings_tests.rs` (`test_word_keys_default_bindings_per_platform`), `terminal/view/scrollback_keys_tests.rs`,
+`terminal/view/scrollback_keys_view_tests.rs`, `clipboard_tests.rs` (`primary_write_tests`); appci `meta_and_word_keys`,
+`scroll_keys_foreground`, `primary_absent_clipboard_kept`.
 ## A remote host whose login shell is fish or nu gets a plain ssh session: no agent tools on that host (#2019) — DECIDED 2026-11-10
 `ssh <host>` from a Phosphor pane hands sshd a POSIX sh script as the remote command, and sshd runs it as
 `<login shell> -c <script>`. fish and nushell (also csh, tcsh, xonsh, elvish) parse the whole text before running any of

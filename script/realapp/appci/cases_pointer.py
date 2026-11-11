@@ -751,8 +751,8 @@ def c_primary_and_middle_click(ctx, r):
     primary_set(ctx, probe)
     time.sleep(0.3)
     if primary_get(ctx) != probe:
-        r.skip("this display has no PRIMARY selection the harness can write and read back (%s): the app then writes selections to CLIPBOARD instead "
-               "(LinuxClipboard::write_to_primary_clipboard), which this case cannot judge" % " / ".join(" ".join(primary_argv(ctx.be.name, w)) for w in (True, False)))
+        r.skip("this display has no PRIMARY selection the harness can write and read back (%s): the app drops its PRIMARY writes there (#2081; before "
+               "round 15 it wrote them to CLIPBOARD instead), and primary_absent_clipboard_kept is the case that judges such a display" % " / ".join(" ".join(primary_argv(ctx.be.name, w)) for w in (True, False)))
     words = distinct_words(ctx.rng, 5)
     line, tok = " ".join(words), ctx.tok(5).lower()
     seen = print_file(ctx, r, "pm_%s.txt" % tok, line + "\n", words)

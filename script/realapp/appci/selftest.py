@@ -7914,6 +7914,9 @@ def r14_w1b_pure_parts():
                 elif low == "alt+d":
                     j = word_right(cur)
                     kill, buf = buf[cur:j], buf[:cur] + buf[j:]
+                elif low == "alt+backspace":
+                    j = word_left(cur)
+                    kill, buf, cur = buf[j:cur], buf[:j] + buf[cur:], j
                 elif low in ("alt+period", "alt+."):
                     buf, cur = buf[:cur] + hist_last + buf[cur:], cur + len(hist_last)
                 elif low == "ctrl+a":
@@ -7953,7 +7956,7 @@ def r14_w1b_pure_parts():
         for meta in (False, True):
             steps = D.prompt_steps("k7m", family, meta)
             names = names or [s["name"] for s in steps]
-            assert [s["name"] for s in steps] == names and len(names) == 15, "both platforms run the same keys"
+            assert [s["name"] for s in steps] == names and len(names) == 16, "both platforms run the same keys"
             for st in steps:
                 assert st["readline"] is not None or st["default"] is not None, st["name"]
                 last = st["seed"].split()[-1] if st["seed"] else ""
@@ -7978,7 +7981,8 @@ def r14_w1b_pure_parts():
                             k = op[1].lower().split("+")[-1]
                             assert k in be_cls.SPECIAL or k in be_cls.LETTERS, (st["name"], op[1])
             alt = {s["name"]: s for s in steps}
-            assert (alt["alt_b"]["issue"] == D.ISSUE_ALT_WORD) == (not mac and not meta) and alt["alt_d"]["issue"] is None
+            # #2079 worked in round 15: no step carries a known issue any more, and Alt-Backspace is a step on every platform
+            assert all(x["issue"] is None for x in steps) and D.ISSUE_ALT_WORD == 2079 and not alt["alt_backspace"]["skip"]
             assert bool(alt["alt_b"]["skip"]) == (mac and not meta) and bool(alt["delete"]["skip"]) == mac
             raw = D.raw_expect(family, meta)
             byname = {x[0]: x for x in raw}
@@ -8281,6 +8285,8 @@ import selftest_w4core  # noqa: E402  (round 15 wave 4 core, #2075: cases_w4core
 CHECKS.extend(selftest_w4core.CHECKS)
 import selftest_r15_tiers  # noqa: E402  (round 15: the tier plan, #2056 #2057 #2058 #2063 #2064; its checks live in their own file)
 CHECKS.extend(selftest_r15_tiers.CHECKS)
+import selftest_r15_defects  # noqa: E402  (round 15: cases_r15_defects.py, the #2079 / #2081 / #2082 source facts; its checks live in their own file)
+CHECKS.extend(selftest_r15_defects.CHECKS)
 
 
 def main():

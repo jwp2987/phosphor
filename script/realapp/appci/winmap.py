@@ -207,6 +207,10 @@ GITBASH_ONLY["grid_snapshot_render"] = ("T34: the escape scripts are files print
                                         "does not depend on the pane's shell, so one pane is enough: runs in the Git Bash pane")
 NOT_WINDOWS["freeze_and_wake"] = ("T36: specified for Linux and macOS; the freeze is SIGSTOP / SIGCONT. NEEDS: a suspend / resume of the app's process "
                                   "in the Windows backend (NtSuspendProcess in winapi.py), which is not built")
+# round 15 (cases_r15_defects.py), as statements of their own so sibling branches' additions to the tables above merge cleanly
+GITBASH_ONLY["scroll_keys_foreground"] = "#2080: the foreground program is a POSIX raw reader started from a bash script (bytes_reader.sh), with a bash job printing next to it: runs in the Git Bash pane"
+NOT_WINDOWS["primary_absent_clipboard_kept"] = "#2081: the PRIMARY selection (and a display without one) is an X11 / Wayland concept; Windows has one clipboard"
+
 
 # #1534: the startup_shell_override passes (APPCI_WIN_SHELLS="pwsh7,cmd", never in the default list: cmd.exe and pwsh 7 are not installed on every VM).
 # The pane's shell is chosen through the app's `session.startup_shell_override` (a custom shell path, profile.Profile.gitbash_toml), not by the harness. Only the

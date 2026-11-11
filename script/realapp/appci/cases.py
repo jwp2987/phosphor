@@ -100,7 +100,7 @@ PROVING = (
     # place, Find in an ordinary scrollback, tab close / cancel / confirm / undo by key, and the routing table in the Windows PowerShell pane
     "history_up_recall", "scroll_keys_position", "find_basic", "tab_lifecycle_keys", "routing_table_powershell",
     # #2072, r14-test-gaps 7.1 wave 1 (T6-T10, cases_daily_b.py; owner 2026-11-10 "build out the tests"): the PowerShell pane's agent basics, job
-    # control, hostile output, the readline keys (Alt-B / Alt-F expected to fail off macOS until #2079), a first run on default settings
+    # control, hostile output, the readline keys (Alt-B / Alt-F / Alt-Backspace are word keys off macOS since #2079), a first run on default settings
     "agent_basics_powershell", "job_control", "hostile_output_recovers", "meta_and_word_keys", "first_run_defaults",
     # round 14 wave 2 (docs/design/r14-test-gaps.md 7.1 T11-T15, cases_agent_w2.py): model switch by keyboard between two fake providers, the Anthropic
     # wire format, the safe allow list (auto-run) against rm / `;` / `$(...)` / a pipe to sh, a conversation reopened after a restart, a block's output
@@ -119,6 +119,9 @@ PROVING = (
     # (registered before the PROVING rule), in the fix tier because no full-tier run has played them since the v0.1.17 RC. None needs the scripted model.
     "session_restore", "crash_kill9_restore", "ui_resize_typing", "ui_split_panes", "ui_ctrl_r", "ui_ghost_accept", "ui_tab_menu",
     "big_paste", "paste_multiline_prompt", "ssh_password_prompt", "remote_session_legacy", "alt_screen_programs", "agent_approval",
+    # round 15 (cases_r15_defects.py): #2080 Shift+PageUp / PageDown / Home / End scroll under a foreground command and a full-screen program keeps
+    # them; #2081 on a display with no primary selection a selection never lands on CLIPBOARD with copy on select off (SKIPs where PRIMARY works)
+    "scroll_keys_foreground", "primary_absent_clipboard_kept",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -6487,3 +6490,4 @@ import cases_r14_state  # noqa: E402,F401  (round 14 wave 2b, T16-T20: agent_hid
 import cases_window_use  # noqa: E402,F401  (r14 wave 3, T26-T30: resize_reflow_output, context_menu_actions, tab_pointer_use, focus_cycle, minimize_fullscreen)
 import cases_pointer  # noqa: E402,F401  (r14 wave 3a: link_and_path_click, selection_modes, primary_and_middle_click, wheel_scroll, pane_resize_maximize)
 import cases_w4core  # noqa: E402,F401  (r15 wave 4 core, #2075, T34 / T36: grid_snapshot_render, freeze_and_wake, lab_freeze_and_wake.*)
+import cases_r15_defects  # noqa: E402,F401  (round 15, #2080 / #2081: scroll_keys_foreground, primary_absent_clipboard_kept)

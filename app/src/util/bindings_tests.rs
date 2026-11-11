@@ -8,9 +8,11 @@ use warpui::{
 use crate::{
     terminal,
     util::bindings::{
-        CONTROL_CHARACTER_KEY_REGEX, INSERT_LAST_WORD_BINDING_NAME, QUIT_APP_BINDING_NAME,
-        default_insert_last_word_keystroke, default_quit_keystroke,
-        keybinding_name_to_display_string, trigger_to_keystroke,
+        CONTROL_CHARACTER_KEY_REGEX, INSERT_LAST_WORD_BINDING_NAME,
+        MOVE_BACKWARD_ONE_WORD_BINDING_NAME, MOVE_FORWARD_ONE_WORD_BINDING_NAME,
+        QUIT_APP_BINDING_NAME, alt_word_keys_enabled_from, default_insert_last_word_keystroke,
+        default_quit_keystroke, keybinding_name_to_display_string,
+        linux_or_windows_word_motion_keystrokes, trigger_to_keystroke,
     },
     workspace::WorkspaceAction,
 };
@@ -351,6 +353,82 @@ fn test_insert_last_word_binding_default_and_no_collision() {
             // history search.
             assert_eq!(claimants("alt-r"), none);
             assert_eq!(claimants("meta-r"), none);
+        });
+    });
+}
+
+// #2079: Alt-F / Alt-B / Alt-Backspace are the word keys of the input editor off macOS, as Alt-.
+// is the last-argument key (#1989). `PHOSPHOR_ALT_WORD_KEYS=0` is the only value that turns them
+// off.
+#[test]
+fn test_alt_word_keys_kill_switch_is_off_only_for_zero() {
+    assert!(alt_word_keys_enabled_from(None));
+    assert!(alt_word_keys_enabled_from(Some("")));
+    assert!(alt_word_keys_enabled_from(Some("1")));
+    assert!(!alt_word_keys_enabled_from(Some("0")));
+    assert!(!alt_word_keys_enabled_from(Some(" 0 ")));
+
+    assert_eq!(
+        linux_or_windows_word_motion_keystrokes(true),
+        ("alt-f", "alt-b")
+    );
+    // With the kill switch the defaults are the ones every release before #2079 had.
+    assert_eq!(
+        linux_or_windows_word_motion_keystrokes(false),
+        ("meta-f", "meta-b")
+    );
+}
+
+#[test]
+fn test_word_keys_default_bindings_per_platform() {
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+        app.update(terminal::init);
+        app.update(crate::editor::init);
+
+        app.update(|ctx| {
+            // The names of every binding whose default is `keystroke`, sorted (a fixed binding
+            // has an empty name).
+            let claimants = |keystroke: &str| -> Vec<String> {
+                let keystroke = Keystroke::parse(keystroke).ok();
+                assert!(keystroke.is_some());
+                let mut names: Vec<String> = ctx
+                    .get_key_bindings()
+                    .filter(|binding| trigger_to_keystroke(binding.trigger) == keystroke)
+                    .map(|binding| binding.name.to_string())
+                    .collect();
+                names.sort();
+                names
+            };
+            let fixed = String::new();
+            let forward = MOVE_FORWARD_ONE_WORD_BINDING_NAME.to_string();
+            let backward = MOVE_BACKWARD_ONE_WORD_BINDING_NAME.to_string();
+            // The code and notebook editors register bindings of the same two names for their
+            // own views, so a keystroke may be claimed by the name more than once.
+            let only = |names: &[String], name: &String| {
+                !names.is_empty() && names.iter().all(|claimant| claimant == name)
+            };
+
+            if OperatingSystem::get().is_mac() {
+                // Option as Meta: the editable binding and the fixed one, as before #2079. A
+                // plain Option-F / Option-B types the layout's character and is not bound.
+                assert!(claimants("meta-f").contains(&forward));
+                assert!(claimants("meta-f").contains(&fixed));
+                assert!(claimants("meta-b").contains(&backward));
+                assert!(claimants("meta-b").contains(&fixed));
+                assert_eq!(claimants("alt-f"), Vec::<String>::new());
+                assert_eq!(claimants("alt-b"), Vec::<String>::new());
+            } else {
+                // The Alt key itself, and nothing else claims it.
+                assert!(only(&claimants("alt-f"), &forward), "alt-f");
+                assert!(only(&claimants("alt-b"), &backward), "alt-b");
+                // An Alt key set to act as Meta keeps the keys it had: fixed bindings only.
+                assert!(only(&claimants("meta-f"), &fixed), "meta-f");
+                assert!(only(&claimants("meta-b"), &fixed), "meta-b");
+                // Alt-Backspace cuts the word before the cursor, next to `meta-backspace`.
+                assert!(only(&claimants("alt-backspace"), &fixed), "alt-backspace");
+                assert!(only(&claimants("meta-backspace"), &fixed), "meta-backspace");
+            }
         });
     });
 }

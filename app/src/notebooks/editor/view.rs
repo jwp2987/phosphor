@@ -114,6 +114,28 @@ pub fn init(app: &mut AppContext) {
     // - There is no command selection
     let text_entry = id!("RichTextEditorView") & !id!("IMEOpen") & !id!("HasCommandSelection");
 
+    // #2079: Alt-F / Alt-B move by word on Linux and Windows, as in the input editor (the
+    // editable bindings below share its names). An Alt key set to act as Meta arrives as
+    // `meta-f` / `meta-b`, the only default before; it keeps working through these two.
+    let (word_forward_key, word_backward_key) =
+        crate::util::bindings::linux_or_windows_word_motion_keystrokes(
+            crate::util::bindings::alt_word_keys_enabled(),
+        );
+    if !warpui::platform::OperatingSystem::get().is_mac() {
+        app.register_fixed_bindings([
+            FixedBinding::new(
+                crate::util::bindings::META_MOVE_FORWARD_ONE_WORD_KEYSTROKE,
+                EditorViewAction::MoveForwardsByWord,
+                text_entry.clone(),
+            ),
+            FixedBinding::new(
+                crate::util::bindings::META_MOVE_BACKWARD_ONE_WORD_KEYSTROKE,
+                EditorViewAction::MoveBackwardsByWord,
+                text_entry.clone(),
+            ),
+        ]);
+    }
+
     /// Enabled predicate that is true if running in debug mode AND notebooks are enabled.
     fn debug_notebooks_enabled() -> bool {
         FeatureFlag::DebugMode.is_enabled()
@@ -479,14 +501,16 @@ pub fn init(app: &mut AppContext) {
             EditorViewAction::MoveForwardsByWord,
         )
         .with_context_predicate(text_entry.clone())
-        .with_key_binding("meta-f"),
+        .with_mac_key_binding(crate::util::bindings::META_MOVE_FORWARD_ONE_WORD_KEYSTROKE)
+        .with_linux_or_windows_key_binding(word_forward_key),
         EditableBinding::new(
             "editor_view:move_backward_one_word",
             crate::t!("keybinding-desc-editor-move-backward-one-word"),
             EditorViewAction::MoveBackwardsByWord,
         )
         .with_context_predicate(text_entry.clone())
-        .with_key_binding("meta-b"),
+        .with_mac_key_binding(crate::util::bindings::META_MOVE_BACKWARD_ONE_WORD_KEYSTROKE)
+        .with_linux_or_windows_key_binding(word_backward_key),
         EditableBinding::new(
             "editor_view:up",
             crate::t!("keybinding-desc-editor-up"),

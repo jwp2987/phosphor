@@ -218,6 +218,9 @@ pub enum TerminalAction {
     PageDown,
     Home,
     End,
+    /// Shift+Page Up / Page Down / Home / End under a running command: scrolls the scrollback and
+    /// writes nothing to the program (#2080).
+    ScrollbackKey(super::scrollback_keys::ScrollbackKey),
     KeyboardSelectText(SelectionDirection),
     UserInputSequence(Vec<u8>),
     ControlSequence(Vec<u8>),
@@ -591,6 +594,7 @@ impl fmt::Debug for TerminalAction {
             PageDown => f.write_str("PageDown"),
             Home => f.write_str("Home"),
             End => f.write_str("End"),
+            ScrollbackKey(key) => write!(f, "ScrollbackKey({key:?})"),
             KeyboardSelectText(direction) => write!(f, "KeyboardSelectText({direction:?})"),
             ContextMenu(action) => write!(f, "ContextMenu({action:?})"),
             CtrlD => f.write_str("CtrlD"),

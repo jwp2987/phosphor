@@ -1,6 +1,6 @@
 use super::{
     AgentOnboardingVersion, AskAISource, ContextMenuAction, OnboardingIntention, OnboardingVersion,
-    TerminalAction,
+    TerminalAction, scrollback_keys,
 };
 
 use crate::ai::predict::prompt_suggestions::ACCEPT_PROMPT_SUGGESTION_KEYBINDING;
@@ -688,6 +688,20 @@ pub fn init(app: &mut AppContext) {
                 & !id!("EditorFocused"),
         ),
     ]);
+
+    // #2080: under a running command the plain Page Up / Page Down / Home / End are the
+    // program's, so the shifted ones scroll the scrollback, as in other terminals. Not in the
+    // alternate screen and not while the input editor has focus (see `scrollback_keys`).
+    // `PHOSPHOR_SCROLLBACK_KEYS=0` leaves them unregistered: the keys go to the program again.
+    if scrollback_keys::scrollback_keys_env_enabled() {
+        app.register_fixed_bindings(scrollback_keys::ScrollbackKey::ALL.map(|key| {
+            FixedBinding::new(
+                key.keystroke(),
+                TerminalAction::ScrollbackKey(key),
+                scrollback_keys::scrollback_key_predicate(),
+            )
+        }));
+    }
 
     app.register_editable_bindings([EditableBinding::new(
         "terminal:scroll_to_top_of_selected_block",

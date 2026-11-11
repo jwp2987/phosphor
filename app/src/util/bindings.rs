@@ -72,6 +72,60 @@ pub fn default_insert_last_word_keystroke() -> Option<Keystroke> {
     }
 }
 
+/// Environment variable that, set to `0`, puts the word keys of the input editor back on Meta
+/// only off macOS, as before #2079 (see [`alt_word_keys_enabled`]).
+pub const ALT_WORD_KEYS_ENV: &str = "PHOSPHOR_ALT_WORD_KEYS";
+
+/// Names of the editable "move forward / backward one word" bindings of the input editor whose
+/// default is readline's `forward-word` / `backward-word` key (#2079). The same two names are also
+/// carried by the arrow-key bindings (`ctrl-right` / `alt-right`), registered after these.
+pub const MOVE_FORWARD_ONE_WORD_BINDING_NAME: &str = "editor_view:move_forward_one_word";
+pub const MOVE_BACKWARD_ONE_WORD_BINDING_NAME: &str = "editor_view:move_backward_one_word";
+
+/// Readline's word keys as the input editor binds them where the Meta key is its own modifier:
+/// macOS (Option set to act as Meta), and every platform as a fixed fallback.
+pub const META_MOVE_FORWARD_ONE_WORD_KEYSTROKE: &str = "meta-f";
+pub const META_MOVE_BACKWARD_ONE_WORD_KEYSTROKE: &str = "meta-b";
+
+/// Defaults of the word keys on Linux and Windows: Alt-F, Alt-B and Alt-Backspace (#2079, the
+/// same decision as #1989 for Alt-.). Alt is the Meta key there: a program that has the terminal
+/// gets `ESC f` / `ESC b` / `ESC DEL` for these keys (`meta_keystroke_to_escape_sequence`), so
+/// they mean "one word" on both sides of the prompt. Before #2079 only the `meta-` forms were
+/// bound, which those platforms send only with an Alt key set to act as Meta; those stay as
+/// fixed bindings. Alt-D (`editor_view:cut_word_right`) already was `alt-d` everywhere.
+pub const LINUX_OR_WINDOWS_MOVE_FORWARD_ONE_WORD_KEYSTROKE: &str = "alt-f";
+pub const LINUX_OR_WINDOWS_MOVE_BACKWARD_ONE_WORD_KEYSTROKE: &str = "alt-b";
+pub const LINUX_OR_WINDOWS_CUT_WORD_LEFT_KEYSTROKE: &str = "alt-backspace";
+
+/// Whether Alt-F / Alt-B / Alt-Backspace are the word keys off macOS: they are, unless the kill
+/// switch [`ALT_WORD_KEYS_ENV`] says `0`. Read when the bindings are registered (app start).
+pub fn alt_word_keys_enabled() -> bool {
+    alt_word_keys_enabled_from(std::env::var(ALT_WORD_KEYS_ENV).ok().as_deref())
+}
+
+/// [`alt_word_keys_enabled`] with the variable's value passed in (tests).
+pub fn alt_word_keys_enabled_from(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
+/// The Linux and Windows defaults of the two editable word-motion bindings, `(forward,
+/// backward)`: Alt-F / Alt-B, or the Meta forms with the kill switch set.
+pub fn linux_or_windows_word_motion_keystrokes(
+    alt_word_keys: bool,
+) -> (&'static str, &'static str) {
+    if alt_word_keys {
+        (
+            LINUX_OR_WINDOWS_MOVE_FORWARD_ONE_WORD_KEYSTROKE,
+            LINUX_OR_WINDOWS_MOVE_BACKWARD_ONE_WORD_KEYSTROKE,
+        )
+    } else {
+        (
+            META_MOVE_FORWARD_ONE_WORD_KEYSTROKE,
+            META_MOVE_BACKWARD_ONE_WORD_KEYSTROKE,
+        )
+    }
+}
+
 // CustomActions are attached to menu items, and may be attached to Bindings.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Sequence)]
 #[repr(isize)]
