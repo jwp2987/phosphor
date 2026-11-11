@@ -368,6 +368,158 @@ def plain_session_feature_limit(shell, log_text, feature):
             "has '%s' and no managed-session line); %s needs a managed session. Not judged; see %s" % (shell, PLAIN_SESSION_HOOK, feature, PLAIN_SESSION_DECLINED))
 
 
+def plain_gate(ctx, r, arm, off, feature):
+    """#2160: the gate for a terminal-mode lab case that judges a feature of the MANAGED session (chips, the shell-mode chip, the family routes, the remote
+    index, Tab completion of the remote directory, the nu agent pager wrapper). Call it right after the connect, with `off` = ctx.log_size() taken BEFORE
+    the connect. On a fish / nu arm whose connect log says it took the plain session (#2019) the row is UNVERIFIABLE with the DECLINED reference, the remote
+    session is left through finish_remote and True is returned (the case returns). bash / zsh (and any arm whose log shows a managed session or neither
+    line) return False and are judged in full."""
+    why = plain_session_feature_limit(arm["shell"], ctx.log_since(off), feature)
+    if not why:
+        return False
+    r.metric("plain_session_by_decision", arm["shell"])
+    r.unverifiable(why)
+    finish_remote(ctx, r)
+    return True
+
+
+# Every lab case that judges a feature of the managed session and so applies plain_gate / plain_session_feature_limit to its fish / nu arms (#2160):
+# body function -> the file it lives in. The self-test (selftest_r22_labcases) pins that each body calls the gate.
+MANAGED_SESSION_CASES = {
+    "c_chips": "cases_lab.py", "c_no_helper_chip": "cases_lab.py", "c_tab_remote_dir": "cases_lab.py", "c_lab_drop": "cases_lab.py",
+    "c_nu_agent_pager_env": "cases_lab.py", "fam_body": "cases_lab_helper.py", "c_codebase_index_remote": "cases_lab_index.py",
+}
+
+# ---- #2164: the helper takes the session over some time after the prompt (command executor swapped from the ControlMaster; remote index sync). A window
+# that counts exec channels must open after that, or the takeover's own channels are charged to the feature under test.
+HOOK_EXECUTOR_SWAPPED = re.compile(r"command executor swapped from the ControlMaster")
+HOOK_SYNC_START = re.compile(r"hop=remote_index_sync start\b")
+HOOK_SYNC_END = re.compile(r"hop=remote_index_sync (?:done|skipped|failed)\b")
+HOOK_ROUTE_SHELL = re.compile(r"hop=backend_route family=(\w+) backend=shell")
+
+
+def helper_takeover_state(log_text):
+    """pure: (swapped, pending_syncs) of an app log: whether the helper client replaced the ControlMaster executor, and how many remote index syncs
+    started and have not logged done / skipped / failed"""
+    t = log_text or ""
+    return (bool(HOOK_EXECUTOR_SWAPPED.search(t)), max(0, len(HOOK_SYNC_START.findall(t)) - len(HOOK_SYNC_END.findall(t))))
+
+
+def helper_takeover_note(log_text):
+    """pure: the one-line evidence of what the log says about the takeover (the swap, the syncs, the shell-routed lines AFTER the swap)"""
+    t = log_text or ""
+    swapped, pending = helper_takeover_state(t)
+    m = HOOK_EXECUTOR_SWAPPED.search(t)
+    after = len(HOOK_ROUTE_SHELL.findall(t[m.end():])) if m else None
+    return "executor_swapped=%s pending_syncs=%d syncs=%d shell_routes_after_swap=%s" % (swapped, pending, len(HOOK_SYNC_END.findall(t)), after)
+
+
+def wait_helper_takeover(ctx, r, arm, off, give_up=30.0, quiet=1.0):
+    """#2164: on a helper arm, wait until the app log (from `off`) says the helper took the session over AND no remote index sync is pending, and has been
+    quiet for `quiet` s. EVENT-driven; `give_up` is only a net: when it ends the case goes on and the state is noted on the row (the limits of the checks
+    are NOT widened). No-helper arms return at once. Returns True when the takeover settled."""
+    if arm["helper"] == "nohelper":
+        return True
+    state = {"since": None}
+
+    def settled():
+        swapped, pending = helper_takeover_state(ctx.log_since(off))
+        if not swapped or pending:
+            state["since"] = None
+            return False
+        if state["since"] is None:
+            state["since"] = time.time()
+        return time.time() - state["since"] >= quiet
+    ok = bool(ctx.until(settled, give_up, step=0.1))
+    r.note("helper takeover %s: %s" % ("settled" if ok else "NOT settled within %.0f s" % give_up, helper_takeover_note(ctx.log_since(off))))
+    return ok
+
+
+def channel_timeline(sshd_text):
+    """pure: the kinds of the 'Starting session: <kind>' lines of an sshd log excerpt, in order (labd's sshd.log lines carry no timestamp, so ChannelWatch
+    stamps each channel with the moment the harness first saw it)"""
+    return re.findall(r"Starting session: (\w+)", sshd_text or "")
+
+
+def watch_timeline(samples, t0):
+    """pure: [(seconds since t0 the harness first saw channel number i+1, route_lines_in_the_app_log_then)] from [(t, n_channels, n_routes)] polls"""
+    out, seen = [], 0
+    for t, n, routes in samples:
+        while seen < n:
+            seen += 1
+            out.append((round(t - t0, 2), routes))
+    return out
+
+
+class ChannelWatch:
+    """#2164: per-channel timestamps of an exec-channel window. A thread polls the lab's sshd log from `size0` (and the app log's backend_route lines from
+    `off`) every 0.2 s and stamps each new 'Starting session: command' with the moment it was first seen and the number of backend_route lines the app had
+    logged by then. A failing 'N extra exec channels' can then be put against the route lines (before or after the takeover). stop() returns the sshd excerpt."""
+    def __init__(self, ctx, lab, size0, off):
+        import threading
+        self.ctx, self.lab, self.size0, self.off = ctx, lab, size0, off
+        self.samples, self.t0 = [], time.time()
+        self._stop = threading.Event()
+        self._th = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._th.start()
+        return self
+
+    def _poll(self):
+        data = self.lab.sshd_since(self.size0)["data"]
+        n = sum(1 for k in channel_timeline(data) if k == "command")
+        self.samples.append((time.time(), n, len(HOOK_ROUTE_ANY.findall(self.ctx.log_since(self.off)))))
+        return data
+
+    def _run(self):
+        while not self._stop.is_set() and time.time() - self.t0 < 180:      # a net: a case that never reaches stop() does not leave a poller behind
+            try:
+                self._poll()
+            except Exception:  # noqa: BLE001
+                pass
+            self._stop.wait(0.2)
+
+    def stop(self, r, name="exec_channel_timeline"):
+        self._stop.set()
+        self._th.join(5)
+        data = self.lab.sshd_since(self.size0)["data"]
+        n = sum(1 for k in channel_timeline(data) if k == "command")
+        self.samples.append((time.time(), n, len(HOOK_ROUTE_ANY.findall(self.ctx.log_since(self.off)))))
+        tl = watch_timeline(self.samples, self.t0)
+        r.metric(name, tl[:40])
+        if tl:
+            r.note("%s (s after the window opened, backend_route lines logged by then): %s" % (name, ", ".join("%.2f/%d" % x for x in tl[:12])))
+        return data
+
+
+HOOK_ROUTE_ANY = re.compile(r"hop=backend_route family=")
+
+
+# ---- #2165: per-arm OCR evidence (the text and the screenshot carry the arm in the file name)
+def arm_tag(arm):
+    return ".".join(str(arm.get(k)) for k in ("shell", "lat", "helper") if arm.get(k) is not None).replace(" ", "_")
+
+
+def ocr_evidence(ctx, tag, arm, txt):
+    """save the OCR text of one read as <label>_<tag>.<arm>.ocr.txt beside its screenshot; returns the path or None"""
+    try:
+        p = os.path.join(ctx.prof.shots, "%s_%s.%s.ocr.txt" % (ctx.label, tag, arm_tag(arm)))
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(txt or "")
+        return p
+    except Exception:  # noqa: BLE001
+        return None
+
+
+CHIP_VALUE_RE = r"update_chip_value ShellGitBranch -> .*?%s"
+
+
+def chip_value_logged(log_text, branch):
+    """pure: whether the app logged the branch chip taking `branch` as its value ([chips] update_chip_value ShellGitBranch -> ..)"""
+    return bool(re.search(CHIP_VALUE_RE % re.escape(branch), log_text or ""))
+
+
 # ---- round 15 (#2063): keyboard drivers for the panels the lab cases had called unreachable. The command palette runs an action by its name; the names are
 # the English keybinding descriptions (app/i18n/en/warp.ftl: keybinding-desc-workspace-toggle-right-panel, -toggle-project-explorer), pinned by the self-test.
 PALETTE_CODE_REVIEW = "Toggle code review"
@@ -471,10 +623,13 @@ def c_tab_remote_dir(ctx, r, arm):
     fx = "tabfx_" + uid
     lab.tree(u, {"%s/zzq%s_only/x" % (fx, uid): "", "%s/amb%s_a/x" % (fx, uid): "", "%s/amb%s_b/x" % (fx, uid): ""})
     CR.rm_remote(ctx, "tab.txt", "tab2.txt")
+    off0 = ctx.log_size()
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     time.sleep(1.0 + 2 * rt)
+    if plain_gate(ctx, r, arm, off0, "Tab completion of a remote directory"):
+        return
     # (a) unique prefix
     off = ctx.log_size()
     ctx.be.type("cd %s%s/zzq%s" % (base, fx, uid), type_pace(ctx))
@@ -537,10 +692,12 @@ def c_path_detect(ctx, r, arm):
     lab, u, base, rt = ctx.lab, arm["user"], work(arm), rtt_s(arm)
     uid = unique(ctx)
     lab.tree(u, {"pd%s/a.txt" % uid: "", "pd%s/sub/b.txt" % uid: ""})          # the fixture directory holds exactly 2 entries: a.txt and sub/
+    off0 = ctx.log_size()
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     time.sleep(2.0 + 3 * rt)                         # the connection's own start-up channels settle first
+    wait_helper_takeover(ctx, r, arm, off0)          # #2164: the helper takeover and the index sync settle before the window opens
     off = ctx.log_size()
     ctx.be.type("cd %spd%s" % (base, uid), type_pace(ctx), enter=True)
     got = ctx.until(lambda: [m for m in HOOK_CWD_LISTING.finditer(ctx.log_since(off)) if m.group(3) == "2"], 10 + 6 * rt, step=0.1)
@@ -551,6 +708,7 @@ def c_path_detect(ctx, r, arm):
     time.sleep(0.5 + 2 * rt)
     size0 = lab.sshd_since(0)["size"]
     off = ctx.log_size()
+    watch = ChannelWatch(ctx, lab, size0, off).start()
     ctx.be.type("ls sub", 30)                         # a subdirectory of the cwd, typed whole: no Tab, no Enter
     hit = ctx.until(lambda: HOOK_PATH_DETECT.search(ctx.log_since(off)), 1.5 + 3 * rt, step=0.05)
     ctx.shot("lab_path_detect")
@@ -559,6 +717,7 @@ def c_path_detect(ctx, r, arm):
     else:
         r.unverifiable("[hook] no hop=path_detect source=pushed line in the app log: detection from the pushed listing is not proven; only the channel count below is checked")
     time.sleep(0.5 + 2 * rt)
+    watch.stop(r)
     starts = L.count_starts(lab.sshd_since(size0)["data"])
     r.metric("exec_channels_while_typing", starts)
     r.check(starts["command"] == 0 and starts["subsystem"] == 0, "typing a remote path opened %d exec and %d subsystem channel(s) on the server (expected none)" % (starts["command"], starts["subsystem"]))
@@ -569,33 +728,49 @@ def c_path_detect(ctx, r, arm):
 # ------------------------------------------------------------------ 3. git chips
 @lab_case("chips", shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150"), helper=("nohelper", "helper"))
 def c_chips(ctx, r, arm):
-    """In a git directory on the remote the branch chip is on screen (OCR) and the app made at most ONE batched side call per prompt (exec channels in the sshd
-    log; with the helper it may make none)."""
+    """In a git directory on the remote the branch chip is on screen (OCR, one glyph of tolerance: cases_ui.find_token) AND the app logged
+    update_chip_value ShellGitBranch for the branch; the app made at most ONE batched side call per prompt (exec channels in the sshd log; with the helper it
+    may make none). The window opens after the helper takeover settled (#2164); the OCR text and the shot of every try are kept per arm (#2165)."""
+    import cases_ui as U
     lab, u, base, rt = ctx.lab, arm["user"], work(arm), rtt_s(arm)
     uid = unique(ctx)
     br = "br" + uid          # a unique branch name: the chip OCR looks for THIS token, not for "main" (which any other text on screen could contain)
     lab.tree(u, {"README": "x\n", "src/a.rs": "fn main(){}\n"}, dir="chips" + uid, git=True, branch=br, branches=("feature-x",))      # <work>/chips<uid> is the git repo
+    off0 = ctx.log_size()
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     time.sleep(1.0 + 2 * rt)
+    if plain_gate(ctx, r, arm, off0, "the git branch chip of the managed session"):
+        return
+    wait_helper_takeover(ctx, r, arm, off0)
     size0 = lab.sshd_since(0)["size"]
+    off = ctx.log_size()
+    watch = ChannelWatch(ctx, lab, size0, off).start()
     p0 = ctx.remote.prompts()
+    U.register_find(ctx, br)
     ctx.be.type("cd %schips%s" % (base, uid), type_pace(ctx), enter=True)
-    seen, txt = False, None
+    seen, no_ocr = False, False
     for i in range(6):
         time.sleep(1.0 + 2 * rt)
-        txt = ctx.ocr("lab_chips_%d" % i)
-        if txt is None:
+        tag = "lab_chips_%s_%d" % (arm_tag(arm), i)
+        word, _ = U.find_token(ctx, tag, br, r=r)
+        txt = ctx.ocr(tag + "_text")
+        ocr_evidence(ctx, tag, arm, txt)
+        if txt is None and not word:
+            no_ocr = True
             break
-        if br in txt:
+        if word:
             seen = True
             break
-    if txt is None:
+    logged = chip_value_logged(ctx.log_since(off), br)
+    if no_ocr:
         r.unverifiable("no OCR on this machine (tesseract): the branch chip on screen is not checked")
     else:
-        r.check(seen, "no branch chip (branch %s) on screen after cd into a git directory on the remote" % br)
+        r.check(seen, "no branch chip (branch %s) on screen after cd into a git directory on the remote (the OCR text of every try is saved as lab_chips_%s_*.ocr.txt)" % (br, arm_tag(arm)))
+    r.check(logged, "the app log has no update_chip_value ShellGitBranch -> %s line: the chip never took the branch" % br)
     prompts = max(1, ctx.remote.prompts() - p0)
+    watch.stop(r)
     calls = L.count_starts(lab.sshd_since(size0)["data"])["command"]
     r.metric("side_calls", calls)
     r.metric("prompts", prompts)
@@ -903,6 +1078,16 @@ def c_lab_drop(ctx, r, arm):
     if ctx.win:
         r.skip("not yet ported to the Windows panes (see ssh_drop_reconnect)")
     host = host_of(arm)
+    if arm["shell"] in PLAIN_SESSION_LOGIN_SHELLS:
+        # #2160: the body connects by itself, so a fish / nu host is probed first: one connect, read from that connect's app log
+        off0 = ctx.log_size()
+        if connect_or_fail(ctx, r, arm, "probe: ") is None:
+            ctx.reset()
+            return
+        time.sleep(1.0 + 2 * rtt_s(arm))
+        if plain_gate(ctx, r, arm, off0, "the reconnect and drop handling of the managed session"):
+            return
+        finish_remote(ctx, r)
     if arm["fault"] is None:
         CA.ssh_drop_body(ctx, r, host, ("escape", "escape_connect_enter", "escape_connect_bare", "kill"))
     elif arm["fault"] == "rst":
@@ -1034,11 +1219,15 @@ def c_no_helper_chip(ctx, r, arm):
     """A Phosphorized ssh session WITHOUT the remote helper shows the small, informational chip "shell mode" (OCR). It never blocks: a command
     typed right after connecting still runs once, and the chip is not an error banner (no 'ERROR' text next to it)."""
     import cases_caseagent as CAG
+    off0 = ctx.log_size()
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     time.sleep(1.0 + 2 * rtt_s(arm))
-    txt = ctx.ocr("lab_no_helper_chip")
+    if plain_gate(ctx, r, arm, off0, "the shell-mode chip"):
+        return
+    txt = ctx.ocr("lab_no_helper_chip_%s" % arm_tag(arm))
+    ocr_evidence(ctx, "lab_no_helper_chip_%s" % arm_tag(arm), arm, txt)
     if txt is None:
         r.unverifiable("no OCR on this machine (tesseract): the chip on screen is not checked")
     else:
@@ -1177,10 +1366,13 @@ def c_nu_agent_pager_env(ctx, r, arm):
     unmarked line sees the user's own PAGER. The local twin with a throw-away HOME is script/test_nu_agent_pager_env."""
     tok = unique(ctx, 5)
     eff = work(arm, "pg_%s.txt" % tok)
+    off0 = ctx.log_size()
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     time.sleep(1.0 + 2 * rtt_s(arm))
+    if plain_gate(ctx, r, arm, off0, "the agent command wrapper of the managed session"):
+        return
 
     def sv(expr):
         return "((%s) + (char nl)) | save -a %s" % (expr, eff)

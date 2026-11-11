@@ -9131,6 +9131,8 @@ import selftest_r21_relaynote  # noqa: E402  (round 21, #2142: the two notes of 
 CHECKS.extend(selftest_r21_relaynote.CHECKS)
 import selftest_r22_labfx  # noqa: E402  (round 22, #2157 #2158 #2159: lab fixture repos, git apply format, codebase step tool; own file)
 CHECKS.extend(selftest_r22_labfx.CHECKS)
+import selftest_r22_labcases  # noqa: E402  (round 22, #2160 #2163 #2164 #2165: the plain-session gate on managed-session lab cases, the self-match-proof daemon count, the helper-takeover wait and per-channel evidence, the chips OCR read; own file)
+CHECKS.extend(selftest_r22_labcases.CHECKS)
 
 
 def missing_required(required, passed):

@@ -8092,3 +8092,26 @@ waits for that build within its own job timeout (`late_build_outcome`); if it su
 the lab image succeeds late (#1921). The unit suites of that platform are not replayed. Self-test (`ci_seq.py --self-test`): `blocking_job`, the
 verdicts, and `late_build_outcome` against a fake status sequence (pending, pending, running, success), its budget, and a vanished job.
 - **Round 22 lab harness fixes (#2157, #2158, #2159).** Every `lab.tree(..., git=True)` now passes `dir=<fixture>` with fixture-relative paths (index, diff x2, tree, buffers cases), so each fixture is its own repo instead of one shared repo at the work root; `cases_lab_git.py`'s `git apply` command uses a `{flag}` placeholder instead of a double `%s` (it raised TypeError at step 3); the fake model's `codebase` step calls `get_relevant_files` (the tool the test profile offers), and `lab_agent_remote_flow` still requires all six results. Self-tests: `script/realapp/appci/selftest_r22_labfx.py` (`r22_no_git_tree_without_dir`, `r22_git_apply_command_formats`, `r22_codebase_step_names_get_relevant_files`). Worked, unproven: no lab run yet.
+## Round 22: lab case judges (#2160, #2163, #2164, #2165; harness only, nothing compiled, no lab run when written)
+- **#2160, the plain-session decision (#2019) in every lab case that needs a managed session.** `cases_lab.plain_gate(ctx, r, arm, off, feature)`
+  (over `plain_session_feature_limit`, read from that connect's app log, `off` taken before the connect) marks a fish / nu arm UNVERIFIABLE with the DECLINED
+  reference and leaves the session through `finish_remote`; bash / zsh and any arm whose log shows a managed session (or neither line) are judged in full.
+  Applied to `lab_chips`, `lab_no_helper_chip`, `lab_fam_*` (`fam_body`), `lab_codebase_index_remote`, `lab_tab_remote_dir`, `lab_ssh_drop_reconnect` (a
+  probe connect first on fish / nu, because the shared body connects by itself) and `lab_nu_agent_pager_env`. The list is `cases_lab.MANAGED_SESSION_CASES`;
+  the self-test pins that each body calls the gate. Not changed: `lab_ctrl_c_no_esc_i` nu.150 x2/x3 (open point of the issue: compare plain ssh at 150 ms first).
+- **#2163, helper daemon counting.** `cases_lab_helper.kill_daemons` kills this user's leftover daemons by pid before the connect in `lab_helper_reconnect`,
+  `lab_helper_killed` and `lab_helper_idle_exit`; `daemon_pids` / `daemons` use the self-match-proof pattern `[p]hosphor-remote.* daemon` (the ssh wrapper's own
+  `bash -c` no longer counts). `lab_helper_reconnect` still requires exactly 1 daemon and now also the SAME pid before and after the reconnect.
+- **#2164, the exec-channel window.** `cases_lab.wait_helper_takeover` waits (event-driven, a 30 s net, noted when it ends) for the app log's
+  `command executor swapped from the ControlMaster` and for every `hop=remote_index_sync start` to have a `done|skipped|failed`, then 1 s of quiet, before
+  `lab_chips`, `lab_path_detect`, `lab_fam_*` and `lab_helper_killed` open their window. No limit is widened. `ChannelWatch` stamps each new sshd
+  `Starting session: command` with the moment the harness first saw it (labd's sshd log has no timestamps) and the backend_route lines logged by then:
+  metric and note `exec_channel_timeline`.
+- **#2165, chips OCR.** `lab_chips` finds the branch with `cases_ui.find_token` (one misread glyph tolerated; the find hook first) AND requires the app's
+  `update_chip_value ShellGitBranch -> <branch>` line; screenshots and the OCR text of every try are kept per arm (`lab_chips_<shell>.<lat>.<helper>_<n>`,
+  `*.ocr.txt`); `lab_no_helper_chip` keeps its OCR text per arm the same way (the unexplained run-once failure can be read from it next run).
+- Self-tests (`script/realapp/appci/selftest_r22_labcases.py`, run by `run.py --self-test`): `r22_every_managed_session_lab_case_applies_the_plain_session_gate`,
+  `r22_gate_limits_fish_and_nu_only_and_reads_the_log`, `r22_plain_gate_marks_unverifiable_and_leaves_the_session`,
+  `r22_daemon_pattern_does_not_match_its_own_wrapper`, `r22_daemon_cases_kill_first_and_compare_pids`, `r22_helper_takeover_state_reads_the_app_log`,
+  `r22_takeover_wait_is_event_driven_and_never_widens_limits`, `r22_channel_evidence_has_per_channel_timestamps`,
+  `r22_chips_read_by_find_token_and_the_chip_value_line`.
