@@ -144,31 +144,42 @@ fn assert_active_block_is_remote(user: String, host: String) -> AssertionCallbac
 /// Assertion that the MotD message is shown. How we expect it to be shown
 /// depends on whether or not the remote shell can be bootstrapped.
 ///
-/// WHICH MotD (#2128): the fixture's "remote" is the machine the scenario runs on, and a session
-/// through the ssh wrapper carries a remote command, so the fixture's own banner
-/// ([`FIXTURE_MOTD`], printed by its `ForceCommand` script only for a session without a
-/// command) is not what appears. The wrapper's remote command (sh, ash) or the remote
-/// bootstrap (bash, zsh) prints the machine's own MotD file, as sshd would have. The assertion
-/// used to look for the text `Welcome to Ubuntu` whatever the machine: that held only where the
-/// machine's MotD happens to start with those words. It now looks for the start of the first
-/// plain line of this machine's MotD (on a stock Ubuntu that is the same line), or the
-/// fixture's banner. On a machine with no MotD file nothing is printed and there is nothing to
-/// look for: the assertion says so in the log and holds (before, it could not pass there).
+/// WHICH MotD (#2128): the fixture's "remote" is the machine the scenario runs on. The wrapper's
+/// remote command (sh, ash) or the remote bootstrap (bash, zsh) prints the machine's own MotD
+/// file, as sshd would have. On a machine that has one, the assertion looks for the start of its
+/// first plain line in the place the app puts it (unchanged).
+///
+/// On a machine with no MotD file the app prints nothing, and the assertion used to hold with
+/// nothing looked for. Owner decision 2026-11-11: it is never vacuous. The fixture now prints
+/// its own banner ([`FIXTURE_MOTD`]) for every session with a terminal, before the remote
+/// command starts, so the banner is in the output of the block that ran `ssh`; on such a
+/// machine the assertion looks for it in every block of the pane. The banner does not stand in
+/// for the machine's MotD where the machine has one: there the app's own printing is what is
+/// checked.
 fn assert_motd_shown(bootstrapped: bool) -> AssertionCallback {
     let machine_motd = machine_motd_marker();
     if machine_motd.is_none() {
         log::warn!(
             "ssh scenario: this machine has no MotD file with a plain line; the MotD \
-             assertion has nothing to look for and holds"
+             assertion looks for the fixture's banner instead"
         );
     }
     Box::new(move |app, window_id| {
-        let Some(machine_motd) = machine_motd.as_deref() else {
-            return AssertionOutcome::Success;
-        };
         let terminal_view = single_terminal_view(app, window_id);
         terminal_view.read(app, |view, _| {
             let model = view.model.lock();
+
+            let Some(machine_motd) = machine_motd.as_deref() else {
+                let banner_shown = model.block_list().blocks().iter().any(|block| {
+                    block.output_to_string().contains(FIXTURE_MOTD)
+                        || block.command_to_string().contains(FIXTURE_MOTD)
+                });
+                return async_assert!(
+                    banner_shown,
+                    "Expected the fixture's banner ({FIXTURE_MOTD:?}) in a block of the pane \
+                     (this machine has no MotD file), but no block holds it"
+                );
+            };
 
             let motd_output = if bootstrapped {
                 let motd_block = model
@@ -188,9 +199,9 @@ fn assert_motd_shown(bootstrapped: bool) -> AssertionCallback {
             };
 
             async_assert!(
-                motd_output.contains(machine_motd) || motd_output.contains(FIXTURE_MOTD),
-                "Expected output to hold this machine's MotD ({machine_motd:?}) or the \
-                 fixture's banner, but was:\n{motd_output:?}"
+                motd_output.contains(machine_motd),
+                "Expected output to hold this machine's MotD ({machine_motd:?}), but was:\n\
+                 {motd_output:?}"
             )
         })
     })

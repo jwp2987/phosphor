@@ -136,7 +136,7 @@ Hard rules:
   starts and stops itself (`app/src/integration_testing/subshell/util.rs`, same recipe as
   `script/realapp/appci/sshd.py`): the current user, no privileges (`UsePAM no`, pubkey only), one sshd per
   remote login shell, a `ForceCommand` that sets `HOME` (scratch remote home) and `SHELL`, runs commands as
-  `$SHELL -c` and otherwise prints a MotD and starts `$SHELL -l -i`; the remote shell has
+  `$SHELL -c` (after its banner, when the session has a terminal) and otherwise prints the banner and starts `$SHELL -l -i`; the remote shell has
   `PHOSPHOR_TEST_SSHD=remote` and `WARP_PROFILE_LOADED=true` exported. Two throw-away client keys: one without a
   passphrase (no prompt: used by the bootstrap and typeahead scenarios, so keys typed during the connect are real
   typeahead) and one with a passphrase (the stand-in for the old password prompt: `Enter passphrase for key`).
@@ -152,9 +152,12 @@ Hard rules:
   (#2128). Their gate is now the fact that decides which wrapper a typed `ssh` runs
   (`legacy_ssh_wrapper_takes_ssh()`, i.e. `ssh_detection::TMUX_SSH_WRAPPER_TAKES_SSH` is false: the tmux option was
   removed, the legacy wrapper is what ships), so they RUN; the first run is their first run ever. The MotD assertion
-  of the ssh scenarios looks for the first plain line of THIS machine's MotD file (a wrapped session carries a remote
-  command, so the machine's MotD is printed, not the fixture's banner) and holds, with a log line, on a machine that
-  has none. `test_ssh_with_shell_override` needs zsh on PATH and proves the pane's shell is zsh before the ssh
+  of the ssh scenarios looks for the first plain line of THIS machine's MotD file in the place the app prints it (the
+  remote bootstrap's block for bash / zsh, the session output for sh / ash). On a machine that has none it looks for
+  the fixture's own banner (`FIXTURE_MOTD`) in any block of the pane: since round 20 the `ForceCommand` script prints
+  the banner for every session that has a terminal, a wrapped one included (a remote command without a terminal, i.e.
+  the app's own multiplexed commands and scp, gets none), so the assertion is never vacuous. The banner does not stand
+  in for the machine's MotD where the machine has one. `test_ssh_with_shell_override` needs zsh on PATH and proves the pane's shell is zsh before the ssh
   (#2133). The tmux-wrapper variants (`test_tmux_ssh_into_*`) need the removed tmux option, say so if started, and are
   not listed in `integration_tests!`; `test_ssh_into_fish` stays off (fish is not a
   supported remote shell). A scenario killed by a timeout can leave its sshd running (`ps`, stop by exact PID).
@@ -7628,6 +7631,11 @@ proves #2126; `lab_nohelper_sh_login_profile` does.
 - **Scenario removed.** `test_open_launch_config_from_add_tab_menu_legacy` (gated on `FeatureFlag::ShellSelector` off, which no build of
   this fork has; its own TODO, CORE-2300) is deleted from `launch_configs.rs`, the `integration_tests!` list and `register_tests()`: one
   `INTEG-SKIP` line fewer per run. Owner decision 2026-11-11.
+- **ssh fixture banner.** See section 2.2: the fixture prints `FIXTURE_MOTD` for wrapped sessions too; `assert_motd_shown` requires the
+  machine's MotD where the machine has one and the banner where it has none (before: held with nothing looked for there).
+| level | tests | what they pin |
+|---|---|---|
+| unit, real `sh` | `integration_testing::subshell::util::tests::the_fixture_banner_is_not_printed_for_a_command_without_a_terminal` | the fixture's `ForceCommand` script prints nothing but the command's output for a remote command whose stdout is not a terminal |
 ## Round 19: three owner decisions of 2026-11-11 in the harness (design `docs/design/r19-decide-tests.md`; #2114, #2120, #2126; harness only; no app run when written)
 Self-tests: `appci/selftest_r19_decide.py` (seven checks; each rule is fed the input it exists for and the inputs on which it must still FAIL).
 `run.py --self-test` and `script/ci/ci_seq.py --self-test` pass. No case was added, none moved between lists.

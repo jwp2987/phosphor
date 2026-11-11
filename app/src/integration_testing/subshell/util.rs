@@ -130,6 +130,30 @@ mod local_sshd {
         Ok(port)
     }
 
+    /// The fixture's `ForceCommand` script: behaves like sshd for a user whose login shell is
+    /// `shell_path` and whose home is `home`. The banner is printed for every session that has
+    /// a terminal, a wrapped one (which carries a remote command) included, so a scenario has a
+    /// MotD to look for on a machine with no MotD file of its own. A command without a
+    /// terminal (the app's own multiplexed commands, scp) gets none: its output is read by a
+    /// program.
+    pub(super) fn force_command_script(home: &Path, shell_path: &Path) -> String {
+        format!(
+            "#!/bin/sh\n\
+             HOME={home}\n\
+             SHELL={shell_path}\n\
+             PHOSPHOR_TEST_SSHD=remote\n\
+             WARP_PROFILE_LOADED=true\n\
+             export HOME SHELL PHOSPHOR_TEST_SSHD WARP_PROFILE_LOADED\n\
+             cd \"$HOME\" || exit 1\n\
+             if [ -z \"$SSH_ORIGINAL_COMMAND\" ] || [ -t 1 ]; then echo \"{motd}\"; fi\n\
+             if [ -n \"$SSH_ORIGINAL_COMMAND\" ]; then exec \"$SHELL\" -c \"$SSH_ORIGINAL_COMMAND\"; fi\n\
+             exec \"$SHELL\" -l -i\n",
+            home = sh_quote(&home.to_string_lossy()),
+            shell_path = sh_quote(&shell_path.to_string_lossy()),
+            motd = super::FIXTURE_MOTD,
+        )
+    }
+
     fn start_fixture(shell: &str) -> Result<Running, String> {
         let sshd = find_program(
             "sshd",
@@ -181,27 +205,9 @@ mod local_sshd {
         std::fs::set_permissions(&authorized_path, std::fs::Permissions::from_mode(0o600))
             .map_err(|err| format!("could not chmod authorized_keys: {err}"))?;
 
-        // Behave like sshd for a user whose login shell is `shell`.
         let force = dir.join("force.sh");
-        std::fs::write(
-            &force,
-            format!(
-                "#!/bin/sh\n\
-                 HOME={home}\n\
-                 SHELL={shell_path}\n\
-                 PHOSPHOR_TEST_SSHD=remote\n\
-                 WARP_PROFILE_LOADED=true\n\
-                 export HOME SHELL PHOSPHOR_TEST_SSHD WARP_PROFILE_LOADED\n\
-                 cd \"$HOME\" || exit 1\n\
-                 if [ -n \"$SSH_ORIGINAL_COMMAND\" ]; then exec \"$SHELL\" -c \"$SSH_ORIGINAL_COMMAND\"; fi\n\
-                 echo \"{motd}\"\n\
-                 exec \"$SHELL\" -l -i\n",
-                home = sh_quote(&home.to_string_lossy()),
-                shell_path = sh_quote(&shell_path.to_string_lossy()),
-                motd = super::FIXTURE_MOTD,
-            ),
-        )
-        .map_err(|err| format!("could not write force.sh: {err}"))?;
+        std::fs::write(&force, force_command_script(&home, &shell_path))
+            .map_err(|err| format!("could not write force.sh: {err}"))?;
         std::fs::set_permissions(&force, std::fs::Permissions::from_mode(0o755))
             .map_err(|err| format!("could not chmod force.sh: {err}"))?;
 
@@ -376,10 +382,9 @@ pub fn motd_marker(motd: &str) -> Option<String> {
 }
 
 /// What a session through the ssh wrapper prints as the MotD on THIS machine. The fixture's
-/// "remote" is the machine the scenario runs on, and a wrapped session carries a remote
-/// command, so sshd's `ForceCommand` script does not print its own banner: the wrapper's
-/// remote command (or the remote bootstrap) prints the machine's MotD file instead. `None`
-/// when the machine has none (nothing is printed, nothing can be looked for).
+/// "remote" is the machine the scenario runs on: the wrapper's remote command (or the remote
+/// bootstrap) prints the machine's MotD file, as sshd would have. `None` when the machine has
+/// none; a scenario then looks for the fixture's own banner ([`FIXTURE_MOTD`]).
 pub fn machine_motd_marker() -> Option<String> {
     let first_readable = MOTD_FILES
         .iter()
@@ -387,8 +392,10 @@ pub fn machine_motd_marker() -> Option<String> {
     motd_marker(&String::from_utf8_lossy(&first_readable))
 }
 
-/// The banner the fixture's `ForceCommand` script prints for a session WITHOUT a remote command
-/// (an ssh the wrapper did not manage).
+/// The banner the fixture's `ForceCommand` script prints for every session with a terminal
+/// (a wrapped session too) and for a session without a remote command. It is printed before
+/// the remote command starts, so it lands in the output of the block that ran `ssh`, not in
+/// the remote shell's bootstrap block where the machine's own MotD goes.
 pub const FIXTURE_MOTD: &str = "Welcome to Ubuntu (phosphor local test sshd)";
 
 /// The full ssh command to run to ssh into the fixture whose remote login shell is `shell`,
@@ -466,5 +473,38 @@ mod tests {
     #[test]
     fn a_typed_ssh_runs_the_legacy_wrapper_in_this_fork() {
         assert!(legacy_ssh_wrapper_takes_ssh());
+    }
+
+    /// Owner decision 2026-11-11: the fixture prints its banner for a wrapped session too (one
+    /// with a remote command and a terminal), so the MotD assertion of the ssh scenarios is
+    /// never vacuous. A remote command WITHOUT a terminal must get none: that is the app's own
+    /// multiplexed command (the helper check, the no-helper executor, scp), whose output a
+    /// program reads. Run here with the real `sh`, stdout a pipe.
+    #[cfg(unix)]
+    #[test]
+    fn the_fixture_banner_is_not_printed_for_a_command_without_a_terminal() {
+        let script = super::local_sshd::force_command_script(
+            &std::env::temp_dir(),
+            std::path::Path::new("/bin/sh"),
+        );
+        let banner_at = script
+            .find(FIXTURE_MOTD)
+            .expect("the script prints the banner");
+        let command_at = script
+            .find("exec \"$SHELL\" -c")
+            .expect("the script runs a remote command");
+        assert!(
+            banner_at < command_at,
+            "the banner is decided before a remote command replaces the script: {script}"
+        );
+        let output = command::blocking::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "SSH_ORIGINAL_COMMAND='echo ran'; export SSH_ORIGINAL_COMMAND\n{script}"
+            ))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("sh runs the script");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "ran\n");
     }
 }
