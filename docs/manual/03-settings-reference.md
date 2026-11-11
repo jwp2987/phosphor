@@ -549,6 +549,21 @@ The code editor, project explorer, and codebase indexing.
 | `code.indexing.agent_mode_codebase_context` | boolean | `false` | Whether the agent may use the codebase embedding index as context. **Unreachable in a stock build:** both this row and the one below only render when `FeatureFlag::FullSourceCodeEmbedding` is on, whose sole enable path is `ZAP_UNSTABLE_FEATURES=full_source_code_embedding` (`app/src/settings_view/code_page.rs:1503-1510`), and nothing indexes without it whatever the setting says. **Desktop only, and off by default here on purpose** — upstream defaults it on because indexing ran on Warp's servers, whereas here it spends your own embedding-provider quota and, on the remote surface, sends your provider API key to whichever host you installed the daemon on. Turning this on *is* the consent step. See §5 “Codebase search”. |
 | `code.indexing.agent_mode_codebase_context_auto_indexing` | boolean | `false` | Whether repositories are indexed automatically as you open them, rather than only on explicit request. Desktop only. |
 
+### Questions the code editor always asks
+
+Two questions have no setting that switches them off:
+
+- **Unsaved edits.** Quitting, or closing a window, tab, pane or editor tab that holds unsaved editor edits, asks
+  first. `general.show_warning_before_quitting = false` switches off the warning about running commands and shared
+  sessions only; it does not switch off this question, and this dialog has no "Don't show again" box.
+  (`PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK=0` in the app's environment puts back the old rule, where the one setting
+  covered both.)
+- **Saving over a file that changed on disk.** When another program changed a file while the editor had unsaved
+  edits, a banner says so. A save in that state (`ctrl-S` / `cmd-S`, or "Save" on a close question) asks:
+  **Overwrite** writes the editor's text over what is on disk, **Reload** drops the unsaved edits and loads what is on
+  disk, **Cancel** does neither. Enter is Overwrite, Escape is Cancel. The banner's own **Overwrite** button writes at
+  once. (`PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0` puts back the save that overwrote without asking.)
+
 ### Internal state (no TOML key)
 
 | Name | Type | Default | What it tracks |
