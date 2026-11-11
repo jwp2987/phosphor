@@ -53,9 +53,10 @@ pub mod view_util;
 pub(crate) use action_model::pty_write_for_target_command;
 #[cfg_attr(target_family = "wasm", allow(unused_imports))]
 pub(crate) use action_model::{
-    BlocklistAIActionEvent, BlocklistAIActionModel, FileReadResult, PromptSuggestionExecutor,
-    PromptSuggestionExecutorEvent, ReadFileContextResult, RequestFileEditsFormatKind,
-    ShellCommandExecutor, ShellCommandExecutorEvent, apply_edits, read_local_file_context,
+    BlocklistAIActionEvent, BlocklistAIActionModel, FILE_DOES_NOT_EXIST_MESSAGE, FileReadResult,
+    PromptSuggestionExecutor, PromptSuggestionExecutorEvent, ReadFileContextResult,
+    RequestFileEditsFormatKind, ShellCommandExecutor, ShellCommandExecutorEvent, apply_edits,
+    read_local_file_context,
 };
 
 #[cfg(any(test, feature = "integration_tests"))]

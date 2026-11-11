@@ -620,6 +620,9 @@ message ReadFileContextResponse {
 message FailedFileRead {
   string path = 1;
   FileOperationError error = 2;
+  // True when the file does not exist (as opposed to any other read failure). Typed so the
+  // client never has to match `error.message` text (#2151). Absent (false) from older servers.
+  bool not_found = 3;
 }
 
 message FileContextProto {

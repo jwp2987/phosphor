@@ -351,6 +351,16 @@ fn failed(path: &str, message: impl Into<String>) -> FailedFileRead {
         error: Some(FileOperationError {
             message: message.into(),
         }),
+        not_found: false,
+    }
+}
+
+/// The per-file failure for a file that does not exist: carries the typed `not_found` flag
+/// besides the human text (#2151).
+fn failed_not_found(path: &str) -> FailedFileRead {
+    FailedFileRead {
+        not_found: true,
+        ..failed(path, "File does not exist")
     }
 }
 
@@ -385,9 +395,7 @@ pub fn assemble(
         }
         let loaded = match probe {
             FileProbe::NotFound => {
-                response
-                    .failed_files
-                    .push(failed(path, "File does not exist"));
+                response.failed_files.push(failed_not_found(path));
                 continue;
             }
             FileProbe::Failed(reason) => {

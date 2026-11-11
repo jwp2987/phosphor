@@ -196,6 +196,26 @@ fn missing_and_unreadable_files_fail_individually_and_the_rest_are_read() {
     );
 }
 
+/// #2151: a missing file carries the typed `not_found` flag, every other failure does not, so the
+/// client never classifies by text.
+#[test]
+fn only_a_missing_file_carries_the_typed_not_found_flag() {
+    let req = request(vec![file("/gone", &[]), file("/denied", &[])], None, None);
+    let r = assemble(
+        &req,
+        vec![
+            FileProbe::NotFound,
+            FileProbe::Failed("Permission denied (os error 13)".into()),
+        ],
+    );
+    let flags: Vec<_> = r
+        .failed_files
+        .iter()
+        .map(|f| (f.path.as_str(), f.not_found))
+        .collect();
+    assert_eq!(flags, vec![("/gone", true), ("/denied", false)]);
+}
+
 #[test]
 fn invalid_utf8_and_binary_extensions_come_back_as_binary() {
     let r = assemble_one("/a.txt", &[], None, loaded(&[0xff, 0xfe, 0x41, 0x80]));
