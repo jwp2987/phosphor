@@ -35773,17 +35773,31 @@ fn e_question_cancels_and_later_keys_reach_the_pty_in_order_in_both_modes() {
     );
 }
 
-/// #1940 (review r8 D9): the R9 flush of the tty's unread input does not rest on the echo filter.
-/// In every case below the first line is out, NOTHING of its echo was matched (which is also what
-/// a missed echo looks like: `-echoctl`, a line editor's own redraw) and the queue holds bytes.
-/// - `Question`: nothing of the user's went to the pty since the write, so the unread bytes are the
-///   setup's: flushed, once (R9 as it was).
+/// #1940 (review r8 D9) and #1991: the R9 flush of the tty's unread input does not rest on the
+/// echo filter. In every case below the first line is out to bash's LINE EDITOR, nothing of its
+/// echo was matched (under readline nothing ever is: the filter is not even armed) and the queue
+/// holds bytes.
+/// - `Question`: nothing of the user's went to the pty since the write and the tty still holds
+///   EXACTLY the bytes of the write: they are the setup's, wholly unread: flushed, once.
+/// - `HalfRead` (#1991, the issue's window): the tty holds fewer bytes than were written: the
+///   editor is taking the line. Never flushed (the flush cut the rest of the line and left half a
+///   setup line in the editor's buffer).
+/// - `MoreThanTheWrite`: more bytes wait than the setup wrote (typed before the arming): never
+///   discarded.
+/// - `NoCount`: the tty gives no count: nothing is proven, never flushed.
 /// - `Secret`: a secret read opened. Never flushed: what waits in the tty there may be what the
 ///   user types for the secret. (No probe of ours reports a queue with a Secret sample today; the
 ///   rule holds whatever a sample says.)
 /// - `UserBytes`: a user byte went to the pty while the setup was written (counted by
 ///   `note_user_bytes_for_subshell_readiness`): the unread bytes may be the user's, never flushed.
 /// Legacy and Table.
+///
+/// Expectation history (#1991, the owner-approved design of `docs/design/r14-queueres.md` section
+/// 5; a changed rule, not a weakened test): the `Question` case used to flush on "the queue is not
+/// empty and nothing was echoed" alone. For a write to a line editor that sentence is true for
+/// the whole attempt, so it now also needs the byte count to say the whole write is unread; the
+/// fixture gives that count, and the three new cases are the ones the old rule got wrong or could
+/// not tell apart. `Secret` and `UserBytes` are unchanged.
 #[test]
 fn the_r9_flush_spares_a_secret_read_and_bytes_the_user_sent_whatever_the_echo_filter_saw() {
     use crate::terminal::input_queue::DestinationMode;
@@ -35791,11 +35805,21 @@ fn the_r9_flush_spares_a_secret_read_and_bytes_the_user_sent_whatever_the_echo_f
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Case {
         Question,
+        HalfRead,
+        MoreThanTheWrite,
+        NoCount,
         Secret,
         UserBytes,
     }
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for case in [Case::Question, Case::Secret, Case::UserBytes] {
+        for case in [
+            Case::Question,
+            Case::HalfRead,
+            Case::MoreThanTheWrite,
+            Case::NoCount,
+            Case::Secret,
+            Case::UserBytes,
+        ] {
             App::test((), move |mut app| async move {
                 let _mode =
                     crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -35804,7 +35828,10 @@ fn the_r9_flush_spares_a_secret_read_and_bytes_the_user_sent_whatever_the_echo_f
                 let terminal = add_window_with_terminal(&mut app, None);
                 let flushes = Arc::new(AtomicUsize::new(0));
                 let count = flushes.clone();
-                let tty = terminal.update(&mut app, |view, ctx| {
+                // #1991: what the tty says waits unread in its input queue.
+                let queue_bytes: Arc<std::sync::Mutex<Option<usize>>> =
+                    Arc::new(std::sync::Mutex::new(None));
+                let (tty, write_bytes) = terminal.update(&mut app, |view, ctx| {
                     view.model.lock().simulate_long_running_block("bash", "");
                     let tty = install_subshell_tty_for_test(view, bash_reading());
                     // The same fake sample, plus a flush that counts its calls.
@@ -35816,6 +35843,12 @@ fn the_r9_flush_spares_a_secret_read_and_bytes_the_user_sent_whatever_the_echo_f
                             true
                         })),
                     );
+                    let unread = queue_bytes.clone();
+                    view.model
+                        .lock()
+                        .set_subshell_tty_input_bytes_probe(Arc::new(move || {
+                            *unread.lock().expect("the byte count")
+                        }));
                     view.model.lock().process_bytes("bash-5.1$ ");
                     view.arm_subshell_setup(
                         SubshellPromptTrigger::Banner {
@@ -35824,20 +35857,40 @@ fn the_r9_flush_spares_a_secret_read_and_bytes_the_user_sent_whatever_the_echo_f
                         ctx,
                     );
                     assert_eq!(readiness_state(view), "written", "{mode:?} {case:?}");
+                    let token = readiness_token(view);
+                    let lines = init_subshell_command_lines_with_markers(
+                        Some(ShellType::Bash),
+                        &[],
+                        SessionId::from(token),
+                        true,
+                        ctx,
+                    );
                     assert!(view.write_user_bytes_to_pty(b"held".to_vec(), ctx));
                     assert_ne!(held_for_subshell_setup(view), (0, 0), "{mode:?} {case:?}");
-                    match &view.subshell_setup_state {
-                        SubshellSetupState::Written(written) => assert_eq!(
-                            written.user_bytes_since_write, 0,
-                            "{mode:?} {case:?}: held keys are not bytes sent to the pty"
-                        ),
+                    let write_bytes = match &view.subshell_setup_state {
+                        SubshellSetupState::Written(written) => {
+                            assert_eq!(
+                                written.user_bytes_since_write, 0,
+                                "{mode:?} {case:?}: held keys are not bytes sent to the pty"
+                            );
+                            assert!(
+                                written.line_editor_write,
+                                "{mode:?} {case:?}: the line went to bash's line editor"
+                            );
+                            assert_eq!(
+                                written.last_write_bytes,
+                                3 + lines[0].len() + 1,
+                                "{mode:?} {case:?}: the ` ^K ^U` prefix, the line, its Enter"
+                            );
+                            written.last_write_bytes
+                        }
                         _ => panic!("not written"),
-                    }
+                    };
                     assert!(
                         !view.model.lock().setup_echo_started(),
                         "{mode:?} {case:?}: no echo was matched"
                     );
-                    tty
+                    (tty, write_bytes)
                 });
                 terminal.update(&mut app, |view, ctx| {
                     if case == Case::UserBytes {
@@ -35856,6 +35909,12 @@ fn the_r9_flush_spares_a_secret_read_and_bytes_the_user_sent_whatever_the_echo_f
                     };
                     unread.queue_empty = Some(false);
                     *tty.lock() = unread;
+                    *queue_bytes.lock().expect("the byte count") = match case {
+                        Case::HalfRead => Some(write_bytes - 10),
+                        Case::MoreThanTheWrite => Some(write_bytes + 2),
+                        Case::NoCount => None,
+                        Case::Question | Case::Secret | Case::UserBytes => Some(write_bytes),
+                    };
                     if case != Case::Secret {
                         // The shell answered our line with a question, no marker.
                         view.model.lock().process_bytes("\r\nContinue? [y/N] ");
@@ -35873,100 +35932,173 @@ fn the_r9_flush_spares_a_secret_read_and_bytes_the_user_sent_whatever_the_echo_f
                     flushes.load(Ordering::SeqCst),
                     usize::from(case == Case::Question),
                     "{mode:?} {case:?}: the tty input is flushed only when the unread bytes are \
-                     provably the setup's"
+                     provably the setup's, all of them and nothing else"
                 );
             })
         }
     }
 }
 
-/// #1679 step 3, E-UNSUPPORTED (R7, stream-ordered): our line's echo ended, then a fresh prompt
+/// #1679 step 3, E-UNSUPPORTED (R7, stream-ordered): the shell took our line, then a fresh prompt
 /// shape with no token-matched marker between, and the queue is proven empty: the shell read the
 /// line as a plain command. The held keys go to the pty in order (R8: a fresh prompt proven and
 /// the line consumed), the attempt ends, the setup's ID is unregistered.
+///
+/// Two readers, two proofs of "the shell took our line":
+/// - `CookedTty` (a dash at its prompt, the `sh` probe): the tty's own echo of the line, through
+///   its line feed, matched by the echo filter. R7 as it was built.
+/// - `LineEditor` (bash's readline, #1991): readline never echoes what the filter expects (it
+///   takes ` ^K ^U` as editing keys and draws the line itself), so the filter is not armed and
+///   the proof is the grid's: a prompt on a row the editor's own drawing of the line cannot have
+///   reached, that does not show the line. While the editor is still drawing (the cursor on a
+///   row of the line) nothing is concluded.
+///
+/// Expectation history (#1991, the owner-approved design of `docs/design/r14-queueres.md` section
+/// 5; a changed rule, not a weakened test): this test drove a bash line editor with the COOKED
+/// tty's echo (`LINE_CLEAR_ECHO`), which readline never produces, and asserted the filter matched
+/// it. The bash arm now feeds readline's form and asserts the filter stays out of it; the cooked
+/// echo is asserted where it does occur, in the dash arm. Every assertion on the outcome (the
+/// verdict's order, the held keys at the pty, the ID unregistered) is kept for both.
 #[test]
 fn e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_prompt() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        app.add_singleton_model(|_| crate::ToastStack);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let written = subshell_pty_writes(&mut app, &terminal);
-        let (token, line0) = terminal.update(&mut app, |view, ctx| {
-            view.model.lock().simulate_long_running_block("bash", "");
-            install_subshell_tty_for_test(view, bash_reading());
-            // #1934: the line editor reads AT A PROMPT IT DREW; the shape is asked for.
-            view.model.lock().process_bytes("bash-5.1$ ");
-            view.arm_subshell_setup(
-                SubshellPromptTrigger::Banner {
-                    shell_type: Some(ShellType::Bash),
-                },
-                ctx,
-            );
-            assert_eq!(readiness_state(view), "written");
-            let token = readiness_token(view);
-            let lines = init_subshell_command_lines_with_markers(
-                Some(ShellType::Bash),
-                &[],
-                SessionId::from(token),
-                true,
-                ctx,
-            );
-            assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
-            assert_ne!(held_for_subshell_setup(view), (0, 0));
-            (token, lines[0].clone())
-        });
-        let after_setup = written.borrow().len();
-        terminal.update(&mut app, |view, ctx| {
-            // A prompt shape BEFORE our echo ended (the old prompt redrawn) is no verdict.
-            view.model.lock().process_bytes("bash-5.1$ ");
-            output_wakeup(view, ctx);
-            assert_eq!(readiness_state(view), "written", "not stream-ordered yet");
-            // The tty echoes our line through its line feed...
-            let echo = format!(
-                "{}{line0}\r\n",
-                crate::terminal::model::setup_echo_filter::LINE_CLEAR_ECHO
-            );
-            view.model.lock().process_bytes(echo.as_str());
-            assert_eq!(
-                view.model.lock().setup_echo_lines_ended(),
-                1,
-                "the echo ended"
-            );
-            output_wakeup(view, ctx);
-            assert_eq!(
-                readiness_state(view),
-                "written",
-                "no fresh prompt after the echo yet"
-            );
-            // ... then the shell prints an error and a FRESH prompt, no marker.
-            view.model
-                .lock()
-                .process_bytes("__hc0=...: command not found\r\nbash-5.1$ ");
-            output_wakeup(view, ctx);
-            assert_eq!(readiness_state(view), "idle", "E-UNSUPPORTED");
-            assert_eq!(held_for_subshell_setup(view), (0, 0));
-            assert!(view.subshell_bootstrap_announced.is_none());
-            assert!(view.subshell_setup_net.is_none());
-            assert!(
-                !view
-                    .model
-                    .lock()
-                    .session_id_is_registered_for_test(SessionId::from(token)),
-                "this attempt's ID is unregistered"
-            );
-        });
-        let all = written.borrow();
-        assert_eq!(
-            &all[after_setup..],
-            b"ls",
-            "the held keys reached the pty, in order, nothing else"
-        );
-        terminal.read(&app, |view, ctx| {
-            view.input.read(ctx, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "", "delivered, not handed back");
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Reader {
+        LineEditor,
+        CookedTty,
+    }
+    for reader in [Reader::LineEditor, Reader::CookedTty] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let prompt = match reader {
+                Reader::LineEditor => "bash-5.1$ ",
+                Reader::CookedTty => "$ ",
+            };
+            let (token, line0) = terminal.update(&mut app, |view, ctx| {
+                let (comm, sample, shell_type) = match reader {
+                    Reader::LineEditor => ("bash", bash_reading(), Some(ShellType::Bash)),
+                    Reader::CookedTty => ("dash", dash_cooked(), None),
+                };
+                view.model.lock().simulate_long_running_block(comm, "");
+                install_subshell_tty_for_test(view, sample);
+                // #1934: the line editor reads AT A PROMPT IT DREW; the shape is asked for.
+                view.model.lock().process_bytes(prompt);
+                view.arm_subshell_setup(SubshellPromptTrigger::Banner { shell_type }, ctx);
+                assert_eq!(readiness_state(view), "written", "{reader:?}");
+                let token = readiness_token(view);
+                let lines = init_subshell_command_lines_with_markers(
+                    shell_type,
+                    &[],
+                    SessionId::from(token),
+                    true,
+                    ctx,
+                );
+                match &view.subshell_setup_state {
+                    SubshellSetupState::Written(written) => assert_eq!(
+                        written.line_editor_write,
+                        reader == Reader::LineEditor,
+                        "{reader:?}: who reads the line is recorded at the write"
+                    ),
+                    _ => panic!("not written"),
+                }
+                assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+                assert_ne!(held_for_subshell_setup(view), (0, 0), "{reader:?}");
+                (token, lines[0].clone())
             });
-        });
-    })
+            let after_setup = written.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                // A prompt shape BEFORE the shell took our line (the old prompt redrawn: in place
+                // by the line editor, again by the cooked shell) is no verdict.
+                let redrawn = match reader {
+                    Reader::LineEditor => format!("\r{prompt}"),
+                    Reader::CookedTty => prompt.to_owned(),
+                };
+                view.model.lock().process_bytes(redrawn.as_str());
+                output_wakeup(view, ctx);
+                assert_eq!(
+                    readiness_state(view),
+                    "written",
+                    "{reader:?}: not stream-ordered yet"
+                );
+                match reader {
+                    Reader::LineEditor => {
+                        // readline's own drawing: the space and its erase, then the line, wrapped
+                        // by the terminal. Nothing of it is the cooked echo.
+                        view.model
+                            .lock()
+                            .process_bytes(format!(" \u{8}\u{1b}[K{line0}").as_str());
+                        output_wakeup(view, ctx);
+                        assert_eq!(
+                            readiness_state(view),
+                            "written",
+                            "the editor is still drawing the line: its row is no prompt"
+                        );
+                        // accept-line: the editor's line feed.
+                        view.model.lock().process_bytes("\r\n");
+                        let model = view.model.lock();
+                        assert_eq!(
+                            model.setup_echo_lines_ended(),
+                            0,
+                            "the echo filter is not armed for a line-editor write"
+                        );
+                        assert!(!model.setup_echo_started());
+                    }
+                    Reader::CookedTty => {
+                        // The tty echoes our line through its line feed...
+                        let echo = format!(
+                            "{}{line0}\r\n",
+                            crate::terminal::model::setup_echo_filter::LINE_CLEAR_ECHO
+                        );
+                        view.model.lock().process_bytes(echo.as_str());
+                        assert_eq!(
+                            view.model.lock().setup_echo_lines_ended(),
+                            1,
+                            "the echo ended"
+                        );
+                    }
+                }
+                output_wakeup(view, ctx);
+                assert_eq!(
+                    readiness_state(view),
+                    "written",
+                    "{reader:?}: no fresh prompt after the line yet"
+                );
+                // ... then the shell prints an error and a FRESH prompt, no marker.
+                view.model
+                    .lock()
+                    .process_bytes(format!("__hc0=...: command not found\r\n{prompt}").as_str());
+                output_wakeup(view, ctx);
+                assert_eq!(readiness_state(view), "idle", "{reader:?}: E-UNSUPPORTED");
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{reader:?}");
+                assert!(view.subshell_bootstrap_announced.is_none(), "{reader:?}");
+                assert!(view.subshell_setup_net.is_none(), "{reader:?}");
+                assert!(
+                    !view
+                        .model
+                        .lock()
+                        .session_id_is_registered_for_test(SessionId::from(token)),
+                    "{reader:?}: this attempt's ID is unregistered"
+                );
+            });
+            let all = written.borrow();
+            assert_eq!(
+                &all[after_setup..],
+                b"ls",
+                "{reader:?}: the held keys reached the pty, in order, nothing else"
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "",
+                        "{reader:?}: delivered, not handed back"
+                    );
+                });
+            });
+        })
+    }
 }
 
 /// #1679 step 3 (R7): a token-matched marker between the echo and the prompt is progress: the

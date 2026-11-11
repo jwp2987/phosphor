@@ -729,3 +729,62 @@ def c_ready_rc_clear(ctx, r):
         r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)" % dt)
     r.check(first_index(hops(ctx, off), "subshell_setup_ready_write") is not None, "the setup was written after the clear")
     leave_and_prove_parent(ctx, r, "clear", f, [tok])
+
+
+def line_editor_proof_verdict(text):
+    """pure (#1991): what an app-log excerpt of ONE healthy bash / zsh subshell setup must show when its first line was written to the
+    shell's LINE EDITOR. -> (ok, why). The write is recorded as one to a line editor (`subshell_setup_ready_write ... line_editor=1`; a
+    build older than #1991 does not log the field); every look at the written line is judged by the grid, never by the echo filter
+    (`subshell_written_judged ... line_editor=1 proof=grid`); a setup that printed its marker is never taken for an unsupported shell
+    (`verdict=Unsupported` / `UnsupportedSuspect`); nothing of the line is flushed (`subshell_setup_cancelled ... flush=true`,
+    `subshell_line_editor_flush ... flushed=1`) and the setup is not given up."""
+    lines = text.splitlines()
+    writes = [ln for ln in lines if "hop=subshell_setup_ready_write" in ln]
+    if not writes:
+        return False, "no setup was written (no hop subshell_setup_ready_write)"
+    if any("line_editor=" not in ln for ln in writes):
+        return False, "the build does not log line_editor= on subshell_setup_ready_write (older than #1991)"
+    if "line_editor=1" not in writes[0]:
+        return False, "the first line was not written as a line-editor write (line_editor=0: no tty probe, or PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF is off)"
+    judged = [ln for ln in lines if "hop=subshell_written_judged" in ln]
+    by_echo = [ln for ln in judged if "line_editor=1" in ln and "proof=grid" not in ln]
+    if by_echo:
+        return False, "a look at a line-editor write was judged by the echo filter: %r" % by_echo[0][-160:]
+    unsupported = [ln for ln in judged if "verdict=Unsupported" in ln]
+    if unsupported:
+        return False, "a healthy setup was taken for an unsupported shell: %r" % unsupported[0][-200:]
+    flushed = [ln for ln in lines if ("hop=subshell_setup_cancelled" in ln and "flush=true" in ln)
+               or ("hop=subshell_line_editor_flush" in ln and "flushed=1" in ln)]
+    if flushed:
+        return False, "the tty input was flushed during a healthy setup: %r" % flushed[0][-200:]
+    if any("hop=subshell_setup_given_up" in ln for ln in lines):
+        return False, "the setup was given up by its net"
+    return True, "written to the line editor (line_editor=1), %d look(s) judged by the grid, no unsupported verdict, no flush, no give-up" % len(judged)
+
+
+@case("subshell_line_editor_proof", order=22)
+@guarded
+def c_line_editor_proof(ctx, r):
+    """#1991: a setup line written to a shell's LINE EDITOR is judged without the echo filter. readline takes the ` ^K ^U` prefix as editing
+    keys and draws the line its own way, so the cooked echo the filter expects never arrives there: the write is recorded as a line-editor
+    write, its looks are judged by the grid, and a healthy setup (its marker is progress) neither reads as an unsupported shell nor flushes
+    anything (line_editor_proof_verdict). The line typed right behind Ctrl-I is held through the setup and runs in the inner bash; then
+    the pane's bash. Needs the tty probe (POSIX): the Windows panes have none (the judge uses screen facts there and the write is not a
+    line-editor write). bash only: a zsh in the pane's scratch HOME starts zsh-newuser-install, which has its own case."""
+    need_posix(ctx, r)
+    f = "lab_lep.txt"
+    ctx.rm(f)
+    rc = write_rc(ctx, "lab_lep.rc", 'PS1="LAB$ "\n')
+    off = ctx.log_size()
+    ctx.be.type("bash --rcfile " + rc, 12, enter=True)
+    time.sleep(BANNER_S)
+    ctx.shot("lep_banner")
+    ctx.be.key("ctrl+i")
+    tok, dt = run_in_inner(ctx, r, "lep", "bash", f)
+    if dt is not None:
+        r.metric("lep_inner_line_after_enter_s", round(dt, 3))
+    r.check(first_index(hops(ctx, off), "subshell_setup_ready_write") is not None, "the setup was written (hop subshell_setup_ready_write)")
+    ok, why = line_editor_proof_verdict(ctx.log_since(off))
+    r.check(ok, why)
+    r.note("lep: setup " + setup_timeline(ctx.log_since(off)))
+    leave_and_prove_parent(ctx, r, "lep", f, [tok])

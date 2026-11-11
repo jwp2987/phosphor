@@ -546,6 +546,9 @@ pub struct TerminalModel {
     /// #1679 step 3 (review R9): discards the slave's unread input, for a setup cancelled with its
     /// bytes provably unread.
     subshell_tty_flush: Option<super::subshell_tty::SubshellTtyFlush>,
+    /// #1991: the byte count of the slave's unread input, for the R9 flush of a setup line that
+    /// was written to a line editor.
+    subshell_tty_input_bytes: Option<super::subshell_tty::SubshellTtyInputBytes>,
     /// The pid of the top-level shell this pty was spawned with: the fallback parent of a
     /// readiness sample when the active session reported none.
     local_shell_pid: Option<i32>,
@@ -1326,6 +1329,7 @@ impl TerminalModel {
             tty_read_probe: None,
             subshell_tty_probe: None,
             subshell_tty_flush: None,
+            subshell_tty_input_bytes: None,
             local_shell_pid: None,
             session_shell_pids: HashMap::new(),
             session_shell_comms: HashMap::new(),
@@ -2140,6 +2144,24 @@ impl TerminalModel {
         self.subshell_tty_flush
             .as_ref()
             .is_some_and(|flush| flush())
+    }
+
+    /// #1991: installs the byte count behind [`Self::subshell_tty_input_bytes`] (unix local
+    /// ptys, `terminal_attributes::slave_input_queue_bytes`; a test installs a closure of its
+    /// own).
+    pub fn set_subshell_tty_input_bytes_probe(
+        &mut self,
+        probe: super::subshell_tty::SubshellTtyInputBytes,
+    ) {
+        self.subshell_tty_input_bytes = Some(probe);
+    }
+
+    /// #1991: how many bytes wait unread in the slave's input queue right now; `None` without a
+    /// probe (ConPTY, a test that installed none) or when the tty will not say.
+    pub fn subshell_tty_input_bytes(&self) -> Option<usize> {
+        self.subshell_tty_input_bytes
+            .as_ref()
+            .and_then(|probe| probe())
     }
 
     /// Exclusive access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).

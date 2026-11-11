@@ -276,6 +276,82 @@ fn the_slave_input_queue_proof_and_the_flush_read_a_real_pty() {
     }
 }
 
+/// #1991: the byte count behind the R9 flush of a line-editor write, on a real pty. A raw slave
+/// (a line editor's tty) holds every byte the master wrote until it is read; one read of three
+/// bytes (the editor taking the ` ^K ^U` prefix) and the count is three short, which is what
+/// forbids the flush; and bytes still pending when the tty turns canonical (the shell left its
+/// editor for a `read`) are counted in full, so a wholly unread write is still recognised there.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_slave_input_byte_count_tells_a_whole_unread_write_from_one_being_read() {
+    use super::slave_input_queue_bytes;
+    // SAFETY: a fresh pty pair, both fds closed at the end.
+    let (master, slave) = unsafe {
+        let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        assert!(master >= 0, "posix_openpt");
+        assert_eq!(libc::grantpt(master), 0);
+        assert_eq!(libc::unlockpt(master), 0);
+        let mut name = [0 as libc::c_char; 64];
+        assert_eq!(libc::ptsname_r(master, name.as_mut_ptr(), name.len()), 0);
+        let slave = libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
+        assert!(slave >= 0, "open slave");
+        let mut attrs: libc::termios = std::mem::zeroed();
+        assert_eq!(libc::tcgetattr(slave, &mut attrs), 0);
+        libc::cfmakeraw(&mut attrs);
+        assert_eq!(libc::tcsetattr(slave, libc::TCSANOW, &attrs), 0);
+        (master, slave)
+    };
+    assert_eq!(slave_input_queue_bytes(master), Some(0), "fresh pty");
+    let write: &[u8] = b" \x0b\x15 __hc0=abc\r";
+    // SAFETY: a write from a valid buffer to an fd this test owns.
+    assert_eq!(
+        unsafe { libc::write(master, write.as_ptr().cast(), write.len()) },
+        write.len() as isize
+    );
+    // The bytes reach the slave's queue through the line discipline's worker.
+    let mut waited = 0;
+    while slave_input_queue_bytes(master) != Some(write.len()) && waited < 200 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        waited += 1;
+    }
+    assert_eq!(
+        slave_input_queue_bytes(master),
+        Some(write.len()),
+        "the whole write waits, unread"
+    );
+    // The reader takes the three prefix bytes: the write is being read.
+    let mut prefix = [0u8; 3];
+    // SAFETY: a read into a three-byte buffer this test owns.
+    assert_eq!(
+        unsafe { libc::read(slave, prefix.as_mut_ptr().cast(), prefix.len()) },
+        3
+    );
+    assert_eq!(&prefix, b" \x0b\x15");
+    assert_eq!(
+        slave_input_queue_bytes(master),
+        Some(write.len() - 3),
+        "three bytes short of the write"
+    );
+    // The tty turns canonical with the rest pending: still counted, in full.
+    // SAFETY: termios calls on an fd this test owns.
+    unsafe {
+        let mut attrs: libc::termios = std::mem::zeroed();
+        assert_eq!(libc::tcgetattr(slave, &mut attrs), 0);
+        attrs.c_lflag |= libc::ICANON;
+        assert_eq!(libc::tcsetattr(slave, libc::TCSANOW, &attrs), 0);
+    }
+    assert_eq!(
+        slave_input_queue_bytes(master),
+        Some(write.len() - 3),
+        "pending raw input counts as a complete line once the tty is canonical"
+    );
+    // SAFETY: fds this test opened.
+    unsafe {
+        libc::close(slave);
+        libc::close(master);
+    }
+}
+
 /// #1937 (review r8 D6) on a real pty: a process that is the pty's foreground group leader AND
 /// the "parent" pid of the sample (what `exec zsh` in the parent shell leaves: the parent's pid,
 /// another program). With the comm the pid had at the shell's report differing from its comm now,

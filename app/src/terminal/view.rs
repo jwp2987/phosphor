@@ -3249,6 +3249,21 @@ struct WrittenSubshellSetup {
     /// not among them: they wait in the queue). Any at all, and a cancel's R9 flush is off: what
     /// sits unread in the tty may be the user's.
     user_bytes_since_write: usize,
+    /// #1991: the look that decided the latest setup write said the shell's LINE EDITOR reads
+    /// the tty (`subshell_ready::is_line_editor_write`). readline and zle never echo what the
+    /// echo filter expects, so for such a write the filter is not armed and proves nothing: the
+    /// R9 flush is decided by the byte count (`last_write_bytes`), the R7 proof read from the
+    /// grid (`line_editor_line`). False for every other reader, and with
+    /// `PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF` off.
+    line_editor_write: bool,
+    /// #1991: the bytes of the latest setup write (the ` ^K ^U` prefix when there is one, the
+    /// line, its Enter): what the tty's input queue holds while that write is wholly unread.
+    last_write_bytes: usize,
+    /// #1991: the first line of the current stage and where the pane stood when it went out,
+    /// when it went to a line editor: what the grid proof of "the shell took the line" needs.
+    /// `None` for any other reader and once a later, marker-paced line was written (progress
+    /// was seen by then; R7 judges the first line only).
+    line_editor_line: Option<subshell_ready::LineEditorWrite>,
 }
 
 /// Where the readiness-judged subshell setup is (#1679 step 3).
@@ -3298,6 +3313,8 @@ struct SubshellPaneLook {
     /// #2006: bracketed paste is on in what the pane shows now (the running command's block):
     /// a line editor announced that it reads. Used only where there is no tty probe.
     bracketed_paste: bool,
+    /// #1991: the width of the block's output grid, in columns.
+    columns: usize,
 }
 
 /// How the keys typed during a PowerShell subshell setup are held (#1048). See
@@ -23191,11 +23208,19 @@ impl TerminalView {
         // them (an rc file that sleeps holds it for as long as it likes, #1014). The terminal model
         // recognises that exact echo and keeps it out of the running block until the setup's
         // `InitShell` arrives (#1038). PowerShell redraws the line itself, so it is left alone.
+        //
+        // #1991: not when the line goes to the shell's LINE EDITOR (the look that decided this
+        // write said so). readline and zle take ` ^K ^U` as editing keys and draw the line their
+        // own way; the cooked form the filter expects never arrives, so it never matched there,
+        // and armed it held back every space as a possible start of the prefix (a prompt's
+        // trailing space was not on the grid). The editor's drawing of the line stays in the
+        // block until the setup's `InitShell` resets it, as it did in practice.
+        let line_editor_write = self.written_setup_reader_is_line_editor();
         {
             let mut model = self.model.lock();
             model.clear_setup_echo();
             model.clear_setup_line_marker();
-            if shell_type != Some(ShellType::PowerShell) {
+            if shell_type != Some(ShellType::PowerShell) && !line_editor_write {
                 // The first line goes out behind ` ^K ^U`, whose echo comes first.
                 if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
                     model.expect_setup_line_clear_echo();
@@ -23232,7 +23257,24 @@ impl TerminalView {
             } else {
                 PowerShellSetupHold::Setup
             };
-        if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
+        let clears_line_editor =
+            crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type);
+        // #1991: what this write puts into the tty's input queue (the three prefix bytes of
+        // `clear_line_editor_and_write_to_pty`, the line, its Enter), and the line itself for the
+        // grid proof; `note_subshell_setup_written` adds where the pane stands.
+        if let SubshellSetupState::Written(written) = &mut self.subshell_setup_state {
+            written.last_write_bytes = usize::from(clears_line_editor) * 3 + first.len() + 1;
+            written.line_editor_line =
+                written
+                    .line_editor_write
+                    .then(|| subshell_ready::LineEditorWrite {
+                        line: first.clone(),
+                        row: 0,
+                        col: 0,
+                        columns: 0,
+                    });
+        }
+        if clears_line_editor {
             self.clear_line_editor_and_write_to_pty(first.into_bytes(), ctx);
         } else {
             // PSReadLine (#1047): no ^K/^U prefix, the first line already starts with a space.
@@ -23715,6 +23757,13 @@ impl TerminalView {
                 });
                 return;
             }
+            // #1991: who reads the line this look lets out.
+            if let SubshellSetupState::Written(written) = &mut self.subshell_setup_state {
+                written.line_editor_write = subshell_ready::is_line_editor_write(
+                    look.tty.kind,
+                    input_queue::switches::subshell_line_editor_proof(),
+                );
+            }
         }
         self.write_next_marked_subshell_line(ctx);
     }
@@ -23799,9 +23848,15 @@ impl TerminalView {
             return;
         }
         // The tty echoes this line from now on: expected now, not before (see
-        // `write_init_subshell_bytes_to_pty`).
-        if expects_echo {
+        // `write_init_subshell_bytes_to_pty`). #1991: not a line that goes to a line editor, which
+        // draws it its own way.
+        if expects_echo && !self.written_setup_reader_is_line_editor() {
             self.model.lock().expect_setup_echo(&line);
+        }
+        // #1991: the latest write, for R9's byte count. The grid proof is the first line's only.
+        if let SubshellSetupState::Written(written) = &mut self.subshell_setup_state {
+            written.last_write_bytes = line.len() + 1;
+            written.line_editor_line = None;
         }
         self.write_to_pty(line.into_bytes(), ctx);
         self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
@@ -23877,6 +23932,7 @@ impl TerminalView {
     /// menu) the grid's last rows are blank, and classifying them read the menu's footer as a
     /// shell prompt and wrote the probe into the menu.
     fn take_subshell_pane_look(&self) -> SubshellPaneLook {
+        use crate::terminal::model::grid::Dimensions as _;
         use subshell_ready::Tail;
         let model = self.model.lock();
         let block = model.block_list().active_block();
@@ -23919,6 +23975,7 @@ impl TerminalView {
             cursor_line,
             cursor_row_continues,
             bracketed_paste: model.is_term_mode_set(TermMode::BRACKETED_PASTE),
+            columns: grid.grid_handler().columns(),
         }
     }
 
@@ -24080,6 +24137,11 @@ impl TerminalView {
                 && subshell_ready::line_editor_announcement_enabled(),
         };
         let relay = look.tty.kind == SubshellTtyKind::Relay;
+        // #1991: who reads the line this look may write.
+        let line_editor_write = subshell_ready::is_line_editor_write(
+            look.tty.kind,
+            input_queue::switches::subshell_line_editor_proof(),
+        );
         armed.last_tty = Some(look.tty.clone());
         armed.last_tail = look.tail;
         armed.no_tty_probe = no_tty_probe;
@@ -24146,7 +24208,9 @@ impl TerminalView {
         });
         match decision {
             Decision::Wait(_) => {}
-            Decision::Write(shell_type) => self.write_armed_subshell_setup(shell_type, relay, ctx),
+            Decision::Write(shell_type) => {
+                self.write_armed_subshell_setup(shell_type, relay, line_editor_write, ctx)
+            }
             Decision::Cancel(kind) => self.cancel_subshell_setup(
                 SubshellCancel::Armed(kind),
                 WrittenCancelProof::default(),
@@ -24162,6 +24226,7 @@ impl TerminalView {
         &mut self,
         shell_type: Option<ShellType>,
         relay: bool,
+        line_editor_write: bool,
         ctx: &mut ViewContext<Self>,
     ) {
         let SubshellSetupState::Armed(armed) =
@@ -24171,8 +24236,10 @@ impl TerminalView {
         };
         warpui::input_order::log_hop("subshell_setup_ready_write", || {
             format!(
-                "trigger={} shell={shell_type:?} relay={relay} bytes_passed={} age_ms={}",
+                "trigger={} shell={shell_type:?} relay={relay} line_editor={} bytes_passed={} \
+                 age_ms={}",
                 trigger_name(&armed.trigger),
+                u8::from(line_editor_write),
                 armed.ledger.bytes_since_arm,
                 armed.armed_at.elapsed().as_millis()
             )
@@ -24196,6 +24263,9 @@ impl TerminalView {
             generation: self.subshell_setup_generation,
             stage_two_pending: None,
             user_bytes_since_write: 0,
+            line_editor_write,
+            last_write_bytes: 0,
+            line_editor_line: None,
         });
         self.last_subshell_setup_session_id = None;
         match armed.trigger {
@@ -24222,6 +24292,16 @@ impl TerminalView {
         }
     }
 
+    /// #1991: whether the setup line being written now goes to the shell's line editor: a
+    /// readiness-judged attempt whose deciding look said so. False with no judged attempt (tmux
+    /// control mode, a setup written on an event) and with the kill switch off.
+    fn written_setup_reader_is_line_editor(&self) -> bool {
+        matches!(
+            &self.subshell_setup_state,
+            SubshellSetupState::Written(written) if written.line_editor_write
+        )
+    }
+
     /// A setup line went out through `trigger_subshell_bootstrap_now` (#1679 step 3): the Written
     /// attempt takes the minted session ID / token, a fresh baseline and fresh counts (stage 2
     /// after `InitSubshell` refreshes the same attempt: new token, new suspicion). Nothing when the
@@ -24234,7 +24314,8 @@ impl TerminalView {
         let Some(session_id) = self.last_subshell_setup_session_id.take() else {
             return;
         };
-        let (position, marker_count, secret_probe) = {
+        let (position, marker_count, secret_probe, columns) = {
+            use crate::terminal::model::grid::Dimensions as _;
             let model = self.model.lock();
             let grid = model.block_list().active_block().output_grid();
             let cursor = grid.grid_handler().cursor_point();
@@ -24242,6 +24323,7 @@ impl TerminalView {
                 (grid.len(), cursor.row, cursor.col),
                 model.setup_line_marker_count(),
                 model.secret_read_probe(),
+                grid.grid_handler().columns(),
             )
         };
         let SubshellSetupState::Written(written) = &mut self.subshell_setup_state else {
@@ -24258,6 +24340,12 @@ impl TerminalView {
         written.echo_end_position = None;
         written.secret_probe = secret_probe;
         written.stage_two_pending = None;
+        // #1991: the editor draws the line from where the cursor is now.
+        if let Some(line) = written.line_editor_line.as_mut() {
+            line.row = position.1;
+            line.col = position.2;
+            line.columns = columns;
+        }
         let _ = ctx;
     }
 
@@ -24329,6 +24417,11 @@ impl TerminalView {
             StageTwoPending::Write => {
                 if let SubshellSetupState::Written(written) = &mut self.subshell_setup_state {
                     written.stage_two_pending = None;
+                    // #1991: who reads stage 2's first line, by the look that decided it.
+                    written.line_editor_write = subshell_ready::is_line_editor_write(
+                        look.tty.kind,
+                        input_queue::switches::subshell_line_editor_proof(),
+                    );
                 }
                 self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
             }
@@ -24373,20 +24466,48 @@ impl TerminalView {
         } else {
             look.tail
         };
-        let echo_ended = look.echo_lines_ended > 0;
-        if echo_ended && written.echo_end_position.is_none() {
-            // The first look that sees the echo ended: a prompt is fresh only once the output
-            // moved past here (R7: stream order, the prompt AFTER the echo).
-            written.echo_end_position = Some(look.position);
-        }
-        if echo_ended
-            && tail == Tail::ShellPrompt
-            && written.echo_end_position != Some(look.position)
-            && written.last_prompt_position != Some(look.position)
-        {
-            written.fresh_prompts_after_echo += 1;
-            written.last_prompt_position = Some(look.position);
-        }
+        let line_editor_write = written.line_editor_write;
+        let echo_ended = if line_editor_write {
+            // #1991: the line went to a line editor, which never echoes what the filter expects:
+            // the echo is no proof here, in either direction. "The shell took the line" is read
+            // from the grid instead: a prompt on a row the editor's own drawing of the line
+            // cannot have reached (so the line feed of accept-line came first), that does not
+            // show the line. Such a look is both halves of R7's "the echo ended, then a fresh
+            // prompt". Not for PowerShell: PSReadLine's marker comes when it reads again, after
+            // its prompt, so a prompt with no marker yet is its normal order.
+            let took_the_line = written.shell_type != Some(ShellType::PowerShell)
+                && written.line_editor_line.as_ref().is_some_and(|write| {
+                    subshell_ready::line_editor_took_the_line(
+                        write,
+                        look.columns,
+                        look.position.1,
+                        tail,
+                        &look.cursor_line,
+                        look.cursor_row_continues,
+                    )
+                });
+            if took_the_line && written.last_prompt_position != Some(look.position) {
+                written.fresh_prompts_after_echo += 1;
+                written.last_prompt_position = Some(look.position);
+            }
+            written.fresh_prompts_after_echo > 0
+        } else {
+            let echo_ended = look.echo_lines_ended > 0;
+            if echo_ended && written.echo_end_position.is_none() {
+                // The first look that sees the echo ended: a prompt is fresh only once the output
+                // moved past here (R7: stream order, the prompt AFTER the echo).
+                written.echo_end_position = Some(look.position);
+            }
+            if echo_ended
+                && tail == Tail::ShellPrompt
+                && written.echo_end_position != Some(look.position)
+                && written.last_prompt_position != Some(look.position)
+            {
+                written.fresh_prompts_after_echo += 1;
+                written.last_prompt_position = Some(look.position);
+            }
+            echo_ended
+        };
         let sample = subshell_ready::WrittenSample {
             tty_kind: look.tty.kind,
             block_unchanged: look.block_id == written.block_id,
@@ -24407,12 +24528,14 @@ impl TerminalView {
         warpui::input_order::log_hop("subshell_written_judged", || {
             format!(
                 "source={source} verdict={verdict:?} kind={:?} tail={tail:?} echo_ended={echo_ended} \
-                 fresh_prompts={} progress={} queue_empty={:?} relay={}",
+                 fresh_prompts={} progress={} queue_empty={:?} relay={} line_editor={} proof={}",
                 look.tty.kind,
                 sample.fresh_prompts_after_echo,
                 sample.progress_seen,
                 look.tty.queue_empty,
-                sample.relay
+                sample.relay,
+                u8::from(line_editor_write),
+                if line_editor_write { "grid" } else { "echo" }
             )
         });
         match verdict {
@@ -24715,23 +24838,41 @@ impl TerminalView {
         let stage_two_pending = written.stage_two_pending.is_some();
         // #1940: the decision does not rest on the echo filter alone: never for a Secret cancel,
         // never once a user byte went to the pty since the first line.
+        //
+        // #1991: for a write that went to a LINE EDITOR it does not rest on the echo at all
+        // (nothing the filter expects is ever echoed there, so "nothing echoed" was true while
+        // the editor was half way through the line, and the flush cut the rest). It is decided
+        // by the tty's own count, taken under the model lock right before the flush it allows:
+        // only a queue that holds exactly the bytes of the latest write is flushed.
+        let line_editor_write = written.line_editor_write;
         let flush = !stage_two_pending
+            && !line_editor_write
             && subshell_ready::cancel_flushes_unread_setup(
                 kind,
                 proof.queue_empty,
                 proof.echo_started,
                 written.user_bytes_since_write,
             );
+        let count_queue_bytes = !stage_two_pending
+            && line_editor_write
+            && subshell_ready::line_editor_flush_needs_the_count(
+                kind,
+                written.last_write_bytes,
+                written.user_bytes_since_write,
+            );
         warpui::input_order::log_hop("subshell_setup_cancelled", || {
             format!(
                 "why={kind:?} dest={dest:?} chunks={} bytes={} flush={flush} queue_empty={:?} \
-                 echo_started={} user_bytes_since_write={} age_ms={}",
+                 echo_started={} user_bytes_since_write={} age_ms={} line_editor={} \
+                 write_bytes={}",
                 held.0,
                 held.1,
                 proof.queue_empty,
                 proof.echo_started,
                 written.user_bytes_since_write,
-                written.written_at.elapsed().as_millis()
+                written.written_at.elapsed().as_millis(),
+                u8::from(line_editor_write),
+                written.last_write_bytes
             )
         });
         log::info!(
@@ -24758,6 +24899,31 @@ impl TerminalView {
                 let flushed = model.flush_subshell_tty_input();
                 log::info!(
                     "subshell setup bytes provably unread: tty input flushed={flushed} (R9)"
+                );
+            }
+            if count_queue_bytes {
+                // #1991: count, then flush, with nothing in between.
+                let queue_bytes = model.subshell_tty_input_bytes();
+                let whole_write_unread = subshell_ready::cancel_flushes_unread_line_editor_write(
+                    kind,
+                    queue_bytes,
+                    written.last_write_bytes,
+                    written.user_bytes_since_write,
+                );
+                let flushed = whole_write_unread && model.flush_subshell_tty_input();
+                warpui::input_order::log_hop("subshell_line_editor_flush", || {
+                    format!(
+                        "why={kind:?} queue_bytes={queue_bytes:?} write_bytes={} flush={} \
+                         flushed={}",
+                        written.last_write_bytes,
+                        u8::from(whole_write_unread),
+                        u8::from(flushed)
+                    )
+                });
+                log::info!(
+                    "subshell setup line written to a line editor: {queue_bytes:?} byte(s) \
+                     unread of {} written; tty input flushed={flushed} (R9, #1991)",
+                    written.last_write_bytes
                 );
             }
             model.abandon_stalled_subshell_bootstrap();

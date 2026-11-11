@@ -13,6 +13,10 @@ use super::{
     row_shows_typed_line, stage_two_pending, subshell_ready, typed_ahead_after_look,
     user_line_may_be_at_cursor,
 };
+use super::{
+    LineEditorWrite, cancel_flushes_unread_line_editor_write, is_line_editor_write,
+    line_editor_flush_needs_the_count, line_editor_took_the_line, row_shows_written_line,
+};
 use crate::terminal::model::subshell_tty::{LeaderKind, SubshellTtyKind, SubshellTtySample};
 use crate::terminal::shell::ShellType;
 
@@ -1868,4 +1872,229 @@ fn the_tracker_knows_the_text_typed_so_far_only_while_it_is_plain() {
     // A paste is never predictable.
     assert!(tracker.note(b"\x1b[200~pasted\x1b[201~").is_empty());
     assert_eq!(tracker.typed_so_far(), None);
+}
+
+// ---- #1991: a setup line written to a line editor ----------------------------------------------
+
+/// A setup-shaped line (the real ones begin with a space and an assignment).
+const SETUP_LINE: &str = " __hc0=abc; eval \"$__hc0\"; printf '\\033]7771;7;0\\007'";
+
+/// The line written at `bash-5.1$ ` (column 10) of row 4 of an 80-column pane.
+fn editor_write() -> LineEditorWrite {
+    LineEditorWrite {
+        line: SETUP_LINE.to_owned(),
+        row: 4,
+        col: 10,
+        columns: 80,
+    }
+}
+
+/// #1991: only a write whose look said "line editor" is judged without the echo, and only while
+/// the kill switch `PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF` is on.
+#[test]
+fn only_a_line_reader_write_is_a_line_editor_write_and_the_switch_turns_it_off() {
+    for kind in [
+        SubshellTtyKind::Secret,
+        SubshellTtyKind::Relay,
+        SubshellTtyKind::LineReader,
+        SubshellTtyKind::Cooked,
+        SubshellTtyKind::Unknown,
+    ] {
+        assert_eq!(
+            is_line_editor_write(kind, true),
+            kind == SubshellTtyKind::LineReader,
+            "{kind:?}"
+        );
+        assert!(!is_line_editor_write(kind, false), "{kind:?}: switch off");
+    }
+}
+
+/// #1991, the issue's R9 window: under a line editor the filter never matches, so "the queue
+/// holds bytes and nothing was echoed" was true while the editor was half way through the line,
+/// and a Question / Net / Gone cancel flushed the rest. The byte count decides instead: only the
+/// WHOLE write, and nothing but it, is provably unread.
+#[test]
+fn a_line_editor_write_is_flushed_only_while_the_queue_holds_exactly_the_whole_write() {
+    let write = 3 + SETUP_LINE.len() + 1;
+    for why in [
+        WrittenCancel::Question,
+        WrittenCancel::Net,
+        WrittenCancel::Gone,
+        WrittenCancel::Unsupported,
+    ] {
+        assert!(
+            cancel_flushes_unread_line_editor_write(why, Some(write), write, 0),
+            "{why:?}: the whole write sits unread: kept out of whatever reads next"
+        );
+        // The editor is taking the line: one byte read is enough to forbid the cut.
+        for unread in [write - 1, write / 2, 1, 0] {
+            assert!(
+                !cancel_flushes_unread_line_editor_write(why, Some(unread), write, 0),
+                "{why:?}: {unread} of {write} bytes unread: the line is being read, never cut"
+            );
+        }
+        // More than the write: something typed before the arming waits there too.
+        assert!(
+            !cancel_flushes_unread_line_editor_write(why, Some(write + 2), write, 0),
+            "{why:?}: bytes that are not the setup's are never discarded"
+        );
+        // No count: nothing is proven.
+        assert!(
+            !cancel_flushes_unread_line_editor_write(why, None, write, 0),
+            "{why:?}"
+        );
+        // #1940, unchanged: a user byte since the write.
+        assert!(
+            !cancel_flushes_unread_line_editor_write(why, Some(write), write, 1),
+            "{why:?}: the unread bytes may be the user's"
+        );
+        assert!(line_editor_flush_needs_the_count(why, write, 0), "{why:?}");
+        assert!(!line_editor_flush_needs_the_count(why, write, 1), "{why:?}");
+        assert!(!line_editor_flush_needs_the_count(why, 0, 0), "{why:?}");
+    }
+    // #1940, unchanged: a Secret cancel never flushes, whatever the count says.
+    assert!(!cancel_flushes_unread_line_editor_write(
+        WrittenCancel::Secret,
+        Some(write),
+        write,
+        0
+    ));
+    assert!(!line_editor_flush_needs_the_count(
+        WrittenCancel::Secret,
+        write,
+        0
+    ));
+    // Nothing written (a stage 2 that still waited): nothing to flush, also with an empty queue.
+    assert!(!cancel_flushes_unread_line_editor_write(
+        WrittenCancel::Question,
+        Some(0),
+        0,
+        0
+    ));
+}
+
+/// #1991: the rows the editor's own drawing of the line can reach, and so the first row a
+/// prompt drawn after accept-line can be on.
+#[test]
+fn the_first_row_after_accept_is_below_every_row_the_editor_draws_the_line_on() {
+    let short = LineEditorWrite {
+        line: "x".repeat(20),
+        row: 4,
+        col: 10,
+        columns: 80,
+    };
+    assert_eq!(short.first_row_after_accept(), Some(5), "one row, then LF");
+    // Ends exactly at the margin: the cursor wraps onto the next row before the accept.
+    let margin = LineEditorWrite {
+        line: "x".repeat(70),
+        ..short.clone()
+    };
+    assert_eq!(margin.first_row_after_accept(), Some(6));
+    // One column short of the margin: the column of slack counts it as wrapped too.
+    let slack = LineEditorWrite {
+        line: "x".repeat(69),
+        ..short.clone()
+    };
+    assert_eq!(slack.first_row_after_accept(), Some(6));
+    let long = LineEditorWrite {
+        line: "x".repeat(200),
+        ..short.clone()
+    };
+    assert_eq!(long.first_row_after_accept(), Some(4 + 2 + 1), "three rows");
+    let unknown_width = LineEditorWrite {
+        columns: 0,
+        ..short
+    };
+    assert_eq!(unknown_width.first_row_after_accept(), None);
+}
+
+/// #1991: what the cursor's row shows while the editor draws the line, and what a prompt drawn
+/// after it shows.
+#[test]
+fn a_row_of_the_drawn_line_is_told_from_a_fresh_prompt_by_its_text() {
+    let line = SETUP_LINE;
+    // The prompt's row, the line growing behind it.
+    assert!(row_shows_written_line("bash-5.1$ __hc0=abc; ev", line));
+    assert!(row_shows_written_line("bash-5.1$ _", line));
+    assert!(row_shows_written_line(
+        &format!("bash-5.1$ {}", line.trim()),
+        line
+    ));
+    // A row of the wrapped line, wherever the editor cut it.
+    assert!(row_shows_written_line("eval \"$__hc0\"; printf", line));
+    assert!(row_shows_written_line("  7;0\\007'  ", line));
+    // An empty row is never proof.
+    assert!(row_shows_written_line("", line));
+    assert!(row_shows_written_line("   ", line));
+    // A prompt drawn after the line was accepted.
+    assert!(!row_shows_written_line("bash-5.1$ ", line));
+    assert!(!row_shows_written_line("user@host:~/src % ", line));
+    assert!(!row_shows_written_line(
+        "bash: __hc0=abc: command not found",
+        line
+    ));
+    // Accepted, on the safe side: a prompt that occurs in the line, or ends in its first
+    // character.
+    assert!(row_shows_written_line("$ ", line), "`$` occurs in the line");
+    assert!(row_shows_written_line("host_ ", line), "ends in `_`");
+}
+
+/// #1991, R7 for a line-editor write: the proof that the shell took the line is the grid's. Each
+/// fact of the rule alone withholds it.
+#[test]
+fn a_fresh_prompt_below_the_drawn_line_proves_the_editor_took_it() {
+    let write = editor_write();
+    // Column 10, 53 characters and the slack: one row. The first row after accept is row 5.
+    assert_eq!(write.first_row_after_accept(), Some(5));
+    let took = |columns, row, tail, text: &str, continues| {
+        line_editor_took_the_line(&write, columns, row, tail, text, continues)
+    };
+    // The error line was printed, the prompt drawn after it.
+    assert!(took(80, 6, Tail::ShellPrompt, "bash-5.1$ ", false));
+    // A shell that printed nothing: the prompt directly below the line.
+    assert!(took(80, 5, Tail::ShellPrompt, "bash-5.1$ ", false));
+
+    // The editor is still drawing on the prompt's row.
+    assert!(!took(80, 4, Tail::ShellPrompt, "bash-5.1$ __hc0=ab", false));
+    // The old prompt redrawn in place is not a prompt after the line.
+    assert!(!took(80, 4, Tail::ShellPrompt, "bash-5.1$ ", false));
+    // A finished line (the accept's line feed, the cursor at column 0), or a question.
+    assert!(!took(80, 6, Tail::None, "", false));
+    assert!(!took(80, 6, Tail::InputPrompt, "Continue? [y/N] ", false));
+    // A soft-wrapped row is the same logical line.
+    assert!(!took(80, 6, Tail::ShellPrompt, "bash-5.1$ ", true));
+    // The row shows a piece of the line (an editor that redrew it lower).
+    assert!(!took(
+        80,
+        6,
+        Tail::ShellPrompt,
+        "eval \"$__hc0\"; printf",
+        false
+    ));
+    // The pane was resized since the write: the rows were reflowed.
+    assert!(!took(100, 6, Tail::ShellPrompt, "bash-5.1$ ", false));
+
+    // A line that wraps: rows 4..=6 are the editor's, so a prompt on row 6 proves nothing and
+    // one on row 7 does.
+    let long = LineEditorWrite {
+        line: format!(" {}", "x".repeat(170)),
+        ..editor_write()
+    };
+    assert_eq!(long.first_row_after_accept(), Some(7));
+    assert!(!line_editor_took_the_line(
+        &long,
+        80,
+        6,
+        Tail::ShellPrompt,
+        "bash-5.1$ ",
+        false
+    ));
+    assert!(line_editor_took_the_line(
+        &long,
+        80,
+        7,
+        Tail::ShellPrompt,
+        "bash-5.1$ ",
+        false
+    ));
 }

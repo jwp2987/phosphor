@@ -257,6 +257,11 @@ pub fn parent_was_replaced(comm_at_report: &str, comm_now: &str) -> bool {
 /// read must not be read later by whatever reads next). Returns whether anything was flushed.
 pub type SubshellTtyFlush = Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// #1991: how many bytes wait unread in the slave's input queue (`None`: it cannot be told). For
+/// the R9 flush of a setup line written to a line editor, which is allowed only while the queue
+/// holds exactly that write. Sampled at a cancel, right before the flush it decides.
+pub type SubshellTtyInputBytes = Arc<dyn Fn() -> Option<usize> + Send + Sync>;
+
 #[cfg(test)]
 #[path = "subshell_tty_tests.rs"]
 mod tests;

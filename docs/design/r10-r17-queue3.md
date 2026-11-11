@@ -104,6 +104,12 @@ Design: `r14-queueres.md` section 5, items 1-4. What is built:
 A write whose reader was not a line editor (an editor-less cooked shell, a relay, no probe) keeps
 every rule it had.
 
+Logged, counts and names only: `subshell_setup_ready_write` gains `line_editor=`,
+`subshell_written_judged` gains `line_editor= proof=grid|echo`, `subshell_setup_cancelled` gains
+`line_editor= write_bytes=`, and a cancel that asked the tty for its count logs
+`subshell_line_editor_flush why= queue_bytes= write_bytes= flush= flushed=`. The appci case
+`subshell_line_editor_proof` (PROVING) reads the first two on a healthy bash setup.
+
 **Accepted losses, all on the safe side.** A prompt whose whole text occurs inside the setup line
 (`$`), or that ends in the line's first character, is never proof: R7 stays blind there and the
 quiet net ends the attempt, as today. A write judged `LineReader` that reached a tty which had
@@ -129,4 +135,8 @@ proof can only end an attempt that printed no marker of its own before a fresh p
   drove a line-editor write with a cooked echo, which a line editor never produces).
 - App: `subshell_*` and `subshell_ready_*` stay PASS on Linux and macOS. In a bash or zsh
   subshell setup's log, `subshell_written_judged` now carries `line_editor=1 proof=grid`, and a
-  healthy setup never shows `verdict=Unsupported` there.
+  healthy setup never shows `verdict=Unsupported` there. `subshell_line_editor_proof` (new,
+  PROVING) asserts exactly that: PASS on Linux and macOS, SKIP on Windows (no tty probe).
+- Not provable from outside the app: the R9 window itself (a cancel while the editor is half way
+  through the line) and a real unsupported line-editor shell. Those rest on the unit and view
+  tests, and on the real-pty byte-count test on Linux.
