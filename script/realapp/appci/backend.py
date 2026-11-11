@@ -872,7 +872,21 @@ class MacBackend(Backend):
             os.remove(t)
         r = subprocess.run(["osascript", "-e", 'tell application "System Events" to get name of first process whose frontmost is true'], capture_output=True)
         if r.returncode != 0:
-            p.append("osascript/System Events denied: grant Accessibility to the runner's process chain (%s)" % r.stderr.decode().strip()[:120])
+            err = r.stderr.decode().strip()
+            # Only a TCC refusal is a permission problem: -1743 (not authorized to send Apple events),
+            # -25211 / "assistive access" (Accessibility off). -1719 "Invalid index" means System Events
+            # found NO frontmost process: a system dialog or the lock screen is in front, the permission
+            # is fine (r14a lab-macos 06:05Z: a UserNotificationCenter dialog was up; screenshots worked).
+            if "(-1719)" in err:
+                front = subprocess.run(["lsappinfo", "front"], capture_output=True, timeout=10).stdout.decode().strip()
+                p.append("no frontmost app (System Events -1719; lsappinfo front=%r): a system dialog or the "
+                         "lock screen is in front of the gitrunner session; dismiss it or unlock, Accessibility is "
+                         "not the cause" % front[:60])
+            elif "-1743" in err or "-25211" in err or "assistive access" in err.lower():
+                p.append("osascript/System Events denied by macOS privacy (TCC): grant Accessibility to the "
+                         "runner's process chain (%s)" % err[:120])
+            else:
+                p.append("osascript/System Events failed, cause unknown (not judged a permission problem): %s" % err[:120])
         return p
 
     def _front(self):
