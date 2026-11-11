@@ -831,7 +831,8 @@ pub fn check_requests(
 }
 
 /// The app's duplicate rule, restated independently: a repeat of an id seen earlier in the same
-/// reply becomes `<id>#2`, `#3`, ... (`chat_stream::unique_call_ids`).
+/// reply becomes `<id>#2`, `#3`, ... (`chat_stream::unique_call_ids`), and stays where it was
+/// emitted: `[x, y, x]` is `[x, y, x#2]` (#2054; corpus `i4_repeat_id_*`).
 fn uniquify(ids: &[String]) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     for id in ids {
@@ -1497,6 +1498,16 @@ mod tests {
     fn duplicates_are_renamed_like_the_app_does() {
         let ids: Vec<String> = ["c", "c", "c#2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(uniquify(&ids), vec!["c", "c#2", "c#2#2"]);
+    }
+
+    /// #2054: a repeat that is not next to its original keeps the place it was emitted at.
+    #[test]
+    fn a_repeat_stays_where_it_was_emitted() {
+        let ids: Vec<String> = ["x", "y", "x", "z", "x"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(uniquify(&ids), vec!["x", "y", "x#2", "z", "x#3"]);
     }
 
     // ---- I8 --------------------------------------------------------------------------------

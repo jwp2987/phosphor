@@ -706,10 +706,12 @@ impl AssistantBuffer {
             messages.push(msg);
         }
         if has_tool_calls {
-            // A call renamed `id#n` because the reply repeated `id` is recorded after the calls
-            // whose placeholders the stream had already shown (the rename only happens when the
-            // stream ends), so it is moved back next to the call it repeats.
-            let order = repeats_beside_their_originals(&self.tool_calls);
+            // The calls go out in the order they are recorded, which is the order the model
+            // emitted them (#2054): the stream shows no early card for a call that comes after a
+            // possible repeat of an id (`may_repeat_call_id`), so a call renamed `id#n` is
+            // recorded at its own place. Only with the kill switch off is a repeat moved next to
+            // the call it repeats, as before.
+            let order = request_call_order(&self.tool_calls, repeat_ids_in_emitted_order());
             if order.iter().enumerate().any(|(slot, from)| slot != *from) {
                 let calls = std::mem::take(&mut self.tool_calls);
                 let keys = std::mem::take(&mut self.tool_call_keys);
@@ -735,8 +737,43 @@ impl AssistantBuffer {
     }
 }
 
+/// The environment variable of the #2054 kill switch.
+const REPEAT_ID_EMITTED_ORDER_ENV: &str = "PHOSPHOR_AGENT_REPEAT_ID_EMITTED_ORDER";
+
+/// Whether a reply's calls are recorded, and sent back, in the order the model emitted them
+/// even when the reply repeats a call id (#2054, owner decision 2026-11-11). On unless
+/// `PHOSPHOR_AGENT_REPEAT_ID_EMITTED_ORDER` is `0`, `off`, `false` or `no`: then the stream holds
+/// no card back and the request builder moves every `id#n` next to `id`, as before.
+fn repeat_ids_in_emitted_order_from(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("0" | "off" | "false" | "no")
+    )
+}
+
+/// See [`repeat_ids_in_emitted_order_from`]. Read once.
+fn repeat_ids_in_emitted_order() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        repeat_ids_in_emitted_order_from(std::env::var(REPEAT_ID_EMITTED_ORDER_ENV).ok().as_deref())
+    })
+}
+
+/// The order one reply's calls take in the next request: indices into `calls`. In emitted
+/// order (the default) that is the recorded order, untouched; otherwise the pre-#2054 rule,
+/// [`repeats_beside_their_originals`].
+fn request_call_order(calls: &[ToolCall], emitted_order: bool) -> Vec<usize> {
+    if emitted_order {
+        (0..calls.len()).collect()
+    } else {
+        repeats_beside_their_originals(calls)
+    }
+}
+
 /// The order that puts every `base#n` call (see [`unique_call_ids`]) right after the call it
-/// repeats and leaves every other call where it is: indices into `calls`.
+/// repeats and leaves every other call where it is: indices into `calls`. Only used with the
+/// #2054 kill switch off: it cannot tell a repeat that was recorded late (`[x, x, y]`, where `y`
+/// had its card before the rename) from one that was emitted late (`[x, y, x]`).
 fn repeats_beside_their_originals(calls: &[ToolCall]) -> Vec<usize> {
     // Only a `#n` id whose base is another call of this reply is a repeat; an id that merely
     // contains '#' stays where it is.
@@ -5134,6 +5171,32 @@ fn unique_call_ids(calls: impl IntoIterator<Item = ToolCall>) -> Vec<ToolCall> {
 /// from a chunk sent twice and counts as the same call: nothing of it is lost, the one call
 /// that stays has those arguments. A buffered call with no name yet is not a call of its own
 /// either (the OpenAI adapter fills the name in from the first chunk that has one).
+/// Whether the chunk `next`, arriving under an id that already has `prev` buffered, may be
+/// ANOTHER call of the reply that repeats the id (#2054). `card_shown`: the id has its early card.
+///
+/// Such a call gets its own id (`id#2`) and its message only when the `End` comes. A call that
+/// arrives after it must not be shown before that, or it would be recorded ahead of a call the
+/// model emitted earlier, so the stream holds every new card back from here on (the same wait a
+/// call behind a websearch already has).
+///
+/// * A chunk that does not carry on the buffered call ([`continues_stream_call`]) is another call.
+/// * A chunk equal to the buffered call is either a chunk sent twice or a call repeated exactly;
+///   the chunks cannot tell. It counts as a possible repeat when the buffered call is whole (its
+///   card is shown, or its arguments are complete JSON). The Anthropic adapter's empty first
+///   delta (`""` again, no card for a tool that needs arguments) is neither, so it holds nothing.
+///   A false "possible repeat" costs only the early cards of the calls after it.
+fn may_repeat_call_id(prev: &ToolCall, next: &ToolCall, card_shown: bool) -> bool {
+    if !continues_stream_call(prev, next) {
+        return true;
+    }
+    let same = prev.fn_name == next.fn_name && prev.fn_arguments == next.fn_arguments;
+    same && (card_shown
+        || match prev.fn_arguments.as_str() {
+            Some(text) => serde_json::from_str::<serde::de::IgnoredAny>(text).is_ok(),
+            None => true,
+        })
+}
+
 fn continues_stream_call(prev: &ToolCall, next: &ToolCall) -> bool {
     if prev.call_id != next.call_id {
         return false;
@@ -7764,6 +7827,12 @@ pub async fn generate_byop_output(
         // `tool_bufs`, in order (#2048). Read only when the body closes with no `End`: with one,
         // the calls come from the captured content, where a repeated id is renamed.
         let mut replaced_calls: HashMap<String, Vec<String>> = HashMap::new();
+        // Set once a chunk may be another call under an id the reply already used
+        // (`may_repeat_call_id`, #2054): from then on no NEW early card is shown, so the repeat,
+        // which gets its message at the `End`, is recorded before the calls emitted after it.
+        // Never set with the kill switch off.
+        let hold_cards_for_repeat = repeat_ids_in_emitted_order();
+        let mut repeat_may_be_pending = false;
         // call_id → the id of the first-frame placeholder ToolCall message.
         // As soon as the first ToolCallChunk arrives and can be parsed, immediately emit a
         // placeholder card (so the UI can show "calling tool X" feedback before the stream's
@@ -8167,7 +8236,7 @@ pub async fn generate_byop_output(
                             &listed_skills,
                             &skill_path_origin,
                         )
-                        { Ok(parsed) if tool_order
+                        { Ok(parsed) if !repeat_may_be_pending && tool_order
                             .iter()
                             .filter(|earlier| **earlier != call.call_id)
                             .all(|earlier| tool_msg_ids.contains_key(earlier)) => {
@@ -8176,6 +8245,8 @@ pub async fn generate_byop_output(
                             // end of the stream: a placeholder shown now would sit BEFORE the
                             // predecessor's message in the conversation and the next request
                             // would list the calls out of the order the model emitted them.
+                            // The same holds after a possible repeat of an id (#2054): the
+                            // repeat has no message until the `End` renames it.
                             // First successful parse → immediately emit a placeholder card.
                             // Every chunk gets reparsed until the placeholder is emitted
                             // (i.e. "retry on every chunk"), so even if the first frame's
@@ -8207,6 +8278,18 @@ pub async fn generate_byop_output(
                     }
                     // Same call_id, multiple chunks: the later one overwrites (genai has
                     // already merged the args).
+                    if hold_cards_for_repeat
+                        && !repeat_may_be_pending
+                        && tool_bufs.get(&call.call_id).is_some_and(|prev| {
+                            may_repeat_call_id(
+                                prev,
+                                &call,
+                                tool_msg_ids.contains_key(&call.call_id),
+                            )
+                        })
+                    {
+                        repeat_may_be_pending = true;
+                    }
                     match tool_bufs.get(&call.call_id) {
                         None => tool_order.push(call.call_id.clone()),
                         // Not a later chunk of the buffered call but another call with its id:
@@ -18951,6 +19034,141 @@ mod duplicate_call_id_tests {
             &chunk("x", "grep", ""),
             &chunk("y", "grep", "")
         ));
+    }
+
+    /// #2054: a chunk under a buffered id that may be another call of the reply. From there on
+    /// the stream shows no new card, so the repeat (renamed at the `End`) is recorded before the
+    /// calls emitted after it.
+    #[test]
+    fn a_chunk_that_may_repeat_its_id_is_told_from_a_growing_call() {
+        // The same call, growing: no repeat, with or without its card.
+        for card in [false, true] {
+            assert!(!may_repeat_call_id(
+                &chunk("x", "grep", r#"{"qu"#),
+                &chunk("x", "grep", r#"{"queries":["a"]}"#),
+                card
+            ));
+            assert!(!may_repeat_call_id(
+                &chunk("x", "", ""),
+                &chunk("x", "grep", r#"{"qu"#),
+                card
+            ));
+        }
+        // Another tool, or arguments that start over: another call.
+        assert!(may_repeat_call_id(
+            &chunk("x", "not_a_real_tool", "{}"),
+            &chunk("x", "grep", r#"{"queries":["a"]}"#),
+            false
+        ));
+        assert!(may_repeat_call_id(
+            &chunk("x", "grep", r#"{"queries":["a"]}"#),
+            &chunk("x", "grep", r#"{"queries":["b"]}"#),
+            false
+        ));
+        // Equal to the buffered call: a possible repeat once the buffered call is whole
+        // (complete arguments, whole-object arguments, or its card is shown) ...
+        assert!(may_repeat_call_id(
+            &chunk("x", "grep", r#"{"queries":["a"]}"#),
+            &chunk("x", "grep", r#"{"queries":["a"]}"#),
+            false
+        ));
+        assert!(may_repeat_call_id(
+            &call("x", "ls"),
+            &call("x", "ls"),
+            false
+        ));
+        assert!(may_repeat_call_id(
+            &chunk("x", "list_things", ""),
+            &chunk("x", "list_things", ""),
+            true
+        ));
+        // ... and only a chunk sent twice while the call is still arriving (the Anthropic
+        // adapter's empty first delta; a partial object): nothing is held for those.
+        assert!(!may_repeat_call_id(
+            &chunk("x", "grep", ""),
+            &chunk("x", "grep", ""),
+            false
+        ));
+        assert!(!may_repeat_call_id(
+            &chunk("x", "grep", r#"{"qu"#),
+            &chunk("x", "grep", r#"{"qu"#),
+            false
+        ));
+    }
+
+    fn ids_in_order(calls: &[ToolCall], order: &[usize]) -> Vec<String> {
+        order.iter().map(|i| calls[*i].call_id.clone()).collect()
+    }
+
+    /// #2054, owner decision 2026-11-11: the next request lists a reply's calls in the order
+    /// they were emitted. `[x, y, x]` is recorded `[x, y, x#2]` and goes out that way; the old
+    /// rule (kill switch off) moved `x#2` next to `x`.
+    #[test]
+    fn a_repeat_that_is_not_next_to_its_original_keeps_its_emitted_place() {
+        let calls = unique_call_ids([call("x", "1"), call("y", "2"), call("x", "3")]);
+        let emitted = request_call_order(&calls, true);
+        assert_eq!(ids_in_order(&calls, &emitted), ["x", "y", "x#2"]);
+        let legacy = request_call_order(&calls, false);
+        assert_eq!(ids_in_order(&calls, &legacy), ["x", "x#2", "y"]);
+
+        // Several repeats, two bases, and an id that only looks like a repeat: untouched.
+        let calls = unique_call_ids([
+            call("a", "1"),
+            call("b", "2"),
+            call("a", "3"),
+            call("c#2", "4"),
+            call("b", "5"),
+            call("a", "6"),
+        ]);
+        let emitted = request_call_order(&calls, true);
+        assert_eq!(
+            ids_in_order(&calls, &emitted),
+            ["a", "b", "a#2", "c#2", "b#2", "a#3"]
+        );
+    }
+
+    /// The request builder itself (the kill switch is not set in a test run): the assistant
+    /// message carries the calls as recorded, and each key stays with its call.
+    #[test]
+    fn the_request_lists_a_late_repeat_where_it_was_emitted() {
+        if !repeat_ids_in_emitted_order() {
+            // The kill switch is set in this environment: the old rule is what is asked for.
+            return;
+        }
+        let mut buf = AssistantBuffer::new(false);
+        for call in unique_call_ids([call("x", "1"), call("y", "2"), call("x", "3")]) {
+            let key = ToolCallKey::new("task", "message", &call.call_id);
+            buf.push_tool_call(call, key);
+        }
+        let mut messages = Vec::new();
+        let group = buf
+            .flush_into_with_group(&mut messages)
+            .expect("a tool group");
+        let sent: Vec<String> = messages[group.message_index]
+            .content
+            .tool_calls()
+            .into_iter()
+            .map(|c| c.call_id.clone())
+            .collect();
+        assert_eq!(sent, ["x", "y", "x#2"]);
+        let commands: Vec<String> = messages[group.message_index]
+            .content
+            .tool_calls()
+            .into_iter()
+            .map(|c| c.fn_arguments["command"].as_str().unwrap_or("").to_owned())
+            .collect();
+        assert_eq!(commands, ["1", "2", "3"]);
+        assert_eq!(group.tool_call_keys.len(), 3);
+    }
+
+    #[test]
+    fn the_emitted_order_kill_switch_reads_the_usual_off_words() {
+        assert!(repeat_ids_in_emitted_order_from(None));
+        assert!(repeat_ids_in_emitted_order_from(Some("1")));
+        assert!(repeat_ids_in_emitted_order_from(Some("")));
+        for off in ["0", "off", "OFF", " false ", "no"] {
+            assert!(!repeat_ids_in_emitted_order_from(Some(off)), "{off:?}");
+        }
     }
 
     /// #2048, owner decision 2026-11-10: exactly the tools the stream runs by itself are held
