@@ -7211,3 +7211,11 @@ down. Its users carry the same gate: `router_tests.rs` `git_reads_with_no_helper
 test there drives `scratch_home_executor`). The one index-sync test that runs no shell, `ranked_paths_keeps_best_first_and_drops_repeats`, moved
 to `index_sync_pure_tests.rs` and runs on every platform. A new test in this crate that starts `sh` goes behind `#[cfg(unix)]`; one that does not
 must not be put in a unix-only module.
+
+### `credential_process` splitting (#2112, and the test's own fault)
+
+`app/src/ai/aws_creds/process_tests.rs`: `splits_like_the_cli_for_quotes_and_plain_words` asked for POSIX single-quote grouping on every
+platform; on Windows the AWS CLI's split takes a single quote as a character, so that one expectation is now per platform (`'single quoted'` is
+one word on unix, two on Windows). New, on every platform: `the_windows_split_groups_by_double_quotes_only` checks `split_windows_command`
+(compiled for Windows and for tests): double quotes group, `""` is a word, backslashes are path separators except before a double quote (2n:
+n backslashes and a grouping quote; 2n+1: n and a literal quote), an open quote is refused.

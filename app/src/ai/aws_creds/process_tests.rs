@@ -8,10 +8,58 @@ fn splits_like_the_cli_for_quotes_and_plain_words() {
         ["aws-vault", "exec", "--json", "work"]
     );
     assert_eq!(
-        split_command(r#"helper --name "two words" 'single quoted'"#).expect("splits"),
-        ["helper", "--name", "two words", "single quoted"]
+        split_command(r#"helper --name "two words""#).expect("splits"),
+        ["helper", "--name", "two words"]
     );
+    // A single quote groups under POSIX rules only: on Windows the AWS CLI (and the C runtime)
+    // take it as an ordinary character.
+    let single = split_command("helper 'single quoted'").expect("splits");
+    if cfg!(windows) {
+        assert_eq!(single, ["helper", "'single", "quoted'"]);
+    } else {
+        assert_eq!(single, ["helper", "single quoted"]);
+    }
     assert_eq!(split_command(r#"helper "unterminated"#), None);
+}
+
+/// The Windows rules, checked on every platform.
+#[test]
+fn the_windows_split_groups_by_double_quotes_only() {
+    let split = |line: &str| split_windows_command(line).expect("splits");
+    assert_eq!(
+        split("aws-vault exec --json  work"),
+        ["aws-vault", "exec", "--json", "work"]
+    );
+    assert_eq!(
+        split(r#"helper --name "two words" 'single quoted'"#),
+        ["helper", "--name", "two words", "'single", "quoted'"]
+    );
+    // Backslashes are path separators, also inside quotes and at the end of a word.
+    assert_eq!(
+        split(r#""C:\Program Files\Helper\helper.exe" --dir C:\work\ x"#),
+        [
+            r"C:\Program Files\Helper\helper.exe",
+            "--dir",
+            r"C:\work\",
+            "x"
+        ]
+    );
+    // Before a double quote: 2n backslashes are n and the quote groups, 2n+1 are n and the
+    // quote is literal.
+    assert_eq!(
+        split(r#"helper "say \"hi\" now" end"#),
+        ["helper", r#"say "hi" now"#, "end"]
+    );
+    assert_eq!(
+        split(r#"helper "C:\dir\\" next"#),
+        ["helper", r"C:\dir\", "next"]
+    );
+    assert_eq!(split(r#"helper \"x"#), ["helper", r#""x"#]);
+    // An empty quoted word is a word.
+    assert_eq!(split(r#"helper "" x"#), ["helper", "", "x"]);
+    assert_eq!(split_windows_command(r#"helper "unterminated"#), None);
+    // An escaped quote does not close the word.
+    assert_eq!(split_windows_command(r#"helper "open \""#), None);
 }
 
 #[cfg(unix)]
