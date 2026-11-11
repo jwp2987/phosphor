@@ -8082,3 +8082,12 @@ is told, by two toasts. Off: `PHOSPHOR_SUBSHELL_RELAY_NOTE=0` (the old toast at 
 - **Self-tests.** `python3 script/ci/run_bounded.py --self-test` (a grandchild holding stdout cannot keep the pipe open; a control proves the
   leak holds it without the wrapper; timeout gives 124), `script/realapp/test_reap.sh` (same shape for the app-test cleanup), and
   `lab_teardown_line_with_cid_none` in `appci/selftest.py` (run by `run.py --self-test`). All three run in the `.gitlab-ci.yml` self-test job.
+
+## ci_seq: a busy runner is RUNNER-BUSY, and its build is not forgotten (#2168)
+
+`script/ci/ci_seq.py` tells "no online runner can take the job" (`RUNNER-OFFLINE`, from the GitLab runner status, #1921) from "the runner is online
+but busy" (`RUNNER-BUSY`, printed with the blocking job of this pipeline when there is one). Both are non-passing verdicts. When a build is given up
+for either reason, nothing more is queued on that machine (its unit and heavy suites are skipped, with a line saying why), and at the end the driver
+waits for that build within its own job timeout (`late_build_outcome`); if it succeeds, the platform's app job is played then, as the lab job is when
+the lab image succeeds late (#1921). The unit suites of that platform are not replayed. Self-test (`ci_seq.py --self-test`): `blocking_job`, the
+verdicts, and `late_build_outcome` against a fake status sequence (pending, pending, running, success), its budget, and a vanished job.
