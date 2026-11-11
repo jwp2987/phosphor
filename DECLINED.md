@@ -3073,8 +3073,17 @@ plain terminal"). The owner saw it on macOS at an EMPTY remote prompt: a toast f
   (an unready shell, a verdict wait) no longer has the complete lines typed behind it written to
   the pty at once (the #826 N1 / #1016 behaviour). They are handed to that gate in place
   (`InputQueue::hand_gate_to`, `hand_deferred_gate_lines_to_waiting_enter`) and follow the line:
-  after it at readiness, behind it at the net. Lines typed behind a BARE deferred Enter are still
-  written at once (no line to overtake). Do not restore the direct write past a waiting line.
+  after it at readiness, behind it at the net. Do not restore the direct write past a waiting line.
+- **Typed order is kept behind a BARE deferred Enter too (#1999, owner 2026-11-11; this replaces
+  "lines typed behind a bare deferred Enter are still written at once", recorded here on
+  2026-11-09).** A bare Enter deferred behind the shell's report and then held for an unready shell
+  (#1571) holds the complete lines typed behind it: they are handed to its gate in place, like the
+  lines behind a non-empty held line, and reach the shell after it (readiness) or behind its `\r`
+  (the 60 s net). Written at once, they reached the shell BEFORE the Enter they were typed after.
+  `Input::enter_gate_holding_a_line` / `enter_gate_holds_lines_typed_behind`; kill switch
+  `PHOSPHOR_BARE_ENTER_HOLDS_LINES=0`. A gate that waits for a verdict, a completion or its route
+  with an empty buffer is not a bare Enter (its line was already submitted) and is unchanged. Do
+  not restore the direct write past a held bare Enter.
 - **The consequence the first ruling left open is closed.** Under the first ruling (a few hours on
   2026-11-09) the unrun line stayed in the editor and the keys typed after it were written to the
   pty, so a second complete command ran without the first. The owner ruled "keep them together":

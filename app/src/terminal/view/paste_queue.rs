@@ -1772,8 +1772,13 @@ impl TerminalView {
     ///
     /// Only when an Enter is among the held keys. An unfinished line keeps its own path in
     /// [`Self::release_held_keys`] (queued behind the same gate as text, or written to a secret
-    /// read, #1957), and so does everything typed behind a BARE deferred Enter (an empty line
-    /// has no command to overtake, S2 / #826 N1).
+    /// read, #1957).
+    ///
+    /// #1999 (owner decision 2026-11-11): the same holds behind a BARE deferred Enter that is
+    /// now held for the unready shell. It has no command to overtake, but it is a key the shell
+    /// has not been given: written at once, the lines reached the shell before the Enter they
+    /// were typed after (S2 / #826 N1 did that). They wait behind its gate and follow it, at
+    /// readiness or at its net. `Input::enter_gate_holding_a_line` decides which gates qualify.
     ///
     /// `Some(true)`: handed over, the caller takes nothing. `Some(false)`: not this case, the
     /// caller takes the keys as before. `None`: the queue could not be locked (nothing changed).

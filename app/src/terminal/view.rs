@@ -16249,8 +16249,10 @@ impl TerminalView {
     /// line is not empty and now waits behind the input's Enter gate (an unready shell, #1571; a
     /// verdict wait), held keys with an Enter among them are not taken at all: they stay queued
     /// behind that gate and follow the line
-    /// ([`Self::hand_deferred_gate_lines_to_waiting_enter`]). What reaches this function then is
-    /// an unfinished line, or the keys typed behind a bare Enter.
+    /// ([`Self::hand_deferred_gate_lines_to_waiting_enter`]). #1999 (owner decision 2026-11-11):
+    /// so are the lines typed behind a BARE deferred Enter that is held for an unready shell.
+    /// What reaches this function then is an unfinished line, or the keys typed behind a
+    /// deferred Enter that no gate of the input holds any more.
     ///
     /// `in_mailbox_flush`: called by the pane queue's mailbox flush (a deferred take), which
     /// applies operations in order, so text queued behind a waiting Enter is offered at once
@@ -16297,8 +16299,9 @@ impl TerminalView {
                 // them). Inserted, they became a programmatic edit deferred behind the gate and
                 // were applied by the give-up, i.e. handed back to the editor.
                 //
-                // #1997: keys that contain an Enter never get here while a non-empty line waits
-                // behind that gate. They are handed to it in place before anything is taken
+                // #1997 / #1999: keys that contain an Enter never get here while a line, or a bare
+                // Enter held for an unready shell, waits behind that gate. They are handed to it
+                // in place before anything is taken
                 // out of the queue (`hand_deferred_gate_lines_to_waiting_enter`), so the
                 // `to_pty` branch above cannot write a later line ahead of it.
                 //

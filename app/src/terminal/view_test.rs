@@ -18105,11 +18105,24 @@ fn typeahead_handoff_never_submits_a_fragment_without_the_report() {
     })
 }
 
-/// S2 and #826 N1: the report arrived but its submit wrote no command (the test view is not
-/// bootstrapped). The held shell lines go to the pty at once -- not into the editor, where the
-/// next Enter sent them to the agent.
+/// S2, #826 N1 and #1999: the report arrived but its submit wrote no command (the test view is
+/// not bootstrapped, so the bare deferred Enter is held for the unready shell, #1571). The held
+/// shell lines never go into the editor, where the next Enter sent them to the agent (#826 N1,
+/// still asserted). They wait behind the bare Enter, in place, and its give-up writes the bare
+/// Enter and then the lines, in typed order, once.
+///
+/// Expectation history (owner decision 2026-11-11 on #1999, "typed order is kept behind a bare
+/// Enter too"; a changed decision, not a weakened test): since #826 N1 this test expected
+/// `echo 1` + Enter + `echo 2` + Enter at the pty the moment the report arrived, while the bare
+/// Enter typed BEFORE them was still held and written later (at readiness or at its 60 s net):
+/// an Enter arrived after the lines it was typed before. Now nothing is written while the bare
+/// Enter waits, and the same bytes arrive behind it. The sibling for an unfinished line already
+/// kept this order. With `PHOSPHOR_BARE_ENTER_HOLDS_LINES=0` the old behaviour is back (the rule
+/// with the switch as an argument: `a_bare_enter_held_for_an_unready_shell_holds_the_lines_typed_behind_it`
+/// in `input/enter_queue_tests.rs`).
 #[test]
 fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_nothing() {
+    use crate::terminal::input_queue::GateKind;
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -18131,9 +18144,40 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
                 view.model.lock().typeahead_handoff().state(),
                 &HandoffState::EditorOwned
             );
+            // #1999: the bare Enter is held for the unready shell and the lines typed behind it
+            // wait behind its gate, in place; the deferred Enter's own gate is closed.
+            let input = view.input.as_ref(ctx);
+            assert!(input.unready_enter_gate_open());
+            let queue = view.paste_queue.queue.borrow();
+            assert!(!queue.has_gate_kind(GateKind::HandoffReport));
+            assert_eq!(queue.queued_len(), 1, "the lines still wait, as one entry");
+            assert_eq!(
+                input.enter_gate_held_len_for_test(ctx),
+                1,
+                "behind the bare Enter's own gate"
+            );
         });
+        // Checked after the update, when the write events it emitted have been delivered.
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "the lines must not reach the pty before the bare Enter typed before them: {:?}",
+            pty_writes.borrow()
+        );
 
-        assert_eq!(*pty_writes.borrow(), vec![b"echo 1\recho 2\r".to_vec()]);
+        // The hold's net: the bare Enter, then what was typed after it.
+        terminal.update(&mut app, |view, ctx| {
+            view.input
+                .update(ctx, |input, ctx| input.give_up_unready_enter("test", ctx));
+        });
+        assert_eq!(
+            String::from_utf8_lossy(&pty_writes.borrow().concat()),
+            "\recho 1\recho 2\r",
+            "typed order: the bare Enter first, then the two lines, once"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(view.paste_queue.queue.borrow().is_idle());
+        });
     })
 }
 

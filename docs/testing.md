@@ -1768,8 +1768,9 @@ readiness. Now, when that line is not empty and an Enter is among the held keys,
 a key typed since stays behind them. They end with that gate: delivered in typed order after the line ran (readiness),
 written behind the line and its Enter at the 60 s net, kept with the line when a verdict wait gives up, voided with it
 by ^C. Unchanged: an unfinished line (no Enter among the keys) still queues behind the same gate as text or goes to a
-secret read (#1957); everything typed behind a BARE deferred Enter (an empty line) is still written at once (S2,
-`typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_nothing`). In an appci log:
+secret read (#1957). Changed since (#1999, owner 2026-11-11, see "Round 17, queue 3" at the end): everything typed behind a BARE
+deferred Enter held for the unready shell now waits behind it too (S2,
+`typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_nothing`, expectation changed). In an appci log:
 `hop=held_lines_kept_behind_enter entries=N` is the hand-over; a `hop=held_keys_release` with `enter_held_gate` just before
 it and a non-empty held line is the old bug. Not compiled or run on the authoring machine.
 
@@ -6855,3 +6856,22 @@ What the next run should show: `meta_and_word_keys` with every prompt key `readl
 Ctrl-Y included) and no "emacs bindings" banner in its screenshot; `keybinding_rebind` passing arm C and both Alt-R steps;
 `scroll_keys_foreground` passing its prompt half in both modes; `ui_palette` and `find_basic` unchanged.
 Run: `python3 script/realapp/appci/run.py --cases meta_and_word_keys,keybinding_rebind,scroll_keys_foreground,ui_readline_keys`.
+
+## Round 17, queue 3: #1999, #2000, #1991 (design `docs/design/r10-r17-queue3.md`; owner decisions of 2026-11-11; nothing compiled, no app run when written)
+Kill switches, in `app/src/terminal/input_queue/switches.rs` beside the round 14 ones (read once per process; `0` / `off` / `false` /
+`no` turn the change off; names pinned by `the_switch_names_are_stable`): `PHOSPHOR_BARE_ENTER_HOLDS_LINES` (#1999),
+`PHOSPHOR_KEEP_DEFERRED_ENTER_KEYS_WITH_LINE` (#2000), `PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF` (#1991). A switch is read once, so a
+unit test cannot flip it: each change has a pure function that takes the switch as an argument, and the tests cover both values there.
+- **#1999, lines typed behind a bare deferred Enter wait behind it.** Unit, `terminal/input/enter_queue_tests.rs` (new file):
+  `a_bare_enter_held_for_an_unready_shell_holds_the_lines_typed_behind_it` (`enter_gate_holds_lines_typed_behind` for every row and
+  both switch values: a non-empty line always holds, a bare Enter held for an unready shell holds only with the switch on, a submitted
+  Enter's gate with an empty buffer never). View, `terminal/view_test.rs`:
+  `typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_nothing`, EXPECTATION CHANGED by the owner's decision
+  (not weakened): it expected `echo 1\recho 2\r` at the pty when the report arrived, while the bare Enter typed before them was still
+  held. It now expects nothing at the pty, the lines as one entry behind the bare Enter's own gate (the `HandoffReport` gate closed),
+  and at the hold's give-up `\recho 1\recho 2\r`, once, with the queue idle. Not covered: the readiness path for a bare Enter (the
+  #1997 readiness test covers the release order for a non-empty line; a bare line takes the same `release_unready_enter_gate_after_run`),
+  the switch off in the view. No appci case: the state needs a shell that refuses a command at a prompt (#1572's window), which no
+  case builds; `giveup_keys_reach_shell` reports "no hold gave up" in its runs. Hop to read if it happens:
+  `hop=held_lines_kept_behind_enter entries=N` with `enter_held_gate` just before it.
+
