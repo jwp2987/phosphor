@@ -127,6 +127,44 @@ mod clipboard_tests {
         });
     }
 
+    /// #2139: a read of the primary selection returns the primary selection's text. The text
+    /// read named no selection, so with one text selected and another copied a middle click
+    /// pasted the copied one. Judged only where this display has a primary selection this
+    /// process can write (elsewhere the read falls back to the clipboard by design).
+    #[test]
+    fn a_primary_read_never_returns_the_clipboards_text() {
+        use arboard::{LinuxClipboardKind, SetExtLinux};
+
+        with_test_clipboard(|clipboard| {
+            let copied = "phosphor-2139-copied-text";
+            let selected = "phosphor-2139-selected-text";
+            if clipboard
+                .inner
+                .set()
+                .clipboard(LinuxClipboardKind::Primary)
+                .text(selected)
+                .is_err()
+            {
+                eprintln!("Skipping test - no writable primary selection on this display");
+                return;
+            }
+            clipboard.write(ClipboardContent::plain_text(copied.to_string()));
+            if clipboard.read().plain_text != copied {
+                eprintln!("Skipping test - the clipboard did not keep what was written");
+                return;
+            }
+            let primary = clipboard.read_from_primary_clipboard();
+            assert_ne!(
+                primary.plain_text, copied,
+                "the primary read returned the CLIPBOARD's text"
+            );
+            assert!(
+                primary.images.is_none(),
+                "a primary read attaches no image (the image probe reads the clipboard)"
+            );
+        });
+    }
+
     #[test]
     fn test_empty_content_handling() {
         with_test_clipboard(|clipboard| {
@@ -333,6 +371,55 @@ mod primary_write_tests {
         assert!(!primary_falls_back_from(Some("0")));
         assert!(primary_falls_back_from(Some("1")));
         assert!(primary_falls_back_from(Some(" 1 ")));
+    }
+}
+
+/// #2139: which selection a read takes its text, its pending write and its image from.
+mod primary_read_tests {
+    use super::super::{pending_target_for, probes_images, text_selection_for};
+    use crate::clipboard::ClipboardTarget;
+    use arboard::LinuxClipboardKind;
+
+    #[test]
+    fn the_text_comes_from_the_selection_asked_for() {
+        assert!(matches!(
+            text_selection_for(LinuxClipboardKind::Primary, false),
+            LinuxClipboardKind::Primary
+        ));
+        assert!(matches!(
+            text_selection_for(LinuxClipboardKind::Clipboard, false),
+            LinuxClipboardKind::Clipboard
+        ));
+    }
+
+    #[test]
+    fn the_kill_switch_reads_the_clipboards_text_for_every_selection() {
+        for asked in [LinuxClipboardKind::Primary, LinuxClipboardKind::Clipboard] {
+            assert!(matches!(
+                text_selection_for(asked, true),
+                LinuxClipboardKind::Clipboard
+            ));
+        }
+    }
+
+    #[test]
+    fn a_selection_reads_its_own_pending_write() {
+        assert_eq!(
+            pending_target_for(LinuxClipboardKind::Primary),
+            ClipboardTarget::Primary
+        );
+        assert_eq!(
+            pending_target_for(LinuxClipboardKind::Clipboard),
+            ClipboardTarget::Clipboard
+        );
+    }
+
+    #[test]
+    fn only_a_clipboard_read_probes_for_an_image() {
+        assert!(probes_images(LinuxClipboardKind::Clipboard, true));
+        assert!(!probes_images(LinuxClipboardKind::Clipboard, false));
+        assert!(!probes_images(LinuxClipboardKind::Primary, true));
+        assert!(!probes_images(LinuxClipboardKind::Primary, false));
     }
 }
 

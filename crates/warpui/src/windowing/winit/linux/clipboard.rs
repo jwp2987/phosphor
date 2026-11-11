@@ -175,6 +175,49 @@ fn note_primary_write_dropped() {
     });
 }
 
+/// Environment variable that, set to `1`, restores the pre-#2139 primary read: its text comes from
+/// the normal clipboard whatever selection was asked for.
+const PRIMARY_TEXT_FROM_CLIPBOARD_ENV: &str = "PHOSPHOR_PRIMARY_READS_CLIPBOARD_TEXT";
+
+/// Whether the legacy text source is on: only when the kill switch says `1`.
+fn primary_text_from_clipboard() -> bool {
+    primary_falls_back_from(
+        std::env::var(PRIMARY_TEXT_FROM_CLIPBOARD_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// The selection a read of `asked` takes its text from: the one asked for (#2139).
+///
+/// Until #2139 the text of every read came from the normal clipboard: the text read named no
+/// selection, only the HTML probe did. A middle click (a read of the primary selection) therefore
+/// pasted what the user had last COPIED, not what they had last SELECTED, with copy on select off.
+/// The same line is in upstream at the pin. `legacy` (the kill switch) restores it.
+fn text_selection_for(asked: LinuxClipboardKind, legacy: bool) -> LinuxClipboardKind {
+    if legacy {
+        LinuxClipboardKind::Clipboard
+    } else {
+        asked
+    }
+}
+
+/// The pending-write slot that belongs to a selection (a copy still being written is what a read
+/// of that selection must return, #1307).
+fn pending_target_for(kind: LinuxClipboardKind) -> ClipboardTarget {
+    match kind {
+        LinuxClipboardKind::Primary => ClipboardTarget::Primary,
+        _ => ClipboardTarget::Clipboard,
+    }
+}
+
+/// Whether a read of `kind` also probes for an image. The image probe
+/// (`clipboard_utils::read_images_from_clipboard`) reads the normal clipboard only, so for any
+/// other selection it would attach the clipboard's image to that selection's text (#2139).
+fn probes_images(kind: LinuxClipboardKind, include_images: bool) -> bool {
+    include_images && matches!(kind, LinuxClipboardKind::Clipboard)
+}
+
 /// Availability from a targets query: `Some` when the query answered (the clipboard is non-empty
 /// iff the owner offers text, an image, HTML or a file list), `None` when it failed and the caller
 /// should treat the availability as unknown.
@@ -362,17 +405,26 @@ fn read_text_with_retry(
 
 impl LinuxClipboard {
     /// The one text read every path uses: retries a timed-out read and records in `read_failed`
-    /// whether it ultimately timed out (#1173).
+    /// whether it ultimately timed out (#1173). The text of the normal clipboard.
     fn read_text_retrying(&mut self) -> Result<String, arboard::Error> {
+        self.read_text_retrying_from(LinuxClipboardKind::Clipboard)
+    }
+
+    /// [`Self::read_text_retrying`] for the selection `kind` (#2139: a read of the primary
+    /// selection reads the primary selection's text).
+    fn read_text_retrying_from(
+        &mut self,
+        kind: LinuxClipboardKind,
+    ) -> Result<String, arboard::Error> {
         // A copy still being written is what the user just copied (#1307).
-        if let Some(pending) = crate::clipboard::pending_write(ClipboardTarget::Clipboard) {
+        if let Some(pending) = crate::clipboard::pending_write(pending_target_for(kind)) {
             self.read_failed = false;
             return Ok(pending.plain_text.clone());
         }
         let (result, timed_out) = read_text_with_retry(
             || {
                 let start = Instant::now();
-                let result = self.inner.get().text();
+                let result = self.inner.get().clipboard(kind).text();
                 (result, start.elapsed())
             },
             || std::thread::sleep(TEXT_READ_RETRY_PAUSE),
@@ -603,6 +655,9 @@ impl LinuxClipboard {
                     }
                 }
             }
+            // Nothing is selected anywhere: a middle click then pastes nothing (#2139; before
+            // it the text came from the normal clipboard, so this arm was never reached).
+            Err(arboard::Error::ContentNotAvailable) => ClipboardContent::null_value(),
             Err(err) => {
                 log::warn!("Unable to read from primary clipboard: {err:?}");
                 ClipboardContent::null_value()
@@ -707,18 +762,20 @@ impl LinuxClipboard {
         clipboard_kind: LinuxClipboardKind,
         include_images: bool,
     ) -> Result<ClipboardContent, arboard::Error> {
-        let pending_target = match clipboard_kind {
-            LinuxClipboardKind::Primary => ClipboardTarget::Primary,
-            _ => ClipboardTarget::Clipboard,
-        };
-        if let Some(pending) = crate::clipboard::pending_write(pending_target) {
+        // #2139: the image probe reads the normal clipboard only; another selection has none.
+        let include_images = probes_images(clipboard_kind, include_images);
+        if let Some(pending) = crate::clipboard::pending_write(pending_target_for(clipboard_kind)) {
             let mut content = (*pending).clone();
             if !include_images {
                 content.images = None;
             }
             return Ok(content);
         }
-        let text_result = self.read_text_retrying();
+        // #2139: the text of the selection asked for (it was always the normal clipboard's).
+        let text_result = self.read_text_retrying_from(text_selection_for(
+            clipboard_kind,
+            primary_text_from_clipboard(),
+        ));
         let mut content = ClipboardContent {
             plain_text: text_result.as_ref().map(|s| s.clone()).unwrap_or_default(),
             ..Default::default()

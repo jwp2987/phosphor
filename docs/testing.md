@@ -7853,6 +7853,15 @@ block of `selftest.py` (R8).
   `agent_lrc_no_false_takeover`, `cb_ui_action_latency`, `desktop_notification_agent_question`, `meta_and_word_keys`,
   `upgrade_over_previous`, and the whole agent pass.
 
+## Round 21, Wayland input: five cases of the round 15 targeted run (design `docs/design/r10-r21-wlinput.md`; #2139, #2140, #2141, #2142; nothing compiled, no app run when written)
+
+`app-test-linux-wayland` job 17936839261 (build/r15a `b06800e98`).
+
+- **App side, #2139 (a middle click pastes the PRIMARY selection).** `clipboard_tests.rs` `primary_read_tests` (which selection the text,
+  the pending write and the image come from; the kill switch `PHOSPHOR_PRIMARY_READS_CLIPBOARD_TEXT=1`) and
+  `a_primary_read_never_returns_the_clipboards_text` (a real round trip; it skips where the display has no writable PRIMARY). Real-app
+  proof: `primary_and_middle_click`, `[copy_on_select off]`. Not compiled when written.
+
 ## Round 21: the prompt suggestion is a chip that moves no output row (design `docs/design/r21-chip.md`; #2138, owner decision 2026-11-11; nothing compiled, no app run when written)
 A model's prompt suggestion arrives seconds after the command it is about. It was a banner laid out only while it showed: the input
 grew, the block list moved by the banner's height, and a click meant for the output landed on the banner and started an agent

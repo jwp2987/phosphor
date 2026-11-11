@@ -3646,3 +3646,16 @@ button too (`NativeModalAction::PressSelected`) and the selected button carries 
 alert for this question and is not affected. App case `editor_daily`. Design:
 `docs/design/r10-r19-decide-app.md`.
 <!-- markers: keep:close_question_enter_button keep:space_button_index keep:has_focus_ring keep:the_close_question_is_answered_dont_save_by_tab_then_enter_or_space -->
+
+## Linux: a read of the PRIMARY selection reads PRIMARY's text (a middle click pastes the selection) (#2139) — IMPROVED 2026-11-11
+
+Upstream (identical at `4111d08f9` and `42effe840`, `crates/warpui/src/windowing/winit/linux/clipboard.rs`,
+`read_from_specific_clipboard_inner`) reads the TEXT of every selection with `self.inner.get().text()`, which
+names no selection and so reads CLIPBOARD; only the HTML probe uses `clipboard_kind`. A middle click
+therefore pasted what was last copied, not what was last selected, whenever the two differ (copy on
+select off). The text read now takes the selection asked for and that selection's pending write
+(`text_selection_for`, `pending_target_for`); a PRIMARY read runs no image probe (it reads CLIPBOARD
+only: `probes_images`). Off: `PHOSPHOR_PRIMARY_READS_CLIPBOARD_TEXT=1`. NOT changed: on a display with
+no PRIMARY the read still falls back to CLIPBOARD (see #2081 above). A re-pin must not put the bare
+`.text()` back. App case `primary_and_middle_click`. Design: `docs/design/r10-r21-wlinput.md`.
+<!-- markers: keep:text_selection_for keep:pending_target_for keep:the_text_comes_from_the_selection_asked_for -->
