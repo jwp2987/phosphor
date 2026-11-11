@@ -142,9 +142,67 @@ pub struct AppArgs {
     #[clap(flatten)]
     pub parent: ParentOpts,
 
-    /// URLs to open in Zap.
-    #[arg(hide = true)]
+    /// URLs to open in Zap. An existing file or directory path is accepted too and becomes a
+    /// `file://` URL (#2083); see [`parse_url_or_existing_path`].
+    #[arg(hide = true, value_parser = parse_url_or_existing_path)]
     pub urls: Vec<Url>,
+}
+
+/// Kill switch for #2083: `0` restores the strict parsing (every positional must be a URL).
+pub const CLI_PATH_ARGS_ENV: &str = "PHOSPHOR_CLI_PATH_ARGS";
+
+/// Parses one `[URLS]` positional (#2083). `phosphor notes.txt` used to end with clap's
+/// "relative URL without a base", and on Windows `phosphor.exe C:\dir\notes.txt` parsed as a
+/// URL whose scheme is `c`, which the running instance then refused. A value that names an
+/// EXISTING file or directory is now turned into a `file://` URL (a relative path is taken
+/// against the current directory). Everything else is parsed as a URL exactly as before, so a
+/// mistyped subcommand still gets the same error and no URL changes meaning.
+fn parse_url_or_existing_path(value: &str) -> Result<Url, String> {
+    let paths_allowed = env::var(CLI_PATH_ARGS_ENV).map_or(true, |v| v != "0");
+    let cwd = env::current_dir().ok();
+    url_or_existing_path(value, paths_allowed, cwd.as_deref())
+}
+
+/// The decision of [`parse_url_or_existing_path`], without the process environment.
+fn url_or_existing_path(
+    value: &str,
+    paths_allowed: bool,
+    cwd: Option<&Path>,
+) -> Result<Url, String> {
+    let parsed = Url::parse(value);
+    // A one-letter scheme is a Windows drive letter (`C:\dir\file`), never a URL the app handles.
+    let is_real_url = matches!(&parsed, Ok(url) if url.scheme().len() > 1);
+    if is_real_url || !paths_allowed {
+        return parsed.map_err(|err| err.to_string());
+    }
+    match existing_path_as_file_url(value, cwd) {
+        Some(url) => Ok(url),
+        None => parsed.map_err(|err| err.to_string()),
+    }
+}
+
+/// `file://` URL of `value` when it names an existing file or directory, else `None`.
+#[cfg(not(target_family = "wasm"))]
+fn existing_path_as_file_url(value: &str, cwd: Option<&Path>) -> Option<Url> {
+    if value.is_empty() {
+        return None;
+    }
+    let path = Path::new(value);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd?.join(path)
+    };
+    if !absolute.exists() {
+        return None;
+    }
+    Url::from_file_path(&absolute).ok()
+}
+
+/// wasm has no filesystem paths to open.
+#[cfg(target_family = "wasm")]
+fn existing_path_as_file_url(_value: &str, _cwd: Option<&Path>) -> Option<Url> {
+    None
 }
 
 impl Args {
