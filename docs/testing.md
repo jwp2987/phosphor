@@ -7052,3 +7052,12 @@ What the next run should show: `md_viewer_first_frame` PASS in both modes with a
   (`hop=agent_turn_stuck fault=unsettled_calls`). The oracle is unchanged: no ERROR allowance was added, and `Oracle::tab_closed` is as
   it was. The two paced fuzz tests (`paced_random_sequences_hold_the_invariants`, `..._with_the_allowlist_on`) are the run-level proof:
   they stopped at this case in round 14, so the cases after it in the fixed-seed sample have not been judged yet.
+- **The four question view tests (TEST fault, fixture).** `a_question_shows_its_card_with_no_approval_step_and_a_skip_resolves_it_once`,
+  `autonomy_max_still_waits_for_the_answer`, `cancelling_a_question_resolves_it_once`, `a_question_finishes_only_with_its_cards_answer`
+  queued a question with no stream into a pane with no AI block, which since #1967 is the stuck-turn fault
+  (`fault=blocked_question_without_card`), so the question was cancelled before the test looked. The fixture now mounts the card in the
+  pane as the stream does (`mount_question_card_in_pane`, `AIBlock::show_question_card_for_test`). No assertion was changed or removed;
+  `queue_one_question` additionally asserts the question still waits after the watch's hops.
+- **New, `terminal/view_test.rs`: `a_waiting_question_with_no_card_in_the_pane_is_stopped`.** The pane's half of #1967, which had no
+  test: a question waiting with no card in the pane gets exactly one cancelled result and nothing of the turn stays pending. It logs
+  the `hop=agent_turn_stuck` ERROR line on purpose.

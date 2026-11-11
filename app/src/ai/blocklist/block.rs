@@ -4565,6 +4565,20 @@ impl AIBlock {
         self.ask_user_question_views.contains_key(action_id)
     }
 
+    /// Test-only: mounts the question card for `action_id` in this block exactly as the reply's
+    /// stream does when the tool call arrives (`handle_ask_user_question_stream_update`), for
+    /// a fixture that queues a question without a stream. Without it such a fixture builds the
+    /// state #1967 heals: a question that waits for the user with no card in the pane.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn show_question_card_for_test(
+        &mut self,
+        action_id: &AIAgentActionId,
+        questions: &[AskUserQuestionItem],
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.handle_ask_user_question_stream_update(action_id, questions, ctx);
+    }
+
     /// Test-only (agent fuzzer, invariants I1 and I7): the ids of the actions this block shows a
     /// card for that the user can act on right now. A command / MCP / button card counts only
     /// while the action model has the action blocked (a finished action's card is history, not a
