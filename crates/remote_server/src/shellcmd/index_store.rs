@@ -196,7 +196,7 @@ pub fn drop_other_vectors_command(pwsh: bool, dir: &str, keep: &str) -> String {
     } else {
         format!(
             "cd {} 2>/dev/null || exit 0\n\
-             for f in vectors-*.bin; do [ -f \"$f\" ] && [ \"$f\" != {} ] && rm -f -- \"$f\"; done\n\
+             ls -1A 2>/dev/null | grep '^vectors-.*\\.bin$' | while IFS= read -r f; do [ -f \"$f\" ] && [ \"$f\" != {} ] && rm -f -- \"$f\"; done\n\
              exit 0",
             sh_quote(dir),
             sh_quote(keep)
@@ -215,7 +215,7 @@ pub fn list_vectors_command(pwsh: bool, dir: &str) -> String {
     } else {
         format!(
             "cd {} 2>/dev/null || exit 0\n\
-             for n in vectors-*.bin; do\n\
+             ls -1A 2>/dev/null | grep '^vectors-.*\\.bin$' | while IFS= read -r n; do\n\
              [ -f \"$n\" ] || continue\n\
              s=$(wc -c < \"$n\" | tr -d ' \\t')\n\
              m=$( (stat -c %Y -- \"$n\" 2>/dev/null || stat -f %m -- \"$n\" 2>/dev/null || echo 0) | head -n 1)\n\
