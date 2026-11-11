@@ -287,3 +287,16 @@ fn test_clear_selection_when_editor_removed() {
         });
     });
 }
+
+/// #2100: the invalid-regex line holds the typed query, and the error that quotes it, only with
+/// the text opt-in and never during a secret read.
+#[test]
+fn the_invalid_regex_line_withholds_the_query_and_the_error() {
+    let err = "regex parse error: (hunter2pw: unclosed group";
+    let line = |shown| super::invalid_search_regex_line("(hunter2pw", &err, shown);
+    assert_eq!(
+        line(warpui::input_order::TextShown::fixed(false, false)),
+        "Invalid regex in search query: <10 chars> - <45 chars>"
+    );
+    warpui::input_order::assert_line_withholds(line, &["hunter2pw", "unclosed"]);
+}

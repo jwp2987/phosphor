@@ -1551,3 +1551,16 @@ fn ran_before_follows_the_newest_recorded_exit_code() {
         });
     });
 }
+
+/// #2100: the start-up line gives the number of persisted commands; their text is in it only
+/// with the text opt-in and never during a secret read.
+#[test]
+fn the_history_created_line_withholds_the_persisted_commands() {
+    let commands = ["export TOKEN=hunter2pw", "ls"];
+    let line = |shown| super::history_created_line(&commands, shown);
+    assert_eq!(
+        line(warpui::input_order::TextShown::fixed(false, false)),
+        "Creating new History model with 2 persisted commands <32 chars>"
+    );
+    warpui::input_order::assert_line_withholds(line, &["hunter2pw", "TOKEN"]);
+}

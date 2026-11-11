@@ -2275,3 +2275,62 @@ fn osc_777_body_helper_joins_and_trims() {
     let parts: [&[u8]; 3] = [b" a", b"b\xff", b"c "];
     assert_eq!(osc_777_body(&parts), "a;b\u{fffd};c");
 }
+
+/// #2100: the hook payload and decode error lines hold the payload only with the text opt-in and
+/// never during a secret read.
+mod log_lines_withhold_text {
+    use warpui::input_order::{TextShown, assert_line_withholds};
+
+    use super::super::log_lines;
+
+    const JSON: &str = r#"{"hook":"InputBuffer","value":{"buffer":"mysql -phunter2pw"}}"#;
+
+    #[test]
+    fn the_payload_lines() {
+        // The three shapes logged: a string, a `from_utf8` result, a `to_string` result.
+        let decoded = std::str::from_utf8(JSON.as_bytes());
+        let serialized: Result<String, String> = Ok(JSON.to_string());
+        let hidden = TextShown::fixed(false, false);
+        let quoted_chars = format!("{JSON:?}").chars().count();
+        assert_eq!(
+            log_lines::payload("Received DCS string with JSON payload", JSON, hidden),
+            format!("Received DCS string with JSON payload: <{quoted_chars} chars>")
+        );
+        assert!(
+            log_lines::payload("Decoded payload string", &decoded, hidden)
+                .starts_with("Decoded payload string: Ok<")
+        );
+        for what in [
+            "Decoded payload string",
+            "Received DCS string with JSON payload",
+            "Received Phosphor OSC string for shell hook with JSON payload",
+        ] {
+            assert_line_withholds(
+                |shown| log_lines::payload(what, JSON, shown),
+                &["hunter2pw"],
+            );
+            assert_line_withholds(
+                |shown| log_lines::payload(what, &decoded, shown),
+                &["hunter2pw"],
+            );
+            assert_line_withholds(
+                |shown| log_lines::payload(what, &serialized, shown),
+                &["hunter2pw"],
+            );
+        }
+    }
+
+    #[test]
+    fn the_hook_error_lines() {
+        let error = serde_json::from_str::<u8>(r#""hunter2pw""#).unwrap_err();
+        for what in [
+            "Error when deserializing escape sequence data",
+            "Error when decoding payload",
+        ] {
+            let line = |shown| log_lines::hook_error(what, &error, shown);
+            let hidden = line(TextShown::fixed(false, false));
+            assert!(hidden.starts_with(&format!("{what}: Error<")), "{hidden}");
+            assert_line_withholds(line, &["hunter2pw"]);
+        }
+    }
+}

@@ -129,3 +129,15 @@ fn find_state_hop_detail_format_is_pinned() {
         "event=next count=0 focused=none scanning=true"
     );
 }
+
+/// #2100: the async find's start line holds the typed query only with the text opt-in and never
+/// during a secret read.
+#[test]
+fn the_async_find_start_line_withholds_the_query() {
+    let line = |shown| super::async_find_start_line(Some("hunter2pw"), shown);
+    assert_eq!(
+        line(warpui::input_order::TextShown::fixed(false, false)),
+        "[async_find] Starting async find with query: Some(<9 chars>)"
+    );
+    warpui::input_order::assert_line_withholds(line, &["hunter2pw"]);
+}

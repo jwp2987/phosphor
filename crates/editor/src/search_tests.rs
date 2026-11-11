@@ -245,3 +245,18 @@ fn searcher(
 ) -> ModelHandle<Searcher> {
     app.add_model(|ctx| Searcher::new(buffer, selection, ctx))
 }
+
+/// #2100: the search failure warning holds the error (a regex error quotes the typed pattern)
+/// only with the text opt-in and never during a secret read.
+#[test]
+fn the_search_failed_line_withholds_the_error() {
+    use warpui::input_order::{TextShown, assert_line_withholds};
+
+    let err = anyhow::anyhow!("regex parse error: (hunter2pw: unclosed group");
+    let line = |shown| super::search_failed_line(&err, shown);
+    assert_eq!(
+        line(TextShown::fixed(false, false)),
+        "Search failed: <45 chars>"
+    );
+    assert_line_withholds(line, &["hunter2pw"]);
+}

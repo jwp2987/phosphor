@@ -4121,12 +4121,16 @@ impl BlocklistAIController {
                 }
             }
             log::info!(
-                "[byop-diag] LRC running_command filled: {filled_count}/{total_inputs} \
-                 UserQuery slot(s); should_spawn={} grid_contents_len={} command={:?} is_alt_screen={}",
-                request_params.lrc_should_spawn_subagent,
-                running_command.grid_contents.len(),
-                running_command.command,
-                running_command.is_alt_screen_active
+                "{}",
+                lrc_running_command_filled_line(
+                    filled_count,
+                    total_inputs,
+                    request_params.lrc_should_spawn_subagent,
+                    running_command.grid_contents.len(),
+                    &running_command.command,
+                    running_command.is_alt_screen_active,
+                    warpui::input_order::TextShown::sample(),
+                )
             );
         } else {
             log::warn!(
@@ -7247,6 +7251,26 @@ fn charge_skill_resolution_resume(spent: &mut u8) -> bool {
     }
     *spent += 1;
     true
+}
+
+/// The `[byop-diag] LRC running_command filled` line (#2100). It is an info line, so it is in
+/// every log: the running command's line follows the input-order text rule (its length by
+/// default), the rest are counts and flags.
+fn lrc_running_command_filled_line(
+    filled_count: usize,
+    total_inputs: usize,
+    should_spawn: bool,
+    grid_contents_len: usize,
+    command: &str,
+    is_alt_screen_active: bool,
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!(
+        "[byop-diag] LRC running_command filled: {filled_count}/{total_inputs} \
+         UserQuery slot(s); should_spawn={should_spawn} grid_contents_len={grid_contents_len} \
+         command={} is_alt_screen={is_alt_screen_active}",
+        shown.text(command)
+    )
 }
 
 fn byop_get_running_command_for_lrc(terminal_model: &TerminalModel) -> Option<RunningCommand> {

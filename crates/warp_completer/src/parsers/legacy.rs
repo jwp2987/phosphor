@@ -71,6 +71,15 @@ pub(super) fn parse_command(
     }
 }
 
+/// The debug line of [`parse_internal_command`] (#2100): the command is the words of the buffer
+/// being completed, so its dump follows the input-order text rule (its length by default).
+fn parsing_internal_command_line(
+    lite_cmd: &dyn std::fmt::Debug,
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!("parsing internal command {}", shown.debug(lite_cmd))
+}
+
 /// Does a full parse of an internal command using the lite-ly parse command as a starting point
 /// This main focus at this level is to understand what flags were passed in, what positional
 /// arguments were passed in, what rest arguments were passed in and to ensure that the basic
@@ -80,7 +89,10 @@ fn parse_internal_command(
     signature: &Signature,
     mut idx: usize,
 ) -> (ShellCommand, Option<ParseError>) {
-    log::debug!("parsing internal command {lite_cmd:?}");
+    log::debug!(
+        "{}",
+        parsing_internal_command_line(lite_cmd, warpui::input_order::TextShown::sample())
+    );
 
     // This is a known internal command, so we need to work with the arguments and parse them according to the expected types
     let (name, name_span) = (
@@ -462,3 +474,7 @@ fn get_flag_signature_spec<'a>(
 
     (output, error)
 }
+
+#[cfg(test)]
+#[path = "legacy_tests.rs"]
+mod tests;

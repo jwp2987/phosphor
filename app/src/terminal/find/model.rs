@@ -563,8 +563,11 @@ impl TerminalFindModel {
         // Use async find if the feature flag is enabled.
         if let Some(controller) = &mut self.async_find_controller {
             log::trace!(
-                "[async_find] Starting async find with query: {:?}",
-                options.query
+                "{}",
+                async_find_start_line(
+                    options.query.as_ref().map(|query| query.as_str()),
+                    warpui::input_order::TextShown::sample()
+                )
             );
             controller.start_find(&options, block_sort_direction, ctx);
             // Claim nothing about the active block: the run's initial queue
@@ -1060,6 +1063,15 @@ impl std::fmt::Debug for TerminalFindModel {
             .field("results_revision", &self.results_revision)
             .finish()
     }
+}
+
+/// The trace line of an async find's start (#2100): the typed query follows the input-order
+/// text rule.
+fn async_find_start_line(query: Option<&str>, shown: warpui::input_order::TextShown) -> String {
+    format!(
+        "[async_find] Starting async find with query: {}",
+        shown.opt_text(query)
+    )
 }
 
 #[cfg(test)]

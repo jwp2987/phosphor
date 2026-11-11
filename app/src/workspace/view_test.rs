@@ -8317,3 +8317,15 @@ fn a_second_multiline_dialog_ask_is_refused_and_only_the_asker_dismisses_it() {
         });
     });
 }
+
+/// #2100: the worktree sidecar line holds the typed search query only with the text opt-in and
+/// never during a secret read.
+#[test]
+fn the_worktree_sidecar_line_withholds_the_query() {
+    let line = |shown| super::worktree_sidecar_configured_line(1, "hunter2pw", 3, shown);
+    assert_eq!(
+        line(warpui::input_order::TextShown::fixed(false, false)),
+        "Configuring worktree sidecar: hovered_index=1, query=<9 chars>, repo_count=3"
+    );
+    warpui::input_order::assert_line_withholds(line, &["hunter2pw"]);
+}

@@ -176,7 +176,10 @@ fn compute_find_matches(text: &str, options: &FindOptions) -> Vec<Range<usize>> 
             .case_insensitive(!options.is_case_sensitive)
             .build()
         else {
-            log::warn!("Attempted to run find on AI block with invalid regex: {query}");
+            log::warn!(
+                "{}",
+                invalid_find_regex_line(query.as_str(), warpui::input_order::TextShown::sample())
+            );
             return vec![];
         };
         regex
@@ -214,6 +217,15 @@ fn compute_find_matches(text: &str, options: &FindOptions) -> Vec<Range<usize>> 
             })
             .collect_vec()
     }
+}
+
+/// The warning for a find query that is not a regex (#2100): the typed query follows the
+/// input-order text rule.
+fn invalid_find_regex_line(query: &str, shown: warpui::input_order::TextShown) -> String {
+    format!(
+        "Attempted to run find on AI block with invalid regex: {}",
+        shown.text(query)
+    )
 }
 
 #[cfg(test)]

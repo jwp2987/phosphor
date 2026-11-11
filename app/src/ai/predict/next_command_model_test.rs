@@ -707,3 +707,91 @@ fn a_generator_validation_that_gave_up_does_not_validate_the_arg() {
     // The give-up is a hang net, well above any generator that answers.
     assert!(ARG_GENERATOR_VALIDATION_TIMEOUT >= Duration::from_secs(20));
 }
+
+/// #2100: every line of this file that names a command, an argument or the typed prefix holds
+/// that text only with the text opt-in and never during a secret read.
+mod log_lines_withhold_text {
+    use std::time::Duration;
+
+    use warpui::input_order::{TextShown, assert_line_withholds};
+
+    use super::super::log_lines;
+
+    const COMMAND: &str = "mysql -phunter2pw";
+    const PREFIX: &str = "mysql -phun";
+
+    #[test]
+    fn the_byop_prefix_mismatch_line() {
+        let line = |shown| log_lines::byop_prefix_mismatch(COMMAND, PREFIX, shown);
+        assert_eq!(
+            line(TextShown::fixed(false, false)),
+            "[byop next_command] response <17 chars> does not start with prefix <11 chars>; dropping"
+        );
+        assert_line_withholds(line, &["hunter2pw", "-phun"]);
+    }
+
+    #[test]
+    fn the_generator_gave_up_line() {
+        let line = |shown| {
+            log_lines::generator_validation_gave_up(
+                "-phunter2pw",
+                COMMAND,
+                Duration::from_secs(25),
+                shown,
+            )
+        };
+        assert_eq!(
+            line(TextShown::fixed(false, false)),
+            "Generator validation for arg <11 chars> in command <17 chars> gave up after 25s; \
+             not treating the arg as valid"
+        );
+        assert_line_withholds(line, &["hunter2pw", "mysql"]);
+    }
+
+    #[test]
+    fn the_discarded_history_command_line() {
+        let line = |shown| log_lines::discarded_history_command(COMMAND, shown);
+        assert!(line(TextShown::fixed(false, false)).ends_with("validation: <17 chars>"));
+        assert_line_withholds(line, &["hunter2pw", "mysql"]);
+    }
+
+    #[test]
+    fn the_suggestion_prefix_mismatch_line() {
+        let line = |shown| log_lines::suggestion_prefix_mismatch(COMMAND, PREFIX, shown);
+        assert_eq!(
+            line(TextShown::fixed(false, false)),
+            "Next command suggestion <17 chars> does not start with prefix <11 chars>."
+        );
+        assert_line_withholds(line, &["hunter2pw", "-phun"]);
+    }
+
+    #[test]
+    fn the_arg_failed_validation_line() {
+        let line = |shown| log_lines::arg_failed_validation("-phunter2pw", COMMAND, shown);
+        assert_eq!(
+            line(TextShown::fixed(false, false)),
+            "arg <11 chars> in command <17 chars> failed validation"
+        );
+        assert_line_withholds(line, &["hunter2pw", "mysql"]);
+    }
+
+    #[test]
+    fn the_assumed_valid_line() {
+        #[derive(Debug)]
+        struct ParseError {
+            _token: &'static str,
+        }
+        let error = ParseError {
+            _token: "-phunter2pw",
+        };
+        let line = |shown| log_lines::assumed_valid_on_parse_error(COMMAND, &error, shown);
+        let hidden = line(TextShown::fixed(false, false));
+        assert!(
+            hidden.starts_with(
+                "Assuming command <17 chars> is valid because it failed to parse: ParseError<"
+            ),
+            "{hidden}"
+        );
+        assert_line_withholds(line, &["hunter2pw", "mysql"]);
+    }
+}

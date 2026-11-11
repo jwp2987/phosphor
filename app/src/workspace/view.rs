@@ -9896,8 +9896,13 @@ impl Workspace {
         let items = self.build_worktree_sidecar_items(ctx);
         let repo_count = items.len().saturating_sub(1);
         log::info!(
-            "Configuring worktree sidecar: hovered_index={hovered_index}, query={:?}, repo_count={repo_count}",
-            self.worktree_sidecar_search_query
+            "{}",
+            worktree_sidecar_configured_line(
+                hovered_index,
+                &self.worktree_sidecar_search_query,
+                repo_count,
+                warpui::input_order::TextShown::sample()
+            )
         );
         let add_repo_mouse_state = self.new_session_sidecar_add_repo_mouse_state.clone();
 
@@ -26942,6 +26947,20 @@ fn render_cross_window_ghost_chip(
     } else {
         ConstrainedBox::new(chip).with_max_width(200.).finish()
     }
+}
+
+/// The info line for the worktree sidecar (#2100): the typed search query follows the
+/// input-order text rule.
+fn worktree_sidecar_configured_line(
+    hovered_index: usize,
+    query: &str,
+    repo_count: usize,
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!(
+        "Configuring worktree sidecar: hovered_index={hovered_index}, query={}, repo_count={repo_count}",
+        shown.text(query)
+    )
 }
 
 fn compute_default_panel_widths(

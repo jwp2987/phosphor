@@ -17,6 +17,15 @@ use crate::{
 };
 use string_offset::CharOffset;
 
+/// The warning for a search that could not be built (#2100): a regex error prints the pattern
+/// it rejects, which is the typed query, so the error follows the input-order text rule.
+fn search_failed_line<T: std::fmt::Debug + ?Sized>(
+    err: &T,
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!("Search failed: {}", shown.debug(err))
+}
+
 #[cfg(test)]
 #[path = "search_tests.rs"]
 mod tests;
@@ -341,7 +350,10 @@ impl Searcher {
                         ctx.emit(SearchEvent::Updated);
                     }
                     Err(err) => {
-                        log::warn!("Search failed: {err:?}");
+                        log::warn!(
+                            "{}",
+                            search_failed_line(&err, warpui::input_order::TextShown::sample())
+                        );
                         // If the search fails, clear all existing results until the next successful query.
                         me.reset_results(ctx);
                         ctx.emit(SearchEvent::Updated);

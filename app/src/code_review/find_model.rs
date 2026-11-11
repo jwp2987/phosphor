@@ -334,9 +334,12 @@ impl CodeReviewFindModel {
                 Err(err) => {
                     // This should be a user regex error (BuildError from invalid syntax, etc)
                     log::info!(
-                        "Invalid regex in search query: {} - {}",
-                        self.query_text,
-                        err
+                        "{}",
+                        invalid_search_regex_line(
+                            &self.query_text,
+                            &err,
+                            warpui::input_order::TextShown::sample()
+                        )
                     );
                     self.results = None;
                     self.selected_match = None;
@@ -401,6 +404,20 @@ impl FindModel for CodeReviewFindModel {
 
 impl Entity for CodeReviewFindModel {
     type Event = FindEvent;
+}
+
+/// The info line for a code-review search query that is not a regex (#2100). The query and
+/// the error follow the input-order text rule: a regex error prints the pattern it rejects.
+fn invalid_search_regex_line(
+    query: &str,
+    err: &dyn std::fmt::Display,
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!(
+        "Invalid regex in search query: {} - {}",
+        shown.text(query),
+        shown.display(err)
+    )
 }
 
 #[cfg(test)]

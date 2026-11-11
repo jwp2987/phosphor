@@ -991,8 +991,12 @@ impl PromptDetector {
             ForegroundTtyRead::Reading => {
                 self.interactive_latched = true;
                 log::info!(
-                    "interactive prompt {:?} unchanged for {quiet_for:?}, foreground reading the tty; handing the command to the user",
-                    self.last_candidate.as_ref().map(|c| c.text.as_str())
+                    "{}",
+                    log_lines::handed_to_user(
+                        self.last_candidate.as_ref().map(|c| c.text.as_str()),
+                        quiet_for,
+                        warpui::input_order::TextShown::sample()
+                    )
                 );
                 Some(PromptDetection::Interactive)
             }
@@ -1005,9 +1009,12 @@ impl PromptDetector {
                 }
                 self.may_be_waiting_noticed = true;
                 log::info!(
-                    "prompt-shaped line {:?} unchanged for {quiet_for:?}, tty read unknown; \
-                     showing a take-over notice (the command stays with the agent)",
-                    self.last_candidate.as_ref().map(|c| c.text.as_str())
+                    "{}",
+                    log_lines::take_over_notice(
+                        self.last_candidate.as_ref().map(|c| c.text.as_str()),
+                        quiet_for,
+                        warpui::input_order::TextShown::sample()
+                    )
                 );
                 Some(PromptDetection::MayBeWaiting)
             }
@@ -1019,8 +1026,13 @@ impl PromptDetector {
                         "whether the foreground reads the tty is unknown"
                     };
                     log::info!(
-                        "prompt-shaped line {:?} unchanged for {quiet_for:?}, but {what}; leaving the command with the agent",
-                        self.last_candidate.as_ref().map(|c| c.text.as_str())
+                        "{}",
+                        log_lines::left_with_agent(
+                            self.last_candidate.as_ref().map(|c| c.text.as_str()),
+                            quiet_for,
+                            what,
+                            warpui::input_order::TextShown::sample()
+                        )
                     );
                 }
                 self.awaiting_tty_read = Some(verdict);
@@ -1175,3 +1187,57 @@ impl FullscreenStallDetector {
         Some(FullscreenStall::MayBeWaiting)
     }
 }
+
+/// The prompt detector's three info lines (#2100). Each quoted the cursor line of an
+/// agent-driven command's output, which holds whatever the command printed there and any input
+/// echoed after it. They are info lines, so they are in every log: the line's text follows the
+/// input-order text rule (its length by default, the text only with
+/// `WARP_INPUT_ORDER_LOG_TEXT=1`, never while a secret is being read). The words the harness
+/// matches (`handing the command to the user`, `showing a take-over notice`, `leaving the
+/// command with the agent`; script/realapp/appci/cases_caseagent.py) are outside the text.
+mod log_lines {
+    use std::time::Duration;
+
+    use warpui::input_order::TextShown;
+
+    pub(super) fn handed_to_user(
+        line: Option<&str>,
+        quiet_for: Duration,
+        shown: TextShown,
+    ) -> String {
+        format!(
+            "interactive prompt {} unchanged for {quiet_for:?}, foreground reading the tty; \
+             handing the command to the user",
+            shown.opt_text(line)
+        )
+    }
+
+    pub(super) fn take_over_notice(
+        line: Option<&str>,
+        quiet_for: Duration,
+        shown: TextShown,
+    ) -> String {
+        format!(
+            "prompt-shaped line {} unchanged for {quiet_for:?}, tty read unknown; showing a \
+             take-over notice (the command stays with the agent)",
+            shown.opt_text(line)
+        )
+    }
+
+    pub(super) fn left_with_agent(
+        line: Option<&str>,
+        quiet_for: Duration,
+        what: &str,
+        shown: TextShown,
+    ) -> String {
+        format!(
+            "prompt-shaped line {} unchanged for {quiet_for:?}, but {what}; leaving the command \
+             with the agent",
+            shown.opt_text(line)
+        )
+    }
+}
+
+#[cfg(test)]
+#[path = "interaction_mode_tests.rs"]
+mod tests;

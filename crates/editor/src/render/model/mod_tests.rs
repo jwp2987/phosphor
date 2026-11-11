@@ -2238,3 +2238,22 @@ fn test_paragraph_hydrate_reports_height_change() {
     assert!(paragraph.hydrate(taller));
     assert_eq!(paragraph.metrics().lines, 2);
 }
+
+/// #2100: the pending edit's trace line holds the laid-out text only with the text opt-in and
+/// never during a secret read.
+#[test]
+fn the_incoming_block_replacements_line_withholds_the_text() {
+    use warpui::input_order::{TextShown, assert_line_withholds};
+
+    #[derive(Debug)]
+    struct Paragraph {
+        _text: &'static str,
+    }
+    let blocks = vec![Paragraph { _text: "hunter2pw" }];
+    let line = |shown| super::incoming_block_replacements_line(&blocks, shown);
+    assert_eq!(
+        line(TextShown::fixed(false, false)),
+        "Incoming block replacements <34 chars>"
+    );
+    assert_line_withholds(line, &["hunter2pw"]);
+}

@@ -624,9 +624,29 @@ impl Entity for History {
 
 impl SingletonEntity for History {}
 
+/// The start-up line of the history model (#2100): how many persisted commands it was given,
+/// and their dump only under the input-order text rule (they are every command line the user
+/// ran).
+fn history_created_line<T: std::fmt::Debug>(
+    persisted_commands: &[T],
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!(
+        "Creating new History model with {} persisted commands {}",
+        persisted_commands.len(),
+        shown.debug(persisted_commands)
+    )
+}
+
 impl History {
     pub fn new(persisted_commands: Vec<PersistedCommand>) -> Self {
-        log::debug!("Creating new History model with persisted commands {persisted_commands:?}");
+        log::debug!(
+            "{}",
+            history_created_line(
+                &persisted_commands,
+                warpui::input_order::TextShown::sample()
+            )
+        );
         let mut persisted_commands_summary =
             HashMap::<ShellHost, HashSet<CommandHistorySummary>>::new();
 

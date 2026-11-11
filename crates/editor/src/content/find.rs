@@ -36,6 +36,24 @@ use super::{
     text::{BufferSummary, BufferText},
 };
 
+/// The trace line of a search engine's build (#2100): the config holds the typed query, so its
+/// dump follows the input-order text rule (its name and a length by default).
+fn compiling_line<T: std::fmt::Debug + ?Sized>(
+    config: &T,
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!("Compiling {}", shown.debug(config))
+}
+
+/// The trace line of each buffer item a search walks (#2100): the item is the editor's text.
+fn advancing_line<T: std::fmt::Debug + ?Sized>(
+    item: &T,
+    at: &dyn std::fmt::Display,
+    shown: warpui::input_order::TextShown,
+) -> String {
+    format!("Advancing state machine by {} @ {at}", shown.debug(item))
+}
+
 #[cfg(test)]
 #[path = "find_tests.rs"]
 mod tests;
@@ -148,7 +166,10 @@ struct Engine {
 
 impl Engine {
     fn new(config: &SearchConfig) -> Result<Self, Box<BuildError>> {
-        log::trace!("Compiling {config:?}");
+        log::trace!(
+            "{}",
+            compiling_line(config, warpui::input_order::TextShown::sample())
+        );
         let mut builder = DFA::builder();
         builder
             .syntax(
@@ -294,7 +315,10 @@ impl Engine {
 
         'items: while let Some(item) = cursor.item() {
             let start_char = cursor.start().text.chars;
-            log::trace!("Advancing state machine by {item:?} @ {start_char}");
+            log::trace!(
+                "{}",
+                advancing_line(item, &start_char, warpui::input_order::TextShown::sample())
+            );
             match item {
                 BufferText::Text { .. } => {
                     if skip_hidden

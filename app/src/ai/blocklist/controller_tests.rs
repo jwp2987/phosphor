@@ -3741,3 +3741,18 @@ mod stashed_prompt {
         assert_eq!(input, "");
     }
 }
+
+/// #2100: the LRC diag line is an info line; the running command's text is in it only with the
+/// text opt-in and never during a secret read.
+#[test]
+fn the_lrc_running_command_line_withholds_the_command() {
+    let line = |shown| {
+        super::lrc_running_command_filled_line(1, 2, true, 640, "mysql -phunter2pw", false, shown)
+    };
+    assert_eq!(
+        line(warpui::input_order::TextShown::fixed(false, false)),
+        "[byop-diag] LRC running_command filled: 1/2 UserQuery slot(s); should_spawn=true \
+         grid_contents_len=640 command=<17 chars> is_alt_screen=false"
+    );
+    warpui::input_order::assert_line_withholds(line, &["hunter2pw", "mysql"]);
+}
