@@ -529,8 +529,11 @@ def c_find_basic(ctx, r):
 REOPEN_KEY = os.environ.get("APPCI_KEY_REOPEN", "ctrl+alt+t")          # app/src/util/bindings.rs ReopenClosedSession on Linux and Windows
 CLOSE_WARNING_LINE = "Displaying unsaved changes warning for pane"     # app/src/pane_group/mod.rs close_pane_with_confirmation (log::info!)
 UNDO_GRACE_S = 60.0                                                    # general.undo_close.grace_period: a closed tab's shell lives this long
-NO_UNDO_MAC = ("macOS: the harness has no usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and the close "
-               "confirmation is a native system dialog the harness cannot answer; runs here once the macOS backend has both (T32)")
+MAC_REOPEN_KEY = "cmd+shift+t"                                         # ReopenClosedSession on macOS
+
+
+def reopen_key(ctx):
+    return os.environ.get("APPCI_KEY_REOPEN") or (MAC_REOPEN_KEY if U.mac(ctx) else REOPEN_KEY)
 
 
 def tl_pwd_cmd(ctx, path):
@@ -656,10 +659,12 @@ def c_tab_lifecycle_keys(ctx, r):
     (still beating); the close key again and Enter closes the tab, and the loop is gone: no beat after the undo-close window (60 s) and, on POSIX,
     the tab's shell pid no longer exists. (2) A second tab, in its own directory, one command; the close key (nothing runs, no question), the undo
     key: the tab is back in its directory, its command did not run again, and the shell's record holds only the typed lines."""
-    if U.mac(ctx):
-        r.skip(NO_UNDO_MAC)
-    if not R.CLOSE_PANE:
-        r.skip(R.NO_CLOSE_WHY)
+    # macOS (#2061, r14-test-gaps T32): the close key is Cmd-W, sent to the app under test only (R.close_key -> MacBackend.app_chord); the question is
+    # a native alert of the app's own process (NSAlert: Escape = Cancel, Return = the first button, 'Yes, close'), so the same two answers apply
+    close = R.close_key(ctx)
+    if not close:
+        r.skip("%s%s" % (R.NO_CLOSE_WHY, (": " + R.mac_chords_why_not(ctx)) if U.mac(ctx) else ""))
+    undo = reopen_key(ctx)
     shell = ctx.pane_shell()
     if shell == "cmd":
         r.skip("cmd.exe pane: no record of the received line and no loop in one line; the PowerShell and Git Bash panes run this case")
@@ -696,7 +701,7 @@ def c_tab_lifecycle_keys(ctx, r):
             pid = int(m.group(1)) if m else None
         off = ctx.log_size()
         ctx.be.guard()
-        ctx.be.key(R.CLOSE_PANE)
+        ctx.be.key(close)
         asked = bool(ctx.until(lambda: CLOSE_WARNING_LINE in ctx.log_since(off), 4))
         ctx.shot("tab_lifecycle_dialog")
         warn = CA.setting_bool(ctx, "show_warning_before_quitting")
@@ -725,7 +730,7 @@ def c_tab_lifecycle_keys(ctx, r):
             r.check(n == n0 + 1, "after Escape on the close question the window has %s tab(s), expected %d" % (n, n0 + 1))
         off = ctx.log_size()
         ctx.be.guard()
-        ctx.be.key(R.CLOSE_PANE)
+        ctx.be.key(close)
         if not r.check(bool(ctx.until(lambda: CLOSE_WARNING_LINE in ctx.log_since(off), 4)), "the second close key did not ask again (no %r line within 4 s); Enter was NOT sent" % CLOSE_WARNING_LINE):
             R.touch(ctx, stop)
             return
@@ -745,18 +750,18 @@ def c_tab_lifecycle_keys(ctx, r):
         r.check(ctx.lines(eff) == [tok3], "the tab's command wrote %r, expected [%r]" % (ctx.lines(eff), tok3))
         off = ctx.log_size()
         ctx.be.guard()
-        ctx.be.key(R.CLOSE_PANE)
+        ctx.be.key(close)
         time.sleep(1.2)
         opened -= 1
         r.check(CLOSE_WARNING_LINE not in ctx.log_since(off), "the close key asked about a tab with nothing running")
         r.check(t.where() == home, "after the close key the pane that has the keyboard is not the first tab (cwd probe): the tab did not close")
         ctx.be.guard()
-        ctx.be.key(REOPEN_KEY)
+        ctx.be.key(undo)
         time.sleep(1.5)
         back = t.where()
         opened += 1 if back == R.norm_path(d3) else 0
         r.check(back == R.norm_path(d3), "after the undo key (%s) the pane that has the keyboard is in %r, expected the closed tab's directory %r%s" % (
-            REOPEN_KEY, back, R.norm_path(d3), " (the tab that ran the loop came back instead)" if back == R.norm_path(d2) else ""))
+            undo, back, R.norm_path(d3), " (the tab that ran the loop came back instead)" if back == R.norm_path(d2) else ""))
         if n0 is not None:
             n = t.count()
             r.check(n == n0 + 1, "after the undo key the window has %s tab(s), expected %d" % (n, n0 + 1))
@@ -765,7 +770,7 @@ def c_tab_lifecycle_keys(ctx, r):
         t.received_ok()
         if back == R.norm_path(d3):
             ctx.be.guard()
-            ctx.be.key(R.CLOSE_PANE)                  # the case leaves one tab
+            ctx.be.key(close)                  # the case leaves one tab
             opened -= 1
             time.sleep(1.0)
         # ---- (1, end) the loop is gone once the undo window is over
@@ -787,7 +792,7 @@ def c_tab_lifecycle_keys(ctx, r):
             if n is None or n <= 1 or (n0 is not None and n <= n0):
                 break
             off = ctx.log_size()
-            ctx.be.key(R.CLOSE_PANE)
+            ctx.be.key(close)
             time.sleep(1.0)
             if CLOSE_WARNING_LINE in ctx.log_since(off):      # the close asked (the loop did not stop yet): confirm it
                 ctx.be.key("Return")

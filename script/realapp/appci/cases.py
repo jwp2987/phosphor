@@ -115,6 +115,8 @@ PROVING = (
     # round 14 wave 3a (docs/design/r14-test-gaps.md 7.1, T21 to T25): pointer and pane cases. Linux pointer for the first four (macOS and Windows SKIP
     # naming the missing pointer tool); pane_resize_maximize also runs on macOS by keyboard
     "link_and_path_click", "selection_modes", "primary_and_middle_click", "wheel_scroll", "pane_resize_maximize",
+    # round 15 wave 4, macOS harness (#2061, r14-test-gaps T32; cases_macptr.py): the Mac pointer tool and the app-only chords proven on the machine
+    "mac_pointer_chord_proof",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -6477,3 +6479,4 @@ import cases_agent_w2  # noqa: E402,F401  (round 14 wave 2, T11-T15: agent_model
 import cases_r14_state  # noqa: E402,F401  (round 14 wave 2b, T16-T20: agent_hidden_tab_attention, settings_ui_toggle_persists, osc52_write_read, history_survives_restart, restore_shows_history)
 import cases_window_use  # noqa: E402,F401  (r14 wave 3, T26-T30: resize_reflow_output, context_menu_actions, tab_pointer_use, focus_cycle, minimize_fullscreen)
 import cases_pointer  # noqa: E402,F401  (r14 wave 3a: link_and_path_click, selection_modes, primary_and_middle_click, wheel_scroll, pane_resize_maximize)
+import cases_macptr  # noqa: E402,F401  (r15 wave 4, #2061: mac_pointer_chord_proof)

@@ -770,6 +770,22 @@ class X11Backend(Backend):
         return [{"id": w} for w in r.stdout.decode().split()]
 
 
+def mac_windows_of(listing, pid):
+    """pure: the rows of `winrect list` (pid<TAB>owner<TAB>layer<TAB>x,y,w,h<TAB>name) that are normal windows of `pid` -> [{'id', 'name', 'rect'}]"""
+    out = []
+    for i, l in enumerate(listing.splitlines()):
+        f = l.split("\t")
+        if len(f) < 4 or f[0] != str(pid) or f[2] != "0":
+            continue
+        try:
+            rect = tuple(int(v) for v in f[3].split(","))
+        except ValueError:
+            continue
+        if len(rect) == 4 and rect[2] > 100 and rect[3] > 100:
+            out.append({"id": i, "name": f[4] if len(f) > 4 else "", "rect": rect})
+    return out
+
+
 class NeedsOwner(RuntimeError):
     """a macOS system dialog (Local Network / TCC / authorization) is in front: keys would go into it. run.py stops the run
     with exit 3 and NEEDS_OWNER.txt. We NEVER click such a dialog ourselves."""
@@ -782,7 +798,12 @@ class MacBackend(Backend):
     Safety (docs/testing.md 3.3): guard() runs before EVERY injection and checks the frontmost app name AND that its PID is
     the Phosphor PID the harness started; on a mismatch it tries once to focus that exact PID (no keys) and otherwise raises.
     Cmd-Q/W/Tab/Space/H/M, any Ctrl+Cmd chord, Globe/Fn are refused structurally. Ctrl-D is only ever sent through key(), i.e.
-    behind the guard, so it reaches Phosphor's window only."""
+    behind the guard, so it reaches Phosphor's window only.
+    #2061 (r14-test-gaps T32), the one exception to that list: Cmd-W, Cmd-Shift-W and Cmd-Q (APP_CHORDS: close tab, close window, quit) are sent by
+    app_chord() and by nothing else: never through htype2, never while a reference terminal is the target (guard_override), only to the PID the harness
+    started, whose executable must be inside the job's own bundle, through mac/tools/appkey (which checks all of that again in its own process and posts
+    the event to that one PID). Every other Cmd chord on NEVER_CMD keys (Cmd-Tab, Cmd-Space, Cmd-H, Cmd-M, Cmd-Shift-Q = log out, Cmd-Alt-W, ...) stays refused.
+    The pointer is mac/tools/mptr (ptr()): guarded the same way, and the tool refuses a press where the topmost window is not the app's."""
     name = "mac"
     APP = os.environ.get("APPCI_MAC_PROCESS", "phosphor-oss")
     TOOLS = os.environ.get("APPCI_MAC_TOOLS", "")
@@ -794,6 +815,10 @@ class MacBackend(Backend):
                ";": 41, "\\": 42, ",": 43, "/": 44, "n": 45, "m": 46, ".": 47}
     MODBIT = {"shift": 1, "ctrl": 2, "alt": 4, "logo": 8}
     NEVER_CMD = ("q", "w", "tab", "space", "h", "m")
+    APP_CHORDS = {(8, "q"): 12, (8, "w"): 13, (9, "w"): 13}       # #2061: (modifier bits, key) -> key code; sent by app_chord() only (appkey)
+    MODALIAS = {"control": "ctrl", "super": "logo", "cmd": "logo", "meta": "logo", "option": "alt"}
+    BUNDLE = os.environ.get("APPCI_MAC_BUNDLE", "")              # the job's private copy of the app (mac/ci/app_test.sh)
+    CHORD_VIA = os.environ.get("APPCI_MAC_CHORD_VIA", "pid")     # appkey delivery: "pid" (CGEvent.postToPid) or "hid" (the HID tap, as htype2)
     pid_fn = None            # set by run.py: returns the PID of the Phosphor instance under test
 
     def __init__(self):
@@ -998,19 +1023,37 @@ class MacBackend(Backend):
         d = int(delay_ms)
         self._ht(["t:%s:%d:%d" % (text, d, d)] + (["e:0"] if enter else []))
 
-    def _kspec(self, spec):
-        """'ctrl+u' / 'Return' / 'a' -> htype2 op"""
+    @classmethod
+    def chord_parts(cls, spec):
+        """'ctrl+u' / 'Return' / 'cmd+shift+w' -> (modifier bits, lower-case key name); ValueError on an unknown modifier"""
         low = spec.lower()
         parts = low.split("+") if low != "+" else ["+"]
-        mods, k = parts[:-1], parts[-1]
         bits = 0
-        for m in mods:
-            m = {"control": "ctrl", "super": "logo", "cmd": "logo", "meta": "logo", "option": "alt"}.get(m, m)
-            if m not in self.MODBIT:
+        for m in parts[:-1]:
+            m = cls.MODALIAS.get(m, m)
+            if m not in cls.MODBIT:
                 raise ValueError("unknown modifier in " + spec)
-            bits |= self.MODBIT[m]
-        if k in ("globe", "fn") or (bits & 2 and bits & 8) or (bits & 8 and k in self.NEVER_CMD):
+            bits |= cls.MODBIT[m]
+        return bits, parts[-1]
+
+    @classmethod
+    def chord_kind(cls, spec):
+        """pure: 'app' (Cmd-W, Cmd-Shift-W, Cmd-Q: app_chord() only), 'refused' (never sent by any path), or 'plain' (htype2 behind the guard)"""
+        bits, k = cls.chord_parts(spec)
+        if (bits, k) in cls.APP_CHORDS:
+            return "app"
+        if k in ("globe", "fn") or (bits & 2 and bits & 8) or (bits & 8 and k in cls.NEVER_CMD):
+            return "refused"
+        return "plain"
+
+    def _kspec(self, spec):
+        """'ctrl+u' / 'Return' / 'a' -> htype2 op format. Refuses the forbidden chords AND the app chords: htype2 never carries either."""
+        bits, k = self.chord_parts(spec)
+        kind = self.chord_kind(spec)
+        if kind == "refused":
             raise ValueError("refusing forbidden chord " + spec)
+        if kind == "app":
+            raise ValueError("refusing forbidden chord %s for htype2: it is sent by app_chord() to the app under test only" % spec)
         code = self.SPECIAL.get(k, self.LETTERS.get(k))
         if code is None:
             raise ValueError("no key code for " + spec)
@@ -1020,16 +1063,133 @@ class MacBackend(Backend):
         self.keys([spec] * repeat, delay_ms=delay_ms)
 
     def keys(self, specs, delay_ms=15):
-        ops = []
+        """named keys in order. An app chord (#2061) goes out through app_chord(), between the htype2 runs before and after it, so the order holds."""
+        run = []
         for s in specs:
+            if self.chord_kind(s) == "app":
+                if run:
+                    self._ht(run)
+                    run = []
+                if int(delay_ms) > 0:
+                    time.sleep(int(delay_ms) / 1000.0)
+                self.app_chord(s)
+                continue
             fmt = self._kspec(s)
-            low = s.lower().split("+")
-            bits = 0
-            for m in low[:-1]:
-                bits |= self.MODBIT[{"control": "ctrl", "super": "logo", "cmd": "logo", "meta": "logo", "option": "alt"}.get(m, m)]
-            code = self.SPECIAL.get(low[-1], self.LETTERS.get(low[-1]))
-            ops.append(fmt % (code, bits, int(delay_ms)))
-        self._ht(ops)
+            bits, k = self.chord_parts(s)
+            run.append(fmt % (self.SPECIAL.get(k, self.LETTERS.get(k)), bits, int(delay_ms)))
+        if run:
+            self._ht(run)
+
+    def app_chord_refusal(self, spec, pid):
+        """pure: why app_chord() must not send `spec` now, or None. Checked before the frontmost-app guard and before the tool runs."""
+        if self.chord_kind(spec) != "app":
+            return "%s is not one of the app chords (Cmd-W, Cmd-Shift-W, Cmd-Q)" % spec
+        if self.guard_override:
+            return "the injection target is the reference terminal (%s): %s is only ever sent to the app under test" % (self.guard_override, spec)
+        if not pid:
+            return "Phosphor PID unknown (app not running?)"
+        if not (self.BUNDLE.startswith("/") and self.BUNDLE.rstrip("/").endswith(".app")):
+            return "APPCI_MAC_BUNDLE (%r) is not the job's .app: the app under test cannot be told from an installed one" % self.BUNDLE
+        if self.CHORD_VIA not in ("pid", "hid"):
+            return "APPCI_MAC_CHORD_VIA is %r, expected pid or hid" % self.CHORD_VIA
+        return None
+
+    def app_chord(self, spec):
+        """#2061: Cmd-W / Cmd-Shift-W / Cmd-Q to the app under test and to nothing else (see the class docstring). Raises RuntimeError on any doubt."""
+        pid = self.pid_fn() if self.pid_fn else None
+        why = self.app_chord_refusal(spec, pid)
+        if why:
+            raise RuntimeError("refusing %s: %s" % (spec, why))
+        if not os.access(self._tool("appkey"), os.X_OK):
+            raise RuntimeError("refusing %s: the appkey tool is missing (%s; app_test.sh compiles mac/tools/appkey.swift, see swiftc-appkey.log)" % (spec, self._tool("appkey")))
+        self.guard()
+        bits, k = self.chord_parts(spec)
+        code = self.APP_CHORDS[(bits, k)]
+        try:
+            os.remove(self.outf)
+        except OSError:
+            pass
+        t0, err = time.time(), None
+        try:
+            r = subprocess.run([self._tool("appkey"), str(pid), self.BUNDLE, str(code), str(bits), self.CHORD_VIA, self.outf], capture_output=True, timeout=30)
+            if r.returncode != 0:          # exit 4 = the tool's own check refused (not frontmost, not the job's bundle): nothing was posted
+                _log_stderr("appkey", r.returncode, r.stderr)
+                raise RuntimeError("appkey exit %d for %s (%s)" % (r.returncode, spec, _tail(r.stderr.decode("utf-8", "replace")) or "no stderr"))
+        except Exception as e:
+            err = "%s: %s" % (type(e).__name__, str(e)[:200])
+            raise
+        finally:
+            self._record_call(["k:%d:%d:0" % (code, bits)], t0, time.time(), err)
+
+    def ptr(self, ops):
+        """#2061: pointer ops (mac/tools/mptr.swift; coordinates in POINTS) at the app under test. The frontmost-app guard runs first; the tool refuses a
+        press, a drag or a wheel step where the topmost window is not owned by the app's PID. -> (x, y) of the cursor read back after the last op."""
+        if self.guard_override:
+            raise RuntimeError("refusing pointer input: the injection target is the reference terminal (%s)" % self.guard_override)
+        pid = self.pid_fn() if self.pid_fn else None
+        if not pid:
+            raise RuntimeError("Phosphor PID unknown (app not running?): refusing pointer input")
+        if not os.access(self._tool("mptr"), os.X_OK):
+            raise RuntimeError("the mptr tool is missing (%s; app_test.sh compiles mac/tools/mptr.swift, see swiftc-mptr.log)" % self._tool("mptr"))
+        self.guard()
+        out = self.outf + ".ptr"
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        t0 = time.time()
+        r = subprocess.run([self._tool("mptr"), str(pid), out] + list(ops), capture_output=True, timeout=90)
+        try:
+            lines = open(out, errors="replace").read().splitlines()
+        except OSError:
+            lines = []
+        loc = None
+        for l in lines:
+            w = l.split()
+            if w[:1] == ["LOC"] and len(w) == 3:
+                try:
+                    loc = (float(w[1]), float(w[2]))
+                except ValueError:
+                    pass
+        if self.inject_log:
+            try:
+                with open(self.inject_log, "a") as f:
+                    f.write("ptr wall=%.3f..%.3f rc=%d ops=%s loc=%s\n" % (t0, time.time(), r.returncode, " ".join(ops), loc))
+            except OSError:
+                pass
+        if r.returncode != 0:
+            _log_stderr("mptr", r.returncode, r.stderr)
+            raise RuntimeError("pointer injector failed: mptr exit %d (%s)" % (r.returncode, _tail(r.stderr.decode("utf-8", "replace")) or "no stderr"))
+        return loc
+
+    def ptr_info(self):
+        """{'display': (x, y, w, h, pixel_w, pixel_h), 'cursor': (x, y)} from `mptr info` (points; pixels of the display mode), or {} when the tool fails"""
+        try:
+            r = subprocess.run([self._tool("mptr"), "info"], capture_output=True, timeout=15)
+        except Exception:
+            return {}
+        out = {}
+        for l in r.stdout.decode(errors="replace").splitlines():
+            w = l.split()
+            try:
+                if w[:1] == ["display"] and len(w) == 7:
+                    out["display"] = tuple(int(v) for v in w[1:])
+                elif w[:1] == ["cursor"] and len(w) == 3:
+                    out["cursor"] = (float(w[1]), float(w[2]))
+            except ValueError:
+                pass
+        return out
+
+    def windows(self):
+        """the app's on-screen normal windows (winrect list, layer 0, wider and taller than 100 points), front to back; [] when unknown"""
+        ph = self.pid_fn() if self.pid_fn else None
+        if not ph:
+            return []
+        try:
+            r = subprocess.run([self._tool("winrect"), "list"], capture_output=True, timeout=15)
+        except Exception:
+            return []
+        return mac_windows_of(r.stdout.decode(errors="replace"), ph)
 
     def roll(self, text, overlap_ms=10, enter=True):
         if ":" in text:                                   # the r: op cannot carry ':'

@@ -21,6 +21,7 @@ import cases as C  # noqa: E402  (cases.py imports this module near its end, so 
 import cases_robust as R  # noqa: E402
 import cases_ui as U  # noqa: E402
 import cases_wrap_vtabs as WV  # noqa: E402
+import macptr as MP  # noqa: E402  (#2061: the macOS pointer, Vision word boxes, the recording URL handler)
 import toml_text as T  # noqa: E402
 from cases import case  # noqa: E402
 
@@ -340,11 +341,22 @@ PALETTE_DIVIDER_LEFT = "move divider left"      # app/i18n/en/warp.ftl keybindin
 
 
 # ================================================================ shared steps
+MAC_POINTER_CASES = ("link_and_path_click", "selection_modes")      # #2061 (r14-test-gaps T32): played on macOS with mac/tools/mptr
+MAC_NOT_PLAYED = {
+    "primary_and_middle_click": "macOS has no PRIMARY selection and no middle-click paste (X11 / Wayland concepts): nothing to test there, by design",
+    "wheel_scroll": "not played on macOS yet: the case sends its wheel steps through xdotool / the Wayland holder. The Mac pointer tool has the wheel op "
+                    "(mptr w:, macptr.MacMouse.wheel); the case's macOS arm (and its mouse-reporting half under the Mac key names) is not written (#2061)",
+}
+
+
 def linux_pointer_or_skip(ctx, r, name):
-    """the Linux pointer (xdotool, or the Wayland virtual pointer / sway seat); macOS and Windows SKIP naming the missing capability"""
+    """the pointer of this backend: xdotool, the Wayland virtual pointer / sway seat, or on macOS (the cases in MAC_POINTER_CASES, #2061) mptr.
+    Windows SKIPs naming the missing capability; a case not played on macOS SKIPs with its own reason."""
     if ctx.win:
         r.skip("%s: no pointer synthesis in the Windows backend yet (mouse SendInput, gap H1)" % name)
-    return U.mouse_or_skip(ctx, r)
+    if U.mac(ctx) and name not in MAC_POINTER_CASES:
+        r.skip("%s: %s" % (name, MAC_NOT_PLAYED.get(name, U.MAC_NOT_ENABLED)))
+    return U.mouse_or_skip(ctx, r, mac=True)
 
 
 def safe_tok(ctx, prefix, n=7):
@@ -404,6 +416,9 @@ class Held:
         self.ctx, self.mod, self.ms, self.proc, self.up = ctx, mod, ms, None, None
 
     def __enter__(self):
+        if U.mac(self.ctx):                   # #2061: held inside the mptr call that clicks (a modifier cannot outlive one injector process)
+            U.mac_mouse(self.ctx).mods = MP.mods_bits([self.mod])
+            return self
         down, self.up = hold_argv(self.ctx.be.name, self.mod, self.ms)
         if self.up:
             self.ctx.be.refocus()
@@ -414,6 +429,9 @@ class Held:
         return self
 
     def __exit__(self, *_):
+        if U.mac(self.ctx):
+            U.mac_mouse(self.ctx).mods = 0
+            return False
         if self.up:
             subprocess.run(self.up, timeout=10)
         elif self.proc:
@@ -497,18 +515,13 @@ def hover(m, row):
     time.sleep(1.0)
 
 
-@case("link_and_path_click", order=72, gui=True)
-def c_link_and_path_click(ctx, r):
-    """T21. One launch with a recording `xdg-open` first on the app's PATH, under `strace -e trace=network`. `cat` prints a URL, an OSC 8 link
-    whose text is not its target, and `<file>:<line>`. Hover alone opens nothing. Ctrl+click on each: the recorder holds exactly the URL, exactly
-    the OSC 8 target, and for the path either the absolute path (the profile opens files with the system handler) or the file's line is drawn in
-    the app. The trace shows no destination beyond loopback and the configured model. The app is relaunched normally at the end."""
-    import cases_netless as NL
-    R.need_linux_app(ctx, "link_and_path_click: the Linux pointer, a recording xdg-open on the app's PATH and strace")
-    m = linux_pointer_or_skip(ctx, r, "link_and_path_click")
-    U.need_tesseract(r)
-    traced = NL.strace_works()
-    tok = ctx.tok(6).lower()
+def link_mod(ctx):
+    """the modifier a user holds to open a link: Ctrl on Linux, Cmd on macOS (app/src/terminal/links.rs)"""
+    return "Cmd" if U.mac(ctx) else "Ctrl"
+
+
+def link_fixture(ctx):
+    """the printed text of link_and_path_click and what each click must open"""
     t_url, t_vis, t_tgt, t_path = safe_tok(ctx, "ua"), safe_tok(ctx, "ha"), safe_tok(ctx, "ht"), safe_tok(ctx, "pa")
     t_first, t_line = safe_tok(ctx, "fa"), safe_tok(ctx, "fc")
     url, osc_url = "https://192.0.2.7/%s" % t_url, "https://192.0.2.9/%s" % t_tgt        # TEST-NET-1: never loopback, never routed
@@ -516,7 +529,125 @@ def c_link_and_path_click(ctx, r):
     abs_src = os.path.join(ctx.W, src)
     with open(abs_src, "w", newline="\n") as f:
         f.write("".join("// %s\n" % (t_first if i == 1 else t_line if i == line_no else "row %d" % i) for i in range(1, 221)))
-    fixture = "url %s\n\nosc \x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\ end\n\npath %s:%d\n" % (url, osc_url, t_vis, src, line_no)
+    text = "url %s\n\nosc \x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\ end\n\npath %s:%d\n" % (url, osc_url, t_vis, src, line_no)
+    return dict(t_url=t_url, t_vis=t_vis, t_path=t_path, t_first=t_first, t_line=t_line, url=url, osc_url=osc_url, line_no=line_no, src=src,
+                abs_src=abs_src, text=text)
+
+
+def links_play(ctx, r, m, calls, fx, tok, front_changed=None):
+    """the part of link_and_path_click every platform shares: print the fixture, find the three words, the hover control, the two URL clicks and the
+    path click. `calls()` = the recorder's rows so far. `front_changed()` (macOS) = the name of another application that came to the front, or None:
+    there a path handed to the system opens in that application, which is the only trace it leaves."""
+    mod = link_mod(ctx)
+    t_url, t_vis, t_path, t_first, t_line = fx["t_url"], fx["t_vis"], fx["t_path"], fx["t_first"], fx["t_line"]
+    seen = print_file(ctx, r, "lc_%s.txt" % tok, fx["text"], (t_url, t_vis, t_path, t_first, t_line))
+    if seen is None:
+        return
+    found = locate_many(ctx, r, "lc_find", (t_url, t_vis, t_path), seen)
+    r.metric("link_positions", {k: list(v[1:3]) for k, v in found.items()})
+    if not need_all(ctx, r, found, (t_url, t_vis, t_path), "lc_find"):
+        return
+    # control: printing the links and resting the pointer on one opens nothing
+    hover(m, found[t_url])
+    r.check(calls() == [], "the desktop opener was called before any click (printing or hovering opened something): %r" % calls())
+    for name, t, want in (("URL", t_url, fx["url"]), ("OSC 8 link", t_vis, fx["osc_url"])):
+        n0 = len(calls())
+        hover(m, found[t])
+        with Held(ctx, "ctrl"):
+            m.click(found[t][1], found[t][2])
+        ctx.until(lambda: len(calls()) > n0, 6, step=0.2)
+        time.sleep(0.5)
+        ctx.shot("lc_clicked_%s" % t[:2])
+        err = url_open_verdict(calls()[n0:], want)
+        msg = ("%s+click on the %s: %s (the pointer hovered the word first; if the app got a plain click, the %s key held by the harness did "
+               "not reach it: shots/*lc_clicked_%s.png shows a link tooltip then)" % (mod, name, err, mod, t[:2]))
+        if err and not calls()[n0:] and U.on_wayland(ctx) and not U.wl_pointer_real(ctx):
+            U.wl_check(ctx, r, False, msg, "pointer")
+        else:
+            r.check(err is None, msg)
+    # the path
+    n0, off = len(calls()), ctx.log_size()
+    hover(m, found[t_path])
+    with Held(ctx, "ctrl"):
+        m.click(found[t_path][1], found[t_path][2])
+    ctx.until(lambda: len(calls()) > n0, 4, step=0.2)
+    time.sleep(1.0)
+    other = front_changed() if front_changed and not calls()[n0:] else None
+    drawn = {} if calls()[n0:] or other else locate_many(ctx, r, "lc_path_open", (t_line, t_first), off)
+    how, err = path_open_verdict(calls()[n0:], fx["abs_src"], t_line in drawn, t_first in drawn)
+    if other:
+        how, err = "system", None
+        r.note("the path was handed to the system and %r came to the front (macOS records no argument for a file open; that application is left "
+               "running: the harness signals only its own PIDs)" % other)
+    r.metric("path_opened_by", how or "nothing")
+    msg = "%s+click on `%s:%d`: %s" % (mod, fx["src"], fx["line_no"], err)
+    if err and how is None and not calls()[n0:] and U.on_wayland(ctx) and not U.wl_pointer_real(ctx):
+        U.wl_check(ctx, r, False, msg, "pointer")
+    else:
+        r.check(err is None, msg)
+    if how in ("system", "external"):
+        r.note("the path went to the desktop opener (%s): this profile's code.editor.open_file_editor is not the app's editor, so no file pane is expected" % how)
+    r.check(ctx.app.alive(), "the app died while opening links")
+
+
+def mac_recorder_or_skip(ctx, r):
+    """macOS: the recording URL handler's log path, or SKIP 'NEEDS: ...' (macptr.RECORDER_NEEDS) unless it is the default https handler right now"""
+    t = MP.tool(ctx.be, "openrec")
+    if not t:
+        r.skip(MP.missing_tool_reason(ctx.be, "openrec"))
+    try:
+        cur = subprocess.run([t, "--handler", "https://192.0.2.7/"], capture_output=True, timeout=20).stdout.decode(errors="replace").strip()
+        log = subprocess.run([t, "--log"], capture_output=True, timeout=20).stdout.decode(errors="replace").strip()
+    except Exception as e:
+        raise RuntimeError("openrec could not be asked for the default https handler: %r" % e)
+    if not MP.recorder_is_default(cur) or not log:
+        r.skip("%s (https opens with %r on this machine now)" % (MP.RECORDER_NEEDS, cur or "nothing"))
+    return log
+
+
+def link_click_mac(ctx, r, m):
+    """link_and_path_click on macOS (#2061): no relaunch (no PATH to change, no strace). The recorder is the machine's default http / https handler;
+    its log is read from where this case starts."""
+    log = mac_recorder_or_skip(ctx, r)
+    tok = ctx.tok(6).lower()
+    base = len(MP.recorder_calls(read_text(log)))
+    calls = lambda: MP.recorder_calls(read_text(log))[base:]      # noqa: E731
+    mine = ctx.app.pid()
+
+    def front_changed():
+        name, pid = ctx.be._front()
+        if pid and pid != mine and "recorder" not in name.lower():
+            ctx.be.refocus()
+            return name
+        return None
+    try:
+        links_play(ctx, r, m, calls, link_fixture(ctx), tok, front_changed)
+    finally:
+        ctx.be.refocus()
+    r.note("macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other "
+           "outbound connection' is NOT judged here")
+    U.exact_burst(ctx, r, "after_links", 4)
+
+
+@case("link_and_path_click", order=72, gui=True)
+def c_link_and_path_click(ctx, r):
+    """T21. One launch with a recording `xdg-open` first on the app's PATH, under `strace -e trace=network`. `cat` prints a URL, an OSC 8 link
+    whose text is not its target, and `<file>:<line>`. Hover alone opens nothing. Ctrl+click on each: the recorder holds exactly the URL, exactly
+    the OSC 8 target, and for the path either the absolute path (the profile opens files with the system handler) or the file's line is drawn in
+    the app. The trace shows no destination beyond loopback and the configured model. The app is relaunched normally at the end.
+    macOS (#2061): Cmd+click; the recorder is an application the owner made the default http / https handler (mac/ci/open_recorder.sh), else the
+    case SKIPs with NEEDS; no relaunch and no network trace (link_click_mac)."""
+    import cases_netless as NL
+    if U.mac(ctx):
+        m = linux_pointer_or_skip(ctx, r, "link_and_path_click")
+        U.need_tesseract(r, ctx)
+        return link_click_mac(ctx, r, m)
+    R.need_linux_app(ctx, "link_and_path_click: the Linux pointer, a recording xdg-open on the app's PATH and strace")
+    m = linux_pointer_or_skip(ctx, r, "link_and_path_click")
+    U.need_tesseract(r)
+    traced = NL.strace_works()
+    tok = ctx.tok(6).lower()
+    fx = link_fixture(ctx)
     bindir, olog = os.path.join(ctx.prof.home, "lc_bin"), os.path.join(ctx.prof.home, "lc_open_%s.log" % tok)
     os.makedirs(bindir, exist_ok=True)
     for n in OPENER_NAMES:
@@ -538,49 +669,7 @@ def c_link_and_path_click(ctx, r):
         if ctx.mode == "agent" and ctx.mode_now("lc_mode") == "terminal":
             r.unverifiable("the agent pass's pane shows a terminal session after the case's own relaunch: not run in agent mode")
             return
-        seen = print_file(ctx, r, "lc_%s.txt" % tok, fixture, (t_url, t_vis, t_path, t_first, t_line))
-        if seen is None:
-            return
-        found = locate_many(ctx, r, "lc_find", (t_url, t_vis, t_path), seen)
-        r.metric("link_positions", {k: list(v[1:3]) for k, v in found.items()})
-        if not need_all(ctx, r, found, (t_url, t_vis, t_path), "lc_find"):
-            return
-        # control: printing the links and resting the pointer on one opens nothing
-        hover(m, found[t_url])
-        r.check(calls() == [], "the desktop opener was called before any click (printing or hovering opened something): %r" % calls())
-        for name, t, want in (("URL", t_url, url), ("OSC 8 link", t_vis, osc_url)):
-            n0 = len(calls())
-            hover(m, found[t])
-            with Held(ctx, "ctrl"):
-                m.click(found[t][1], found[t][2])
-            ctx.until(lambda: len(calls()) > n0, 6, step=0.2)
-            time.sleep(0.5)
-            ctx.shot("lc_clicked_%s" % t[:2])
-            err = url_open_verdict(calls()[n0:], want)
-            msg = ("Ctrl+click on the %s: %s (the pointer hovered the word first; if the app got a plain click, the Ctrl key held by the harness did "
-                   "not reach it: shots/*lc_clicked_%s.png shows a link tooltip then)" % (name, err, t[:2]))
-            if err and not calls()[n0:] and U.on_wayland(ctx) and not U.wl_pointer_real(ctx):
-                U.wl_check(ctx, r, False, msg, "pointer")
-            else:
-                r.check(err is None, msg)
-        # the path
-        n0, off = len(calls()), ctx.log_size()
-        hover(m, found[t_path])
-        with Held(ctx, "ctrl"):
-            m.click(found[t_path][1], found[t_path][2])
-        ctx.until(lambda: len(calls()) > n0, 4, step=0.2)
-        time.sleep(1.0)
-        drawn = {} if calls()[n0:] else locate_many(ctx, r, "lc_path_open", (t_line, t_first), off)
-        how, err = path_open_verdict(calls()[n0:], abs_src, t_line in drawn, t_first in drawn)
-        r.metric("path_opened_by", how or "nothing")
-        msg = "Ctrl+click on `%s:%d`: %s" % (src, line_no, err)
-        if err and how is None and not calls()[n0:] and U.on_wayland(ctx) and not U.wl_pointer_real(ctx):
-            U.wl_check(ctx, r, False, msg, "pointer")
-        else:
-            r.check(err is None, msg)
-        if how in ("system", "external"):
-            r.note("the path went to the desktop opener (%s): this profile's code.editor.open_file_editor is not the app's editor, so no file pane is expected" % how)
-        r.check(ctx.app.alive(), "the app died while opening links")
+        links_play(ctx, r, m, calls, fx, tok)
     finally:
         ctx.app.wrap = ""
         ctx.app.extra_env = old_env
@@ -610,7 +699,7 @@ def c_selection_modes(ctx, r):
     then copy-output = the three lines (the app's Shift+click is the block range); a drag over two words of a running program's first line while
     its last line is rewritten ten times a second = those words. The clipboard is set to a sentinel before every copy."""
     m = linux_pointer_or_skip(ctx, r, "selection_modes")
-    U.need_tesseract(r)
+    U.need_tesseract(r, ctx)
     words = distinct_words(ctx.rng, 16)
     la, lb, lc, ls = (" ".join(words[i:i + 4]) for i in (0, 4, 8, 12))
     tok = ctx.tok(5).lower()
@@ -1154,7 +1243,8 @@ def c_pane_resize_maximize(ctx, r):
                     errs = divider_verdict(ak, bk, ad, bd, want_cols=want)
                     r.check(not errs, "divider dragged %d px left: %s" % (DIVIDER_DRAG_PX, "; ".join(errs)))
         else:
-            r.note("the divider drag was not run: %s" % ("macOS has no pointer tool in the harness" if U.mac(ctx) else "xdotool / swaymsg or tesseract is missing"))
+            r.note("the divider drag was not run: %s" % ("not played on macOS yet (fast_drag and the divider sweep are xdotool / wlptr; the Mac pointer tool exists, #2061)"
+                                                         if U.mac(ctx) else "xdotool / swaymsg or tesseract is missing"))
     finally:
         ctx.exit_nested(base, r, "pane_resize_maximize")       # closes the new pane only when a probe proves its shell is in front
         time.sleep(0.8)

@@ -5,8 +5,9 @@
 # package it needs. Registered by the one import line at the end of cases.py. Every case here is full-tier.
 #
 # Platform notes (docs/testing.md 2.8): keys follow app/src/util/bindings.rs (Linux ctrl-shift-X, macOS cmd-X); the mouse is
-# xdotool on X11 and `swaymsg seat - cursor ...` on the headless-sway Wayland job (no extra package); macOS has no mouse
-# tool in the harness, so mouse cases skip there. Positions come from tesseract word boxes of a screenshot (package: tesseract-ocr).
+# xdotool on X11 and `swaymsg seat - cursor ...` on the headless-sway Wayland job (no extra package); on macOS it is mac/tools/mptr
+# (CGEvent, macptr.MacMouse, #2061) for the cases that ask for it with mouse_or_skip(..., mac=True). Positions come from the app's find
+# hook, else from word boxes of a screenshot (tesseract, package tesseract-ocr; Apple Vision through mac/tools/ocrw on macOS).
 import hashlib, json, os, re, shlex, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -113,9 +114,25 @@ def shot_changed(a, b, thresh, color=False):
     return d >= thresh, d
 
 
-def need_tesseract(r):
+def need_tesseract(r, ctx=None):
+    """a word-box reader for screen positions: tesseract, or on macOS (a case that passes its ctx, #2061) Apple Vision through mac/tools/ocrw"""
+    if ctx is not None and mac(ctx):
+        import macptr
+        if not macptr.tool(ctx.be, "ocrw") and not shutil.which("tesseract"):
+            r.skip(macptr.missing_tool_reason(ctx.be, "ocrw"))
+        return
     if not shutil.which("tesseract"):
         r.skip("tesseract not installed on this machine (package: tesseract-ocr): screen positions/text cannot be read")
+
+
+def have_word_ocr(ctx):
+    """True when words() can read this platform's screen: tesseract, or Apple Vision word boxes on macOS"""
+    if shutil.which("tesseract"):
+        return True
+    if mac(ctx):
+        import macptr
+        return bool(macptr.tool(ctx.be, "ocrw"))
+    return False
 
 
 def words(ctx, tag):
@@ -123,8 +140,14 @@ def words(ctx, tag):
     p = ctx.shot(tag)
     if not p:
         return [], None
+    res = []
+    if mac(ctx):                                          # #2061: Apple Vision word boxes first (the engine the Mac harness reads screens with, cases.ocr_engines)
+        import macptr
+        res += macptr.words(ctx.be, p)
+        if not shutil.which("tesseract"):
+            return res, p
     out = subprocess.run(["tesseract", p, "-", "--psm", "11", "tsv"], capture_output=True, timeout=90).stdout.decode(errors="replace")
-    res = tsv_words(out)
+    res += tsv_words(out)
     up = C.ocr_upscaled(ctx.be.name, p)                   # X11: words of a 2x copy are added, boxes scaled back (cases.ocr_upscaled)
     if up:
         res += tsv_words(subprocess.run(["tesseract", up, "-", "--psm", "11", "tsv"], capture_output=True, timeout=90).stdout.decode(errors="replace"), 2)
@@ -169,7 +192,7 @@ def find_token(ctx, tag, token, last=True, since=None, r=None):
     h = _hook_word(ctx, token, since)
     if h:
         return h, None
-    if r is not None and getattr(ctx.be, "name", None) in ("wayland", "x11"):
+    if r is not None and getattr(ctx.be, "name", None) in ("wayland", "x11", "mac"):
         hook_missing_note(r, token)
     ws, p = words(ctx, tag)
     hits = token_hits(ws, token)
@@ -192,14 +215,16 @@ def x11_window_origin(pid):
 def _hook_word(ctx, token, since=None):
     """the OCR-free position (hook_find) of `token` on Wayland (window origin from sway) and X11 (from xdotool); None without the app hook line
     (an app without the hook, or a token the hook never saw drawn): the caller falls back to OCR and says so (hook_missing_note)"""
-    if getattr(ctx.be, "name", None) not in ("wayland", "x11"):
+    if getattr(ctx.be, "name", None) not in ("wayland", "x11", "mac"):
         return None
     if os.environ.get("APPCI_NO_FIND_HOOK") == "1":       # kill switch: positions by OCR only, as every Linux run before round 14 was (the launcher never armed the hook)
         return None
     pid = ctx.be.pid_fn() if getattr(ctx.be, "pid_fn", None) else None
     if not pid:
         return None
-    if on_wayland(ctx):
+    if mac(ctx):
+        origin = mac_window_origin(ctx)
+    elif on_wayland(ctx):
         rect = sway_window_rect(pid)
         origin = (rect[0], rect[1]) if rect else None
     else:
@@ -309,6 +334,27 @@ class Mouse:
         time.sleep(0.3)
 
 
+def mac_mouse(ctx):
+    """the run's one macptr.MacMouse (the display scale is measured once), or None when the mptr tool is not there"""
+    import macptr
+    if not macptr.tool(ctx.be, "mptr"):
+        return None
+    m = getattr(ctx.be, "_appci_mouse", None)
+    if m is None:
+        m = ctx.be._appci_mouse = macptr.MacMouse(ctx.be)
+    return m
+
+
+def mac_window_origin(ctx):
+    """(x, y) of the app window's top-left corner in SCREENSHOT pixels on macOS (winrect points times the display scale), or None. The find hook's
+    device-pixel coordinates are added to it (macptr.origin_px says why the window's corner is the content's corner)."""
+    import macptr
+    m = mac_mouse(ctx)
+    if m is None or not m.scale:
+        return None
+    return macptr.origin_px(ctx.be.window_rect(), m.scale)
+
+
 def wl_pointer_ctl():
     """the control socket of the session's virtual-pointer holder if it answers (wayland_session.sh exports APPCI_WL_PTR), else None"""
     ctl = os.environ.get("APPCI_WL_PTR")
@@ -387,9 +433,23 @@ def register_find(ctx, *tokens):
     time.sleep(0.35)
 
 
-def mouse_or_skip(ctx, r):
+MAC_NOT_ENABLED = ("macOS: this case's macOS arm is not enabled. The pointer tool exists since round 15 (mac/tools/mptr.swift, #2061), and the cases that "
+                   "pass mac=True run with it; this one still drives the pointer or reads the screen in a Linux-only way and has not been ported")
+
+
+def mouse_or_skip(ctx, r, mac=False):
+    """the pointer of this backend, or SKIP with the reason. macOS (#2061, r14-test-gaps T32): only for a case that says mac=True; the pointer is
+    macptr.MacMouse over mac/tools/mptr (same methods, same unit: screenshot pixels)."""
     if ctx.be.name == "mac":
-        r.skip("macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)")
+        if not mac:
+            r.skip(MAC_NOT_ENABLED)
+        import macptr
+        m = mac_mouse(ctx)
+        if m is None:
+            r.skip(macptr.missing_tool_reason(ctx.be, "mptr"))
+        if not m.scale:
+            raise RuntimeError("macOS pointer: the display scale could not be measured (%s): screenshot pixels cannot be turned into pointer positions" % m.scale_how)
+        return m
     if ctx.be.name not in ("x11", "wayland"):
         r.skip("backend %s has no pointer synthesis" % ctx.be.name)
     if ctx.be.name == "x11" and not shutil.which("xdotool"):
@@ -661,8 +721,8 @@ def c_mouse_copy(ctx, r):
     """mouse selection in command output + the copy key: print a unique token whose text is NOT in the command line, find it on screen
     (tesseract word box), double-click it -> copy -> the PRIVATE clipboard (wl-paste / xsel of this job's own display) holds exactly the
     token; then a drag across the word -> copy contains the token. The clipboard is pre-set to a sentinel so a no-op copy cannot pass."""
-    m = mouse_or_skip(ctx, r)
-    need_tesseract(r)
+    m = mouse_or_skip(ctx, r, mac=True)
+    need_tesseract(r, ctx)
     tok = "msel" + ocr_safe(ctx.tok(6).lower().replace("_", ""))
     register_find(ctx, tok)
     seen = ctx.log_size()

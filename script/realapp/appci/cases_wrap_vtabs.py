@@ -248,8 +248,8 @@ def c_copy_wrapped_output(ctx, r):
 def c_copy_wrapped_drag(ctx, r):
     """#1976 with the pointer: a drag from a word on the first visual row of a soft-wrapped line to a word on the second, then copy: the text between the
     two words, no line break. A triple click on a word, then copy: the whole printed line. Positions come from the app's find hook, else OCR."""
-    m = U.mouse_or_skip(ctx, r)
-    U.need_tesseract(r)
+    m = U.mouse_or_skip(ctx, r, mac=True)
+    U.need_tesseract(r, ctx)
     fx = print_wrap_fixture(ctx, r, "drag", register=True)
     if not fx:
         return
@@ -534,8 +534,8 @@ def c_vertical_tabs_panel_click(ctx, r):
     """#1990: the panel itself. With tab 1 shown, the tokens of tabs 2..4 (each tab's directory name and last command) are on screen only in the panel:
     they are stacked top to bottom in tab order, and a click on a row puts the next typed command in that tab's shell (its own `pwd`)."""
     vt_need(ctx, r)
-    m = U.mouse_or_skip(ctx, r)
-    U.need_tesseract(r)
+    m = U.mouse_or_skip(ctx, r, mac=True)
+    U.need_tesseract(r, ctx)
     n = 4
     if not first_tab_in_front(ctx, r, "panel"):
         return

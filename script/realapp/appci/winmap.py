@@ -200,6 +200,7 @@ NOT_WINDOWS = {
     "context_menu_actions": "r14 T27: no pointer synthesis in the Windows backend yet (mouse SendInput, r14-test-gaps T31)",
     "tab_pointer_use": "r14 T28: no pointer synthesis in the Windows backend yet (r14-test-gaps T31), and the live settings rewrite of ui_vertical_tabs_many",
     "minimize_fullscreen": "r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33)",
+    "mac_pointer_chord_proof": "r15 T32 (#2061): macOS only by design: it proves the Mac harness's own pointer tool (mptr) and app-only chords (appkey)",
 }
 
 

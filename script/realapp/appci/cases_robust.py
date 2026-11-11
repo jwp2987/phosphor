@@ -19,18 +19,19 @@ NEWTAB = os.environ.get("APPCI_KEY_NEWTAB", "ctrl+shift+t")
 NEWWIN = os.environ.get("APPCI_KEY_NEWWIN", "ctrl+shift+n")
 QUIT_KEY = os.environ.get("APPCI_KEY_QUIT", "ctrl+shift+q")
 CLOSE_PANE = os.environ.get("APPCI_KEY_CLOSE", "ctrl+shift+w")
-# Phosphor's own close shortcut on macOS is cmd-shift-W (app/src/util/bindings.rs: CloseCurrentSession = cmd_or_ctrl_shift("w"); it is also bound to
-# CloseWindow), and the backend refuses every Cmd+W chord on purpose (backend.MacBackend.NEVER_CMD, owner rule: Cmd-W/Cmd-Q hit the wrong app).
-# So there the key is empty and a case that NEEDS a keyboard close must SKIP with this reason; it must never call be.key("").
-NO_CLOSE_WHY = ("no keyboard close-pane/tab shortcut is usable on this platform (APPCI_KEY_CLOSE empty): Phosphor's close shortcut on macOS is "
-                "cmd-shift-W, which the frontmost-app guard refuses by policy")
+# macOS: Phosphor's close shortcut is Cmd-W (app/src/util/bindings.rs: CloseCurrentSession = cmd_or_ctrl_shift("w"), which is "cmd-w" on macOS;
+# CloseWindow is cmd-shift-W) and its quit is Cmd-Q. htype2 never carries them (backend.MacBackend.NEVER_CMD, owner rule: Cmd-W / Cmd-Q hit the wrong app).
+# Since #2061 (r14-test-gaps T32) the backend sends exactly those chords to the app under test only (MacBackend.app_chord through mac/tools/appkey).
+# APPCI_KEY_CLOSE stays EMPTY on macOS for now (mac/ci/app_test.sh): the cases written against "no close key" keep their Ctrl-D / palette paths until
+# the chord path has a passing run; the cases that need the chords ask close_key(ctx) / quit_key(ctx) below. A case must never call be.key("").
+NO_CLOSE_WHY = ("no keyboard close-pane/tab shortcut is usable on this platform (APPCI_KEY_CLOSE empty, and on macOS the app-only chord path, "
+                "MacBackend.app_chord / mac/tools/appkey, is not available in this run)")
 NOW = lambda ctx: "now" if ctx.be.name == "mac" else "date +%s.%N"     # BSD date has no %N; ~/bin/now is written by profile.py
 
 
 # Precise skip reasons (a coverage gap, not "not applicable"): what is missing on macOS/Windows for each family of Linux-only cases.
 SKIP_QUIT_WHY = ("%s needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; "
-                 "on macOS Cmd-Q is refused by the frontmost-app guard and MacBackend has no quit/relaunch (an osascript 'tell application to quit' path and a "
-                 "relaunch through the LaunchServices PID are not implemented); Windows has a separate flow")
+                 "macOS sends Cmd-Q to the app under test only (need_quit_app, #2061); Windows has a separate flow")
 SKIP_EDITOR_WHY = ("the file is opened by a second `phosphor <path>` process that the running instance receives over the D-Bus URL forward (Linux) or the "
                    "Windows named pipe (#1544, runs there); macOS (open -a / an Apple Event open-document handler) has cb_editor_mac, and the editor key set differs "
                    "(Cmd-S/Cmd-V on macOS, close = cmd-shift-W which the guard refuses)")
@@ -44,6 +45,47 @@ def close_tab_best_effort(ctx, r):
     else:
         ctx.be.key("ctrl+d")
         r.note("no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)")
+
+
+def mac_chords_why_not(ctx):
+    """macOS: None when the app-only chords (Cmd-W, Cmd-Q; MacBackend.app_chord, #2061) can be sent in this run, else the reason: the appkey tool
+    did not compile, the job's bundle is unknown, or mac_pointer_chord_proof FAILED its chord half earlier in this run (a chord that provably does
+    not arrive is not sent again: every later case would type its dialog answers into the pane)."""
+    be = ctx.be
+    if not hasattr(be, "app_chord"):
+        return "this backend has no app-only chord path"
+    if getattr(be, "app_chords_proven", None) is False:
+        return "the app-only chords FAILED their proof earlier in this run (mac_pointer_chord_proof: Cmd-W did not close a tab)"
+    if not os.access(os.path.join(getattr(be, "TOOLS", "") or "", "appkey"), os.X_OK):
+        return "NEEDS: the appkey tool compiled on the Mac runner (script/realapp/mac/tools/appkey.swift; see swiftc-appkey.log in the job artifacts)"
+    pid = be.pid_fn() if getattr(be, "pid_fn", None) else None
+    return be.app_chord_refusal("cmd+q", pid)
+
+
+def close_key(ctx):
+    """the key that closes the focused tab / pane on this platform, or '' where the harness has none: APPCI_KEY_CLOSE, else on macOS Cmd-W when the
+    app-only chord path is available (#2061)"""
+    if CLOSE_PANE:
+        return CLOSE_PANE
+    return "cmd+w" if ctx.be.name == "mac" and mac_chords_why_not(ctx) is None else ""
+
+
+def quit_key(ctx):
+    """the app's quit key on this platform, or '' where the harness cannot send one (Windows; macOS without the app-only chord path)"""
+    if ctx.be.name == "mac":
+        return "cmd+q" if mac_chords_why_not(ctx) is None else ""
+    return "" if ctx.win else QUIT_KEY
+
+
+def need_quit_app(ctx, why):
+    """a case that needs a clean quit through the app's own quit key: Linux, and macOS since #2061 (Cmd-Q through appkey, to the app under test
+    only). Windows SKIPs as before; macOS SKIPs with the reason the chord path is not available."""
+    if ctx.be.name == "mac":
+        bad = mac_chords_why_not(ctx)
+        if bad:
+            raise cases.Skip("%s: macOS quit key (Cmd-Q) not available: %s" % (why, bad))
+        return
+    need_linux_app(ctx, why)
 
 
 def need_linux_app(ctx, why):
@@ -110,12 +152,13 @@ def hard_kill(ctx, r, label):
     return ok
 
 
-def stop_for_restart(ctx, r, bound, label):
+def stop_for_restart(ctx, r, bound, label, mac_quit=False):
     """Take the app down so its settings can be edited and it can be relaunched on the same profile. Linux: through the app's own quit key (the
-    session writer runs, as for a user). macOS / Windows have no usable quit key for the harness (Cmd-Q is refused by the frontmost-app guard; the
-    Windows close is a confirm dialog), so the app is stopped by pid (SIGTERM then SIGKILL / taskkill) and the result says so: a restore case on
-    those platforms proves the restore of a HARD stop, not of a quit. Returns the quit_app-shaped dict."""
-    if not (ctx.be.name == "mac" or ctx.win):
+    session writer runs, as for a user). Windows has no usable quit key for the harness (the close is a confirm dialog), and on macOS the callers
+    written before #2061 keep what they had: the app is stopped by pid (SIGTERM then SIGKILL / taskkill) and the result says so: a restore case on
+    those platforms proves the restore of a HARD stop, not of a quit. mac_quit=True (the cases whose subject IS the quit: agent_restart_quit_*)
+    quits through Cmd-Q on macOS (quit_key). Returns the quit_app-shaped dict."""
+    if not (ctx.be.name == "mac" or ctx.win) or (mac_quit and ctx.be.name == "mac" and quit_key(ctx)):
         return quit_app(ctx, r, bound, label)
     t0 = time.time()
     ctx.app.stop()
@@ -165,8 +208,12 @@ def quit_app(ctx, r, bound, label):
     after a short wait; it is confirmed with Return, then quit-key+Tab+Return, then quit-key+Tab+Tab+Return (one of them lands on
     'Yes, quit'; which one is a metric). Returns dict(exited, confirm_to_exit_s, total_s, dialog, attempt)."""
     ctx.be.guard()
+    qk = quit_key(ctx) or QUIT_KEY
+    # macOS (#2061): the question is a native alert whose default button is 'Yes, quit' (app/src/quit_warning, NSAlert: the first button added takes
+    # Return), and the menu's Cmd-Q is not live while it is up, so Return is the only answer tried there (twice: the alert may not be up yet)
+    answers = (["Return"], ["Return"]) if ctx.be.name == "mac" else (["Return"], [qk, "Tab", "Return"], [qk, "Tab", "Tab", "Return"])
     t0 = time.time()
-    ctx.be.key(QUIT_KEY)
+    ctx.be.key(qk)
     t_last, dialog, attempt = t0, False, 0
     if not wait_exit(ctx, 2.0):
         dialog = True
@@ -174,7 +221,10 @@ def quit_app(ctx, r, bound, label):
         txt = ctx.ocr("%s_quit_dialog_ocr" % label)
         if txt is not None:
             r.metric("%s_dialog_text_seen" % label, "yes, quit" in " ".join(txt.lower().split()))
-        for attempt, ks in enumerate((["Return"], [QUIT_KEY, "Tab", "Return"], [QUIT_KEY, "Tab", "Tab", "Return"]), 1):
+        for n_try, ks in enumerate(answers, 1):
+            if not ctx.app.alive():                    # it exited while the screenshot was read: no further key (the guard would refuse, with no app in front)
+                break
+            attempt = n_try
             ctx.be.guard()
             ctx.be.keys(ks, delay_ms=60)
             t_last = time.time()
@@ -235,6 +285,9 @@ def fresh_app(ctx, r, label):
 
 
 def descendants_cwd_under(prefix):
+    if not os.path.isdir("/proc/self"):                  # macOS (#2061: quit_24_tabs there): no /proc; lsof reads every process's cwd
+        import macptr
+        return macptr.pids_cwd_under(prefix)
     out = set()
     for p in os.listdir("/proc"):
         if p.isdigit():
@@ -359,7 +412,7 @@ def c_quit_24(ctx, r):
     """#1410: 24 streaming tabs + a second window, quit through the quit key (confirm dialog included): the process exits within
     a bound (APPCI_QUIT_BOUND_S, 10 s after the last confirm key), the app log has no 'Failed to send Shutdown', and no shell or
     streaming loop of the profile outlives the app. Repeated APPCI_QUIT_REPEAT times (the original failure was 1 in 3)."""
-    need_linux_app(ctx, SKIP_QUIT_WHY % "quit_24_tabs")
+    need_quit_app(ctx, SKIP_QUIT_WHY % "quit_24_tabs")
     bound = float(os.environ.get("APPCI_QUIT_BOUND_S", "10"))
     ntabs = int(os.environ.get("APPCI_QUIT_TABS", "24"))
     reps = int(os.environ.get("APPCI_QUIT_REPEAT", "2"))

@@ -2684,7 +2684,7 @@ def mac_close_key_empty_never_crashes_and_latency_guards():
     """r18e0 follow-up: an empty close key SKIPs soak (never be.key('')); the edit cases skip with precise reasons; median_se / per-side n are
     recorded; an implausibly FASTER reference is NOREF (no-compare), never a PASS; dbg() shows the hex of a ZWJ."""
     import cases_robust as cr, cases_caseintl as ci, lat
-    assert "cmd-shift-W" in cr.NO_CLOSE_WHY and "D-Bus" in cr.SKIP_EDITOR_WHY and "Cmd-Q" in cr.SKIP_QUIT_WHY
+    assert "APPCI_KEY_CLOSE empty" in cr.NO_CLOSE_WHY and "D-Bus" in cr.SKIP_EDITOR_WHY and "Cmd-Q" in cr.SKIP_QUIT_WHY      # #2061: macOS has the app-only chord path now
     ph = [30.0 + (i % 5) for i in range(30)]
     ref = [60.0 + (i % 5) for i in range(30)]
     rec = lat.evaluate("x/y", ph, ref, 5.0, "overhead", "macos", ref_name="T", expected=30, mode="interleaved", implausible_neg_ms=5.0)
@@ -7677,7 +7677,7 @@ def r14_w1a_wave1_cases_pure_parts_and_registry():
     assert winmap.skip_reason("routing_table_powershell", "powershell") is None and winmap.skip_reason("routing_table_powershell", "gitbash")
     assert all("OCR" in winmap.skip_reason("scroll_keys_position", p) for p in ("powershell", "gitbash"))
     # a skip names the missing capability
-    assert "OCR" in inspect.getsource(w.c_scroll_keys_position) and "close key" in w.NO_UNDO_MAC and "PowerShell pane" in inspect.getsource(w.c_routing_table_powershell)
+    assert "OCR" in inspect.getsource(w.c_scroll_keys_position) and "R.close_key(ctx)" in inspect.getsource(w.c_tab_lifecycle_keys) and "PowerShell pane" in inspect.getsource(w.c_routing_table_powershell)
 
     # --- Received: rec.log, or PSReadLine's history in the PowerShell pane, minus the harness's own probe lines
     marker = cases.Ctx.HARNESS_MARKER_RE
@@ -7788,7 +7788,7 @@ def r14_w1a_wave1_cases_pure_parts_and_registry():
     tb.received_ok()
     assert notes[-1][0] == "noref"
     body = inspect.getsource(w.c_tab_lifecycle_keys)
-    for needle in ('ctx.be.key("Escape")', 'ctx.be.key("Return")', "ctx.be.key(REOPEN_KEY)", "beat_verdict(samples)", "Escape was NOT sent", "Enter was NOT sent", "t.received_ok()"):
+    for needle in ('ctx.be.key("Escape")', 'ctx.be.key("Return")', "ctx.be.key(undo)", "beat_verdict(samples)", "Escape was NOT sent", "Enter was NOT sent", "t.received_ok()"):
         assert needle in body, needle
 
     # --- T5: the table and its verdicts
@@ -8271,6 +8271,8 @@ def r14_window_use_cases_pure_parts():
             assert n in winmap.NOT_WINDOWS and "r14-test-gaps T3" in winmap.skip_reason(n, "gitbash"), n
 import selftest_pointer  # noqa: E402  (round 14 wave 3a: cases_pointer.py; its checks live in their own file)
 CHECKS.extend(selftest_pointer.CHECKS)
+import selftest_macptr  # noqa: E402  (round 15 wave 4, #2061: the macOS pointer, app-only chords and the cases enabled with them)
+CHECKS.extend(selftest_macptr.CHECKS)
 
 
 def main():
