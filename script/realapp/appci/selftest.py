@@ -8126,8 +8126,9 @@ def editor_save_mixed_endings_1956():
 @check
 def lab_plain_session_limit_2019():
     """#2019 (owner 2026-11-10): an agent-mode lab arm on a host whose login shell gets a plain ssh session by decision (fish, nu) is UNVERIFIABLE with the
-    DECLINED reference, on the app log's own evidence; bash / zsh / dash / ash / pwsh arms are judged in full whatever the log says, and so is a fish / nu
-    arm that got a managed session or whose connect logged neither line"""
+    DECLINED reference, on the app log's own evidence; bash / zsh / pwsh arms are judged in full whatever the log says, and so is a fish / nu
+    arm that got a managed session or whose connect logged neither line. dash / ash arms (owner 2026-11-11, their own premise and connect):
+    selftest_r19_decide.r19_lab_dash_ash_agent_arms_2120; here they are only shown not to take the fish / nu premise"""
     import inspect
     import cases_lab as CL
     import cases_agent_remote as AR, cases_agent_file_edits as FE, cases_lab_remote as LR
@@ -8168,7 +8169,7 @@ def lab_plain_session_limit_2019():
     assert calls == ["connect lab-u_nu", "leave", "reset"] and r.metrics.get("plain_session_by_decision") == "nu", calls
     ok, r, calls = drive("nu", plain, left=False)            # the pane must still be left: that check is not waived
     assert ok is False and len(r.fails) == 1 and "exit" in r.fails[0] and len(r.noref) == 1
-    for shell, log in (("bash", plain), ("bash", managed), ("dash", plain), ("pwsh", plain), ("nu", managed), ("nu", ""), ("fish", managed)):
+    for shell, log in (("bash", plain), ("bash", managed), ("pwsh", plain), ("nu", managed), ("nu", ""), ("fish", managed)):
         ok, r, calls = drive(shell, log)
         assert ok is True and not r.fails and not r.noref and calls == ["connect lab-u_" + shell], (shell, calls, r.noref)
     ok, r, calls = drive("nu", plain, connected=False)       # no remote prompt is a FAIL on every shell, never the limitation
@@ -9058,6 +9059,8 @@ import selftest_r17_misc  # noqa: E402  (round 17 misc: #2028 md_viewer_first_fr
 CHECKS.extend(selftest_r17_misc.CHECKS)
 import selftest_r19_winmisc  # noqa: E402  (round 19, Windows rest after the round 14 candidate: #2113 #2114)
 CHECKS.extend(selftest_r19_winmisc.CHECKS)
+import selftest_r19_decide  # noqa: E402  (round 19, owner decisions 2026-11-11: paste controls, the Enter gate on Windows Git Bash, dash / ash agent arms)
+CHECKS.extend(selftest_r19_decide.CHECKS)
 import selftest_r19_tabs  # noqa: E402  (round 19, #2108 / #2109 / #2110: the round 14 candidate's tab, Find, viewer and notification verdicts; own file)
 CHECKS.extend(selftest_r19_tabs.CHECKS)
 import selftest_r19_artifacts  # noqa: E402  (#2123: run_slim is made by the job script, the after_script net is bounded, after_job.ps1's one snapshot; own file)

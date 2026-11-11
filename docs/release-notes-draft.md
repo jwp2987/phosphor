@@ -17,6 +17,14 @@ needs one; keep each to what the user sees and what to do.
   no Secret Service keyring shows those credentials as not set. Nothing is deleted, and they
   read again after upgrading. Machines with a working keyring are not affected.
 
+- **ssh to a host whose login shell is dash or ash (or sh, ksh): a plain session, no agent tools
+  on that host** (#2120). Phosphor's ssh sets up its own session only for a bash or zsh login
+  shell. On a host with another POSIX login shell the pane works like a plain terminal, as it
+  already does for fish and nushell (#2019): what you type goes to ssh as typed, there are no
+  command blocks or app completions in the remote shell, and the agent cannot read, search, edit
+  or run commands on that host. To get them, make bash or zsh the login shell on that host
+  (`chsh`).
+
 ### Changed behaviour
 
 - **A stored credential that cannot be opened is now said, once per launch** (#2095). If a

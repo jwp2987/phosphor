@@ -288,20 +288,36 @@ def connect_or_fail(ctx, r, arm, label=""):
 # ---- #2019: a host whose LOGIN shell is fish or nu gets a plain ssh session, by decision (DECLINED.md, PLAIN_SESSION_DECLINED). The agent works on a
 # remote host through the managed session, so an agent-mode arm on such a host has nothing to judge: in a plain session the keys are ssh's and the agent
 # prompt would be typed into the remote shell. The premise is read from the APP'S OWN LOG of this connect, never from the arm's name alone.
+# Owner decision 2026-11-11 (#2120, #2126): a host whose login shell is dash or ash gets a plain session too (the remote command bootstraps bash and zsh
+# only; the SSH hook of any other POSIX login shell is a plain login, view.rs ssh_on_remote_plain_login), with the same consequence for the agent. Its
+# evidence in the log is a different line (SH_LOGIN_PLAIN_RE, the plain-login event of the SSH hook), and its DECLINED entry is its own.
 PLAIN_SESSION_LOGIN_SHELLS = ("fish", "nu")
+PLAIN_LOGIN_SH_SHELLS = ("dash", "ash")                                                           # the lab's login shells the remote command does not bootstrap
 PLAIN_SESSION_HOOK = "Received PlainSSHFallback hook"                                            # ansi/mod.rs: log::info!("Received {} hook")
 MANAGED_SESSION_RE = re.compile(r"Received ManagedSSHSessionStarting hook|hop=ssh_wrapper verdict managed=true")
+# view.rs ssh_on_remote_plain_login (the hop) / terminal_model.rs TerminalModel::ssh (the INFO line): the SSH hook of an unbootstrapped login shell (#2120)
+SH_LOGIN_PLAIN_RE = re.compile(r"hop=ssh_wrapper remote_plain_login\b|SSH hook for a login shell the remote command does not bootstrap")
 PLAIN_SESSION_DECLINED = "DECLINED.md, 'A remote host whose login shell is fish or nu gets a plain ssh session: no agent tools on that host (#2019)'"
+PLAIN_LOGIN_SH_DECLINED = "DECLINED.md, 'A remote host whose login shell is dash or ash gets a plain ssh session: no agent tools on that host (#2120)'"
 
 
 def plain_session_limit(shell, log_text):
-    """pure: the reason an agent-mode arm cannot be judged, or None when it must be judged in full. A reason needs ALL of: the arm's login shell is one the
-    app gives a plain session by decision (fish, nu); the app log of this connect says it took the plain session (the PlainSSHFallback hook); and it has no
-    managed-session line. So a bash / zsh / dash / ash / pwsh arm never gets one (a plain session there is a defect and the case's own checks fail), and a
-    fish / nu arm that got a managed session, or whose connect logged neither line, is judged like any other."""
+    """pure: the reason an agent-mode arm cannot be judged, or None when it must be judged in full. Two families, each on the app log's own evidence:
+      fish, nu   (#2019): the log of this connect says it took the plain session (the PlainSSHFallback hook) and has no managed-session line;
+      dash, ash  (owner 2026-11-11, #2120): the log of this connect has the plain-login event of the SSH hook (SH_LOGIN_PLAIN_RE). The wrapper went the
+                 managed way first, so a managed-session line is expected there and does not matter.
+    So a bash / zsh / pwsh arm never gets one (a plain session there is a defect and the case's own checks fail); a fish / nu arm that got a managed
+    session, a dash / ash arm whose connect logged no plain-login event (the kill switch PHOSPHOR_SSH_UNBOOTSTRAPPED_PLAIN=0, a regression of #2120, a
+    session that was bootstrapped after all), and any arm whose connect logged neither line are judged like any other."""
+    text = log_text or ""
+    if shell in PLAIN_LOGIN_SH_SHELLS:
+        if not SH_LOGIN_PLAIN_RE.search(text):
+            return None
+        return ("KNOWN LIMITATION (owner decision 2026-11-11, #2120): the host's login shell is %s, which the ssh remote command does not bootstrap, so the "
+                "session is a plain login (the app log of this connect has the plain-login event of the SSH hook, `remote_plain_login`), and the agent's "
+                "remote tools need a managed session. Not judged; see %s" % (shell, PLAIN_LOGIN_SH_DECLINED))
     if shell not in PLAIN_SESSION_LOGIN_SHELLS:
         return None
-    text = log_text or ""
     if PLAIN_SESSION_HOOK not in text or MANAGED_SESSION_RE.search(text):
         return None
     return ("KNOWN LIMITATION (owner decision, #2019): the host's login shell is %s, which gets a plain ssh session by decision (the app log of this "
@@ -309,13 +325,27 @@ def plain_session_limit(shell, log_text):
                 shell, PLAIN_SESSION_HOOK, PLAIN_SESSION_DECLINED))
 
 
+def sh_login_connect(ctx, r, arm, off):
+    """connect of an agent-mode arm on a dash / ash host: `ssh <host>`, then wait for the remote shell's first prompt OR the plain-login event of the SSH
+    hook in the app log since `off`, whichever comes first. The lab's dash / ash prompt hook lives in `~/.profile`, which the session reads only when the
+    remote command starts the shell as a login shell (#2126); the event is logged either way, before the shell starts. Neither within the wait = no
+    connect: a FAIL, as on every other arm. -> True when connected."""
+    before = CR.rprompts(ctx)
+    ctx.be.type("ssh " + host_of(arm), 12, enter=True)
+    seen = ctx.until(lambda: CR.rprompts(ctx) > before or bool(SH_LOGIN_PLAIN_RE.search(ctx.log_since(off))), 90 if arm["lat_ms"] < 300 else 150, step=0.1)
+    r.check(bool(seen), "no remote prompt and no plain-login event in the app log after `ssh %s` (login shell %s). Test host: %s" % (
+        host_of(arm), arm["shell"], "" if seen else ctx.ssh_diag()))
+    return bool(seen)
+
+
 def agent_connect(ctx, r, arm):
     """connect for a case in which the AGENT works on the remote host. True = connected and the case goes on. False = the case ends here: either no remote
     prompt (the failed check of connect_or_fail, pane reset), or the arm is the decided limitation (plain_session_limit over the app log of this connect):
     the row is then UNVERIFIABLE with the DECLINED reference, the agent steps are NOT typed (in a plain session they would go to the remote shell), and the
-    remote session is left through finish_remote, whose check stands."""
+    remote session is left through finish_remote, whose check stands. A dash / ash arm connects through sh_login_connect (prompt or plain-login event)."""
     off = ctx.log_size()
-    if connect_or_fail(ctx, r, arm) is None:
+    connected = sh_login_connect(ctx, r, arm, off) if arm["shell"] in PLAIN_LOGIN_SH_SHELLS else connect_or_fail(ctx, r, arm) is not None
+    if not connected:
         ctx.reset()
         return False
     time.sleep(1.0 + 2 * rtt_s(arm))
@@ -330,8 +360,9 @@ def agent_connect(ctx, r, arm):
 
 def plain_session_feature_limit(shell, log_text, feature):
     """pure: plain_session_limit for a TERMINAL-mode case about a remote feature of the managed session (the code-review panel, the remote editor, the git
-    dialog). Same premise, read from the app log of this connect; None = judge the arm in full."""
-    if plain_session_limit(shell, log_text) is None:
+    dialog). Same premise, read from the app log of this connect; None = judge the arm in full. fish / nu only: the owner decision of 2026-11-11 for dash /
+    ash hosts covers the agent-mode arms, and their terminal-mode arms are judged normally."""
+    if shell not in PLAIN_SESSION_LOGIN_SHELLS or plain_session_limit(shell, log_text) is None:
         return None
     return ("KNOWN LIMITATION (owner decision, #2019): the host's login shell is %s, which gets a plain ssh session by decision (the app log of this connect "
             "has '%s' and no managed-session line); %s needs a managed session. Not judged; see %s" % (shell, PLAIN_SESSION_HOOK, feature, PLAIN_SESSION_DECLINED))
@@ -1021,8 +1052,7 @@ def c_no_helper_chip(ctx, r, arm):
     finish_remote(ctx, r)
 
 # ------------------------------------------------------------------ 6a. a login shell the remote command does not bootstrap: keys reach it (#2120)
-# view.rs ssh_on_remote_plain_login (the hop) / terminal_model.rs TerminalModel::ssh (the INFO line): the SSH hook of an unbootstrapped login shell
-SH_LOGIN_PLAIN_RE = re.compile(r"hop=ssh_wrapper remote_plain_login\b|SSH hook for a login shell the remote command does not bootstrap")
+# SH_LOGIN_PLAIN_RE (the plain-login event of the SSH hook of an unbootstrapped login shell) is defined with plain_session_limit above
 SH_LOGIN_GIVE_UP_RE = re.compile(r"hop=kh_ssh_give_up\b")
 
 

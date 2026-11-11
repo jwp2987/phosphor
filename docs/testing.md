@@ -6023,8 +6023,9 @@ Everything below is worked, unproven: nothing was compiled or run against a buil
   `Received ManagedSSHSessionStarting hook` and no `hop=ssh_wrapper verdict managed=true`. Then the row is UNVERIFIABLE (status `noref`,
   never a pass) with the DECLINED reference, metric `plain_session_by_decision`, the agent steps are not typed (in a plain session they
   would be typed into the remote shell), and the pane is left with `exit`, whose check stands. **No check is weakened for any other
-  arm:** a bash / zsh / dash / ash / pwsh arm is judged in full whatever the log says (a plain session there fails on the case's own
-  checks), a `nu` arm that gets a managed session is judged in full, and "no remote prompt" is a FAIL on every shell. The rows stay
+  arm:** a bash / zsh / pwsh arm is judged in full whatever the log says (a plain session there fails on the case's own
+  checks; dash / ash arms have their own premise since the owner decision of 2026-11-11, section "Round 19: three owner decisions"),
+  a `nu` arm that gets a managed session is judged in full, and "no remote prompt" is a FAIL on every shell. The rows stay
   registered (`lab_agent_remote_flow.nu.lan.nohelper` and the others), so they are reported, not dropped. Self-test
   `lab_plain_session_limit_2019` (the pure verdict per shell and log, `agent_connect` driven with stubs: what it records and that the
   `exit` check is not waived, the six cases connect through it, the DECLINED entry exists under the title the reason quotes).
@@ -7623,3 +7624,53 @@ proves #2126; `lab_nohelper_sh_login_profile` does.
 | unit | `available_shells_test.rs`: `legacy_startup_shell_name_is_resolved_while_the_scan_is_unfinished`, `legacy_startup_shell_name_uses_the_finished_scan_as_before` | no finished scan: one direct lookup of the name, the named shell; a finished scan decides as before and nothing is resolved directly; `Default` and a custom path are untouched |
 | unit | `integration_testing::subshell::util::tests`: `motd_marker_is_the_start_of_the_first_plain_line`, `a_typed_ssh_runs_the_legacy_wrapper_in_this_fork` | what the MotD assertion looks for; the fact the ssh scenarios are gated on |
 | integration | `test_ssh_with_shell_override` (new second step `test -n "$ZSH_VERSION"`; needs zsh), `assert_motd_shown` (this machine's MotD), the four scenarios of #2128 | see section 2.2 |
+## Round 19: three owner decisions of 2026-11-11 in the harness (design `docs/design/r19-decide-tests.md`; #2114, #2120, #2126; harness only; no app run when written)
+Self-tests: `appci/selftest_r19_decide.py` (seven checks; each rule is fed the input it exists for and the inputs on which it must still FAIL).
+`run.py --self-test` and `script/ci/ci_seq.py --self-test` pass. No case was added, none moved between lists.
+**(4) Windows `big_paste` and `remote_heredoc_paste`: a control that fails too makes the row NOREF, never PASS and never a Phosphor FAIL.**
+Both rows failed every full Windows run for a platform reason their own control already showed (round 14: conhost got 2 of 1000001 bytes).
+| case | before | now | still a FAIL |
+|---|---|---|---|
+| `big_paste` [Git Bash pane] | the byte check was NOREF under a `same-shortfall` control, but "the shell never came back to a prompt after `cat` was interrupted" failed the row, and `run.py` added `pane_not_local_after_big_paste` | `cases.big_paste_back_at_prompt` takes the control's result: with it, no prompt is the same NOREF (text carries the control's numbers, metric `big_paste_control`), and the case relaunches the app itself (`cases_robust.start_app`) so the next case gets a clean pane | the control got every byte (`exact`); no control could run or it received nothing (`none`); a byte-exact paste whose shell does not come back; a relaunch that does not come up; the UI-item budget (Phosphor's own main thread: the control says nothing about it) |
+| `remote_heredoc_paste` [Git Bash pane], step "10 KB single line" | FAIL "this step's payload is a different kind/size, so that does not cover it": the only control was the 2,000-line here-doc | control L: the SAME line pasted into the reference console's ssh, same 60 s budget (`heredoc_control(line=)`, Windows only, only when that step produced no file, once per run). `classify_timeout`: L did not deliver either -> `platform` (NOREF naming L's numbers: its budget, the bytes the test sshd counted from the reference console's ssh client) | L delivered the line (class `app`); L could not run; L sent the test sshd no byte at all (a console that pastes nothing proves nothing); no L in the control |
+`conhost_ssh_send` now records what the test sshd counted for the control (`sshd_got`), so a NOREF text has the control's own byte count.
+The two here-doc steps are judged as before (control H). POSIX is untouched (control W).
+**Next Windows run:** `big_paste` [terminal@gitbash, agent@gitbash] NOREF with two NO-REFERENCE lines (bytes, prompt) and
+"big_paste: relaunch", no `pane_not_local_after_big_paste`; `remote_heredoc_paste` NOREF with a "control L" note, or a FAIL that says the
+reference console delivered the line.
+**(5) `latency_enter` on the Windows Git Bash pane (both modes): the regression gate judges the app's own segment.**
+`cases.enter_regress_basis` hands `lat.evaluate` the app-share basis of the Ctrl-C ruling (section "Latency budgets and regression checks"):
+figure `enter_to_write` = the median of `enter_begin -> pty_write` (`metrics.app_segments_ms.enter_to_write_ms`). Usable (n >= 30 and
+>= 90 % of the Enters asked for): the previous-build and baseline verdicts compare that figure (+5 % and +0.5 ms = FAIL), with the one
+re-measure kept (a second set judged on its own figure; clean = WARN, no figure = clears nothing). The end-to-end median is still measured,
+stays in the latency record and is printed in the row ("REPORTED, not gated on this pane"; "NOT JUDGED: median ..." when the median gate
+would have tripped). Hard bound: the figure over 2 ms fails the row whatever n is (`APPCI_ENTER_APP_SHARE_MAX_MS`). Not usable, another
+pane, another platform: the median gate, unchanged. `lat.old_app_share` reads the flat shape older runs recorded
+(`app_segments_ms.enter_to_write_ms` / `_n`), so the previous-build comparison works from the first run. **The committed
+`baselines/windows.json` has no app-share figure for the two `latency_enter` Git Bash records**: until a baseline is promoted from a run
+that has one (`baseline.py promote` carries `app_share`), the row says "baseline: no app-share figure ... not compared on the app share"
+and the previous build plus the 2 ms bound judge.
+The attribution control: `cases.enter_segment_samples` reads two more hops the app already logs, `enter_to_execute_ms`
+(`enter_begin -> try_execute_done`) and `command_to_pty_ms` (`write_command -> pty_write`); with `submit_bookkeeping_ms` and
+`effect_flush_ms` they are the four consecutive hops of the segment (`cases.ENTER_HOPS`). Every `latency_enter` row with a log gets one
+line, "app segment per hop ...", and the metric `enter_hops_ms` (`enter_hop_breakdown`): the four medians, then the difference per hop
+against the terminal-mode arm of the same run and pane (same build, host and hour: the control for "agent mode costs +1 ms") and against
+the previous run's same arm, naming the hop that grew most. A hop the other side has no figure for is listed, never counted as 0.
+**Next Windows run:** `latency_enter` [agent@gitbash] has no "REGRESSION ... median" line; it has the "REPORTED, not gated" line and a
+per-hop line whose "vs the terminal-mode arm of this run" part names one hop. A FAIL there now means the app's own segment grew against
+the previous run, or is over 2 ms.
+**(9) dash / ash hosts: the agent-mode lab arms report the plain session as the named known limitation (#2120; DECLINED.md, the entry
+after #2019).** `cases_lab.plain_session_limit` has a second family: login shell `dash` or `ash` AND the app log of this connect has the
+plain-login event of the SSH hook (`hop=ssh_wrapper remote_plain_login`, or the model's INFO line; `SH_LOGIN_PLAIN_RE`). The wrapper went
+the managed way first on such a host, so a managed-session line does not matter there. `agent_connect` connects a dash / ash arm through
+`sh_login_connect`: the remote shell's first prompt OR that event, whichever comes first, because the lab's dash / ash prompt hook is in
+`~/.profile` and the session reads it only when the shell is started as a login shell (#2126). Then the row is UNVERIFIABLE (NOREF) with
+the DECLINED reference, metric `plain_session_by_decision`, the agent steps are not typed and the pane is left with `exit`, whose check
+stands. Rows: `lab_agent_remote_{flow,errors}.{dash,ash}`, `lab_agent_remote_drop.dash`, `lab_fam_agent_{edit,delete}_conflict.dash`,
+`lab_read_files_remote.{dash,ash}`, `lab_diff_apply_remote.{dash,ash}` (both helper arms). **Still a FAIL:** neither a prompt nor the
+event (no connect, or `PHOSPHOR_SSH_UNBOOTSTRAPPED_PLAIN=0`). **Judged in full:** a dash / ash arm that connects with no such event, and
+every terminal-mode arm on these hosts (`plain_session_feature_limit` stays fish / nu only, so `lab_remote_edit`, `lab_diff_panel_remote`,
+`lab_git_write_remote`, `lab_gh_chip_remote` on dash / ash are judged normally). Self-test `r19_lab_dash_ash_agent_arms_2120`;
+`lab_plain_session_limit_2019` lost its one `agent_connect` row for a dash arm (that arm now has its own connect, covered by the new check).
+**Next lab run with dash / ash arms:** the agent-mode rows above NOREF with "KNOWN LIMITATION (owner decision 2026-11-11, #2120)".
+No played matrix has dash / ash today (the quick and candidate selections leave them out), so this needs a run that selects them.

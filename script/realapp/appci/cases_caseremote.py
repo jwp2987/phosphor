@@ -834,7 +834,7 @@ def conhost_ssh_send(ctx, label, name, text, expected, timeout):
     with the pane's rc, so the same msys ssh client and the same fake sshd), as big_paste's control does for a local paste. Same result dict as
     plain_ssh_send; why is set when it could not run."""
     from cases import ref_terminal
-    res = dict(label=label, sent=len(text), s=None, got=-1, exact=False, peak={}, out=0, why=None)
+    res = dict(label=label, sent=len(text), want=len(expected), s=None, got=-1, exact=False, peak={}, out=0, why=None, sshd_got=None)
     ref = None
     rm_remote(ctx, name, ".appci_ctl_ready")
     try:
@@ -853,15 +853,19 @@ def conhost_ssh_send(ctx, label, name, text, expected, timeout):
             res["why"] = "ssh in the reference console never ran a probe line in the remote shell"
             return res
         t0 = time.time()
+        sshd_off = sshd_log_size(ctx)
         ctx.be.clip_set(text)
         ctx.be.paste(enter=True)
         got = _wait_remote_file(ctx, name, len(expected), timeout)
+        # the control's own numbers (owner 2026-11-11: a NOREF names them): what the test sshd counted from the reference console's ssh client
+        res["sshd_got"] = sshd_input_bytes(sshd_io_lines(ctx, sshd_off))
         if got is not None:
             res["got"], res["exact"] = len(got), got == expected
             if got == expected:
                 res["s"] = round(time.time() - t0, 2)
         else:
-            res["why"] = "no file within %d s" % timeout
+            res["why"] = "no file within %d s%s" % (timeout, "" if res["sshd_got"] is None else
+                                                    "; test sshd: %d client bytes received of the %d-byte paste" % (res["sshd_got"], len(text)))
         return res
     except Exception as e:
         res["why"] = "control failed: %s: %s" % (type(e).__name__, str(e)[:120])
@@ -880,25 +884,39 @@ def conhost_ssh_send(ctx, label, name, text, expected, timeout):
 _CONTROL_CACHE = {}         # run dir -> control results: the control does not depend on the app, so the second mode reuses the first's
 
 
-def heredoc_control(ctx, r, eof, lines2k):
+LINE_STEP = "hd_line.txt"            # the 10 KB single-line step: never wrapped, and a different payload from the here-doc controls
+
+
+def heredoc_control(ctx, r, eof, lines2k, line=None):
     """#1129: the plain-ssh / reference-console control for the 2,000-line here-doc, cached per run. POSIX runs two variants: W = the app's wrapper
     line for that here-doc (the same ONE long line the app types for a bash without bracketed paste) and H = the here-doc itself (what a plain
-    terminal's paste sends: 2,000 short lines). Windows runs H in the reference console."""
+    terminal's paste sends: 2,000 short lines). Windows runs H in the reference console.
+    Owner decision 2026-11-11 (#2114): `line` (the 10 KB single line, given when that step produced no file) adds control L on Windows: the SAME line
+    pasted into the reference console's ssh, same 60 s budget as the step. The here-doc control is a different payload and does not cover that step
+    (classify_timeout), so without L the step could only FAIL whatever the platform did. L is run once per run, when first asked for."""
     key = getattr(ctx, "run", "") or ""
-    if key in _CONTROL_CACHE:
-        r.note("plain-ssh control: reused from the first mode of this run (it does not involve the app)")
-        return _CONTROL_CACHE[key]
     heredoc = lambda name: "cat > ~/%s <<'%s'\n%s\n%s" % (name, eof, "\n".join(lines2k), eof)      # noqa: E731
     expected = ("\n".join(lines2k) + "\n").encode()
-    ctl = {}
-    if getattr(ctx, "win", False):
-        ctl["H"] = conhost_ssh_send(ctx, "reference console + ssh, the here-doc pasted", "ctl_h.txt", heredoc("ctl_h.txt"), expected, 120)
+    fresh = []
+    if key in _CONTROL_CACHE:
+        r.note("plain-ssh control: reused from the first mode of this run (it does not involve the app)")
+        ctl = _CONTROL_CACHE[key]
     else:
-        ctl["H"] = plain_ssh_send(ctx, "plain ssh, the here-doc pasted", "ctl_h.txt", heredoc("ctl_h.txt"), expected, 120)
-        w = wrapper_line(heredoc("ctl_w.txt"))
-        ctl["W"] = plain_ssh_send(ctx, "plain ssh, the app's %d-byte wrapper line" % len(w), "ctl_w.txt", w, expected, 200)
-        ctl["W"]["line"] = len(w)
-    for k, v in ctl.items():
+        ctl = {}
+        if getattr(ctx, "win", False):
+            ctl["H"] = conhost_ssh_send(ctx, "reference console + ssh, the here-doc pasted", "ctl_h.txt", heredoc("ctl_h.txt"), expected, 120)
+        else:
+            ctl["H"] = plain_ssh_send(ctx, "plain ssh, the here-doc pasted", "ctl_h.txt", heredoc("ctl_h.txt"), expected, 120)
+            w = wrapper_line(heredoc("ctl_w.txt"))
+            ctl["W"] = plain_ssh_send(ctx, "plain ssh, the app's %d-byte wrapper line" % len(w), "ctl_w.txt", w, expected, 200)
+            ctl["W"]["line"] = len(w)
+        fresh = list(ctl)
+    if line is not None and getattr(ctx, "win", False) and "L" not in ctl:
+        ctl["L"] = conhost_ssh_send(ctx, "reference console + ssh, the %d-byte single line pasted" % len(line), "ctl_l.txt",
+                                    "printf '%%s\\n' '%s' > ~/ctl_l.txt" % line, (line + "\n").encode(), 60)
+        fresh.append("L")
+    for k in fresh:
+        v = ctl[k]
         r.metric("control_%s_s" % k, -1 if v["s"] is None else v["s"])
         r.metric("control_%s_bytes_got" % k, v["got"])
         if v["peak"]:
@@ -906,6 +924,14 @@ def heredoc_control(ctx, r, eof, lines2k):
         r.note("control %s (%s): %s%s" % (k, v["label"], "%.1f s" % v["s"] if v["s"] is not None else "not done", "" if not v["why"] else " (%s)" % v["why"]))
     _CONTROL_CACHE[key] = ctl
     return ctl
+
+
+def control_numbers(c, want):
+    """the numbers of a reference-console control that did not deliver, for a NOREF text: why it stopped (with the test sshd's byte count when it
+    logged one), or the bytes of a short / wrong file"""
+    if c["got"] < 0:
+        return c["why"] or "no file"
+    return "%d of %d bytes in the remote file%s" % (c["got"], want, "" if c.get("sshd_got") is None else "; test sshd: %d client bytes received" % c["sshd_got"])
 
 
 def classify_timeout(rec, ctl, bracketed):
@@ -919,6 +945,22 @@ def classify_timeout(rec, ctl, bracketed):
         return None, "no control ran"
     h, w = ctl.get("H"), ctl.get("W")
     big_enough = rec["name"] in BASH_WRAPPER_STEPS          # the 2k here-doc itself, or the bigger one
+    if "W" not in ctl and rec["name"] == LINE_STEP:
+        # owner 2026-11-11 (#2114), Windows: the 10 KB single line is judged against a control of the SAME line (L). The control did not deliver it
+        # either -> platform (NOREF with the control's numbers); it did -> the app; no such control -> no evidence, the plain failure stands.
+        l = ctl.get("L")
+        if l is None:
+            return None, "no reference-console control of the single line ran; the here-doc control is a different kind/size of payload, so that does not cover it"
+        if l["exact"]:
+            return "app", "the reference console's ssh delivered the same %d-byte single line in %.1f s" % (l["sent"], l["s"])
+        if l["got"] < 0 and not (l["why"] or "").startswith("no file"):
+            return None, "the reference-console control of the single line could not run (%s)" % l["why"]
+        if l["got"] < 0 and l.get("sshd_got") == 0:
+            # as big_paste_control's "received nothing at all": a console that pastes nothing says nothing about the platform's limit
+            return None, "the reference console's ssh sent the test sshd no byte of the single line (the paste chord may not work in a console window), so the control proves nothing"
+        return "platform", ("the reference console's ssh did not deliver the same %d-byte single line either (%s, same %d s budget): the msys ssh client under a "
+                            "Windows console does not get this paste through, with or without Phosphor; not shown to be the app" % (
+                                l["sent"], control_numbers(l, l.get("want") or rec["want"]), rec["timeout"]))
     if "W" not in ctl:      # Windows: only the reference-console paste of the 2k here-doc
         if h is None:
             return None, "no reference-console control ran"
@@ -929,7 +971,7 @@ def classify_timeout(rec, ctl, bracketed):
         if not big_enough:
             return None, "the reference console's ssh failed the 2,000-line here-doc too, but this step's payload is a different kind/size, so that does not cover it"
         return "platform", ("the reference console's ssh did not deliver the 2,000-line here-doc either (%s): the msys ssh client under a Windows console does not take "
-                            "a paste this size, as big_paste's control showed for msys `cat`; not shown to be the app" % (h["why"] or "%d of %d bytes" % (h["got"], rec["want"])))
+                            "a paste this size, as big_paste's control showed for msys `cat`; not shown to be the app" % control_numbers(h, h.get("want") or rec["want"]))
     if rec["name"] not in BASH_WRAPPER_STEPS:
         return None, "not a bash wrapper-path step, so the wrapper-line control does not apply"
     if bracketed is None:
@@ -1229,7 +1271,9 @@ def c_remote_heredoc(ctx, r):
     # the verdicts: a slow step is compared with the same bytes through plain ssh (run now, with the pane local and idle)
     ctl = None
     if any(not x["ok"] for x in recs) or any(x["name"] == "hd_2k.txt" and x["secs"] > 20 for x in recs):
-        ctl = heredoc_control(ctx, r, eof, lines2k)
+        # owner 2026-11-11: a single-line step with no file gets a control of the same line (Windows; heredoc_control ignores `line` elsewhere)
+        line_stuck = any(x["name"] == LINE_STEP and x["got"] is None for x in recs)
+        ctl = heredoc_control(ctx, r, eof, lines2k, line=long_line if line_stuck else None)
         ctx.reset()
     for rec in recs:
         judge_step(ctx, r, rec, ctl, bracketed, rec.get("io"))

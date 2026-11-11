@@ -706,6 +706,11 @@ def enter_segments(lines, t0):
       submit_bookkeeping_ms    `hop=try_execute_done` -> `hop=enter_submit_done` (#1606): post-submit model updates that run before the queued
                                ExecuteCommand effect reaches the pty (agent mode measured ~0.7 ms here in r18e4)
       effect_flush_ms          `hop=enter_submit_done` -> `hop=write_command`
+      enter_to_execute_ms      `hop=enter_begin` -> `hop=try_execute_done` (owner 2026-11-11): the first hop of enter_to_write, routing and the
+                               submit decision (agent mode decides shell-or-agent here)
+      command_to_pty_ms        `hop=write_command` -> the line's `pty_write`: the last hop of enter_to_write (PtyController::write_command takes
+                               the model lock, hands the bytes to the pty thread, which writes them). With submit_bookkeeping and effect_flush
+                               these are the four consecutive hops of the app's own Enter segment (ENTER_HOPS)
       write_to_first_read_ms   that write -> the first `pty_read` after it (the shell's first answer: echo/Preexec OSC); the app logs this as
                                `since_write_ms` on the pty_read line
       write_to_preexec_ms      from the app's `hop=preexec_received` line (input_order::note_shell_signal(Preexec), #1583 W3). Builds before
@@ -727,7 +732,14 @@ def enter_segments(lines, t0):
 
 
 ENTER_SEGMENT_KEYS = ("event_age_ms", "event_to_enter_ms", "enter_to_write_ms", "submit_bookkeeping_ms", "effect_flush_ms", "write_to_first_read_ms",
-                      "write_to_preexec_ms", "pty_lock_wait_ms", "appkit_route_ms", "key_equivalent_ms", "interpret_keys_ms", "dispatch_to_enter_ms")
+                      "write_to_preexec_ms", "pty_lock_wait_ms", "appkit_route_ms", "key_equivalent_ms", "interpret_keys_ms", "dispatch_to_enter_ms",
+                      "enter_to_execute_ms", "command_to_pty_ms")
+# owner 2026-11-11 (#2114): the four CONSECUTIVE hops of the app's own Enter segment, enter_begin -> pty_write, in the order an Enter passes them, each
+# with what it is. Together they are enter_to_write_ms (medians of parts need not add up to the median of the whole; the note says both).
+ENTER_HOPS = (("enter_to_execute_ms", "enter_begin -> try_execute_done (routing, the submit decision)"),
+              ("submit_bookkeeping_ms", "try_execute_done -> enter_submit_done (post-submit model updates)"),
+              ("effect_flush_ms", "enter_submit_done -> write_command (the queued ExecuteCommand effect)"),
+              ("command_to_pty_ms", "write_command -> pty_write (model lock, hand-over to the pty thread, write(2))"))
 # #2031: the mac_enter stages between app_send_event and enter_begin, in the order a Return passes them (window.m performKeyEquivalent ->
 # host_view.m keyDownImpl), each with the segment that ENDS at it
 ENTER_STAGE_SEGMENTS = (("perform_key_equivalent", "appkit_route_ms"), ("key_down_impl_entry", "key_equivalent_ms"),
@@ -741,6 +753,7 @@ def enter_segment_samples(lines, t0):
     seg = {k: [] for k in keys}
     pending, wrote, read_seen, chord = None, None, True, False
     sent, executed, submitted, lock_wait = None, None, None, None
+    cmd_at = None         # the write_command hop of the Enter that is still waiting for its pty_write
     stages = []           # #2031: (stage, t) of the mac_enter lines since the last app_send_event
     # pty_lock_wait is logged only when a wait happened, so its absence means 0 only in a build that has the #1606 hops (the
     # enter_submit_done hop is logged on every shell submit); an older build reports the key absent, never 0.0
@@ -761,7 +774,7 @@ def enter_segment_samples(lines, t0):
             if sent is not None:
                 stages.append((l.split("hop=mac_enter stage=", 1)[1].split(" ", 1)[0], t))
         elif "hop=enter_begin" in l:
-            pending, chord = t, False
+            pending, chord, cmd_at = t, False, None
             if sent is not None:
                 seg["event_to_enter_ms"].append(t - sent)
                 for k, v in enter_stage_split(sent, stages, t).items():
@@ -773,12 +786,16 @@ def enter_segment_samples(lines, t0):
             chord = True
         elif "hop=try_execute_done" in l and pending is not None:
             executed = t
+            seg["enter_to_execute_ms"].append(t - pending)
         elif "hop=enter_submit_done" in l and executed is not None:
             seg["submit_bookkeeping_ms"].append(t - executed)
             submitted, executed = t, None
-        elif "hop=write_command" in l and submitted is not None:
-            seg["effect_flush_ms"].append(t - submitted)
-            submitted = None
+        elif "hop=write_command" in l and (submitted is not None or pending is not None):
+            if submitted is not None:
+                seg["effect_flush_ms"].append(t - submitted)
+                submitted = None
+            if pending is not None:
+                cmd_at = t
         elif "hop=preexec_received" in l and wrote is not None:
             seg["write_to_preexec_ms"].append(t - wrote)
             if has_lock_hop:
@@ -792,7 +809,9 @@ def enter_segment_samples(lines, t0):
             nb = re.search(r"pty_write bytes=(\d+)", l)
             if nb and (int(nb.group(1)) > 10 or chord) and pending is not None:
                 seg["enter_to_write_ms"].append(t - pending)
-                wrote, pending, read_seen, lock_wait, chord = t, None, False, None, False
+                if cmd_at is not None:
+                    seg["command_to_pty_ms"].append(t - cmd_at)
+                wrote, pending, read_seen, lock_wait, chord, cmd_at = t, None, False, None, False, None
         elif wrote is not None and not read_seen and " pty_read bytes=" in l:
             sw = re.search(r"since_write_ms=(\d+(?:\.\d+)?)", l)
             seg["write_to_first_read_ms"].append(float(sw.group(1)) if sw else t - wrote)
@@ -2633,12 +2652,15 @@ def c_big(ctx, r):
     if ctx.log_path and os.path.exists(ctx.log_path):
         judge_paste_read(r, ctx.log_since(ui_off), plat(), "big_paste")    # #1782: macOS copies the pasteboard on the main thread
     want = (data + "\n").encode()
+    control_fell_short = None       # the conhost control's own numbers when it fell short too (owner 2026-11-11)
     if got != want and ctx.win:
         # r18u8 (U2): under ConPTY `cat` in msys receives ~1 line of a 1 MB paste (100 of 1000001 bytes) and Ctrl-D does not look like EOF there. Whether that is the app or
         # the platform is decided by a CONTROL: the same paste into the same program in a conhost Git Bash window. If conhost also falls short, the case is NOREF
         # (reason stated), never a pass and never an app failure; if conhost gets every byte, the failure stands. No control possible -> NOREF with the reason.
         kind, why = big_paste_control(ctx, data, want)
         if kind == "same-shortfall":
+            control_fell_short = why
+            r.metric("big_paste_control", why)
             r.no_reference("big_paste: Phosphor's pane got %d of %d bytes and the CONTROL did too (%s): the platform's ConPTY/msys path does not deliver a 1 MB paste to `cat`, not shown to be the app" % (len(got), len(want), why))
         elif kind == "none":
             r.no_reference("big_paste: Phosphor's pane got %d of %d bytes and no conhost control could run (%s): a ConPTY limit and an app defect cannot be told apart here" % (len(got), len(want), why))
@@ -2647,9 +2669,14 @@ def c_big(ctx, r):
     else:
         r.check(got == want, "%.0f MB paste not byte-exact (expected %d bytes, got %d)" % (mb, len(data) + 1, len(got)))
     ctx.reset()
-    big_paste_back_at_prompt(ctx, r, nb)
+    back = big_paste_back_at_prompt(ctx, r, nb, control_fell_short)
     if ctx.win and got != want:
-        relaunch_after_paste_backlog(ctx, r, "big_paste", mark, out)
+        relaunched = relaunch_after_paste_backlog(ctx, r, "big_paste", mark, out)
+        if not back and control_fell_short and not relaunched:
+            # owner 2026-11-11: the pane is still inside the undelivered paste (the NOREF above says so, with the control's numbers). The next case must
+            # not type into it, and run.py's root-shell probe must not report this platform shortfall a second time as pane_not_local_after_big_paste:
+            # the case relaunches the app itself. A relaunch that does not come up is a FAIL (start_app's own check).
+            cases_robust.start_app(ctx, r, "big_paste: relaunch, the pane is still inside the undelivered paste")
 
 
 def paste_backlog_count(ctx, mark, payload_lines, wait=5.0):
@@ -2679,22 +2706,35 @@ def relaunch_after_paste_backlog(ctx, r, label, mark, payload_lines):
     return ok
 
 
-def big_paste_back_at_prompt(ctx, r, nb):
+def big_paste_back_at_prompt(ctx, r, nb, control_fell_short=None):
     """r18u22 (Windows Git Bash): under ConPTY Ctrl-D is not EOF for msys `cat`, so the case ends with `cat` still reading, and reset()'s Ctrl-C reached it
     only after the 1 MB paste backlog drained (3.7 s; 68 ms in r18u19). The next case (tab_enter) typed its first line into the dying `cat`; the line was
     split across the shell's hand-back and ran as `T180_x >> tc/zzcompl_alpha_u`, whose stray file then made every later Tab ambiguous (0/12). The case
     must leave the pane where it found it: wait for the shell's own prompt (prompt.log) after the Ctrl-C, pressing Ctrl-C again while `cat` still runs,
-    and fail here, by name, if the prompt never comes. Panes without the rc hook (PowerShell, cmd) have no prompt.log and do not run this case."""
+    and fail here, by name, if the prompt never comes. Panes without the rc hook (PowerShell, cmd) have no prompt.log and do not run this case.
+    Owner decision 2026-11-11 (#2114): `control_fell_short` is the conhost control's own result when that control ALSO fell short of the paste
+    (big_paste_control "same-shortfall", e.g. "conhost Git Bash received 2 of 1000001 bytes"). Then a prompt that never comes is the same platform
+    shortfall seen from its other end (ConPTY still feeds `cat` the unread rest of the paste and the Ctrl-C queue behind it): it is reported NOREF with
+    the control's numbers, never a pass and never a Phosphor FAIL. With no such control result (the control got every byte, could not run, or the
+    paste was byte-exact) it is the FAIL it always was. -> True when the shell is back at a prompt (or the pane has no prompt.log), else False."""
     if nb is None:
-        return
+        return True
     back = lambda: ctx.prompts() > nb       # noqa: E731
     for _ in range(3):
         if ctx.until(back, 10):
-            return
+            return True
         # agent mode: two Ctrl-C within the exit window would leave an empty agent view (r18u8 H16); a running `cat` takes them, but keep the spacing
         ctx.be.key("ctrl+c")
         time.sleep(ctx.EXIT_WINDOW_S + 0.4 if ctx.mode == "agent" else 0.8)
-    r.check(ctx.until(back, 10), "big_paste: the shell never came back to a prompt after `cat` was interrupted (Ctrl-C x4 over ~45 s): the next case would type into `cat`")
+    if ctx.until(back, 10):
+        return True
+    msg = "big_paste: the shell never came back to a prompt after `cat` was interrupted (Ctrl-C x4 over ~45 s): the next case would type into `cat`"
+    if control_fell_short:
+        r.no_reference("%s. PLATFORM by the control (%s): the pane is still inside the paste the platform did not deliver, in the reference console "
+                       "either; not shown to be the app. The app is relaunched so the next case starts in a clean pane" % (msg, control_fell_short))
+    else:
+        r.check(False, msg)
+    return False
 
 
 def big_paste_control(ctx, data, want):
@@ -4652,6 +4692,95 @@ def record_enter_os_split(ctx, r, splits):
         "%s %s" % (side, ", ".join("%s %s" % (k[:-3], v) for k, v in d.items() if k.endswith("_ms") or k.startswith("n"))) for side, d in sp.items()))
 
 
+ENTER_APP_SHARE = "enter_to_write"           # the figure's name in a latency record; older runs recorded it as app_segments_ms.enter_to_write_ms / _n
+ENTER_APP_SHARE_MAX_MS = 2.0                 # hard bound on the app's own share of an Enter: the owner's Enter budget (MACOS_ENTER_APP_SHARE_MAX_MS, the Ctrl-C bound)
+_ENTER_HOPS_OF_RUN = {}                      # (run dir, pane) -> the terminal-mode arm's app segments: the same-run control of the agent-mode arm
+
+
+def enter_regress_basis(ctx, segs, n, warm, again):
+    """owner 2026-11-11 (#2114): on the Windows Git Bash pane, both modes, the latency_enter regression verdicts (vs the previous build and the baseline)
+    are judged on the app's own segment of an Enter, `enter_begin -> pty_write`, not on the end-to-end median, as the 2026-11-10 ruling did for Ctrl-C
+    (ctrl_c_regress_basis, lat.py "app-share basis"). Round 14, agent@gitbash: median 115.2 ms vs baseline 92.8 (+24 %) FAIL with 2.00 ms of it the
+    app's; the rest is after the write (pty_write -> first pty_read 39 ms, a Git Bash fork 45 ms at that hour), which no change to the app moves.
+    -> the app_share argument of lat.evaluate, or None (another platform or pane, or no figure in the log: the median gate, as before). The end-to-end
+    median stays measured and reported (the latency record, the row), not gated. The re-measure rule is kept: `again()` types a fresh set and the second
+    verdict is on that set's own share. Hard bound ENTER_APP_SHARE_MAX_MS (APPCI_ENTER_APP_SHARE_MAX_MS): the share over it fails the row.
+    segs: enter_segments() of the measured Enters. again: callable -> fresh end-to-end samples (warm-up dropped)."""
+    if not (ctx.win and ctx.pane == "gitbash"):
+        return None
+    p50 = (segs or {}).get("enter_to_write_ms")
+    if p50 is None:
+        return None
+
+    def remeasure():
+        t0 = time.time()
+        samples = again()
+        s2 = ctx.app_enter_segments(t0)
+        return dict(what=ENTER_APP_SHARE, p50=s2.get("enter_to_write_ms"), n=s2.get("enter_to_write_n") or 0, samples=samples)
+    return dict(what=ENTER_APP_SHARE, p50=p50, n=segs.get("enter_to_write_n") or 0, metric="app_segments_ms", remeasure=remeasure,
+                budget_ms=float(os.environ.get("APPCI_ENTER_APP_SHARE_MAX_MS", str(ENTER_APP_SHARE_MAX_MS))))
+
+
+def enter_hop_breakdown(segs, others=()):
+    """owner 2026-11-11 (#2114), the control that attributes a change of the app's own Enter segment (pure). segs: enter_segments() of this arm.
+    others: [(name, segs of the arm compared against)], e.g. the terminal-mode arm of the same run and pane, the previous run's same arm.
+    -> dict(hops={key: ms} for the ENTER_HOPS this arm has, whole_ms=enter_to_write, sum_ms, vs=[dict(name, whole_delta_ms, delta={key: ms}, grew=key|None,
+    missing=[keys the other arm has no figure for])]), or None when this arm has no hop at all. `grew` is the hop with the largest POSITIVE difference;
+    None when no compared hop is slower here. A hop either side lacks is listed in `missing`, never counted as 0."""
+    segs = segs or {}
+    hops = {k: segs[k] for k, _ in ENTER_HOPS if segs.get(k) is not None}
+    if not hops:
+        return None
+    out = dict(hops=hops, whole_ms=segs.get("enter_to_write_ms"), sum_ms=round(sum(hops.values()), 2), vs=[])
+    for name, o in others:
+        o = o or {}
+        delta = {k: round(hops[k] - o[k], 2) for k in hops if o.get(k) is not None}
+        if not delta and o.get("enter_to_write_ms") is None:
+            continue
+        up = max(delta.items(), key=lambda kv: kv[1]) if delta else None
+        whole = None if out["whole_ms"] is None or o.get("enter_to_write_ms") is None else round(out["whole_ms"] - o["enter_to_write_ms"], 2)
+        out["vs"].append(dict(name=name, whole_delta_ms=whole, delta=delta, grew=up[0] if up and up[1] > 0 else None,
+                              missing=[k for k, _ in ENTER_HOPS if k not in delta]))
+    return out
+
+
+def enter_hop_note(bd):
+    """one row line from enter_hop_breakdown(): the four hops of this arm, then per compared arm the difference per hop and the hop that grew"""
+    short = lambda k: k[:-3]      # noqa: E731
+    txt = "app segment per hop (enter_begin -> pty_write%s; medians ms, #2114): %s (sum of the hop medians %.2f)" % (
+        "" if bd["whole_ms"] is None else " %.2f ms" % bd["whole_ms"], ", ".join("%s %.2f" % (short(k), v) for k, v in bd["hops"].items()), bd["sum_ms"])
+    for v in bd["vs"]:
+        txt += "; vs %s: whole %s, %s" % (v["name"], "n/a" if v["whole_delta_ms"] is None else "%+.2f" % v["whole_delta_ms"],
+                                         ", ".join("%s %+.2f" % (short(k), d) for k, d in v["delta"].items()) or "no hop to compare")
+        if v["grew"]:
+            txt += " -> the hop that grew most: %s (%+.2f ms: %s)" % (short(v["grew"]), v["delta"][v["grew"]], dict(ENTER_HOPS)[v["grew"]])
+        elif v["delta"]:
+            txt += " -> no hop is slower here"
+        if v["missing"]:
+            txt += " [no figure there for: %s]" % ", ".join(short(k) for k in v["missing"])
+    return txt
+
+
+def record_enter_hops(ctx, r, segs, rid):
+    """latency_enter: the per-hop breakdown as metric `enter_hops_ms` and one row line. Compared against the terminal-mode arm of this run and pane (kept
+    in _ENTER_HOPS_OF_RUN when that arm ran: same build, same host, same hour) and the previous run's same arm (its app_segments_ms metric)."""
+    key = (getattr(ctx, "run", "") or "", ctx.pane)
+    others = []
+    if ctx.mode == "terminal":
+        _ENTER_HOPS_OF_RUN[key] = dict(segs or {})
+    elif key in _ENTER_HOPS_OF_RUN:
+        others.append(("the terminal-mode arm of this run", _ENTER_HOPS_OF_RUN[key]))
+    prev = lat.prev_case_metric(rid, "app_segments_ms")
+    if prev and not prev.get("unavailable"):
+        others.append(("the previous run, same arm", prev))
+    bd = enter_hop_breakdown(segs, others)
+    if bd is None:
+        return None
+    r.metric("enter_hops_ms", bd)
+    r.note(enter_hop_note(bd))
+    return bd
+
+
 @case("latency_enter", order=41, gui=True)
 def c_lat_enter(ctx, r):
     """Enter -> command start, Phosphor vs a reference terminal in the SAME session with the SAME keys/cadence/timestamp command.
@@ -4795,9 +4924,17 @@ def c_lat_enter(ctx, r):
         r.metric("lf_missing", getattr(ctx, "lf_missing", 0))     # #1492: split-line samples (both sides) whose line-accepted time never arrived
     record_enter_split(r, splits, segs)
     record_enter_os_split(ctx, r, splits)
+    rid = "%s/latency_enter/enter_to_start" % ctx.label
+    record_enter_hops(ctx, r, segs, rid)          # owner 2026-11-11: which hop of the app's own segment grew (vs the terminal arm, vs the previous run)
     if ds:
-        rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
-                           remeasure=lambda: enter_to_start(ctx, n + warm)[warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
+        again = lambda: enter_to_start(ctx, n + warm)[warm:]      # noqa: E731
+        basis = enter_regress_basis(ctx, segs, n, warm, again)    # Windows Git Bash: the gate is the app's own segment (owner 2026-11-11)
+        if basis:
+            r.note("Enter to command start: end-to-end median %.2f ms (p95 %.2f, n=%d): REPORTED, not gated on this pane (owner 2026-11-11: the regression "
+                   "gate judges the app's own segment, enter_begin -> pty_write, %.2f ms, n=%d; lat.py app-share basis)" % (
+                       statistics.median(ds), lat.pct(ds, 0.95), len(ds), basis["p50"], basis["n"]))
+        rec = lat.evaluate(rid, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
+                           remeasure=again, ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms, app_share=basis,
                            pane_shell=pane_sh, ref_shell=getattr(ctx, "ref_shell", None) if ref else None, expected=n, mode=mode,
                            notes=[("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
                                    else "reference measured after Phosphor (sequential, same session)" + ("; " + fallback if fallback else "")) +
