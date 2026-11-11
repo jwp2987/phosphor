@@ -7599,6 +7599,229 @@ def r14_w1a_wave1_cases_pure_parts_and_registry():
     for n in names:
         assert ("`%s`" % n) in doc, n
     assert "cases_r14_w1a.py" in doc and "hop=find_state" in doc and "#2080" in doc
+def r14_w1b_pure_parts():
+    """#2072 (r14-test-gaps T6-T10, cases_daily_b.py): each oracle's pure part passes the right answer and fails the wrong ones. The key table is
+    replayed on a small line editor: every step's expected line is what readline semantics (or the documented app default) give for its keys, and
+    a key under test that does nothing, or types its letter, gives a line the step rejects. Registry: the five cases are PROVING, never SMOKE,
+    need no fake model, are classified for Windows and described in docs/testing.md."""
+    import cases_daily_b as D
+    import hostile_out as H
+    import backend
+    # T6: the PSReadLine history judge
+    want = "Add-Content abp_x.txt t1_x"
+    assert D.judge_ps_shell_line([want], want, ["zqn1"])[0] == "ok"
+    assert D.judge_ps_shell_line([], want, ["zqn1"])[0] == "noref"                                   # no evidence is never a pass
+    assert D.judge_ps_shell_line([want, "please explain why the zqn1 build"], want, ["zqn1"])[0] == "fail"
+    assert D.judge_ps_shell_line([want + "x"], want, [])[0] == "fail" and D.judge_ps_shell_line([want, want], want, [])[0] == "fail"
+    # T7: process states and `jobs` listings (bash and zsh wording)
+    rows = D.parse_ps_rows("  10     1 Ss   /bin/bash\n  77    10 T    sleep 345\n  78    10 S+   sleep 346\n  junk\n")
+    assert rows[1] == (77, 10, "T", "sleep 345") and len(rows) == 3
+    assert D.proc_state(rows, "sleep 345") == "stopped" and D.proc_state(rows, "sleep 346") == "running" and D.proc_state(rows, "sleep 34") is None
+    assert D.jobs_state(["[1]+  Stopped                 sleep 345"], "sleep 345") == "stopped"
+    assert D.jobs_state(["[1]  + suspended  sleep 345"], "sleep 345") == "stopped"
+    assert D.jobs_state(["[1]+  Running                 sleep 345 &"], "sleep 345") == "running"
+    assert D.jobs_state(["[1]  + running    sleep 345"], "sleep 345") == "running"
+    assert D.jobs_state([], "sleep 345") == "absent" and D.jobs_state(["[1]+  Stopped   sleep 999"], "sleep 345") == "absent"
+    assert D.jobs_state(["[1]+  Done   sleep 345"], "sleep 345") == "other"
+    # T8: the seeded file is the same everywhere, the script holds the four hostile things, and the three judges can fail
+    b = H.seeded_bytes(D.HOSTILE_SEED, 4096)
+    assert b == H.seeded_bytes(D.HOSTILE_SEED, 4096) and b != H.seeded_bytes(D.HOSTILE_SEED + 1, 4096) and b[:4].hex() == H.seeded_bytes(D.HOSTILE_SEED, 4).hex()
+    assert len(set(b)) > 200 and b"\x1b" in b and b"\x00" in b, "not binary-looking"
+    out = b"".join(H.script_chunks("tk", titles=4, link_bytes=1000))
+    assert out.count(b"\x1b]0;") == 2 and out.count(b"\x1b]2;") == 2 and b"\x1b]8;;http://appci.invalid/" + b"a" * 1000 + b"\x1b\\" in out
+    assert out.index(b"\x1b[?1000h") < out.index(b"\x1b[?1049h") and b"\x1b[?1049l" not in out and b"\x1b[?1000l" not in out
+    assert len(b"".join(H.script_chunks("tk"))) > 1_000_000 and "1049l" in H.RESTORE_PRINTF and "1000l" in H.RESTORE_PRINTF
+    e1 = "2026-11-10T00:00:00Z [ERROR] failed to parse hook 17 of 4 bytes t=123.4\n"
+    e2 = "2026-11-10T00:00:01Z [ERROR] failed to parse hook 9 of 12 bytes t=999.1\n"
+    e3 = "2026-11-10T00:00:02Z [ERROR] grid index out of range\n"
+    assert list(D.error_signatures(e1)) == list(D.error_signatures(e2)) and len(D.error_signatures(e1 + e3)) == 2
+    assert D.new_errors(e1, e2 + "[INFO] fine\n") == ([], [], ["failed to parse hook # of # bytes"])
+    panics, new, known = D.new_errors(e1, e2 + e3 + "x thread 'main' panicked at src/a.rs:1\n")
+    assert len(panics) == 1 and len(new) == 1 and "grid index" in new[0] and len(known) == 1
+    assert D.new_errors("", "")[:2] == ([], [])
+    assert D.judge_ui_after(5.0, 9.0)[0] and D.judge_ui_after(30.0, 45.0)[0] and not D.judge_ui_after(5.0, 40.0)[0] and not D.judge_ui_after(0.0, 16.0)[0]
+    hops = D.find_hops("a input_order hop=find_scroll result=no_match pending=true t=1\nb input_order hop=find_scroll result=scroll block=3 moved=true t=2\nc hop=other\n")
+    assert len(hops) == 2 and D.find_result(hops) == "scroll" and D.find_result(hops[:1]) == "no_match" and D.find_result([]) is None
+    assert D.judge_find("scroll", "scroll", "no_match")[0] == "ok" and D.judge_find("scroll", "scroll", None)[0] == "ok"
+    assert D.judge_find("scroll", "no_match", "no_match")[0] == "fail" and D.judge_find("scroll", None, "no_match")[0] == "fail"
+    assert D.judge_find("scroll", "scroll", "scroll")[0] == "fail" and D.judge_find(None, "scroll", "no_match")[0] == "noref" and D.judge_find("no_match", None, None)[0] == "noref"
+    # T9: the settings reader
+    assert D.alt_is_meta("[terminal.input.extra_meta_keys]\nleft_alt = true\nright_alt = false\n")
+    assert not D.alt_is_meta("[terminal.input.extra_meta_keys]\nleft_alt = false\nright_alt = true\n[other]\nleft_alt = true\n")
+    assert D.alt_is_meta("[terminal.input]\nextra_meta_keys = { left_alt = true, right_alt = false }\n") and not D.alt_is_meta("") and not D.alt_is_meta("[general]\nx = 1\n")
+
+    # T9: a small line editor. mode 'readline' or 'default' (the documented Linux / Windows defaults); `broken` = (spec, 'noop' | 'letter')
+    def play(ops, mode, hist_last, mac, broken=None):
+        buf, cur, kill, sel = "", 0, "", False
+
+        def word_left(i):
+            while i > 0 and buf[i - 1] == " ":
+                i -= 1
+            while i > 0 and buf[i - 1] != " ":
+                i -= 1
+            return i
+
+        def word_right(i):
+            while i < len(buf) and buf[i] == " ":
+                i += 1
+            while i < len(buf) and buf[i] != " ":
+                i += 1
+            return i
+        for op in ops:
+            if op[0] == "t":
+                if sel:
+                    buf, cur, sel = "", 0, False
+                buf, cur = buf[:cur] + op[1] + buf[cur:], cur + len(op[1])
+                continue
+            spec = op[1]
+            for _ in range(op[2]):
+                if broken and broken[0] == spec:
+                    if broken[1] == "letter":
+                        k = spec.split("+")[-1]
+                        k = "." if k == "period" else k
+                        if len(k) == 1:
+                            buf, cur = buf[:cur] + k + buf[cur:], cur + 1
+                    continue
+                low = spec.lower()
+                if low == "left":
+                    cur, sel = max(cur - 1, 0), False
+                elif low in ("alt+b", "ctrl+left", "alt+left"):
+                    cur = word_left(cur)
+                elif low in ("alt+f", "ctrl+right", "alt+right"):
+                    cur = word_right(cur)
+                elif low == "alt+d":
+                    j = word_right(cur)
+                    kill, buf = buf[cur:j], buf[:cur] + buf[j:]
+                elif low in ("alt+period", "alt+."):
+                    buf, cur = buf[:cur] + hist_last + buf[cur:], cur + len(hist_last)
+                elif low == "ctrl+a":
+                    if mode == "default" and not mac:
+                        sel = True
+                    else:
+                        cur = 0
+                elif low == "ctrl+e":
+                    if not (mode == "default" and not mac):
+                        cur = len(buf)
+                elif low == "ctrl+k":
+                    kill, buf = buf[cur:], buf[:cur]
+                elif low == "ctrl+u":
+                    buf, cur = "", 0                     # cursor at the end in the step: whole row (app) = to the line start (readline)
+                elif low == "ctrl+w":
+                    j = word_left(cur)
+                    kill, buf, cur = buf[j:cur], buf[:j] + buf[cur:], j
+                elif low == "ctrl+y":
+                    if mode == "default" and not mac:
+                        buf, cur = buf[cur:], 0
+                    else:
+                        buf, cur = buf[:cur] + kill + buf[cur:], cur + len(kill)
+                elif low == "home":
+                    cur = 0
+                elif low == "end":
+                    cur = len(buf)
+                elif low == "delete":
+                    buf = buf[:cur] + buf[cur + 1:]
+                else:
+                    raise AssertionError("the editor model has no key %r" % spec)
+        return buf
+
+    names = None
+    for family in ("mac", "other"):
+        mac = family == "mac"
+        be_cls = backend.MacBackend if mac else None
+        for meta in (False, True):
+            steps = D.prompt_steps("k7m", family, meta)
+            names = names or [s["name"] for s in steps]
+            assert [s["name"] for s in steps] == names and len(names) == 15, "both platforms run the same keys"
+            for st in steps:
+                assert st["readline"] is not None or st["default"] is not None, st["name"]
+                last = st["seed"].split()[-1] if st["seed"] else ""
+                under_test = [op[1] for op in st["ops"] if op[0] == "k" and op[1] != "Left"]
+                assert under_test, st["name"]
+                if st["readline"] is not None:
+                    assert play(st["ops"], "readline", last, mac) == st["readline"] or play(st["ops"], "readline", last, mac).rstrip() == st["readline"], (family, st["name"])
+                    assert D.classify_key_line(play(st["ops"], "readline", last, mac), st["readline"], st["default"]) == "readline"
+                if st["default"] is not None:
+                    assert not mac and D.classify_key_line(play(st["ops"], "default", last, mac), st["readline"], st["default"]) == "app_default", (family, st["name"])
+                for how in ("noop", "letter"):           # the key under test doing nothing, or typing its letter, is never accepted
+                    for spec in set(under_test):
+                        bad = play(st["ops"], "readline", last, mac, broken=(spec, how))
+                        if st["name"] == "ctrl_e" and not mac and how == "noop":
+                            assert D.classify_key_line(bad, st["readline"], st["default"]) == "app_default"      # "does not move" IS the documented default there
+                            continue
+                        assert D.classify_key_line(bad, st["readline"], st["default"]) == "fail", (family, st["name"], spec, how, bad)
+                assert D.classify_key_line(None, st["readline"], st["default"]) == "fail"
+                if mac:                                  # every key spec is one the macOS injector can post
+                    for op in st["ops"]:
+                        if op[0] == "k" and not st["skip"]:
+                            k = op[1].lower().split("+")[-1]
+                            assert k in be_cls.SPECIAL or k in be_cls.LETTERS, (st["name"], op[1])
+            alt = {s["name"]: s for s in steps}
+            assert (alt["alt_b"]["issue"] == D.ISSUE_ALT_WORD) == (not mac and not meta) and alt["alt_d"]["issue"] is None
+            assert bool(alt["alt_b"]["skip"]) == (mac and not meta) and bool(alt["delete"]["skip"]) == mac
+            raw = D.raw_expect(family, meta)
+            byname = {x[0]: x for x in raw}
+            assert byname["Ctrl-A"][2] == b"\x01" and byname["Ctrl-Y"][2] == b"\x19" and byname["Home"][2] == b"\x1b[H" and byname["End"][2] == b"\x1b[F"
+            assert all((x[2] is None) == bool(x[3]) for x in raw)
+            if not mac:
+                assert byname["Ctrl-Left"][2] == b"\x1b[1;5D" and byname["Delete"][2] == b"\x1b[3~" and (byname["Alt-B"][2] == b"\x1bb") == (not meta)
+                assert byname["Alt-."][1] == "alt+period"
+            else:
+                assert byname["Option-Right"][2] == b"\x1b[1;3C" and (byname["Alt-F"][2] == b"\x1bf") == meta and byname["Delete"][2] is None
+                assert all(x[1].lower().split("+")[-1] in be_cls.SPECIAL or x[1].lower().split("+")[-1] in be_cls.LETTERS for x in raw if x[2] is not None)
+    assert D.classify_key_line("echo a ", "echo a", None) == "readline" and D.classify_key_line("echo", "echo a b", "echo") == "app_default"
+    # the Windows injector can post every key spec too (no display needed: the chord table is static)
+    for spec in ("alt+b", "alt+f", "alt+d", "alt+period", "ctrl+a", "ctrl+Left", "ctrl+Right", "Home", "End", "Delete", "Left"):
+        k = spec.lower().split("+")[-1]
+        assert k in backend.WindowsBackend.NAMED or len(k) == 1 or backend.REV_ENVNAME.get(k), spec
+    # T10
+    assert D.first_run_dirs("linux")[0] == ".config/phosphor" and ".local/state" in D.first_run_dirs("linux")[1] and D.first_run_dirs("windows") == (None, [])
+    assert D.first_run_dirs("mac")[0] == ".phosphor" and not any(x.startswith("Library/Logs") for x in D.first_run_dirs("mac")[1])
+    ok_j = dict(sent=30, seen=30, lost=0, enters_sent=1, enters_seen=1)
+    assert D.judge_first_run_keys(ok_j)[0] == "ok" and D.judge_first_run_keys(None)[0] == "noref" and D.judge_first_run_keys(dict(sent=3, seen=None))[0] == "noref"
+    assert D.judge_first_run_keys(dict(ok_j, seen=22, lost=8))[0] == "fail" and D.judge_first_run_keys(dict(ok_j, enters_seen=0))[0] == "fail"
+    assert D.judge_first_run_keys(dict(ok_j, app_undelivered=2))[0] == "fail"
+    # the Git Bash raw reader, on a pty where this machine has one (bash >= 4): the bytes of the judged keys come through unchanged
+    if os.name == "posix" and shutil.which("bash") and subprocess.run(["bash", "-c", "[ ${BASH_VERSINFO[0]} -ge 4 ]"]).returncode == 0:
+        import pty
+        d = tempfile.mkdtemp()
+        outf = os.path.join(d, "rd.txt")
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execvp("bash", ["bash", os.path.join(HERE, "bytes_reader.sh"), outf, "10"])
+        try:
+            t0 = time.time()
+            while not os.path.exists(outf + ".ready") and time.time() - t0 < 5:
+                time.sleep(0.05)
+            assert os.path.exists(outf + ".ready"), "bytes_reader.sh never became ready"
+            time.sleep(0.2)
+            sent = [x[2] for x in D.raw_expect("other", False)]
+            for chunk in sent:
+                os.write(fd, chunk)
+                time.sleep(0.05)
+            want = b"".join(sent)
+            t0 = time.time()
+            got = b""
+            while time.time() - t0 < 5 and got != want:
+                time.sleep(0.1)
+                got = b"".join(bytes.fromhex(l.split()[1]) for l in open(outf) if len(l.split()) == 2)
+            assert got == want, (got, want)
+            os.write(fd, b"\x03")
+        finally:
+            try:
+                os.waitpid(pid, 0)
+            except OSError:
+                pass
+            os.close(fd)
+            shutil.rmtree(d, ignore_errors=True)
+    # registry and docs
+    names = ("agent_basics_powershell", "job_control", "hostile_output_recovers", "meta_and_word_keys", "first_run_defaults")
+    reg = {c["name"]: c for c in cases.CASES}
+    assert all(n in cases.PROVING and n not in cases.SMOKE and n not in cases.PROVING_FAKE and reg[n]["gui"] and reg[n]["modes"] == ("terminal", "agent") for n in names)
+    assert "agent_basics_powershell" in winmap.PS_ONLY and "job_control" in winmap.NOT_WINDOWS and "hostile_output_recovers" in winmap.GITBASH_ONLY
+    assert "meta_and_word_keys" in winmap.BOTH and "first_run_defaults" in winmap.BOTH
+    assert reg["meta_and_word_keys"]["order"] > 94 and reg["first_run_defaults"]["order"] > reg["meta_and_word_keys"]["order"], "the banner and the relaunch come late in a pass"
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md"), encoding="utf-8").read()
+    assert all(("`%s`" % n) in doc for n in names) and "r14_w1b_pure_parts" in doc and "#2079" in doc, "docs/testing.md does not describe every new case"
 
 
 def main():

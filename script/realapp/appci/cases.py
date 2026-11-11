@@ -97,6 +97,9 @@ PROVING = (
     # round 14, wave 1 of docs/design/r14-test-gaps.md 7.1 (#2072; cases_r14_w1a.py): Up-arrow history recall, scroll keys and the view holding its
     # place, Find in an ordinary scrollback, tab close / cancel / confirm / undo by key, and the routing table in the Windows PowerShell pane
     "history_up_recall", "scroll_keys_position", "find_basic", "tab_lifecycle_keys", "routing_table_powershell",
+    # #2072, r14-test-gaps 7.1 wave 1 (T6-T10, cases_daily_b.py; owner 2026-11-10 "build out the tests"): the PowerShell pane's agent basics, job
+    # control, hostile output, the readline keys (Alt-B / Alt-F expected to fail off macOS until #2079), a first run on default settings
+    "agent_basics_powershell", "job_control", "hostile_output_recovers", "meta_and_word_keys", "first_run_defaults",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -6439,3 +6442,4 @@ import cases_win_handover  # noqa: E402,F401  (#1882/#1883/#1891: ps_read_host_s
 import cases_precmd_secret  # noqa: E402,F401  (#1923: precmd_secret_honor_ps1, a bash precmd `read -s` with the app's prompt and with honor PS1 on; #2052: precmd_question_echo)
 import cases_wrap_vtabs  # noqa: E402,F401  (#1976: ui_copy_wrapped_output / _drag, copy of soft-wrapped lines; #1990: ui_vertical_tabs_many / _panel_click)
 import cases_r14_w1a  # noqa: E402,F401  (#2072: round 14 wave 1: history_up_recall, scroll_keys_position, find_basic, tab_lifecycle_keys, routing_table_powershell)
+import cases_daily_b  # noqa: E402,F401  (#2072: r14-test-gaps wave 1 T6-T10: agent_basics_powershell, job_control, hostile_output_recovers, meta_and_word_keys, first_run_defaults)
