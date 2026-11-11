@@ -6625,7 +6625,7 @@ Whether the fix tier keeps the x11 pass after its first clean run.
 without the flag the owner's 2026-11-11 rule stands (PROVING_LAB only). A targeted run reaches the same jobs with the `macos-lab` / `windows-lab` keys of
 the cases file (names `lab_*`); `lab-helper` and `sshlab-image` are played first whenever any lab job is in the plan. The helper bundle is named after the
 helper binary's ELF machine (`cases_lab.helper_arch`), never the runner's CPU, so an arm64 Mac stages `linux-x86_64` for the x86_64 lab host. The Mac and
-Windows jobs take the helper as `lab-helper`'s artifact with `APPCI_APP_PINNED_DIGESTS=0`: the `nohelper`, `helper` and `never`-free arms are judged, the
+Windows jobs take the helper as `lab-helper`'s artifact with `APPCI_APP_PINNED_DIGESTS=0`: the `nohelper` and `helper` arms are judged, the
 `upload` / `upgrade` arms stay UNVERIFIABLE by design on a dev build. Worked, unproven: self-tests only (`ci_seq.py --self-test`, `run.py --self-test`);
 the first Mac and Windows lab play, and the system dialog that blocked the Mac in round 15, are still to be seen.
 Harness finding, not changed here (#2082): `app.py` sets `PHOSPHOR_APPCI_FIND_FILE` only in the Windows launcher, so the find hook (#1789) has never been on in a Linux or macOS run and every Linux pointer case has placed the pointer by OCR (r12a rows carry "app find hook gave no position"). The statement above in 2.8 that `app.py` sets it holds for Windows only. **Since closed:** the Linux launcher arms it since round 14 (`e9018de13`, #2069) and the macOS launcher since round 15 (`app.find_hook_env`), so the statement in 2.8 now holds on all three platforms; see the round 15 section at the end.
