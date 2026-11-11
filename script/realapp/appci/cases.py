@@ -115,6 +115,9 @@ PROVING = (
     # round 14 wave 3a (docs/design/r14-test-gaps.md 7.1, T21 to T25): pointer and pane cases. Linux pointer for the first four (macOS and Windows SKIP
     # naming the missing pointer tool); pane_resize_maximize also runs on macOS by keyboard
     "link_and_path_click", "selection_modes", "primary_and_middle_click", "wheel_scroll", "pane_resize_maximize",
+    # round 15 wave 5 part A (docs/design/r14-test-gaps.md T42, T45, T50; design docs/design/r15-w5a.md; #2076): the macOS keychain at start
+    # (#1977), a keybindings.yaml change taking effect, and the code editor's find and replace / close question / file changed on disk (#2087, #2088)
+    "keychain_startup_macos", "keybinding_rebind", "editor_daily",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -6477,3 +6480,4 @@ import cases_agent_w2  # noqa: E402,F401  (round 14 wave 2, T11-T15: agent_model
 import cases_r14_state  # noqa: E402,F401  (round 14 wave 2b, T16-T20: agent_hidden_tab_attention, settings_ui_toggle_persists, osc52_write_read, history_survives_restart, restore_shows_history)
 import cases_window_use  # noqa: E402,F401  (r14 wave 3, T26-T30: resize_reflow_output, context_menu_actions, tab_pointer_use, focus_cycle, minimize_fullscreen)
 import cases_pointer  # noqa: E402,F401  (r14 wave 3a: link_and_path_click, selection_modes, primary_and_middle_click, wheel_scroll, pane_resize_maximize)
+import cases_r15_w5a  # noqa: E402,F401  (r15 wave 5 part A, T42/T45/T50: keychain_startup_macos, keybinding_rebind, editor_daily)

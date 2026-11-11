@@ -1,4 +1,7 @@
 # appci/cases_netless.py: Wave N, "no network at startup" (docs/testing.md 2.17). Registered with the same @case decorator as cases.py (imported by its last line).
+# Round 15 (#2076 T41, #2077): zero_network_startup also runs on macOS and Windows with a polled per-process connection table (nettrace.py) and a
+# control connection that proves the tool on the machine; network_gate_switch runs on macOS and in the Windows Git Bash pane; the two plugin cases run
+# on macOS with `sandbox-exec` denying the network, and on every platform prove that their no-network prefix really blocks before they claim "offline".
 #   zero_network_startup   Linux: the app, with the harness profile (no cloud account, no provider key), is launched under `strace -f` and left idle for APPCI_ZNS_IDLE_S
 #                          (default 120 s), then drives a short scripted session (the settings page walked with the keyboard, which visits the AI page, and an ssh connect to the
 #                          fake host); NO connect()/sendto() to an inet address beyond loopback + the fake ssh host (+ APPCI_ZNS_ALLOW, comma separated) may appear in the trace
@@ -72,7 +75,11 @@ def strace_works():
 
 @case("zero_network_startup", modes=("terminal",), order=84, gui=True)
 def c_zero_network_startup(ctx, r):
-    """default settings + idle: the app makes no outbound connection from launch through APPCI_ZNS_IDLE_S seconds of idling (loopback allowed)"""
+    """default settings + idle: the app makes no outbound connection from launch through APPCI_ZNS_IDLE_S seconds of idling (loopback allowed).
+    Linux: `strace -f` (every connect / sendto / sendmsg). macOS and Windows: the per-process connection table polled (zero_network_polled)."""
+    import nettrace
+    if nettrace.platform_kind(ctx):
+        return zero_network_polled(ctx, r, nettrace.platform_kind(ctx))
     R.need_linux_app(ctx, "zero_network_startup")
     if not strace_works():
         ctx.skip_reason = "strace missing or ptrace not permitted on this runner"
@@ -118,6 +125,73 @@ def c_zero_network_startup(ctx, r):
     R.start_app(ctx, r, "zns_restore")                      # leave a normally-launched app for the cases that follow
 
 
+POLL_LIMITS = ("a connection that opens and closes between two polls (%.2f s apart on this run), a UDP datagram sent without connect(), and DNS (the resolver "
+               "service makes the query, not the app) are NOT visible to this trace; the Linux strace run sees all three")
+
+
+def polled_verdict(idle_rows, session_rows, provider):
+    """pure: (bad, to_provider). idle_rows / session_rows: [(proto, host, port, t)] of non-local destinations first seen during launch + idle and during the
+    scripted session. Launch and idle allow nothing; the session allows the configured model endpoint (`provider`, a set of addresses) and nothing else."""
+    bad = [r[:3] + ("idle",) for r in idle_rows]
+    to_provider = [r for r in session_rows if r[1] in provider]
+    bad += [r[:3] + ("session",) for r in session_rows if r[1] not in provider]
+    return bad, to_provider
+
+
+def zero_network_polled(ctx, r, kind):
+    """T41 (#2076): zero_network_startup where there is no strace. The OS connection table is polled for the app's processes (nettrace.py) from before
+    the launch until the scripted session ends. Control first: a child of the harness holds a connection to this machine's own address and the tool
+    must list it for that pid, else the case SKIPs with NEEDS (never a pass on a tool that sees nothing)."""
+    import nettrace
+    R.need_relaunch_app(ctx, "zero_network_startup")
+    sampler = nettrace.sample_mac if kind == "mac" else nettrace.sample_windows
+    ok, why = nettrace.control(sampler)
+    if not ok:
+        ctx.skip_reason = "the polled network trace failed its control"
+        raise cases.Skip("NEEDS: `%s` must list an established TCP connection of a process of the runner user%s. Control: %s. The check is NOT passed."
+                         % (nettrace.TOOL[kind], "" if ok is False else " and this machine needs a non-loopback address to make the control connection to", why))
+    idle = float(os.environ.get("APPCI_ZNS_IDLE_S", "120"))
+    ctx.snapshot_log()
+    ctx.app.stop()
+    poller = nettrace.ConnPoller(sampler, lambda: nettrace.app_pids(ctx))
+    t_launch = time.time()
+    poller.start()
+    t_idle_end = None
+    allow = set()
+    try:
+        _, up = R.start_app(ctx, r, "zns_polled")
+        if not up:
+            return
+        t0 = time.time()
+        while time.time() - t0 < idle:
+            time.sleep(min(5.0, idle - (time.time() - t0)))
+            if not r.check(ctx.app.alive(), "the app exited while idling"):
+                break
+        t_idle_end = time.time()
+        allow = scripted_session(ctx, r)
+    finally:
+        poller.stop()
+    t_end = time.time() + 1.0
+    period = (t_end - 1.0 - t_launch) / max(1, poller.ticks)          # the tool's own run time is part of it: measured, not the requested interval
+    r.metric("poll_period_s", period)
+    r.check(period <= 2.0, "the connection table was read only every %.1f s on average: too coarse to call the run traced" % period)
+    r.check(poller.ticks >= 4 and poller.errors == 0, "the connection table was read %d time(s) with %d error(s): the trace did not cover the run" % (poller.ticks, poller.errors))
+    seen_pids = {k[0] for k in poller.seen}
+    r.metric("trace", "poll %s" % nettrace.TOOL[kind])
+    r.metric("polls", poller.ticks)
+    r.metric("rows_seen", len(poller.seen))
+    r.metric("pids_with_rows", len(seen_pids))
+    idle_rows = poller.outbound_between(t_launch, t_idle_end or t_end)
+    sess_rows = poller.outbound_between(t_idle_end or t_end, t_end, allow=set(allow))
+    bad, to_prov = polled_verdict(idle_rows, sess_rows, provider_addresses())
+    r.metric("outbound_attempts", len(bad))
+    r.metric("provider_connects_in_session", len(to_prov))
+    if to_prov:
+        r.note("the scripted session's commands made %d connection(s) to the configured model endpoint (destination hash %s): allowed, the user configured it" % (len(to_prov), fingerprint(to_prov[0][1], to_prov[0][2])))
+    r.note("trace=poll (%s, control connection listed): %s" % (nettrace.TOOL[kind], POLL_LIMITS % period))
+    r.check(not bad, "the app held a connection to the network at startup/idle: %s" % "; ".join("%s dest#%s port %d (%s)" % (b[0], fingerprint(b[1], b[2]), b[2], b[3]) for b in bad[:8]))
+
+
 def session_allowlist(ctx):
     """addresses the scripted session may reach beyond loopback: APPCI_ZNS_ALLOW plus the fake ssh host's address when it is an IP literal"""
     allow = {a.strip() for a in os.environ.get("APPCI_ZNS_ALLOW", "").split(",") if a.strip()}
@@ -148,18 +222,7 @@ def scripted_session(ctx, r):
     # Escape does not close the settings TAB (the same fact cases_coverage_b settings_open_close handles): keys typed next went to the settings page,
     # and the ssh connect below never reached the shell (round 7 Linux: app log keydowns with live_focus=no). Prove the shell is in front with a probe
     # line; if not, close the settings tab with the platform's close and prove it again.
-    probe_f = "zns_probe.txt"
-
-    def shell_in_front(n):
-        ctx.rm(probe_f)
-        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), "zns%d" % n, probe_f), 12, enter=True)
-        return bool(ctx.until(lambda: any("zns%d" % n in l for l in ctx.lines(probe_f)), 3))
-    if not shell_in_front(1):
-        how = cases.editor_close(ctx, r)
-        r.note("Escape left the settings page open (the shell did not take the probe line); closed it with %s" % how)
-        time.sleep(0.8)
-        if how is not None:
-            r.check(shell_in_front(2), "the shell pane did not take typing after the settings page was closed with %s" % how)
+    shell_back_in_front(ctx, r, "zns")
     ctx.reset()
     r.note("scripted session: settings page walked with the keyboard (best effort; shots/zns_settings_*), allowlist beyond loopback: %s" % (sorted(allow) or "none"))
     if getattr(ctx, "ssh", None):
@@ -172,24 +235,117 @@ def scripted_session(ctx, r):
     return allow
 
 
+def shell_back_in_front(ctx, r, tag):
+    """after a settings page was shown: prove the shell takes typing with a probe line; if it does not, close the page with the platform's close
+    (cases.editor_close: the close key, on macOS the palette's 'Close Current Session') and prove it again. -> whether the shell is in front."""
+    probe_f = "%s_probe.txt" % tag
+
+    def shell_in_front(n):
+        ctx.rm(probe_f)
+        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), "%s%d" % (tag, n), probe_f), 12, enter=True)
+        return bool(ctx.until(lambda: any("%s%d" % (tag, n) in l for l in ctx.lines(probe_f)), 3))
+    if shell_in_front(1):
+        return True
+    how = cases.editor_close(ctx, r)
+    r.note("Escape left the settings page open (the shell did not take the probe line); closed it with %s" % how)
+    time.sleep(0.8)
+    if how is None:
+        return False
+    return bool(r.check(shell_in_front(2), "the shell pane did not take typing after the settings page was closed with %s" % how))
+
+
+def bundle_roots(ctx):
+    """directories that may hold the build's `resources/bundled` tree: beside the binary (Linux, Windows), inside the macOS bundle
+    (Contents/Resources, with and without a `resources` level), then the checkout"""
+    exe = os.path.dirname(os.path.realpath(getattr(ctx.app, "bin", "") or "/nonexistent"))
+    roots = [os.path.join(exe, "resources", "bundled")]
+    b = getattr(ctx.app, "bundle", None)
+    if b:
+        roots += [os.path.join(b, "Contents", "Resources", "bundled"), os.path.join(b, "Contents", "Resources", "resources", "bundled")]
+    return roots + [os.path.join(REPO, "resources", "bundled")]
+
+
 def bundle_dir(ctx):
     """the plugin folder shipped with the build under test: APPCI_PLUGIN_DIR, else <binary dir>/resources/bundled/claude_plugin, else the checkout's copy"""
-    for d in (os.environ.get("APPCI_PLUGIN_DIR"),
-              os.path.join(os.path.dirname(os.path.realpath(getattr(ctx.app, "bin", "") or "/nonexistent")), "resources", "bundled", "claude_plugin"),
-              os.path.join(REPO, "resources", "bundled", "claude_plugin")):
+    for d in [os.environ.get("APPCI_PLUGIN_DIR")] + [os.path.join(root, "claude_plugin") for root in bundle_roots(ctx)]:
         if d and os.path.isfile(os.path.join(d, ".claude-plugin", "marketplace.json")):
             return d
     return None
 
 
-def netns_prefix():
-    """argv prefix that runs a command with no network, or None when the runner cannot unshare"""
+SANDBOX_NO_NET = "(version 1)(allow default)(deny network*)"
+
+
+def netns_prefix(platform=None):
+    """argv prefix that runs a command with no network, or None when the runner has none. Linux: `unshare -rn` (an empty network namespace).
+    macOS: `sandbox-exec -p '(version 1)(allow default)(deny network*)'` (no root needed). The prefix is only a candidate until
+    prefix_blocks_network() has seen it refuse a connection."""
+    platform = platform or sys.platform
     try:
+        if platform == "darwin":
+            if shutil.which("sandbox-exec") and subprocess.run(["sandbox-exec", "-p", SANDBOX_NO_NET, "true"], capture_output=True, timeout=20).returncode == 0:
+                return ["sandbox-exec", "-p", SANDBOX_NO_NET]
+            return None
         if shutil.which("unshare") and subprocess.run(["unshare", "-rn", "true"], capture_output=True, timeout=20).returncode == 0:
             return ["unshare", "-rn"]
     except Exception:
         pass
     return None
+
+
+BLOCK_PROBE = ("import socket,sys\n"
+               "try:\n"
+               "    socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=5).close()\n"
+               "except OSError:\n"
+               "    sys.exit(7)\n"
+               "sys.exit(0)\n")
+
+
+def prefix_blocks_network(prefix):
+    """the control of the two offline cases: a connect to a loopback listener of this process, made INSIDE `prefix`, must fail, and the same connect
+    made without the prefix must succeed (so a failure is the prefix's doing, not a broken probe). -> (blocks, why)"""
+    import socket
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+        port = str(srv.getsockname()[1])
+        probe = [sys.executable, "-I", "-c", BLOCK_PROBE, port]
+        plain = subprocess.run(probe, capture_output=True, timeout=30).returncode
+        if plain != 0:
+            return False, "the probe could not connect to a loopback listener even without the prefix (exit %s): nothing is proven" % plain
+        inside = subprocess.run(list(prefix) + probe, capture_output=True, timeout=30).returncode
+        if inside == 7:
+            return True, "a connect made inside the prefix was refused"
+        return False, "a connect made inside `%s` %s" % (" ".join(prefix[:1]), "SUCCEEDED" if inside == 0 else "ended with exit %s (not the refusal the probe reports as 7)" % inside)
+    except Exception as e:
+        return False, "the block probe could not run (%r)" % (e,)
+    finally:
+        srv.close()
+
+
+NO_WINDOWS_PLUGINS = ("NEEDS: (harness, not built) a console capture for the Codex plugin's PowerShell hooks and a per-process network block, which on Windows is a "
+                      "firewall rule of an elevated runner; the Claude and Gemini plugins ship bash hooks only")
+
+
+def offline_prefix(ctx, r, name):
+    """the no-network prefix of the two plugin cases, proven. Windows SKIPs with what is missing. Without a prefix, or with one that does not block,
+    the hooks still run and the case is NOT judged for 'offline' (no_reference), as before."""
+    if getattr(ctx, "win", False) or cases.plat().startswith("windows"):
+        ctx.skip_reason = name
+        raise cases.Skip("%s: %s" % (name, NO_WINDOWS_PLUGINS))
+    R.need_relaunch_app(ctx, name)
+    prefix = netns_prefix()
+    tool = "`sandbox-exec` with the network denied" if sys.platform == "darwin" else "`unshare -rn`"
+    if prefix is None:
+        r.no_reference("%s is not permitted on this runner: the installs and hooks ran WITH network access, so 'works offline' is not proven" % tool)
+        return []
+    blocks, why = prefix_blocks_network(prefix)
+    if not blocks:
+        r.no_reference("%s does not block the network here (%s): the installs and hooks ran WITH network access, so 'works offline' is not proven" % (tool, why))
+        return []
+    r.note("no-network prefix proven: %s" % why)
+    return prefix
 
 
 # the hook inputs Claude Code gives the plugin's scripts, and the event each must produce
@@ -232,17 +388,17 @@ def run_plugin_offline(work, bundle, claude_cfg, prefix):
 @case("claude_plugin_offline", modes=("terminal",), order=86, gui=True)
 def c_claude_plugin_offline(ctx, r):
     """the bundled Claude plugin installs and works with the network blocked, and the app parses the events it emits"""
-    R.need_linux_app(ctx, "claude_plugin_offline")
+    if getattr(ctx, "win", False) or cases.plat().startswith("windows"):
+        ctx.skip_reason = "claude_plugin_offline"
+        raise cases.Skip("claude_plugin_offline: %s" % NO_WINDOWS_PLUGINS)
+    R.need_relaunch_app(ctx, "claude_plugin_offline")
     if not shutil.which("jq") or not shutil.which("bash"):
-        raise cases.Skip("the plugin's hook scripts need bash and jq on the runner")
+        raise cases.Skip("NEEDS: bash and jq on the runner (the plugin's hook scripts are bash + jq)")
     bundle = bundle_dir(ctx)
     r.check(bundle is not None, "no bundled plugin folder (resources/bundled/claude_plugin) beside the binary or in the checkout")
     if not bundle:
         return
-    prefix = netns_prefix()
-    if prefix is None:
-        prefix = []
-        r.no_reference("`unshare -rn` is not permitted on this runner: the install and hooks ran WITH network access, so 'works offline' is not proven")
+    prefix = offline_prefix(ctx, r, "claude_plugin_offline")
     r.note("bundle: %s; network namespace: %s" % (bundle, "unshared" if prefix else "NOT unshared"))
     work = os.path.join(ctx.W, "plugin_offline")
     shutil.rmtree(work, ignore_errors=True)
@@ -277,9 +433,7 @@ def c_claude_plugin_offline(ctx, r):
 
 def plugin_bundle_dir(ctx, agent, marker):
     """the folder resources/bundled/<agent>_plugin of the build under test (APPCI_<AGENT>_PLUGIN_DIR, else beside the binary, else the checkout's), or None"""
-    for d in (os.environ.get("APPCI_%s_PLUGIN_DIR" % agent.upper()),
-              os.path.join(os.path.dirname(os.path.realpath(getattr(ctx.app, "bin", "") or "/nonexistent")), "resources", "bundled", agent + "_plugin"),
-              os.path.join(REPO, "resources", "bundled", agent + "_plugin")):
+    for d in [os.environ.get("APPCI_%s_PLUGIN_DIR" % agent.upper())] + [os.path.join(root, agent + "_plugin") for root in bundle_roots(ctx)]:
         if d and os.path.isfile(os.path.join(d, *marker)):
             return d
     return None
@@ -413,13 +567,13 @@ APP_NAME = {"codex": "Codex", "opencode": "OpenCode"}
 @case("agent_plugins_offline", modes=("terminal",), order=87, gui=True)
 def c_agent_plugins_offline(ctx, r):
     """the bundled Codex, Gemini CLI and OpenCode plugins install and work with the network blocked, and the app parses the events Codex and OpenCode emit"""
-    R.need_linux_app(ctx, "agent_plugins_offline")
+    if getattr(ctx, "win", False) or cases.plat().startswith("windows"):
+        ctx.skip_reason = "agent_plugins_offline"
+        raise cases.Skip("agent_plugins_offline: %s" % NO_WINDOWS_PLUGINS)
+    R.need_relaunch_app(ctx, "agent_plugins_offline")
     if not shutil.which("jq") or not shutil.which("bash"):
-        raise cases.Skip("the plugins' hook scripts need bash and jq on the runner")
-    prefix = netns_prefix()
-    if prefix is None:
-        prefix = []
-        r.no_reference("`unshare -rn` is not permitted on this runner: the installs and hooks ran WITH network access, so 'works offline' is not proven")
+        raise cases.Skip("NEEDS: bash and jq on the runner (the plugins' hook scripts are bash + jq)")
+    prefix = offline_prefix(ctx, r, "agent_plugins_offline")
     work = os.path.join(ctx.W, "agent_plugins_offline")
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
@@ -483,8 +637,14 @@ def c_network_gate_switch(ctx, r):
     the next launch logs 'network gate: turned OFF' and a later launch with the key true logs no OFF line. The app log never contains the host of the allowed-origin
     entry the case writes. The denial notice, its 'Allow this origin' link and the Settings > Network log are UNVERIFIABLE here (see the note): no setting can make
     the app issue a request the gate refuses, because every setting that names an origin also allows it. The page's origin rows (Remove, typed add) ARE judged here, by the keyboard
-    ring and the `hop=network_gate_ui` lines (#1830 follow-up)."""
-    R.need_linux_app(ctx, "network_gate_switch")
+    ring and the `hop=network_gate_ui` lines (#1830 follow-up).
+    Round 15 (#2077): also macOS and the Windows Git Bash pane. The launch half is the same everywhere (the settings file of the NEXT launch is the
+    profile's; start() installs it). The page half reads the file the running app writes (cases_robust.live_settings_file) and ends by proving the
+    shell is in front again. Windows: the settings chord has never been played there, so a page that shows no action is 'not judged', not a failure."""
+    R.need_relaunch_app(ctx, "network_gate_switch")
+    linux = not (ctx.be.name == "mac" or ctx.win)
+    if linux:
+        R.need_linux_app(ctx, "network_gate_switch")
     marker_host = "gate-switch-%s.example.invalid" % ctx.tok(5).lower()
     try:
         # 1. gate_enabled absent (the v0.1.17 file shape): the gate is on, nothing is logged about the switch.
@@ -534,6 +694,12 @@ def c_network_gate_switch(ctx, r):
         ctx.shot("ngs_kb_remove_focus")
         ctx.be.key("Delete")
         time.sleep(0.8)
+        if ctx.win and not ctx.until(lambda: NG.hop_line("remove_origin", marker_host) in ctx.log_since(off), 10, step=0.3) and NG.origin_count(ctx, marker_host) == 1:
+            NG.close_settings(ctx)
+            shell_back_in_front(ctx, r, "ngs")
+            r.unverifiable("the Settings > Network page showed no action on Windows (no remove_origin hop, the origin still in the file): the settings chord "
+                           "(ctrl+comma) and the palette entry have never been proven on the Windows backend, so the page half is NOT judged here; the launch half was")
+            return
         NG.expect_hop(ctx, r, off, "remove_origin", "keyboard Remove of the allowed origin", host=marker_host)
         r.check(NG.origin_count(ctx, marker_host) == 0, "keyboard Remove: settings.toml still holds the allowed origin")
         NG.close_settings(ctx)
@@ -547,6 +713,8 @@ def c_network_gate_switch(ctx, r):
         r.check(NG.origin_count(ctx, marker_host) == 1, "keyboard add: settings.toml holds the origin %d times (expected once)" % NG.origin_count(ctx, marker_host))
         ctx.shot("ngs_kb_added")
         NG.close_settings(ctx)
+        if not linux:
+            shell_back_in_front(ctx, r, "ngs")
         r.check(marker_host not in ctx.log_since(0), "the app log names the allowed origin's host after the page edits (hop lines carry a host hash only)")
         r.unverifiable("the denial notice (toast naming the purpose and host), its 'Allow this origin' link and the log row's 'Allow' button need a request the gate refuses, which no setting "
                        "this case writes can cause (every setting that names an origin also allows it); agent_gate_deny_allow and network_gate_notice trigger one and judge those rows")
@@ -556,6 +724,10 @@ def c_network_gate_switch(ctx, r):
             t = open(p, encoding="utf-8", errors="replace").read()
             t = R.T.set_key(t, "network", "gate_enabled", "true")
             open(p, "w", encoding="utf-8").write(R.T.set_key(t, "network", "allowed_origins", '""'))
+            if not linux:
+                # the app runs on a COPY of that file here: the copy is replaced at the next start, so start once more for the cases that follow
+                R.stop_for_restart(ctx, r, 20, "ngs_restore")
+                R.start_app(ctx, r, "ngs_restore")
         except Exception:
             pass
 
@@ -580,7 +752,8 @@ def c_network_gate_notice(ctx, r):
     import cases_replay as CRP
     import cases_ui as UI
     import cases_agent_netgate as NG
-    R.need_linux_app(ctx, "network_gate_notice")
+    R.need_linux_app(ctx, "network_gate_notice: Linux only. NEEDS (harness, not built): a pointer tool and OCR for the toast's 'Allow this origin' link "
+                          "(macOS: r14-test-gaps T32; Windows: T31) and a close key for the viewer tab on macOS")
     CRP.need_model(ctx, r)
     m = UI.mouse_or_skip(ctx, r)
     UI.need_tesseract(r)

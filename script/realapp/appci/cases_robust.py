@@ -130,6 +130,25 @@ def settings_file(ctx):
     return os.path.join(ctx.prof.home, ".config", "phosphor", "settings.toml")
 
 
+def app_config_dir(ctx):
+    """the directory the RUNNING app reads its own config files from (settings.toml, keybindings.yaml; warp_core::paths::config_local_dir):
+    Linux <home>/.config/phosphor (the profile's directory itself), macOS <home>/.phosphor (MacApp copies the profile's settings.toml there at
+    start), Windows %LOCALAPPDATA%\\phosphor\\Phosphor\\config (WindowsApp copies it there at every start)"""
+    app = ctx.app
+    if ctx.win and getattr(app, "config", None):
+        return app.config
+    if ctx.be.name == "mac" and getattr(app, "settings", None):
+        return os.path.dirname(app.settings)
+    return os.path.join(ctx.prof.home, ".config", "phosphor")
+
+
+def live_settings_file(ctx):
+    """the settings.toml the running app reads AND writes (a page action, a toast's Allow). On Linux it is settings_file(ctx). On macOS and
+    Windows it is a copy: a case that edits settings for the NEXT launch writes settings_file(ctx) (start() installs it); a case that reads
+    what the app wrote, or edits while the app runs, uses this one."""
+    return os.path.join(app_config_dir(ctx), "settings.toml")
+
+
 def set_restore(ctx, on):
     """textual edit of the profile's settings.toml (the app must be stopped; the owner's seed file is never touched)"""
     p = settings_file(ctx)

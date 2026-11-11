@@ -7,7 +7,7 @@ if [ "$APPCI_APP_DISPLAY" = x11 ]; then unset WAYLAND_DISPLAY; fi
 if [ "$APPCI_APP_DISPLAY" = wayland ] && [ -z "$APPCI_KEEP_DISPLAY" ]; then unset DISPLAY; fi
 export HOME="%(home)s" XDG_CONFIG_HOME="%(home)s/.config" XDG_STATE_HOME="%(home)s/.local/state" XDG_DATA_HOME="%(home)s/.local/share"
 export SHELL=/bin/bash ZDOTDIR="%(home)s"
-export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug,warp::terminal::cli_agent_sessions::event=info
+export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug,warp::terminal::cli_agent_sessions::event=info,editor_disk=debug
 export WARP_INPUT_ORDER_LOG_TEXT=1
 # #1789 / #2069: the app's find hook. Until round 14 only the Windows launcher set these two (where there is no pointer), so on Linux, the only platform
 # with pointer cases, the hook never logged a position: r12a, every hook-asking case, "app find hook gave no position ... located by OCR instead", and
@@ -46,6 +46,13 @@ WINDOWS_RUST_LOG = ",".join([
     "warp::input_order=debug", "warp::terminal::model_lock_trace=debug", "warpui::frame_cause=debug", "warpui::appci_find=info",
     "phosphor::routing=debug", "editor_memory=debug",
 ])
+
+# Round 15 (#2076, #2087), kept as separate statements so sibling branches that add to the list above merge cleanly:
+#   editor_disk=debug        the code editor's file-watcher trace (`editor_disk outcome=...`, editor_daily); also in the Linux and macOS launchers
+#   warp::pane_group=info    'Displaying unsaved changes warning for pane' (editor_daily's close question; tab_lifecycle_keys reads the same line)
+WINDOWS_RUST_LOG += ",editor_disk=debug,warp::pane_group=info"
+# macOS: the same trace, and the CLI-agent event line the two plugin cases read (the Linux launcher has had it since they were written)
+MAC_RUST_LOG_MORE = ",editor_disk=debug,warp::terminal::cli_agent_sessions::event=info"
 
 
 def rust_log_enabled(spec, module, level):
@@ -259,7 +266,7 @@ class MacApp:
         env_args = []
         for k, v in (("HOME", self.home), ("SHELL", "/bin/zsh"), ("ZDOTDIR", self.home), ("APPCI_W", self.home + "/w"),
                      ("PA_CTL", os.path.join(self.run, "ctl")),
-                     ("RUST_LOG", "warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug"),
+                     ("RUST_LOG", "warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug" + MAC_RUST_LOG_MORE),
                      ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
             env_args += ["--env", "%s=%s" % (k, v)]
         for k, v in passthrough_env().items():
