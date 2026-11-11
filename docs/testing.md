@@ -7943,3 +7943,18 @@ Source: the round 15 targeted run, build/r15a `b06800e98`, `app-test-linux-wayla
   message of round 15.
 - Not covered by an app case: a file moved in from another directory over an open file (`mv ../new file.txt`); the unit test of the merge
   covers the report, no case plays it.
+
+### Keyboard pane resize moves the divider that is on screen (#2144; APP)
+
+- Defect: with a closed pane still in the branch (undo-close window, 60 s) or a pane hidden for a job / as a child agent next to the focused
+  pane, "Resize pane > Move divider left / right / up / down" moved flex between the focused pane and the pane that is not drawn: the divider
+  went the wrong way by about half a step. `pane_resize_maximize` is the app case (unchanged): after `editor_daily` closed four editor splits
+  it read 81 / 79 columns after "move divider left" twice on the right pane, expected the right one wider.
+- Unit tests (`app/src/pane_group/tree_tests.rs`, not compiled when written): `keyboard_resize_pairs_the_focused_pane_with_a_drawn_neighbour`
+  (the round 15 layout), `resize_pairs_skip_a_hidden_node_between_drawn_ones`, `resize_pairs_are_unchanged_when_nothing_is_hidden`,
+  `move_divider_left_on_the_right_pane_widens_it`, `resize_drawn_pair_kill_switch_values`.
+- Kill switch: `PHOSPHOR_PANE_RESIZE_DRAWN_PAIR=0` (read once at first use): pairs by raw index and the divider after the last drawn pane, as
+  before. With it `pane_resize_maximize` fails again when it runs within a minute of a case that closed a split.
+- Not covered by an app case: a pointer drag of a divider with a pane hidden for a job or as a child agent between the two panes (the unit
+  test covers the pair; `pane_resize_maximize` drags with closed panes only, which the drag drops first); the divider that used to be drawn
+  after the last pane is not looked for by any case.
