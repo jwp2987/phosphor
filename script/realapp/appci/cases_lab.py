@@ -4,7 +4,8 @@
 # runners): without one they SKIP with the reason. Before each arm the harness sets the network fault, MEASURES the echo RTT, and a mismatch makes the arm
 # UNVERIFIABLE (never a pass). `nohelper` (no remote helper on the server) is the default and always the first arm; `helper` pre-installs the binary named by
 # APPCI_LAB_HELPER_BIN (a built phosphor-remote; the lab blocks outbound network, so nothing could be downloaded anyway) with never_install; when that
-# variable is not set the binary is this checkout's entry in the machine-local helper cache (script/ci/lab_helper.py, filled by the manual `lab-helper` job:
+# variable is not set the binary is the `lab-helper` job's artifact in this checkout (./helper-artifacts/, #2062) or this checkout's entry in the machine-local
+# helper cache (script/ci/lab_helper.py, filled by the manual `lab-helper` job:
 # resolve_helper_bin), and the arm is UNVERIFIABLE with the reason when there is neither. The Wave H arms (#1804) use the same binary as the bundle the app uploads: `upload` (nothing on the server, always_install), `upgrade` (older
 # versions pre-seeded), `never` (per-host policy never: nothing may be uploaded, the session still works). Scenario user p_noscp refuses scp/sftp.
 #
@@ -89,9 +90,14 @@ def lab_helper_cache():
 
 
 def resolve_helper_bin(env=None):
-    """-> (path, why). The helper the non-`nohelper` arms use: APPCI_LAB_HELPER_BIN when it is set (an explicit choice always wins, and a wrong one is not
-    papered over), else this checkout's entry in the machine-local cache the manual `lab-helper` job fills (script/ci/lab_helper.py: built once per set of
-    helper inputs, not in every dev build). ('' , reason) when neither names a file."""
+    """-> (path, why). The helper the non-`nohelper` arms use, first hit wins:
+      1. APPCI_LAB_HELPER_BIN when it is set (an explicit choice always wins, and a wrong one is not papered over);
+      2. the `lab-helper` job's artifact in this checkout, ./helper-artifacts/ (#2062: how the Mac and the Windows VM get it, `needs: lab-helper`), when
+         it is THIS checkout's helper (script/ci/lab_helper.py artifact_entry: same key, or exported by this pipeline);
+      3. this checkout's entry in the machine-local cache the same job fills on the build box (built once per set of helper inputs, not in every dev build).
+    ('', reason) when none names a file. The reason carries the `NEEDS: ...` line of the last `lab-helper` build that could not start for a missing tool
+    (from the artifact, else from the cache root), and on Linux the same line for zig when zig is not where that build looks for it: the row then says which
+    machine change is missing, not only which job to play."""
     env = os.environ if env is None else env
     explicit = env.get("APPCI_LAB_HELPER_BIN", "")
     if explicit:
@@ -99,10 +105,20 @@ def resolve_helper_bin(env=None):
     cache = lab_helper_cache()
     if cache is None:
         return "", "APPCI_LAB_HELPER_BIN is not set and this checkout has no script/ci/lab_helper.py"
+    art, art_why = cache.artifact_entry(cache.ROOT, env)
+    if art is not None:
+        return os.path.join(art, cache.BIN), None
     entry, why = cache.cached_entry(cache.ROOT, env)
-    if entry is None:
-        return "", "APPCI_LAB_HELPER_BIN is not set and the lab helper cache has none for this checkout: %s" % why
-    return os.path.join(entry, cache.BIN), None
+    if entry is not None:
+        return os.path.join(entry, cache.BIN), None
+    if art_why:
+        return "", "APPCI_LAB_HELPER_BIN is not set and %s" % art_why
+    why = "APPCI_LAB_HELPER_BIN is not set, this checkout has no helper-artifacts/ from `lab-helper`, and the lab helper cache has none for it: %s" % why
+    if "NEEDS:" not in why and sys.platform.startswith("linux"):
+        needs = cache.zig_needs(env)
+        if needs:
+            why += ". " + needs
+    return "", why
 
 
 # Arms in which the APP uploads (or must refuse to upload) the helper. A bundled build with no pinned helper digest refuses EVERY upload by design

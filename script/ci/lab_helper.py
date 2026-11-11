@@ -17,6 +17,15 @@ THE CACHE. `${PHOSPHOR_CI_HELPER_CACHE:-$HOME/.cache/phosphor-ci/helper}/<key>/`
 An entry is immutable: a second build of the same key is refused (two LTO builds are not promised to be byte-identical, and a digest pinned
 from the first one must stay true). Newest KEEP entries are kept.
 
+THE ARTIFACT (#2062). `build` copies the entry to ./helper-artifacts/ and adds export.json (which pipeline and job exported it). A lab job on a
+machine without the cache (the Mac, the Windows VM) gets that directory through `needs: lab-helper` and artifact_entry() accepts it only when it is
+this checkout's helper: meta.json's key equals the key computed here, or, where no key can be computed, export.json names this pipeline. A file
+carried over from another commit is refused by name, never used silently.
+
+NEEDS. When the build tools are missing, `build` fails as before and ALSO writes the list as one `NEEDS: ...` line to helper-artifacts/NEEDS.txt
+(uploaded: the job's artifact is `when: always`) and to <cache>/NEEDS.txt. The lab's helper arms quote that line as their reason, so a row says
+which machine change is missing instead of "play lab-helper". The first build that succeeds removes the record.
+
 THE KEY. sha256 over: the tag, the target, the profile, the features, this recipe's revision, and the git ids of everything the helper is
 built from: the trees in KEY_TREES (the workspace crates in the helper's dependency tree: remote_server itself, `command`, and the vendored
 `notify`) and the files Cargo.toml, Cargo.lock, rust-toolchain.toml, .cargo/config.toml. No cargo is needed to compute it, so a lab job
@@ -31,6 +40,7 @@ COMMANDS
     build           the `lab-helper` job: build it unless cached, verify it (static, version line, size), store it, and copy the entry to
                     ./helper-artifacts/ for the job's artifact. Installs NOTHING: a missing musl target, zig or cargo-zigbuild is an error
                     naming what is missing (they are the tools the cli-linux release job leaves in the runner user's home).
+    artifact        print the binary inside ./helper-artifacts/ when it is this checkout's helper; exit 3 with the reason otherwise
     --self-test     the pure parts, in a temp dir
 
 Exit: 0 ok, 1 failed, 2 usage, 3 not cached (path).
@@ -57,6 +67,9 @@ KEY_TREES = ("crates/remote_server", "crates/command", "lib/notify")      # prov
 KEY_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml")
 MAX_BYTES = 20 * 1024 * 1024                    # the release job's size gate (build-remote-helper)
 KEEP = 3
+ARTIFACT_DIR = "helper-artifacts"                # what `build` exports and the `lab-helper` job uploads
+EXPORT_FILE = "export.json"                     # in the artifact only: which pipeline / job exported it
+NEEDS_FILE = "NEEDS.txt"                        # in the artifact and in the cache root: why the last build could not start
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -141,7 +154,9 @@ def cached_entry(root, env=None, git=git_out):
         return None, str(e)
     d = os.path.join(cache_root(env), key)
     if not os.path.isdir(d):
-        return None, "no cached helper for key %s under %s: play the manual `lab-helper` job on this ref (it builds the helper once and every later lab run reuses it)" % (key, cache_root(env))
+        why = "no cached helper for key %s under %s: play the manual `lab-helper` job on this ref (it builds the helper once and every later lab run reuses it)" % (key, cache_root(env))
+        needs = read_needs(cache_root(env))
+        return None, why + (". The last `lab-helper` build on this machine could not start. " + needs if needs else "")
     why = entry_problem(d)
     if why:
         return None, "the cached helper %s is damaged (%s): remove that directory and play `lab-helper` again" % (d, why)
@@ -234,26 +249,128 @@ def prune(cache, keep=KEEP, keep_dir=None):
     return gone
 
 
-def export(entry, dest):
-    """copy the entry's files to `dest` (the job's artifact directory)"""
+def export(entry, dest, env=None):
+    """copy the entry's files to `dest` (the job's artifact directory) and say which pipeline exported them (export.json: what a machine that cannot
+    compute the key, or has no cache, ties the artifact to its own pipeline with)"""
+    env = os.environ if env is None else env
     os.makedirs(dest, exist_ok=True)
     for n in (BIN, BIN + ".version", GZ, SHA, "meta.json"):
         shutil.copyfile(os.path.join(entry, n), os.path.join(dest, n))
     os.chmod(os.path.join(dest, BIN), 0o755)
+    json.dump({"pipeline_id": env.get("CI_PIPELINE_ID", ""), "job_id": env.get("CI_JOB_ID", ""), "sha": env.get("CI_COMMIT_SHA", "")},
+              open(os.path.join(dest, EXPORT_FILE), "w"), indent=1, sort_keys=True)
 
 
-def missing_tools(env):
-    """the build's prerequisites that are absent, as messages. Nothing is installed here."""
+def artifact_dir(root, env=None):
+    env = os.environ if env is None else env
+    return env.get("APPCI_LAB_HELPER_ARTIFACTS") or os.path.join(root, ARTIFACT_DIR)
+
+
+def artifact_entry(root, env=None, git=git_out):
+    """the `lab-helper` job's artifact in this checkout (#2062): (dir, None) when ./helper-artifacts/ holds THIS checkout's helper, (None, reason) when
+    it holds something that must not be used (a NEEDS record instead of a binary, a damaged entry, another commit's helper), (None, None) when there is
+    no artifact at all (the caller then asks the machine-local cache). "This checkout's" means meta.json's key equals the key computed here; where no
+    key can be computed (not a git checkout, a dirty tree) export.json must name this job's pipeline instead."""
+    env = os.environ if env is None else env
+    d = artifact_dir(root, env)
+    if not os.path.isdir(d):
+        return None, None
+    if not os.path.isfile(os.path.join(d, BIN)):
+        needs = read_needs(d)
+        if needs:
+            return None, "the `lab-helper` job of this pipeline could not build the helper. " + needs
+        return None, None
+    why = entry_problem(d)
+    if why:
+        return None, "the helper artifact in %s is damaged (%s): play `lab-helper` again" % (d, why)
+    try:
+        built_for = json.load(open(os.path.join(d, "meta.json"), encoding="utf-8")).get("key")
+    except (OSError, ValueError):
+        built_for = None
+    try:
+        key = key_of(key_inputs(root, helper_tag(root, env), git))
+    except NoKey as e:
+        try:
+            exported_by = str(json.load(open(os.path.join(d, EXPORT_FILE), encoding="utf-8")).get("pipeline_id") or "")
+        except (OSError, ValueError):
+            exported_by = ""
+        if exported_by and exported_by == str(env.get("CI_PIPELINE_ID") or ""):
+            return d, None
+        return None, ("the helper artifact in %s cannot be tied to this checkout: no key here (%s) and its export.json does not name this pipeline "
+                      "(%r); it is not used" % (d, e, exported_by))
+    if built_for != key:
+        return None, ("the helper artifact in %s was built for key %s; this checkout's key is %s: it is another commit's helper and is not used "
+                      "(play `lab-helper` in this pipeline)" % (d, built_for, key))
+    return d, None
+
+
+BUILD_TOOLS = (("cargo", "the rust toolchain"), ("cargo-zigbuild", "the cli-linux release job installs it into the runner user's home"),
+               ("zig", "the cli-linux release job installs it into $HOME/.local/zig-*"))
+MUSL_TARGET_NAME = "the %s rust target" % TARGET
+
+
+def build_path(env, home=None):
+    """the PATH `build` looks its tools up on: CARGO_HOME/bin, ~/.local/bin and every ~/.local/zig-*/ that holds a zig, before the job's own PATH"""
+    home = home or os.path.expanduser("~")
+    extra = [os.path.join(env.get("CARGO_HOME") or os.path.join(home, ".cargo"), "bin"), os.path.join(home, ".local", "bin")]
+    local = os.path.join(home, ".local")
+    if os.path.isdir(local):
+        extra += [os.path.join(local, n) for n in sorted(os.listdir(local), reverse=True) if n.startswith("zig-") and os.path.isfile(os.path.join(local, n, "zig"))]
+    return os.pathsep.join(extra + [env.get("PATH", "")])
+
+
+def missing_tools(env, which=shutil.which, targets=None):
+    """the build's prerequisites that are absent: [(name, message)]. Nothing is installed here. `targets`: the installed rust targets (None = ask rustup)."""
     out = []
-    for tool, why in (("cargo", "the rust toolchain"), ("cargo-zigbuild", "the cli-linux release job installs it into the runner user's home"),
-                      ("zig", "the cli-linux release job installs it into $HOME/.local/zig-*")):
-        if shutil.which(tool, path=env.get("PATH")) is None:
-            out.append("%s is missing for this user (%s; nothing is installed by this job)" % (tool, why))
+    for tool, why in BUILD_TOOLS:
+        if which(tool, path=env.get("PATH")) is None:
+            out.append((tool, "%s is missing for this user (%s; nothing is installed by this job)" % (tool, why)))
     if not out:
-        p = subprocess.run(["rustup", "target", "list", "--installed"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
-        if p.returncode != 0 or TARGET not in p.stdout.split():
-            out.append("the %s rust target is not installed (`rustup target add %s`, once, by the toolchain owner)" % (TARGET, TARGET))
+        if targets is None:
+            p = subprocess.run(["rustup", "target", "list", "--installed"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+            targets = p.stdout.split() if p.returncode == 0 else []
+        if TARGET not in targets:
+            out.append((MUSL_TARGET_NAME, "the %s rust target is not installed (`rustup target add %s`, once, by the toolchain owner)" % (TARGET, TARGET)))
     return out
+
+
+def needs_line(names):
+    """the one line a helper arm quotes while the box cannot build the helper: the exact machine change, then the job to play"""
+    return ("NEEDS: %s installed for the CI runner user on the build box (owner: machine change; the `lab-helper` job installs nothing), then the manual "
+            "`lab-helper` job played once" % ", ".join(names))
+
+
+def zig_needs(env=None, home=None, which=shutil.which):
+    """a NEEDS line when zig cannot be found the way `build` looks for it, else None. Only zig is asked here: it is looked up in the runner user's home,
+    which a lab job shares with the `lab-helper` job; cargo and the rust target depend on that job's own CARGO_HOME / RUSTUP_HOME and are judged there."""
+    env = os.environ if env is None else env
+    if which("zig", path=build_path(env, home)) is None:
+        return needs_line(["zig"])
+    return None
+
+
+def read_needs(d):
+    """the NEEDS line recorded in directory `d` (the artifact or the cache root), or None"""
+    try:
+        for line in open(os.path.join(d, NEEDS_FILE), encoding="utf-8"):
+            if line.startswith("NEEDS: "):
+                return line.strip()
+    except OSError:
+        pass
+    return None
+
+
+def write_needs(d, names, key, when=None):
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, NEEDS_FILE), "w", encoding="utf-8") as f:
+        f.write("%s\nkey=%s recorded=%s\n" % (needs_line(names), key, when or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+
+
+def clear_needs(d):
+    try:
+        os.remove(os.path.join(d, NEEDS_FILE))
+    except OSError:
+        pass
 
 
 def cmd_build(root):
@@ -267,6 +384,8 @@ def cmd_build(root):
     key = key_of(inputs)
     cache = cache_root(env)
     d = os.path.join(cache, key)
+    dest = os.path.join(root, ARTIFACT_DIR)
+    shutil.rmtree(dest, ignore_errors=True)         # only what THIS job exports is uploaded (a checkout that was not cleaned may hold an older one)
     if os.path.isdir(d):
         why = entry_problem(d)
         if why:
@@ -275,16 +394,20 @@ def cmd_build(root):
         os.utime(d, None)                       # used now: the prune keeps the entries in use
         print("lab_helper: key %s is already cached at %s (no build)" % (key, d))
     else:
-        home = os.path.expanduser("~")
-        extra = [os.path.join(env.get("CARGO_HOME") or os.path.join(home, ".cargo"), "bin"), os.path.join(home, ".local", "bin")]
-        local = os.path.join(home, ".local")
-        if os.path.isdir(local):
-            extra += [os.path.join(local, n) for n in sorted(os.listdir(local), reverse=True) if n.startswith("zig-") and os.path.isfile(os.path.join(local, n, "zig"))]
-        env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
+        env["PATH"] = build_path(env)
         miss = missing_tools(env)
         if miss:
-            for m in miss:
+            for _name, m in miss:
                 print("lab_helper: ERROR %s" % m, file=sys.stderr)
+            names = [n for n, _m in miss]
+            # the lab's helper arms quote this line (cases_lab.resolve_helper_bin): from the artifact on a machine that downloads it, from the
+            # cache root on this one
+            for where in (dest, cache):
+                try:
+                    write_needs(where, names, key)
+                except OSError as e:
+                    print("lab_helper: could not record the NEEDS line in %s: %s" % (where, e), file=sys.stderr)
+            print("lab_helper: %s" % needs_line(names), file=sys.stderr)
             return 1
         # the helper must stay warpui-free; the same gate build-remote-helper runs first (metadata only)
         if subprocess.run([os.path.join(root, "script", "check_remote_helper_deps")], cwd=root, env=env).returncode != 0:
@@ -334,7 +457,8 @@ def cmd_build(root):
         print("lab_helper: stored %s (%d bytes, %s)" % (d, size, line))
     for p in prune(cache, KEEP, d):
         print("lab_helper: pruned %s" % p)
-    export(d, os.path.join(root, "helper-artifacts"))
+    clear_needs(cache)                              # a helper exists: the machine change the record asked for was made
+    export(d, dest, env)
     print("lab_helper: helper-artifacts/ holds key %s: %s" % (key, open(os.path.join(d, BIN + ".version")).readline().strip()))
     return 0
 
@@ -436,7 +560,57 @@ def self_test():
         check(left == ["key0", "key2", "key3", "key4"] and gone == [made[1]], "prune keeps the newest three and the entry in use (%r)" % left)
         dest = os.path.join(tmp, "helper-artifacts")
         export(made[4], dest)
-        check(sorted(os.listdir(dest)) == sorted([BIN, BIN + ".version", GZ, SHA, "meta.json"]) and os.access(os.path.join(dest, BIN), os.X_OK), "export copies the whole entry")
+        check(sorted(os.listdir(dest)) == sorted([BIN, BIN + ".version", GZ, SHA, "meta.json", EXPORT_FILE]) and os.access(os.path.join(dest, BIN), os.X_OK), "export copies the whole entry and says who exported it")
+        # #2062: the artifact a lab job downloads. Accepted only as THIS checkout's helper; a NEEDS record is a reason, never a helper
+        aenv = {"APPCI_LAB_HELPER_ARTIFACTS": os.path.join(tmp, "art"), "CI_PIPELINE_ID": "77"}
+        check(artifact_entry(root, aenv, fake_git) == (None, None), "no artifact directory: nothing to say (the caller asks the cache)")
+        mine = store(cache, k1, fake, "phosphor-remote v0.1.18-dev protocol 1", {"tag": "v0.1.18-dev"})
+        export(mine, aenv["APPCI_LAB_HELPER_ARTIFACTS"], {"CI_PIPELINE_ID": "77", "CI_JOB_ID": "5"})
+        check(artifact_entry(root, aenv, fake_git) == (aenv["APPCI_LAB_HELPER_ARTIFACTS"], None), "this checkout's artifact is accepted (its key is the key computed here)")
+        old, ids["HEAD:crates/remote_server"] = ids["HEAD:crates/remote_server"], "moved-on"
+        d, why = artifact_entry(root, aenv, fake_git)
+        check(d is None and "another commit's helper" in why and k1 in why, "an artifact built for another key is refused by name (a stale file is never used silently)")
+        ids["HEAD:crates/remote_server"] = old
+        state["dirty"] = " M Cargo.lock"
+        check(artifact_entry(root, aenv, fake_git)[0] == aenv["APPCI_LAB_HELPER_ARTIFACTS"], "without a key the artifact is accepted when export.json names this pipeline")
+        d, why = artifact_entry(root, dict(aenv, CI_PIPELINE_ID="78"), fake_git)
+        check(d is None and "cannot be tied to this checkout" in why, "without a key, another pipeline's artifact is refused")
+        d, why = artifact_entry(root, {"APPCI_LAB_HELPER_ARTIFACTS": aenv["APPCI_LAB_HELPER_ARTIFACTS"]}, fake_git)
+        check(d is None and "cannot be tied" in why, "without a key and outside CI the artifact is refused")
+        state["dirty"] = ""
+        open(os.path.join(aenv["APPCI_LAB_HELPER_ARTIFACTS"], BIN), "ab").write(b"x")
+        d, why = artifact_entry(root, aenv, fake_git)
+        check(d is None and "damaged" in why, "an artifact whose binary does not match its digest is refused")
+        shutil.rmtree(aenv["APPCI_LAB_HELPER_ARTIFACTS"])
+        shutil.rmtree(mine)
+        # NEEDS: the exact machine change, recorded by a build that could not start and quoted until one succeeds
+        line = needs_line(["zig", "cargo-zigbuild"])
+        check(line.startswith("NEEDS: zig, cargo-zigbuild installed") and "owner: machine change" in line and "`lab-helper`" in line, "the NEEDS line names the tools, the owner and the job")
+        write_needs(aenv["APPCI_LAB_HELPER_ARTIFACTS"], ["zig"], k1, "2026-11-11T00:00:00Z")
+        d, why = artifact_entry(root, aenv, fake_git)
+        check(d is None and why.endswith(needs_line(["zig"])) and "could not build" in why, "an artifact that holds only a NEEDS record gives that line as the reason")
+        write_needs(cache, ["zig"], k1)
+        d, why = cached_entry(root, env, fake_git)
+        check(d is None and needs_line(["zig"]) in why and "lab-helper" in why, "a cache miss quotes the NEEDS line the last failed build recorded")
+        clear_needs(cache)
+        d, why = cached_entry(root, env, fake_git)
+        check(d is None and "NEEDS:" not in why and read_needs(cache) is None, "no record, no NEEDS line (nothing is claimed about the machine)")
+        clear_needs(cache)                                                                              # twice is fine
+        none = lambda tool, path=None: None
+        only_cargo = lambda tool, path=None: "/x/" + tool if tool == "cargo" else None
+        every = lambda tool, path=None: "/x/" + tool
+        check([n for n, _ in missing_tools({}, none)] == ["cargo", "cargo-zigbuild", "zig"] and [n for n, _ in missing_tools({}, only_cargo)] == ["cargo-zigbuild", "zig"],
+              "each missing tool is named")
+        check(missing_tools({}, every, [TARGET]) == [] and [n for n, _ in missing_tools({}, every, ["x86_64-unknown-linux-gnu"])] == [MUSL_TARGET_NAME],
+              "with the tools there, the musl target is asked for by name")
+        zhome = os.path.join(tmp, "home")
+        os.makedirs(os.path.join(zhome, ".local", "zig-0.13.0"))
+        check(zig_needs({"PATH": ""}, zhome) == needs_line(["zig"]), "no zig where the build looks: the NEEDS line")
+        zig = os.path.join(zhome, ".local", "zig-0.13.0", "zig")
+        open(zig, "w").write("#!/bin/sh\n")
+        os.chmod(zig, 0o755)
+        check(zig_needs({"PATH": ""}, zhome) is None and os.path.join(zhome, ".local", "zig-0.13.0") in build_path({"PATH": "/bin"}, zhome).split(os.pathsep),
+              "a zig in ~/.local/zig-*/ is found the way the build finds it")
         # version line and ELF checks
         check(version_line_ok("phosphor-remote v0.1.18-dev protocol 1", "v0.1.18-dev") and version_line_ok("phosphor-remote v1 protocol 12", None), "a version line is accepted")
         check(not version_line_ok("phosphor-remote v0.1.17 protocol 1", "v0.1.18-dev") and not version_line_ok("phosphor-oss v1 protocol 1", None)
@@ -483,6 +657,13 @@ def main(argv):
         d, why = cached_entry(ROOT)
         if d is None:
             print("lab_helper: %s" % why, file=sys.stderr)
+            return 3
+        print(os.path.join(d, BIN))
+        return 0
+    if cmd == "artifact":
+        d, why = artifact_entry(ROOT)
+        if d is None:
+            print("lab_helper: %s" % (why or "no %s/ with a helper in this checkout" % ARTIFACT_DIR), file=sys.stderr)
             return 3
         print(os.path.join(d, BIN))
         return 0

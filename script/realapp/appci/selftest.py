@@ -7134,12 +7134,14 @@ def lab_helper_from_the_cache_r12():
     LH = CL.lab_helper_cache()
     assert LH is not None and LH.BIN == "phosphor-remote" and callable(LH.cached_entry)
     d = tempfile.mkdtemp()
-    keep = {k: os.environ.get(k) for k in ("APPCI_LAB_HELPER_BIN", "PHOSPHOR_CI_HELPER_CACHE", "APPCI_APP_PINNED_DIGESTS", "LAB_HELPER_TAG", CL.HELPER_ASSET_ENV)}
+    keep = {k: os.environ.get(k) for k in ("APPCI_LAB_HELPER_BIN", "PHOSPHOR_CI_HELPER_CACHE", "APPCI_APP_PINNED_DIGESTS", "LAB_HELPER_TAG", CL.HELPER_ASSET_ENV,
+                                           "APPCI_LAB_HELPER_ARTIFACTS")}
     try:
         for k in keep:
             os.environ.pop(k, None)
         cache = os.path.join(d, "cache")
         os.environ["PHOSPHOR_CI_HELPER_CACHE"] = cache
+        os.environ["APPCI_LAB_HELPER_ARTIFACTS"] = os.path.join(d, "no-artifact")      # round 15: a lab job's checkout may hold a real ./helper-artifacts/; this check is about the cache
         # (1) nothing anywhere
         path, why = CL.resolve_helper_bin()
         assert path == "" and "APPCI_LAB_HELPER_BIN" in why and "lab-helper" in why, why
@@ -8271,6 +8273,8 @@ def r14_window_use_cases_pure_parts():
             assert n in winmap.NOT_WINDOWS and "r14-test-gaps T3" in winmap.skip_reason(n, "gitbash"), n
 import selftest_pointer  # noqa: E402  (round 14 wave 3a: cases_pointer.py; its checks live in their own file)
 CHECKS.extend(selftest_pointer.CHECKS)
+import selftest_r15_lab  # noqa: E402  (round 15 lab: the helper artifact, the lab families and their drivers, kl3's keys; its checks live in their own file)
+CHECKS.extend(selftest_r15_lab.CHECKS)
 
 
 def main():
