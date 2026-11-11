@@ -8150,6 +8150,41 @@ def lab_plain_session_limit_2019():
         assert n in names, n                                 # the nu rows are still registered: reported by name, not dropped
     doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
     assert "lab_plain_session_limit_2019" in doc and "plain_session_limit" in doc
+@check
+def lab_sh_login_keys_2120():
+    """#2120: lab_nohelper_sh_login_keys. The log reader finds the plain-login event in either form (the view's hop, the model's INFO line), counts
+    give-ups, and can fail; the dash / ash arms are registered, terminal and agent mode, and named exactly in PROVING_LAB (the quick matrix has no such
+    shell); the bash control arm is what the family glob and the candidate matrix select; the event texts are the ones the app's source logs."""
+    import cases_lab as CL
+    import lab as labmod
+    f = CL.sh_login_log_facts
+    hop = "12:00:01.1 [DEBUG] input_order hop=ssh_wrapper remote_plain_login holding=true held_bytes=13 t=3\n"
+    info = "12:00:01.1 [INFO] SSH hook for a login shell the remote command does not bootstrap (dash): a plain login, no remote session is pending\n"
+    managed = "12:00:00.9 [INFO] Received ManagedSSHSessionStarting hook\n"
+    give_up = "12:00:16.0 [DEBUG] input_order hop=kh_ssh_give_up why=give_up_ceiling held_bytes=13 t=9\n"
+    assert f(managed + hop) == dict(plain=True, managed=True, give_ups=0)
+    assert f(info) == dict(plain=True, managed=False, give_ups=0)
+    assert f(managed) == dict(plain=False, managed=True, give_ups=0)                       # the state before the fix on Linux: held, nothing logged
+    assert f(managed + give_up + give_up) == dict(plain=False, managed=True, give_ups=2)   # ... and on macOS: the net
+    assert f("x hop=ssh_wrapper remote_plain_login_ignored state=Off remote_announced=false\n")["plain"] is False     # an ignored hook is not the event
+    assert f(None) == f("") == dict(plain=False, managed=False, give_ups=0)
+    names = {c["name"]: c for c in cases.CASES}
+    want = ["lab_nohelper_sh_login_keys.%s.lan.nohelper" % sh for sh in ("dash", "ash", "bash")]
+    assert sorted(n for n in names if n.startswith("lab_nohelper_sh_login_keys.")) == sorted(want)
+    assert all(names[n]["modes"] == ("terminal", "agent") for n in want), "both session modes"
+    assert set(want[:2]) <= set(cases.PROVING_LAB), "the dash / ash arms are named exactly: the quick matrix would leave them out"
+    quick = labmod.matrix_selection("quick")
+    assert not labmod.arm_selected(names[want[0]]["arm"], quick) and labmod.arm_selected(names[want[2]]["arm"], quick)
+    assert any(labmod.name_matches(g, want[2]) for g in cases.PROVING_LAB), "the bash control arm is played through the family glob"
+    root = os.path.join(HERE, "..", "..", "..")
+    view = open(os.path.join(root, "app", "src", "terminal", "view.rs"), encoding="utf-8").read()
+    model = open(os.path.join(root, "app", "src", "terminal", "model", "terminal_model.rs"), encoding="utf-8").read()
+    assert '"remote_plain_login holding={} held_bytes={}"' in view and '"remote_plain_login_ignored state={:?} remote_announced={}"' in view
+    assert "SSH hook for a login shell the remote command does not bootstrap" in model
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    assert "lab_nohelper_sh_login_keys" in doc and "lab_sh_login_keys_2120" in doc
+
+
 @check      # #2086: this line was lost in a hand merge and the function never ran
 def r14_w1a_wave1_cases_pure_parts_and_registry():
     """#2072 (docs/design/r14-w1a.md): history_up_recall, scroll_keys_position, find_basic, tab_lifecycle_keys, routing_table_powershell. Each verdict

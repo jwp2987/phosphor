@@ -1020,6 +1020,73 @@ def c_no_helper_chip(ctx, r, arm):
     r.check(sum(1 for _, cmd in ctx.remote.commands() if "echo chip%s" % tok in cmd) == 1, "a command typed after connecting did not run exactly once with the chip up")
     finish_remote(ctx, r)
 
+# ------------------------------------------------------------------ 6a. a login shell the remote command does not bootstrap: keys reach it (#2120)
+# view.rs ssh_on_remote_plain_login (the hop) / terminal_model.rs TerminalModel::ssh (the INFO line): the SSH hook of an unbootstrapped login shell
+SH_LOGIN_PLAIN_RE = re.compile(r"hop=ssh_wrapper remote_plain_login\b|SSH hook for a login shell the remote command does not bootstrap")
+SH_LOGIN_GIVE_UP_RE = re.compile(r"hop=kh_ssh_give_up\b")
+
+
+def sh_login_log_facts(log_text):
+    """pure: what the app log of one connect says about #2120: dict(plain=the plain-login event of the SSH hook was logged, managed=the wrapper took the
+    managed way (the premise: without it this is not the path of #2120), give_ups=number of ssh give-up nets that fired)"""
+    text = log_text or ""
+    return dict(plain=bool(SH_LOGIN_PLAIN_RE.search(text)), managed=bool(MANAGED_SESSION_RE.search(text)), give_ups=len(SH_LOGIN_GIVE_UP_RE.findall(text)))
+
+
+@lab_case("nohelper_sh_login_keys", shells=("dash", "ash", "bash"), lat=("lan",), helper=("nohelper",))
+def c_nohelper_sh_login_keys(ctx, r, arm):
+    """#2120: `ssh <host>` to a host whose LOGIN shell is dash / busybox ash. The wrapper's remote command prints the SSH hook and execs the shell without a
+    bootstrap, so no InitShell and no first prompt ever come; before the fix every key typed in that session was held for as long as ssh ran (Linux: no
+    clock; macOS: 15 s, by a give-up). Oracle: one line typed right behind the ssh command's Enter (held while ssh connects) and five lines typed at
+    10-25 ms/key with an instant Enter once the session is up all arrive in the host's effect file exactly once, in typed order (the host's file, read by
+    labd: no prompt hook is needed, and dash / ash have none in this session); the app log of the connect has the plain-login event of the SSH hook and
+    NO ssh give-up (the release is the hook, not a net). dash / ash: "the session is up" is that event in the app log, not `prompt.log`: a dash started
+    by the remote command is not a login shell and never reads the `~/.profile` that carries the lab's prompt hook.
+    The bash arm is the control (and the arm the candidate matrix, which has no dash, plays): a login shell the remote command DOES bootstrap. Same typed
+    lines, same effect-file oracle, the session is up at its first remote prompt, and the plain-login event must NOT be in the log."""
+    rt = rtt_s(arm)
+    bootstrapped = arm["shell"] in ("bash", "zsh")                # bootstrap/bash_body.sh: the remote command's `case`; ssh_phase.rs ssh_remote_command_bootstraps
+    eff = work(arm, "shk_%s.txt" % unique(ctx, 4))
+    off = ctx.log_size()
+    before = CR.rprompts(ctx)
+    ahead = "ta" + unique(ctx, 5)
+    ctx.be.type("ssh " + host_of(arm), 12, enter=True)
+    ctx.be.type(ctx.append_cmd("bash", ahead, eff), type_pace(ctx), enter=True)          # typed while ssh connects: held, then the remote's
+    if bootstrapped:
+        seen = ctx.until(lambda: CR.rprompts(ctx) > before, 90, step=0.1)
+    else:
+        seen = ctx.until(lambda: sh_login_log_facts(ctx.log_since(off))["plain"], 90, step=0.1)
+    facts = sh_login_log_facts(ctx.log_since(off))
+    r.metric("sh_login_log_facts", facts)
+    if bootstrapped:
+        r.check(bool(seen), "control: no remote prompt 90 s after `ssh %s`. Test host: %s" % (host_of(arm), "" if seen else ctx.ssh_diag()))
+    else:
+        r.check(bool(seen), "no plain-login event in the app log 90 s after `ssh %s` (neither `hop=ssh_wrapper remote_plain_login` nor the model's SSH-hook "
+                            "line): the SSH hook of a %s login shell did not end the connect hold (#2120). Managed way taken: %s. Test host: %s" % (
+                                host_of(arm), arm["shell"], facts["managed"], "" if seen else ctx.ssh_diag()))
+    if not seen:
+        ctx.reset()
+        return
+    time.sleep(1.0 + 2 * rt)
+    toks = []
+    for _ in range(5):
+        tok = "sk" + unique(ctx, 5)
+        toks.append(tok)
+        ctx.be.type(ctx.append_cmd("bash", tok, eff), type_pace(ctx), enter=True)
+        ctx.until(lambda: any(tok in x for x in ctx.remote.lines(eff)), 10 + 4 * rt, step=0.05)
+    ctx.until(lambda: len(ctx.remote.lines(eff)) >= len(toks) + 1, 10 + 4 * rt)
+    got = [(x.split() or [""])[0] for x in ctx.remote.lines(eff)]
+    CA.exact_lines(r, "effect file: the line typed while ssh connected, then every line typed at the remote prompt, once each, in typed order", [ahead] + toks, got)
+    facts = sh_login_log_facts(ctx.log_since(off))
+    r.metric("sh_login_log_facts_end", facts)
+    r.check(facts["give_ups"] == 0, "%d ssh give-up net(s) fired in this session (hop=kh_ssh_give_up): the keys must be released by an event" % facts["give_ups"])
+    if bootstrapped:
+        r.check(not facts["plain"], "control: the app logged the plain-login event of an SSH hook for a %s login shell, which the remote command bootstraps" % arm["shell"])
+    elif not facts["managed"]:
+        r.note("the app log has no managed-session line for this connect: the wrapper did not take the managed way, so this run did not go through the path of #2120")
+    finish_remote(ctx, r)
+
+
 # ------------------------------------------------------------------ 6b. nushell agent commands: pagers off, restored (#1813)
 NU_PAGER_MARKER = "# __phosphor_ap_pagers"          # agent_shell_wrap.rs NU_PAGER_MARKER (selftest keeps them equal)
 
