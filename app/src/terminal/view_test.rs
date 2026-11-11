@@ -33945,6 +33945,11 @@ mod give_up_to_pty_tests;
 #[path = "view/group2_timer_tests.rs"]
 mod group2_timer_tests;
 
+// #2142 (the two notes of a Phosphorize click that waits behind a relay). Declared here for the
+// same reason as group 1.
+#[path = "view/subshell_relay_note_view_tests.rs"]
+mod subshell_relay_note_view_tests;
+
 // #2000 (an event that keeps a deferred Enter unrun keeps the keys behind it with its line).
 // Declared here for the same reason as group 1.
 #[path = "view/keep_deferred_enter_tests.rs"]

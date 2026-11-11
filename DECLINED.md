@@ -3672,3 +3672,17 @@ does not notify ends the episode. Off: `PHOSPHOR_AGENT_NOTIFY_EVERY_EVENT=1`. Th
 are as at the pin; a re-pin must keep the `should_send` gate in front of the send. App case
 `desktop_notification_agent_question`. Design: `docs/design/r10-r21-wlinput.md`.
 <!-- markers: keep:NotifiedEpisodes keep:one_blocked_action_is_notified_for_once -->
+
+## Subshell setup behind a relay: the click and the cancel say what happens (#2142) — IMPROVED 2026-11-11
+
+Owner decision 2026-11-11. Behind a relay (`sudo -s` with `use_pty`, ssh) the readiness rules are KEPT
+as they are: a click on Phosphorize at an idle prompt writes nothing (`Wait(RelayNoPrompt)`, R4), the
+setup is written at the next prompt after an Enter on an empty line, a typed command cancels the
+attempt (`UserDrove`, R2). DECLINED: treating the prompt already on screen as proof behind a relay
+(option 3 of #2142). Added: a toast at the click ("Phosphor will set up this shell at the next empty
+prompt: press Enter on an empty line. ...") that stays until the setup is written or the attempt ends,
+and a toast at the cancel that says so; the Phosphorize button is offered again after that cancel so
+the retry it names exists. No timer, no modal, nothing typed for the user, no reading of the screen
+(`terminal/view/subshell_relay_note.rs`). Off: `PHOSPHOR_SUBSHELL_RELAY_NOTE=0`. App case
+`subshell_ready_relay_shape`. Design: `docs/design/r10-r21-relaynote.md`.
+<!-- markers: keep:armed_wait_note_wanted keep:cancelled_note_wanted keep:a_typed_command_cancels_with_a_note_and_the_button_comes_back -->

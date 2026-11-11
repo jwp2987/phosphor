@@ -9127,6 +9127,8 @@ import selftest_r21_wlinput  # noqa: E402  (round 21, #2139 #2140 #2141: the Way
 CHECKS.extend(selftest_r21_wlinput.CHECKS)
 import selftest_r21_wlpanes  # noqa: E402  (round 21 Wayland, #2143 #2144 #2145 #2146: accounting of quoted keys, the depth check's lineage, the tab cb_ui_action_latency closes, scroll_keys_position in the agent view; own file)
 CHECKS.extend(selftest_r21_wlpanes.CHECKS)
+import selftest_r21_relaynote  # noqa: E402  (round 21, #2142: the two notes of a Phosphorize click that waits behind a relay; own file)
+CHECKS.extend(selftest_r21_relaynote.CHECKS)
 
 
 def missing_required(required, passed):
