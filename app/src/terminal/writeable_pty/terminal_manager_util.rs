@@ -285,6 +285,11 @@ pub fn wire_up_remote_server_controller_with_view<T: EventLoopSender>(
                     ctrl.handle_ssh_remote_server_skip(*session_id, *remember, ctx);
                 });
             }
+            view::Event::RemoteServerQuestionAbandoned { session_id } => {
+                controller.update(ctx, |ctrl, _ctx| {
+                    ctrl.handle_ssh_remote_server_question_abandoned(*session_id);
+                });
+            }
             _ => {}
         }
     });

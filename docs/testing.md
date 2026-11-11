@@ -136,7 +136,7 @@ Hard rules:
   starts and stops itself (`app/src/integration_testing/subshell/util.rs`, same recipe as
   `script/realapp/appci/sshd.py`): the current user, no privileges (`UsePAM no`, pubkey only), one sshd per
   remote login shell, a `ForceCommand` that sets `HOME` (scratch remote home) and `SHELL`, runs commands as
-  `$SHELL -c` and otherwise prints a MotD and starts `$SHELL -l -i`; the remote shell has
+  `$SHELL -c` (after its banner, when the session has a terminal) and otherwise prints the banner and starts `$SHELL -l -i`; the remote shell has
   `PHOSPHOR_TEST_SSHD=remote` and `WARP_PROFILE_LOADED=true` exported. Two throw-away client keys: one without a
   passphrase (no prompt: used by the bootstrap and typeahead scenarios, so keys typed during the connect are real
   typeahead) and one with a passphrase (the stand-in for the old password prompt: `Enter passphrase for key`).
@@ -152,9 +152,12 @@ Hard rules:
   (#2128). Their gate is now the fact that decides which wrapper a typed `ssh` runs
   (`legacy_ssh_wrapper_takes_ssh()`, i.e. `ssh_detection::TMUX_SSH_WRAPPER_TAKES_SSH` is false: the tmux option was
   removed, the legacy wrapper is what ships), so they RUN; the first run is their first run ever. The MotD assertion
-  of the ssh scenarios looks for the first plain line of THIS machine's MotD file (a wrapped session carries a remote
-  command, so the machine's MotD is printed, not the fixture's banner) and holds, with a log line, on a machine that
-  has none. `test_ssh_with_shell_override` needs zsh on PATH and proves the pane's shell is zsh before the ssh
+  of the ssh scenarios looks for the first plain line of THIS machine's MotD file in the place the app prints it (the
+  remote bootstrap's block for bash / zsh, the session output for sh / ash). On a machine that has none it looks for
+  the fixture's own banner (`FIXTURE_MOTD`) in any block of the pane: since round 20 the `ForceCommand` script prints
+  the banner for every session that has a terminal, a wrapped one included (a remote command without a terminal, i.e.
+  the app's own multiplexed commands and scp, gets none), so the assertion is never vacuous. The banner does not stand
+  in for the machine's MotD where the machine has one. `test_ssh_with_shell_override` needs zsh on PATH and proves the pane's shell is zsh before the ssh
   (#2133). The tmux-wrapper variants (`test_tmux_ssh_into_*`) need the removed tmux option, say so if started, and are
   not listed in `integration_tests!`; `test_ssh_into_fish` stays off (fish is not a
   supported remote shell). A scenario killed by a timeout can leave its sshd running (`ps`, stop by exact PID).
@@ -389,7 +392,8 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_HEAP_TRIM=0` | no heap trim at all (glibc `malloc_trim`, macOS `malloc_zone_pressure_relief`, Windows `HeapCompact` on the process heap; the close-time trims included) |
 | `PHOSPHOR_HEAP_TRIM_ON_CLOSE=0` | editor (#1607, #1407): no heap trim when a closed large (>= 1M chars) editor's buffer is really dropped. Default on: the drop event starts one trim on a background worker (a burst of drops is folded into at most one more pass, no timer); the app logs `editor_memory buffer_dropped ... trim=true|coalesced|off|false` and, when the trim ends, `editor_memory heap_trim why=close ms=<ms> freed_estimate=<bytes>` (footprint before minus after; also on the `input_order hop=heap_trim` line) |
 | `PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0` | agent answers (#1267): keep every fenced code block's editor for the life of its block (default: an AI block more than 6 rich-content entries from the visible ones drops the editors that hold no user state and renders those snippets as plain code blocks; within 2 entries they are rebuilt from the kept text; log `editor_memory agent_code_recycled` / `agent_code_rebuilt` at debug) |
-| `PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION=0` | ssh (#2127): the 7 s bootstrap give-up runs on while the app's own "install the remote helper?" question waits for its answer, as before (default: showing the question takes the give-up off the clock and the question leaving the screen arms it afresh; log `bootstrap give-up: off the clock ...` / `... armed afresh ...` at INFO). Read once per pane |
+| `PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION=0` | ssh (#2127): the 7 s bootstrap give-up runs on while the app's own "install the remote helper?" question waits for its answer, as before (default: showing the question takes the give-up off the clock and the question leaving the screen arms it afresh; log `bootstrap give-up: off the clock ...` / `... armed afresh ...` at INFO). Also (#2135) lets it run on while the app installs or updates the remote helper (default: off the clock from the install's start to its report). Read once per pane |
+| `PHOSPHOR_HELPER_QUESTION_INTERRUPT_ENDS_SSH=0` | ssh (#2134): an interrupt key (Ctrl-C) typed while the "install the remote helper?" question is showing is held with its notice, as before, instead of dismissing the question and ending the ssh (read once per pane) |
 | `PHOSPHOR_CODE_PANE_KEEP_ON_CLOSE=1`, `PHOSPHOR_FILE_PANE_KEEP_ON_CLOSE=1` | keep closed code/file pane editors alive through the undo-close grace (pre-#1340) |
 | `PHOSPHOR_LAZY_RESTORE=0`, `PHOSPHOR_LAZY_REFLOW=0` | eager restore / reflow of blocks (#1303) |
 | `PHOSPHOR_ALT_FILE_LINKS=0` | alt-screen TUIs treated as editors (no file hover scan) |
@@ -7690,6 +7694,27 @@ proves #2126; `lab_nohelper_sh_login_profile` does.
 | unit | `available_shells_test.rs`: `legacy_startup_shell_name_is_resolved_while_the_scan_is_unfinished`, `legacy_startup_shell_name_uses_the_finished_scan_as_before` | no finished scan: one direct lookup of the name, the named shell; a finished scan decides as before and nothing is resolved directly; `Default` and a custom path are untouched |
 | unit | `integration_testing::subshell::util::tests`: `motd_marker_is_the_start_of_the_first_plain_line`, `a_typed_ssh_runs_the_legacy_wrapper_in_this_fork` | what the MotD assertion looks for; the fact the ssh scenarios are gated on |
 | integration | `test_ssh_with_shell_override` (new second step `test -n "$ZSH_VERSION"`; needs zsh), `assert_motd_shown` (this machine's MotD), the four scenarios of #2128 | see section 2.2 |
+## Round 20: the remote-helper question and install (design `docs/design/r20-helperq.md`; #2134, #2135; nothing compiled or run when written)
+- **#2134, APP (owner decision 2026-11-11).** Ctrl-C while the remote-helper question is showing ends the ssh: the question is dismissed, the
+  controller drops the bootstrap it held for the answer, the ssh client gets SIGINT (`Event::SigintForegroundToPty`), a line held from the
+  connect is void. Both paths of the key (the cancel binding, row P1a of the table). Ctrl-D stays held. Kill switch
+  `PHOSPHOR_HELPER_QUESTION_INTERRUPT_ENDS_SSH=0`. Log: `interrupt at the remote-helper question of session ...`, hop `ctrl_c_route
+  route=helper_question_end_ssh` / `helper_question_interrupt`, and from the controller `the question of session ... was abandoned by an interrupt`.
+- **#2135, APP.** The 7 s bootstrap give-up does not run while the app installs or updates the remote helper (answer "Install", a stored
+  `allow`, an old helper): the install's start (`SetupStateChanged` `Installing` / `Updating`) supersedes the armed give-up, the install's
+  report (`BinaryInstallComplete`, either result, or the install's own timeout) arms it afresh. No timer was added. Shares the kill switch
+  of #2127 (`PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION=0`). Log: `bootstrap give-up: off the clock while the app installs the
+  remote helper ...`, then `... reported; armed afresh for 7s from now`.
+- **Scenario removed.** `test_open_launch_config_from_add_tab_menu_legacy` (gated on `FeatureFlag::ShellSelector` off, which no build of
+  this fork has; its own TODO, CORE-2300) is deleted from `launch_configs.rs`, the `integration_tests!` list and `register_tests()`: one
+  `INTEG-SKIP` line fewer per run. Owner decision 2026-11-11.
+- **ssh fixture banner.** See section 2.2: the fixture prints `FIXTURE_MOTD` for wrapped sessions too; `assert_motd_shown` requires the
+  machine's MotD where the machine has one and the banner where it has none (before: held with nothing looked for there).
+| level | tests | what they pin |
+|---|---|---|
+| view | `view_test.rs`: `ctrl_c_at_the_helper_question_ends_the_ssh`, `ctrl_c_at_the_helper_question_is_held_with_the_kill_switch`, `ctrl_d_at_the_helper_question_stays_held`, `helper_question_interrupt_rule` | question up for the pending session with a line held: Ctrl-C by the binding path and by the table path gives one SIGINT, one `RemoteServerQuestionAbandoned`, no question, no hold, no held notice, no pty byte; switch off (the control) holds it with the notice; Ctrl-D is held; the pure rule |
+| view | `view_test.rs`: `bootstrap_give_up_does_not_judge_a_session_while_the_app_installs_the_helper`, `bootstrap_give_up_runs_through_the_helper_install_with_the_kill_switch`, `bootstrap_give_up_is_not_armed_while_the_app_installs_the_helper` | the give-up armed before the install expires during it and judges nothing (not failed, no pty byte); the install's report arms it and it still judges a bootstrap that never comes; switch off (the control) fails the session during the install; no other caller arms it during the install, another session's report does not end the pause |
+| unit, real `sh` | `integration_testing::subshell::util::tests::the_fixture_banner_is_not_printed_for_a_command_without_a_terminal` | the fixture's `ForceCommand` script prints nothing but the command's output for a remote command whose stdout is not a terminal |
 ## Round 19: three owner decisions of 2026-11-11 in the harness (design `docs/design/r19-decide-tests.md`; #2114, #2120, #2126; harness only; no app run when written)
 Self-tests: `appci/selftest_r19_decide.py` (seven checks; each rule is fed the input it exists for and the inputs on which it must still FAIL).
 `run.py --self-test` and `script/ci/ci_seq.py --self-test` pass. No case was added, none moved between lists.

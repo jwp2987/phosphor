@@ -7,6 +7,7 @@ use warpui::{
 
 use super::{TEST_ONLY_ASSETS, assert_approx_eq, new_builder};
 use crate::Builder;
+use warp::integration_testing::settings::set_window_custom_size;
 use warp::integration_testing::{
     pane_group::assert_focused_pane_index,
     window::assert_num_windows_open,
@@ -17,8 +18,6 @@ use warp::integration_testing::{
     terminal::{validate_block_output, wait_until_bootstrapped_single_pane_for_tab},
 };
 use warp::search::command_palette::launch_config;
-use warp::workspace::NEW_TAB_BUTTON_POSITION_ID;
-use warp::{features::FeatureFlag, integration_testing::settings::set_window_custom_size};
 use warp::{
     integration_testing::type_getters::get_launch_config_ui_location, search::SyncDataSource,
 };
@@ -126,39 +125,6 @@ pub fn test_with_launch_config() -> Builder {
                 .add_named_assertion("Validate second tab", move |app, window_id| {
                     validate_block_output("test_command_on_another_tab", 1, 0, window_id, app)
                 }),
-        )
-}
-
-// TODO(CORE-2300): Once we remove FeatureFlag::ShellSelector, we should remove this test.
-pub fn test_open_launch_config_from_add_tab_menu_legacy() -> Builder {
-    new_builder()
-        .set_should_run_test(|| warpui::integration::needs(!FeatureFlag::ShellSelector.is_enabled(), "FeatureFlag::ShellSelector off (the legacy add-tab menu, CORE-2300); it is on in every default build of this fork, so this legacy scenario does not run"))
-        .with_setup(move |utils| {
-            utils.set_env("WARP_CONFIG_WATCHER_DELAY_MS", Some((10).to_string()));
-
-            // Write a new launch config file. Launch config is named "Launch Config"
-            let dir = integration_testing::launch_configs::launch_configs_dir();
-            std::fs::create_dir_all(&dir).expect("Should be able to create launch configs dir");
-            integration_testing::create_file_from_assets(
-                TEST_ONLY_ASSETS,
-                "test_launch_config.yaml",
-                &dir.join("test_launch_config.yaml"),
-            );
-        })
-        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
-        .with_step(
-            new_step_with_default_assertions("Right click on new tab button")
-                .with_right_click_on_saved_position(NEW_TAB_BUTTON_POSITION_ID),
-        )
-        .with_step(
-            new_step_with_default_assertions("Press Launch Config menu item")
-                // Since we only have one launch config, it should be the third menu item and the
-                // second one is disabled.
-                .with_keystrokes(&["down", "down", "enter"]),
-        )
-        .with_step(
-            new_step_with_default_assertions("Assert that three new windows are created")
-                .add_assertion(assert_num_windows_open(4)),
         )
 }
 

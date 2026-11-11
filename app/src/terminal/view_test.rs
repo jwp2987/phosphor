@@ -20386,6 +20386,410 @@ fn helper_question_pause_rule() {
     )));
 }
 
+use crate::terminal::event::RemoteServerSetupState;
+
+/// What [`bootstrap_give_up_under_the_helper_install`] saw.
+struct HelperInstallGiveUp {
+    /// The install's start took the give-up off the clock.
+    paused_during_install: bool,
+    /// The session was judged failed by the give-up that expired while the app installed.
+    failed_during_install: bool,
+    /// pty writes made by that expiry.
+    writes_during_install: usize,
+    /// A give-up was armed afresh when the install reported.
+    armed_at_install_end: bool,
+    /// That one, expiring with no `Bootstrapped`, judged the session failed.
+    failed_after_install: bool,
+}
+
+/// #2135: an ssh session whose remote shell sent `InitShell`, with a line typed during the
+/// connect held and the give-up armed as the `SSH` hook arms it. The app then starts to install
+/// the remote helper (the answer "Install", or a stored `allow` for the host): the setup state
+/// becomes `Installing`, with a progress update after it. The give-up armed before the install
+/// expires while it runs (an upload takes longer than 7 s), the install reports, and the
+/// give-up that is current after that expires too.
+fn bootstrap_give_up_under_the_helper_install(switch_on: bool) -> HelperInstallGiveUp {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        let remote_session = SessionId::from(167303092612202);
+        let armed_before_install = terminal.update(&mut app, |view, ctx| {
+            view.bootstrap_give_up_pauses_for_helper_question = switch_on;
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            assert_eq!(
+                view.model.lock().pending_session_id(),
+                Some(remote_session),
+                "precondition: the remote session is the pending one"
+            );
+            // What `ModelEvent::SSH` does for a bash remote.
+            view.start_bootstrap_timer(BOOTSTRAP_FAILED_DURATION, ctx);
+            let arm = BootstrapTimerArm {
+                generation: view.bootstrap_timer_generation,
+                session: Some(remote_session),
+            };
+            // What `RemoteServerManagerEvent::SetupStateChanged` does when the install starts,
+            // and again for a progress update.
+            view.on_remote_helper_setup_state(
+                remote_session,
+                &RemoteServerSetupState::Installing {
+                    progress_percent: None,
+                },
+                ctx,
+            );
+            view.on_remote_helper_setup_state(
+                remote_session,
+                &RemoteServerSetupState::Installing {
+                    progress_percent: Some(40),
+                },
+                ctx,
+            );
+            arm
+        });
+        let writes_before = pty_writes.borrow().len();
+        // 7 s pass with the install still running.
+        let (failed_during_install, paused_during_install, generation_during_install) = terminal
+            .update(&mut app, |view, ctx| {
+                view.on_bootstrap_timer_fired(armed_before_install, ctx);
+                (
+                    view.ssh_bootstrap_failed_session == Some(remote_session),
+                    view.bootstrap_give_up_paused_for_helper_install == Some(remote_session),
+                    view.bootstrap_timer_generation,
+                )
+            });
+        let writes_during_install = pty_writes.borrow().len() - writes_before;
+        // What `RemoteServerManagerEvent::BinaryInstallComplete` does.
+        let (armed_at_install_end, failed_after_install) =
+            terminal.update(&mut app, |view, ctx| {
+                view.on_remote_helper_install_finished(remote_session, ctx);
+                assert_eq!(
+                    view.bootstrap_give_up_paused_for_helper_install, None,
+                    "a pause never outlives its install"
+                );
+                let armed_at_install_end =
+                    view.bootstrap_timer_generation != generation_during_install;
+                // No `Bootstrapped` follows: the give-up that is current now expires.
+                let arm = BootstrapTimerArm {
+                    generation: view.bootstrap_timer_generation,
+                    session: view.model.lock().pending_session_id(),
+                };
+                view.on_bootstrap_timer_fired(arm, ctx);
+                (
+                    armed_at_install_end,
+                    view.ssh_bootstrap_failed_session == Some(remote_session),
+                )
+            });
+        HelperInstallGiveUp {
+            paused_during_install,
+            failed_during_install,
+            writes_during_install,
+            armed_at_install_end,
+            failed_after_install,
+        }
+    })
+}
+
+/// #2135: while the app itself installs the remote helper the bootstrap has not been written,
+/// so a give-up that expires then judges nothing: the session is not marked failed and not a
+/// byte is written to the pty (before #2135 a slow install was judged a failed bootstrap: the
+/// held line was written to the remote shell's raw, unbootstrapped prompt). The install's
+/// report arms the give-up afresh, and it still judges a bootstrap that then never comes.
+#[test]
+fn bootstrap_give_up_does_not_judge_a_session_while_the_app_installs_the_helper() {
+    let seen = bootstrap_give_up_under_the_helper_install(true);
+    assert!(
+        seen.paused_during_install,
+        "the install's start takes the give-up off the clock"
+    );
+    assert!(
+        !seen.failed_during_install,
+        "a session the app is installing the helper for is not a failed bootstrap"
+    );
+    assert_eq!(
+        seen.writes_during_install, 0,
+        "the expiry during the install writes nothing to the pty"
+    );
+    assert!(
+        seen.armed_at_install_end,
+        "the give-up is armed afresh when the install reports"
+    );
+    assert!(
+        seen.failed_after_install,
+        "a bootstrap that never completes after the install is still judged"
+    );
+}
+
+/// #2135, the kill switch (shared with #2127): the clock runs through the install as it did
+/// before, so the expiry during the install judges the session failed. Also the control of the
+/// test above: the same scenario does show the failure when the pause is off.
+#[test]
+fn bootstrap_give_up_runs_through_the_helper_install_with_the_kill_switch() {
+    let seen = bootstrap_give_up_under_the_helper_install(false);
+    assert!(!seen.paused_during_install);
+    assert!(
+        seen.failed_during_install,
+        "switch off: the give-up judges the session while the app installs, as before #2135"
+    );
+    assert!(
+        !seen.armed_at_install_end,
+        "switch off: the install's report arms nothing (the session was judged once)"
+    );
+}
+
+/// #2135: while the install pause is set for the pending session no give-up is armed by any
+/// other caller, and only the install and update states are an install.
+#[test]
+fn bootstrap_give_up_is_not_armed_while_the_app_installs_the_helper() {
+    assert!(setup_state_is_helper_install(
+        &RemoteServerSetupState::Installing {
+            progress_percent: None
+        }
+    ));
+    assert!(setup_state_is_helper_install(
+        &RemoteServerSetupState::Updating
+    ));
+    assert!(!setup_state_is_helper_install(
+        &RemoteServerSetupState::Checking
+    ));
+    assert!(!setup_state_is_helper_install(
+        &RemoteServerSetupState::Initializing
+    ));
+    assert!(!setup_state_is_helper_install(
+        &RemoteServerSetupState::Ready
+    ));
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let remote_session = SessionId::from(167303092612202);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            view.on_remote_helper_setup_state(
+                remote_session,
+                &RemoteServerSetupState::Updating,
+                ctx,
+            );
+            assert_eq!(
+                view.bootstrap_give_up_paused_for_helper_install,
+                Some(remote_session)
+            );
+            // An arm from anywhere else supersedes earlier timers but arms none.
+            view.start_bootstrap_timer(BOOTSTRAP_FAILED_DURATION, ctx);
+            assert_eq!(
+                view.bootstrap_give_up_paused_for_helper_install,
+                Some(remote_session),
+                "the pause stays until the install reports"
+            );
+            // The report of another session's install changes nothing here.
+            view.on_remote_helper_install_finished(SessionId::from(2135), ctx);
+            assert_eq!(
+                view.bootstrap_give_up_paused_for_helper_install,
+                Some(remote_session)
+            );
+        });
+    })
+}
+
+/// What [`interrupt_at_the_helper_question`] saw.
+struct HelperQuestionInterrupt {
+    /// SIGINTs sent to the pty's foreground group (the ssh client).
+    sigints: usize,
+    /// Sessions whose question the controller was told is abandoned.
+    abandoned: Vec<SessionId>,
+    /// The question is still on screen.
+    question_showing: bool,
+    /// The line typed during the connect is still held.
+    still_holding: bool,
+    /// The "interrupt held" notice was shown for the session.
+    held_notice: bool,
+    /// Bytes written to the pty.
+    pty_writes: usize,
+}
+
+/// The two ways an interrupt key reaches the view.
+#[derive(Clone, Copy)]
+enum InterruptPath {
+    /// The cancel binding: `ctrl_c` ends in `ctrl_c_to_active_block` (the ssh block is long
+    /// running, no agent in control).
+    Binding,
+    /// The key as an arrival of the input table (row P1a).
+    Arrival,
+}
+
+/// #2134: an ssh session whose remote shell sent `InitShell`, a line typed during the connect
+/// held, the app's "install the remote helper?" question on screen, and then `key` (Ctrl-C or
+/// Ctrl-D) by `path`.
+fn interrupt_at_the_helper_question(
+    switch_on: bool,
+    path: InterruptPath,
+    key: &'static str,
+) -> HelperQuestionInterrupt {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        let sigints = Rc::new(RefCell::new(0usize));
+        let abandoned: Rc<RefCell<Vec<SessionId>>> = Rc::new(RefCell::new(Vec::new()));
+        let (sigint_counter, abandoned_log) = (sigints.clone(), abandoned.clone());
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                Event::SigintForegroundToPty => *sigint_counter.borrow_mut() += 1,
+                Event::RemoteServerQuestionAbandoned { session_id } => {
+                    abandoned_log.borrow_mut().push(*session_id);
+                }
+                _ => {}
+            });
+        });
+        let remote_session = SessionId::from(167303092612202);
+        let (question_showing, still_holding, held_notice) =
+            terminal.update(&mut app, |view, ctx| {
+                view.helper_question_interrupt_ends_ssh = switch_on;
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+                view.start_bootstrap_timer(BOOTSTRAP_FAILED_DURATION, ctx);
+                view.show_ssh_remote_server_choice_block(remote_session, ctx);
+                assert!(view.ssh_helper_question_showing());
+                assert_eq!(
+                    view.ssh_bootstrap_interrupt_route(),
+                    Some(SshBootstrapInterruptRoute::Hold),
+                    "precondition: the bootstrap route holds an interrupt"
+                );
+                match path {
+                    InterruptPath::Binding => {
+                        assert_eq!(key, "\u{3}", "the binding is the interrupt key");
+                        view.ctrl_c_to_active_block(true, false, None, ctx);
+                    }
+                    InterruptPath::Arrival => view.keydown_on_terminal(key, ctx),
+                }
+                (
+                    view.ssh_helper_question_showing(),
+                    view.ssh_typeahead_holding,
+                    view.ssh_interrupt_held_notified == Some(remote_session),
+                )
+            });
+        let sigints = *sigints.borrow();
+        let abandoned = abandoned.borrow().clone();
+        let pty_writes = pty_writes.borrow().len();
+        HelperQuestionInterrupt {
+            sigints,
+            abandoned,
+            question_showing,
+            still_holding,
+            held_notice,
+            pty_writes,
+        }
+    })
+}
+
+/// #2134 (owner decision 2026-11-11): Ctrl-C while the remote-helper question is showing ends
+/// the ssh, by either path the key takes. The question is dismissed, the controller is told to
+/// drop the bootstrap it held, the ssh client gets SIGINT (its tty is raw: a ^C byte would go to
+/// the remote shell), the line typed during the connect is void and nothing is written to the
+/// pty. Before #2134 the key was held with a notice for as long as the question was up.
+#[test]
+fn ctrl_c_at_the_helper_question_ends_the_ssh() {
+    let remote_session = SessionId::from(167303092612202);
+    for path in [InterruptPath::Binding, InterruptPath::Arrival] {
+        let seen = interrupt_at_the_helper_question(true, path, "\u{3}");
+        assert_eq!(seen.sigints, 1, "one SIGINT for the ssh client");
+        assert_eq!(
+            seen.abandoned,
+            vec![remote_session],
+            "the controller drops the held bootstrap of that session"
+        );
+        assert!(!seen.question_showing, "the question is dismissed");
+        assert!(!seen.still_holding, "what was typed before is void");
+        assert!(!seen.held_notice, "the interrupt was not held");
+        assert_eq!(seen.pty_writes, 0, "no byte for the remote shell");
+    }
+}
+
+/// #2134, the kill switch (`PHOSPHOR_HELPER_QUESTION_INTERRUPT_ENDS_SSH=0`) and the control of
+/// the test above: the interrupt takes the bootstrap route as before, held with its notice, and
+/// the question stays.
+#[test]
+fn ctrl_c_at_the_helper_question_is_held_with_the_kill_switch() {
+    for path in [InterruptPath::Binding, InterruptPath::Arrival] {
+        let seen = interrupt_at_the_helper_question(false, path, "\u{3}");
+        assert_eq!(seen.sigints, 0);
+        assert!(seen.abandoned.is_empty());
+        assert!(seen.question_showing, "the question stays");
+        assert!(seen.still_holding, "the held line stays held");
+        assert!(seen.held_notice, "held with the notice, as before #2134");
+        assert_eq!(seen.pty_writes, 0);
+    }
+}
+
+/// #2134 decides the interrupt key only: a Ctrl-D at the question stays held, the question
+/// stays, nothing is abandoned.
+#[test]
+fn ctrl_d_at_the_helper_question_stays_held() {
+    let seen = interrupt_at_the_helper_question(true, InterruptPath::Arrival, "\u{4}");
+    assert_eq!(seen.sigints, 0);
+    assert!(seen.abandoned.is_empty());
+    assert!(seen.question_showing);
+    assert!(seen.still_holding);
+    assert_eq!(seen.pty_writes, 0);
+}
+
+#[test]
+fn helper_question_interrupt_rule() {
+    use SshBootstrapInterruptRoute::{Forward, Hold};
+    let asked = SessionId::from(2134);
+    let other = SessionId::from(2135);
+    assert!(helper_question_interrupt_ends_ssh(
+        true,
+        Some(Hold),
+        Some(asked),
+        Some(asked)
+    ));
+    // Whatever the bootstrap route says, while the question of the pending session is up.
+    assert!(helper_question_interrupt_ends_ssh(
+        true,
+        Some(Forward),
+        Some(asked),
+        Some(asked)
+    ));
+    // The kill switch.
+    assert!(!helper_question_interrupt_ends_ssh(
+        false,
+        Some(Hold),
+        Some(asked),
+        Some(asked)
+    ));
+    // No question on screen: the bootstrap route decides.
+    assert!(!helper_question_interrupt_ends_ssh(
+        true,
+        Some(Hold),
+        None,
+        Some(asked)
+    ));
+    // The question of an abandoned connect, or no pending session at all.
+    assert!(!helper_question_interrupt_ends_ssh(
+        true,
+        Some(Hold),
+        Some(asked),
+        Some(other)
+    ));
+    assert!(!helper_question_interrupt_ends_ssh(
+        true,
+        None,
+        Some(asked),
+        None
+    ));
+    // No ssh-style bootstrap pending (a subshell, or already bootstrapped).
+    assert!(!helper_question_interrupt_ends_ssh(
+        true,
+        None,
+        Some(asked),
+        Some(asked)
+    ));
+    assert!(helper_question_interrupt_ends_ssh_from(None));
+    assert!(helper_question_interrupt_ends_ssh_from(Some("1")));
+    assert!(!helper_question_interrupt_ends_ssh_from(Some(" 0 ")));
+}
+
 /// #1566: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes, the
 /// second expiry fails the session and writes the held keys to the pty in typed order, with no
 /// `stty sane` (owner decision 2026-11-09, #1996; under #1577 this test expected the held text
