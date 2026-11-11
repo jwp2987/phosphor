@@ -157,4 +157,4 @@ hold of #2120).
 
 The remote command starts these shells with `exec "$SHELL"`: not a login shell, so `~/.profile`
 is not read (a plain `ssh host` reads it). `/etc/profile` is sourced by the command itself. The
-one-connection path uses `exec "$SHELL" -l` (#2051). Filed as its own issue; no change here.
+one-connection path uses `exec "$SHELL" -l` (#2051). Filed as #2126; no change here.

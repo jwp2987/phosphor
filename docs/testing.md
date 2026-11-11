@@ -7327,4 +7327,4 @@ in the list of `input_queue/switches.rs`).
 Not changed, and why the existing dash / ash lab arms do not prove this: `lab_enter_start.{dash,ash}.*` and `lab_no_helper_chip.{dash,ash}.*`
 are declared, but the quick and candidate matrices have no dash / ash shell, and their connect step waits for `prompt.log`, which the lab's
 dash hook writes only from `~/.profile`; the remote command starts the shell with `exec "$SHELL"` (not a login shell), so that file is never
-read in the app's session. That difference from a plain `ssh host` is filed on its own; this round changes no wrapper text.
+read in the app's session. That difference from a plain `ssh host` is #2126; this round changes no wrapper text.
