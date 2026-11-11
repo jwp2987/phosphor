@@ -147,10 +147,16 @@ Hard rules:
   skips). Every ssh scenario sets `warpify.ssh.ssh_extension_install_mode` to `never_install`, like the real-app
   harness: with the default the app asks whether to install the remote helper and holds the remote bootstrap until
   a person answers. Four of the listed scenarios (`test_legacy_ssh_into_bash/zsh`,
-  `test_ssh_remote_bash_bootstrapped_hook`, `test_ssh_typeahead_during_connect_runs_remotely_once`) are gated on
-  `FeatureFlag::SSHTmuxWrapper` being off, which no default build of this fork has: they SKIP in every run until
-  #2128 is decided, and their skip line says so. The tmux-wrapper variants (`test_tmux_ssh_into_*`) need tmux on the remote
-  and a package install and are not listed in `integration_tests!`; `test_ssh_into_fish` stays off (fish is not a
+  `test_ssh_remote_bash_bootstrapped_hook`, `test_ssh_typeahead_during_connect_runs_remotely_once`) were gated on
+  `FeatureFlag::SSHTmuxWrapper` being off, which no default build of this fork has, so they skipped in every run
+  (#2128). Their gate is now the fact that decides which wrapper a typed `ssh` runs
+  (`legacy_ssh_wrapper_takes_ssh()`, i.e. `ssh_detection::TMUX_SSH_WRAPPER_TAKES_SSH` is false: the tmux option was
+  removed, the legacy wrapper is what ships), so they RUN; the first run is their first run ever. The MotD assertion
+  of the ssh scenarios looks for the first plain line of THIS machine's MotD file (a wrapped session carries a remote
+  command, so the machine's MotD is printed, not the fixture's banner) and holds, with a log line, on a machine that
+  has none. `test_ssh_with_shell_override` needs zsh on PATH and proves the pane's shell is zsh before the ssh
+  (#2133). The tmux-wrapper variants (`test_tmux_ssh_into_*`) need the removed tmux option, say so if started, and are
+  not listed in `integration_tests!`; `test_ssh_into_fish` stays off (fish is not a
   supported remote shell). A scenario killed by a timeout can leave its sshd running (`ps`, stop by exact PID).
   Every scenario in `integration_tests!` must be registered in the binary's `register_tests()`
   (guard `check_integration_test_registry`). `PHOSPHOR_TEST_SHELL=pwsh` pins the shell for the two
@@ -7580,6 +7586,8 @@ display needed: which lines stay out of the trace, the log name per start, the l
 `integration_testing::evidence::tests` (the tail). Python: `integ_evidence.py --self-test` (9 rows), `collect_results.py --self-test` (3 new
 rows), `ci_seq.py --self-test` (3 new rows on the job blocks).
 ## Round 19: follow-ups of the integration evidence work (design `docs/design/r19-integfix.md`; #2127, #2128, #2133; nothing compiled or run when written)
+- **#2128, the gate.** The four ssh scenarios above run (section 2.2). Expect a verdict per scenario on the first run: everything after the
+  remote bootstrap (remote user and host, login shell, MotD, the typeahead count) has never been seen.
 - **#2127, APP.** The 7 s bootstrap give-up no longer runs while the app's own "install the remote helper?" question waits: showing the
   question supersedes the armed give-up, the question leaving the screen (answered, withdrawn with its session, cleared) arms it afresh.
   No timer was added. Kill switch `PHOSPHOR_BOOTSTRAP_GIVE_UP_PAUSED_BY_HELPER_QUESTION=0` (read once per pane).
@@ -7589,3 +7597,5 @@ rows), `ci_seq.py --self-test` (3 new rows on the job blocks).
 | layer | tests | what they pin |
 | view | `view_test.rs`: `bootstrap_give_up_does_not_judge_a_session_waiting_for_the_helper_answer`, `bootstrap_give_up_runs_through_the_helper_question_with_the_kill_switch`, `helper_question_pause_rule` | an ssh session with a held line, the give-up armed as the `SSH` hook arms it, the question shown: the give-up armed before the question expires and judges nothing (session not marked failed, no pty write); "continue without" arms a new give-up, which still judges a bootstrap that never comes. The first fails on the code before this change; the second is its control (switch off: the old judgement) |
 | unit | `available_shells_test.rs`: `legacy_startup_shell_name_is_resolved_while_the_scan_is_unfinished`, `legacy_startup_shell_name_uses_the_finished_scan_as_before` | no finished scan: one direct lookup of the name, the named shell; a finished scan decides as before and nothing is resolved directly; `Default` and a custom path are untouched |
+| unit | `integration_testing::subshell::util::tests`: `motd_marker_is_the_start_of_the_first_plain_line`, `a_typed_ssh_runs_the_legacy_wrapper_in_this_fork` | what the MotD assertion looks for; the fact the ssh scenarios are gated on |
+| integration | `test_ssh_with_shell_override` (new second step `test -n "$ZSH_VERSION"`; needs zsh), `assert_motd_shown` (this machine's MotD), the four scenarios of #2128 | see section 2.2 |

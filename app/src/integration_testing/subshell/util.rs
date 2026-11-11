@@ -194,10 +194,11 @@ mod local_sshd {
                  export HOME SHELL PHOSPHOR_TEST_SSHD WARP_PROFILE_LOADED\n\
                  cd \"$HOME\" || exit 1\n\
                  if [ -n \"$SSH_ORIGINAL_COMMAND\" ]; then exec \"$SHELL\" -c \"$SSH_ORIGINAL_COMMAND\"; fi\n\
-                 echo \"Welcome to Ubuntu (phosphor local test sshd)\"\n\
+                 echo \"{motd}\"\n\
                  exec \"$SHELL\" -l -i\n",
                 home = sh_quote(&home.to_string_lossy()),
                 shell_path = sh_quote(&shell_path.to_string_lossy()),
+                motd = super::FIXTURE_MOTD,
             ),
         )
         .map_err(|err| format!("could not write force.sh: {err}"))?;
@@ -337,6 +338,59 @@ pub fn ssh_test_fixture_available(shell: &str) -> bool {
     }
 }
 
+/// Whether a typed `ssh` runs the legacy (ControlMaster) ssh wrapper, which is what the
+/// `test_legacy_ssh_*` scenarios and the two connect scenarios drive (#2128). True in every
+/// build of this fork: see [`TMUX_SSH_WRAPPER_TAKES_SSH`]. Upstream's gate for these scenarios
+/// was `!FeatureFlag::SSHTmuxWrapper.is_enabled()`, which is false in every default build here
+/// (the flag is kept on for tmux control mode), so they skipped in every run.
+///
+/// [`TMUX_SSH_WRAPPER_TAKES_SSH`]: crate::terminal::ssh::ssh_detection::TMUX_SSH_WRAPPER_TAKES_SSH
+pub fn legacy_ssh_wrapper_takes_ssh() -> bool {
+    !crate::terminal::ssh::ssh_detection::TMUX_SSH_WRAPPER_TAKES_SSH
+}
+
+/// The message-of-the-day files the ssh wrapper's remote command and the bootstraps print (the
+/// first readable one, unless `~/.hushlogin` exists), in their order (`bash_body.sh`).
+const MOTD_FILES: [&str; 5] = [
+    "/etc/motd",
+    "/run/motd",
+    "/run/motd.dynamic",
+    "/usr/lib/motd",
+    "/usr/lib/motd.dynamic",
+];
+
+/// The start of the first plain line of `motd` (at most 40 characters, so a wrapped line of a
+/// narrow grid still holds it): what a scenario looks for to see that the MotD was printed.
+/// `None` when no line is plain printable text (an empty file, colour codes only).
+pub fn motd_marker(motd: &str) -> Option<String> {
+    motd.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && line.chars().all(|ch| ch == ' ' || ch.is_ascii_graphic()))
+        .map(|line| {
+            line.chars()
+                .take(40)
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+}
+
+/// What a session through the ssh wrapper prints as the MotD on THIS machine. The fixture's
+/// "remote" is the machine the scenario runs on, and a wrapped session carries a remote
+/// command, so sshd's `ForceCommand` script does not print its own banner: the wrapper's
+/// remote command (or the remote bootstrap) prints the machine's MotD file instead. `None`
+/// when the machine has none (nothing is printed, nothing can be looked for).
+pub fn machine_motd_marker() -> Option<String> {
+    let first_readable = MOTD_FILES
+        .iter()
+        .find_map(|path| std::fs::read(path).ok())?;
+    motd_marker(&String::from_utf8_lossy(&first_readable))
+}
+
+/// The banner the fixture's `ForceCommand` script prints for a session WITHOUT a remote command
+/// (an ssh the wrapper did not manage).
+pub const FIXTURE_MOTD: &str = "Welcome to Ubuntu (phosphor local test sshd)";
+
 /// The full ssh command to run to ssh into the fixture whose remote login shell is `shell`,
 /// authenticating with the passphrase-protected key (so ssh stops at a passphrase prompt on the
 /// tty).
@@ -379,5 +433,38 @@ pub fn ssh_command_with_key(
         }
         // The scenario's `set_should_run_test` skips it before this is ever typed.
         Err(_) => format!("{program} phosphor-ssh-fixture-unavailable"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FIXTURE_MOTD, legacy_ssh_wrapper_takes_ssh, motd_marker};
+
+    #[test]
+    fn motd_marker_is_the_start_of_the_first_plain_line() {
+        assert_eq!(
+            motd_marker("\n\nWelcome to Ubuntu 24.04 LTS (GNU/Linux 6.8.0 x86_64)\n\n * Docs\n"),
+            Some("Welcome to Ubuntu 24.04 LTS (GNU/Linux 6".to_owned())
+        );
+        // A line with colour codes cannot be found in the grid's text: the next plain one is.
+        assert_eq!(
+            motd_marker("\u{1b}[1mBANNER\u{1b}[0m\n  plain line  \n"),
+            Some("plain line".to_owned())
+        );
+        assert_eq!(motd_marker(""), None);
+        assert_eq!(motd_marker("\n \n\u{1b}[0m\n"), None);
+        // The fixture's own banner is one plain line a marker can be made of.
+        assert_eq!(
+            motd_marker(FIXTURE_MOTD).as_deref(),
+            Some("Welcome to Ubuntu (phosphor local test s")
+        );
+    }
+
+    /// #2128: the gate of the legacy ssh scenarios is the fact that decides which wrapper a
+    /// typed `ssh` runs, and in this fork that is the legacy one. If this fails the tmux
+    /// option is back and the scenarios' gates need a look.
+    #[test]
+    fn a_typed_ssh_runs_the_legacy_wrapper_in_this_fork() {
+        assert!(legacy_ssh_wrapper_takes_ssh());
     }
 }

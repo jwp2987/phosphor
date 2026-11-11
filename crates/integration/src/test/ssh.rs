@@ -4,14 +4,16 @@ use crate::Builder;
 use regex::Regex;
 use settings::Setting as _;
 use warp::{
-    features::FeatureFlag,
     integration_testing::{
         step::new_step_with_default_assertions,
         subshell::{
             accept_tmux_install, assert_subshell_banner_is_showing,
             assert_subshell_is_bootstrapped, enter_ssh_command, enter_ssh_command_without_prompt,
             enter_ssh_password, run_exit_command, trigger_subshell_bootstrap,
-            util::{remote_hostname, remote_user, ssh_test_fixture_available, stop_ssh_fixtures},
+            util::{
+                FIXTURE_MOTD, legacy_ssh_wrapper_takes_ssh, machine_motd_marker, remote_hostname,
+                remote_user, ssh_test_fixture_available, stop_ssh_fixtures,
+            },
             wait_for_password_prompt,
         },
         terminal::{
@@ -37,15 +39,28 @@ use warpui::{
 
 use super::new_builder;
 
-/// What a scenario gated on `!FeatureFlag::SSHTmuxWrapper.is_enabled()` needs (#2122, #2128). The gate
-/// is upstream's: there the flag chose the tmux wrapper over the legacy one. In this fork the
-/// flag is on in every default build (`ssh_tmux_wrapper` is a default cargo feature of the app;
-/// it also gates tmux control-mode handling) while the legacy wrapper is the one that runs, so
-/// these scenarios skip in every run until the gate is changed. Said in the skip line instead
-/// of being counted as a pass.
-const TMUX_WRAPPER_FLAG_ON: &str = "FeatureFlag::SSHTmuxWrapper off, and it is on in every \
-    default build of this fork (cargo feature ssh_tmux_wrapper): this scenario never runs \
-    until its gate is changed";
+/// What the scenarios that drive the legacy (ControlMaster) ssh wrapper need (#2128): that a
+/// typed `ssh` runs that wrapper. Upstream's gate was `!FeatureFlag::SSHTmuxWrapper.is_enabled()`,
+/// where the flag chose the tmux wrapper over the legacy one. In this fork the flag is on in
+/// every default build (it also gates tmux control-mode handling) while the tmux ssh-wrapper
+/// option is gone (`DECLINED.md`, removed 2026-11-08) and the legacy wrapper is what runs, so
+/// under upstream's gate these scenarios skipped in every run. The gate now asks the fact
+/// that decides it (`legacy_ssh_wrapper_takes_ssh`), which is true in every build of this fork.
+const LEGACY_SSH_WRAPPER: &str = "a typed ssh to run the legacy (ControlMaster) ssh wrapper";
+
+/// What the tmux-wrapper scenarios need. Nothing offers it: the option was removed on
+/// 2026-11-08 (`DECLINED.md`), and the scenarios are not in the run list.
+const TMUX_SSH_WRAPPER: &str = "the tmux ssh-wrapper option, which this fork removed \
+    (DECLINED.md, 2026-11-08): this scenario cannot run";
+
+/// A scenario that overrides the startup shell needs that shell on this machine: without it the
+/// app falls back to the system default and the scenario would not test what its name says.
+const LOCAL_ZSH: &str = "zsh installed (the startup shell this scenario sets)";
+
+fn is_on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
 
 /// PowerShell has no ssh wrapper (CORE-2333).
 const POSIX_LOCAL_SHELL: &str = "a POSIX local shell (PowerShell has no ssh wrapper)";
@@ -128,9 +143,29 @@ fn assert_active_block_is_remote(user: String, host: String) -> AssertionCallbac
 
 /// Assertion that the MotD message is shown. How we expect it to be shown
 /// depends on whether or not the remote shell can be bootstrapped.
+///
+/// WHICH MotD (#2128): the fixture's "remote" is the machine the scenario runs on, and a session
+/// through the ssh wrapper carries a remote command, so the fixture's own banner
+/// ([`FIXTURE_MOTD`], printed by its `ForceCommand` script only for a session without a
+/// command) is not what appears. The wrapper's remote command (sh, ash) or the remote
+/// bootstrap (bash, zsh) prints the machine's own MotD file, as sshd would have. The assertion
+/// used to look for the text `Welcome to Ubuntu` whatever the machine: that held only where the
+/// machine's MotD happens to start with those words. It now looks for the start of the first
+/// plain line of this machine's MotD (on a stock Ubuntu that is the same line), or the
+/// fixture's banner. On a machine with no MotD file nothing is printed and there is nothing to
+/// look for: the assertion says so in the log and holds (before, it could not pass there).
 fn assert_motd_shown(bootstrapped: bool) -> AssertionCallback {
-    let motd_regex = Regex::new("Welcome to Ubuntu").expect("Regex should compile");
+    let machine_motd = machine_motd_marker();
+    if machine_motd.is_none() {
+        log::warn!(
+            "ssh scenario: this machine has no MotD file with a plain line; the MotD \
+             assertion has nothing to look for and holds"
+        );
+    }
     Box::new(move |app, window_id| {
+        let Some(machine_motd) = machine_motd.as_deref() else {
+            return AssertionOutcome::Success;
+        };
         let terminal_view = single_terminal_view(app, window_id);
         terminal_view.read(app, |view, _| {
             let model = view.model.lock();
@@ -153,8 +188,9 @@ fn assert_motd_shown(bootstrapped: bool) -> AssertionCallback {
             };
 
             async_assert!(
-                motd_regex.is_match(&motd_output),
-                "Expected output to match {motd_regex:?}, but was:\n{motd_output:?}"
+                motd_output.contains(machine_motd) || motd_output.contains(FIXTURE_MOTD),
+                "Expected output to hold this machine's MotD ({machine_motd:?}) or the \
+                 fixture's banner, but was:\n{motd_output:?}"
             )
         })
     })
@@ -207,8 +243,8 @@ macro_rules! generate_can_bootstrap_legacy_ssh_test_for_shell {
                 .with_user_defaults(without_helper_question())
                 // TODO(CORE-2333) PowerShell has no SSH wrapper.
                 .set_should_run_test(|| {
-                    if FeatureFlag::SSHTmuxWrapper.is_enabled() {
-                        return skip_because(TMUX_WRAPPER_FLAG_ON);
+                    if !legacy_ssh_wrapper_takes_ssh() {
+                        return skip_because(LEGACY_SSH_WRAPPER);
                     }
                     let (starter, _) = current_shell_starter_and_version();
                     // Last: this starts the local sshd (see `ssh_test_fixture_available`).
@@ -277,8 +313,8 @@ macro_rules! generate_can_bootstrap_tmux_ssh_test_for_shell {
                 .with_cleanup(|_| stop_ssh_fixtures())
                 // TODO(CORE-2333) PowerShell has no SSH wrapper.
                 .set_should_run_test(|| {
-                    if !FeatureFlag::SSHTmuxWrapper.is_enabled() {
-                        return skip_because("FeatureFlag::SSHTmuxWrapper on");
+                    if legacy_ssh_wrapper_takes_ssh() {
+                        return skip_because(TMUX_SSH_WRAPPER);
                     }
                     let (starter, _) = current_shell_starter_and_version();
                     // Last: this starts the local sshd (see `ssh_test_fixture_available`).
@@ -362,6 +398,12 @@ generate_long_running_block_ssh_test_for_shell!(test_ssh_into_ash, "ash", prompt
 /// path, SSH fails to execute proxy commands. (The scenario now connects to the
 /// local sshd fixture, which has no ProxyCommand; it still guards the override
 /// path of the ssh wrapper.)
+///
+/// #2133: the override is the LEGACY key with a shell name, and until that issue the app
+/// ignored it for the first tab (the shell scan had not finished), so this scenario only ever
+/// drove the system default shell: round 14 started `/bin/bash` every time. It now says that
+/// it needs zsh, and its second step proves the pane's shell IS zsh before any ssh is typed,
+/// so it can no longer pass (or fail) on a shell it did not ask for.
 pub fn test_ssh_with_shell_override() -> Builder {
     new_builder()
         .with_cleanup(|_| stop_ssh_fixtures())
@@ -372,7 +414,8 @@ pub fn test_ssh_with_shell_override() -> Builder {
             needs(
                 starter.shell_type() != ShellType::PowerShell,
                 POSIX_LOCAL_SHELL,
-            ) && ssh_test_fixture_available("bash")
+            ) && needs(is_on_path("zsh"), LOCAL_ZSH)
+                && ssh_test_fixture_available("bash")
         })
         .with_user_defaults(HashMap::from([(
             StartupShellOverride::storage_key().to_owned(),
@@ -380,6 +423,13 @@ pub fn test_ssh_with_shell_override() -> Builder {
         )]))
         .with_user_defaults(without_helper_question())
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        // The override was applied: the local shell is zsh (`ZSH_VERSION` is set by zsh only).
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            "test -n \"$ZSH_VERSION\"".into(),
+            ExpectedExitStatus::Success,
+            (),
+        ))
         .with_step(enter_ssh_command("bash"))
         .with_step(wait_for_password_prompt(0, "bash"))
         .with_step(enter_ssh_password())
@@ -397,8 +447,8 @@ pub fn test_ssh_with_shell_override() -> Builder {
 /// The remote bash shell bootstraps over ssh: the `Bootstrapped` hook of the REMOTE shell arrives
 /// (the same wait the legacy scenarios use), the session is remote for the right user and host,
 /// and the next command really runs on the remote side (`PHOSPHOR_TEST_SSHD=remote` is exported by
-/// the fixture's login script and nowhere else). Runs whichever ssh wrapper is enabled; the
-/// connect uses the key without a passphrase.
+/// the fixture's login script and nowhere else). Runs the legacy ssh wrapper (the one this fork
+/// ships, #2128); the connect uses the key without a passphrase.
 pub fn test_ssh_remote_bash_bootstrapped_hook() -> Builder {
     new_builder()
         .with_cleanup(|_| stop_ssh_fixtures())
@@ -409,10 +459,8 @@ pub fn test_ssh_remote_bash_bootstrapped_hook() -> Builder {
             needs(
                 starter.shell_type() != ShellType::PowerShell,
                 POSIX_LOCAL_SHELL,
-            ) && needs(
-                !FeatureFlag::SSHTmuxWrapper.is_enabled(),
-                TMUX_WRAPPER_FLAG_ON,
-            ) && ssh_test_fixture_available("bash")
+            ) && needs(legacy_ssh_wrapper_takes_ssh(), LEGACY_SSH_WRAPPER)
+                && ssh_test_fixture_available("bash")
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(enter_ssh_command_without_prompt("bash"))
@@ -484,10 +532,8 @@ pub fn test_ssh_typeahead_during_connect_runs_remotely_once() -> Builder {
             needs(
                 starter.shell_type() != ShellType::PowerShell,
                 POSIX_LOCAL_SHELL,
-            ) && needs(
-                !FeatureFlag::SSHTmuxWrapper.is_enabled(),
-                TMUX_WRAPPER_FLAG_ON,
-            ) && ssh_test_fixture_available("bash")
+            ) && needs(legacy_ssh_wrapper_takes_ssh(), LEGACY_SSH_WRAPPER)
+                && ssh_test_fixture_available("bash")
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(enter_ssh_command_without_prompt("bash"))
