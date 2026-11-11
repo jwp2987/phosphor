@@ -53,10 +53,16 @@ that call got its card after the repeat's chunk arrived, which the hold rules ou
 ### Risk
 
 * A false "possible repeat" costs the early cards of the calls after it in that reply (they
-  appear when the reply ends). Known case: a tool whose arguments may be empty, on the
-  Anthropic adapter, which sends `""` at the block start and `""` again as its first delta; if
-  the tool's card shows for `""`, the calls after it wait. For a tool that needs arguments
-  (every built-in) `""` shows no card and is not complete JSON: nothing is held.
+  appear when the reply ends). By reading genai's streamers, every adapter emits one chunk per
+  delta and none re-sends a finished call, so an equal chunk needs an empty delta. The one
+  adapter that sends one for every call is Anthropic's (`""` at `content_block_start`, `""`
+  again as the first `input_json_delta`; Vertex uses it for Claude). A tool that takes empty
+  arguments (every MCP tool, `mcp.rs:573`; the transfer and new-conversation markers) shows
+  its card for `""`, so that pair would have held the cards of every later call of the reply.
+  `adapter_opens_calls_with_an_empty_chunk(api_type)` exempts exactly that pair on those two
+  api types. What is given up: on Anthropic or Vertex, a reply that repeats an id with two
+  empty-argument calls and then has a call with an early card is still listed `[x, y, x#2]`
+  (Anthropic's ids are unique per call, so this needs a proxy that rewrites them).
 * A reply that breaks after a possible repeat shows fewer early cards than before (I4 accepts
   any leading part of the early list).
 * A conversation saved before this change with a late-RECORDED repeat (`[x, y, x#2]` stored

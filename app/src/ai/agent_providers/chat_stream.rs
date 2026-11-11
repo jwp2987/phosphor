@@ -5182,19 +5182,43 @@ fn unique_call_ids(calls: impl IntoIterator<Item = ToolCall>) -> Vec<ToolCall> {
 /// * A chunk that does not carry on the buffered call ([`continues_stream_call`]) is another call.
 /// * A chunk equal to the buffered call is either a chunk sent twice or a call repeated exactly;
 ///   the chunks cannot tell. It counts as a possible repeat when the buffered call is whole (its
-///   card is shown, or its arguments are complete JSON). The Anthropic adapter's empty first
-///   delta (`""` again, no card for a tool that needs arguments) is neither, so it holds nothing.
-///   A false "possible repeat" costs only the early cards of the calls after it.
-fn may_repeat_call_id(prev: &ToolCall, next: &ToolCall, card_shown: bool) -> bool {
+///   card is shown, or its arguments are complete JSON).
+/// * `empty_chunk_opens_a_call` ([`adapter_opens_calls_with_an_empty_chunk`]): on such an
+///   adapter two chunks with empty arguments are how every call starts, never a repeat. Without
+///   this, a tool that takes empty arguments (every MCP tool) would show its card for `""` and
+///   then hold the cards of all calls after it.
+///
+/// A false "possible repeat" costs only the early cards of the calls after it.
+fn may_repeat_call_id(
+    prev: &ToolCall,
+    next: &ToolCall,
+    card_shown: bool,
+    empty_chunk_opens_a_call: bool,
+) -> bool {
     if !continues_stream_call(prev, next) {
         return true;
     }
-    let same = prev.fn_name == next.fn_name && prev.fn_arguments == next.fn_arguments;
-    same && (card_shown
-        || match prev.fn_arguments.as_str() {
-            Some(text) => serde_json::from_str::<serde::de::IgnoredAny>(text).is_ok(),
-            None => true,
-        })
+    if prev.fn_name != next.fn_name || prev.fn_arguments != next.fn_arguments {
+        // The buffered call, growing.
+        return false;
+    }
+    match prev.fn_arguments.as_str() {
+        Some("") if empty_chunk_opens_a_call => false,
+        Some(text) => card_shown || serde_json::from_str::<serde::de::IgnoredAny>(text).is_ok(),
+        None => true,
+    }
+}
+
+/// Whether genai's adapter for `api_type` opens every tool call with a chunk that has empty
+/// arguments and can send the same empty arguments again as the first delta: the Anthropic
+/// streamer does (`content_block_start`, then an `input_json_delta` of `""`), and Vertex uses it
+/// for Claude models. The OpenAI-shaped adapters send a chunk per delta with the arguments so
+/// far; Gemini and Ollama send each call whole.
+fn adapter_opens_calls_with_an_empty_chunk(api_type: AgentProviderApiType) -> bool {
+    matches!(
+        api_type,
+        AgentProviderApiType::Anthropic | AgentProviderApiType::Vertex
+    )
 }
 
 fn continues_stream_call(prev: &ToolCall, next: &ToolCall) -> bool {
@@ -8285,6 +8309,7 @@ pub async fn generate_byop_output(
                                 prev,
                                 &call,
                                 tool_msg_ids.contains_key(&call.call_id),
+                                adapter_opens_calls_with_an_empty_chunk(api_type),
                             )
                         })
                     {
@@ -19041,59 +19066,100 @@ mod duplicate_call_id_tests {
     /// calls emitted after it.
     #[test]
     fn a_chunk_that_may_repeat_its_id_is_told_from_a_growing_call() {
-        // The same call, growing: no repeat, with or without its card.
+        // The same call, growing: no repeat, with or without its card, on any adapter.
         for card in [false, true] {
-            assert!(!may_repeat_call_id(
-                &chunk("x", "grep", r#"{"qu"#),
-                &chunk("x", "grep", r#"{"queries":["a"]}"#),
-                card
-            ));
-            assert!(!may_repeat_call_id(
-                &chunk("x", "", ""),
-                &chunk("x", "grep", r#"{"qu"#),
-                card
-            ));
+            for opens_empty in [false, true] {
+                assert!(!may_repeat_call_id(
+                    &chunk("x", "grep", r#"{"qu"#),
+                    &chunk("x", "grep", r#"{"queries":["a"]}"#),
+                    card,
+                    opens_empty
+                ));
+                assert!(!may_repeat_call_id(
+                    &chunk("x", "", ""),
+                    &chunk("x", "grep", r#"{"qu"#),
+                    card,
+                    opens_empty
+                ));
+            }
         }
         // Another tool, or arguments that start over: another call.
         assert!(may_repeat_call_id(
             &chunk("x", "not_a_real_tool", "{}"),
             &chunk("x", "grep", r#"{"queries":["a"]}"#),
+            false,
             false
         ));
         assert!(may_repeat_call_id(
             &chunk("x", "grep", r#"{"queries":["a"]}"#),
             &chunk("x", "grep", r#"{"queries":["b"]}"#),
-            false
+            false,
+            true
         ));
         // Equal to the buffered call: a possible repeat once the buffered call is whole
         // (complete arguments, whole-object arguments, or its card is shown) ...
         assert!(may_repeat_call_id(
             &chunk("x", "grep", r#"{"queries":["a"]}"#),
             &chunk("x", "grep", r#"{"queries":["a"]}"#),
+            false,
             false
         ));
         assert!(may_repeat_call_id(
             &call("x", "ls"),
             &call("x", "ls"),
+            false,
             false
         ));
         assert!(may_repeat_call_id(
             &chunk("x", "list_things", ""),
             &chunk("x", "list_things", ""),
+            true,
+            false
+        ));
+        // ... and only a chunk sent twice while the call is still arriving: nothing is held.
+        assert!(!may_repeat_call_id(
+            &chunk("x", "grep", ""),
+            &chunk("x", "grep", ""),
+            false,
+            false
+        ));
+        assert!(!may_repeat_call_id(
+            &chunk("x", "grep", r#"{"qu"#),
+            &chunk("x", "grep", r#"{"qu"#),
+            false,
+            false
+        ));
+        // The Anthropic streamer opens every call with empty arguments and sends them again as
+        // its first delta. A tool that takes empty arguments shows its card at once; that pair
+        // of chunks must not hold the cards of the calls after it.
+        assert!(!may_repeat_call_id(
+            &chunk("x", "list_things", ""),
+            &chunk("x", "list_things", ""),
+            true,
             true
         ));
-        // ... and only a chunk sent twice while the call is still arriving (the Anthropic
-        // adapter's empty first delta; a partial object): nothing is held for those.
-        assert!(!may_repeat_call_id(
-            &chunk("x", "grep", ""),
-            &chunk("x", "grep", ""),
-            false
+        // A whole call sent twice is still a possible repeat there.
+        assert!(may_repeat_call_id(
+            &chunk("x", "grep", r#"{"queries":["a"]}"#),
+            &chunk("x", "grep", r#"{"queries":["a"]}"#),
+            true,
+            true
         ));
-        assert!(!may_repeat_call_id(
-            &chunk("x", "grep", r#"{"qu"#),
-            &chunk("x", "grep", r#"{"qu"#),
-            false
+        assert!(adapter_opens_calls_with_an_empty_chunk(
+            AgentProviderApiType::Anthropic
         ));
+        assert!(adapter_opens_calls_with_an_empty_chunk(
+            AgentProviderApiType::Vertex
+        ));
+        for other in [
+            AgentProviderApiType::OpenAi,
+            AgentProviderApiType::OpenAiResp,
+            AgentProviderApiType::Gemini,
+            AgentProviderApiType::Ollama,
+            AgentProviderApiType::DeepSeek,
+        ] {
+            assert!(!adapter_opens_calls_with_an_empty_chunk(other), "{other:?}");
+        }
     }
 
     fn ids_in_order(calls: &[ToolCall], order: &[usize]) -> Vec<String> {
