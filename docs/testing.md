@@ -6855,3 +6855,16 @@ What the next run should show: `meta_and_word_keys` with every prompt key `readl
 Ctrl-Y included) and no "emacs bindings" banner in its screenshot; `keybinding_rebind` passing arm C and both Alt-R steps;
 `scroll_keys_foreground` passing its prompt half in both modes; `ui_palette` and `find_basic` unchanged.
 Run: `python3 script/realapp/appci/run.py --cases meta_and_word_keys,keybinding_rebind,scroll_keys_foreground,ui_readline_keys`.
+
+## Round 17 misc (#2028, #2030, #2055, #2091, #2096; `docs/design/r17-misc.md`)
+
+Nothing here was compiled or run with cargo. All "worked, unproven" until a run.
+
+**#2096: `test_cursor_blink_tick_requests_paint_only_frame` can now fail on a notify.** A `ctx.notify()` is a queued effect; it reaches the
+window's invalidation only when the outermost update returns, and the unit-test window then builds its scene and consumes the invalidation. So
+a test that runs a handler inside `app.update(..)` and reads `take_invalidation_kind_for_test` there can NOT see a notify of that handler.
+`AppContext::pending_view_notifications_for_test(window_id, view_id)` (test / `test-util` only, `crates/warpui_core/src/core/app.rs`; also on
+`App`) counts the queued `Effect::ViewNotification` entries of one view. The blink test reads it before and after the tick, inside the same
+update, and requires zero new ones; `needs_layout` stays as the check for a layout redraw request. Control:
+`test_a_view_notify_is_visible_to_the_blink_test_observation` makes the same observation of a real `ctx.notify()` (one counted, `needs_layout`
+still false before the flush). Use the same pair wherever a test must show that a handler does not notify its view.
