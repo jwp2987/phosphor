@@ -220,6 +220,8 @@ NOT_WINDOWS.update({
 })
 
 # round 15 wave 4 core (#2075; cases_w4core.py). Separate statements, so a merge with other branches' additions to the tables above stays line-wise.
+GITBASH_ONLY["agent_close_undo_call_status"] = ("#2103: the scripted command is a POSIX printf whose output is not in its command line; the agent path "
+                                                "does not depend on the pane's shell: runs once, in the Git Bash pane's fake-model pass")
 GITBASH_ONLY["grid_snapshot_render"] = ("T34: the escape scripts are files printed with `cat` and stepped with bash `read`; the grid the app paints "
                                         "does not depend on the pane's shell, so one pane is enough: runs in the Git Bash pane")
 NOT_WINDOWS["freeze_and_wake"] = ("T36: specified for Linux and macOS; the freeze is SIGSTOP / SIGCONT. NEEDS: a suspend / resume of the app's process "

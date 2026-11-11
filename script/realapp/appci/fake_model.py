@@ -30,11 +30,14 @@
 #   * "Please run scripted command <KEY>" (round 14, agent_autorun_permissions) -> one run_shell_command call with SCRIPTED_COMMANDS[KEY], a command the
 #     case registered beforehand. The prompt the case TYPES is plain prose: a command with `;`, `|` or `$(...)` typed into the input could be routed to
 #     the shell by its syntax and run there, which would read as "ran with no card". An unknown key -> the text "NO-SCRIPTED-COMMAND <KEY>";
+#   * "Please run scripted command <KEY> then ask me a question <TAG>" (#2103, agent_close_undo_call_status) -> ONE reply with two calls: run_shell_command
+#     with SCRIPTED_COMMANDS[KEY], then ask_user_question. Once the approved command has run, its result is finished and not yet sent (the step is not
+#     over while the question waits): the state a pane close discards. An unknown key -> "NO-SCRIPTED-COMMAND <KEY>";
 #   * "Please write code snippets <TOK> count <N>" (#2071, agent_code_recycle) -> the text of N fenced bash code blocks, block i holding the single line
 #     `echo RCY<TOK>_<ii>` (snippet_reply): the answer whose code-block editors the app recycles and rebuilds, word for word the same in every run;
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
 # Trigger order in reply_for (no trigger shadows another): plan, tool-result "Done.", stream long reply, follow up check, call mcp tool then ask, call mcp tool, show this image,
-# run a slow command then ask me a question, ask me a question, run scripted command, write code snippets, run / read / create / delete / edit exactly,
+# run scripted command then ask me a question, run a slow command then ask me a question, ask me a question, run scripted command, write code snippets, run / read / create / delete / edit exactly,
 # STREAMLONG (sticky), SLOW, fallback.
 # Every trigger and every fault `match` reads the text the USER typed (prompt_text): never the app's <environment_context> message, and never the
 # <attached_context> block the app puts in front of the prompt (the blocks run since the last query, with their output; #2045).
@@ -86,6 +89,7 @@ MCP_RE = re.compile(r"call mcp tool (\S+) on (\S+)(?: with (\{.*\}))?\s*$", re.S
 MCPASK_RE = re.compile(r"call mcp tool (\S+) on (\S+) then ask me a question(?:\s+(\w+))?")      # #2034: [mcp call, ask_user_question] in ONE reply
 ASKCMD_RE = re.compile(r"run a slow command then ask me a question(?:\s+(\w+))?")      # #1858: [run_shell_command sleep, ask_user_question] in ONE reply
 ASKQ_RE = re.compile(r"ask me a question(?:\s+(\w+))?")
+SCRIPTASK_RE = re.compile(r"run scripted command (\w+) then ask me a question(?:\s+(\w+))?")      # #2103: [run_shell_command KEY's command, ask_user_question] in ONE reply
 SCRIPT_RE = re.compile(r"run scripted command (\w+)")
 SCRIPTED_COMMANDS = {}       # KEY -> shell command, registered by a case before it types "Please run scripted command KEY"
 SNIP_RE = re.compile(r"write code snippets (\w+) count (\d+)")      # #2071: the agent_code_recycle answer (snippet_prompt / snippet_reply)
@@ -430,6 +434,13 @@ def reply_for(messages, tools=None):
     m = IMG_RE.search(text)
     if m:                                      # a markdown image: agent output never loads an http(s) image, so the app must request nothing for it (agent_gate_deny_allow step 0)
         return {"text": "Here it is:\n\n![img](%s)" % m.group(1), "tool": None}
+    m = SCRIPTASK_RE.search(text)
+    if m:                                      # #2103: a registered command, then a question: once the command ran its result is finished and UNSENT while the card waits
+        cmd = SCRIPTED_COMMANDS.get(m.group(1))
+        if cmd is None:
+            return {"text": "NO-SCRIPTED-COMMAND %s" % m.group(1), "tool": None}
+        return {"text": "", "tool": {"name": "run_shell_command", "arguments": {"command": cmd, "is_read_only": False, "uses_pager": False, "is_risky": False}},
+                "tools_after": [ask_question_call(m.group(2))], "ask_question": True}
     m = ASKCMD_RE.search(text)
     if m:                                      # #1858: the ask trails a running command; the card must not say "Preparing question..." meanwhile
         return {"text": "", "tool": {"name": "run_shell_command", "arguments": {"command": "sleep 8", "is_read_only": False, "uses_pager": False, "is_risky": False}},

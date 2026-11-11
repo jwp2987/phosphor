@@ -3051,6 +3051,7 @@ one row per lab family, for every arm of it; the lab harness's own two settings 
 | `ime_compose` | fix | autosuggestions = true, completions_while_typing = true | - | - |  |
 | `md_viewer_first_frame` | fix | keybindings_file = absent | - | - | as md_viewer: opened through the app's own open-file path; judged from the app log (the viewer's first-size line, no image painted without a width), OCR of the heading where there is an engine |
 | `gpu_lost_device_recovers` | fix | - | - | - | one launch compared with itself before and after the rebuilt renderer, so the seed's theme and text size cancel out; judged from the app log (the hook's line, the rebuild, frames) and two screenshots |
+| `agent_close_undo_call_status` | fix | agent_readonly_autorun = false, autosuggestions = true, completions_while_typing = true, keybindings_file = absent, safe_command_allowlist = false | - | providers, quit_warning | #2103: the command is approved at its card (AGENT_ASK); new tab, close and undo-close are the default chords; where the close key asks first (quit_warning) the case answers with Enter and notes it |
 | `rollover` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
 | `expert_fuzz` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
 | `arrows_behind_paste` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
@@ -7073,8 +7074,19 @@ that discards something: `hop=agent_close_discard conversation=<id> results=<n> 
   must still pass: its call's cancelled result is kept at the close, so the later Stop finds nothing unsettled.
 - **The r18-agentheal guard stays** (`replies_discarded_for_close`, `a_reply_a_close_stopped_is_not_judged_for_unsettled_calls`): the kept
   status does not cover a batch that was still preprocessing when the close's stop dropped it, nor the kill switch's arm.
+- **App case `agent_close_undo_call_status`** (`appci/cases_agent_close_undo.py`; agent mode, scripted model; `cases.PROVING` and
+  `PROVING_FAKE`; settings declared in `case_settings.py`; Windows: Git Bash pane). A new tab; ONE reply with a command (approved by keyboard,
+  prints a token that is not in its command line) and a question (`fake_model.py` trigger "Please run scripted command KEY then ask me a
+  question TAG"); when the command is done and the question waits, the close key, the undo key, a plain prompt. Oracles: the app's
+  `hop=agent_close_discard` with `results>=1 kept_status=1`; the printed token in NO tool-result message of any request after the close
+  (`fake.reqs`; other places, e.g. attached block context, are a note); the prompt after the undo reaches the model once and ends `success`;
+  no `hop=agent_turn_stuck`, no unexpected ERROR. UNVERIFIABLE (never a pass) when the command never finished behind a waiting question or the
+  app logged no discard line. NOT judged: the look of the restored cards (no log line or OCR text tells a check mark from a cancel mark);
+  screenshot `close_undo_restored` is kept for a person. Self-test `agent_close_undo_pieces_2103`.
+  Run: `python3 script/realapp/appci/run.py --cases agent_close_undo_call_status`.
 - **What the next run should show.** The five unit tests above pass; both paced fuzz tests, the matrix rows with `CloseTab` and the corpus
-  replay pass with the exception gone (a new I1 failure after a close is a new finding, not this change's noise).
+  replay pass with the exception gone (a new I1 failure after a close is a new finding, not this change's noise); the app case PASSES in the
+  agent@fake pass with `close_discard_results >= 1`.
 
 ## Round 18: the turn self-heal after round 14's unit run (design `docs/design/r18-agentheal.md`; #1967, #2103; nothing compiled or run when written)
 

@@ -6720,6 +6720,53 @@ def agent_ctrl_c_running_tool_pieces_2034():
 
 
 @check
+def agent_close_undo_pieces_2103():
+    """#2103 (owner decision 2026-11-11): agent_close_undo_call_status. The fake model's two-call reply (a registered command, then a question, in ONE
+    reply), the case's pure verdicts (a discard line with kept_status=0 is a failure, no discard line is missing evidence and never a pass; only a
+    tool-result message counts as the discarded result having been sent), the app strings the case reads, and the registration."""
+    import cases_agent_close_undo as CU, case_settings, fake_model as FM
+    FM.SCRIPTED_COMMANDS["CUZZ"] = "printf '%s%s\\n' QX7 ZZ"
+    try:
+        rep = FM.reply_for([{"role": "user", "content": "Please run scripted command CUZZ then ask me a question Q5"}])
+        assert rep["tool"]["name"] == "run_shell_command" and rep["tool"]["arguments"]["command"] == FM.SCRIPTED_COMMANDS["CUZZ"], rep
+        assert [t["name"] for t in rep["tools_after"]] == ["ask_user_question"] and "Q5" in rep["tools_after"][0]["arguments"]["questions"][0]["question"], rep
+        calls = json.loads(FM.stream_lines("m", rep)[0])["message"]["tool_calls"]
+        assert [c["function"]["name"] for c in calls] == ["run_shell_command", "ask_user_question"], "one reply, the command first: %s" % calls
+        # the older triggers keep their replies
+        assert not FM.reply_for([{"role": "user", "content": "Please run scripted command CUZZ"}]).get("tools_after")
+        assert FM.reply_for([{"role": "user", "content": "Please run a slow command then ask me a question Z8"}])["tool"]["arguments"]["command"] == "sleep 8"
+        assert FM.reply_for([{"role": "user", "content": "Please ask me a question Z9"}])["tool"]["name"] == "ask_user_question"
+    finally:
+        FM.SCRIPTED_COMMANDS.pop("CUZZ", None)
+    assert FM.reply_for([{"role": "user", "content": "Please run scripted command NOPE then ask me a question Q5"}])["text"] == "NO-SCRIPTED-COMMAND NOPE"
+    command, printed = CU.scripted_command("AB12")
+    assert printed == "QX7AB12" and printed not in command, "the printed text must not be in the command line: %r" % command
+    line = "hop=agent_close_discard conversation=AIConversationId(1) results=%d kept_status=%d\n"
+    assert CU.discards(line % (2, 1) + "x\n" + line % (1, 0)) == [(2, 1), (1, 0)]
+    assert CU.judge_discard([(1, 1)]) == (None, None)
+    bad, missing = CU.judge_discard([(1, 0)])
+    assert bad and "ERASED" in bad and missing is None
+    bad, missing = CU.judge_discard([])
+    assert bad is None and missing and "no hop=agent_close_discard" in missing, "no line is missing evidence, never a pass"
+    reqs = [{"messages": [{"role": "user", "content": "attached QX7AB12"}, {"role": "assistant", "content": ""}, {"role": "tool", "content": "cancelled"}]},
+            {"messages": [{"role": "tool", "content": "out: QX7AB12"}]}]
+    assert CU.tool_results_with(reqs[:1], printed) == 0 and CU.other_messages_with(reqs[:1], printed) == ["user"]
+    assert CU.tool_results_with(reqs, printed) == 1
+    done = "hop=agent_action id=c1 kind=run_shell_command status=done\n"
+    ask = "hop=agent_action id=q1 kind=ask_user_question status=queued\nhop=agent_action id=q1 kind=ask_user_question status=blocked\n"
+    assert CU.command_ran_and_question_waits(done + ask) and not CU.command_ran_and_question_waits(ask) and not CU.command_ran_and_question_waits(done)
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    src = open(os.path.join(root, "app/src/ai/blocklist/controller.rs"), errors="replace").read()
+    assert "hop=agent_close_discard conversation={conversation_id:?} results={discarded}" in src and "kept_status={}" in src, "the app's discard line changed"
+    assert "hop=agent_turn_stuck fault={}" in src, "the app's stuck-turn line changed"
+    n = "agent_close_undo_call_status"
+    assert n in cases.PROVING and n in cases.PROVING_FAKE and n not in cases.SMOKE, n
+    assert [c["modes"] for c in cases.CASES if c["name"] == n] == [("agent",)], n
+    assert case_settings.declared(n), n
+    assert winmap.skip_reason(n, "gitbash") is None and "Git Bash" in winmap.skip_reason(n, "powershell"), n
+
+
+@check
 def mcp_config_is_where_the_app_reads_it():
     """#2065: agent_mcp_faults was SKIP on every platform in every run because the harness wrote `~/.warp/.mcp.json` and the app under test (Channel::Oss)
     reads `<home>/.phosphor/.mcp.json`. The directory name is pinned against the app's source, so a renamed directory fails here and not as a silent skip;
