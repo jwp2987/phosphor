@@ -328,7 +328,34 @@ impl FindModel for TerminalFindModel {
     }
 }
 
+/// The detail of the `hop=find_state` log line (round 14; the real-app case `find_basic` reads
+/// it): `event=<query|next> count=<matches> focused=<index|none> scanning=<bool>`. `count` is
+/// what the find bar shows as the number of matches, `focused` the focused match's index in
+/// that list, `scanning` whether the async find is still running (the count can still grow).
+/// Counts and a fixed word only, never the query.
+pub(crate) fn find_state_hop_detail(
+    event: &str,
+    count: usize,
+    focused: Option<usize>,
+    scanning: bool,
+) -> String {
+    let focused = focused.map_or_else(|| "none".to_string(), |index| index.to_string());
+    format!("event={event} count={count} focused={focused} scanning={scanning}")
+}
+
 impl TerminalFindModel {
+    /// [`find_state_hop_detail`] for this model's current results. Reads what the find bar
+    /// itself renders (`match_count`, `focused_match_index`), so it takes the terminal model's
+    /// lock as those do; call it only from inside the input-order log closure.
+    pub(crate) fn state_hop_detail(&self, event: &str) -> String {
+        find_state_hop_detail(
+            event,
+            FindModel::match_count(self),
+            FindModel::focused_match_index(self),
+            FindModel::is_scanning(self),
+        )
+    }
+
     pub fn new(terminal_model: Arc<FairMutex<TerminalModel>>, ctx: &AppContext) -> Self {
         let async_find_controller = if TerminalSettings::as_ref(ctx).is_async_find_enabled() {
             Some(AsyncFindController::new(terminal_model.clone()))
