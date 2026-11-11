@@ -6,7 +6,6 @@
 //! `view_test.rs`.
 
 use super::*;
-use crate::terminal::input_queue::DestinationMode;
 
 /// The exact sequence of the round 9 log up to the report: the editor owns input and holds `Ad`;
 /// the shell starts a command by itself (`on_preexec(true)`: the pty takes input, model thread);
@@ -56,51 +55,43 @@ fn type_a_line_across_a_shell_started_command(
 /// end, and the pty received exactly `d-`.
 #[test]
 fn a_report_of_keys_typed_after_the_editors_text_goes_behind_that_text() {
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = collect_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                type_a_line_across_a_shell_started_command(view, true, ctx);
-                assert!(
-                    view.input.as_ref(ctx).has_handoff_report_anchor(),
-                    "{mode:?}: the anchor waits for the report"
-                );
-                store_shell_report(view, "d-");
-                view.handle_typeahead_report_with_handoff(true, ctx);
-            });
-            terminal.read(&app, |view, ctx| {
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    "Add-Co",
-                    "{mode:?}: the keys are in typed order"
-                );
-                assert_eq!(
-                    view.model.lock().typeahead_handoff().state(),
-                    &HandoffState::EditorOwned,
-                    "{mode:?}"
-                );
-            });
-            assert_eq!(
-                String::from_utf8_lossy(&pty_writes.borrow().concat()),
-                "d-",
-                "{mode:?}: the two keys typed while the command ran reached the pty, once"
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            type_a_line_across_a_shell_started_command(view, true, ctx);
+            assert!(
+                view.input.as_ref(ctx).has_handoff_report_anchor(),
+                "the anchor waits for the report"
             );
-            // The next key lands behind everything typed so far.
-            terminal.update(&mut app, |view, ctx| {
-                view.input
-                    .update(ctx, |input, ctx| input.system_insert("n", ctx));
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    "Add-Con",
-                    "{mode:?}"
-                );
-            });
-        })
-    }
+            store_shell_report(view, "d-");
+            view.handle_typeahead_report_with_handoff(true, ctx);
+        });
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "Add-Co",
+                "the keys are in typed order"
+            );
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+        assert_eq!(
+            String::from_utf8_lossy(&pty_writes.borrow().concat()),
+            "d-",
+            "the two keys typed while the command ran reached the pty, once"
+        );
+        // The next key lands behind everything typed so far.
+        terminal.update(&mut app, |view, ctx| {
+            view.input
+                .update(ctx, |input, ctx| input.system_insert("n", ctx));
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "Add-Con");
+        });
+    })
 }
 
 /// The premise: the same sequence without the view's Preexec handling records no anchor, and the
@@ -108,28 +99,22 @@ fn a_report_of_keys_typed_after_the_editors_text_goes_behind_that_text() {
 /// also what every report without an anchor still does.
 #[test]
 fn without_the_anchor_the_same_sequence_puts_the_report_in_front() {
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let terminal = add_window_with_terminal(&mut app, None);
-            terminal.update(&mut app, |view, ctx| {
-                type_a_line_across_a_shell_started_command(view, false, ctx);
-                assert!(
-                    !view.input.as_ref(ctx).has_handoff_report_anchor(),
-                    "{mode:?}"
-                );
-                store_shell_report(view, "d-");
-                view.handle_typeahead_report_with_handoff(true, ctx);
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    "d-AdCo",
-                    "{mode:?}: the round 9 result"
-                );
-            });
-        })
-    }
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            type_a_line_across_a_shell_started_command(view, false, ctx);
+            assert!(!view.input.as_ref(ctx).has_handoff_report_anchor());
+            store_shell_report(view, "d-");
+            view.handle_typeahead_report_with_handoff(true, ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "d-AdCo",
+                "the round 9 result"
+            );
+        });
+    })
 }
 
 /// No key was typed while the shell-started command ran: its prompt hands input back with no

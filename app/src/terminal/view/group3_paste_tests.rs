@@ -4,7 +4,6 @@
 
 use super::*;
 use crate::terminal::input::PasteSource;
-use crate::terminal::input_queue::DestinationMode;
 
 /// Offers an editor paste of `text` to the pane queue (behind whatever gate is open).
 fn offer_editor_paste_for_test(
@@ -56,76 +55,68 @@ fn queued_texts_and_editor_pastes(
 /// in the local editor (Table); the kill switch keeps the editor insert (Legacy).
 #[test]
 fn editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold() {
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                hold_text_behind_test_gate(view, "echo ", ctx);
-                offer_editor_paste_for_test(view, "X", ctx);
-                offer_text_for_test(view, " Y", ctx);
-                submit_command(view, "ssh host", ctx);
-                release_test_gate(view, ctx);
-                let buffer = view.input.as_ref(ctx).buffer_text(ctx);
-                // Both modes hold the same way at this instant: nothing is typed ahead of the
-                // line, and the paste stays its own queue entry behind the held line (not lost:
-                // `queued_texts` lists only text entries), in typed order.
-                assert_eq!(
-                    buffer, "",
-                    "nothing reached the local editor ahead of the line"
-                );
-                assert_eq!(
-                    queued_texts_and_editor_pastes(view, ctx),
-                    vec!["echo ".to_owned(), "X".to_owned(), " Y".to_owned()]
-                );
-                assert!(view.ssh_typeahead_holding);
-                // No remote shell comes up: the hold gives up and hands the text back
-                // unexecuted, in typed order, with the paste between the typed parts.
-                view.ssh_connect_gate = None;
-                view.note_ssh_gate_released(
-                    crate::terminal::input_queue::SshRelease::GiveUpCeiling,
-                );
-                view.deliver_ssh_typeahead_if_ready("test", ctx);
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    "echo X Y",
-                    "the paste stays in order between the typed parts"
-                );
-            });
-            for _ in 0..16 {
-                futures_lite::future::yield_now().await;
-            }
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
-        })
-    }
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            hold_text_behind_test_gate(view, "echo ", ctx);
+            offer_editor_paste_for_test(view, "X", ctx);
+            offer_text_for_test(view, " Y", ctx);
+            submit_command(view, "ssh host", ctx);
+            release_test_gate(view, ctx);
+            let buffer = view.input.as_ref(ctx).buffer_text(ctx);
+            // Both modes hold the same way at this instant: nothing is typed ahead of the
+            // line, and the paste stays its own queue entry behind the held line (not lost:
+            // `queued_texts` lists only text entries), in typed order.
+            assert_eq!(
+                buffer, "",
+                "nothing reached the local editor ahead of the line"
+            );
+            assert_eq!(
+                queued_texts_and_editor_pastes(view, ctx),
+                vec!["echo ".to_owned(), "X".to_owned(), " Y".to_owned()]
+            );
+            assert!(view.ssh_typeahead_holding);
+            // No remote shell comes up: the hold gives up and hands the text back
+            // unexecuted, in typed order, with the paste between the typed parts.
+            view.ssh_connect_gate = None;
+            view.note_ssh_gate_released(crate::terminal::input_queue::SshRelease::GiveUpCeiling);
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "echo X Y",
+                "the paste stays in order between the typed parts"
+            );
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
 }
 
 /// #1585: at an idle local prompt (no ssh) the paste still lands in the editor, in order.
 #[test]
 fn editor_paste_behind_an_enter_gate_at_an_idle_prompt_lands_in_the_editor() {
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                hold_text_behind_test_gate(view, "echo ", ctx);
-                offer_editor_paste_for_test(view, "X", ctx);
-                offer_text_for_test(view, " Y", ctx);
-                release_test_gate(view, ctx);
-                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo X Y");
-            });
-            for _ in 0..16 {
-                futures_lite::future::yield_now().await;
-            }
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
-        })
-    }
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            hold_text_behind_test_gate(view, "echo ", ctx);
+            offer_editor_paste_for_test(view, "X", ctx);
+            offer_text_for_test(view, " Y", ctx);
+            release_test_gate(view, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo X Y");
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
 }

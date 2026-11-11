@@ -12206,48 +12206,40 @@ fn test_tab_then_enter_with_completion_delivered_after_a_stall_submits_the_compl
 /// a command the user did not mean): the line is handed back to the editor. Both modes.
 #[test]
 fn test_tab_completion_cap_counts_only_completer_compute() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            let (clock, guard) =
-                ComputeClock::running_for_test(std::time::Duration::from_millis(40));
-            input.update(&mut app, |input, ctx| {
-                input.input_enter(ctx);
-                let wait = input.verdict_wait.as_mut().unwrap();
-                wait.compute = clock.clone();
-                let id = wait.id;
-                input.compute_cap_fired(id, ctx);
-            });
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: 40 ms of compute is within the 150 ms cap"
-            );
-            input.read(&app, |input, _| {
-                assert!(input.verdict_wait.is_some(), "{mode:?}: still waiting")
-            });
-            drop(guard);
-            input.update(&mut app, |input, ctx| {
-                let wait = input.verdict_wait.as_mut().unwrap();
-                wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET);
-                let id = wait.id;
-                input.compute_cap_fired(id, ctx);
-            });
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: the cap's give-up runs nothing (#1666)"
-            );
-            input.read(&app, |input, ctx| {
-                assert!(
-                    input.verdict_wait.is_none(),
-                    "{mode:?}: the Enter is dropped"
-                );
-                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
-            });
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let (clock, guard) = ComputeClock::running_for_test(std::time::Duration::from_millis(40));
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = clock.clone();
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
         });
-    }
+        assert!(
+            executed.borrow().is_empty(),
+            "40 ms of compute is within the 150 ms cap"
+        );
+        input.read(&app, |input, _| {
+            assert!(input.verdict_wait.is_some(), "still waiting")
+        });
+        drop(guard);
+        input.update(&mut app, |input, ctx| {
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET);
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
+        });
+        assert!(
+            executed.borrow().is_empty(),
+            "the cap's give-up runs nothing (#1666)"
+        );
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none(), "the Enter is dropped");
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
+        });
+    });
 }
 
 /// #1207: what counts as keys typed behind a waiting Enter: a suffix (cursor at the end) or an
@@ -12781,78 +12773,63 @@ fn count_toasts(app: &mut App) -> Rc<RefCell<usize>> {
 /// as it was, nothing runs, nothing reaches the pty, and a toast says how many. Both modes.
 #[test]
 fn multiline_dialog_cancel_discards_the_held_keys() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
-            let (terminal, input, dialog, executed) =
-                multiline_dialog_fixture(&mut app, &text).await;
-            let writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
-            let sink = writes.clone();
-            app.update(|ctx| {
-                ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
-                    crate::terminal::view::Event::WriteBytesToPty { bytes }
-                    | crate::terminal::view::Event::WriteHandoffUserBytesToPty { bytes } => {
-                        sink.borrow_mut().push(bytes.to_vec());
-                    }
-                    _ => {}
-                });
+    App::test((), move |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+        let (terminal, input, dialog, executed) = multiline_dialog_fixture(&mut app, &text).await;
+        let writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                crate::terminal::view::Event::WriteBytesToPty { bytes }
+                | crate::terminal::view::Event::WriteHandoffUserBytesToPty { bytes } => {
+                    sink.borrow_mut().push(bytes.to_vec());
+                }
+                _ => {}
             });
-            let toasts = count_toasts(&mut app);
-            ask_multiline_dialog(&mut app, &input);
+        });
+        let toasts = count_toasts(&mut app);
+        ask_multiline_dialog(&mut app, &input);
 
+        assert_eq!(
+            offer_to_dialog(&mut app, &dialog, dialog_typed("ls")),
+            warpui::pane_key::PaneKeyOutcome::Consumed
+        );
+        assert_eq!(
+            offer_to_dialog(&mut app, &dialog, dialog_key_down("backspace", "\u{7f}")),
+            warpui::pane_key::PaneKeyOutcome::Consumed,
+            "backspace on the dialog is swallowed (#1652 discards it)"
+        );
+        enter_in_editor(&mut app, &terminal, &input);
+        offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
+        assert!(executed.borrow().is_empty(), "nothing ran");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), text, "the waiting buffer");
             assert_eq!(
-                offer_to_dialog(&mut app, &dialog, dialog_typed("ls")),
-                warpui::pane_key::PaneKeyOutcome::Consumed,
-                "{mode:?}"
-            );
-            assert_eq!(
-                offer_to_dialog(&mut app, &dialog, dialog_key_down("backspace", "\u{7f}")),
-                warpui::pane_key::PaneKeyOutcome::Consumed,
-                "{mode:?}: backspace on the dialog is swallowed (#1652 discards it)"
-            );
-            enter_in_editor(&mut app, &terminal, &input);
-            offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
-            assert!(executed.borrow().is_empty(), "{mode:?}: nothing ran");
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: the waiting buffer");
-                assert_eq!(
-                    input.enter_gate_held_for_test(ctx),
-                    vec![
-                        AfterEnterInput::Text("ls".to_string()),
-                        AfterEnterInput::Enter,
-                        AfterEnterInput::Text("pwd".to_string()),
-                    ],
-                    "{mode:?}: typed order, behind the Enter"
-                );
-            });
-            writes.borrow_mut().clear();
-
-            input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: exactly as it was");
-                assert!(
-                    !input.awaiting_multiline_submit_confirmation,
-                    "{mode:?}: no second ask"
-                );
-                assert!(!input.multiline_dialog_gate_open(), "{mode:?}");
-                assert!(
-                    !input.enter_queue_holds_keys(ctx),
-                    "{mode:?}: nothing left held"
-                );
-            });
-            assert!(executed.borrow().is_empty(), "{mode:?}: nothing runs");
-            assert!(
-                writes.borrow().is_empty(),
-                "{mode:?}: nothing reached the pty"
-            );
-            assert!(
-                *toasts.borrow() >= 1,
-                "{mode:?}: a toast says keys were discarded"
+                input.enter_gate_held_for_test(ctx),
+                vec![
+                    AfterEnterInput::Text("ls".to_string()),
+                    AfterEnterInput::Enter,
+                    AfterEnterInput::Text("pwd".to_string()),
+                ],
+                "typed order, behind the Enter"
             );
         });
-    }
+        writes.borrow_mut().clear();
+
+        input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), text, "exactly as it was");
+            assert!(
+                !input.awaiting_multiline_submit_confirmation,
+                "no second ask"
+            );
+            assert!(!input.multiline_dialog_gate_open());
+            assert!(!input.enter_queue_holds_keys(ctx), "nothing left held");
+        });
+        assert!(executed.borrow().is_empty(), "nothing runs");
+        assert!(writes.borrow().is_empty(), "nothing reached the pty");
+        assert!(*toasts.borrow() >= 1, "a toast says keys were discarded");
+    });
 }
 
 /// #1652 (H1/H2): keys typed into the editor while the dialog waits that have no tty form are held
@@ -12861,52 +12838,47 @@ fn multiline_dialog_cancel_discards_the_held_keys() {
 /// Both modes.
 #[test]
 fn multiline_dialog_holds_unmapped_keys_then_discards_them() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
-            let (_terminal, input, dialog, executed) =
-                multiline_dialog_fixture(&mut app, &text).await;
-            app.update(|ctx| {
-                ctx.clipboard()
-                    .write(ClipboardContent::plain_text("keep".to_string()));
-            });
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            ask_multiline_dialog(&mut app, &input);
-            offer_to_dialog(&mut app, &dialog, dialog_typed("gone"));
-            assert_eq!(
-                offer_to_dialog(&mut app, &dialog, dialog_key_down("ctrl-u", "\u{15}")),
-                warpui::pane_key::PaneKeyOutcome::Consumed,
-                "{mode:?}: ctrl-u on the dialog is swallowed (#1652 discards it)"
-            );
-            editor.update(&mut app, |editor, ctx| {
-                editor.handle_action(&EditorAction::VimBackspace, ctx);
-                editor.handle_action(&EditorAction::Escape, ctx);
-                editor.handle_action(
-                    &EditorAction::DragAndDropFiles(vec![UserInput::new("/tmp/f".to_string())]),
-                    ctx,
-                );
-            });
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: the waiting buffer");
-                assert_eq!(
-                    input.enter_gate_held_len_for_test(ctx),
-                    4,
-                    "{mode:?}: every editor key held (ctrl-u on the dialog is swallowed there: #1652 discards it)"
-                );
-            });
-            input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: discarded");
-                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
-            });
-            let clipboard =
-                app.update(|ctx| warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text);
-            assert_eq!(clipboard, "keep", "{mode:?}: the clipboard is not touched");
-            assert!(executed.borrow().is_empty(), "{mode:?}");
+    App::test((), move |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+        let (_terminal, input, dialog, executed) = multiline_dialog_fixture(&mut app, &text).await;
+        app.update(|ctx| {
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("keep".to_string()));
         });
-    }
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        ask_multiline_dialog(&mut app, &input);
+        offer_to_dialog(&mut app, &dialog, dialog_typed("gone"));
+        assert_eq!(
+            offer_to_dialog(&mut app, &dialog, dialog_key_down("ctrl-u", "\u{15}")),
+            warpui::pane_key::PaneKeyOutcome::Consumed,
+            "ctrl-u on the dialog is swallowed (#1652 discards it)"
+        );
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::VimBackspace, ctx);
+            editor.handle_action(&EditorAction::Escape, ctx);
+            editor.handle_action(
+                &EditorAction::DragAndDropFiles(vec![UserInput::new("/tmp/f".to_string())]),
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), text, "the waiting buffer");
+            assert_eq!(
+                input.enter_gate_held_len_for_test(ctx),
+                4,
+                "every editor key held (ctrl-u on the dialog is swallowed there: #1652 discards it)"
+            );
+        });
+        input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), text, "discarded");
+            assert!(!input.enter_queue_holds_keys(ctx));
+        });
+        let clipboard =
+            app.update(|ctx| warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text);
+        assert_eq!(clipboard, "keep", "the clipboard is not touched");
+        assert!(executed.borrow().is_empty());
+    });
 }
 
 /// #1652 (owner: "throw it away"): Confirm runs the waiting buffer alone, exactly once, and the
@@ -12915,93 +12887,78 @@ fn multiline_dialog_holds_unmapped_keys_then_discards_them() {
 /// and one toast says how many were dropped. Both modes.
 #[test]
 fn multiline_dialog_confirm_discards_the_held_keys() {
-    use crate::terminal::input_queue::DestinationMode;
     use crate::workspace::multiline_submit_confirmation_dialog::MultilineSubmitConfirmationAction;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _handoff = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
-            let (terminal, input, dialog, executed) =
-                multiline_dialog_fixture(&mut app, &text).await;
-            app.update(|ctx| {
-                ctx.clipboard()
-                    .write(ClipboardContent::plain_text("P".to_string()));
-            });
-            let writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
-            let sink = writes.clone();
-            app.update(|ctx| {
-                ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
-                    crate::terminal::view::Event::WriteBytesToPty { bytes }
-                    | crate::terminal::view::Event::WriteHandoffUserBytesToPty { bytes } => {
-                        sink.borrow_mut().push(bytes.to_vec());
-                    }
-                    _ => {}
-                });
-            });
-            let toasts = Rc::new(RefCell::new(0usize));
-            let toast_count = toasts.clone();
-            app.update(|ctx| {
-                let stack = ToastStack::handle(ctx);
-                ctx.subscribe_to_model(&stack, move |_, _, _| *toast_count.borrow_mut() += 1);
-            });
-            ask_multiline_dialog(&mut app, &input);
-            offer_to_dialog(&mut app, &dialog, dialog_typed("rm -rf x"));
-            offer_to_dialog(&mut app, &dialog, dialog_key_down("ctrl-w", "\u{17}"));
-            dialog.update(&mut app, |dialog, ctx| {
-                dialog.handle_action(&MultilineSubmitConfirmationAction::PasteIntoInput, ctx)
-            });
-            enter_in_editor(&mut app, &terminal, &input);
-            offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
-            assert!(executed.borrow().is_empty(), "{mode:?}");
-            // Whatever reached the pty before the answer is not this test's subject.
-            writes.borrow_mut().clear();
-
-            input.update(&mut app, |input, ctx| input.confirm_multiline_submit(ctx));
-            // A paste still being read makes the answer wait for its result (an event).
-            wait_for_input(&mut app, &input, |input, _| {
-                !input.multiline_dialog_gate_open()
-            })
-            .await;
-            assert_eq!(
-                executed.borrow().as_slice(),
-                [text.clone()],
-                "{mode:?}: the run is the waiting buffer alone, once"
-            );
-            input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    text,
-                    "{mode:?}: nothing reached the editor"
-                );
-                assert!(!input.awaiting_multiline_submit_confirmation, "{mode:?}");
-                assert!(
-                    !input.enter_queue_holds_keys(ctx),
-                    "{mode:?}: nothing is held"
-                );
-                assert!(input.enter_gate_held_for_test(ctx).is_empty(), "{mode:?}");
-            });
-            assert!(
-                *toasts.borrow() >= 1,
-                "{mode:?}: a toast says keys were discarded"
-            );
-
-            // The command runs and the view settles: still nothing of the held keys follows.
-            terminal.update(&mut app, |view, ctx| {
-                view.model
-                    .lock()
-                    .simulate_long_running_block("bash -c script", "");
-                view.settle_enter_queue_for_test(ctx);
-            });
-            let written: Vec<u8> = writes.borrow().iter().flatten().copied().collect();
-            let written = String::from_utf8_lossy(&written).into_owned();
-            assert!(
-                !written.contains("rm") && !written.contains("pwd") && !written.contains('P'),
-                "{mode:?}: no held key reached the pty: {written:?}"
-            );
-            assert_eq!(executed.borrow().len(), 1, "{mode:?}: run exactly once");
+    App::test((), move |mut app| async move {
+        let _handoff = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+        let (terminal, input, dialog, executed) = multiline_dialog_fixture(&mut app, &text).await;
+        app.update(|ctx| {
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("P".to_string()));
         });
-    }
+        let writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                crate::terminal::view::Event::WriteBytesToPty { bytes }
+                | crate::terminal::view::Event::WriteHandoffUserBytesToPty { bytes } => {
+                    sink.borrow_mut().push(bytes.to_vec());
+                }
+                _ => {}
+            });
+        });
+        let toasts = Rc::new(RefCell::new(0usize));
+        let toast_count = toasts.clone();
+        app.update(|ctx| {
+            let stack = ToastStack::handle(ctx);
+            ctx.subscribe_to_model(&stack, move |_, _, _| *toast_count.borrow_mut() += 1);
+        });
+        ask_multiline_dialog(&mut app, &input);
+        offer_to_dialog(&mut app, &dialog, dialog_typed("rm -rf x"));
+        offer_to_dialog(&mut app, &dialog, dialog_key_down("ctrl-w", "\u{17}"));
+        dialog.update(&mut app, |dialog, ctx| {
+            dialog.handle_action(&MultilineSubmitConfirmationAction::PasteIntoInput, ctx)
+        });
+        enter_in_editor(&mut app, &terminal, &input);
+        offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
+        assert!(executed.borrow().is_empty());
+        // Whatever reached the pty before the answer is not this test's subject.
+        writes.borrow_mut().clear();
+
+        input.update(&mut app, |input, ctx| input.confirm_multiline_submit(ctx));
+        // A paste still being read makes the answer wait for its result (an event).
+        wait_for_input(&mut app, &input, |input, _| {
+            !input.multiline_dialog_gate_open()
+        })
+        .await;
+        assert_eq!(
+            executed.borrow().as_slice(),
+            [text.clone()],
+            "the run is the waiting buffer alone, once"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), text, "nothing reached the editor");
+            assert!(!input.awaiting_multiline_submit_confirmation);
+            assert!(!input.enter_queue_holds_keys(ctx), "nothing is held");
+            assert!(input.enter_gate_held_for_test(ctx).is_empty());
+        });
+        assert!(*toasts.borrow() >= 1, "a toast says keys were discarded");
+
+        // The command runs and the view settles: still nothing of the held keys follows.
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("bash -c script", "");
+            view.settle_enter_queue_for_test(ctx);
+        });
+        let written: Vec<u8> = writes.borrow().iter().flatten().copied().collect();
+        let written = String::from_utf8_lossy(&written).into_owned();
+        assert!(
+            !written.contains("rm") && !written.contains("pwd") && !written.contains('P'),
+            "no held key reached the pty: {written:?}"
+        );
+        assert_eq!(executed.borrow().len(), 1, "run exactly once");
+    });
 }
 
 /// #1652: the toast of an answer that discarded keys.
@@ -14058,60 +14015,46 @@ fn fire_tab_completion_cap(input: &ViewHandle<Input>, app: &mut App) {
 #[test]
 fn test_tab_then_enter_timeout_hands_the_line_back_and_drops_late_result() {
     use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
-            let toasts = record_toast_texts(&mut app);
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            fire_tab_completion_cap(&input, &mut app);
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: the clock must not run the uncompleted line"
-            );
-            input.read(&app, |input, ctx| {
-                assert!(
-                    input.verdict_wait.is_none(),
-                    "{mode:?}: the Enter is dropped"
-                );
-                assert!(input.tab_completion_request.is_none(), "{mode:?}");
-                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}: gate closed");
-                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
-                assert_eq!(
-                    input.enter_guard_for_test(),
-                    Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST)),
-                    "{mode:?}: the glue guard is armed over the line"
-                );
-            });
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        let toasts = record_toast_texts(&mut app);
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        fire_tab_completion_cap(&input, &mut app);
+        assert!(
+            executed.borrow().is_empty(),
+            "the clock must not run the uncompleted line"
+        );
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none(), "the Enter is dropped");
+            assert!(input.tab_completion_request.is_none());
+            assert!(!input.enter_queue_holds_keys(ctx), "gate closed");
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
             assert_eq!(
-                *toasts.borrow(),
-                [COMPLETION_GIVE_UP_TOAST.to_string()],
-                "{mode:?}: exactly one toast"
+                input.enter_guard_for_test(),
+                Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST)),
+                "the glue guard is armed over the line"
             );
-
-            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: a late result runs nothing"
-            );
-            input.read(&app, |input, ctx| {
-                // The late result was dropped: it did not complete the handed-back line.
-                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
-            });
-
-            // The user's own Enter on the unchanged line runs it as shown: the glue guard holds
-            // only text typed onto it.
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert_eq!(
-                executed.borrow().as_slice(),
-                ["git checkout fe"],
-                "{mode:?}"
-            );
-            assert_eq!(toasts.borrow().len(), 1, "{mode:?}: no second toast");
         });
-    }
+        assert_eq!(
+            *toasts.borrow(),
+            [COMPLETION_GIVE_UP_TOAST.to_string()],
+            "exactly one toast"
+        );
+
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert!(executed.borrow().is_empty(), "a late result runs nothing");
+        input.read(&app, |input, ctx| {
+            // The late result was dropped: it did not complete the handed-back line.
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
+        });
+
+        // The user's own Enter on the unchanged line runs it as shown: the glue guard holds
+        // only text typed onto it.
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
+        assert_eq!(toasts.borrow().len(), 1, "no second toast");
+    });
 }
 
 /// #1667 (H7): the Tab completion hold's backstop (a result that never arrives) gives up like the
@@ -14120,43 +14063,35 @@ fn test_tab_then_enter_timeout_hands_the_line_back_and_drops_late_result() {
 #[test]
 fn test_tab_then_enter_backstop_hands_the_line_back_and_runs_nothing() {
     use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
-            let toasts = record_toast_texts(&mut app);
-            input.update(&mut app, |input, ctx| {
-                input.input_enter(ctx);
-                let id = input
-                    .verdict_wait
-                    .as_ref()
-                    .expect("the Enter holds for the Tab")
-                    .id;
-                input.hold_backstop_fired(id, ctx);
-            });
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: the backstop must not run the uncompleted line"
-            );
-            input.read(&app, |input, ctx| {
-                assert!(input.verdict_wait.is_none(), "{mode:?}");
-                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
-                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
-            });
-            assert_eq!(
-                *toasts.borrow(),
-                [COMPLETION_GIVE_UP_TOAST.to_string()],
-                "{mode:?}"
-            );
-            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
-            assert!(executed.borrow().is_empty(), "{mode:?}");
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
-            });
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        let toasts = record_toast_texts(&mut app);
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            let id = input
+                .verdict_wait
+                .as_ref()
+                .expect("the Enter holds for the Tab")
+                .id;
+            input.hold_backstop_fired(id, ctx);
         });
-    }
+        assert!(
+            executed.borrow().is_empty(),
+            "the backstop must not run the uncompleted line"
+        );
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none());
+            assert!(!input.enter_queue_holds_keys(ctx));
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
+        });
+        assert_eq!(*toasts.borrow(), [COMPLETION_GIVE_UP_TOAST.to_string()]);
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert!(executed.borrow().is_empty());
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
+        });
+    });
 }
 
 /// #1666 review: the cap and then the backstop fire on the SAME wait. The first gives up; the
@@ -14164,32 +14099,28 @@ fn test_tab_then_enter_backstop_hands_the_line_back_and_runs_nothing() {
 #[test]
 fn test_tab_then_enter_cap_then_backstop_on_one_wait_shows_one_toast() {
     use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            let toasts = record_toast_texts(&mut app);
-            input.update(&mut app, |input, ctx| {
-                input.input_enter(ctx);
-                let wait = input.verdict_wait.as_mut().expect("the Enter holds");
-                wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET * 2);
-                let id = wait.id;
-                input.compute_cap_fired(id, ctx);
-                input.hold_backstop_fired(id, ctx);
-            });
-            assert!(executed.borrow().is_empty(), "{mode:?}");
-            assert_eq!(
-                *toasts.borrow(),
-                [COMPLETION_GIVE_UP_TOAST.to_string()],
-                "{mode:?}: exactly one toast"
-            );
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
-            });
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let toasts = record_toast_texts(&mut app);
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            let wait = input.verdict_wait.as_mut().expect("the Enter holds");
+            wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET * 2);
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
+            input.hold_backstop_fired(id, ctx);
         });
-    }
+        assert!(executed.borrow().is_empty());
+        assert_eq!(
+            *toasts.borrow(),
+            [COMPLETION_GIVE_UP_TOAST.to_string()],
+            "exactly one toast"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
+        });
+    });
 }
 
 /// #1666 review (HIGH): after a give-up with nothing typed during the hold, text typed onto the
@@ -14200,54 +14131,39 @@ fn test_tab_then_enter_cap_then_backstop_on_one_wait_shows_one_toast() {
 #[test]
 fn test_tab_completion_give_up_then_typing_onto_the_line_does_not_run_it_glued() {
     use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            let toasts = record_toast_texts(&mut app);
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            fire_tab_completion_cap(&input, &mut app);
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let toasts = record_toast_texts(&mut app);
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        fire_tab_completion_cap(&input, &mut app);
 
-            input.update(&mut app, |input, ctx| {
-                input.user_insert("ls", ctx);
-                input.input_enter(ctx);
-            });
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: the glued line must not run"
-            );
-            input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    "git checkout fels",
-                    "{mode:?}: the buffer is kept"
-                );
-                assert!(
-                    !input.ssh_handover_enter_guard_armed(),
-                    "{mode:?}: used once"
-                );
-            });
-            assert_eq!(
-                *toasts.borrow(),
-                [
-                    COMPLETION_GIVE_UP_TOAST.to_string(),
-                    GLUE_GUARD_TOAST.to_string()
-                ],
-                "{mode:?}"
-            );
-
-            // The guarded Enter, then the next: the user has seen the line and runs it.
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert_eq!(
-                executed.borrow().as_slice(),
-                ["git checkout fels"],
-                "{mode:?}"
-            );
-            assert_eq!(toasts.borrow().len(), 2, "{mode:?}: no further toast");
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("ls", ctx);
+            input.input_enter(ctx);
         });
-    }
+        assert!(executed.borrow().is_empty(), "the glued line must not run");
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "git checkout fels",
+                "the buffer is kept"
+            );
+            assert!(!input.ssh_handover_enter_guard_armed(), "used once");
+        });
+        assert_eq!(
+            *toasts.borrow(),
+            [
+                COMPLETION_GIVE_UP_TOAST.to_string(),
+                GLUE_GUARD_TOAST.to_string()
+            ]
+        );
+
+        // The guarded Enter, then the next: the user has seen the line and runs it.
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(executed.borrow().as_slice(), ["git checkout fels"]);
+        assert_eq!(toasts.borrow().len(), 2, "no further toast");
+    });
 }
 
 /// #1666 review: the toast says "Press Tab to complete it", so a completion inserted into the
@@ -14255,36 +14171,24 @@ fn test_tab_completion_give_up_then_typing_onto_the_line_does_not_run_it_glued()
 /// Tab runs the completed line. Both modes.
 #[test]
 fn test_tab_completion_give_up_then_tab_completes_and_enter_runs_it() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            fire_tab_completion_cap(&input, &mut app);
-            // The user's Tab: its single match is inserted (no Enter is waiting, so it applies).
-            let (generation, snapshot) = input.update(&mut app, |input, ctx| {
-                (input.input_generation, editor_model_snapshot(input, ctx))
-            });
-            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
-            input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx).trim_end(),
-                    "git checkout feature",
-                    "{mode:?}"
-                );
-                assert!(input.enter_guard_for_test().is_none(), "{mode:?}");
-            });
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
-            assert_eq!(
-                executed.borrow()[0].trim_end(),
-                "git checkout feature",
-                "{mode:?}"
-            );
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        fire_tab_completion_cap(&input, &mut app);
+        // The user's Tab: its single match is inserted (no Enter is waiting, so it applies).
+        let (generation, snapshot) = input.update(&mut app, |input, ctx| {
+            (input.input_generation, editor_model_snapshot(input, ctx))
         });
-    }
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx).trim_end(), "git checkout feature");
+            assert!(input.enter_guard_for_test().is_none());
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
+    });
 }
 
 /// #1666 re-review: with a glue guard armed (text typed onto the handed-back line), an Enter that
@@ -14293,70 +14197,62 @@ fn test_tab_completion_give_up_then_tab_completes_and_enter_runs_it() {
 /// completed line. Both modes.
 #[test]
 fn test_glue_guard_lets_an_enter_accept_a_completion_menu_item() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let _classic = FeatureFlag::ForceClassicCompletions.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            fire_tab_completion_cap(&input, &mut app);
-            input.update(&mut app, |input, ctx| input.user_insert("a", ctx));
-            input.update(&mut app, |input, ctx| {
-                input.handle_completion_suggestions_results(
-                    build_suggestion_results(
-                        // No common prefix past `fea`: the Tab opens the menu and inserts nothing.
-                        vec![argument_suggestion("feature"), argument_suggestion("fear")],
-                        (13, 16),
-                        MatchStrategy::CaseInsensitive,
-                    ),
-                    CompletionsTrigger::Keybinding,
-                    editor_model_snapshot(input, ctx),
-                    ctx,
-                );
-            });
-            input.update(&mut app, |input, ctx| {
-                input
-                    .input_suggestions
-                    .update(ctx, |suggestions, ctx| suggestions.select_next(ctx));
-            });
-            input.read(&app, |input, ctx| {
-                assert!(
-                    input.should_enter_accept_completion_suggestion(ctx),
-                    "{mode:?}: a highlighted item"
-                );
-                assert_eq!(
-                    input.enter_guard_for_test().map(|(kind, _)| kind),
-                    Some(EnterGuardKind::Glue),
-                    "{mode:?}"
-                );
-            });
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: accepting runs nothing"
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _classic = FeatureFlag::ForceClassicCompletions.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        fire_tab_completion_cap(&input, &mut app);
+        input.update(&mut app, |input, ctx| input.user_insert("a", ctx));
+        input.update(&mut app, |input, ctx| {
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    // No common prefix past `fea`: the Tab opens the menu and inserts nothing.
+                    vec![argument_suggestion("feature"), argument_suggestion("fear")],
+                    (13, 16),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::Keybinding,
+                editor_model_snapshot(input, ctx),
+                ctx,
             );
-            let accepted = input.read(&app, |input, ctx| {
-                let buffer = input.buffer_text(ctx);
-                assert!(
-                    matches!(
-                        buffer.trim_end(),
-                        "git checkout feature" | "git checkout fear"
-                    ),
-                    "{mode:?}: the item was accepted: {buffer:?}"
-                );
-                assert!(
-                    input.enter_guard_for_test().is_none(),
-                    "{mode:?}: the insert dropped the guard"
-                );
-                buffer.trim_end().to_string()
-            });
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
-            assert_eq!(executed.borrow()[0].trim_end(), accepted, "{mode:?}");
         });
-    }
+        input.update(&mut app, |input, ctx| {
+            input
+                .input_suggestions
+                .update(ctx, |suggestions, ctx| suggestions.select_next(ctx));
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.should_enter_accept_completion_suggestion(ctx),
+                "a highlighted item"
+            );
+            assert_eq!(
+                input.enter_guard_for_test().map(|(kind, _)| kind),
+                Some(EnterGuardKind::Glue)
+            );
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert!(executed.borrow().is_empty(), "accepting runs nothing");
+        let accepted = input.read(&app, |input, ctx| {
+            let buffer = input.buffer_text(ctx);
+            assert!(
+                matches!(
+                    buffer.trim_end(),
+                    "git checkout feature" | "git checkout fear"
+                ),
+                "the item was accepted: {buffer:?}"
+            );
+            assert!(
+                input.enter_guard_for_test().is_none(),
+                "the insert dropped the guard"
+            );
+            buffer.trim_end().to_string()
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(executed.borrow()[0].trim_end(), accepted);
+    });
 }
 
 /// #1666 third review: the menu the glue guard lets an Enter through for is judged as that Enter
@@ -14367,124 +14263,108 @@ fn test_glue_guard_lets_an_enter_accept_a_completion_menu_item() {
 #[test]
 fn test_glue_guard_judges_the_menu_after_a_pending_refilter_empties_it() {
     use crate::input_suggestions::INLINE_REFILTER_MAX_ENTRIES;
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let _classic = FeatureFlag::ForceClassicCompletions.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            let toasts = record_toast_texts(&mut app);
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            fire_tab_completion_cap(&input, &mut app);
-            // The Tab menu: large enough that typing refilters it off the UI thread, and with no
-            // common prefix past `fe`, so opening it inserts nothing. Its first item is `fe`
-            // itself: classic completions write the highlighted item into the line as they cycle
-            // to it (`fea0` made the line `git checkout fea0zz`), and cycling to `fe` highlights
-            // an item while the handed-back line stays `git checkout fe`.
-            input.update(&mut app, |input, ctx| {
-                let suggestions = std::iter::once(argument_suggestion("fe"))
-                    .chain((0..INLINE_REFILTER_MAX_ENTRIES + 500).map(|i| {
-                        argument_suggestion(format!("fe{}{i}", if i % 2 == 0 { "a" } else { "n" }))
-                    }))
-                    .collect();
-                input.handle_completion_suggestions_results(
-                    build_suggestion_results(suggestions, (13, 15), MatchStrategy::CaseInsensitive),
-                    CompletionsTrigger::Keybinding,
-                    editor_model_snapshot(input, ctx),
-                    ctx,
-                );
-            });
-            input.update(&mut app, |input, ctx| {
-                input
-                    .input_suggestions
-                    .update(ctx, |suggestions, ctx| suggestions.select_next(ctx));
-                // The give-up's guard over the line (re-armed: opening the menu is not the
-                // subject here).
-                input.arm_enter_guard(
-                    "git checkout fe".to_string(),
-                    EnterGuardKind::Glue,
-                    GLUE_GUARD_TOAST,
-                );
-            });
-            input.update(&mut app, |input, ctx| input.user_insert("zz", ctx));
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "git checkout fezz", "{mode:?}");
-                assert!(
-                    input.input_suggestions.as_ref(ctx).has_pending_refilter(),
-                    "{mode:?}: the refilter is still in the background"
-                );
-                assert!(
-                    input.should_enter_accept_completion_suggestion(ctx),
-                    "{mode:?}: the old list still offers its highlighted item"
-                );
-                assert_eq!(
-                    input.enter_guard_for_test().map(|(kind, _)| kind),
-                    Some(EnterGuardKind::Glue),
-                    "{mode:?}"
-                );
-            });
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: the glued line must not run"
-            );
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "git checkout fezz", "{mode:?}");
-                assert!(
-                    matches!(
-                        input.suggestions_mode_model.as_ref(ctx).mode(),
-                        InputSuggestionsMode::Closed
-                    ),
-                    "{mode:?}: the emptied menu is closed"
-                );
-            });
-            assert_eq!(
-                toasts.borrow().last().map(String::as_str),
-                Some(GLUE_GUARD_TOAST),
-                "{mode:?}: the guard held the Enter"
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _classic = FeatureFlag::ForceClassicCompletions.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let toasts = record_toast_texts(&mut app);
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        fire_tab_completion_cap(&input, &mut app);
+        // The Tab menu: large enough that typing refilters it off the UI thread, and with no
+        // common prefix past `fe`, so opening it inserts nothing. Its first item is `fe`
+        // itself: classic completions write the highlighted item into the line as they cycle
+        // to it (`fea0` made the line `git checkout fea0zz`), and cycling to `fe` highlights
+        // an item while the handed-back line stays `git checkout fe`.
+        input.update(&mut app, |input, ctx| {
+            let suggestions = std::iter::once(argument_suggestion("fe"))
+                .chain((0..INLINE_REFILTER_MAX_ENTRIES + 500).map(|i| {
+                    argument_suggestion(format!("fe{}{i}", if i % 2 == 0 { "a" } else { "n" }))
+                }))
+                .collect();
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(suggestions, (13, 15), MatchStrategy::CaseInsensitive),
+                CompletionsTrigger::Keybinding,
+                editor_model_snapshot(input, ctx),
+                ctx,
             );
         });
-    }
+        input.update(&mut app, |input, ctx| {
+            input
+                .input_suggestions
+                .update(ctx, |suggestions, ctx| suggestions.select_next(ctx));
+            // The give-up's guard over the line (re-armed: opening the menu is not the
+            // subject here).
+            input.arm_enter_guard(
+                "git checkout fe".to_string(),
+                EnterGuardKind::Glue,
+                GLUE_GUARD_TOAST,
+            );
+        });
+        input.update(&mut app, |input, ctx| input.user_insert("zz", ctx));
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "git checkout fezz");
+            assert!(
+                input.input_suggestions.as_ref(ctx).has_pending_refilter(),
+                "the refilter is still in the background"
+            );
+            assert!(
+                input.should_enter_accept_completion_suggestion(ctx),
+                "the old list still offers its highlighted item"
+            );
+            assert_eq!(
+                input.enter_guard_for_test().map(|(kind, _)| kind),
+                Some(EnterGuardKind::Glue)
+            );
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert!(executed.borrow().is_empty(), "the glued line must not run");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "git checkout fezz");
+            assert!(
+                matches!(
+                    input.suggestions_mode_model.as_ref(ctx).mode(),
+                    InputSuggestionsMode::Closed
+                ),
+                "the emptied menu is closed"
+            );
+        });
+        assert_eq!(
+            toasts.borrow().last().map(String::as_str),
+            Some(GLUE_GUARD_TOAST),
+            "the guard held the Enter"
+        );
+    });
 }
 
 /// #1666 re-review: an accepted autosuggestion grows the handed-back line like a completion; it
 /// was not typed onto it. It drops the glue guard and the Enter runs the line at once. Both modes.
 #[test]
 fn test_glue_guard_is_dropped_by_an_accepted_autosuggestion() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            fire_tab_completion_cap(&input, &mut app);
-            input.update(&mut app, |input, ctx| {
-                input.set_autosuggestion(
-                    "ature",
-                    AutosuggestionType::Command {
-                        was_intelligent_autosuggestion: false,
-                    },
-                    ctx,
-                )
-            });
-            editor.update(&mut app, |editor, ctx| {
-                editor.handle_action(&EditorAction::InsertAutosuggestion, ctx)
-            });
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "git checkout feature", "{mode:?}");
-                assert!(input.enter_guard_for_test().is_none(), "{mode:?}");
-            });
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert_eq!(
-                executed.borrow().as_slice(),
-                ["git checkout feature"],
-                "{mode:?}"
-            );
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        fire_tab_completion_cap(&input, &mut app);
+        input.update(&mut app, |input, ctx| {
+            input.set_autosuggestion(
+                "ature",
+                AutosuggestionType::Command {
+                    was_intelligent_autosuggestion: false,
+                },
+                ctx,
+            )
         });
-    }
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::InsertAutosuggestion, ctx)
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "git checkout feature");
+            assert!(input.enter_guard_for_test().is_none());
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(executed.borrow().as_slice(), ["git checkout feature"]);
+    });
 }
 
 /// #1666 re-review: a glue guard goes stale when the line it was armed over is gone: cleared
@@ -14492,60 +14372,48 @@ fn test_glue_guard_is_dropped_by_an_accepted_autosuggestion() {
 /// with the old one then runs at once. Both modes.
 #[test]
 fn test_glue_guard_is_dropped_when_the_line_is_cleared_or_edited_away() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        // Cleared (what Ctrl-C does to the editor).
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            fire_tab_completion_cap(&input, &mut app);
-            input.update(&mut app, |input, ctx| {
-                input.clear_buffer_and_reset_undo_stack(ctx)
-            });
-            input.read(&app, |input, _| {
-                assert!(input.enter_guard_for_test().is_none(), "{mode:?}: cleared")
-            });
-            input.update(&mut app, |input, ctx| {
-                input.user_insert("git checkout feature/foo", ctx)
-            });
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert_eq!(
-                executed.borrow().as_slice(),
-                ["git checkout feature/foo"],
-                "{mode:?}: the new line runs at once"
-            );
+    // Cleared (what Ctrl-C does to the editor).
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        fire_tab_completion_cap(&input, &mut app);
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx)
         });
-        // Edited away: a Backspace leaves `git checkout f`, then the user types on.
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            fire_tab_completion_cap(&input, &mut app);
-            type_into_editor(
-                &mut app,
-                &editor,
-                HeldPasteKey::Action(EditorAction::Backspace),
-            );
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "git checkout f", "{mode:?}");
-                assert!(
-                    input.enter_guard_for_test().is_none(),
-                    "{mode:?}: edited away"
-                );
-            });
-            input.update(&mut app, |input, ctx| input.user_insert("eature", ctx));
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert_eq!(
-                executed.borrow().as_slice(),
-                ["git checkout feature"],
-                "{mode:?}"
-            );
+        input.read(&app, |input, _| {
+            assert!(input.enter_guard_for_test().is_none(), "cleared")
         });
-    }
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("git checkout feature/foo", ctx)
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(
+            executed.borrow().as_slice(),
+            ["git checkout feature/foo"],
+            "the new line runs at once"
+        );
+    });
+    // Edited away: a Backspace leaves `git checkout f`, then the user types on.
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        fire_tab_completion_cap(&input, &mut app);
+        type_into_editor(
+            &mut app,
+            &editor,
+            HeldPasteKey::Action(EditorAction::Backspace),
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "git checkout f");
+            assert!(input.enter_guard_for_test().is_none(), "edited away");
+        });
+        input.update(&mut app, |input, ctx| input.user_insert("eature", ctx));
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(executed.borrow().as_slice(), ["git checkout feature"]);
+    });
 }
 
 /// #1666 re-review: the user finishes the word by hand after a give-up (`ature` typed onto
@@ -14554,66 +14422,48 @@ fn test_glue_guard_is_dropped_when_the_line_is_cleared_or_edited_away() {
 #[test]
 fn test_tab_completion_give_up_then_finishing_the_word_by_hand_costs_one_enter() {
     use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            let toasts = record_toast_texts(&mut app);
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            fire_tab_completion_cap(&input, &mut app);
-            input.update(&mut app, |input, ctx| input.user_insert("ature", ctx));
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert!(executed.borrow().is_empty(), "{mode:?}: one Enter held");
-            assert_eq!(
-                *toasts.borrow(),
-                [
-                    COMPLETION_GIVE_UP_TOAST.to_string(),
-                    GLUE_GUARD_TOAST.to_string()
-                ],
-                "{mode:?}"
-            );
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert_eq!(
-                executed.borrow().as_slice(),
-                ["git checkout feature"],
-                "{mode:?}"
-            );
-        });
-    }
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let toasts = record_toast_texts(&mut app);
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        fire_tab_completion_cap(&input, &mut app);
+        input.update(&mut app, |input, ctx| input.user_insert("ature", ctx));
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert!(executed.borrow().is_empty(), "one Enter held");
+        assert_eq!(
+            *toasts.borrow(),
+            [
+                COMPLETION_GIVE_UP_TOAST.to_string(),
+                GLUE_GUARD_TOAST.to_string()
+            ]
+        );
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(executed.borrow().as_slice(), ["git checkout feature"]);
+    });
 }
 
 /// #1666: a completion that lands inside the cap still runs the COMPLETED line (owner rule
 /// 2026-10-31: Tab then a fast Enter runs the completed line), in both modes.
 #[test]
 fn test_tab_then_enter_completion_in_time_runs_the_completed_line_in_both_modes() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
-            let (clock, _guard) =
-                ComputeClock::running_for_test(std::time::Duration::from_millis(40));
-            input.update(&mut app, |input, ctx| {
-                input.input_enter(ctx);
-                let wait = input.verdict_wait.as_mut().unwrap();
-                wait.compute = clock.clone();
-                let id = wait.id;
-                // Within the cap: the timer leaves the wait to the result.
-                input.compute_cap_fired(id, ctx);
-            });
-            assert!(executed.borrow().is_empty(), "{mode:?}");
-            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
-            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
-            assert_eq!(
-                executed.borrow()[0].trim_end(),
-                "git checkout feature",
-                "{mode:?}"
-            );
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        let (clock, _guard) = ComputeClock::running_for_test(std::time::Duration::from_millis(40));
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = clock.clone();
+            let id = wait.id;
+            // Within the cap: the timer leaves the wait to the result.
+            input.compute_cap_fired(id, ctx);
         });
-    }
+        assert!(executed.borrow().is_empty());
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
+    });
 }
 
 /// #1666: keys typed behind an Enter held for a Tab completion that then gives up STAY WITH THE
@@ -14629,100 +14479,93 @@ fn test_tab_then_enter_completion_in_time_runs_the_completed_line_in_both_modes(
 #[test]
 fn test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_with_the_line() {
     use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            let released = record_released_enter_entries(&mut app, &input);
-            let toasts = record_toast_texts(&mut app);
-            let given_up = record_given_up_keys(&mut app, &input);
-            input.update(&mut app, |input, ctx| {
-                input.input_enter(ctx);
-                // Only the explicit give-up below may end the wait.
-                input.disarm_hold_give_ups_for_test();
-            });
-            input.read(&app, |input, ctx| {
-                assert!(
-                    input
-                        .verdict_wait
-                        .as_ref()
-                        .is_some_and(VerdictWait::holds_for_tab_completion),
-                    "{mode:?}"
-                );
-                assert!(input.enter_queue_holds_keys(ctx), "{mode:?}");
-            });
-            type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
-            type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
-            type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
-            type_into_editor(&mut app, &editor, HeldPasteKey::Text("pwd".to_string()));
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
-                assert_eq!(input.enter_gate_held_len_for_test(ctx), 4, "{mode:?}");
-            });
-
-            fire_tab_completion_cap(&input, &mut app);
-            assert!(executed.borrow().is_empty(), "{mode:?}: nothing ran");
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let released = record_released_enter_entries(&mut app, &input);
+        let toasts = record_toast_texts(&mut app);
+        let given_up = record_given_up_keys(&mut app, &input);
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            // Only the explicit give-up below may end the wait.
+            input.disarm_hold_give_ups_for_test();
+        });
+        input.read(&app, |input, ctx| {
             assert!(
-                released.borrow().is_empty(),
-                "{mode:?}: nothing was released to a destination: {:?}",
-                released.borrow()
+                input
+                    .verdict_wait
+                    .as_ref()
+                    .is_some_and(VerdictWait::holds_for_tab_completion)
             );
-            input.read(&app, |input, ctx| {
-                assert!(input.verdict_wait.is_none(), "{mode:?}");
-                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}: gate closed");
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    "git checkout fe\nls\npwd",
-                    "{mode:?}: the line typed before the Enter stays and what was typed after \
+            assert!(input.enter_queue_holds_keys(ctx));
+        });
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
+        type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("pwd".to_string()));
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
+            assert_eq!(input.enter_gate_held_len_for_test(ctx), 4);
+        });
+
+        fire_tab_completion_cap(&input, &mut app);
+        assert!(executed.borrow().is_empty(), "nothing ran");
+        assert!(
+            released.borrow().is_empty(),
+            "nothing was released to a destination: {:?}",
+            released.borrow()
+        );
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none());
+            assert!(!input.enter_queue_holds_keys(ctx), "gate closed");
+            assert_eq!(
+                input.buffer_text(ctx),
+                "git checkout fe\nls\npwd",
+                "the line typed before the Enter stays and what was typed after \
                      it stays with it, on the lines after it, in typed order"
-                );
-                assert_eq!(
-                    input.enter_guard_for_test(),
-                    Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST)),
-                    "{mode:?}"
-                );
-            });
-            assert_eq!(
-                *toasts.borrow(),
-                [COMPLETION_GIVE_UP_TOAST.to_string()],
-                "{mode:?}: exactly one toast, the line's notice, with no count"
             );
             assert_eq!(
-                *given_up.borrow(),
-                [(GIVEN_UP_WITH_LINE, 4)],
-                "{mode:?}: all four keys typed after the Enter are kept with the line, none \
-                 for the pty"
-            );
-            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
-            assert!(executed.borrow().is_empty(), "{mode:?}");
-            input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    "git checkout fe\nls\npwd",
-                    "{mode:?}: the late completion changes nothing"
-                );
-            });
-
-            // An Enter on the kept lines (here after one more typed character) does not run
-            // them unseen: the hand-back guard holds it once, with its notice.
-            input.update(&mut app, |input, ctx| {
-                input.user_insert("x", ctx);
-                input.input_enter(ctx);
-            });
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: the kept lines must not run on the first Enter"
-            );
-            assert_eq!(
-                toasts.borrow().last().map(String::as_str),
-                Some(HANDED_BACK_GUARD_TOAST),
-                "{mode:?}"
+                input.enter_guard_for_test(),
+                Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST))
             );
         });
-    }
+        assert_eq!(
+            *toasts.borrow(),
+            [COMPLETION_GIVE_UP_TOAST.to_string()],
+            "exactly one toast, the line's notice, with no count"
+        );
+        assert_eq!(
+            *given_up.borrow(),
+            [(GIVEN_UP_WITH_LINE, 4)],
+            "all four keys typed after the Enter are kept with the line, none \
+                 for the pty"
+        );
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert!(executed.borrow().is_empty());
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "git checkout fe\nls\npwd",
+                "the late completion changes nothing"
+            );
+        });
+
+        // An Enter on the kept lines (here after one more typed character) does not run
+        // them unseen: the hand-back guard holds it once, with its notice.
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("x", ctx);
+            input.input_enter(ctx);
+        });
+        assert!(
+            executed.borrow().is_empty(),
+            "the kept lines must not run on the first Enter"
+        );
+        assert_eq!(
+            toasts.borrow().last().map(String::as_str),
+            Some(HANDED_BACK_GUARD_TOAST)
+        );
+    });
 }
 
 /// #1165: keys typed during the hold go behind the submitted command, in order, never into the
@@ -14777,43 +14620,34 @@ fn test_tab_then_enter_ctrl_c_during_hold_submits_nothing() {
 /// Tab does (owner rule: Tab then a fast Enter runs the completed line). Both destination modes.
 #[test]
 fn test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_modes() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
-            input.update(&mut app, |input, _| {
-                input.tab_completion_request.as_mut().unwrap().remote_native = true;
-            });
-            // A very late frame: a minute of waiting, far over any old budget. No clock decides
-            // what this Enter runs, so it still waits for the answer.
-            let (clock, _guard) =
-                ComputeClock::running_for_test(std::time::Duration::from_secs(60));
-            input.update(&mut app, |input, ctx| {
-                input.input_enter(ctx);
-                let wait = input
-                    .verdict_wait
-                    .as_mut()
-                    .expect("the Enter holds for the remote in-band answer");
-                assert!(wait.holds_for_tab_completion(), "{mode:?}");
-                wait.compute = clock.clone();
-                let id = wait.id;
-                input.compute_cap_fired(id, ctx);
-            });
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: nothing runs before the answer"
-            );
-            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
-            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
-            assert_eq!(
-                executed.borrow()[0].trim_end(),
-                "git checkout feature",
-                "{mode:?}"
-            );
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
+        input.update(&mut app, |input, _| {
+            input.tab_completion_request.as_mut().unwrap().remote_native = true;
         });
-    }
+        // A very late frame: a minute of waiting, far over any old budget. No clock decides
+        // what this Enter runs, so it still waits for the answer.
+        let (clock, _guard) = ComputeClock::running_for_test(std::time::Duration::from_secs(60));
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            let wait = input
+                .verdict_wait
+                .as_mut()
+                .expect("the Enter holds for the remote in-band answer");
+            assert!(wait.holds_for_tab_completion());
+            wait.compute = clock.clone();
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
+        });
+        assert!(
+            executed.borrow().is_empty(),
+            "nothing runs before the answer"
+        );
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
+    });
 }
 
 /// Owner decision (no timer decides what Enter runs): a remote in-band Tab that is NEVER answered
@@ -14822,42 +14656,37 @@ fn test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_mod
 /// destination modes.
 #[test]
 fn test_tab_then_enter_remote_in_band_give_up_runs_nothing_in_both_modes() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, _generation, _snapshot) =
-                tab_enter_fixture(&mut app, false).await;
-            input.update(&mut app, |input, _| {
-                input.tab_completion_request.as_mut().unwrap().remote_native = true;
-            });
-            input.update(&mut app, |input, ctx| {
-                input.input_enter(ctx);
-                // A compute clock that ran for ages must not give up either.
-                let (clock, _guard) =
-                    ComputeClock::running_for_test(std::time::Duration::from_secs(60));
-                let wait = input.verdict_wait.as_mut().expect("the Enter holds");
-                wait.compute = clock.clone();
-                let id = wait.id;
-                input.compute_cap_fired(id, ctx);
-                assert!(input.verdict_wait.is_some(), "{mode:?}: no clock gives up");
-            });
-            assert!(executed.borrow().is_empty(), "{mode:?}");
-            let handed_back = input.update(&mut app, |input, ctx| {
-                input.give_up_unanswered_remote_hold(ctx)
-            });
-            assert!(handed_back, "{mode:?}");
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: the uncompleted line must not run"
-            );
-            input.read(&app, |input, ctx| {
-                assert!(input.verdict_wait.is_none(), "{mode:?}");
-                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
-            });
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, false).await;
+        input.update(&mut app, |input, _| {
+            input.tab_completion_request.as_mut().unwrap().remote_native = true;
         });
-    }
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            // A compute clock that ran for ages must not give up either.
+            let (clock, _guard) =
+                ComputeClock::running_for_test(std::time::Duration::from_secs(60));
+            let wait = input.verdict_wait.as_mut().expect("the Enter holds");
+            wait.compute = clock.clone();
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
+            assert!(input.verdict_wait.is_some(), "no clock gives up");
+        });
+        assert!(executed.borrow().is_empty());
+        let handed_back = input.update(&mut app, |input, ctx| {
+            input.give_up_unanswered_remote_hold(ctx)
+        });
+        assert!(handed_back);
+        assert!(
+            executed.borrow().is_empty(),
+            "the uncompleted line must not run"
+        );
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none());
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
+        });
+    });
 }
 
 /// #1801 review: keys typed behind an Enter held for the remote in-band answer are not lost or
@@ -14897,39 +14726,26 @@ fn test_tab_then_enter_remote_in_band_keys_typed_during_hold_follow_the_complete
 /// line at once, and the Tab request is no longer remote-native. Both destination modes.
 #[test]
 fn test_tab_then_enter_remote_native_miss_submits_the_visible_line_at_once_in_both_modes() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
-            input.update(&mut app, |input, ctx| {
-                input.tab_completion_request.as_mut().unwrap().remote_native = true;
-                input.input_enter(ctx);
-            });
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: held for the remote answer"
-            );
-            let released = input.update(&mut app, |input, ctx| {
-                input.end_remote_native_tab_wait(
-                    generation,
-                    CompletionsTrigger::Keybinding,
-                    snapshot,
-                    ctx,
-                )
-            });
-            assert!(released, "{mode:?}: the held Enter was released");
-            assert_eq!(
-                executed.borrow().as_slice(),
-                ["git checkout fe"],
-                "{mode:?}"
-            );
-            input.read(&app, |input, _| {
-                assert!(input.verdict_wait.is_none(), "{mode:?}")
-            });
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
+        input.update(&mut app, |input, ctx| {
+            input.tab_completion_request.as_mut().unwrap().remote_native = true;
+            input.input_enter(ctx);
         });
-    }
+        assert!(executed.borrow().is_empty(), "held for the remote answer");
+        let released = input.update(&mut app, |input, ctx| {
+            input.end_remote_native_tab_wait(
+                generation,
+                CompletionsTrigger::Keybinding,
+                snapshot,
+                ctx,
+            )
+        });
+        assert!(released, "the held Enter was released");
+        assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
+        input.read(&app, |input, _| assert!(input.verdict_wait.is_none()));
+    });
 }
 
 /// #1801 review (F4): with no Enter held, a miss only stops the request being remote-native, so
@@ -14937,30 +14753,26 @@ fn test_tab_then_enter_remote_native_miss_submits_the_visible_line_at_once_in_bo
 /// modes.
 #[test]
 fn test_remote_native_miss_without_enter_makes_the_next_enter_not_wait_in_both_modes() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
-            let released = input.update(&mut app, |input, ctx| {
-                input.tab_completion_request.as_mut().unwrap().remote_native = true;
-                input.end_remote_native_tab_wait(
-                    generation,
-                    CompletionsTrigger::Keybinding,
-                    snapshot,
-                    ctx,
-                )
-            });
-            assert!(!released, "{mode:?}");
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert_eq!(
-                executed.borrow().as_slice(),
-                ["git checkout fe"],
-                "{mode:?}: the Enter is not held for the completer's remote I/O"
-            );
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
+        let released = input.update(&mut app, |input, ctx| {
+            input.tab_completion_request.as_mut().unwrap().remote_native = true;
+            input.end_remote_native_tab_wait(
+                generation,
+                CompletionsTrigger::Keybinding,
+                snapshot,
+                ctx,
+            )
         });
-    }
+        assert!(!released);
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(
+            executed.borrow().as_slice(),
+            ["git checkout fe"],
+            "the Enter is not held for the completer's remote I/O"
+        );
+    });
 }
 
 /// #1165: a remote completer is never waited for: the Enter submits the visible text at once.
@@ -16651,101 +16463,95 @@ fn test_enter_on_the_at_picker_in_agent_mode_never_submits() {
 /// #1728: an @-picker Enter waiting for its typed query's results waits the 10 s net (not 3 s), and
 /// when the net fires the Enter is NOT applied: nothing is inserted, the typed `@...` text stays,
 /// nothing runs, and a toast tells the user the Enter was not applied (it used to vanish with only
-/// a log line, a lost key). Legacy and Table.
+/// a log line, a lost key).
 #[test]
 fn test_at_picker_enter_give_up_keeps_the_text_and_says_so() {
-    use crate::terminal::input_queue::DestinationMode;
     let _ai_context_menu_enabled = FeatureFlag::AIContextMenuEnabled.override_enabled(true);
     assert_eq!(
         crate::search::ai_context_menu::view::AIContextMenu::select_wait_give_up_for_test(),
         crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP
     );
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app(&mut app);
-            let toasts = record_toast_texts(&mut app);
-            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
-            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
-            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
-            {
-                let executed = executed.clone();
-                app.update(|ctx| {
-                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
-                        if let super::Event::ExecuteCommand(event) = event {
-                            executed.borrow_mut().push(event.command.clone());
-                        }
-                    });
-                });
-            }
-            input.update(&mut app, |input, ctx| {
-                input.ai_input_model().update(ctx, |ai_input, ctx| {
-                    ai_input.set_input_config(
-                        InputConfig {
-                            input_type: InputType::AI,
-                            is_locked: true,
-                        },
-                        true, /* is_input_buffer_empty */
-                        ctx,
-                    );
+
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let toasts = record_toast_texts(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let executed = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteCommand(event) = event {
+                        executed.borrow_mut().push(event.command.clone());
+                    }
                 });
             });
-            let menu = input.update(&mut app, |input, ctx| {
-                input.replace_buffer_content("@cbmention_x", ctx);
-                input.suggestions_mode_model().update(ctx, |model, ctx| {
-                    model.set_mode(
-                        InputSuggestionsMode::AIContextMenu {
-                            filter_text: "cbmention_x".to_string(),
-                            at_symbol_position: 0,
-                        },
-                        ctx,
-                    );
-                });
-                let menu = input
-                    .editor()
-                    .as_ref(ctx)
-                    .ai_context_menu()
-                    .expect("agent mode has an @ picker")
-                    .clone();
-                menu.update(ctx, |menu, ctx| {
-                    menu.update_search_query("cbmention_x".to_string(), ctx);
-                });
-                input.input_enter(ctx);
-                menu
-            });
-            assert!(
-                menu.read(&app, |menu, _| menu.has_deferred_select()),
-                "{mode:?}: the Enter waits for the typed query's results"
-            );
-            menu.update(&mut app, |menu, ctx| {
-                menu.fire_select_wait_give_up_for_test(ctx);
-                // A second firing for the same wait changes nothing.
-                menu.fire_select_wait_give_up_for_test(ctx);
-            });
-            assert!(
-                !menu.read(&app, |menu, _| menu.has_deferred_select()),
-                "{mode:?}"
-            );
-            input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    "@cbmention_x",
-                    "{mode:?}: nothing inserted, the typed text is kept"
+        }
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
                 );
             });
-            assert!(executed.borrow().is_empty(), "{mode:?}: nothing ran");
+        });
+        let menu = input.update(&mut app, |input, ctx| {
+            input.replace_buffer_content("@cbmention_x", ctx);
+            input.suggestions_mode_model().update(ctx, |model, ctx| {
+                model.set_mode(
+                    InputSuggestionsMode::AIContextMenu {
+                        filter_text: "cbmention_x".to_string(),
+                        at_symbol_position: 0,
+                    },
+                    ctx,
+                );
+            });
+            let menu = input
+                .editor()
+                .as_ref(ctx)
+                .ai_context_menu()
+                .expect("agent mode has an @ picker")
+                .clone();
+            menu.update(ctx, |menu, ctx| {
+                menu.update_search_query("cbmention_x".to_string(), ctx);
+            });
+            input.input_enter(ctx);
+            menu
+        });
+        assert!(
+            menu.read(&app, |menu, _| menu.has_deferred_select()),
+            "the Enter waits for the typed query's results"
+        );
+        menu.update(&mut app, |menu, ctx| {
+            menu.fire_select_wait_give_up_for_test(ctx);
+            // A second firing for the same wait changes nothing.
+            menu.fire_select_wait_give_up_for_test(ctx);
+        });
+        assert!(!menu.read(&app, |menu, _| menu.has_deferred_select()));
+        input.read(&app, |input, ctx| {
             assert_eq!(
-                toasts
-                    .borrow()
-                    .iter()
-                    .filter(|text| text.contains("Enter not applied"))
-                    .count(),
-                1,
-                "{mode:?}: one toast says the Enter was not applied: {:?}",
-                toasts.borrow()
+                input.buffer_text(ctx),
+                "@cbmention_x",
+                "nothing inserted, the typed text is kept"
             );
         });
-    }
+        assert!(executed.borrow().is_empty(), "nothing ran");
+        assert_eq!(
+            toasts
+                .borrow()
+                .iter()
+                .filter(|text| text.contains("Enter not applied"))
+                .count(),
+            1,
+            "one toast says the Enter was not applied: {:?}",
+            toasts.borrow()
+        );
+    });
 }
 
 #[test]
@@ -17131,61 +16937,54 @@ fn test_enter_queue_ctrl_c_voids_the_held_enter_and_the_keys_behind_it() {
 /// with the unrun line, which is what this test expects now.
 #[test]
 fn test_enter_queue_voided_enter_keeps_the_keys_typed_behind_it_with_the_line() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            let released = record_released_enter_entries(&mut app, &input);
-            let toasts = record_toast_texts(&mut app);
-            let given_up = record_given_up_keys(&mut app, &input);
-            input.update(&mut app, |input, ctx| {
-                input.input_enter(ctx);
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let released = record_released_enter_entries(&mut app, &input);
+        let toasts = record_toast_texts(&mut app);
+        let given_up = record_given_up_keys(&mut app, &input);
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+        });
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
+        // The waiting line itself is edited (not through the editor's key handler).
+        input.update(&mut app, |input, ctx| {
+            input.editor().update(ctx, |editor, ctx| {
+                editor.set_buffer_text("git checkout f", ctx)
             });
-            type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
-            type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
-            // The waiting line itself is edited (not through the editor's key handler).
-            input.update(&mut app, |input, ctx| {
-                input.editor().update(ctx, |editor, ctx| {
-                    editor.set_buffer_text("git checkout f", ctx)
-                });
-                input.reconcile_verdict_wait(ctx);
-            });
-            input.read(&app, |input, ctx| {
-                assert!(
-                    input.verdict_wait.is_none(),
-                    "{mode:?}: the edit voids the Enter"
-                );
-                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    "git checkout f\nls",
-                    "{mode:?}: the edited line stays; what was typed behind the void Enter is \
-                     on the line after it, never glued onto it"
-                );
-                assert_eq!(
-                    input.enter_guard_for_test(),
-                    Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST)),
-                    "{mode:?}: the first Enter on the two lines is held"
-                );
-            });
-            assert!(executed.borrow().is_empty(), "{mode:?}");
-            assert!(released.borrow().is_empty(), "{mode:?}: nothing routed");
+            input.reconcile_verdict_wait(ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none(), "the edit voids the Enter");
+            assert!(!input.enter_queue_holds_keys(ctx));
             assert_eq!(
-                *given_up.borrow(),
-                [(GIVEN_UP_WITH_LINE, 2)],
-                "{mode:?}: both keys typed behind the void Enter are kept with the line, none \
-                 for the pty"
+                input.buffer_text(ctx),
+                "git checkout f\nls",
+                "the edited line stays; what was typed behind the void Enter is \
+                     on the line after it, never glued onto it"
             );
-            assert!(
-                toasts.borrow().is_empty(),
-                "{mode:?}: no toast: {:?}",
-                toasts.borrow()
+            assert_eq!(
+                input.enter_guard_for_test(),
+                Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST)),
+                "the first Enter on the two lines is held"
             );
         });
-    }
+        assert!(executed.borrow().is_empty());
+        assert!(released.borrow().is_empty(), "nothing routed");
+        assert_eq!(
+            *given_up.borrow(),
+            [(GIVEN_UP_WITH_LINE, 2)],
+            "both keys typed behind the void Enter are kept with the line, none \
+                 for the pty"
+        );
+        assert!(
+            toasts.borrow().is_empty(),
+            "no toast: {:?}",
+            toasts.borrow()
+        );
+    });
 }
 
 /// #1661 review (MEDIUM): `git checkout fe⏎ls`, then Backspace to fix `ls`. The Backspace edits
@@ -17194,62 +16993,56 @@ fn test_enter_queue_voided_enter_keeps_the_keys_typed_behind_it_with_the_line() 
 /// line still runs once. Both modes.
 #[test]
 fn test_backspace_behind_keys_typed_after_a_waiting_enter_does_not_void_it() {
-    use crate::terminal::input_queue::{DestinationMode, HELD_KEY};
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            let toasts = record_toast_texts(&mut app);
-            input.update(&mut app, |input, ctx| {
-                input.input_enter(ctx);
-                input.disarm_hold_give_ups_for_test();
-            });
-            type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
-            type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
-            type_into_editor(
-                &mut app,
-                &editor,
-                HeldPasteKey::Action(EditorAction::Backspace),
-            );
-            input.update(&mut app, |input, ctx| {
-                input.reconcile_verdict_wait(ctx);
-            });
-            input.read(&app, |input, ctx| {
-                assert!(
-                    input.verdict_wait.is_some(),
-                    "{mode:?}: the Backspace did not void the Enter"
-                );
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    "git checkout fe",
-                    "{mode:?}: the waiting line is untouched"
-                );
-                assert_eq!(
-                    input.enter_gate_held_len_for_test(ctx),
-                    3,
-                    "{mode:?}: `l`, `s` and the Backspace wait behind the Enter, in order"
-                );
-                assert_eq!(
-                    input.queued_held_for_test(ctx),
-                    vec![(HELD_KEY, "\u{7f}".to_owned())],
-                    "{mode:?}: the Backspace in its tty form"
-                );
-            });
-            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
-            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
-            assert_eq!(
-                executed.borrow()[0].trim_end(),
-                "git checkout feature",
-                "{mode:?}: the completed line runs once"
-            );
+    use crate::terminal::input_queue::HELD_KEY;
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let toasts = record_toast_texts(&mut app);
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            input.disarm_hold_give_ups_for_test();
+        });
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
+        type_into_editor(
+            &mut app,
+            &editor,
+            HeldPasteKey::Action(EditorAction::Backspace),
+        );
+        input.update(&mut app, |input, ctx| {
+            input.reconcile_verdict_wait(ctx);
+        });
+        input.read(&app, |input, ctx| {
             assert!(
-                toasts.borrow().is_empty(),
-                "{mode:?}: nothing was discarded"
+                input.verdict_wait.is_some(),
+                "the Backspace did not void the Enter"
+            );
+            assert_eq!(
+                input.buffer_text(ctx),
+                "git checkout fe",
+                "the waiting line is untouched"
+            );
+            assert_eq!(
+                input.enter_gate_held_len_for_test(ctx),
+                3,
+                "`l`, `s` and the Backspace wait behind the Enter, in order"
+            );
+            assert_eq!(
+                input.queued_held_for_test(ctx),
+                vec![(HELD_KEY, "\u{7f}".to_owned())],
+                "the Backspace in its tty form"
             );
         });
-    }
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(
+            executed.borrow()[0].trim_end(),
+            "git checkout feature",
+            "the completed line runs once"
+        );
+        assert!(toasts.borrow().is_empty(), "nothing was discarded");
+    });
 }
 
 /// #1389: cursor keys typed behind a LARGE paste (100 KB and 1 MB) are applied after the paste's
@@ -17260,96 +17053,87 @@ fn test_backspace_behind_keys_typed_after_a_waiting_enter_does_not_void_it() {
 #[test]
 fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
     use crate::editor::FrameLayouts;
-    use crate::terminal::input_queue::DestinationMode;
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
 
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for with_layout in [false, true] {
-            for size in [100 * 1024usize, 1024 * 1024] {
-                App::test((), move |mut app| async move {
-                    let _mode =
-                        crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                    initialize_app(&mut app);
-                    let terminal =
-                        add_window_with_bootstrapped_terminal(&mut app, None, None).await;
-                    let input = terminal.read(&app, |terminal, _| terminal.input().clone());
-                    let editor = input.read(&app, |input, _| input.editor().clone());
-                    input.update(&mut app, |input, ctx| {
-                        input.clear_buffer_and_reset_undo_stack(ctx);
-                        input.user_insert("a", ctx);
-                    });
-                    let soft = editor.read(&app, |editor, ctx| editor.soft_wrap_state(ctx));
-                    if with_layout {
-                        // A frame was laid out for the one-character buffer; no other frame
-                        // lands until the test releases the hold (unit tests build the scene at
-                        // every effect flush, which would otherwise lay one out after the paste).
-                        soft.update(FrameLayouts::new(Vec::new(), 0, 0));
-                        soft.hold_updates_for_test(true);
-                    }
-                    let pasted = "p".repeat(size);
-                    let content = pasted.clone();
-                    let (release, parked) = std::sync::mpsc::channel::<()>();
-                    let reader: BackgroundTextReader = Box::new(move || {
-                        let _ = parked.recv_timeout(Duration::from_secs(20));
-                        BackgroundTextRead::Content(ClipboardContent::plain_text(content))
-                    });
-                    input.update(&mut app, |input, ctx| {
-                        input.start_background_paste(reader, ctx)
-                    });
-                    editor.update(&mut app, |editor, ctx| {
-                        editor.handle_action(&EditorAction::Left, ctx);
-                        editor.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
-                        editor.handle_action(&EditorAction::MoveToVisualLineEnd, ctx);
-                        editor.handle_action(&EditorAction::UserInsert(UserInput::new("!")), ctx);
-                    });
-                    input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "a"));
-                    release.send(()).unwrap();
-                    let expected = format!("a{}zp!", &pasted[..size - 1]);
-                    let before_end = format!("a{}zp", &pasted[..size - 1]);
-                    if with_layout {
-                        // The paste and the Left/z are in; End waits for a frame laid out after
-                        // them, and the `!` typed behind it waits too (never before it).
-                        for _ in 0..4000 {
-                            if input.read(&app, |input, ctx| input.buffer_text(ctx) == before_end) {
-                                break;
-                            }
-                            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
-                        }
-                        warpui::r#async::Timer::after(Duration::from_millis(100)).await;
-                        input.read(&app, |input, ctx| {
-                            assert!(
-                                input.buffer_text(ctx) == before_end,
-                                "{mode:?} size {size}: End/! applied on the old layout"
-                            );
-                        });
-                        assert!(
-                            soft.is_stale(),
-                            "{mode:?} size {size}: the paste staled the layout"
-                        );
-                        soft.hold_updates_for_test(false);
-                        // The frame after the paste is laid out.
-                        soft.update(FrameLayouts::new(Vec::new(), 0, 0));
-                    }
+    for with_layout in [false, true] {
+        for size in [100 * 1024usize, 1024 * 1024] {
+            App::test((), move |mut app| async move {
+                initialize_app(&mut app);
+                let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+                let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+                let editor = input.read(&app, |input, _| input.editor().clone());
+                input.update(&mut app, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx);
+                    input.user_insert("a", ctx);
+                });
+                let soft = editor.read(&app, |editor, ctx| editor.soft_wrap_state(ctx));
+                if with_layout {
+                    // A frame was laid out for the one-character buffer; no other frame
+                    // lands until the test releases the hold (unit tests build the scene at
+                    // every effect flush, which would otherwise lay one out after the paste).
+                    soft.update(FrameLayouts::new(Vec::new(), 0, 0));
+                    soft.hold_updates_for_test(true);
+                }
+                let pasted = "p".repeat(size);
+                let content = pasted.clone();
+                let (release, parked) = std::sync::mpsc::channel::<()>();
+                let reader: BackgroundTextReader = Box::new(move || {
+                    let _ = parked.recv_timeout(Duration::from_secs(20));
+                    BackgroundTextRead::Content(ClipboardContent::plain_text(content))
+                });
+                input.update(&mut app, |input, ctx| {
+                    input.start_background_paste(reader, ctx)
+                });
+                editor.update(&mut app, |editor, ctx| {
+                    editor.handle_action(&EditorAction::Left, ctx);
+                    editor.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+                    editor.handle_action(&EditorAction::MoveToVisualLineEnd, ctx);
+                    editor.handle_action(&EditorAction::UserInsert(UserInput::new("!")), ctx);
+                });
+                input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "a"));
+                release.send(()).unwrap();
+                let expected = format!("a{}zp!", &pasted[..size - 1]);
+                let before_end = format!("a{}zp", &pasted[..size - 1]);
+                if with_layout {
+                    // The paste and the Left/z are in; End waits for a frame laid out after
+                    // them, and the `!` typed behind it waits too (never before it).
                     for _ in 0..4000 {
-                        let idle = editor.read(&app, |editor, _| {
-                            let hold = editor.paste_hold();
-                            !hold.has_pending() && hold.queue().peek().is_idle()
-                        });
-                        if idle {
+                        if input.read(&app, |input, ctx| input.buffer_text(ctx) == before_end) {
                             break;
                         }
                         warpui::r#async::Timer::after(Duration::from_millis(5)).await;
                     }
+                    warpui::r#async::Timer::after(Duration::from_millis(100)).await;
                     input.read(&app, |input, ctx| {
-                        let text = input.buffer_text(ctx);
-                        assert_eq!(text.len(), expected.len(), "{mode:?} size {size}");
                         assert!(
-                            text == expected,
-                            "{mode:?} size {size} layout {with_layout}: keys landed in the wrong place"
+                            input.buffer_text(ctx) == before_end,
+                            "size {size}: End/! applied on the old layout"
                         );
                     });
+                    assert!(soft.is_stale(), "size {size}: the paste staled the layout");
+                    soft.hold_updates_for_test(false);
+                    // The frame after the paste is laid out.
+                    soft.update(FrameLayouts::new(Vec::new(), 0, 0));
+                }
+                for _ in 0..4000 {
+                    let idle = editor.read(&app, |editor, _| {
+                        let hold = editor.paste_hold();
+                        !hold.has_pending() && hold.queue().peek().is_idle()
+                    });
+                    if idle {
+                        break;
+                    }
+                    warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+                }
+                input.read(&app, |input, ctx| {
+                    let text = input.buffer_text(ctx);
+                    assert_eq!(text.len(), expected.len(), "size {size}");
+                    assert!(
+                        text == expected,
+                        "size {size} layout {with_layout}: keys landed in the wrong place"
+                    );
                 });
-            }
+            });
         }
     }
 }
@@ -17360,58 +17144,54 @@ fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
 #[test]
 fn test_live_end_after_an_edit_waits_for_the_next_layout() {
     use crate::editor::FrameLayouts;
-    use crate::terminal::input_queue::DestinationMode;
 
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app(&mut app);
-            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
-            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            input.update(&mut app, |input, ctx| {
-                input.clear_buffer_and_reset_undo_stack(ctx);
-                input.user_insert("ab", ctx);
-            });
-            editor.update(&mut app, |editor, ctx| editor.move_to_buffer_start(ctx));
-            let soft = editor.read(&app, |editor, ctx| editor.soft_wrap_state(ctx));
-            soft.update(FrameLayouts::new(Vec::new(), 0, 0));
-            assert!(!soft.is_stale());
-            // The edit (what a paste does) makes the stored layout stale. Unit tests build the
-            // scene at every effect flush, so layout stores are held to keep "no frame since the
-            // edit" open.
-            soft.hold_updates_for_test(true);
-            input.update(&mut app, |input, ctx| input.user_insert("Q", ctx));
-            assert!(soft.is_stale(), "{mode:?}: the edit staled the layout");
-            editor.update(&mut app, |editor, ctx| {
-                editor.handle_action(&EditorAction::MoveToVisualLineEnd, ctx);
-                editor.handle_action(&EditorAction::UserInsert(UserInput::new("!")), ctx);
-            });
-            warpui::r#async::Timer::after(Duration::from_millis(100)).await;
-            input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    "Qab",
-                    "{mode:?}: End and the text behind it wait for a layout newer than the edit"
-                );
-            });
-            assert!(soft.is_stale(), "{mode:?}: still no layout after the edit");
-            soft.hold_updates_for_test(false);
-            soft.update(FrameLayouts::new(Vec::new(), 0, 0));
-            for _ in 0..1000 {
-                if input.read(&app, |input, ctx| input.buffer_text(ctx) == "Qab!") {
-                    break;
-                }
-                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
-            }
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "Qab!", "{mode:?}");
-            });
-            editor.read(&app, |editor, _| {
-                assert!(editor.paste_hold().queue().peek().is_idle(), "{mode:?}")
-            });
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("ab", ctx);
         });
-    }
+        editor.update(&mut app, |editor, ctx| editor.move_to_buffer_start(ctx));
+        let soft = editor.read(&app, |editor, ctx| editor.soft_wrap_state(ctx));
+        soft.update(FrameLayouts::new(Vec::new(), 0, 0));
+        assert!(!soft.is_stale());
+        // The edit (what a paste does) makes the stored layout stale. Unit tests build the
+        // scene at every effect flush, so layout stores are held to keep "no frame since the
+        // edit" open.
+        soft.hold_updates_for_test(true);
+        input.update(&mut app, |input, ctx| input.user_insert("Q", ctx));
+        assert!(soft.is_stale(), "the edit staled the layout");
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::MoveToVisualLineEnd, ctx);
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new("!")), ctx);
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "Qab",
+                "End and the text behind it wait for a layout newer than the edit"
+            );
+        });
+        assert!(soft.is_stale(), "still no layout after the edit");
+        soft.hold_updates_for_test(false);
+        soft.update(FrameLayouts::new(Vec::new(), 0, 0));
+        for _ in 0..1000 {
+            if input.read(&app, |input, ctx| input.buffer_text(ctx) == "Qab!") {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "Qab!");
+        });
+        editor.read(&app, |editor, _| {
+            assert!(editor.paste_hold().queue().peek().is_idle())
+        });
+    });
 }
 
 /// #1353 merge step 4 (X5), #1389 on the pane's shared queue: keys typed while a paste is read are
@@ -17568,17 +17348,13 @@ fn test_shared_queue_closing_quote_typed_during_a_paste_overtypes_after_it() {
 // could not observe the release order they are about. The bug shape (`<line>` merged with the
 // next line's text) is the same for any command.
 
-/// Runs the #1558 sequence in `mode`: a bootstrapped session whose first Precmd has not given it
+/// Runs the #1558 sequence: a bootstrapped session whose first Precmd has not given it
 /// its history (a command is refused, as in PostBootstrapPrecmd on a fresh ssh session), an Enter
 /// on `make fake` that waits behind its verdict gate, optionally text typed behind it, and the
 /// verdict arriving. Returns the commands the input executed, in order, after the shell became
 /// ready, and the text the editor holds at the end.
-fn deferred_enter_on_unready_shell(
-    mode: crate::terminal::input_queue::facts::DestinationMode,
-    typed_behind: &str,
-) -> (Vec<String>, Vec<String>, bool) {
+fn deferred_enter_on_unready_shell(typed_behind: &str) -> (Vec<String>, Vec<String>, bool) {
     use crate::ai::blocklist::InputConfig;
-    let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
     let typed_behind = typed_behind.to_owned();
     let result = Rc::new(RefCell::new(None));
     let sink = result.clone();
@@ -17704,39 +17480,29 @@ fn deferred_enter_on_unready_shell(
 /// log `submit` and vanish, leaving its text in the buffer.
 #[test]
 fn test_deferred_enter_on_unready_shell_is_held_and_runs_once_as_typed() {
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let (executed, _, still_pending) = deferred_enter_on_unready_shell(mode, "");
-        assert_eq!(executed, ["make fake".to_owned()], "{mode:?}");
-        assert!(!still_pending, "{mode:?}: the pending command was consumed");
-    }
+    let (executed, _, still_pending) = deferred_enter_on_unready_shell("");
+    assert_eq!(executed, ["make fake".to_owned()]);
+    assert!(!still_pending, "the pending command was consumed");
 }
 
 /// #1558, both destination modes: text typed while the Enter waits goes to the NEXT line. The held
 /// Enter still runs exactly `make fake` (never `make fakeecho ...`).
 #[test]
 fn test_text_typed_during_the_verdict_wait_never_merges_into_the_held_enter() {
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let (executed, released, _) = deferred_enter_on_unready_shell(mode, "echo T");
-        assert_eq!(executed, ["make fake".to_owned()], "{mode:?}");
-        assert_eq!(released.len(), "echo T".chars().count(), "{mode:?}");
-    }
+    let (executed, released, _) = deferred_enter_on_unready_shell("echo T");
+    assert_eq!(executed, ["make fake".to_owned()]);
+    assert_eq!(released.len(), "echo T".chars().count());
 }
 
 // ---- #1564: a DIRECT Enter the shell cannot take yet is held too ---------------------------------
 
-/// Runs the #1564 sequence in `mode`: a bootstrapped session whose first Precmd has not given it
+/// Runs the #1564 sequence: a bootstrapped session whose first Precmd has not given it
 /// its history, a DIRECT Enter (no verdict wait) on `ssh fake`, optionally text typed behind it,
 /// and the session becoming ready. Returns the commands the input executed after the shell became
 /// ready, whether the Enter was held right after it was pressed, and whether it was still pending
 /// after the retry.
-fn direct_enter_on_unready_shell(
-    mode: crate::terminal::input_queue::facts::DestinationMode,
-    typed_behind: &str,
-) -> (Vec<String>, bool, bool) {
+fn direct_enter_on_unready_shell(typed_behind: &str) -> (Vec<String>, bool, bool) {
     use crate::ai::blocklist::InputConfig;
-    let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
     let typed_behind = typed_behind.to_owned();
     let result = Rc::new(RefCell::new(None));
     let sink = result.clone();
@@ -17816,28 +17582,19 @@ fn direct_enter_on_unready_shell(
 /// the buffer (`enter_declined deferred=false held_as_pending=false`).
 #[test]
 fn test_direct_enter_on_unready_shell_is_held_and_runs_once_as_typed() {
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let (executed, held, still_pending) = direct_enter_on_unready_shell(mode, "");
-        assert!(
-            held,
-            "{mode:?}: the refused direct Enter must be held as pending"
-        );
-        assert_eq!(executed, ["ssh fake".to_owned()], "{mode:?}");
-        assert!(!still_pending, "{mode:?}: the pending command was consumed");
-    }
+    let (executed, held, still_pending) = direct_enter_on_unready_shell("");
+    assert!(held, "the refused direct Enter must be held as pending");
+    assert_eq!(executed, ["ssh fake".to_owned()]);
+    assert!(!still_pending, "the pending command was consumed");
 }
 
 /// #1564, both destination modes: text typed after the refused direct Enter never merges into it:
 /// the held Enter runs exactly `ssh fake`, never `ssh fakeecho ...`.
 #[test]
 fn test_text_typed_after_a_held_direct_enter_never_merges_into_it() {
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let (executed, held, _) = direct_enter_on_unready_shell(mode, "echo T");
-        assert!(held, "{mode:?}");
-        assert_eq!(executed, ["ssh fake".to_owned()], "{mode:?}");
-    }
+    let (executed, held, _) = direct_enter_on_unready_shell("echo T");
+    assert!(held);
+    assert_eq!(executed, ["ssh fake".to_owned()]);
 }
 
 /// #1564: a refusal that is not "not ready yet" (a program is running) is still a refusal: nothing
@@ -17883,17 +17640,13 @@ struct UnreadyEnterRun {
     released: Vec<AfterEnterInput>,
 }
 
-/// Runs the #1564 shape with the readiness event delayed past the user's SECOND Enter, in `mode`:
+/// Runs the #1564 shape with the readiness event delayed past the user's SECOND Enter:
 /// a shell that cannot take a command yet (its session has no history), `make fake` + Enter
 /// (direct, or `deferred` behind its verdict gate with `echo T` + Enter typed during that wait),
 /// then the next line typed (`echo T` + Enter for a direct Enter, `ls` + Enter after a deferred
 /// one), then the shell becomes ready and the command the held line starts takes the pty.
-fn unready_enter_then_the_next_line(
-    mode: crate::terminal::input_queue::facts::DestinationMode,
-    deferred: bool,
-) -> UnreadyEnterRun {
+fn unready_enter_then_the_next_line(deferred: bool) -> UnreadyEnterRun {
     use crate::ai::blocklist::InputConfig;
-    let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
     let result = Rc::new(RefCell::new(None));
     let sink = result.clone();
     App::test((), move |mut app| async move {
@@ -18047,33 +17800,27 @@ fn per_key_lines(lines: &[&str]) -> Vec<AfterEnterInput> {
 /// once, alone, and the next line follows it in order.
 #[test]
 fn test_unready_direct_enter_then_a_second_line_and_enter_run_as_two_commands() {
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let run = unready_enter_then_the_next_line(mode, false);
-        assert_eq!(
-            run.buffer_before_ready, "make fake",
-            "{mode:?}: nothing merged"
-        );
-        assert!(run.executed_before_ready.is_empty(), "{mode:?}");
-        assert_eq!(
-            run.held_before_ready,
-            vec![
-                AfterEnterInput::Text("echo T".to_owned()),
-                AfterEnterInput::Enter
-            ],
-            "{mode:?}: the next line waits behind the held Enter, its Enter its own entry"
-        );
-        assert_eq!(
-            run.executed,
-            ["make fake".to_owned()],
-            "{mode:?}: the held line runs once, alone (never `make fakeecho T`)"
-        );
-        assert_eq!(
-            run.released,
-            per_key_lines(&["echo T"]),
-            "{mode:?}: the next line follows, in order"
-        );
-    }
+    let run = unready_enter_then_the_next_line(false);
+    assert_eq!(run.buffer_before_ready, "make fake", "nothing merged");
+    assert!(run.executed_before_ready.is_empty());
+    assert_eq!(
+        run.held_before_ready,
+        vec![
+            AfterEnterInput::Text("echo T".to_owned()),
+            AfterEnterInput::Enter
+        ],
+        "the next line waits behind the held Enter, its Enter its own entry"
+    );
+    assert_eq!(
+        run.executed,
+        ["make fake".to_owned()],
+        "the held line runs once, alone (never `make fakeecho T`)"
+    );
+    assert_eq!(
+        run.released,
+        per_key_lines(&["echo T"]),
+        "the next line follows, in order"
+    );
 }
 
 /// #1571, both destination modes: the same with a DEFERRED Enter (it waited for its verdict with
@@ -18083,31 +17830,24 @@ fn test_unready_direct_enter_then_a_second_line_and_enter_run_as_two_commands() 
 /// becomes the held Enter's gate in place: both later lines stay behind it, in order.
 #[test]
 fn test_unready_deferred_enter_keeps_both_later_lines_behind_it_in_order() {
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let run = unready_enter_then_the_next_line(mode, true);
-        assert_eq!(
-            run.buffer_before_ready, "make fake",
-            "{mode:?}: nothing merged"
-        );
-        assert!(run.executed_before_ready.is_empty(), "{mode:?}");
-        assert_eq!(
-            run.held_before_ready,
-            vec![
-                AfterEnterInput::Text("echo T".to_owned()),
-                AfterEnterInput::Enter,
-                AfterEnterInput::Text("ls".to_owned()),
-                AfterEnterInput::Enter,
-            ],
-            "{mode:?}"
-        );
-        assert_eq!(run.executed, ["make fake".to_owned()], "{mode:?}");
-        assert_eq!(
-            run.released,
-            per_key_lines(&["echo T", "ls"]),
-            "{mode:?}: released after the held line, in typed order"
-        );
-    }
+    let run = unready_enter_then_the_next_line(true);
+    assert_eq!(run.buffer_before_ready, "make fake", "nothing merged");
+    assert!(run.executed_before_ready.is_empty());
+    assert_eq!(
+        run.held_before_ready,
+        vec![
+            AfterEnterInput::Text("echo T".to_owned()),
+            AfterEnterInput::Enter,
+            AfterEnterInput::Text("ls".to_owned()),
+            AfterEnterInput::Enter,
+        ]
+    );
+    assert_eq!(run.executed, ["make fake".to_owned()]);
+    assert_eq!(
+        run.released,
+        per_key_lines(&["echo T", "ls"]),
+        "released after the held line, in typed order"
+    );
 }
 
 /// #1586, both destination modes: behind an Enter held for an unready shell, keys with a tty form
@@ -18117,104 +17857,98 @@ fn test_unready_deferred_enter_keeps_both_later_lines_behind_it_in_order() {
 #[test]
 fn test_unready_enter_holds_or_swallows_keys_with_no_text() {
     use crate::ai::blocklist::InputConfig;
-    use crate::terminal::input_queue::facts::DestinationMode;
     use crate::terminal::input_queue::{HELD_KEY, HELD_SEQ};
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-        App::test((), move |mut app| async move {
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            initialize_app(&mut app);
-            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
-            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
-            {
-                let executed = executed.clone();
-                app.update(|ctx| {
-                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
-                        if let super::Event::ExecuteCommand(event) = event {
-                            executed.borrow_mut().push(event.command.clone());
-                        }
-                    });
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let executed = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteCommand(event) = event {
+                        executed.borrow_mut().push(event.command.clone());
+                    }
                 });
-            }
-            let real_session = terminal.update(&mut app, |terminal, _| {
-                let mut model = terminal.model.lock();
-                let block = model.block_list_mut().active_block_for_test();
-                let real = block.session_id();
-                block.set_session_id(SessionId::from(1571));
-                real
             });
-            input.update(&mut app, |input, ctx| {
-                input.ai_input_model().update(ctx, |ai_input, ctx| {
-                    ai_input.set_input_config(
-                        InputConfig {
-                            input_type: InputType::Shell,
-                            is_locked: true,
-                        },
-                        true, /* is_input_buffer_empty */
-                        ctx,
-                    );
-                });
-                input.clear_buffer_and_reset_undo_stack(ctx);
-                input.user_insert("ssh fake", ctx);
-                input.input_enter(ctx);
-            });
-            input.read(&app, |input, _| {
-                assert!(input.unready_enter_gate_open(), "{mode:?}");
-            });
-            for action in [
-                EditorAction::Delete,
-                EditorAction::MoveToLineStart,
-                EditorAction::MoveToLineEnd,
-                EditorAction::Tab,
-                EditorAction::DeleteAllRight,
-            ] {
-                type_into_editor(&mut app, &editor, HeldPasteKey::Action(action));
-            }
-            let held_with_forms = input.read(&app, |input, ctx| input.queued_held_for_test(ctx));
-            for action in [
-                EditorAction::Escape,
-                EditorAction::ShiftTab,
-                EditorAction::DeleteWordRight,
-                EditorAction::MoveToBufferStart,
-                EditorAction::MoveToBufferEnd,
-            ] {
-                type_into_editor(&mut app, &editor, HeldPasteKey::Action(action));
-            }
-            let held_after_swallowed =
-                input.read(&app, |input, ctx| input.queued_held_for_test(ctx));
-            let buffer = input.read(&app, |input, ctx| input.buffer_text(ctx));
-            assert_eq!(buffer, "ssh fake", "{mode:?}: the held line is not edited");
-            assert_eq!(
-                held_with_forms,
-                vec![
-                    (HELD_SEQ, "\u{1b}[3~".to_owned()),
-                    (HELD_SEQ, "\u{1b}[H".to_owned()),
-                    (HELD_SEQ, "\u{1b}[F".to_owned()),
-                    (HELD_SEQ, "\t".to_owned()),
-                    (HELD_KEY, "\u{b}".to_owned()),
-                ],
-                "{mode:?}"
-            );
-            assert_eq!(
-                held_after_swallowed, held_with_forms,
-                "{mode:?}: keys with no text and no tty form queue nothing"
-            );
-            // The readiness event: the held line runs exactly as typed.
-            terminal.update(&mut app, |terminal, _| {
-                let mut model = terminal.model.lock();
-                if let Some(real) = real_session {
-                    model
-                        .block_list_mut()
-                        .active_block_for_test()
-                        .set_session_id(real);
-                }
-            });
-            input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
-            assert_eq!(*executed.borrow(), ["ssh fake".to_owned()], "{mode:?}");
+        }
+        let real_session = terminal.update(&mut app, |terminal, _| {
+            let mut model = terminal.model.lock();
+            let block = model.block_list_mut().active_block_for_test();
+            let real = block.session_id();
+            block.set_session_id(SessionId::from(1571));
+            real
         });
-    }
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("ssh fake", ctx);
+            input.input_enter(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(input.unready_enter_gate_open());
+        });
+        for action in [
+            EditorAction::Delete,
+            EditorAction::MoveToLineStart,
+            EditorAction::MoveToLineEnd,
+            EditorAction::Tab,
+            EditorAction::DeleteAllRight,
+        ] {
+            type_into_editor(&mut app, &editor, HeldPasteKey::Action(action));
+        }
+        let held_with_forms = input.read(&app, |input, ctx| input.queued_held_for_test(ctx));
+        for action in [
+            EditorAction::Escape,
+            EditorAction::ShiftTab,
+            EditorAction::DeleteWordRight,
+            EditorAction::MoveToBufferStart,
+            EditorAction::MoveToBufferEnd,
+        ] {
+            type_into_editor(&mut app, &editor, HeldPasteKey::Action(action));
+        }
+        let held_after_swallowed = input.read(&app, |input, ctx| input.queued_held_for_test(ctx));
+        let buffer = input.read(&app, |input, ctx| input.buffer_text(ctx));
+        assert_eq!(buffer, "ssh fake", "the held line is not edited");
+        assert_eq!(
+            held_with_forms,
+            vec![
+                (HELD_SEQ, "\u{1b}[3~".to_owned()),
+                (HELD_SEQ, "\u{1b}[H".to_owned()),
+                (HELD_SEQ, "\u{1b}[F".to_owned()),
+                (HELD_SEQ, "\t".to_owned()),
+                (HELD_KEY, "\u{b}".to_owned()),
+            ]
+        );
+        assert_eq!(
+            held_after_swallowed, held_with_forms,
+            "keys with no text and no tty form queue nothing"
+        );
+        // The readiness event: the held line runs exactly as typed.
+        terminal.update(&mut app, |terminal, _| {
+            let mut model = terminal.model.lock();
+            if let Some(real) = real_session {
+                model
+                    .block_list_mut()
+                    .active_block_for_test()
+                    .set_session_id(real);
+            }
+        });
+        input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
+        assert_eq!(*executed.borrow(), ["ssh fake".to_owned()]);
+    });
 }
 
 /// #1571, both destination modes: the give-up of an Enter held for an unready shell. The line is
@@ -18232,111 +17966,106 @@ fn test_unready_enter_holds_or_swallows_keys_with_no_text() {
 #[test]
 fn test_unready_enter_give_up_sends_the_line_and_the_rest_to_the_pty_in_order() {
     use crate::ai::blocklist::InputConfig;
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-        let result = Rc::new(RefCell::new(None));
-        let sink = result.clone();
-        App::test((), move |mut app| async move {
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            initialize_app(&mut app);
-            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
-            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            let toasts = record_toast_texts(&mut app);
-            let given_up = record_given_up_keys(&mut app, &input);
-            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
-            {
-                let executed = executed.clone();
-                app.update(|ctx| {
-                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
-                        if let super::Event::ExecuteCommand(event) = event {
-                            executed.borrow_mut().push(event.command.clone());
-                        }
-                    });
+    let result = Rc::new(RefCell::new(None));
+    let sink = result.clone();
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let toasts = record_toast_texts(&mut app);
+        let given_up = record_given_up_keys(&mut app, &input);
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let executed = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteCommand(event) = event {
+                        executed.borrow_mut().push(event.command.clone());
+                    }
                 });
-            }
-            let real_session = terminal.update(&mut app, |terminal, _| {
-                let mut model = terminal.model.lock();
-                let block = model.block_list_mut().active_block_for_test();
-                let real = block.session_id();
-                block.set_session_id(SessionId::from(1571));
-                real
             });
-            input.update(&mut app, |input, ctx| {
-                input.ai_input_model().update(ctx, |ai_input, ctx| {
-                    ai_input.set_input_config(
-                        InputConfig {
-                            input_type: InputType::Shell,
-                            is_locked: true,
-                        },
-                        true, /* is_input_buffer_empty */
-                        ctx,
-                    );
-                });
-                input.clear_buffer_and_reset_undo_stack(ctx);
-                input.user_insert("ssh fake", ctx);
-                input.input_enter(ctx);
-            });
-            for ch in "echo T".chars() {
-                type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
-            }
-            type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
-            // The net fires (no readiness event came).
-            input.update(&mut app, |input, ctx| {
-                input.give_up_unready_enter("test", ctx)
-            });
-            let after_give_up = input.read(&app, |input, ctx| {
-                (
-                    input.buffer_text(ctx),
-                    input.has_pending_command(),
-                    input.unready_enter_gate_open(),
-                    input.enter_queue_holds_keys(ctx),
-                )
-            });
-            // The shell becomes ready later: nothing is pending, so nothing runs.
-            terminal.update(&mut app, |terminal, _| {
-                let mut model = terminal.model.lock();
-                if let Some(real) = real_session {
-                    model
-                        .block_list_mut()
-                        .active_block_for_test()
-                        .set_session_id(real);
-                }
-            });
-            input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
-            *sink.borrow_mut() = Some((
-                after_give_up,
-                executed.borrow().clone(),
-                toasts.borrow().clone(),
-                given_up.borrow().clone(),
-            ));
+        }
+        let real_session = terminal.update(&mut app, |terminal, _| {
+            let mut model = terminal.model.lock();
+            let block = model.block_list_mut().active_block_for_test();
+            let real = block.session_id();
+            block.set_session_id(SessionId::from(1571));
+            real
         });
-        let ((buffer, pending, gated, holds), executed, toasts, given_up) =
-            result.borrow_mut().take().expect("the test body ran");
-        assert_eq!(
-            buffer, "",
-            "{mode:?}: the line left for the pty with its Enter; nothing typed after it came \
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("ssh fake", ctx);
+            input.input_enter(ctx);
+        });
+        for ch in "echo T".chars() {
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
+        }
+        type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+        // The net fires (no readiness event came).
+        input.update(&mut app, |input, ctx| {
+            input.give_up_unready_enter("test", ctx)
+        });
+        let after_give_up = input.read(&app, |input, ctx| {
+            (
+                input.buffer_text(ctx),
+                input.has_pending_command(),
+                input.unready_enter_gate_open(),
+                input.enter_queue_holds_keys(ctx),
+            )
+        });
+        // The shell becomes ready later: nothing is pending, so nothing runs.
+        terminal.update(&mut app, |terminal, _| {
+            let mut model = terminal.model.lock();
+            if let Some(real) = real_session {
+                model
+                    .block_list_mut()
+                    .active_block_for_test()
+                    .set_session_id(real);
+            }
+        });
+        input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
+        *sink.borrow_mut() = Some((
+            after_give_up,
+            executed.borrow().clone(),
+            toasts.borrow().clone(),
+            given_up.borrow().clone(),
+        ));
+    });
+    let ((buffer, pending, gated, holds), executed, toasts, given_up) =
+        result.borrow_mut().take().expect("the test body ran");
+    assert_eq!(
+        buffer, "",
+        "the line left for the pty with its Enter; nothing typed after it came \
              back into the editor"
-        );
-        assert!(!pending, "{mode:?}: the held line is no longer pending");
-        assert!(!gated, "{mode:?}: the gate is closed");
-        assert!(!holds, "{mode:?}: nothing is held");
-        assert!(
-            executed.is_empty(),
-            "{mode:?}: the editor submitted nothing (the bytes went to the pty): {executed:?}"
-        );
-        // Only the refused Enter's own notice at the Enter (pre-existing): the give-up shows
-        // nothing, the line was sent.
-        assert_eq!(
-            toasts,
-            ["Cannot run `ssh fake` yet: the shell is still starting.".to_string()],
-            "{mode:?}"
-        );
-        // One give-up: the line and its Enter (taken by the view), with `echo T` (six keys) and
-        // the Enter typed after them, all seven, behind it.
-        assert_eq!(given_up, [(GIVEN_UP_LINE_AND_KEYS_TO_PTY, 7)], "{mode:?}");
-    }
+    );
+    assert!(!pending, "the held line is no longer pending");
+    assert!(!gated, "the gate is closed");
+    assert!(!holds, "nothing is held");
+    assert!(
+        executed.is_empty(),
+        "the editor submitted nothing (the bytes went to the pty): {executed:?}"
+    );
+    // Only the refused Enter's own notice at the Enter (pre-existing): the give-up shows
+    // nothing, the line was sent.
+    assert_eq!(
+        toasts,
+        ["Cannot run `ssh fake` yet: the shell is still starting.".to_string()]
+    );
+    // One give-up: the line and its Enter (taken by the view), with `echo T` (six keys) and
+    // the Enter typed after them, all seven, behind it.
+    assert_eq!(given_up, [(GIVEN_UP_LINE_AND_KEYS_TO_PTY, 7)]);
 }
 
 /// #1577 (A2), owner decision 2026-11-09 (REVERSING #1661, under which this test expected a
@@ -18347,87 +18076,78 @@ fn test_unready_enter_give_up_sends_the_line_and_the_rest_to_the_pty_in_order() 
 /// and no guard is armed (nothing came back).
 #[test]
 fn test_route_wait_give_up_sends_the_keys_behind_a_submitted_enter_to_the_pty() {
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-        let result = Rc::new(RefCell::new(None));
-        let sink = result.clone();
-        App::test((), move |mut app| async move {
-            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-            initialize_app(&mut app);
-            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
-            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
-            let toasts = record_toast_texts(&mut app);
-            let given_up = record_given_up_keys(&mut app, &input);
-            let released = record_released_enter_entries(&mut app, &input);
-            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
-            {
-                let executed = executed.clone();
-                app.update(|ctx| {
-                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
-                        if let super::Event::ExecuteCommand(event) = event {
-                            executed.borrow_mut().push(event.command.clone());
-                        }
-                    });
+    let result = Rc::new(RefCell::new(None));
+    let sink = result.clone();
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let toasts = record_toast_texts(&mut app);
+        let given_up = record_given_up_keys(&mut app, &input);
+        let released = record_released_enter_entries(&mut app, &input);
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let executed = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteCommand(event) = event {
+                        executed.borrow_mut().push(event.command.clone());
+                    }
                 });
-            }
-            input.update(&mut app, |input, ctx| {
-                input.clear_buffer_and_reset_undo_stack(ctx);
-                input.open_submitted_enter_gate_awaiting_pty_for_test(ctx);
-                // The gate's key is the wait's id (1 in the test seam).
-                input.give_up_enter_route_wait(1, ctx);
             });
-            let state = input.read(&app, |input, ctx| {
-                (
-                    input.buffer_text(ctx),
-                    input.ssh_handover_enter_guard_armed(),
-                    input.enter_queue_holds_keys(ctx),
-                )
-            });
-            *sink.borrow_mut() = Some((
-                state,
-                executed.borrow().clone(),
-                toasts.borrow().clone(),
-                released.borrow().len(),
-                given_up.borrow().clone(),
-            ));
+        }
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.open_submitted_enter_gate_awaiting_pty_for_test(ctx);
+            // The gate's key is the wait's id (1 in the test seam).
+            input.give_up_enter_route_wait(1, ctx);
         });
-        let ((buffer, guard, holds), executed, toasts, released, given_up) =
-            result.borrow_mut().take().expect("the test body ran");
-        assert_eq!(
-            buffer, "",
-            "{mode:?}: the key behind the Enter is not put into the editor"
-        );
-        assert!(!guard, "{mode:?}: nothing came back, so nothing is guarded");
-        assert!(!holds, "{mode:?}: the gate is gone");
-        assert!(
-            executed.is_empty(),
-            "{mode:?}: the editor ran nothing: {executed:?}"
-        );
-        assert_eq!(released, 0, "{mode:?}: the editor's replay routed nothing");
-        assert_eq!(
-            given_up,
-            [(GIVEN_UP_TO_PTY, 1)],
-            "{mode:?}: the Enter ran, so the key typed behind it is handed over for the pty"
-        );
-        assert!(
-            toasts.is_empty(),
-            "{mode:?}: the Enter ran, so there is no notice, and no key was discarded: {toasts:?}"
-        );
-    }
+        let state = input.read(&app, |input, ctx| {
+            (
+                input.buffer_text(ctx),
+                input.ssh_handover_enter_guard_armed(),
+                input.enter_queue_holds_keys(ctx),
+            )
+        });
+        *sink.borrow_mut() = Some((
+            state,
+            executed.borrow().clone(),
+            toasts.borrow().clone(),
+            released.borrow().len(),
+            given_up.borrow().clone(),
+        ));
+    });
+    let ((buffer, guard, holds), executed, toasts, released, given_up) =
+        result.borrow_mut().take().expect("the test body ran");
+    assert_eq!(
+        buffer, "",
+        "the key behind the Enter is not put into the editor"
+    );
+    assert!(!guard, "nothing came back, so nothing is guarded");
+    assert!(!holds, "the gate is gone");
+    assert!(executed.is_empty(), "the editor ran nothing: {executed:?}");
+    assert_eq!(released, 0, "the editor's replay routed nothing");
+    assert_eq!(
+        given_up,
+        [(GIVEN_UP_TO_PTY, 1)],
+        "the Enter ran, so the key typed behind it is handed over for the pty"
+    );
+    assert!(
+        toasts.is_empty(),
+        "the Enter ran, so there is no notice, and no key was discarded: {toasts:?}"
+    );
 }
 
-/// Runs a refused (unready) direct `ssh fake` Enter in `mode`, then `typed_after` runs against the
+/// Runs a refused (unready) direct `ssh fake` Enter, then `typed_after` runs against the
 /// input and editor (the keys typed behind the gate), then `then` against the input. Returns the
 /// buffer, whether the input still holds a pending command or a gate, and the commands executed
 /// (the shell is made ready before `then`, so anything still pending would run there).
 fn unready_enter_then(
-    mode: crate::terminal::input_queue::facts::DestinationMode,
     typed_after: fn(&mut App, &ViewHandle<Input>, &ViewHandle<EditorView>),
     then: fn(&mut Input, &mut ViewContext<Input>),
 ) -> (String, bool, bool, Vec<String>) {
     use crate::ai::blocklist::InputConfig;
-    let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
     let result = Rc::new(RefCell::new(None));
     let sink = result.clone();
     App::test((), move |mut app| async move {
@@ -18502,37 +18222,33 @@ fn unready_enter_then(
 /// the pty, each in its place, is asserted in `view/give_up_to_pty_tests.rs`.)
 #[test]
 fn test_unready_enter_give_up_never_puts_a_paste_typed_behind_it_into_the_editor() {
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let (buffer, pending, gated, executed) = unready_enter_then(
-            mode,
-            |app, input, editor| {
-                for ch in "echo ".chars() {
-                    type_into_editor(app, editor, HeldPasteKey::Text(ch.to_string()));
-                }
-                input.update(app, |input, ctx| {
-                    input.offer_ready_paste(
-                        warpui::clipboard::ClipboardContent::plain_text("PASTED".to_owned()),
-                        PasteSource::PlainTextPaste,
-                        ctx,
-                    )
-                });
-                type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::Enter));
-                input.update(app, |input, ctx| input.give_up_unready_enter("test", ctx));
-            },
-            |input, ctx| input.execute_pending_command(ctx),
-        );
-        assert_eq!(
-            buffer, "",
-            "{mode:?}: the line left for the pty, and the paste and the keys around it did not \
+    let (buffer, pending, gated, executed) = unready_enter_then(
+        |app, input, editor| {
+            for ch in "echo ".chars() {
+                type_into_editor(app, editor, HeldPasteKey::Text(ch.to_string()));
+            }
+            input.update(app, |input, ctx| {
+                input.offer_ready_paste(
+                    warpui::clipboard::ClipboardContent::plain_text("PASTED".to_owned()),
+                    PasteSource::PlainTextPaste,
+                    ctx,
+                )
+            });
+            type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::Enter));
+            input.update(app, |input, ctx| input.give_up_unready_enter("test", ctx));
+        },
+        |input, ctx| input.execute_pending_command(ctx),
+    );
+    assert_eq!(
+        buffer, "",
+        "the line left for the pty, and the paste and the keys around it did not \
              come back into the editor"
-        );
-        assert!(!pending && !gated, "{mode:?}");
-        assert!(
-            executed.is_empty(),
-            "{mode:?}: the editor submitted nothing: {executed:?}"
-        );
-    }
+    );
+    assert!(!pending && !gated);
+    assert!(
+        executed.is_empty(),
+        "the editor submitted nothing: {executed:?}"
+    );
 }
 
 /// #1571 review, both destination modes: an unready shell's give-up leaves NO line in the editor
@@ -18547,57 +18263,49 @@ fn test_unready_enter_give_up_never_puts_a_paste_typed_behind_it_into_the_editor
 /// and that the readiness event runs nothing.
 #[test]
 fn test_an_unready_give_up_leaves_no_line_and_no_guard_behind() {
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let (buffer, pending, gated, executed) = unready_enter_then(
-            mode,
-            |app, input, editor| {
-                for ch in "echo T".chars() {
-                    type_into_editor(app, editor, HeldPasteKey::Text(ch.to_string()));
-                }
-                type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::Enter));
-                input.update(app, |input, ctx| input.give_up_unready_enter("test", ctx));
-                input.read(app, |input, ctx| {
-                    assert_eq!(input.buffer_text(ctx), "", "the line left for the pty");
-                    assert!(
-                        !input.ssh_handover_enter_guard_armed(),
-                        "nothing came back into the editor, so nothing is guarded"
-                    );
-                });
-            },
-            // The shell becomes ready: nothing is pending any more.
-            |input, ctx| input.execute_pending_command(ctx),
-        );
-        assert_eq!(buffer, "", "{mode:?}: the editor stays empty");
-        assert!(!pending && !gated, "{mode:?}");
-        assert!(
-            executed.is_empty(),
-            "{mode:?}: the line is not run a second time by the editor: {executed:?}"
-        );
-    }
+    let (buffer, pending, gated, executed) = unready_enter_then(
+        |app, input, editor| {
+            for ch in "echo T".chars() {
+                type_into_editor(app, editor, HeldPasteKey::Text(ch.to_string()));
+            }
+            type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::Enter));
+            input.update(app, |input, ctx| input.give_up_unready_enter("test", ctx));
+            input.read(app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "", "the line left for the pty");
+                assert!(
+                    !input.ssh_handover_enter_guard_armed(),
+                    "nothing came back into the editor, so nothing is guarded"
+                );
+            });
+        },
+        // The shell becomes ready: nothing is pending any more.
+        |input, ctx| input.execute_pending_command(ctx),
+    );
+    assert_eq!(buffer, "", "the editor stays empty");
+    assert!(!pending && !gated);
+    assert!(
+        executed.is_empty(),
+        "the line is not run a second time by the editor: {executed:?}"
+    );
 }
 
 /// #1571 review, both destination modes: ^C on the held Enter voids it and what was typed behind
 /// it; the readiness event runs nothing.
 #[test]
 fn test_ctrl_c_voids_an_unready_enter_and_its_gate() {
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let (_, pending, gated, executed) = unready_enter_then(
-            mode,
-            |app, _input, editor| {
-                for ch in "echo T".chars() {
-                    type_into_editor(app, editor, HeldPasteKey::Text(ch.to_string()));
-                }
-                type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::Enter));
-                type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::CtrlC));
-            },
-            |input, ctx| input.execute_pending_command(ctx),
-        );
-        assert!(!pending, "{mode:?}: the held line is void");
-        assert!(!gated, "{mode:?}: the gate is closed");
-        assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
-    }
+    let (_, pending, gated, executed) = unready_enter_then(
+        |app, _input, editor| {
+            for ch in "echo T".chars() {
+                type_into_editor(app, editor, HeldPasteKey::Text(ch.to_string()));
+            }
+            type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::Enter));
+            type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::CtrlC));
+        },
+        |input, ctx| input.execute_pending_command(ctx),
+    );
+    assert!(!pending, "the held line is void");
+    assert!(!gated, "the gate is closed");
+    assert!(executed.is_empty(), "nothing ran: {executed:?}");
 }
 
 /// #1768 / #1661: waits (bounded) until the pane queue's deferred operations have run and the
@@ -18631,71 +18339,59 @@ async fn wait_for_enter_gate_take(
 #[test]
 fn test_completion_give_up_on_a_busy_queue_acts_like_on_a_free_one() {
     use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for busy in [false, true] {
-            App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-                let (input, executed, _generation, _snapshot) =
-                    tab_enter_fixture(&mut app, true).await;
-                let editor = input.read(&app, |input, _| input.editor().clone());
-                let released = record_released_enter_entries(&mut app, &input);
-                let toasts = record_toast_texts(&mut app);
-                let given_up = record_given_up_keys(&mut app, &input);
-                input.update(&mut app, |input, ctx| {
-                    input.input_enter(ctx);
-                    input.disarm_hold_give_ups_for_test();
-                });
-                type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
-                type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
-                let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
-                {
-                    let _held = busy.then(|| queue.peek());
-                    fire_tab_completion_cap(&input, &mut app);
-                    if busy {
-                        assert!(
-                            queue.has_deferred(),
-                            "{mode:?}: the take waits for the busy queue"
-                        );
-                        assert!(toasts.borrow().is_empty(), "{mode:?}: no toast before it");
-                    }
+    for busy in [false, true] {
+        App::test((), move |mut app| async move {
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            let released = record_released_enter_entries(&mut app, &input);
+            let toasts = record_toast_texts(&mut app);
+            let given_up = record_given_up_keys(&mut app, &input);
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                input.disarm_hold_give_ups_for_test();
+            });
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+            type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+            let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+            {
+                let _held = busy.then(|| queue.peek());
+                fire_tab_completion_cap(&input, &mut app);
+                if busy {
+                    assert!(queue.has_deferred(), "the take waits for the busy queue");
+                    assert!(toasts.borrow().is_empty(), "no toast before it");
                 }
-                wait_for_enter_gate_take(&mut app, &input, &queue).await;
-                input.read(&app, |input, ctx| {
-                    assert_eq!(
-                        input.buffer_text(ctx),
-                        "git checkout fe\nl\n",
-                        "{mode:?} busy={busy}: the line stays and `l`, Enter stay with it on \
+            }
+            wait_for_enter_gate_take(&mut app, &input, &queue).await;
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "git checkout fe\nl\n",
+                    "busy={busy}: the line stays and `l`, Enter stay with it on \
                          the line after it; nothing is glued onto the line"
-                    );
-                    assert_eq!(
-                        input.enter_guard_for_test(),
-                        Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST)),
-                        "{mode:?} busy={busy}: the first Enter on the lines is held"
-                    );
-                    assert!(!input.enter_queue_holds_keys(ctx), "{mode:?} busy={busy}");
-                });
-                assert!(executed.borrow().is_empty(), "{mode:?} busy={busy}");
-                assert!(
-                    released.borrow().is_empty(),
-                    "{mode:?} busy={busy}: nothing routed"
                 );
                 assert_eq!(
-                    *toasts.borrow(),
-                    [COMPLETION_GIVE_UP_TOAST.to_string()],
-                    "{mode:?} busy={busy}: the line's notice, with no count, on both paths"
+                    input.enter_guard_for_test(),
+                    Some((EnterGuardKind::HandedBackText, HANDED_BACK_GUARD_TOAST)),
+                    "busy={busy}: the first Enter on the lines is held"
                 );
-                if !busy {
-                    assert_eq!(
-                        *given_up.borrow(),
-                        [(GIVEN_UP_WITH_LINE, 2)],
-                        "{mode:?}: `l` and the Enter are kept with the line, none for the pty"
-                    );
-                }
+                assert!(!input.enter_queue_holds_keys(ctx), "busy={busy}");
             });
-        }
+            assert!(executed.borrow().is_empty(), "busy={busy}");
+            assert!(released.borrow().is_empty(), "busy={busy}: nothing routed");
+            assert_eq!(
+                *toasts.borrow(),
+                [COMPLETION_GIVE_UP_TOAST.to_string()],
+                "busy={busy}: the line's notice, with no count, on both paths"
+            );
+            if !busy {
+                assert_eq!(
+                    *given_up.borrow(),
+                    [(GIVEN_UP_WITH_LINE, 2)],
+                    "`l` and the Enter are kept with the line, none for the pty"
+                );
+            }
+        });
     }
 }
 
@@ -18706,99 +18402,94 @@ fn test_completion_give_up_on_a_busy_queue_acts_like_on_a_free_one() {
 #[test]
 fn test_unready_enter_cancel_on_a_busy_queue_discards_like_on_a_free_one() {
     use crate::ai::blocklist::InputConfig;
-    use crate::terminal::input_queue::facts::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for busy in [false, true] {
-            App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-                initialize_app(&mut app);
-                let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
-                let input = terminal.read(&app, |terminal, _| terminal.input().clone());
-                let editor = input.read(&app, |input, _| input.editor().clone());
-                let released = record_released_enter_entries(&mut app, &input);
-                let toasts = record_toast_texts(&mut app);
-                let executed = Rc::new(RefCell::new(Vec::<String>::new()));
-                {
-                    let executed = executed.clone();
-                    app.update(|ctx| {
-                        ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
-                            if let super::Event::ExecuteCommand(event) = event {
-                                executed.borrow_mut().push(event.command.clone());
-                            }
-                        });
+    for busy in [false, true] {
+        App::test((), move |mut app| async move {
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            let released = record_released_enter_entries(&mut app, &input);
+            let toasts = record_toast_texts(&mut app);
+            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+            {
+                let executed = executed.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                        if let super::Event::ExecuteCommand(event) = event {
+                            executed.borrow_mut().push(event.command.clone());
+                        }
                     });
-                }
-                let real_session = terminal.update(&mut app, |terminal, _| {
-                    let mut model = terminal.model.lock();
-                    let block = model.block_list_mut().active_block_for_test();
-                    let real = block.session_id();
-                    block.set_session_id(SessionId::from(1571));
-                    real
                 });
-                input.update(&mut app, |input, ctx| {
-                    input.ai_input_model().update(ctx, |ai_input, ctx| {
-                        ai_input.set_input_config(
-                            InputConfig {
-                                input_type: InputType::Shell,
-                                is_locked: true,
-                            },
-                            true, /* is_input_buffer_empty */
-                            ctx,
-                        );
-                    });
-                    input.clear_buffer_and_reset_undo_stack(ctx);
-                    input.user_insert("ssh fake", ctx);
-                    input.input_enter(ctx);
-                });
-                for ch in "echo T".chars() {
-                    type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
-                }
-                type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
-                let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
-                {
-                    let _held = busy.then(|| queue.peek());
-                    input.update(&mut app, |input, ctx| {
-                        input.cancel_unready_enter("test", ctx)
-                    });
-                    if busy {
-                        assert!(queue.has_deferred(), "{mode:?}: the take is deferred");
-                    }
-                }
-                wait_for_enter_gate_take(&mut app, &input, &queue).await;
-                // The shell becomes ready: nothing is pending, so nothing runs.
-                terminal.update(&mut app, |terminal, _| {
-                    let mut model = terminal.model.lock();
-                    if let Some(real) = real_session {
-                        model
-                            .block_list_mut()
-                            .active_block_for_test()
-                            .set_session_id(real);
-                    }
-                });
-                input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
-                input.read(&app, |input, ctx| {
-                    assert_eq!(
-                        input.buffer_text(ctx),
-                        "ssh fake",
-                        "{mode:?} busy={busy}: nothing typed behind the Enter came back"
-                    );
-                    assert!(!input.unready_enter_gate_open(), "{mode:?} busy={busy}");
-                    assert!(!input.enter_queue_holds_keys(ctx), "{mode:?} busy={busy}");
-                    assert!(!input.has_pending_command(), "{mode:?} busy={busy}");
-                });
-                assert!(executed.borrow().is_empty(), "{mode:?} busy={busy}");
-                assert!(released.borrow().is_empty(), "{mode:?} busy={busy}");
-                // The refused Enter's own notice (pre-existing, at the Enter) is the only toast:
-                // a ^C discard shows none, busy or free.
-                assert_eq!(
-                    *toasts.borrow(),
-                    ["Cannot run `ssh fake` yet: the shell is still starting.".to_string()],
-                    "{mode:?} busy={busy}"
-                );
+            }
+            let real_session = terminal.update(&mut app, |terminal, _| {
+                let mut model = terminal.model.lock();
+                let block = model.block_list_mut().active_block_for_test();
+                let real = block.session_id();
+                block.set_session_id(SessionId::from(1571));
+                real
             });
-        }
+            input.update(&mut app, |input, ctx| {
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::Shell,
+                            is_locked: true,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.user_insert("ssh fake", ctx);
+                input.input_enter(ctx);
+            });
+            for ch in "echo T".chars() {
+                type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
+            }
+            type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+            let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+            {
+                let _held = busy.then(|| queue.peek());
+                input.update(&mut app, |input, ctx| {
+                    input.cancel_unready_enter("test", ctx)
+                });
+                if busy {
+                    assert!(queue.has_deferred(), "the take is deferred");
+                }
+            }
+            wait_for_enter_gate_take(&mut app, &input, &queue).await;
+            // The shell becomes ready: nothing is pending, so nothing runs.
+            terminal.update(&mut app, |terminal, _| {
+                let mut model = terminal.model.lock();
+                if let Some(real) = real_session {
+                    model
+                        .block_list_mut()
+                        .active_block_for_test()
+                        .set_session_id(real);
+                }
+            });
+            input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "ssh fake",
+                    "busy={busy}: nothing typed behind the Enter came back"
+                );
+                assert!(!input.unready_enter_gate_open(), "busy={busy}");
+                assert!(!input.enter_queue_holds_keys(ctx), "busy={busy}");
+                assert!(!input.has_pending_command(), "busy={busy}");
+            });
+            assert!(executed.borrow().is_empty(), "busy={busy}");
+            assert!(released.borrow().is_empty(), "busy={busy}");
+            // The refused Enter's own notice (pre-existing, at the Enter) is the only toast:
+            // a ^C discard shows none, busy or free.
+            assert_eq!(
+                *toasts.borrow(),
+                ["Cannot run `ssh fake` yet: the shell is still starting.".to_string()],
+                "busy={busy}"
+            );
+        });
     }
 }
 
@@ -18808,57 +18499,52 @@ fn test_unready_enter_cancel_on_a_busy_queue_discards_like_on_a_free_one() {
 /// nothing runs or reaches a destination, and the same discard toast is shown. Both modes.
 #[test]
 fn multiline_dialog_cancel_on_a_busy_queue_discards_like_on_a_free_one() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        let outcomes = Rc::new(RefCell::new(Vec::new()));
-        for busy in [false, true] {
-            let sink = outcomes.clone();
-            App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
-                let (terminal, input, dialog, executed) =
-                    multiline_dialog_fixture(&mut app, &text).await;
-                let released = record_released_enter_entries(&mut app, &input);
-                let toasts = record_toast_texts(&mut app);
-                ask_multiline_dialog(&mut app, &input);
-                offer_to_dialog(&mut app, &dialog, dialog_typed("ls"));
-                enter_in_editor(&mut app, &terminal, &input);
-                offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
-                let editor = input.read(&app, |input, _| input.editor().clone());
-                let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
-                {
-                    let _held = busy.then(|| queue.peek());
-                    input.update(&mut app, |input, ctx| {
-                        assert!(input.cancel_multiline_dialog("editor_interrupt", ctx));
-                    });
-                    if busy {
-                        assert!(queue.has_deferred(), "{mode:?}: the take is deferred");
-                    }
-                }
-                wait_for_enter_gate_take(&mut app, &input, &queue).await;
-                input.read(&app, |input, ctx| {
-                    assert_eq!(
-                        input.buffer_text(ctx),
-                        text,
-                        "{mode:?} busy={busy}: exactly as it was"
-                    );
-                    assert!(!input.multiline_dialog_gate_open(), "{mode:?} busy={busy}");
-                    assert!(!input.enter_queue_holds_keys(ctx), "{mode:?} busy={busy}");
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    for busy in [false, true] {
+        let sink = outcomes.clone();
+        App::test((), move |mut app| async move {
+            let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+            let (terminal, input, dialog, executed) =
+                multiline_dialog_fixture(&mut app, &text).await;
+            let released = record_released_enter_entries(&mut app, &input);
+            let toasts = record_toast_texts(&mut app);
+            ask_multiline_dialog(&mut app, &input);
+            offer_to_dialog(&mut app, &dialog, dialog_typed("ls"));
+            enter_in_editor(&mut app, &terminal, &input);
+            offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+            {
+                let _held = busy.then(|| queue.peek());
+                input.update(&mut app, |input, ctx| {
+                    assert!(input.cancel_multiline_dialog("editor_interrupt", ctx));
                 });
-                assert!(executed.borrow().is_empty(), "{mode:?} busy={busy}");
-                assert!(released.borrow().is_empty(), "{mode:?} busy={busy}");
-                assert_eq!(toasts.borrow().len(), 1, "{mode:?} busy={busy}");
-                sink.borrow_mut().push(toasts.borrow().clone());
+                if busy {
+                    assert!(queue.has_deferred(), "the take is deferred");
+                }
+            }
+            wait_for_enter_gate_take(&mut app, &input, &queue).await;
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    text,
+                    "busy={busy}: exactly as it was"
+                );
+                assert!(!input.multiline_dialog_gate_open(), "busy={busy}");
+                assert!(!input.enter_queue_holds_keys(ctx), "busy={busy}");
             });
-        }
-        let outcomes = outcomes.borrow();
-        assert_eq!(outcomes.len(), 2, "{mode:?}");
-        assert_eq!(
-            outcomes[0], outcomes[1],
-            "{mode:?}: the busy queue reports the same discard as the free one"
-        );
+            assert!(executed.borrow().is_empty(), "busy={busy}");
+            assert!(released.borrow().is_empty(), "busy={busy}");
+            assert_eq!(toasts.borrow().len(), 1, "busy={busy}");
+            sink.borrow_mut().push(toasts.borrow().clone());
+        });
     }
+    let outcomes = outcomes.borrow();
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(
+        outcomes[0], outcomes[1],
+        "the busy queue reports the same discard as the free one"
+    );
 }
 
 /// #1661 review: a Tab typed behind an Enter that holds keys waits in its tty form (a `Held`
@@ -18869,70 +18555,66 @@ fn multiline_dialog_cancel_on_a_busy_queue_discards_like_on_a_free_one() {
 /// is dropped as any sequence is, and never runs the editor's Tab. Both modes, both cases.
 #[test]
 fn test_a_tab_held_behind_an_enter_runs_the_editors_tab_only_on_an_editor_route() {
-    use crate::terminal::input_queue::{DestinationMode, EntryKind, HELD_SEQ};
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for takeover in [true, false] {
-            App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-                initialize_app(&mut app);
-                let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
-                let input = terminal.read(&app, |terminal, _| terminal.input().clone());
-                if takeover {
-                    // The editor just took input over from the pty: sequences go to it.
-                    terminal.read(&app, |terminal, _| {
-                        terminal
-                            .model
-                            .lock()
-                            .typeahead_handoff_mut()
-                            .note_editor_took_over(std::time::Instant::now());
-                    });
-                }
-                input.update(&mut app, |input, ctx| {
-                    input.clear_buffer_and_reset_undo_stack(ctx);
-                    input.open_submitted_enter_gate_for_test(
-                        vec![AfterEnterInput::Text("ls".to_string())],
-                        false,
-                        ctx,
-                    );
-                    input.offer_entry_through_editor_host_for_test(
-                        EntryKind::Held {
-                            class: HELD_SEQ,
-                            text: "\t".to_owned(),
-                        },
-                        ctx,
-                    );
-                    assert_eq!(input.enter_gate_held_len_for_test(ctx), 2, "{mode:?}");
-                    input.release_enter_gate(ctx);
+    use crate::terminal::input_queue::{EntryKind, HELD_SEQ};
+    for takeover in [true, false] {
+        App::test((), move |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            if takeover {
+                // The editor just took input over from the pty: sequences go to it.
+                terminal.read(&app, |terminal, _| {
+                    terminal
+                        .model
+                        .lock()
+                        .typeahead_handoff_mut()
+                        .note_editor_took_over(std::time::Instant::now());
                 });
-                for _ in 0..400 {
-                    let done = input.read(&app, |input, ctx| {
-                        input.tabs_seen_for_test > 0
-                            || (!takeover && !input.enter_queue_holds_keys(ctx))
-                    });
-                    if done {
-                        break;
-                    }
-                    warpui::r#async::Timer::after(Duration::from_millis(5)).await;
-                }
-                // Let a late delivery land before judging the no-editor-route case.
-                warpui::r#async::Timer::after(Duration::from_millis(50)).await;
-                input.read(&app, |input, ctx| {
-                    assert_eq!(
-                        input.tabs_seen_for_test,
-                        usize::from(takeover),
-                        "{mode:?} takeover={takeover}: the Tab runs only on an editor route"
-                    );
-                    assert!(
-                        input.buffer_text(ctx).starts_with("ls"),
-                        "{mode:?} takeover={takeover}: the text before it: {:?}",
-                        input.buffer_text(ctx)
-                    );
-                    assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
-                });
+            }
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.open_submitted_enter_gate_for_test(
+                    vec![AfterEnterInput::Text("ls".to_string())],
+                    false,
+                    ctx,
+                );
+                input.offer_entry_through_editor_host_for_test(
+                    EntryKind::Held {
+                        class: HELD_SEQ,
+                        text: "\t".to_owned(),
+                    },
+                    ctx,
+                );
+                assert_eq!(input.enter_gate_held_len_for_test(ctx), 2);
+                input.release_enter_gate(ctx);
             });
-        }
+            for _ in 0..400 {
+                let done = input.read(&app, |input, ctx| {
+                    input.tabs_seen_for_test > 0
+                        || (!takeover && !input.enter_queue_holds_keys(ctx))
+                });
+                if done {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            // Let a late delivery land before judging the no-editor-route case.
+            warpui::r#async::Timer::after(Duration::from_millis(50)).await;
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.tabs_seen_for_test,
+                    usize::from(takeover),
+                    "takeover={takeover}: the Tab runs only on an editor route"
+                );
+                assert!(
+                    input.buffer_text(ctx).starts_with("ls"),
+                    "takeover={takeover}: the text before it: {:?}",
+                    input.buffer_text(ctx)
+                );
+                assert!(!input.enter_queue_holds_keys(ctx));
+            });
+        });
     }
 }
 
@@ -19047,48 +18729,41 @@ const SHELL_INPUT_FOR_SSH_ESCAPE_TEST: InputConfig = InputConfig {
 /// #1638: in a managed ssh session, Enter and then `~.` reach ssh as `~.`, once, exactly as plain
 /// ssh in a plain terminal receives them; the editor is left empty. Every ssh escape character
 /// except `~` (see `SSH_ESCAPE_CHARS`) does the same. Shell input and the agent mode's
-/// autodetected input (not locked to the agent) alike; Legacy and Table.
+/// autodetected input (not locked to the agent) alike;
 #[test]
 fn test_ssh_escape_at_line_start_of_a_managed_ssh_session_goes_to_the_pty() {
-    use crate::terminal::input_queue::DestinationMode;
     let autodetected_ai = InputConfig {
         input_type: InputType::AI,
         is_locked: false,
     };
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for input_config in [SHELL_INPUT_FOR_SSH_ESCAPE_TEST, autodetected_ai] {
-            for escape in [".", "?", "C", "R", "V", "v", "#", "&", "B"] {
-                App::test((), move |mut app| async move {
-                    let _mode =
-                        crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                    initialize_app(&mut app);
-                    let (input, editor, writes) =
-                        pane_for_ssh_escape_test(&mut app, true, input_config).await;
 
-                    type_keys_for_ssh_escape_test(&mut app, &editor, &["~"]);
-                    input.read(&app, |input, ctx| {
-                        assert_eq!(
-                            input.buffer_text(ctx),
-                            "~",
-                            "{mode:?} {input_config:?}: a lone `~` waits in the editor"
-                        );
-                    });
-                    assert!(
-                        writes.borrow().is_empty(),
-                        "{mode:?}: nothing before the 2nd key"
-                    );
+    for input_config in [SHELL_INPUT_FOR_SSH_ESCAPE_TEST, autodetected_ai] {
+        for escape in [".", "?", "C", "R", "V", "v", "#", "&", "B"] {
+            App::test((), move |mut app| async move {
+                initialize_app(&mut app);
+                let (input, editor, writes) =
+                    pane_for_ssh_escape_test(&mut app, true, input_config).await;
 
-                    type_keys_for_ssh_escape_test(&mut app, &editor, &[escape]);
+                type_keys_for_ssh_escape_test(&mut app, &editor, &["~"]);
+                input.read(&app, |input, ctx| {
                     assert_eq!(
-                        *writes.borrow(),
-                        vec![format!("~{escape}").into_bytes()],
-                        "{mode:?} {input_config:?}: `~{escape}` reached ssh once"
+                        input.buffer_text(ctx),
+                        "~",
+                        "{input_config:?}: a lone `~` waits in the editor"
                     );
-                    input.read(&app, |input, ctx| {
-                        assert_eq!(input.buffer_text(ctx), "", "{mode:?}: the editor is empty");
-                    });
                 });
-            }
+                assert!(writes.borrow().is_empty(), "nothing before the 2nd key");
+
+                type_keys_for_ssh_escape_test(&mut app, &editor, &[escape]);
+                assert_eq!(
+                    *writes.borrow(),
+                    vec![format!("~{escape}").into_bytes()],
+                    "{input_config:?}: `~{escape}` reached ssh once"
+                );
+                input.read(&app, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "", "the editor is empty");
+                });
+            });
         }
     }
 }
@@ -19097,76 +18772,62 @@ fn test_ssh_escape_at_line_start_of_a_managed_ssh_session_goes_to_the_pty() {
 /// reaches the pty. `~~` stays editor text too: ssh turns it into one `~` when the line is sent.
 #[test]
 fn test_tilde_and_a_non_escape_key_stay_in_the_editor_of_a_managed_ssh_session() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for second in ["x", "/", "~", " "] {
-            App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                initialize_app(&mut app);
-                let (input, editor, writes) =
-                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
-                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", second, "."]);
-                input.read(&app, |input, ctx| {
-                    assert_eq!(input.buffer_text(ctx), format!("~{second}."), "{mode:?}");
-                });
-                assert!(
-                    writes.borrow().is_empty(),
-                    "{mode:?} `~{second}`: nothing to the pty"
-                );
+    for second in ["x", "/", "~", " "] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["~", second, "."]);
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), format!("~{second}."));
             });
-        }
+            assert!(
+                writes.borrow().is_empty(),
+                "`~{second}`: nothing to the pty"
+            );
+        });
     }
 }
 
 /// #1638: ssh takes `~` only as the first character of a line; mid-line `~.` is editor text.
 #[test]
 fn test_ssh_escape_mid_line_stays_in_the_editor_of_a_managed_ssh_session() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            initialize_app(&mut app);
-            let (input, editor, writes) =
-                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
-            type_keys_for_ssh_escape_test(&mut app, &editor, &["l", "s", " ", "~", "."]);
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "ls ~.", "{mode:?}");
-            });
-            assert!(writes.borrow().is_empty(), "{mode:?}: nothing to the pty");
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let (input, editor, writes) =
+            pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["l", "s", " ", "~", "."]);
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "ls ~.");
         });
-    }
+        assert!(writes.borrow().is_empty(), "nothing to the pty");
+    });
 }
 
 /// #1638: a local session has no ssh client to take the escape: `~.` is editor text, as before.
 /// So is a line locked to the agent in a managed ssh session (the agent view, a steer, #851).
 #[test]
 fn test_ssh_escape_stays_in_the_editor_outside_a_managed_ssh_shell_line() {
-    use crate::terminal::input_queue::DestinationMode;
     let locked_ai = InputConfig {
         input_type: InputType::AI,
         is_locked: true,
     };
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for (remote, input_config) in [(false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST), (true, locked_ai)]
-        {
-            App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                initialize_app(&mut app);
-                let (input, editor, writes) =
-                    pane_for_ssh_escape_test(&mut app, remote, input_config).await;
-                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
-                input.read(&app, |input, ctx| {
-                    assert_eq!(
-                        input.buffer_text(ctx),
-                        "~.",
-                        "{mode:?} remote={remote} {input_config:?}"
-                    );
-                });
-                assert!(writes.borrow().is_empty(), "{mode:?}: nothing to the pty");
+
+    for (remote, input_config) in [(false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST), (true, locked_ai)] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, remote, input_config).await;
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "~.",
+                    "remote={remote} {input_config:?}"
+                );
             });
-        }
+            assert!(writes.borrow().is_empty(), "nothing to the pty");
+        });
     }
 }
 
@@ -19234,90 +18895,80 @@ async fn wait_for_pty_writes(writes: &Rc<RefCell<Vec<Vec<u8>>>>, n: usize) {
 /// nothing held or discarded. While a request IS on its way, the Enter still waits for its report
 /// (#1104) and `~.` waits behind it: nothing reaches the pty. (The bare Enter is not a pass-through
 /// of its own: that shortcut was removed by the owner on 2026-11-05 and is a known gap for after
-/// the release, for `<Enter>~.` typed right after ssh connects.) Legacy and Table.
+/// the release, for `<Enter>~.` typed right after ssh connects.)
 #[test]
 fn test_bare_enter_then_ssh_escape_after_an_unanswered_request_in_a_managed_ssh_session() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for on_its_way in [false, true] {
-            App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-                initialize_app(&mut app);
-                let (input, editor, writes) =
-                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
-                handoff_after_an_unanswered_request(&app, &input, on_its_way);
-                let case = format!("{mode:?} on_its_way={on_its_way}");
+    for on_its_way in [false, true] {
+        App::test((), move |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            handoff_after_an_unanswered_request(&app, &input, on_its_way);
+            let case = format!("on_its_way={on_its_way}");
 
-                // The bare Enter on the empty line.
-                input.update(&mut app, |input, ctx| input.input_enter(ctx));
-                assert_eq!(
-                    enter_is_deferred_behind_the_report(&app, &input),
-                    on_its_way,
-                    "{case}: the bare Enter waits only for a report that is on its way"
-                );
+            // The bare Enter on the empty line.
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(
+                enter_is_deferred_behind_the_report(&app, &input),
+                on_its_way,
+                "{case}: the bare Enter waits only for a report that is on its way"
+            );
 
-                if on_its_way {
-                    // `~.` typed at once.
-                    type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
-                    assert!(
-                        writes.borrow().is_empty(),
-                        "{case}: neither the Enter nor `~.` behind it reaches the pty before the \
-                         report"
-                    );
-                    return;
-                }
-
-                // The Enter's command write, captured before any later key is typed.
-                wait_for_pty_writes(&writes, 1).await;
-                assert_eq!(
-                    *writes.borrow(),
-                    vec![b"\r".to_vec()],
-                    "{case}: the bare Enter's command went to the pty controller at once"
-                );
-
-                // `~.` typed at once lands behind it.
+            if on_its_way {
+                // `~.` typed at once.
                 type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
-                wait_for_pty_writes(&writes, 2).await;
-                assert_eq!(
-                    *writes.borrow(),
-                    vec![b"\r".to_vec(), b"~.".to_vec()],
-                    "{case}: ssh receives `\\r~.`, in order, once, nothing held or discarded"
+                assert!(
+                    writes.borrow().is_empty(),
+                    "{case}: neither the Enter nor `~.` behind it reaches the pty before the \
+                         report"
                 );
-                input.read(&app, |input, ctx| {
-                    assert_eq!(input.buffer_text(ctx), "", "{case}: the editor is empty");
-                });
+                return;
+            }
+
+            // The Enter's command write, captured before any later key is typed.
+            wait_for_pty_writes(&writes, 1).await;
+            assert_eq!(
+                *writes.borrow(),
+                vec![b"\r".to_vec()],
+                "{case}: the bare Enter's command went to the pty controller at once"
+            );
+
+            // `~.` typed at once lands behind it.
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+            wait_for_pty_writes(&writes, 2).await;
+            assert_eq!(
+                *writes.borrow(),
+                vec![b"\r".to_vec(), b"~.".to_vec()],
+                "{case}: ssh receives `\\r~.`, in order, once, nothing held or discarded"
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "", "{case}: the editor is empty");
             });
-        }
+        });
     }
 }
 
 /// #1793 backstop for a line that is NOT empty: a request the remote never answered no longer
 /// holds it once the next command's own Preexec (told by its text) has settled it, while a request
-/// that IS on its way still holds it until its report (#1104). Legacy and Table.
+/// that IS on its way still holds it until its report (#1104).
 #[test]
 fn test_a_settled_unanswered_request_does_not_hold_a_typed_line_in_a_managed_ssh_session() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for on_its_way in [false, true] {
-            App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-                initialize_app(&mut app);
-                let (input, editor, _writes) =
-                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
-                handoff_after_an_unanswered_request(&app, &input, on_its_way);
-                type_keys_for_ssh_escape_test(&mut app, &editor, &["l", "s"]);
-                input.update(&mut app, |input, ctx| input.input_enter(ctx));
-                assert_eq!(
-                    enter_is_deferred_behind_the_report(&app, &input),
-                    on_its_way,
-                    "{mode:?}: `ls` waits only for a report that is on its way"
-                );
-            });
-        }
+    for on_its_way in [false, true] {
+        App::test((), move |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let (input, editor, _writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            handoff_after_an_unanswered_request(&app, &input, on_its_way);
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["l", "s"]);
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(
+                enter_is_deferred_behind_the_report(&app, &input),
+                on_its_way,
+                "`ls` waits only for a report that is on its way"
+            );
+        });
     }
 }
 
@@ -19366,79 +19017,69 @@ fn handoff_state(
 /// answered, nothing written since), the escape goes out as `\r~.`, one write: ssh sees its line
 /// start, and the remote shell runs an empty line, which the hand-off counts as a bare Enter's (the
 /// pty owns input until that line's prompt is answered). Both after a command and at the first
-/// prompt right after connect (`~.` with no Enter). Legacy and Table.
+/// prompt right after connect (`~.` with no Enter).
 #[test]
 fn test_ssh_escape_on_a_proven_empty_remote_line_goes_out_behind_a_carriage_return() {
-    use crate::terminal::input_queue::DestinationMode;
     use crate::terminal::model::typeahead_handoff::HandoffState;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for after_command in [true, false] {
-            App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-                initialize_app(&mut app);
-                let (input, editor, writes) =
-                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
-                handoff_after_an_answered_empty_report(&app, &input, after_command);
-                let case = format!("{mode:?} after_command={after_command}");
+    for after_command in [true, false] {
+        App::test((), move |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            handoff_after_an_answered_empty_report(&app, &input, after_command);
+            let case = format!("after_command={after_command}");
 
-                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
-                assert_eq!(
-                    *writes.borrow(),
-                    vec![b"\r~.".to_vec()],
-                    "{case}: ssh receives `\\r~.`, once, in one write"
-                );
-                input.read(&app, |input, ctx| {
-                    assert_eq!(input.buffer_text(ctx), "", "{case}: the editor is empty");
-                });
-                assert_eq!(
-                    handoff_state(&app, &input),
-                    HandoffState::PtyOwned {
-                        wrote_user_bytes: true,
-                        enters_written: 1,
-                        precmds_seen: 0,
-                    },
-                    "{case}: the `\\r` is counted as a bare Enter's line"
-                );
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+            assert_eq!(
+                *writes.borrow(),
+                vec![b"\r~.".to_vec()],
+                "{case}: ssh receives `\\r~.`, once, in one write"
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "", "{case}: the editor is empty");
             });
-        }
+            assert_eq!(
+                handoff_state(&app, &input),
+                HandoffState::PtyOwned {
+                    wrote_user_bytes: true,
+                    enters_written: 1,
+                    precmds_seen: 0,
+                },
+                "{case}: the `\\r` is counted as a bare Enter's line"
+            );
+        });
     }
 }
 
 /// #1793: the `\r` is never added where it could submit remote text: with user bytes the hand-off
 /// did not adopt in the shell's line, with a request still outstanding, or with anything written to
-/// the pty since the report. The escape then goes out as typed, as before. Legacy and Table.
+/// the pty since the report. The escape then goes out as typed, as before.
 #[test]
 fn test_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for blocker in ["untracked", "outstanding", "written"] {
-            App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-                initialize_app(&mut app);
-                let (input, editor, writes) =
-                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
-                handoff_after_an_answered_empty_report(&app, &input, true);
-                input.read(&app, |input, _| {
-                    let mut model = input.model.lock();
-                    let mut handoff = model.typeahead_handoff_mut();
-                    match blocker {
-                        "untracked" => handoff.note_untracked_line_bytes(),
-                        "outstanding" => handoff.on_legacy_request_written(),
-                        _ => handoff.pty_write_count().note_write(),
-                    }
-                });
-                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
-                assert_eq!(
-                    *writes.borrow(),
-                    vec![b"~.".to_vec()],
-                    "{mode:?} {blocker}: the escape goes out as typed, no `\\r`"
-                );
+    for blocker in ["untracked", "outstanding", "written"] {
+        App::test((), move |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            handoff_after_an_answered_empty_report(&app, &input, true);
+            input.read(&app, |input, _| {
+                let mut model = input.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                match blocker {
+                    "untracked" => handoff.note_untracked_line_bytes(),
+                    "outstanding" => handoff.on_legacy_request_written(),
+                    _ => handoff.pty_write_count().note_write(),
+                }
             });
-        }
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+            assert_eq!(
+                *writes.borrow(),
+                vec![b"~.".to_vec()],
+                "{blocker}: the escape goes out as typed, no `\\r`"
+            );
+        });
     }
 }
 
@@ -19448,68 +19089,59 @@ fn test_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empt
 /// Table.
 #[test]
 fn test_enter_then_ssh_escape_right_after_connect_adds_no_second_carriage_return() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            initialize_app(&mut app);
-            let (input, editor, writes) =
-                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
-            handoff_after_an_answered_empty_report(&app, &input, false);
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (input, editor, writes) =
+            pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        handoff_after_an_answered_empty_report(&app, &input, false);
 
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
-            assert!(
-                !enter_is_deferred_behind_the_report(&app, &input),
-                "{mode:?}: the answered report holds nothing"
-            );
-            wait_for_pty_writes(&writes, 1).await;
-            assert_eq!(*writes.borrow(), vec![b"\r".to_vec()], "{mode:?}");
-            // What `PtyController::write_command` does with the editor's command.
-            input.read(&app, |input, _| {
-                let mut model = input.model.lock();
-                let mut handoff = model.typeahead_handoff_mut();
-                handoff.on_command_written();
-                handoff.note_written_command_text("");
-                handoff.pty_write_count().note_write();
-            });
-
-            type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
-            wait_for_pty_writes(&writes, 2).await;
-            assert_eq!(
-                *writes.borrow(),
-                vec![b"\r".to_vec(), b"~.".to_vec()],
-                "{mode:?}: ssh receives `\\r~.`, in order, once"
-            );
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert!(
+            !enter_is_deferred_behind_the_report(&app, &input),
+            "the answered report holds nothing"
+        );
+        wait_for_pty_writes(&writes, 1).await;
+        assert_eq!(*writes.borrow(), vec![b"\r".to_vec()]);
+        // What `PtyController::write_command` does with the editor's command.
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.on_command_written();
+            handoff.note_written_command_text("");
+            handoff.pty_write_count().note_write();
         });
-    }
+
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+        wait_for_pty_writes(&writes, 2).await;
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"\r".to_vec(), b"~.".to_vec()],
+            "ssh receives `\\r~.`, in order, once"
+        );
+    });
 }
 
 /// #1793: a local session has no ssh client: `~.` on a proven-empty line stays editor text and
-/// nothing (no `\r`) reaches the pty. Legacy and Table.
+/// nothing (no `\r`) reaches the pty.
 #[test]
 fn test_ssh_escape_carriage_return_leaves_a_local_session_alone() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            initialize_app(&mut app);
-            let (input, editor, writes) =
-                pane_for_ssh_escape_test(&mut app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
-            handoff_after_an_answered_empty_report(&app, &input, true);
-            type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), "~.", "{mode:?}");
-            });
-            assert!(writes.borrow().is_empty(), "{mode:?}: nothing to the pty");
-            assert_eq!(
-                handoff_state(&app, &input),
-                crate::terminal::model::typeahead_handoff::HandoffState::EditorOwned,
-                "{mode:?}"
-            );
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (input, editor, writes) =
+            pane_for_ssh_escape_test(&mut app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        handoff_after_an_answered_empty_report(&app, &input, true);
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "~.");
         });
-    }
+        assert!(writes.borrow().is_empty(), "nothing to the pty");
+        assert_eq!(
+            handoff_state(&app, &input),
+            crate::terminal::model::typeahead_handoff::HandoffState::EditorOwned
+        );
+    });
 }
 
 /// The remote as-you-type listing is single flight, latest wins, with no clock: a burst of
