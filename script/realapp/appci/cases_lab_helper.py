@@ -566,6 +566,8 @@ def c_tab_hands_back(ctx, r, arm):
     ctx.until(lambda: any(tok in c for _, c in ctx.remote.commands()[c0:]), 30, step=0.5)
     n = sum(1 for _, c in ctx.remote.commands()[c0:] if tok in c)
     r.check(n == 1, "the typed line reached the remote shell %d times, expected exactly once" % n)
+    if n != 1:
+        CL.recorder_evidence(ctx, r, arm, c0, "nohelper_tab_hands_back")
     CL.finish_remote(ctx, r)
 
 

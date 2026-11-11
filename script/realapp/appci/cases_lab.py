@@ -591,6 +591,38 @@ def finish_remote(ctx, r, label=""):
     return ok
 
 
+def recorder_evidence(ctx, r, arm, since, why):
+    """#2162: when a case's check on what the remote shell RECEIVED fails because the lab recorder shows nothing new (`rec.log` has no C line for it; `since` is only
+    recorded in the note), the effect file alone proves the commands ran but not who is at fault. Capture the lab user's rec.log / prompt.log / hook.log tails
+    and, in a zsh pane, `print -l $preexec_functions` (typed into the pane AFTER the judged part, so it cannot disturb it) and say which side the facts
+    point at: __pa_pxh missing from preexec_functions is APP evidence (the app's bootstrap dropped the user's preexec hook); present with an empty
+    rec.log is a TEST (recorder) finding. Notes only: the failing check stays failing, and the case is never accepted on the effect file alone."""
+    try:
+        rem = ctx.remote
+        tails = {}
+        for name in ("rec.log", "prompt.log", "hook.log"):
+            try:
+                tails[name] = rem.read(name)[-12:]
+            except Exception as e:  # noqa: BLE001
+                tails[name] = ["<unreadable: %s>" % e]
+        r.note("recorder evidence (%s, after %d recorded lines): rec.log tail %r; prompt.log tail %r; hook.log %r" % (why, since, tails["rec.log"], tails["prompt.log"][-3:], tails["hook.log"]))
+        if arm["shell"] != "zsh":
+            return
+        f = "pf_%s.txt" % unique(ctx, 4)
+        ctx.be.type("print -l $preexec_functions >> %s" % work(arm, f), type_pace(ctx), enter=True)
+        got = ctx.until(lambda: rem.lines(f), 10)
+        if got is None or not got:
+            r.note("recorder evidence: `print -l $preexec_functions` produced nothing (the shell did not run it or the file is unreadable)")
+            return
+        if "__pa_pxh" not in got:
+            r.note("APP evidence (#2162): preexec_functions in the bootstrapped zsh = %r has no __pa_pxh: the app's bootstrap dropped the user's preexec hook "
+                   "(the rc re-adds it at the next prompt; hook.log names the loss)" % got)
+        else:
+            r.note("TEST evidence (#2162): preexec_functions = %r carries __pa_pxh, yet rec.log has no C line for the commands: the recorder, not the app" % got)
+    except Exception as e:  # noqa: BLE001
+        r.note("recorder evidence could not be captured: %s" % e)
+
+
 def rec_ts(ctx, tok):
     """epoch (REMOTE clock) of the first rec.log entry containing tok, or None"""
     for ts, cmd in ctx.remote.commands():
@@ -848,6 +880,8 @@ def c_enter_start(ctx, r, arm):
     CA.exact_lines(r, "effect file: every typed line arrived once, in order", app_toks, [(x.split() or [""])[0] for x in eff_lines])
     if timed:
         recs = [c for _, c in ctx.remote.commands() if any(t in c for t in app_toks)]
+        if not recs:
+            recorder_evidence(ctx, r, arm, 0, "enter_start")
         CA.exact_lines(r, "rec.log: the shell received exactly the typed lines", app_lines, recs)
     pv = None
     if timed:
@@ -1154,6 +1188,8 @@ def c_ctrl_c_no_esc_i(ctx, r, arm):
             time.sleep(0.3 + rt)
             new = rem.commands()[c0:]
             r.check(len(new) == 2 and new[0][1].strip() == sleep_line and tok in new[-1][1], "[%s] the shell received %r, expected exactly [%s, the echo]" % (label, [c for _, c in new], sleep_line))
+            if not new:
+                recorder_evidence(ctx, r, arm, c0, label)
             r.check(not any("\x1bi" in c or "^[i" in c for _, c in new), "[%s] an ESC-i (^[i) reached the shell: %r" % (label, [c for _, c in new]))
             if arm["shell"] == "bash":
                 # one prompt per command, plus at most one for each further Ctrl-C the app WROTE while the prompt had not come back (lab.ctrl_c_prompt_bounds)

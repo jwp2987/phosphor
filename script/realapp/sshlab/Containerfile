@@ -28,6 +28,12 @@ RUN apt-get install -y --no-install-recommends openssh-server bash dash busybox 
  && cp -L "$(readlink -f /usr/bin/python3)" /usr/libexec/sshlab/py
 COPY rootfs/ /
 RUN ln -sfn /run/sshlab /etc/sshlab
+# #2154: the PATH directory of the p_tinypath scenario (scenarios/tinypath.sh). A small PATH that deliberately has NO bash (nor od/tr/base64/curl/wget/scp,
+# which the bare flavor also lacks): busybox applets for a minimal tool set, so the case judges "a small PATH without bash", not an empty one.
+RUN mkdir -p /usr/local/lib/sshlab/tinybin \
+ && for t in sh ls cat cp mv rm mkdir rmdir pwd echo printf sleep date uname env id head tail sed grep wc dirname basename sort stty test true false; do \
+      ln -sf /bin/busybox "/usr/local/lib/sshlab/tinybin/$t"; done \
+ && test ! -e /usr/local/lib/sshlab/tinybin/bash && /usr/local/lib/sshlab/tinybin/ls /usr/local/lib/sshlab/tinybin >/dev/null
 
 FROM common AS full
 RUN apt-get update && apt-get install -y --no-install-recommends zsh fish bash-completion git curl \

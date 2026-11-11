@@ -529,6 +529,17 @@ def cmd_selftest(root):
                 if v["verdict"] != "ok":
                     failures.append("RTT gate at 150 ms: %s" % v)
                 lab.clear_fault()
+                # #2161: labd /complete returns BOTH of two `amb*` directories for every shell that has a completion driver (all of them exist in this image)
+                for u in users:
+                    if u["shell"] not in ("bash", "rbash", "zsh", "fish", "nu", "pwsh") or u["profile"] != "default":
+                        continue
+                    lab.tree(u["user"], {"ambx_a/f": "", "ambx_b/f": "", "zzq_only/f": ""}, dir="cx")
+                    got = lab.complete(u["user"], "cd /work/%s/cx/amb" % u["user"]).get("candidates") or []
+                    names = {c.rstrip("/").split("/")[-1] for c in got}
+                    ok = {"ambx_a", "ambx_b"} <= names and "zzq_only" not in names
+                    print("%-6s %-12s complete %s" % (flavor, u["user"], "ok" if ok else "FAIL: %r" % got))
+                    if not ok:
+                        failures.append("%s: /complete returned %r for two amb* directories" % (u["user"], got))
                 if not L.mfa_login_ok(lab, key):
                     failures.append("p_mfa: publickey + TOTP login failed")
                 if not L.onesess_refuses(lab, key, tmp):

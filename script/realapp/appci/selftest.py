@@ -5619,9 +5619,78 @@ def lab_ctl_and_daemon_pure_pieces():
     assert D.parse_ss(ss) == [("10.89.0.1", 51234, 22), ("10.89.0.1", 5, 7000), ("::ffff:10.89.0.1", 6000, 2222)]
     log = "sshd-session[9]: Accepted publickey for u_a from 10.89.0.1 port 51234 ssh2: ED25519\nAccepted publickey for u_ab from 10.89.0.1 port 51240 ssh2\n"
     assert D.accepted_ports(log, "u_a") == [("10.89.0.1", 51234)]
-    assert D.split_candidates("zsh", "\x1b[1m> \x1b[0mcd tabfx/\r\nambx_a/  ambx_b/\r\n", "cd tabfx/") == ["ambx_a/", "ambx_b/"]
+    assert D.split_candidates("zsh", "\x1b[K\x07x_\n\x00\x1b[Jambx_a/  ambx_b/\x1b[A\x1b[0m\n\x1b[6Ccd tabfx/ambx_\x1b[K\x07\n", "cd tabfx/amb") == ["ambx_a/", "ambx_b/"]
+    assert D.split_candidates("zsh", "\x1b[K\x07\n\x00\x1b[K\n", "cd none/") == []          # no list drawn: no candidates, not the echoed line
+    assert D.split_candidates("nu", '[{"value":"ambx_a/","description":null,"span":{"start":3,"end":6}},{"value":"ambx_b/"}]', "cd amb") == ["ambx_a/", "ambx_b/"]
+    assert D.split_candidates("nu", '{"completions":["a","b"]}', "x") == ["a", "b"] and D.split_candidates("nu", "a\nb\n", "x") == ["a", "b"]
     assert D.split_candidates("fish", "a/\tdirectory\nb/\tdirectory\n", "x") == ["a/", "b/"]
     assert D.totp_file_text("ABC") == 'ABC\n" TOTP_AUTH\n'
+
+@check
+def labd_complete_returns_both_ambiguous_dirs_for_every_shell_2161():
+    """#2161: labd's /complete driver, run offline with the SAME run_completer the daemon uses, returns both of two `amb*` directories for every shell whose
+    binary exists on this machine (a missing binary skips only that shell; the lab-side check in `labctl.py selftest` runs all of them inside the image,
+    where every shell exists). Before the fix zsh (one read after a sleep, no terminal size) and nu (JSON read as one candidate per line) returned []."""
+    D = _load_by_path("labd_2161", os.path.join(SSHLAB, "rootfs", "usr", "local", "sbin", "labd.py"))
+    d = tempfile.mkdtemp()
+    ran = []
+    try:
+        for n in ("ambx_a", "ambx_b", "zzq_only"):
+            os.makedirs(os.path.join(d, "t", n))
+        for key, binary in (("bash", "bash"), ("zsh", "zsh"), ("fish", "fish"), ("nu", "nu"), ("pwsh", "pwsh")):
+            if not shutil.which(binary):
+                print("  skip %s: no %s binary on this machine" % (key, binary))
+                continue
+            line = "cd t/amb"
+            p = D.run_completer(key, line, d)
+            got = D.split_candidates(key, p.stdout, line)
+            names = {g.rstrip("/").split("/")[-1] for g in got}
+            assert {"ambx_a", "ambx_b"} <= names and "zzq_only" not in names, "%s: candidates %r (rc=%s, stderr=%r, raw=%r)" % (key, got, p.returncode, p.stderr[-200:], p.stdout[-300:])
+            ran.append(key)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  labd /complete verified offline for: %s" % (", ".join(ran) or "none (no shell binary here)"))
+
+
+@check
+def zsh_recorder_logs_from_preexec_and_survives_a_dropped_hook_2162():
+    """#2162: the lab zsh rc logs each executed line from preexec itself ($1), so a session whose precmd/history path misses a line still records it; the
+    history path is only a guard (no double C line), precmd puts a dropped preexec hook back and names the loss in hook.log. Runs a real interactive zsh
+    in a zpty with the rc (skipped only when there is no zsh binary)."""
+    if not shutil.which("zsh"):
+        print("  skip: no zsh binary on this machine")
+        return
+    d = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(d, "w"))
+        with open(os.path.join(d, ".zshrc"), "w") as f:
+            f.write(profile.ZSHRC % {"ctl": d})
+        lines = ["echo one", "preexec_functions=()", "echo two", "precmd_functions=(__pa_rec); preexec_functions=()", "echo three", "exit"]
+        drv = ("zmodload zsh/zpty; export ZDOTDIR=$1 HOME=$1 APPCI_W=$1/w TERM=xterm; zpty z zsh -di; sleep 1\n"
+               "for l in " + " ".join("'%s'" % l for l in lines) + "; do zpty -w z \"$l\"; sleep 0.5; done\nsleep 0.5; zpty -d z\n")
+        subprocess.run(["zsh", "-f", "-c", drv, "_", d], timeout=60, capture_output=True)
+        rec = [l.split("\t", 2)[2] for l in open(os.path.join(d, "rec.log")).read().splitlines() if l.startswith("C\t")]
+        rec = [c for c in rec if c]          # the first precmd of a shell with no history logs an empty line (older behaviour, ignored by readers)
+        assert rec == lines[:-1], "rec.log C lines %r, expected each typed line exactly once: %r" % (rec, lines[:-1])
+        hook = open(os.path.join(d, "hook.log")).read()
+        assert "preexec_functions lost __pa_pxh" in hook, "the dropped hook was not named in hook.log: %r" % hook
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def tinypath_scenario_dir_is_built_into_the_image_without_bash_2154():
+    """#2154: scenarios/tinypath.sh points PATH at a directory the image must create; the Containerfile builds it (busybox applets, never bash)."""
+    import re as _re2
+    sc = open(os.path.join(SSHLAB, "rootfs", "usr", "local", "lib", "sshlab", "scenarios", "tinypath.sh")).read()
+    d = _re2.search(r"PATH=(\S+)", sc).group(1)
+    cf = open(os.path.join(SSHLAB, "Containerfile")).read()
+    assert d in cf, "the Containerfile does not create %s" % d
+    seg = cf[cf.index("mkdir -p " + d):].split("\n\n")[0]
+    tools = _re2.search(r"for t in ([^;]+); do", seg).group(1).split()
+    assert "sh" in tools and "ls" in tools and "cat" in tools and "bash" not in tools and "rbash" not in tools, tools
+    assert "test ! -e %s/bash" % d in seg, "the build does not assert there is no bash in the small PATH"
+
 
 # ---- the real-use replay (replay.py, fake_model.py, cases_replay.py)
 @check
