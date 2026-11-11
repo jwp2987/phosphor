@@ -7198,3 +7198,54 @@ re-read after the run and the run repeated if a login rewrote it meanwhile). `te
 test pane (`sh$ `) and the test asserts that it does; no assertion changed. Not covered in a view test: a prompt that soft-wraps staying `written`
 (the pure rule's `continues` cases cover it).
 What the next run should show: both PASS in test-linux.
+
+## Round 19: Windows rest of the round 14 candidate (design `docs/design/r19-winmisc.md`; #2113 #2114 #2115 #2116; nothing compiled, no app run when written)
+
+Source: build/r14a 42ef67839, job app-test-windows. Verdicts per row are in the design note. Self-tests: `appci/selftest_r19_winmisc.py`
+(four checks), plus rows added to `audit2_raw_exit_is_banned_outside_ctx_and_the_root_pid_is_recorded_once_per_launch` (selftest.py) and to
+the polled zero-network check (selftest_r15_w5a.py).
+
+**PowerShell expressions route to the shell (#2113, APP).** `routing::route` now decides a `[Type]::member` / `[Type]$var` head and a
+numeric range (`1..10`) as `shell-syntax` in a PowerShell session, before the quoted-first-word return that left them to the model.
+Unit tests: `crates/input_classifier/src/util/routing_tests.rs`, `powershell_type_and_range_heads_are_shell_syntax_in_a_powershell_session`
+and `powershell_expression_rule_takes_nothing_else` (what must not match, and every other shell family). App case:
+`routing_table_powershell` (PROVING) gained three shell rows, `[math]::Sqrt(2)`, `[IO.File]::Exists('log.txt')` and `1..3`, in both modes.
+The rows that showed the defect and should pass on the next Windows run: `intl_wide_type` [agent], `intl_wide_paste` [terminal, agent],
+`intl_altgr_ps` [agent] (every `enter_route` line `Shell` only) and `soak` [agent] (the minute-5 sentinel arrives; the flood line
+`1..300000` is no longer an agent prompt).
+
+**Leaving a Git Bash started from the PowerShell pane (#2114, TEST).** `Ctx.exit_nested` types `exit` only on proof, and had none for a
+bash nested in a PowerShell pane: the PID probe there is PowerShell syntax, the where probe lands in the same home, and Windows has no
+shell count. `cases.posix_probe_cmd` is a line only bash or zsh can run (PowerShell refuses it at parse time, so none of it runs);
+`Ctx.posix_shell_in_front` types it in a PowerShell pane when the PID probe got no answer, and an answer is the proof `exit_nested` and
+the post-case `leave_nested` need. No answer: no `exit`, as before. Rows this should clear: `gitbash_subshell` [terminal, agent],
+`pane_wedged_after_gitbash_subshell`, and `pane_wedged_after_editor_daily` in the PowerShell arms (bash left in front by
+`intl_altgr_bash`, whose "`exit` NOT typed" note should be gone too). The oracle can still fail: a PowerShell line typed after the `exit`
+must run in PowerShell, and a pane that answers neither probe is still reported and relaunched.
+
+**A case waits for its own interrupted command to be logged (#2114, TEST).** `agent_lrc_no_false_takeover` can end with its `[y/N]` command
+at its prompt; the cleanup's Ctrl-C ends it and bash logs it at the next prompt. `lrc_wait_logged` waits (10 s net) for that rec.log line,
+so the next case's mark is taken after it. No check was removed: `cb_agent_pickers` still fails on any line the shell receives during it.
+
+**zero_network_startup on Windows types nothing in launch and idle (#2114, TEST).** The polled path starts the app with the key proof
+(`ctx.reprove`) taken out, idles `APPCI_ZNS_IDLE_S`, then runs the key proof as the first step of the scripted session (a failed proof is
+a FAIL and the session is not played). Launch and idle allow no non-loopback row, as before; the configured model endpoint is allowed in
+the session only, as before.
+
+**latency_first_key_after_idle re-measures a suspected regression (#2114, TEST).** The app-log path (Linux, Windows Git Bash) now hands
+`lat.evaluate` a `remeasure` (the same block again), as `lat.py`'s policy says: a clean second set is a WARN, never a pass; a second
+regressed set stays FAIL. Thresholds, budget and baseline are unchanged.
+
+**upgrade_over_previous: the previous release's stage is not a verdict on the build (#2114, TEST).** Failures while starting and driving the
+previous release (`uo_old`) are collected in a scratch result and make the case UNVERIFIABLE (noref), named, with what is needed
+(`prev_stage_unverifiable`). Once the previous release ran, the build under test is judged exactly as before. On the Windows VM the previous
+release could not be driven in either pane in round 14; why is not known (machine look needed).
+
+**CI: `RUNNER_AFTER_SCRIPT_TIMEOUT: "45m"` on `app-test-windows` (#2114).** The runner's default 5 minutes ran out in after_job.ps1 and the
+scrub after the 7-hour full tier; `slim_appci_run.py` never ran and the artifact had no `run_slim/shots` and no `run_slim/logs`. The lab
+and reuse jobs inherit the variable. Check on the next run: the trace has no "after_script could not run to completion" line and the
+artifact holds both directories.
+
+**Not judged, kept as rows:** `expert_fuzz` [terminal@gitbash] (#2115); `history_survives_restart`, `desktop_notification` and
+`pane_wedged_after_restore_shows_history` in the Git Bash terminal arm and `latency_enter` [agent@gitbash] (#2116). `big_paste` and
+`remote_heredoc_paste` on Windows fail as in the 2026-11-05 full run (platform: the conhost control falls short too).

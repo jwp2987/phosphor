@@ -495,6 +495,16 @@ def old_app_like(app, binary, bundle=None):
     return appmod.App(app.run, app.home, binary, app.display)
 
 
+def prev_stage_unverifiable(fails):
+    """pure: None when the previous release came up and took its three lines; else the UNVERIFIABLE text. The upgrade is judged only from what the build
+    under test does on the previous release's data, so a previous release that could not be started or driven on this profile leaves nothing to judge."""
+    if not fails:
+        return None
+    return ("the PREVIOUS release could not be brought up and driven on this pass's profile, so the build under test was not started on its data and the "
+            "upgrade is NOT judged: %s. NEEDS: a previous-release binary this harness can drive in this pane (same data folders and settings file as the "
+            "build under test), or APPCI_PREV_FIXTURE" % "; ".join(fails[:3]))
+
+
 @case("upgrade_over_previous", modes=("terminal",), order=90, gui=True)
 def c_upgrade_over_previous(ctx, r):
     """#1546 option (a): the NEW build starts on the data directory of the PREVIOUS release. The old data comes from one of (checked in this order):
@@ -534,12 +544,22 @@ def c_upgrade_over_previous(ctx, r):
             r.metric("fixture_files", unpack_state(fixture, ctx.prof.home))
         else:
             R.use_app(ctx, old_app_like(new_app, prev_bin, prev_bundle))
-            _n, up = R.start_app(ctx, r, "uo_old", restored_min=1)
-            if not up:
+            # #2114 (round 14, Windows, both panes): this stage drives the PREVIOUS release, and its failures were FAIL rows of the build under test
+            # ("uo_old: after the relaunch keys not delivered" with the previous release's window in front; "uo_old: no window / shell after the
+            # relaunch within 90 s"), although that build had not been started on the old data yet. What the previous release does under the harness
+            # says nothing about the build: its problems are collected apart and make the case UNVERIFIABLE (noref, never a pass), naming them.
+            old = C.Result(r.name, r.mode)
+            _n, up = R.start_app(ctx, old, "uo_old", restored_min=1)
+            if up:
+                ctx.be.key("Escape")
+                U.exact_burst(ctx, old, "uo_old", 3)
+                time.sleep(4.0)                                # the database writer and the session writer run at least once
+            for note in old.notes:
+                r.note(note)
+            why = prev_stage_unverifiable(old.fails)
+            if why:
+                r.unverifiable(why)
                 return
-            ctx.be.key("Escape")
-            U.exact_burst(ctx, r, "uo_old", 3)
-            time.sleep(4.0)                                    # the database writer and the session writer run at least once
             ctx.app.stop()
             R.use_app(ctx, new_app)
             if not ctx.win:

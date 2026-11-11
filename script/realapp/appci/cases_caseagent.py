@@ -1181,6 +1181,7 @@ def c_agent_lrc_no_false_takeover(ctx, r):
     NOTICE (the shared detector's `showing a take-over notice` line) and stays with the agent; the hand-over on Windows is the Read-Host marker (agent_interactive_password)."""
     need_provider(ctx, r)
     fresh_conversation(ctx, r)
+    tok_y = None
     try:
         # ---- part 1: a slow, silent command after a trailing colon stays with the agent
         tok_w = "LRCWAIT" + ctx.tok(6).upper()
@@ -1238,3 +1239,25 @@ def c_agent_lrc_no_false_takeover(ctx, r):
     finally:
         cleanup_tmp(ctx)
         ctx.be.key("ctrl+c")
+        lrc_wait_logged(ctx, tok_y)
+
+
+def lrc_command_pending(commands, tok, effect_lines):
+    """pure: is the [y/N] command of this case (it carries `tok`) still to be logged by the shell? True while it was started (tok given), did not
+    finish on its own (its effect file is empty) and no rec.log line carries the token yet. A pane without rec.log (commands == []) has nothing to wait for."""
+    return bool(tok) and bool(commands) and not effect_lines and not any(tok in c for c in commands)
+
+
+def lrc_wait_logged(ctx, tok, timeout=10.0):
+    """#2114 (round 14, Windows agent@gitbash): part 2 can end with `printf 'Continue? [y/N] '; read ans; ...` still at its prompt (the model's tool call
+    did not wait, so nothing handed it over). The Ctrl-C above ends it, and bash logs an interrupted command at its NEXT prompt, which came 0.7 s later,
+    after the next case (cb_agent_pickers) had taken its rec.log mark: "a picker key reached the shell: [the [y/N] line]". A case leaves the pane as it
+    found it: wait (bounded; the give-up net is the old behaviour) until the shell has logged the line. Returns True when it waited for one."""
+    try:
+        pending = lambda: lrc_command_pending([c for _t, c in ctx.prof.commands()], tok, ctx.lines("lrc_yn.txt"))       # noqa: E731
+        if not pending():
+            return False
+        ctx.until(lambda: not pending(), timeout, step=0.2)
+        return True
+    except Exception:          # cleanup never masks the case's verdict
+        return False

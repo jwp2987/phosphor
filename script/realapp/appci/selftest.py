@@ -1676,6 +1676,37 @@ def audit2_raw_exit_is_banned_outside_ctx_and_the_root_pid_is_recorded_once_per_
     assert cases.Ctx.exit_nested(c, 1, r, "x") is True and typed == ["exit"]              # a `su` shell: answers in root's home, but one more shell
     typed.clear(); c.root_pid = None; st["where"] = "local"; st["count"] = 2
     assert cases.Ctx.exit_nested(c, 1, r, "x") is True and typed == ["exit"]              # no root pid: the shell count proves the nesting
+    # #2114 (round 14, Windows): Git Bash started from the PowerShell pane. The PowerShell PID probe gets no answer from bash, the where probe lands in
+    # the same home and Windows has no shell count: the POSIX-only probe is the proof. No answer to it (PowerShell in front) -> no exit, as before.
+    typed.clear(); c.root_pid = "100"; st["pid"] = None; st["where"] = "local"; st["count"] = None
+    probes = []
+    c.pane, c.ptok = "powershell", lambda n=8: "T1_abcdefgh"
+    c.posix_shell_in_front = lambda: cases.Ctx.posix_shell_in_front(c)
+    c.probe = lambda cmd, tok, name, **k: (probes.append((cmd, name)), ("local", [tok + ":4711"]))[1]
+    assert cases.Ctx.exit_nested(c, None, r, "x") is True and typed == ["exit"], typed
+    assert probes == [('[ -n "$BASH_VERSION$ZSH_VERSION" ] && echo xT1_abcdefgh:$$ >> ~/.appci_pid', ".appci_pid")], probes
+    typed.clear()
+    c.probe = lambda cmd, tok, name, **k: ("none", [])
+    assert cases.Ctx.exit_nested(c, None, r, "x") is False and typed == [] and "unknown" in r.notes[-1]
+    c.probe = lambda cmd, tok, name, **k: ("local", [tok])                                 # a token without a pid is no proof (the where probe's shape)
+    assert cases.Ctx.exit_nested(c, None, r, "x") is False and typed == []
+    c.pane = "gitbash"
+    c.probe = lambda cmd, tok, name, **k: 1 / 0                                           # only a PowerShell pane is asked
+    assert cases.Ctx.posix_shell_in_front(c) is False
+    c.pane = None
+    # the POSIX-only line is one PowerShell cannot run in part: it opens with `[ -n`, a parse error there, and names no PowerShell syntax
+    line = cases.posix_probe_cmd("tok")
+    assert line.startswith('[ -n "$BASH_VERSION') and "&& echo tok:$$ >> ~/.appci_pid" in line and "Add-Content" not in line
+    # leave_nested: the same proof lets the post-case check leave a Git Bash a case left in front of the PowerShell pane
+    typed.clear()
+    seq = {"pids": [None, None, "100"], "posix": [True]}
+    ln = types.SimpleNamespace(pane="powershell", be=types.SimpleNamespace(type=lambda t, *a, **k: typed.append(t)), prof=types.SimpleNamespace(prompts=lambda remote=False: 0),
+                               shell_pid=lambda: seq["pids"].pop(0), reset=lambda: None, posix_shell_in_front=lambda: seq["posix"].pop(0),
+                               wait_prompt_after_exit=lambda *a, **k: True)
+    assert cases.Ctx.leave_nested(ln, "100") == "root" and typed == ["exit"], typed
+    typed.clear()
+    seq = {"pids": [None, None], "posix": [False]}
+    assert cases.Ctx.leave_nested(ln, "100") == "none" and typed == []                    # nothing answers either probe: no exit, the pane is lost
     # record_root_pid: once per launch, refused unless exactly one shell runs under the app
     cx = types.SimpleNamespace(win=False, pane=None, be=types.SimpleNamespace(guard=lambda: None), shell_count=lambda: 2, shell_pid=lambda: "77")
     app = types.SimpleNamespace(pid=lambda: 4242)
@@ -8665,6 +8696,8 @@ import selftest_r16_settings  # noqa: E402  (round 16: the test settings model: 
 CHECKS.extend(selftest_r16_settings.CHECKS)
 import selftest_r17_misc  # noqa: E402  (round 17 misc: #2028 md_viewer_first_frame, #2091 gpu_lost_device_recovers and its Rust hook; own file)
 CHECKS.extend(selftest_r17_misc.CHECKS)
+import selftest_r19_winmisc  # noqa: E402  (round 19, Windows rest after the round 14 candidate: #2113 #2114)
+CHECKS.extend(selftest_r19_winmisc.CHECKS)
 
 
 def missing_required(required, passed):
