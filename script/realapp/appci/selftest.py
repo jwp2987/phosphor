@@ -8271,6 +8271,8 @@ def r14_window_use_cases_pure_parts():
             assert n in winmap.NOT_WINDOWS and "r14-test-gaps T3" in winmap.skip_reason(n, "gitbash"), n
 import selftest_pointer  # noqa: E402  (round 14 wave 3a: cases_pointer.py; its checks live in their own file)
 CHECKS.extend(selftest_pointer.CHECKS)
+import selftest_desk  # noqa: E402  (round 15 wave 4: cases_desk.py, notify_recorder.py, dragsrc.py; its checks live in their own file)
+CHECKS.extend(selftest_desk.CHECKS)
 
 
 def main():

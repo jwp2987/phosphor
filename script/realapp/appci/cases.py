@@ -130,6 +130,10 @@ PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_i
 PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wait.*", "lab_enter_start.*.150.*", "lab_ctrl_c_no_esc_i.*", "lab_agent_nld_predict_ssh.*")
 # #985 (round 14): lab_raw_key_arrival is new: a key to a raw-input program on the server against plain ssh, with and without the helper's session.
 PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wait.*", "lab_enter_start.*.150.*", "lab_ctrl_c_no_esc_i.*", "lab_raw_key_arrival.*")
+# round 15 wave 4, desktop integration (docs/design/r14-test-gaps.md T35 / T37 / T38 / T39, design docs/design/r15-w4desk.md; #2075, #2078): display
+# scale 1.25 / 1.5 / 2 and a second output, desktop notifications (a recording service on the app's private bus), a real file drag, a real input method
+PROVING += ("scale_matrix", "desktop_notification", "desktop_notification_agent_question", "drag_drop_file", "ime_compose")
+PROVING_FAKE += ("desktop_notification_agent_question",)
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):
@@ -6477,3 +6481,4 @@ import cases_agent_w2  # noqa: E402,F401  (round 14 wave 2, T11-T15: agent_model
 import cases_r14_state  # noqa: E402,F401  (round 14 wave 2b, T16-T20: agent_hidden_tab_attention, settings_ui_toggle_persists, osc52_write_read, history_survives_restart, restore_shows_history)
 import cases_window_use  # noqa: E402,F401  (r14 wave 3, T26-T30: resize_reflow_output, context_menu_actions, tab_pointer_use, focus_cycle, minimize_fullscreen)
 import cases_pointer  # noqa: E402,F401  (r14 wave 3a: link_and_path_click, selection_modes, primary_and_middle_click, wheel_scroll, pane_resize_maximize)
+import cases_desk  # noqa: E402,F401  (r15 wave 4, T35/T37/T38/T39: scale_matrix, desktop_notification, desktop_notification_agent_question, drag_drop_file, ime_compose)

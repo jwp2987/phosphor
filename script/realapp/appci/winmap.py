@@ -201,6 +201,14 @@ NOT_WINDOWS = {
     "tab_pointer_use": "r14 T28: no pointer synthesis in the Windows backend yet (r14-test-gaps T31), and the live settings rewrite of ui_vertical_tabs_many",
     "minimize_fullscreen": "r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33)",
 }
+# round 15 wave 4 (cases_desk.py, r14-test-gaps T35 / T37 / T38 / T39). The two notification cases run in both panes (append_cmd / pane_shell, the fake
+# model on the host, the app's hop=desktop_notification; the reference console takes the focus). ime_compose reads UTF-8 bytes a bash `echo >>` wrote.
+BOTH |= {"desktop_notification", "desktop_notification_agent_question"}
+GITBASH_ONLY.update({"ime_compose": "r15 T39: the committed text is checked as the UTF-8 bytes of a file written by `echo ... >> file` (Windows PowerShell 5.1 writes UTF-16 there) and against rec.log"})
+NOT_WINDOWS.update({
+    "scale_matrix": "r15 T35: NEEDS: a display scale the harness can set on the Windows VM (the VM's basic display adapter offers no per-monitor DPI call; a system DPI change needs a sign-out) and Windows pointer synthesis for the word click (mouse SendInput, r14-test-gaps T31)",
+    "drag_drop_file": "r15 T38: NEEDS: a harness capability that is not built: an OLE drag source for Windows (IDropSource / DoDragDrop in a helper process) and Windows pointer synthesis (mouse SendInput, r14-test-gaps T31)",
+})
 
 
 # #1534: the startup_shell_override passes (APPCI_WIN_SHELLS="pwsh7,cmd", never in the default list: cmd.exe and pwsh 7 are not installed on every VM).
