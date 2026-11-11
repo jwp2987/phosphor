@@ -12,7 +12,7 @@
 //! |---|---|
 //! | [`SshEdge::Submitted`] | the user submitted a command (an interactive `ssh ...` arms the window) |
 //! | [`SshEdge::ConnectStart`] | the shell's preexec showed an ssh command running that nothing armed |
-//! | [`SshEdge::TtyOwned`] | `CommandBecameInteractive` for the window's block: ssh owns the tty (#1611, #1612, #1621). Under the ssh wrapper (`PreInteractiveSSHSession` seen) the view defers it to the wrapper's `PlainSSHFallback` hook and never sends it for a managed session (#1641) |
+//! | [`SshEdge::TtyOwned`] | `CommandBecameInteractive` for the window's block: ssh owns the tty (#1611, #1612, #1621). Under the ssh wrapper (`PreInteractiveSSHSession` seen) the view defers it to the wrapper's `PlainSSHFallback` hook, or to the `SSH` hook of a login shell the remote command does not bootstrap (#2120, [`ssh_hook_announces_session`]), and never sends it for a managed session (#1641) |
 //! | [`SshEdge::TtyReclaimed`] | `PreInteractiveSSHSession` handled after `TtyOwned` for the same window: the wrapper's master login owns the tty, so the hold resumes until the verdict (#1641) |
 //! | [`SshEdge::Observed`] | the published facts at a model event or output wakeup: a remote session announced (InitShell) or gone (Bootstrapped / exit), the ssh hook, the setup dialog and the remote-setup state (`SessionsEvent`) |
 //! | [`SshEdge::BlockCompleted`] | the ssh block ended (the remote shell's first precmd, or a failed connect) |
@@ -50,6 +50,33 @@ use super::facts::SshPhase;
 /// every platform and stay. The crate's own tests drive the ownership edge by hand on every
 /// platform, so under `cfg(test)` a window is always born unowned.
 pub const TTY_OWNED_AT_ARM: bool = cfg!(all(windows, not(test)));
+
+/// #2120: whether the wrapper's remote command bootstraps a login shell of this name, i.e.
+/// whether an `InitShell` can follow the `SSH` hook that names it. The remote command prints the
+/// hook for every login shell (`remote_shell` is the last component of the remote `$SHELL`) and
+/// then starts a bootstrapped shell for exactly these two names; for every other one (sh, dash,
+/// ash, ksh, mksh, ...) it prints the MotD, sources `/etc/profile` and runs `exec "$SHELL"`: a
+/// plain login from there on. Keep in step with the `case` at the end of the remote command in
+/// `bootstrap/bash_body.sh`, `zsh_body.sh` and `fish.sh`.
+pub fn ssh_remote_command_bootstraps(remote_shell: &str) -> bool {
+    matches!(remote_shell, "bash" | "zsh")
+}
+
+/// #2120: the rule the model and the view both read, so the connect gate and the phase machine
+/// cannot disagree: an `SSH` hook announces a managed session (one whose `InitShell`,
+/// `Bootstrapped` and first prompt will come) only for a shell the remote command bootstraps.
+/// For any other shell the hook is the event that says the session is a plain login: the model
+/// keeps no pending session for it, and the view ends the wrapper's hold there
+/// (`TerminalView::ssh_on_remote_plain_login`). `plain_rule_on` is the kill switch
+/// (`switches::ssh_unbootstrapped_plain`); off, every hook announces a session, as before.
+pub fn ssh_hook_announces_session_with(remote_shell: &str, plain_rule_on: bool) -> bool {
+    !plain_rule_on || ssh_remote_command_bootstraps(remote_shell)
+}
+
+/// [`ssh_hook_announces_session_with`] under the process's kill switch.
+pub fn ssh_hook_announces_session(remote_shell: &str) -> bool {
+    ssh_hook_announces_session_with(remote_shell, super::switches::ssh_unbootstrapped_plain())
+}
 
 /// How an ssh connect window ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,7 +128,9 @@ impl SshRelease {
 pub struct SshObservation {
     /// A remote or subshell session is announced and not bootstrapped (`pending_session_id`).
     pub pending_session: bool,
-    /// The ssh hook was seen for the pending connect (`has_pending_ssh_session`).
+    /// The ssh hook was seen for the pending connect (`has_pending_ssh_session`). #2120: only
+    /// the hook of a shell the remote command bootstraps is such a fact
+    /// ([`ssh_hook_announces_session`]); the model keeps none for any other shell.
     pub hook_seen: bool,
     /// The remote-setup choice dialog is up for the pending session.
     pub dialog_up: bool,

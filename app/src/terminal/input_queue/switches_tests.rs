@@ -44,4 +44,8 @@ fn the_switch_names_are_stable() {
         SUBSHELL_LINE_EDITOR_PROOF_ENV,
         "PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF"
     );
+    assert_eq!(
+        SSH_UNBOOTSTRAPPED_PLAIN_ENV,
+        "PHOSPHOR_SSH_UNBOOTSTRAPPED_PLAIN"
+    );
 }

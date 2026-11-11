@@ -11845,6 +11845,57 @@ impl TerminalView {
         }
     }
 
+    /// #2120: the remote command printed the `SSH` hook of a login shell it does not bootstrap
+    /// (`input_queue::ssh_hook_announces_session` is false: sh, dash, ash, ksh, ...). It runs
+    /// `exec "$SHELL"` next, so no InitShell, Bootstrapped or first prompt will ever end the
+    /// managed hold: this hook is the event that says the session is a plain login, and it is
+    /// the plain verdict of a window the wrapper still holds (what `PlainSSHFallback` is, and
+    /// what #2051's remote plain verdict is on the one-connection path). The wrapper's hold ends
+    /// and the ownership applies now: the hook came from the remote through the session's ssh,
+    /// so ssh owns the tty at this event whatever the latch recorded. What is held goes to ssh
+    /// once, in typed order (or the termios guard discards it, as at every ownership), and later
+    /// keys pass straight through. No clock, nothing read from the screen.
+    ///
+    /// Not for a window no wrapper holds (its own ownership event releases it, as for any
+    /// unmanaged ssh), and not once the remote announced a managed session in this window (a
+    /// bootstrapping shell's hook or its InitShell came first): the first announcement stands,
+    /// as for every second verdict (#1641 review, finding 4).
+    fn ssh_on_remote_plain_login(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(gate) = self.ssh_connect_gate.as_mut() else {
+            return;
+        };
+        if !ssh_remote_plain_login_applies(gate.wrapper, gate.managed || gate.saw_pending) {
+            warpui::input_order::log_hop("ssh_wrapper", || {
+                format!(
+                    "remote_plain_login_ignored state={:?} remote_announced={}",
+                    gate.wrapper,
+                    gate.managed || gate.saw_pending
+                )
+            });
+            return;
+        }
+        gate.wrapper = SshWrapperHold::Off;
+        gate.single_awaits_remote = false;
+        gate.auth_pass_through = false;
+        // Applied below by the ownership path itself, which wants the window unowned.
+        gate.tty_owned = false;
+        gate.tty_owned_by_event = false;
+        gate.tty_owned_deferred = false;
+        let block_id = gate.block_id.clone();
+        // #1933: a one-connection sync, if one was open, is over with this verdict.
+        self.ssh_single = None;
+        warpui::input_order::log_hop("ssh_wrapper", || {
+            format!(
+                "remote_plain_login holding={} held_bytes={}",
+                self.ssh_typeahead_holding,
+                self.ssh_held_bytes()
+            )
+        });
+        self.ssh_observe(ctx);
+        let block_id = block_id.unwrap_or_else(|| self.model.lock().active_block_id().clone());
+        self.ssh_on_tty_owned(&block_id, ctx);
+    }
+
     /// #1933: a stage of the one-connection managed ssh (Git Bash / MSYS2, where `ssh.exe` cannot
     /// multiplex; `docs/design/1933-windows-managed-ssh.md`). The stages are hooks printed on the
     /// local side, by the wrapper (`auth`) and by ssh's own LocalCommand after the login succeeded
@@ -18675,9 +18726,15 @@ impl TerminalView {
         if self.ssh_connect_gate.is_some() {
             // The ssh hook itself proves a Phosphor-managed remote, even if the pending legacy
             // session was already consumed by InitShell by the time this event is handled.
-            if matches!(event, ModelEvent::SSH(_)) {
-                if let Some(gate) = self.ssh_connect_gate.as_mut() {
-                    gate.managed = true;
+            // #2120: only the hook of a shell the remote command bootstraps says that. The hook of
+            // any other login shell (sh, dash, ash, ksh, ...) is the plain verdict of the window.
+            if let ModelEvent::SSH(remote_shell) = event {
+                if input_queue::ssh_hook_announces_session(remote_shell) {
+                    if let Some(gate) = self.ssh_connect_gate.as_mut() {
+                        gate.managed = true;
+                    }
+                } else {
+                    self.ssh_on_remote_plain_login(ctx);
                 }
             }
             // #1085: a precmd after an EARLIER event saw the remote bootstrap end is the remote
@@ -41254,7 +41311,8 @@ struct SshConnectGate {
     /// unmanaged / short session such as `-f`, `-O check`, a quick `exit`).
     failed: bool,
     /// The remote is plausibly Phosphor-managed: a remote session was announced, or the ssh hook
-    /// was seen. Only then does a clean block end keep the gate holding for the bootstrap.
+    /// of a shell the remote command bootstraps was seen (#2120: not the hook of any other
+    /// shell). Only then does a clean block end keep the gate holding for the bootstrap.
     managed: bool,
     /// The block the armed command runs in; only its completion applies to the gate.
     block_id: Option<BlockId>,
@@ -41313,6 +41371,14 @@ fn ssh_single_remote_plain_applies(
     remote_announced: bool,
 ) -> bool {
     !managed && wrapper == SshWrapperHold::Managed && awaits_remote && !remote_announced
+}
+
+/// #2120: whether the `SSH` hook of a login shell the remote command does not bootstrap is the
+/// plain verdict of the connect window: only while the wrapper holds the window (it waits for
+/// the verdict, or took the managed one) and the remote has announced no managed session in it
+/// (`remote_announced`: a bootstrapping shell's hook, or a session).
+fn ssh_remote_plain_login_applies(wrapper: SshWrapperHold, remote_announced: bool) -> bool {
+    wrapper.defers_ownership() && !remote_announced
 }
 
 /// #2013: whether the block that just started runs the ssh command the user submitted, although
@@ -41409,7 +41475,8 @@ enum SshWrapperHold {
     AwaitingVerdict,
     /// `ManagedSSHSessionStarting`: the managed session starts. Keys stay held and the managed
     /// hold takes over (SSH hook / InitShell, Bootstrapped, first Precmd, #1572): they are
-    /// delivered at the remote shell's first prompt. (`PlainSSHFallback` sets `Off` again.)
+    /// delivered at the remote shell's first prompt. (`PlainSSHFallback` sets `Off` again, and so
+    /// does the SSH hook of a login shell the remote command does not bootstrap, #2120.)
     Managed,
 }
 

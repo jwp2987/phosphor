@@ -336,3 +336,60 @@ fn a_reclaimed_tty_holds_again() {
     idle.apply(SshEdge::TtyReclaimed);
     assert_eq!(idle.phase(false), SshPhase::Idle);
 }
+
+/// #2120: the remote command bootstraps bash and zsh and nothing else, so only their `SSH` hook
+/// announces a session. The names are compared whole, as the remote command's `case` does: a
+/// login shell called `bash5` or `-bash` is started plain by it as well.
+#[test]
+fn only_a_shell_the_remote_command_bootstraps_announces_a_session() {
+    for shell in ["bash", "zsh"] {
+        assert!(ssh_remote_command_bootstraps(shell), "{shell}");
+        assert!(ssh_hook_announces_session_with(shell, true), "{shell}");
+    }
+    for shell in [
+        "sh", "dash", "ash", "ksh", "ksh93", "mksh", "busybox", "fish", "nu", "tcsh", "bash5",
+        "-bash", "Bash", "zsh-5.9", "",
+    ] {
+        assert!(!ssh_remote_command_bootstraps(shell), "{shell:?}");
+        assert!(!ssh_hook_announces_session_with(shell, true), "{shell:?}");
+        // The kill switch: every hook announces a session again.
+        assert!(ssh_hook_announces_session_with(shell, false), "{shell:?}");
+    }
+}
+
+/// #2120, the machine's half. A window the wrapper took back (`TtyReclaimed`) and whose remote
+/// printed the `SSH` hook of a shell that is not bootstrapped: the model reports no hook
+/// (`hook_seen` false) and the view sends the ownership edge at that event. The window is then a
+/// plain ssh's: keys pass, and a clean end of the block is "nothing more is coming", not a wait
+/// for a bootstrap.
+#[test]
+fn a_hook_that_announces_no_session_leaves_a_plain_window() {
+    let mut m = owned();
+    m.apply(SshEdge::TtyReclaimed);
+    assert_eq!(m.phase(false), SshPhase::Holding, "held for the wrapper");
+    m.apply(observed(|_| {}));
+    m.apply(SshEdge::TtyOwned);
+    assert!(m.tty_owned());
+    assert_eq!(m.phase(false), SshPhase::Idle, "keys go straight to ssh");
+    m.apply(observed(|_| {}));
+    assert_eq!(m.phase(false), SshPhase::Idle);
+    m.apply(SshEdge::BlockCompleted { clean: true });
+    assert_eq!(
+        m.phase(false),
+        SshPhase::Idle,
+        "a clean end of an unmanaged session holds nothing for a bootstrap"
+    );
+}
+
+/// #2120, why the hook of such a shell must not be reported as seen: with it the machine counts
+/// the remote as managed, the ownership edge never comes under the wrapper, and a clean end of
+/// the block waits for a bootstrap. Only a give-up ended that hold.
+#[test]
+fn a_hook_reported_as_seen_keeps_the_wrapper_hold_and_waits_after_the_block() {
+    let mut m = owned();
+    m.apply(SshEdge::TtyReclaimed);
+    m.apply(observed(|o| o.hook_seen = true));
+    assert_eq!(m.phase(false), SshPhase::Holding);
+    m.apply(SshEdge::BlockCompleted { clean: true });
+    assert_eq!(m.phase(false), SshPhase::Holding, "the post-block wait");
+}

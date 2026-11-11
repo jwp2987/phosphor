@@ -21275,6 +21275,201 @@ fn managed_ssh_plain_fallback_releases_the_held_keys_at_ownership() {
     })
 }
 
+/// #2120: the `SSH` hook the remote command prints, naming the remote login shell `shell`, as the
+/// model and then the view see it.
+fn simulate_ssh_hook_of_shell(
+    view: &mut TerminalView,
+    shell: &str,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    crate::terminal::model::ansi::Handler::ssh(
+        &mut *view.model.lock(),
+        crate::terminal::model::ansi::SSHValue {
+            remote_shell: shell.to_owned(),
+            remote_session_id: Some(167303092612202),
+            ..Default::default()
+        },
+    );
+    view.handle_terminal_event(&ModelEvent::SSH(shell.to_owned()), ctx);
+}
+
+/// #2120 (`test_ssh_into_sh`): the wrapper went the managed way (`ManagedSSHSessionStarting`) and
+/// the remote login shell is one the remote command does not bootstrap (sh, dash, ash, ksh): it
+/// prints the `SSH` hook with that name and runs `exec "$SHELL"`. No InitShell, Bootstrapped or
+/// first prompt will come, and on a pty whose tty-read probe works (Linux) the window has no
+/// clock (#1809), so before this change every key was held for as long as ssh ran. The hook is
+/// the plain verdict: the held keys are written once, in typed order, at that event, later keys
+/// pass straight through, and the connect gate and the phase machine agree that a plain ssh owns
+/// the tty (no pending session in the model, `managed` in neither, Ctrl-C is the byte and not
+/// ssh's `~.`). No give-up is involved.
+#[test]
+fn managed_ssh_to_a_login_shell_the_remote_command_does_not_bootstrap_is_plain_at_its_ssh_hook() {
+    for shell in ["sh", "dash", "ash", "ksh"] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let written = {
+                let pty_writes = pty_writes.clone();
+                move || -> String {
+                    let bytes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+                    String::from_utf8_lossy(&bytes).into_owned()
+                }
+            };
+            terminal.update(&mut app, |view, ctx| {
+                // Linux: the tty-read probe works, so the window has no ceiling.
+                view.model
+                    .lock()
+                    .set_tty_read_probe(std::sync::Arc::new(|| false));
+                managed_ssh_held_through_the_master_login_for_test(view, ctx);
+                ssh_wrapper_verdict_for_test(view, true, ctx);
+                assert!(view.ssh_typeahead_holding, "{shell}: held for the session");
+                let gate = view.ssh_connect_gate.as_ref().expect("the window is open");
+                assert_eq!(gate.wrapper, SshWrapperHold::Managed, "{shell}");
+                assert_eq!(gate.give_up_deadline(false), None, "{shell}: no clock");
+            });
+            assert_eq!(written(), "", "{shell}: nothing written before the hook");
+            terminal.update(&mut app, |view, ctx| {
+                simulate_ssh_hook_of_shell(view, shell, ctx);
+                assert!(!view.ssh_typeahead_holding, "{shell}: the hold ended");
+                assert!(view.ssh_held_is_empty(), "{shell}: delivered to ssh");
+                assert!(
+                    !view.model.lock().has_pending_ssh_session(),
+                    "{shell}: no remote session is pending"
+                );
+                // The gate.
+                let gate = view.ssh_connect_gate.as_ref().expect("the window is open");
+                assert_eq!(gate.wrapper, SshWrapperHold::Off, "{shell}");
+                assert!(gate.tty_owned, "{shell}: ssh owns the tty");
+                assert!(!gate.managed, "{shell}: no bootstrap is expected");
+                assert!(gate.plain_ssh_owns_tty(), "{shell}");
+                assert!(!gate.drops_keys(false), "{shell}");
+                // The phase machine says the same.
+                assert!(view.ssh_phase.tty_owned(), "{shell}");
+                assert_eq!(
+                    view.build_route_facts(
+                        crate::terminal::input_queue::QueueFacts::default(),
+                        ctx
+                    )
+                    .ssh,
+                    crate::terminal::input_queue::SshPhase::Idle,
+                    "{shell}: later keys pass straight through"
+                );
+                assert_eq!(
+                    view.ssh_pre_init_abort_bytes(),
+                    None,
+                    "{shell}: a Ctrl-C is the byte, never ssh's escape"
+                );
+                assert_eq!(view.ssh_give_ups, 0, "{shell}: by the event, no give-up");
+                view.typed_characters_on_terminal("y", ctx);
+                // A repeated hook changes nothing and writes nothing.
+                simulate_ssh_hook_of_shell(view, shell, ctx);
+                assert!(view.ssh_connect_gate.as_ref().is_some_and(|g| g.tty_owned));
+            });
+            assert_eq!(
+                written(),
+                "echo T258_ok\ry",
+                "{shell}: every held key once in typed order at the hook, then the live key"
+            );
+        })
+    }
+}
+
+/// #2120: after that plain verdict the window is an unmanaged one for the block's end as well: a
+/// clean exit of ssh is "nothing more is coming" in the gate and in the machine (no wait for a
+/// bootstrap, no post-block grace), and no give-up ends it.
+#[test]
+fn a_plain_login_by_ssh_hook_ends_its_window_at_the_blocks_clean_end() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .set_tty_read_probe(std::sync::Arc::new(|| false));
+            let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
+            ssh_wrapper_verdict_for_test(view, true, ctx);
+            simulate_ssh_hook_of_shell(view, "dash", ctx);
+            assert!(view.ssh_connect_gate.is_some(), "open while ssh runs");
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            assert!(
+                view.ssh_connect_gate.is_none(),
+                "the block's end is the end of the window: no wait for a bootstrap"
+            );
+            assert_eq!(
+                view.ssh_phase.last_release(),
+                Some(crate::terminal::input_queue::SshRelease::Failed),
+                "the machine was told the same end, an event"
+            );
+            assert!(!view.ssh_phase.armed());
+            assert_eq!(
+                view.build_route_facts(crate::terminal::input_queue::QueueFacts::default(), ctx)
+                    .ssh,
+                crate::terminal::input_queue::SshPhase::Idle,
+                "nothing is held after the block either"
+            );
+            assert_eq!(view.ssh_give_ups, 0, "ended by an event, not a net");
+        });
+    })
+}
+
+/// #2120 control: the hook of a shell the remote command DOES bootstrap is no plain verdict. The
+/// keys stay held through the bootstrap and are written once at the remote shell's first prompt,
+/// as before; and a hook that names another shell after it is ignored (the first announcement
+/// stands).
+#[test]
+fn the_ssh_hook_of_a_bootstrapped_shell_still_holds_to_the_first_prompt() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let armed = terminal.update(&mut app, |view, ctx| {
+            let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
+            ssh_wrapper_verdict_for_test(view, true, ctx);
+            simulate_ssh_hook_of_shell(view, "bash", ctx);
+            assert!(view.ssh_typeahead_holding, "held for the bootstrap");
+            let gate = view.ssh_connect_gate.as_ref().expect("the window is open");
+            assert!(gate.managed);
+            assert_eq!(gate.wrapper, SshWrapperHold::Managed);
+            assert!(!gate.tty_owned);
+            // A later hook naming an unbootstrapped shell changes nothing.
+            simulate_ssh_hook_of_shell(view, "sh", ctx);
+            assert!(view.ssh_typeahead_holding, "the first announcement stands");
+            let gate = view.ssh_connect_gate.as_ref().expect("the window is open");
+            assert_eq!(gate.wrapper, SshWrapperHold::Managed);
+            assert!(view.model.lock().has_pending_ssh_session());
+            armed
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "nothing reached the bootstrap: {:?}",
+            pty_writes.borrow()
+        );
+        terminal.update(&mut app, |view, ctx| {
+            managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"echo T258_ok\r", "once, after the bootstrap");
+    })
+}
+
+/// #2120: the pure rule of `ssh_on_remote_plain_login`. The hook of an unbootstrapped login shell
+/// is the plain verdict only for a window the wrapper holds, and only while the remote has
+/// announced no managed session in it.
+#[test]
+fn a_remote_plain_login_applies_only_to_a_wrapper_held_window_with_no_announced_session() {
+    use SshWrapperHold::{AwaitingVerdict, Managed, Off};
+    assert!(ssh_remote_plain_login_applies(Managed, false));
+    assert!(ssh_remote_plain_login_applies(AwaitingVerdict, false));
+    assert!(!ssh_remote_plain_login_applies(Off, false));
+    assert!(!ssh_remote_plain_login_applies(Managed, true));
+    assert!(!ssh_remote_plain_login_applies(AwaitingVerdict, true));
+}
+
 /// #1933: a stage hook of the one-connection managed ssh (`SSHWrapperSync`) as the parser delivers
 /// it, with no session id.
 fn ssh_wrapper_sync_for_test(

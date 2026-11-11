@@ -7306,3 +7306,18 @@ text would now see no text; none is known.
 `integration-linux`: `test_ssh_with_shell_override`, `test_command_xray_hover`,
 `test_autosuggestions_are_hidden_when_opening_tab_completions` (#2122: the job keeps no artifacts and the INFO trace has no line for the pty
 writes, the hover or the Tab). `test_ssh_into_sh` is an APP defect (#2120) and stays red until that is worked.
+
+## Round 19: keys in an ssh session to a login shell the remote command does not bootstrap (design `docs/design/r19-shssh.md`; #2120; nothing compiled or run when written)
+The wrapper's remote command prints the `SSH` hook for every login shell and bootstraps only bash and zsh; for sh / dash / ash / ksh it execs the
+shell. The app took that hook as a coming managed session, and on Linux (no ceiling, #1809) held every key of the session. Now one rule,
+`input_queue::ssh_hook_announces_session`, is read by the model (no pending session for such a hook) and by the view (the hook is the plain
+verdict of a window the wrapper holds: `ssh_on_remote_plain_login`). Kill switch `PHOSPHOR_SSH_UNBOOTSTRAPPED_PLAIN=0` (read once per process;
+in the list of `input_queue/switches.rs`).
+
+| layer | tests | what they pin |
+|---|---|---|
+| pure | `input_queue/ssh_phase_tests.rs`: `only_a_shell_the_remote_command_bootstraps_announces_a_session`, `a_hook_that_announces_no_session_leaves_a_plain_window`, `a_hook_reported_as_seen_keeps_the_wrapper_hold_and_waits_after_the_block`; `switches_tests.rs` `the_switch_names_are_stable` | the rule is exactly `bash` and `zsh` (whole names, as the remote command's `case`), and the switch turns it off; the phase machine with the hook fact absent is a plain window (keys pass after the ownership edge, a clean block end holds nothing), and with it present it is the old hold |
+| model | `model/terminal_model_test.rs`: `an_ssh_hook_for_a_shell_the_remote_command_does_not_bootstrap_announces_no_session`, `an_unbootstrapped_shells_ssh_hook_does_not_clear_a_pending_session` | sh / dash / ash / ksh / mksh: `has_pending_ssh_session` stays false, the remote session id is not registered, `Event::SSH(shell)` is still sent; bash / zsh unchanged; a later such hook leaves an earlier pending session alone |
+| view | `view_test.rs`: `managed_ssh_to_a_login_shell_the_remote_command_does_not_bootstrap_is_plain_at_its_ssh_hook` (sh, dash, ash, ksh; a pty with a tty-read probe, i.e. no clock), `a_plain_login_by_ssh_hook_ends_its_window_at_the_blocks_clean_end`, `the_ssh_hook_of_a_bootstrapped_shell_still_holds_to_the_first_prompt`, `a_remote_plain_login_applies_only_to_a_wrapper_held_window_with_no_announced_session` | after `ManagedSSHSessionStarting` the hook writes the held keys once in typed order and later keys pass; the gate (`wrapper` Off, `tty_owned`, not `managed`, `plain_ssh_owns_tty`) and the machine (`tty_owned`, phase Idle) agree; Ctrl-C is not `~.`; `ssh_give_ups` is 0; the block's clean end ends the window in both (`SshRelease::Failed`, no post-block wait); a bash hook still holds to the first prompt and a later sh hook is ignored. The first three fail on the code before this change (the keys stay held, `has_pending_ssh_session` is true) |
+| integration | `shell_integration_tests::test_ssh_into_sh`, `test_ssh_into_ash` (unchanged) | the proof on a real sshd: the line typed at the remote `$ ` prompt is echoed and answered |
+

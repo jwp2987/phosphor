@@ -165,7 +165,10 @@ pub use pane::{
     Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, SshDropThen,
     is_editor_paste_id,
 };
-pub use ssh_phase::{SshEdge, SshObservation, SshPhaseMachine, SshRelease, TTY_OWNED_AT_ARM};
+pub use ssh_phase::{
+    SshEdge, SshObservation, SshPhaseMachine, SshRelease, TTY_OWNED_AT_ARM,
+    ssh_hook_announces_session,
+};
 
 /// Monotonic id assigned at arrival; it is the entry's position in the one order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
