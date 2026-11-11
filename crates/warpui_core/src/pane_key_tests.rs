@@ -6,6 +6,42 @@ use crate::{
 };
 use std::{cell::RefCell, rc::Rc};
 
+/// #2106: a key down "will type" when its text is printable and Cmd is not held. A function key
+/// on macOS carries a private-use code point (Home is U+F729) and never types; calling it
+/// printable lost Shift+Home in a full-screen program.
+#[test]
+fn a_function_key_is_not_a_key_that_will_type() {
+    assert!(key_down_will_type("a", false));
+    assert!(key_down_will_type("\u{4f60}", false), "an ideograph types");
+    assert!(
+        key_down_will_type("\u{e000}", false),
+        "private use outside the key range types"
+    );
+    assert!(!key_down_will_type("a", true), "Cmd-A types nothing");
+    assert!(
+        !key_down_will_type("", false),
+        "no text (Linux / Windows function keys)"
+    );
+    assert!(!key_down_will_type("\r", false), "Enter is the key itself");
+    assert!(
+        !key_down_will_type("\u{3}", false),
+        "Ctrl-C is the key itself"
+    );
+    for (name, c) in [
+        ("up", '\u{F700}'),
+        ("f1", '\u{F704}'),
+        ("home", '\u{F729}'),
+        ("end", '\u{F72B}'),
+        ("pageup", '\u{F72C}'),
+        ("the last of the range", '\u{F8FF}'),
+    ] {
+        assert!(
+            !key_down_will_type(&c.to_string(), false),
+            "{name} is a function key: no typed event follows it"
+        );
+    }
+}
+
 #[test]
 fn typed_right_after_a_composition_ends_is_its_commit() {
     assert!(!note_event_and_is_ime_commit(false, true), "a plain key");
