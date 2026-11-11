@@ -214,6 +214,10 @@ PROVING += ("scale_matrix", "desktop_notification", "desktop_notification_agent_
 # of T48: the renderer's test hook reports the device as lost once and the app must rebuild, draw again and show the same screen (cases_r15_w5c.py)
 PROVING += ("md_viewer_first_frame", "gpu_lost_device_recovers")
 PROVING_FAKE += ("desktop_notification_agent_question",)
+# round 18 (#2103, owner decision 2026-11-11; docs/design/r18-retire.md; cases_agent_close_undo.py): a tab closed with a finished, unsent tool result and
+# brought back by the undo key: the result is in no later request, the close kept its call's status, nothing reads as a stuck turn. Scripted model.
+PROVING += ("agent_close_undo_call_status",)
+PROVING_FAKE += ("agent_close_undo_call_status",)
 # Lab families the fix tier's lab job does NOT play, each with the reason (self-test r15_every_lab_family_is_in_a_tier: a lab family is in PROVING_LAB
 # or here, so a new one cannot be registered and never played, which is what #2063 found for 18 of them).
 LAB_NOT_IN_FIX_TIER = {
@@ -6743,3 +6747,4 @@ import cases_macptr  # noqa: E402,F401  (r15 wave 4, #2061: mac_pointer_chord_pr
 import cases_install  # noqa: E402,F401  (#2076 / #1546, round 15 wave 5 part B: installer_smoke, upgrade_from_previous_release)
 import cases_r15_w5a  # noqa: E402,F401  (r15 wave 5 part A, T42/T45/T50: keychain_startup_macos, keybinding_rebind, editor_daily)
 import cases_r17_misc  # noqa: E402,F401  (round 17 misc, #2028: md_viewer_first_frame; #2091's gpu_lost_device_recovers is in cases_r15_w5c.py)
+import cases_agent_close_undo  # noqa: E402,F401  (round 18, #2103: agent_close_undo_call_status)

@@ -3902,3 +3902,345 @@ fn the_lrc_running_command_line_withholds_the_command() {
     );
     warpui::input_order::assert_line_withholds(line, &["hunter2pw", "mysql"]);
 }
+
+// -- #2103: a pane close keeps the status of the calls whose results it discards ------------
+//
+// Owner decision 2026-11-11, with its condition: the results a close discards (#848) are kept
+// for the calls' STATUS only and are never sent to the model. No BYOP provider is configured
+// here, so the preflight is skipped and a request is seen as the controller builds it, with
+// its `ActionResult` inputs (the same footing as the #1059 tests above).
+
+fn grep_result(
+    id: &str,
+    task_id: &TaskId,
+    result: crate::ai::agent::GrepResult,
+) -> crate::ai::agent::AIAgentActionResult {
+    crate::ai::agent::AIAgentActionResult {
+        id: AIAgentActionId::from(id.to_owned()),
+        task_id: task_id.clone(),
+        result: crate::ai::agent::AIAgentActionResultType::Grep(result),
+    }
+}
+
+/// What `suspend_agent_work_for_close` and `resume_after_close_undone` do to the controller,
+/// without the view: the pane is closed (its finished results are discarded) and restored.
+fn close_and_restore_pane(
+    controller: &mut super::BlocklistAIController,
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+    ctx: &mut warpui::ModelContext<super::BlocklistAIController>,
+) {
+    controller.set_suspended_for_close(true);
+    controller.discard_pending_work_for_close(conversation_id, ctx);
+    controller.set_suspended_for_close(false);
+}
+
+/// The id of every tool result that any request of the conversation carries or that its
+/// history holds: the `ActionResult` inputs of every exchange and of every in-flight stream's
+/// parameters, and every `ToolCallResult` message of every task.
+fn result_ids_sent_or_recorded(
+    controller: &super::BlocklistAIController,
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+    app: &warpui::AppContext,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    for stream in controller.in_flight_response_streams.streams_for_test() {
+        ids.extend(action_result_ids(
+            &stream.as_ref(app).params_for_test().input,
+        ));
+    }
+    let history = BlocklistAIHistoryModel::as_ref(app);
+    let conversation = history
+        .conversation(&conversation_id)
+        .expect("conversation should exist");
+    for exchange in conversation.all_exchanges() {
+        ids.extend(action_result_ids(&exchange.input));
+    }
+    for task in conversation.all_tasks() {
+        for message in task.messages() {
+            if let Some(agent_proto::message::Message::ToolCallResult(result)) = &message.message {
+                ids.push(result.tool_call_id.clone());
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// The prompts the conversation's exchanges carry: proof that a request was built at all.
+fn prompts_sent(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+    app: &warpui::AppContext,
+) -> Vec<String> {
+    BlocklistAIHistoryModel::as_ref(app)
+        .conversation(&conversation_id)
+        .expect("conversation should exist")
+        .all_exchanges()
+        .into_iter()
+        .flat_map(|exchange| exchange.input.iter().filter_map(AIAgentInput::user_query))
+        .collect()
+}
+
+/// #2103: a pane close discards the finished, unsent results of the reply it stops, and each
+/// of their calls keeps its status: the call that ran is still a success, the call that was
+/// cancelled is still cancelled. Nothing is left to send, and the copy / export text (which can
+/// be attached to a prompt) does not see the discarded results.
+///
+/// Red on the old code: the close erased the results and both calls had no status at all.
+#[test]
+fn a_pane_close_discards_finished_results_and_their_calls_keep_their_status() {
+    use crate::ai::agent::GrepResult;
+
+    App::test((), |mut app| async move {
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+        assert!(
+            super::super::action_model::close_keeps_call_status_enabled(),
+            "precondition: the kill switch is not set in the test environment"
+        );
+        let (ran, stopped) = (
+            AIAgentActionId::from("ran-before-close".to_owned()),
+            AIAgentActionId::from("stopped-before-close".to_owned()),
+        );
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(
+                        "ran-before-close",
+                        &root_task_id,
+                        GrepResult::Success {
+                            matched_files: vec![],
+                        },
+                    ),
+                );
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result("stopped-before-close", &root_task_id, GrepResult::Cancelled),
+                );
+            });
+            close_and_restore_pane(controller, conversation_id, ctx);
+
+            let action_model = controller.action_model.as_ref(ctx);
+            assert!(
+                action_model
+                    .get_finished_action_results(conversation_id)
+                    .is_none_or(|results| results.is_empty()),
+                "#848: nothing of the stopped reply is left to ride on a later request"
+            );
+            assert!(
+                action_model
+                    .get_action_status(&ran)
+                    .is_some_and(|status| status.is_success()),
+                "the call that ran before the close still shows as run"
+            );
+            assert!(
+                action_model
+                    .get_action_status(&stopped)
+                    .is_some_and(|status| status.is_cancelled()),
+                "the cancelled call still shows as cancelled"
+            );
+            for id in [&ran, &stopped] {
+                assert!(action_model.is_result_discarded_by_close(id));
+                assert!(
+                    action_model.get_action_result_for_export(id).is_none(),
+                    "a discarded result is not in the copy / export text"
+                );
+            }
+        });
+    });
+}
+
+/// The kill switch's arm (`PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0`): the results are erased as
+/// before #2103 and the call has no status. Driven with the flag passed in, so the test does
+/// not depend on the process environment.
+#[test]
+fn with_the_kill_switch_off_a_pane_close_erases_the_results() {
+    use crate::ai::agent::GrepResult;
+    use crate::ai::blocklist::action_model::close_keeps_call_status_enabled_from as enabled;
+
+    assert!(enabled(None));
+    assert!(enabled(Some("1")));
+    for off in ["0", " 0 ", "off", "FALSE", "no"] {
+        assert!(!enabled(Some(off)), "{off:?} turns it off");
+    }
+
+    App::test((), |mut app| async move {
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+        let ran = AIAgentActionId::from("ran-before-close".to_owned());
+        controller.update(&mut app, |controller, ctx| {
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(
+                        "ran-before-close",
+                        &root_task_id,
+                        GrepResult::Success {
+                            matched_files: vec![],
+                        },
+                    ),
+                );
+                let discarded =
+                    action_model.discard_finished_action_results_for_close(conversation_id, false);
+                assert_eq!(discarded, 1);
+                assert!(action_model.get_action_status(&ran).is_none());
+                assert!(!action_model.is_result_discarded_by_close(&ran));
+                assert!(
+                    action_model
+                        .get_finished_action_results(conversation_id)
+                        .is_none_or(|results| results.is_empty())
+                );
+            });
+        });
+    });
+}
+
+/// #2103, the owner's condition: close a pane with a finished-but-unsent result, undo the
+/// close, send a follow-up. The discarded result is in NO request and is not recorded in the
+/// conversation: not in the automatic or the user-requested follow-up (there is none: nothing
+/// is left to send), not in the user's next prompt, not after the prompt after that. Its call
+/// has a status the whole time, which is the only thing the kept result is for.
+#[test]
+fn a_result_a_pane_close_discarded_is_in_no_later_request() {
+    use crate::ai::agent::GrepResult;
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+        let discarded_id = AIAgentActionId::from("ran-before-close".to_owned());
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(
+                        "ran-before-close",
+                        &root_task_id,
+                        GrepResult::Success {
+                            matched_files: vec![],
+                        },
+                    ),
+                );
+            });
+            close_and_restore_pane(controller, conversation_id, ctx);
+
+            // The follow-ups an action or the user can trigger: nothing to send.
+            for trigger in [
+                super::FollowUpTrigger::Auto,
+                super::FollowUpTrigger::UserRequested,
+            ] {
+                controller.send_follow_up_for_conversation(conversation_id, trigger, ctx);
+                assert_eq!(
+                    controller
+                        .in_flight_response_streams
+                        .streams_for_test()
+                        .count(),
+                    0,
+                    "a follow-up after the undo has no results to send ({trigger:?})"
+                );
+            }
+
+            // The user's next prompt.
+            controller.send_user_query_in_conversation(
+                "what next".to_owned(),
+                conversation_id,
+                None,
+                ctx,
+            );
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        controller.update(&mut app, |controller, ctx| {
+            assert_eq!(
+                prompts_sent(conversation_id, ctx),
+                vec!["what next".to_owned()],
+                "precondition: the prompt after the undo was built into a request"
+            );
+            assert_eq!(
+                result_ids_sent_or_recorded(controller, conversation_id, ctx),
+                Vec::<String>::new(),
+                "the request after the undo carries no tool result: the discarded one is not sent"
+            );
+            assert!(
+                controller
+                    .action_model
+                    .as_ref(ctx)
+                    .get_action_status(&discarded_id)
+                    .is_some_and(|status| status.is_success()),
+                "the call keeps its status across the request"
+            );
+
+            // And the prompt after that (it supersedes the first: the same drain runs again).
+            controller.send_user_query_in_conversation(
+                "and then".to_owned(),
+                conversation_id,
+                None,
+                ctx,
+            );
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        controller.update(&mut app, |controller, ctx| {
+            assert!(
+                prompts_sent(conversation_id, ctx).contains(&"and then".to_owned()),
+                "precondition: the second prompt was built into a request"
+            );
+            assert_eq!(
+                result_ids_sent_or_recorded(controller, conversation_id, ctx),
+                Vec::<String>::new()
+            );
+        });
+    });
+}
+
+/// Positive control for the test above: with no close, the same finished result DOES travel
+/// with the user's next prompt (`send_query` prepends the finished results). Without this,
+/// "no result in the request" could be an artifact of the setup.
+#[test]
+fn without_a_close_the_finished_result_travels_with_the_next_prompt() {
+    use crate::ai::agent::GrepResult;
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(
+                        "ran-before-close",
+                        &root_task_id,
+                        GrepResult::Success {
+                            matched_files: vec![],
+                        },
+                    ),
+                );
+            });
+            controller.send_user_query_in_conversation(
+                "what next".to_owned(),
+                conversation_id,
+                None,
+                ctx,
+            );
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        controller.update(&mut app, |controller, ctx| {
+            assert_eq!(
+                prompts_sent(conversation_id, ctx),
+                vec!["what next".to_owned()]
+            );
+            assert_eq!(
+                result_ids_sent_or_recorded(controller, conversation_id, ctx),
+                vec!["ran-before-close".to_owned()],
+                "an unsent finished result rides on the user's next prompt"
+            );
+        });
+    });
+}

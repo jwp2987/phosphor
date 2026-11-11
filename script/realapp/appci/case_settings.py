@@ -365,6 +365,9 @@ decl("agent_lrc_no_false_takeover agent_approval", needs=_merge(AGENT_ASK, INPUT
 decl("agent_question_answer agent_question_cut agent_question_nodone agent_question_trunc agent_question_empty agent_question_slow agent_question_ctrl_c "
      "agent_question_steer agent_question_steer_at_end", needs=INPUT, reads=MODEL)
 decl("agent_question_after_command", needs=_merge(INPUT, AGENT_ASK), reads=MODEL)
+decl("agent_close_undo_call_status", needs=_merge(INPUT, AGENT_ASK, KEYS), reads=MODEL + ("quit_warning",),
+     note="#2103: the command is approved at its card (AGENT_ASK); new tab, close and undo-close are the default chords; where the close key asks first "
+          "(quit_warning) the case answers with Enter and notes it")
 decl("agent_model_switch agent_anthropic_wire", needs=_merge(KEYS, AGENT_ASK), sets=("providers",), note="its own provider list, written with the app stopped and put back")
 decl("agent_autorun_permissions", needs=dict(agent_readonly_autorun=False), sets=("safe_command_allowlist",),
      note="the allow list off (the control: `ls` asks) and on, both written by the case")

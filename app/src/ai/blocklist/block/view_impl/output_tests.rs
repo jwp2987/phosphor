@@ -385,6 +385,168 @@ mod is_orphaned_by_finished_output_tests {
     }
 }
 
+mod discarded_by_close_tests {
+    //! #2103 (owner decision 2026-11-11): what the cards of a RESTORED pane show for the calls
+    //! whose finished, unsent results the pane's close discarded (#848). The close keeps those
+    //! calls' status, so their cards read like any other finished call's:
+    //!
+    //! | the call, before the close | "hide completed tool cards" off | on |
+    //! |---|---|---|
+    //! | ran and succeeded | its card with the green check | hidden, like every completed card |
+    //! | was cancelled (by the user, or by the close's own stop) | its card with the cancelled icon | the same: a cancelled card is never hidden |
+    //!
+    //! Before #2103 the close erased the results, the calls had no status, and both rows read
+    //! as the third call below does: `is_orphaned_by_finished_output`, a cancelled icon on a
+    //! card that is never hidden, whatever the call had done.
+    //!
+    //! Scope, as for `is_orphaned_by_finished_output_tests`: these tests call the two
+    //! predicates `render` and `action_icon` decide on, with the pane's real action model after
+    //! a real close-discard; they do not paint a card.
+
+    use settings::Setting as _;
+    use warpui::{App, SingletonEntity};
+
+    use super::super::{is_orphaned_by_finished_output, should_hide_completed_action};
+    use crate::ai::agent::task::TaskId;
+    use crate::ai::agent::{
+        AIAgentActionId, AIAgentActionResult, AIAgentActionResultType, AIAgentOutput, GrepResult,
+        Shared,
+    };
+    use crate::ai::blocklist::BlocklistAIHistoryModel;
+    use crate::ai::blocklist::block::model::AIBlockOutputStatus;
+    use crate::settings::AISettings;
+    use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
+
+    fn finished_block() -> AIBlockOutputStatus {
+        AIBlockOutputStatus::Complete {
+            output: Shared::new(AIAgentOutput::default()),
+        }
+    }
+
+    fn grep_result(
+        id: &AIAgentActionId,
+        task_id: &TaskId,
+        result: GrepResult,
+    ) -> AIAgentActionResult {
+        AIAgentActionResult {
+            id: id.clone(),
+            task_id: task_id.clone(),
+            result: AIAgentActionResultType::Grep(result),
+        }
+    }
+
+    #[test]
+    fn cards_of_a_restored_pane_show_what_the_discarded_calls_did() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+            app.add_singleton_model(|_| {
+                crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
+            let terminal = add_window_with_terminal(&mut app, None);
+            let terminal_view_id = terminal.read(&app, |view, _| view.id());
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            let action_model = controller.read(&app, |controller, _| {
+                controller.action_model_for_test().clone()
+            });
+            let (conversation_id, task_id) =
+                BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                    let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                    let task_id = history
+                        .conversation(&id)
+                        .expect("conversation should exist")
+                        .get_root_task_id()
+                        .clone();
+                    (id, task_id)
+                });
+
+            let ran = AIAgentActionId::from("ran-before-close".to_owned());
+            let stopped = AIAgentActionId::from("stopped-before-close".to_owned());
+            let never_queued = AIAgentActionId::from("never-had-a-status".to_owned());
+            action_model.update(&mut app, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(
+                        &ran,
+                        &task_id,
+                        GrepResult::Success {
+                            matched_files: vec![],
+                        },
+                    ),
+                );
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(&stopped, &task_id, GrepResult::Cancelled),
+                );
+            });
+
+            // The close and its undo, as the pane drives its controller.
+            controller.update(&mut app, |controller, ctx| {
+                controller.set_suspended_for_close(true);
+                controller.discard_pending_work_for_close(conversation_id, ctx);
+                controller.set_suspended_for_close(false);
+            });
+
+            for hide_completed in [false, true] {
+                app.update(|ctx| {
+                    AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                        settings
+                            .hide_completed_tool_cards
+                            .set_value(hide_completed, ctx)
+                            .expect("setting should update");
+                    });
+                });
+                app.read(|ctx| {
+                    let settings = AISettings::as_ref(ctx);
+                    let status =
+                        |id: &AIAgentActionId| action_model.as_ref(ctx).get_action_status(id);
+
+                    // The call that ran: a finished, successful card.
+                    assert!(status(&ran).is_some_and(|status| status.is_success()));
+                    assert!(!is_orphaned_by_finished_output(
+                        status(&ran).as_ref(),
+                        finished_block
+                    ));
+                    assert_eq!(
+                        should_hide_completed_action(&action_model, &ran, settings, ctx),
+                        hide_completed,
+                        "a completed card is hidden exactly when the setting says so \
+                         (hide_completed_tool_cards = {hide_completed})"
+                    );
+
+                    // The cancelled call: a cancelled card, never hidden.
+                    assert!(status(&stopped).is_some_and(|status| status.is_cancelled()));
+                    assert!(!is_orphaned_by_finished_output(
+                        status(&stopped).as_ref(),
+                        finished_block
+                    ));
+                    assert!(!should_hide_completed_action(
+                        &action_model,
+                        &stopped,
+                        settings,
+                        ctx
+                    ));
+
+                    // The control, and the look both calls above had before #2103: a call
+                    // with no status in a finished reply is orphaned (the cancelled icon) and
+                    // never hidden.
+                    assert!(status(&never_queued).is_none());
+                    assert!(is_orphaned_by_finished_output(
+                        status(&never_queued).as_ref(),
+                        finished_block
+                    ));
+                    assert!(!should_hide_completed_action(
+                        &action_model,
+                        &never_queued,
+                        settings,
+                        ctx
+                    ));
+                });
+            }
+        })
+    }
+}
+
 // #1011: reasoning text was rendered with `selectable = false`, so it was excluded from the
 // SelectableArea's selection model while the answer text was not.
 #[test]

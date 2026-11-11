@@ -622,7 +622,11 @@ impl AIAgentOutput {
                 AIAgentOutputMessageType::Action(action) => {
                     // Include action results from the action model if available
                     if let Some(action_model) = action_model {
-                        if let Some(action_result) = action_model.get_action_result(&action.id) {
+                        // Not a result a pane close discarded (#2103): this text can be
+                        // attached to a prompt, and the model must never get such a result.
+                        if let Some(action_result) =
+                            action_model.get_action_result_for_export(&action.id)
+                        {
                             result.push(format!("{}", MarkdownActionResult(&action_result.result)));
                             // Add an extra newline after tool call results for readability
                             result.push(String::new());
