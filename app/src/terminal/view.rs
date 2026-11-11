@@ -10642,7 +10642,15 @@ impl TerminalView {
     ) {
         if has_block_list_selection {
             self.copy(ctx);
-            self.clear_selections_when_shell_mode_without_focusing_input(ctx);
+            if ctrl_c_copy_drops_text_selection(is_long_running) {
+                // #2117: this Ctrl-C would have been the interrupt. With the selection left
+                // up (the clear below keeps it while the agent view feature is on) every
+                // later Ctrl-C copied again and none reached the program.
+                self.clear_selected_text(ctx);
+                ctx.notify();
+            } else {
+                self.clear_selections_when_shell_mode_without_focusing_input(ctx);
+            }
             return;
         } else if has_alt_screen_selection {
             self.copy(ctx);
@@ -41805,6 +41813,16 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
         .map(|name| dir.join(name))
         .find(|path| path.is_file())
         .unwrap_or_else(|| dir.join(RULES_FILE_PATTERN[0]))
+}
+
+/// Windows, Ctrl-C with text selected in the block list: the key copies and is not sent as an
+/// interrupt. Whether that copy also drops the text selection (#2117): yes while a command is
+/// in front, so the NEXT Ctrl-C is the interrupt the user is reaching for. At an idle prompt
+/// the selection is treated as before (kept as agent context while the agent view feature is
+/// on); there is no program a Ctrl-C has to reach.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ctrl_c_copy_drops_text_selection(command_in_front: bool) -> bool {
+    command_in_front
 }
 
 /// Whether an appearing approval card may take keyboard focus (#1195, #1350): never from the

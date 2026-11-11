@@ -3513,3 +3513,16 @@ The fork now records whether the left press began inside the block list
 `pane_resize_maximize` (round 14). Reverse only with another rule that keeps the next key out of a
 pane the user did not click. Design: `docs/design/r10-r19-copy.md`.
 <!-- markers: keep:left_mouse_up_is_foreign keep:foreign_left_mouse_up_is_ignored_by_an_unfocused_pane_only -->
+
+## Windows: a Ctrl-C that copied a selection while a command runs drops the selection (#2117) — IMPROVED
+
+On Windows a Ctrl-C with text selected in the block list copies and is not sent as an interrupt
+(upstream design, kept). The copy was followed by
+`clear_selections_when_shell_mode_without_focusing_input`, which does nothing while
+`FeatureFlag::AgentView` is enabled (identical at the pin), so the selection stayed and every later
+Ctrl-C copied again: no Ctrl-C reached the running program until the user clicked the selection
+away. With a command in front the copy now drops the text selection
+(`ctrl_c_copy_drops_text_selection`), so the next Ctrl-C is the interrupt. At an idle prompt the
+selection is treated as before (an owner question in #2117). Found by the app case
+`selection_modes` in the Git Bash pane (round 14). Design: `docs/design/r10-r19-copy.md`.
+<!-- markers: keep:ctrl_c_copy_drops_text_selection keep:ctrl_c_copy_drops_the_text_selection_only_with_a_command_in_front -->
