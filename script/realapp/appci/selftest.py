@@ -3567,6 +3567,106 @@ def big_paste_time_budgets_2004():
 
 
 @check
+def effect_file_is_not_read_while_a_burst_line_may_open_it_2093():
+    """#2093 (round 13, Windows PowerShell pane, terminal fast_typing 29/30): the 30th line of a gap-0 burst was accepted and run by PowerShell
+    (PSReadLine history exact, Preexec 11 ms after the app's write) and never written, because the harness was reading the effect file when
+    Add-Content opened it. On Windows the burst's wait must not open the file before it has its full size: replayed here with a writer that, like
+    Add-Content, refuses to append while a reader holds the file."""
+    import threading
+    assert cases.effect_file_bytes("pwsh", ["ab", "cde"], True) == 9 and cases.effect_file_bytes("cmd", ["ab"], True) == 4       # CR LF
+    assert cases.effect_file_bytes("bash", ["ab", "cde"], True) == 7 and cases.effect_file_bytes("pwsh", ["ab"], False) == 3     # LF: Git Bash; pwsh off Windows
+    assert cases.effect_file_bytes("nu", ["ab"], True) == 3
+    tmp = tempfile.mkdtemp()
+    try:
+        toks = ["t%02d_abcdefghij" % i for i in range(30)]
+
+        class Shell:
+            """the pane's shell: 29 lines are in the file when the wait starts and the 30th is still to come; like Add-Content, its append is
+            refused (and the line never written) when a reader holds the file at that moment"""
+            def __init__(self):
+                self.reading, self.refused, self.opens_before_full, self.wrote = False, 0, 0, False
+                open(os.path.join(tmp, "f"), "wb").write(b"".join(t.encode() + b"\r\n" for t in toks[:29]))
+
+            def last_line(self):
+                if self.wrote or self.refused:
+                    return
+                if self.reading:
+                    self.refused += 1
+                else:
+                    self.wrote = True
+                    open(os.path.join(tmp, "f"), "ab").write(toks[29].encode() + b"\r\n")
+
+        def ctx_for(sh, win):
+            c = types.SimpleNamespace(W=tmp, win=win)
+
+            def lines(name):
+                if os.path.getsize(os.path.join(tmp, name)) < cases.effect_file_bytes("pwsh", toks, True):
+                    sh.opens_before_full += 1
+                sh.reading = True
+                sh.last_line()                   # the shell's open lands while the harness holds its read handle
+                sh.reading = False
+                return open(os.path.join(tmp, name), newline="").read().splitlines()
+
+            def await_file_size(name, size, timeout, step=0.01):
+                threading.Timer(0.1, sh.last_line).start()       # the last line runs while the harness waits
+                return cases.Ctx.await_file_size(c, name, size, timeout, step)
+
+            def until(pred, timeout=10, step=0.01):
+                end = time.time() + timeout
+                while time.time() < end:
+                    if pred():
+                        return True
+                    time.sleep(step)
+                return pred()
+            c.lines, c.await_file_size, c.until = lines, await_file_size, until
+            return c
+
+        class R:
+            def __init__(self):
+                self.notes = []
+
+            def note(self, m):
+                self.notes.append(m)
+
+        # the old wait (what the non-Windows branch still does) opens the file while the last line is pending: the append is refused, 29 lines for ever
+        sh = Shell()
+        r = R()
+        cases.await_effect_file(ctx_for(sh, False), r, "ft0", "f", "pwsh", toks, 0.3)
+        assert sh.refused == 1 and len(open(os.path.join(tmp, "f"), "rb").read().splitlines()) == 29, "the replay does not reproduce the round 13 loss"
+        # Windows: stat only until the file is complete; the same late line is written, and nothing was opened before
+        sh = Shell()
+        r = R()
+        cases.await_effect_file(ctx_for(sh, True), r, "ft0", "f", "pwsh", toks, 5.0)
+        assert sh.wrote and sh.refused == 0 and sh.opens_before_full == 0, (sh.wrote, sh.refused, sh.opens_before_full)
+        assert open(os.path.join(tmp, "f"), newline="").read().splitlines() == toks and r.notes == []
+        # a line that never comes: bounded by the timeout, no note (the caller's comparison reports 29/30 as before)
+        open(os.path.join(tmp, "g"), "wb").write(b"".join(t.encode() + b"\r\n" for t in toks[:29]))
+        c2 = types.SimpleNamespace(W=tmp, win=True, lines=lambda name: open(os.path.join(tmp, name), newline="").read().splitlines())
+        c2.await_file_size = lambda name, size, timeout, step=0.01: cases.Ctx.await_file_size(c2, name, size, timeout, step)
+        t = time.time()
+        r = R()
+        cases.await_effect_file(c2, r, "ft0", "g", "pwsh", toks, 0.3)
+        assert 0.25 <= time.time() - t < 1.5 and r.notes == []
+        assert cases.Ctx.await_file_size(c2, "missing", 1, 0.1, 0.01) is False
+        # the size was never reached although every line is there (a wrong newline assumption): said, not silent
+        open(os.path.join(tmp, "h"), "wb").write(b"".join(t.encode() + b"\n" for t in toks))
+        cases.await_effect_file(c2, r, "ft0", "h", "pwsh", toks, 0.1)
+        assert len(r.notes) == 1 and "HARNESS" in r.notes[0] and "effect_file_bytes" in r.notes[0], r.notes
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cases.py")).read()
+    er = src[src.index("def effect_run("):src.index("\n@case(", src.index("def effect_run("))]
+    assert "await_effect_file(ctx, r, tag, fname, shell, exp, 20 + n * 0.5)" in er and "ctx.until(lambda: len(ctx.lines(fname))" not in er
+    assert er.index("await_effect_file(") < er.index("got = ctx.lines(fname)")
+    assert "r.check(ok, \"%s: file has %d/%d lines, exact match %s%s%s%s\"" in er, "the exact-lines check of effect_run is gone"
+    assert "PowerShell accepted every line" in er and er.index("r.check(not bad,") < er.index("PowerShell accepted every line")     # a note after the failure, never instead of it
+    rc = src[src.index("def run_enter_control("):src.index("\ndef ", src.index("def run_enter_control(") + 10)]
+    assert "await_effect_file(ctx, r," in rc and "ctx.until(lambda: len(ctx.lines(fname))" not in rc
+    aw = src[src.index("    def await_file_size("):src.index("    def rm(self")]
+    assert "open(" not in aw and "os.path.getsize(path)" in aw, "await_file_size must not open the file"
+
+
+@check
 def windows_rust_log_enables_every_hop_module_1966():
     """#1966: the Windows launcher's RUST_LOG (bare `warn` base) enables every module that emits, with a plain `log::info!`/`debug!`, a `hop=` line some appci
     case reads. Scans the Rust sources; the module path comes from the file path (app -> warp, crates/x -> x). `backend_route` is logged through a helper

@@ -6268,3 +6268,23 @@ Source: `docs/design/r14-test-gaps.md` 7.1 (T41, T42, T45, T50) and gap G8. Thre
 **Launcher changes.** `editor_disk=debug` on Linux, macOS and Windows; `warp::pane_group=info` on Windows (the close-question line; `tab_lifecycle_keys` reads the same line and could not see it under the `warn` base); the CLI-agent event target on macOS.
 Self-tests (`script/realapp/appci/selftest_r15_w5a.py`, run by `run.py --self-test` and `selftest.py`): `r15_w5a_registry_and_windows_classification`, `r15_nettrace_parsers`, `r15_nettrace_control_and_poller` (where `lsof` exists the control runs for real), `r15_offline_prefix_is_proven`, `r15_live_settings_paths`, `r15_keybinding_rebind_parts`, `r15_editor_daily_parts`, `r15_keychain_startup_parts`.
 Run: `python3 script/realapp/appci/run.py --cases keychain_startup_macos,keybinding_rebind,editor_daily,zero_network_startup,network_gate_switch,claude_plugin_offline,agent_plugins_offline`.
+
+## Round 16: the effect file of a burst is not read while a line may still open it (#2093; design `docs/design/r10-r16-fastwin.md`; no app run when written)
+Round 13, Windows, PowerShell pane, terminal mode: `fast_typing` `ft0: file has 29/30 lines`, reported as "Phosphor-side (#1482)". The app log and
+the PSReadLine history slice show the 30th line delivered and run (`pwsh_command_via_pipe`, `preexec_received` 11 ms later, `precmd_seen`, history
+30/30 exact). The harness began polling the effect file (`ctx.lines`, an open and read every 50 ms) the moment the last Enter was posted;
+Windows PowerShell's `Add-Content` does not share the file with a reader, so the last command of a gap-0 burst can be refused the file and write nothing.
+TEST fault; no app change.
+- `effect_run` (fast_typing, rollover and its other callers) and the reference burst of `run_enter_control` wait through `cases.await_effect_file`. On
+  Windows that is `Ctx.await_file_size` (stat only, no read handle) until the file has the size of all its lines (`cases.effect_file_bytes`: CR LF
+  from Windows PowerShell and cmd.exe, LF elsewhere), then the one read as before. A file that never gets there is read after the same timeout
+  (`20 + n * 0.5` s): a lost line fails as it always did. Off Windows the line poll is unchanged.
+- A `HARNESS:` note appears when every line is in the file and the size was never reached (the newline assumption is wrong for that shell; the burst
+  then waits out its timeout).
+- PowerShell pane: when PSReadLine history has every typed line exactly and the effect file lacks lines, a note says the lines were accepted by
+  PowerShell, so the missing line is a command that ran and did not write, not lost typing. The failing check stays.
+- Triage rule: a PowerShell-pane "file has N-1 lines" where the history or `preexec_received` shows the command ran is first a harness read colliding
+  with `Add-Content`, not an app loss. Other cases that poll an effect file right after an Enter still have this exposure (design note, "Left open").
+- Self-test `effect_file_is_not_read_while_a_burst_line_may_open_it_2093`: a writer that refuses to append while a reader holds the file loses the
+  30th line under the old poll and keeps it under the size wait; a line that never comes is bounded by the timeout; the wrong-size note; source pins
+  (no line poll in `effect_run` / `run_enter_control`, the exact-lines check still there, `await_file_size` opens nothing).
