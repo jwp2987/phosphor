@@ -219,6 +219,18 @@ impl App {
             .take_invalidation_kind_for_test(window_id)
     }
 
+    /// Test-only: see [`AppContext::pending_view_notifications_for_test`].
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn pending_view_notifications_for_test(
+        &self,
+        window_id: WindowId,
+        view_id: EntityId,
+    ) -> usize {
+        self.0
+            .borrow()
+            .pending_view_notifications_for_test(window_id, view_id)
+    }
+
     pub fn window_bounds(&self, window_id: &WindowId) -> Option<RectF> {
         self.0.borrow().window_bounds(window_id)
     }
@@ -1167,6 +1179,29 @@ impl AppContext {
                 || invalidation.redraw_requested,
             invalidation.paint_only_redraw_requested,
         )
+    }
+
+    /// Test-only: how many `ctx.notify()` calls for this view are queued and not yet flushed
+    /// (#2096). A notify is an effect: it reaches the window's invalidation only when the
+    /// outermost update returns, and the unit-test window then builds its scene and consumes
+    /// the invalidation. So "this handler must not notify the view" can only be observed here,
+    /// inside the update that ran the handler, before the flush.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn pending_view_notifications_for_test(
+        &self,
+        window_id: WindowId,
+        view_id: EntityId,
+    ) -> usize {
+        self.pending_effects
+            .iter()
+            .filter(|effect| {
+                matches!(
+                    effect,
+                    Effect::ViewNotification { window_id: w, view_id: v }
+                        if *w == window_id && *v == view_id
+                )
+            })
+            .count()
     }
 
     pub fn has_window_invalidations(&self, window_id: WindowId) -> bool {

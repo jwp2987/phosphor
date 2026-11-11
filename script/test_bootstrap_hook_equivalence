@@ -685,6 +685,69 @@ def preexec_hex_tests():
 
 
 
+def bash_func(name):
+    """the real function `name` out of bash_body.sh (4-space indent, as the file defines its hook helpers)"""
+    m = re.search(r"^ {4}%s \(\) \{\n.*?^ {4}\}\n" % re.escape(name), read("bash_body.sh"), re.S | re.M)
+    return m.group(0) if m else None
+
+
+def hook_hex_cache_tests():
+    """#2030: CommandFinished and the Precmd head are sent as cached hex pieces joined with the hex of
+    the exit code, the block counter and seq. The bytes on the wire must be exactly those of the
+    whole-message encoding (PHOSPHOR_BASH_HOOK_HEX_CACHE=0), for a local and for a remote shell
+    (the remote one adds the cwd listing to the Precmd tail), and the digit encoder must agree
+    with the general one for every input."""
+    if not SHELLS["bash"]:
+        return
+    print("bash hook hex cache (%s)" % SHELLS["bash"])
+    funcs = [bash_func(n) for n in ("__warp_hex_encode_to", "warp_hex_encode_string", "__warp_hex_digits_to")]
+    check(all(funcs), "__warp_hex_digits_to and the encoders are found in bash_body.sh")
+    if all(funcs):
+        vals = ["", "0", "7", "9", "10", "130", "255", "0042", "18446744073709551615", "-1", "+3", "1a", "a1", "12 3", " 5", "5 ", "1\n2",
+                "\u0663", "1.5", "0x10", "*", "?", "[0-9]", "1" * 600]
+        driver = "\n".join(funcs) + '\nfor v in "$@"; do __warp_hex_digits_to "$v"; builtin printf "%s\\n" "$__warp_hex"; done\n'
+        for label, pre in (("default options", ""), ("set -eu, nocasematch, extglob", "set -eu; shopt -s nocasematch extglob\n")):
+            p = subprocess.run([SHELLS["bash"], "--noprofile", "--norc", "-c", pre + driver, "x"] + vals, capture_output=True, timeout=60)
+            got = p.stdout.decode().split("\n")[:-1]
+            want = [v.encode().hex() for v in vals]
+            bad = [(v, g) for v, g, w in zip(vals, got, want) if g != w]
+            check(p.returncode == 0 and len(got) == len(vals) and not bad, "__warp_hex_digits_to equals the bytes' hex for %d inputs (%s)" % (len(vals), label),
+                  "rc=%s bad=%r stderr=%r" % (p.returncode, bad[:3], p.stderr[-300:]))
+    lines = [b"true", b"false", b"sh -c 'exit 37'", b"echo 'a b'; sh -c 'exit 255'", b"cd sub", b"true", b"cd ..", b"echo \xc3\xa9", b"true"]
+    for flavour, local in (("local", "1"), ("remote", "0")):
+        raw = {}
+        # one directory for both runs: the prompt and the pwd carry its name, and the payloads are compared byte for byte
+        base = tempfile.mkdtemp(prefix="phosphor-2030-")
+        for mode in ("cache", "whole"):
+            try:
+                shutil.rmtree(os.path.join(base, "home"), ignore_errors=True)
+                shutil.rmtree(os.path.join(base, "work"), ignore_errors=True)
+                os.makedirs(os.path.join(base, "home"))
+                os.makedirs(os.path.join(base, "work", "sub"))
+                open(os.path.join(base, "work", "file one"), "w").close()
+                extra = {"WARP_IS_LOCAL_SHELL_SESSION": local}
+                if mode == "whole":
+                    extra["PHOSPHOR_BASH_HOOK_HEX_CACHE"] = "0"
+                sh = Shell("bash", os.path.join(base, "home"), os.path.join(base, "work"), "/usr/local/bin:/usr/bin:/bin", env_extra=extra)
+                check(not sh.broken, "%s shell, %s: bootstraps" % (flavour, mode))
+                sh.cycle(b"true")
+                start = len(HOOK_RE.findall(sh.buf))
+                seen = []
+                for line in lines:
+                    seen += [h for h, _ in sh.cycle(line)]
+                raw[mode] = HOOK_RE.findall(sh.buf)[start:]
+                check(not sh.broken and seen.count("CommandFinished") == len(lines) and seen.count("Precmd") == len(lines) and seen.count("Preexec") == len(lines),
+                      "%s shell, %s: one Preexec, CommandFinished and Precmd per line" % (flavour, mode), repr(seen)[:300])
+                sh.close()
+            except Exception as e:  # noqa: BLE001  (a failed run is a failed check, and the directory is still removed below)
+                check(False, "%s shell, %s: ran" % (flavour, mode), repr(e))
+        shutil.rmtree(base, ignore_errors=True)
+        same = raw.get("cache") == raw.get("whole") and len(raw.get("cache") or []) >= 3 * len(lines)
+        diff = next(((a, b) for a, b in zip(raw.get("cache") or [], raw.get("whole") or []) if a != b), None)
+        check(same, "%s shell: every hook payload is byte-identical with the hex cache and with PHOSPHOR_BASH_HOOK_HEX_CACHE=0 (%d payloads)" % (
+            flavour, len(raw.get("cache") or [])), "first difference: %r" % (diff,))
+
+
 def zsh_hex_encoder_tests():
     """#1606: the zsh encoder's printf path, loop and kill switch against `od`, over every byte value (script/test_zsh_hex_encoder)"""
     print("zsh hex encoder (printf -v path, loop, fallback)")
@@ -738,6 +801,7 @@ def debug_trap_tests():
 table_tests()
 history_tests()
 preexec_hex_tests()
+hook_hex_cache_tests()
 debug_trap_tests()
 if SHELLS["zsh"]:
     zsh_hex_encoder_tests()

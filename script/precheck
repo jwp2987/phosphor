@@ -375,10 +375,40 @@ step "shell tests (packaging and bootstrap scripts)"
 for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_pwsh_hook_equivalence ./script/test_nu_bootstrap_hook_equivalence ./script/test_nu_agent_pager_env ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive ./script/test_ssh_probe_cache ./script/test_ssh_wrapper_forks ./script/test_ssh_auth_once ./script/test_ssh_raw_bootstrap_hook ./script/test_local_counted_bootstrap ./script/test_native_completions ./script/test_cwd_listing ./script/test_child_ps1 ./script/test_init_shell_escaping ./script/test_reader_marker; do
     [[ -x "$shell_test" ]] || continue
     _shell_rc=0
+# #2055: six more harnesses were listed in docs/testing.md 2.4 and run by nothing. The three quick
+# ones (test_hijack_bootstrap ~9 s, test_bash_preexec_large_command ~2 s, test_zsh_hex_encoder ~3 s)
+# are in the list below; the three slow ones (test_fish_bootstrap ~65 s, test_hook_forks ~85 s,
+# test_line_editor_markers ~54 s) run in the "slow shell tests" step after the --fast exit, so
+# only the full precheck pays for them.
+#
+# shell_test_needs: the tools a harness cannot run without (its shebang interpreter, or the one
+# shell it is about). A harness that skips a missing shell by itself is not listed. A missing
+# tool is a visible SKIPPED line here, never a pass and never a failure of this gate.
+shell_test_needs() {
+    case "${1##*/}" in
+        test_zsh_hex_encoder) echo "zsh od tr" ;;
+        test_bash_preexec_large_command) echo "python3 bash" ;;
+        test_hijack_bootstrap) echo "python3" ;;
+        test_fish_bootstrap) echo "python3 fish" ;;
+        test_hook_forks) echo "python3 git strace" ;;
+        test_line_editor_markers) echo "python3" ;;
+        *) echo "" ;;
+    esac
+}
+run_shell_test() {
+    local shell_test="$1" _need _missing="" _shell_rc=0 _shell_out
+    [[ -x "$shell_test" ]] || { warn "$shell_test -- not in this checkout"; return 0; }
+    for _need in $(shell_test_needs "$shell_test"); do
+        command -v "$_need" >/dev/null 2>&1 || _missing+=" $_need"
+    done
+    if [[ -n "$_missing" ]]; then
+        warn "$shell_test -- SKIPPED (not installed:$_missing)"
+        return 0
+    fi
     _shell_out="$("$shell_test" 2>&1)" || _shell_rc=$?
     if ((_shell_rc == 0)); then
         if [[ "$_shell_out" == *SKIPPED* ]]; then
-            warn "$shell_test -- SKIPPED (no built binary)"
+            warn "$shell_test -- SKIPPED in part or whole: $(printf '%s\n' "$_shell_out" | grep -m1 SKIPPED)"
         else
             ok "$shell_test"
         fi
@@ -386,6 +416,10 @@ for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warp
         fail "$shell_test"
         printf '%s\n' "$_shell_out" | sed 's/^/      /' >&2
     fi
+}
+step "shell tests (packaging and bootstrap scripts)"
+for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_pwsh_hook_equivalence ./script/test_nu_bootstrap_hook_equivalence ./script/test_nu_agent_pager_env ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive ./script/test_ssh_probe_cache ./script/test_ssh_wrapper_forks ./script/test_ssh_auth_once ./script/test_ssh_raw_bootstrap_hook ./script/test_local_counted_bootstrap ./script/test_native_completions ./script/test_cwd_listing ./script/test_child_ps1 ./script/test_init_shell_escaping ./script/test_hijack_bootstrap ./script/test_bash_preexec_large_command ./script/test_zsh_hex_encoder; do
+    run_shell_test "$shell_test"
 done
 
 if ((FAST == 1)); then
@@ -393,6 +427,14 @@ if ((FAST == 1)); then
     printf 'This does NOT authorise a push. Run script/precheck with no flags first.\n'
     exit $status
 fi
+
+# ------------------------------------------------------- slow shell tests
+# #2055: pty-driven harnesses of the REAL assembled bootstraps that take about a minute each
+# (about 3.5 minutes together), so they are not in --fast. No cargo, no build.
+step "slow shell tests (bootstrap hooks in a pty; full precheck only)"
+for shell_test in ./script/test_fish_bootstrap ./script/test_hook_forks ./script/test_line_editor_markers; do
+    run_shell_test "$shell_test"
+done
 
 # ------------------------------------------------------------------- compile
 # The required CI check. Note --lib --tests: test code must compile too, and a

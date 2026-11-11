@@ -173,3 +173,70 @@ fn a_drawn_frame_clears_the_debt() {
     owed.note_draw_ran();
     assert!(!owed.take_for_flush(true));
 }
+
+/// A directory of this test's own under the system temp directory.
+fn loss_test_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("phosphor-2091-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    dir
+}
+
+#[test]
+fn test_device_loss_hook_is_off_unless_the_variable_names_its_own_file() {
+    // Unset: never armed, never fires.
+    let off = TestDeviceLoss::from_path(None);
+    assert!(!off.armed());
+    assert!(!off.take());
+
+    // A path with another file name is ignored, and the file is NOT deleted.
+    let dir = loss_test_dir("wrong-name");
+    let other = dir.join("something-else");
+    std::fs::write(&other, b"keep").expect("write");
+    let wrong = TestDeviceLoss::from_path(Some(other.clone()));
+    assert!(!wrong.armed());
+    assert!(!wrong.take());
+    assert!(other.exists(), "a file the hook does not own must survive");
+
+    // A relative path is ignored too.
+    let relative = TestDeviceLoss::from_path(Some(TEST_DEVICE_LOSS_FILE_NAME.into()));
+    assert!(!relative.armed());
+    assert!(!relative.take());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_device_loss_hook_fires_once_per_trigger_file() {
+    let dir = loss_test_dir("once");
+    let trigger = dir.join(TEST_DEVICE_LOSS_FILE_NAME);
+    let hook = TestDeviceLoss::from_path(Some(trigger.clone()));
+    assert!(hook.armed());
+    // Armed but not requested: every redraw draws.
+    for _ in 0..3 {
+        assert!(!hook.take());
+    }
+    // One request: exactly one redraw reports the loss, and the file is gone.
+    std::fs::write(&trigger, b"").expect("write");
+    assert!(hook.take());
+    assert!(!trigger.exists());
+    for _ in 0..3 {
+        assert!(!hook.take());
+    }
+    // A second request works the same way.
+    std::fs::write(&trigger, b"").expect("write");
+    assert!(hook.take());
+    assert!(!hook.take());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_error_the_test_hook_reports_rebuilds_the_renderer() {
+    // What `redraw_window` does with the hook's error: rebuild, count toward the exit (one of
+    // three), no timed retry. A frame drawn afterwards clears the count's history here.
+    let mut state = DrawRetryState::default();
+    let decision = state.on_frame_error(&Error::DeviceLost);
+    assert!(decision.recreate_renderer);
+    assert!(decision.counts_toward_exit);
+    assert_eq!(decision.retry_after, None);
+    state.on_frame_drawn();
+}

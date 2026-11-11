@@ -5775,7 +5775,15 @@ fn test_cursor_blink_tick_requests_paint_only_frame() {
         // One `app.update` defers the effect flush: outside it, the flush after `update_view`
         // builds the scene eagerly (the unit-test `on_window_invalidated` path) and consumes the
         // pending invalidation before it can be inspected.
-        let (needs_layout, paint_only) = app.update(|ctx| {
+        //
+        // #2096: `needs_layout` read here can NOT see a notify of the tick (a notify is a queued
+        // effect; it reaches the invalidation only at the flush, after this closure). What can
+        // see it is the queue itself: `pending_view_notifications_for_test`. The control test
+        // below (`test_a_view_notify_is_visible_to_the_blink_test_observation`) shows that
+        // observation does report a notify made the same way.
+        let view_id = editor_handle.id();
+        let (needs_layout, paint_only, notifies) = app.update(|ctx| {
+            let queued_before = ctx.pending_view_notifications_for_test(window_id, view_id);
             ctx.update_view(&editor_handle, |editor, ctx| {
                 let before = editor.cursors_visible;
                 let epoch = editor.next_blink_epoch();
@@ -5788,10 +5796,46 @@ fn test_cursor_blink_tick_requests_paint_only_frame() {
                     editor.cursors_visible
                 );
             });
-            ctx.take_invalidation_kind_for_test(window_id)
+            let notifies =
+                ctx.pending_view_notifications_for_test(window_id, view_id) - queued_before;
+            let (needs_layout, paint_only) = ctx.take_invalidation_kind_for_test(window_id);
+            (needs_layout, paint_only, notifies)
         });
-        assert!(!needs_layout, "a blink tick must not notify the view");
+        assert_eq!(notifies, 0, "a blink tick must not notify the view");
+        assert!(
+            !needs_layout,
+            "a blink tick must not request a layout redraw"
+        );
         assert!(paint_only, "a blink tick must request a paint-only frame");
+    });
+}
+
+/// #2096: the control for the test above. A `ctx.notify()` made inside the same kind of nested
+/// update IS seen by `pending_view_notifications_for_test`, and is NOT seen by the invalidation
+/// read in the same update (which is why the test above cannot rely on `needs_layout` alone).
+#[test]
+fn test_a_view_notify_is_visible_to_the_blink_test_observation() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (window_id, editor_handle) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::single_line(Default::default(), ctx)
+        });
+        let _ = app.take_invalidation_kind_for_test(window_id);
+        let view_id = editor_handle.id();
+        let (needs_layout, notifies) = app.update(|ctx| {
+            let queued_before = ctx.pending_view_notifications_for_test(window_id, view_id);
+            ctx.update_view(&editor_handle, |_, ctx| ctx.notify());
+            let notifies =
+                ctx.pending_view_notifications_for_test(window_id, view_id) - queued_before;
+            let (needs_layout, _) = ctx.take_invalidation_kind_for_test(window_id);
+            (needs_layout, notifies)
+        });
+        assert_eq!(notifies, 1, "the queued notify must be counted");
+        assert!(
+            !needs_layout,
+            "a notify is not in the invalidation before the flush: if this fails the effect \
+             flush changed and the blink test can read the invalidation again"
+        );
     });
 }
 

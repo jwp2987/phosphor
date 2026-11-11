@@ -56,7 +56,8 @@ guards:
   extends: .shim_github_env
   stage: test
   tags: [little-thing]
-  timeout: 10m
+  # 15m since #2055: the six bootstrap harnesses at the end add up to about 3.5 minutes when bash, zsh, fish and strace are all on the runner.
+  timeout: 15m
   interruptible: true
   variables:
     # The deletion guard diffs against a base commit and the oracle fetch needs
@@ -144,6 +145,28 @@ guards:
     # #1907: the REAL assembled bash bootstrap in a pty; a child `sh` must see PS1 unset, never an
     # empty exported one (python3 + bash + sh, ~12 s, no build). It was in docs/testing.md but run by nothing.
     - ./script/test_child_ps1
+    # #2055: six bootstrap harnesses that docs/testing.md listed and nothing ran (no cargo, no build; the REAL assembled bootstraps in a pty).
+    # Each runs only where what it needs is installed; a missing tool prints SKIPPED with the tool's name and is never a pass. What a harness
+    # skips by itself (one shell of several) it prints as SKIPPED too. Quick ones first (about 15 s), then the slow ones (about 3.5 minutes).
+    - |
+      run_harness() {
+        local name="$1"; shift
+        local tool
+        for tool in "$@"; do
+          if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "SKIPPED $name: no $tool on this runner (it runs in script/precheck where $tool exists)"
+            return 0
+          fi
+        done
+        echo "== $name"
+        "./script/$name"
+      }
+      run_harness test_hijack_bootstrap python3 bash
+      run_harness test_bash_preexec_large_command python3 bash
+      run_harness test_zsh_hex_encoder zsh od tr
+      run_harness test_fish_bootstrap python3 fish
+      run_harness test_hook_forks python3 bash git strace
+      run_harness test_line_editor_markers python3 bash
 
 # cargo check on the build box. Every cargo call goes through script/agent-cargo,
 # the slot/memory governor: unbounded concurrent compiles OOM-reaped this host

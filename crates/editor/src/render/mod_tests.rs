@@ -17,8 +17,10 @@ use string_offset::CharOffset;
 use super::model::{
     BlockItem, RenderEvent, RenderState,
     test_utils::{TEST_STYLES, init_logging},
+    viewport::SizeInfo,
 };
 use crate::content::buffer::ShouldAutoscroll;
+use warpui::geometry::vector::vec2f;
 
 #[test]
 fn test_simple_edit() {
@@ -401,6 +403,183 @@ Code Block - Shell (5 characters, 1 lines, 84.00px tall)
 Trailing Newline (1 characters, 1 lines, 32.00px tall)
 "#,
         )
+    });
+}
+
+/// #2028: counts of the render events a first-size-hold test cares about.
+#[derive(Clone, Default)]
+struct HoldEvents {
+    needs_resize: std::rc::Rc<std::cell::Cell<usize>>,
+    layout_updated: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl HoldEvents {
+    fn watch(render: &ModelHandle<RenderState>, app: &mut App) -> Self {
+        let events = Self::default();
+        let seen = events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(render, move |_, event, _| match event {
+                RenderEvent::NeedsResize => seen.needs_resize.set(seen.needs_resize.get() + 1),
+                RenderEvent::LayoutUpdated => {
+                    seen.layout_updated.set(seen.layout_updated.get() + 1)
+                }
+                _ => (),
+            });
+        });
+        events
+    }
+}
+
+fn first_size(width: f32, height: f32) -> SizeInfo {
+    SizeInfo {
+        viewport_size: vec2f(width, height),
+        // What the element reports for a width that differs from the model's.
+        needs_layout: true,
+    }
+}
+
+/// Types one paragraph into the buffer and waits until the render model has handled the edit
+/// (laid it out, or queued it).
+async fn insert_and_settle(state: &TestState, text: &str, app: &mut App) {
+    state.content.update(app, |buffer, ctx| {
+        buffer.update_content(
+            BufferEditAction::Insert {
+                text,
+                style: Default::default(),
+                override_text_style: None,
+            },
+            EditOrigin::UserTyped,
+            state.selection.clone(),
+            ctx,
+        )
+    });
+    app.read(|ctx| state.render.as_ref(ctx).layout_complete())
+        .await;
+}
+
+/// #2028: a model that holds its layout for the first size lays nothing out at width 0. The
+/// first width above zero lays the queued edits out at once, publishes their version, emits
+/// `LayoutUpdated` and does NOT ask for a resize; after that the model is an ordinary eager one.
+#[test]
+fn test_first_size_hold_lays_out_at_the_first_width_and_not_before() {
+    init_logging();
+    App::test((), |mut app| async move {
+        let state = TestState::new(&mut app);
+        let events = HoldEvents::watch(&state.render, &mut app);
+        state
+            .render
+            .update(&mut app, |render, _| render.hold_layout_until_first_size());
+
+        insert_and_settle(&state, "first paragraph of the file", &mut app).await;
+        state.render.read(&app, |render, _| {
+            assert!(render.holding_layout_for_first_size());
+            assert_eq!(
+                render.blocks(),
+                1,
+                "nothing may be laid out before the first size (only the trailing newline)"
+            );
+            assert!(
+                render.next_render_buffer_version().is_none(),
+                "a held edit is not published as laid out"
+            );
+        });
+        assert_eq!(events.layout_updated.get(), 0);
+
+        // A zero width (a hidden pane) is not a size: the hold stays, and no resize is asked for
+        // even if the element says the width changed.
+        state.render.update(&mut app, |render, ctx| {
+            render.set_viewport_size(first_size(0., 0.), ctx)
+        });
+        state.render.read(&app, |render, _| {
+            assert!(render.holding_layout_for_first_size());
+            assert_eq!(render.blocks(), 1);
+        });
+
+        // The first real width: the held edit is laid out inside this call.
+        state.render.update(&mut app, |render, ctx| {
+            render.set_viewport_size(first_size(400., 300.), ctx)
+        });
+        state.render.read(&app, |render, _| {
+            assert!(!render.holding_layout_for_first_size());
+            assert!(
+                render.blocks() > 1,
+                "the held edit must be laid out by the first size"
+            );
+            assert!(render.next_render_buffer_version().is_some());
+            assert_eq!(render.viewport().width().as_f32(), 400.);
+        });
+        assert_eq!(
+            events.layout_updated.get(),
+            1,
+            "the release reports the layout once"
+        );
+        assert_eq!(
+            events.needs_resize.get(),
+            0,
+            "nothing was laid out at the old width, so no resize may be requested"
+        );
+
+        // One-shot: a later width change asks for a resize as it always did, and a later edit is
+        // laid out on arrival.
+        state.render.update(&mut app, |render, ctx| {
+            render.set_viewport_size(first_size(250., 300.), ctx)
+        });
+        assert_eq!(events.needs_resize.get(), 1);
+        app.read(|ctx| state.render.as_ref(ctx).layout_complete())
+            .await;
+        let updates_before = events.layout_updated.get();
+        insert_and_settle(&state, " and more", &mut app).await;
+        assert!(events.layout_updated.get() > updates_before);
+        state.render.read(&app, |render, _| {
+            assert!(!render.holding_layout_for_first_size());
+        });
+    });
+}
+
+/// #2028 control: without the hold an edit is laid out on arrival, before any size (the old
+/// behaviour, and what every model that does not opt in keeps), and the first size asks for the
+/// resize.
+#[test]
+fn test_without_the_first_size_hold_an_edit_is_laid_out_on_arrival() {
+    init_logging();
+    App::test((), |mut app| async move {
+        let state = TestState::new(&mut app);
+        let events = HoldEvents::watch(&state.render, &mut app);
+        insert_and_settle(&state, "first paragraph of the file", &mut app).await;
+        state.render.read(&app, |render, _| {
+            assert!(!render.holding_layout_for_first_size());
+            assert!(render.blocks() > 1);
+            assert!(render.next_render_buffer_version().is_some());
+        });
+        assert!(events.layout_updated.get() >= 1);
+        state.render.update(&mut app, |render, ctx| {
+            render.set_viewport_size(first_size(400., 300.), ctx)
+        });
+        assert_eq!(events.needs_resize.get(), 1);
+    });
+}
+
+/// #2028: the hold is refused by a lazy model (it lays out at element layout time already) and
+/// by a model that has had a size.
+#[test]
+fn test_first_size_hold_is_refused_where_it_cannot_apply() {
+    init_logging();
+    App::test((), |mut app| async move {
+        let lazy = app.add_model(|ctx| RenderState::new(TEST_STYLES, true, None, ctx));
+        lazy.update(&mut app, |render, _| render.hold_layout_until_first_size());
+        lazy.read(&app, |render, _| {
+            assert!(!render.holding_layout_for_first_size())
+        });
+
+        let sized = app.add_model(|ctx| RenderState::new(TEST_STYLES, false, None, ctx));
+        sized.update(&mut app, |render, ctx| {
+            render.hold_layout_until_first_size();
+            render.set_viewport_size(first_size(300., 200.), ctx);
+            assert!(!render.holding_layout_for_first_size());
+            // Asking again after a size has been seen changes nothing.
+            render.hold_layout_until_first_size();
+            assert!(!render.holding_layout_for_first_size());
+        });
     });
 }
 

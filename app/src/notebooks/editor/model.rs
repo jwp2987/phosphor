@@ -353,6 +353,15 @@ impl NotebooksEditorModel {
             });
     }
 
+    /// #2028: lay nothing out until the editor's element has given the render model a width
+    /// (see `RenderState::hold_layout_until_first_size`). For an editor that is about to be shown
+    /// and whose content arrives before its first frame; call it before the first edit.
+    pub fn hold_layout_until_first_size(&mut self, ctx: &mut ModelContext<Self>) {
+        self.render_state.update(ctx, |render_state, _| {
+            render_state.hold_layout_until_first_size();
+        });
+    }
+
     /// Set the window this editor model is associated with. Should be called when the pane attaches.
     pub fn set_window_id(&mut self, window_id: WindowId, _ctx: &mut ModelContext<Self>) {
         self.rte_window_id = Some(window_id);

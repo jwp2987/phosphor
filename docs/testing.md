@@ -205,9 +205,16 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 `test_native_completions`, `test_cwd_listing`, since round 14 `test_child_ps1` (#1907) and `test_init_shell_escaping`, and since round 16 `test_reader_marker` (#2052; it was
 added without being listed, found with #2098). The CI
 `guards` job runs `macos/test_create_warpctrl_wrapper`, `test_warpctrl_early_dispatch` and, since round 14, `test_child_ps1`
-(python3 + bash + sh, about 12 s). Run by NOTHING, by hand only (#2055): `test_fish_bootstrap`, `test_hook_forks`,
-`test_line_editor_markers`, `test_hijack_bootstrap`, `test_bash_preexec_large_command`, `test_zsh_hex_encoder`; all six passed
-when run directly on 2026-11-10. A harness nothing runs rots without a failure: `test_init_shell_escaping` had stopped matching the
+(python3 + bash + sh, about 12 s). Since round 17 (#2055) the six that nothing ran are wired: `test_hijack_bootstrap`,
+`test_bash_preexec_large_command` and `test_zsh_hex_encoder` (about 15 s together) are in that list (so also in `--fast`; the last one also runs inside
+`test_bootstrap_hook_equivalence`); `test_fish_bootstrap`, `test_hook_forks` and `test_line_editor_markers` (about 3.5 minutes together) run in the
+step "slow shell tests" AFTER the `--fast` exit, so only the full `precheck` pays for them. The CI `guards` job runs all six after `test_child_ps1`
+(its timeout is 15 minutes since then). In both places a harness runs only where the tools it cannot do without are installed
+(`shell_test_needs` in `precheck`, `run_harness` in the job: zsh + od + tr for `test_zsh_hex_encoder`, fish for `test_fish_bootstrap`, git + strace for
+`test_hook_forks`, python3 and bash for the rest); a missing tool prints `SKIPPED <harness>` with the tool's name, never a pass and never a failure.
+What the box has installed was not checked when this was wired: read the first `guards` log for `SKIPPED` lines. `precheck` also names the first
+`SKIPPED` line of a harness that skipped one shell of several by itself (it used to say "no built binary" for every such line).
+A harness nothing runs rots without a failure: `test_init_shell_escaping` had stopped matching the
 bootstrap text for exactly that reason. A new `script/test_*` goes into the `precheck` list in the same commit.
 
 | script | checks |
@@ -216,6 +223,7 @@ bootstrap text for exactly that reason. A new `script/test_*` goes into the `pre
 | `test_fish_bootstrap` | fish hooks fire end to end in a pty (#829, #879) |
 | `test_hook_forks` | processes the prompt hooks start per prompt, in the REAL assembled bash, zsh and fish bootstraps (the Shell class of `test_cwd_listing`), local shell, in a plain directory and in a git repository whose directory and branch names need JSON escaping, with the prompt honored (`WARP_HONOR_PS1=1`) and with the rendered PS1 carried in the Precmd: every shell runs under `strace -f -e trace=execve,clone,clone3,fork,vfork`, `true` is typed ten times, and the successful execs (named) and non-thread forks between the first Enter and the last Precmd are counted per prompt. Budget: zero of each, every shell (fish gets a plain prompt: its stock one runs git, which is the user's prompt, not a hook). Each Precmd must be valid JSON and the odd branch/dir names must arrive intact. Also prints the median Enter-to-Precmd of `true` (untraced). `--root DIR` measures another checkout's bootstraps (a worktree of an older commit gives the "before" numbers), `--keep DIR` saves the traced segments, `--no-budget` only prints. Without `strace` the counts are SKIPPED and only the timing runs |
 | `test_bootstrap_hook_equivalence` (bash/zsh/fish), `test_nu_bootstrap_hook_equivalence`, `test_pwsh_hook_equivalence` (+ `testdata/pwsh_hooks_golden.json`) | fork-free hook helpers emit byte-identical DCS payloads to the old forking code (#1170, #1233, #1231); a detached HEAD runs git once per directory and HEAD commit, a moved HEAD is seen at the next prompt, `PHOSPHOR_GIT_HEAD_CACHE=0` restores git per prompt (#1616); fish's in-process hex encoder (ASCII, at most 2 KiB, switched on by a probe the helper file runs too) and its `string replace` JSON escape are compared with `od` / the sed pipeline over every byte value, random strings and the 511..2049 byte boundaries #2099: the pwsh golden is machine-independent since round 16. InitShell's `pid` (added on purpose by #1679, different on every run) is taken out before the comparison and checked on its own: it must be the pid of the pwsh the script started. `user` and `hostname` become `<this user>` / `<this host>` only when they ARE this machine's values (the golden used to hold the recording machine's, so the script could pass on that machine only; it skips without pwsh, which is why no gate showed either fault) |
+| `test_bootstrap_hook_equivalence` (bash/zsh/fish), `test_nu_bootstrap_hook_equivalence`, `test_pwsh_hook_equivalence` (+ `testdata/pwsh_hooks_golden.json`) | **bash hook hex cache (#2030):** `__warp_hex_digits_to` equals the bytes' hex for 24 inputs (digits, empty, signs, letters, glob characters, a non-ASCII digit, 600 digits) in the default state and under `set -eu` + `nocasematch` + `extglob`; a local and a remote-flavoured bash each run the same nine lines (exit codes 0, 1, 37, 255, a `cd` and back, non-ASCII) twice, with the cache and with `PHOSPHOR_BASH_HOOK_HEX_CACHE=0`, in the same directory, and every hook payload (27 each) must be byte-identical; fork-free hook helpers emit byte-identical DCS payloads to the old forking code (#1170, #1233, #1231); a detached HEAD runs git once per directory and HEAD commit, a moved HEAD is seen at the next prompt, `PHOSPHOR_GIT_HEAD_CACHE=0` restores git per prompt (#1616); fish's in-process hex encoder (ASCII, at most 2 KiB, switched on by a probe the helper file runs too) and its `string replace` JSON escape are compared with `od` / the sed pipeline over every byte value, random strings and the 511..2049 byte boundaries |
 | `test_nu_agent_pager_env` (#1813) | REAL nushell (0.116.1 checked; skipped cleanly when `nu` is absent, `--nu PATH` to force) in a pty with the real `nu.nu` bootstrap, a throw-away HOME/XDG under `$TMPDIR` and a `config.nu` holding the user's own `pre_prompt`/`pre_execution` hooks. An agent command is typed as Nu's wrapper form (` <command> # __phosphor_ap_pagers`, `NU_PAGER_MARKER`): `cd` and `$env.X =` persist; `PAGER`/`LESS`/... are set during it (nushell and an external child); the user's own `PAGER` is back, and variables the user never had are gone, after a success, after an external command exiting 3 and after a nushell error; an unmarked line is untouched; the user's hooks ran and ours are appended; no agent line is in the history (a control line without the leading space is). In `precheck`. Unit twins in `agent_shell_wrap_tests.rs`: `nushell_commands_are_not_wrapped_in_a_block` (owner-decision expectation change: the Nu line now ends in the marker comment), `nu_bootstrap_matches_the_overrides_and_the_marker` | the script's own checks |
 | `test_bash_bootstrap_builtins` | fork-free `sort -V`/os-release/`shopt` replacements match the commands (#1164) |
 | `test_bash_preexec_large_command` | Preexec escaping of a 3 MB command is linear (#1255) |
@@ -321,6 +329,9 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_CTRL_C_INTERRUPTS_ACTION=0` | agent, a tool that is running and is not a shell command (a read, a search, an MCP call): Ctrl-C and the Stop button both cancel that one action as a user stop again and leave the later actions of the reply queued (#2034; default: the key interrupts what runs and the turn goes on, the button and a stop of the running action by id stop the whole turn). `action_model_tests.rs` `ctrl_c_interrupts_action_kill_switch` |
 | `PHOSPHOR_DEFER_TURN_SUCCESS=0` | agent: the turn reads `success` again at the end of every reply without actions, also when the app is about to ask the model again by itself (a tool call it answered with an error), i.e. `success`, `in_progress`, `success` within a few ms (#2029; default: the status is held until that follow-up is decided, and written at once when it does not happen). `controller_tests.rs` `a_reply_that_left_a_local_error_result_expects_a_follow_up`, `agent_fuzz::turn_status_tests` |
 | `PHOSPHOR_CONNECTION_LOST_TOOL_RESULT=0` | agent: a tool call with no result that a broken reply stream left behind is answered to the model as `interrupted_by_user` again (#2036; default: `connection_lost`, with the note that the call did not run). `controller_tests.rs` `a_call_left_by_a_broken_reply_is_answered_as_connection_lost_not_as_a_user_interrupt` |
+| `PHOSPHOR_MD_FIRST_LAYOUT_HOLD=0` | the markdown viewer lays its file out when it arrives again, at whatever width its render model has (0 before the first frame: one glyph per line until the debounced resize), instead of holding the layout until its element has a width (#2028). Unit: `test_first_size_hold_*` (`crates/editor/src/render/mod_tests.rs`), `test_file_notebook_holds_layout_until_its_first_size`, `test_first_layout_hold_kill_switch_is_the_exact_value_zero`; app case `md_viewer_first_frame` (its control arm runs with this switch) |
+| `PHOSPHOR_TEST_GPU_LOSE_DEVICE_FILE=<abs path>/phosphor-test-lose-gpu-device` | TEST HOOK, never set in a normal run (#2091). The winit event loop (Linux, Windows) tries to remove that file at every redraw; the redraw that removes it reports the GPU device as lost instead of drawing, once per file, and the app's real lost-device handling runs (renderer dropped and rebuilt). Ignored unless the path is absolute and ends in exactly that file name (the app deletes the file). Logs `TEST HOOK armed (..)` at start and `TEST HOOK (..): reporting the GPU device as lost for this frame`. Unit: `draw_retry_tests.rs` `test_device_loss_hook_*`; app case `gpu_lost_device_recovers` |
+| `PHOSPHOR_BASH_HOOK_HEX_CACHE=0` | read by the bash bootstrap at every prompt, in the shell that runs the hooks (set it in that shell, local or remote; not an app variable): CommandFinished, the Precmd head and the Preexec tail are hex-encoded whole on every prompt again instead of from the per-session cached pieces (#2030). The bytes sent are the same either way (`test_bootstrap_hook_equivalence`, "bash hook hex cache") |
 | `PHOSPHOR_PTY_WRITE_QUEUE=0` | back to timer-chained pty writes instead of the writer-owned job queue (#1384) |
 | `PHOSPHOR_PTY_COALESCE=0` | no key-write coalescing in the pty event loop |
 | `PHOSPHOR_HANDOFF_FACTS=0` | user-key path takes the model lock again instead of published facts (#1403) |
@@ -3030,6 +3041,8 @@ one row per lab family, for every arm of it; the lab harness's own two settings 
 | `desktop_notification_agent_question` | fix | - | notifications | providers | as desktop_notification, with the agent's needs-attention notification on |
 | `drag_drop_file` | fix | autosuggestions = true, completions_while_typing = true | - | - |  |
 | `ime_compose` | fix | autosuggestions = true, completions_while_typing = true | - | - |  |
+| `md_viewer_first_frame` | fix | keybindings_file = absent | - | - | as md_viewer: opened through the app's own open-file path; judged from the app log (the viewer's first-size line, no image painted without a width), OCR of the heading where there is an engine |
+| `gpu_lost_device_recovers` | fix | - | - | - | one launch compared with itself before and after the rebuilt renderer, so the seed's theme and text size cancel out; judged from the app log (the hook's line, the rebuild, frames) and two screenshots |
 | `rollover` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
 | `expert_fuzz` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
 | `arrows_behind_paste` | full | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | typed (and pasted) lines at the prompt, judged by the exact line the shell received |
@@ -6587,7 +6600,7 @@ Outcomes that are not a verdict, each stated on the row:
 - a node, but the session offers no hardware adapter the app can present to (Xvfb has no DRI3): SKIP, NEEDS: the headless-sway job with `WLR_RENDERER=gles2`, and Mesa's driver packages;
 - a presentable hardware adapter listed and a software one used: FAIL;
 - fewer than 30 frames, no `Surface configured:` line, a software launch that did not come up or did not take the software rasteriser, a control pair that does not differ: NOREF with the reason;
-- "a lost device recovers" (the spec's third oracle; #2091): `NOT RUN:` on every row. NEEDS: a way to take the device away that the CI user has (the kernel's reset switches need root) or a test hook in the renderer. The recovery policy is unit-tested (`draw_retry_tests.rs`).
+- "a lost device recovers" (the spec's third oracle; #2091): built in round 17 as its own case, `gpu_lost_device_recovers` (see "Round 17 misc"); every `gpu_real_render` row says so. It was `NOT RUN:` on every row before. NEEDS: nothing on the machine (the app's test hook reports the loss; the kernel's reset switches need root and are not used).
 **T49, the soak on macOS and Windows (`appci/procsample.py`).** `procsample.sample(ctx)` returns the app's pids, memory in KiB and CPU seconds: `/proc` on Linux (the same figures as before), `ps -axo pid=,rss=,time=,command=` filtered to the job's private bundle on macOS (the main process and its terminal-server helper; before, one process), and on Windows the app's Win32 job for the exact pids plus `GetProcessTimes` / `GetProcessMemoryInfo` for those running the app's exe (the calls `Get-Process` wraps; without a job, one `Get-Process` by the exe path). The Windows memory figure is private bytes (#1340: the working set is trimmed and shared).
 - Tiers: `APPCI_SOAK_MIN` wins; else 10 minutes in the fix tier and 60 elsewhere (`cases_robust.soak_minutes`, also the case's time limit in `run.py`). In the fix tier the soak runs on macOS (both modes) and on Windows in two of the four passes (terminal in the PowerShell pane, agent in the Git Bash pane: each mode and each pane once); the other two Windows passes and Linux SKIP with that reason. The full tier is unchanged on Linux and soaks every pass on macOS and Windows.
 - A run under 18 minutes takes a second memory sample at each minute boundary, so the growth rule (3 windows of 5 after a warm-up of 3) still gives a verdict in 10 minutes. The thresholds are the 60-minute ones.
@@ -6954,3 +6967,64 @@ unit test cannot flip it: each change has a pure function that takes the switch 
   Run: `python3 script/realapp/appci/run.py --cases subshell_line_editor_proof`.
 What the next run should show: the unit tests above green (the three changed expectations included); every `subshell_*` and
 `subshell_ready_*` case as before; `subshell_line_editor_proof` PASS on Linux and macOS, SKIP on Windows.
+## Round 17 misc (#2028, #2030, #2055, #2091, #2096; `docs/design/r17-misc.md`)
+
+Nothing here was compiled or run with cargo. All "worked, unproven" until a run.
+
+**#2096: `test_cursor_blink_tick_requests_paint_only_frame` can now fail on a notify.** A `ctx.notify()` is a queued effect; it reaches the
+window's invalidation only when the outermost update returns, and the unit-test window then builds its scene and consumes the invalidation. So
+a test that runs a handler inside `app.update(..)` and reads `take_invalidation_kind_for_test` there can NOT see a notify of that handler.
+`AppContext::pending_view_notifications_for_test(window_id, view_id)` (test / `test-util` only, `crates/warpui_core/src/core/app.rs`; also on
+`App`) counts the queued `Effect::ViewNotification` entries of one view. The blink test reads it before and after the tick, inside the same
+update, and requires zero new ones; `needs_layout` stays as the check for a layout redraw request. Control:
+`test_a_view_notify_is_visible_to_the_blink_test_observation` makes the same observation of a real `ctx.notify()` (one counted, `needs_layout`
+still false before the flush). Use the same pair wherever a test must show that a handler does not notify its view.
+
+**#2030: bash prompt hooks, measured and trimmed.** Not a fork problem: `test_hook_forks` run with the shell started as a REMOTE one counts 0 execs
+and 0 forks per prompt (bash 5.3). The time was the byte loop of `__warp_hex_encode_to` over the fixed text of CommandFinished and the Precmd head
+on every prompt. Those pieces are now encoded once per session id and joined with the hex of the numbers (`__warp_hex_digits_to`); kill switch
+`PHOSPHOR_BASH_HOOK_HEX_CACHE=0` (2.6). In-shell timing on the laptop: everything between a command's end and the prompt 4.17 ms to 2.46 ms.
+Proof on the wire: `test_bootstrap_hook_equivalence` ("bash hook hex cache", 2.4). Proof of the effect: the lab's
+`lab_enter_start.bash.150.nohelper` metrics `enter_to_next_prompt_app_ms` (r13a median 107.1 ms, zsh 82.0 ms) and `enter_start_app_ms` (85.7 / 81.5);
+the next lab run should show the bash next-prompt figure lower and the command-start figure about the same. No new app case: the existing lab
+case measures exactly this and the harness cannot see inside the remote shell otherwise.
+
+**#2028: `md_viewer_first_frame` (`appci/cases_r17_misc.py`; `PROVING`; Linux, macOS, both Windows panes; both modes).** The markdown viewer
+(`FileNotebookView`) now holds its layout until its element has given the render model a width (`RenderState::hold_layout_until_first_size`): edits
+that arrive before the first frame are queued and laid out by the first `set_viewport_size` with a width above zero, which logs
+`rich text: first size <w>x<h> released <n> held layout edit(s)` and asks for no resize. Before, the file was shaped at width 0 and the first frame
+showed one glyph per line for at least the 150 ms resize debounce. The case writes a markdown file with a heading, an image (a PNG it builds itself)
+and a 120-word paragraph, hands it to the running app (`open_file_in_app`) and judges the app log since the open: the first-size line with a width
+above zero, and no `image paint with suspicious size` line (the issue's own evidence). The heading is read by OCR where there is an engine (a note
+without one); the broken picture lasted too short to be caught by a screenshot, so the log is the oracle. Control (Linux launcher only): the app
+relaunched with `PHOSPHOR_MD_FIRST_LAYOUT_HOLD=0` opens the same file and must NOT log the first-size line; how many suspicious image paints it logs
+there is the metric `control_suspicious_image_paints` (it depends on whether the file arrives before the first frame, so it is not a verdict). The
+case then relaunches with the default environment. A build before the fix FAILS the case ("no `rich text: first size` line"). Not covered: the code
+pane's rendered remote markdown (`app/src/code/view.rs`), which very likely has the same first frame and does not hold (not opted in; see the design
+note). Unit tests: `crates/editor/src/render/mod_tests.rs` `test_first_size_hold_lays_out_at_the_first_width_and_not_before` (nothing laid out and no
+version published while holding; a zero width keeps the hold and asks for no resize; the first width lays out, reports once, asks for no resize; one-shot
+afterwards), `test_without_the_first_size_hold_an_edit_is_laid_out_on_arrival` (control), `test_first_size_hold_is_refused_where_it_cannot_apply`;
+`app/src/notebooks/file/mod_tests.rs` `test_file_notebook_holds_layout_until_its_first_size`, `test_first_layout_hold_kill_switch_is_the_exact_value_zero`.
+**Expectation change in an existing test, stated:** `test_file_notebook_mermaid_blocks_default_to_rendered` read the laid-out content right after
+`layout_complete()`; with the hold the content exists only after the viewer's first frame, so the test now also waits (bounded, 2000 yields) for the
+hold to be released. Its assertions are unchanged.
+
+**#2091: `gpu_lost_device_recovers` (`appci/cases_r15_w5c.py`; `PROVING`; Linux, both modes).** The third oracle of T48. The app is relaunched with
+`PHOSPHOR_TEST_GPU_LOSE_DEVICE_FILE=<work dir>/phosphor-test-lose-gpu-device` (2.6); the launch log must have `TEST HOOK armed` (else UNVERIFIABLE:
+a build without the hook). The case clears the pane (control picture), draws the 24-row pattern of `gpu_real_render` (reference picture), creates the
+trigger file and, if no redraw took it within 1.5 s, types one key. Judged from the app log after that: the hook's line exactly once and the file
+gone; `Recreating the renderer` after it; a `Surface configured:` line after that (the rebuilt renderer; its adapter is on the row); at least one
+`hop=frame_drawn` after the rebuild; the app alive and no panic. Then one more key and Backspace for every key typed, a settled screenshot, and the
+screen must equal the reference within `APPCI_GPU_SHOT_DIFF` (2 %), with the cleared pane against the pattern differing by 5x that (else
+UNVERIFIABLE). It runs on whatever adapter the launch uses: the render node where the session can present to it, the software rasteriser under Xvfb;
+the rebuild is the app's own code either way. Metric and note, not a verdict: `frames_after_rebuild_before_input`, the frames drawn in the 2 s after
+the rebuild before the next key. The lost-device decision asks for no retry, so 0 is expected on an idle window: the frame that hit the loss waits for
+the next event (#2101, filed, not worked). `gpu_real_render` rows now say where the third oracle is judged instead of `NOT RUN:`. Unit tests:
+`draw_retry_tests.rs` `test_device_loss_hook_is_off_unless_the_variable_names_its_own_file`, `test_device_loss_hook_fires_once_per_trigger_file`,
+`the_error_the_test_hook_reports_rebuilds_the_renderer`.
+
+Self-tests: `appci/selftest_r17_misc.py` (registered at the tail of `selftest.py`): both verdicts with the input each defect produces, the PNG
+fixture, and the Rust strings and order the cases read (`r17_*`).
+Run: `python3 script/realapp/appci/run.py --cases md_viewer_first_frame,gpu_lost_device_recovers`.
+What the next run should show: `md_viewer_first_frame` PASS in both modes with a first size near the pane size and `suspicious_image_paints` 0;
+`gpu_lost_device_recovers` PASS in both modes on Wayland and X11 with the adapter named, and `frames_after_rebuild_before_input` (0 confirms #2101).

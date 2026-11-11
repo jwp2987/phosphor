@@ -8590,6 +8590,8 @@ import selftest_r16_harness  # noqa: E402  (round 16 harness decisions, owner 20
 CHECKS.extend(selftest_r16_harness.CHECKS)
 import selftest_r16_settings  # noqa: E402  (round 16: the test settings model: case_settings.py, cases.requires, the tables of docs/testing.md)
 CHECKS.extend(selftest_r16_settings.CHECKS)
+import selftest_r17_misc  # noqa: E402  (round 17 misc: #2028 md_viewer_first_frame, #2091 gpu_lost_device_recovers and its Rust hook; own file)
+CHECKS.extend(selftest_r17_misc.CHECKS)
 
 
 def missing_required(required, passed):
