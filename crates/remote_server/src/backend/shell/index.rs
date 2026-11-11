@@ -611,13 +611,22 @@ impl ShellBackend {
             };
             script = script.section(format!("f{i}"), command, StderrMode::Discard)?;
         }
-        let output = executor
+        let started = std::time::Instant::now();
+        let result = executor
             .execute(ExecRequest {
                 command: script.render(self.login_kind()),
                 stdin: Vec::new(),
                 max_output_bytes: MAX_EXEC_OUTPUT_BYTES,
             })
-            .await?;
+            .await;
+        // One line per exec channel (#2156).
+        log::debug!(
+            "shell exec: producer=index_read files={} elapsed_ms={} ok={}",
+            paths.len(),
+            started.elapsed().as_millis(),
+            result.is_ok()
+        );
+        let output = result?;
         if output.truncated {
             return Ok(None);
         }

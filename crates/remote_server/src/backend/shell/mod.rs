@@ -216,13 +216,22 @@ impl ShellBackend {
             .unwrap_or_else(|| executor.shell_kind());
         let mut retried = false;
         loop {
-            let output = executor
+            let started = std::time::Instant::now();
+            let result = executor
                 .execute(ExecRequest {
                     command: script.render(kind),
                     stdin: stdin.clone(),
                     max_output_bytes: MAX_EXEC_OUTPUT_BYTES,
                 })
-                .await?;
+                .await;
+            // One line per exec channel (#2156): the sections name the producer.
+            log::debug!(
+                "shell exec: producer=run_script sections=[{}] elapsed_ms={} ok={}",
+                script.section_names().join(","),
+                started.elapsed().as_millis(),
+                result.is_ok()
+            );
+            let output = result?;
             if output.truncated {
                 return Err(BackendError::Unavailable(format!(
                     "remote output over the {} byte cap",

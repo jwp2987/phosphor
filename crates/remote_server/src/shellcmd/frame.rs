@@ -111,6 +111,11 @@ impl Script {
         &self.nonce
     }
 
+    /// The section names in order (for the per-exec debug line; never the commands).
+    pub fn section_names(&self) -> Vec<&str> {
+        self.sections.iter().map(|s| s.name.as_str()).collect()
+    }
+
     fn marker(&self) -> String {
         format!("@@PHOSPHOR-{}", self.nonce)
     }
