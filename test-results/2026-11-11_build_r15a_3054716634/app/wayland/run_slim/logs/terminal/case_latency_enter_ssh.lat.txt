@@ -1,0 +1,24 @@
+2026-11-11T16:13:55Z [DEBUG] input_order frame layout=true t=1794413635658.904
+2026-11-11T16:13:55Z [DEBUG] input_order hop=input_report reported_chars=0 kept_chars=0 text="" t=1794413635659.723
+2026-11-11T16:13:55Z [DEBUG] input_order hop=frame_drawn total_ms=2.8 acquire_ms=0.1 present_ms=0.0 t=1794413635660.182
+2026-11-11T16:13:55Z [DEBUG] input_order hop=frame_drawn total_ms=1.3 acquire_ms=0.1 present_ms=0.0 t=1794413635671.882
+2026-11-11T16:13:55Z [DEBUG] input_order hop=frame_drawn total_ms=1.2 acquire_ms=0.1 present_ms=0.0 t=1794413635688.028
+2026-11-11T16:13:55Z [DEBUG] input_order hop=frame_drawn total_ms=1.7 acquire_ms=0.1 present_ms=0.0 t=1794413635704.689
+2026-11-11T16:13:55Z [DEBUG] input_order hop=frame_drawn total_ms=1.8 acquire_ms=0.1 present_ms=0.0 t=1794413635737.074
+2026-11-11T16:13:56Z [DEBUG] input_order hop=frame_drawn total_ms=1.5 acquire_ms=0.1 present_ms=0.0 t=1794413636157.037
+2026-11-11T16:13:56Z [DEBUG] input_order hop=frame_drawn total_ms=1.3 acquire_ms=0.1 present_ms=0.0 t=1794413636656.929
+2026-11-11T16:13:56Z [DEBUG] input_order hop=key_unconverted outcome=dropped logical=Shift physical=Code(Escape) ctrl=false alt=false shift=false cmd=false t=1794413636845.607
+2026-11-11T16:13:56Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=6810 key="c" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794413636870.156
+2026-11-11T16:13:56Z [DEBUG] input_order hop=ctrl_c_keydown powershell_setup_hold=Off t=1794413636870.204
+2026-11-11T16:13:56Z [DEBUG] input_order hop=ctrl_c_route route=none t=1794413636870.215
+2026-11-11T16:13:56Z [DEBUG] input_order hop=kh_focus_input seq=6241 self_focused=true t=1794413636870.226
+2026-11-11T16:13:56Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794413636870.238
+2026-11-11T16:13:56Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794413636870.248
+2026-11-11T16:13:56Z [DEBUG] input_order hop=kh_focus_terminal_view seq=6241 self_focused=false ssh_holding=false t=1794413636870.262
+2026-11-11T16:13:56Z [DEBUG] input_order hop=kh_focus_editor seq=6241 self_focused=true t=1794413636870.272
+2026-11-11T16:13:56Z [DEBUG] input_order hop=kh_focus_input seq=6241 self_focused=false t=1794413636870.288
+2026-11-11T16:13:56Z [DEBUG] input_order hop=kh_focus_terminal_view seq=6241 self_focused=false ssh_holding=false t=1794413636870.292
+2026-11-11T16:13:56Z [DEBUG] input_order hop=frame_drawn total_ms=1.6 acquire_ms=0.1 present_ms=0.0 t=1794413636871.980
+2026-11-11T16:13:57Z [DEBUG] input_order hop=key_unconverted outcome=dropped logical=Shift physical=Code(Escape) ctrl=false alt=false shift=false cmd=false t=1794413637127.009
+2026-11-11T16:13:57Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=6811 key="u" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794413637151.286
+2026-11-11T16:13:57Z [DEBUG] input_order hop=frame_drawn total_ms=1.3 acquire_ms=0.1 present_ms=0.0 t=1794413637152.649

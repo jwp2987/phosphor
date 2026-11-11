@@ -1,0 +1,328 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="109" failures="16" skipped="35">
+<testcase classname="terminal" name="big_paste" time="6.00">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="37.90">
+<failure message="the setup was written behind sudo: not after Ctrl-I and not within 10 s of the first typed line's prompt (the first new prompt behind the relay). The judge's last looks: ['=output decision=Wait(LineDirty) kind=Relay leader=Relay comm=&quot;sudo&quot; tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=77 lines=0 age_ms=4350 user_line_at_cursor=false line_editor_announced=false t=1794412774280.533', '=output decision=Wait(LineDirty) kind=Relay leader=Relay comm=&quot;sudo&quot; tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=78 lines=0 age_ms=4365 user_line_at_cursor=false line_editor_announced=false t=1794412774296.005', '=output decision=Wait(LineDirty) kind=Relay leader=Relay comm=&quot;sudo&quot; tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=79 lines=0 age_ms=4382 user_line_at_cursor=false line_editor_announced=false t=1794412774312.502']; armed: True">the setup was written behind sudo: not after Ctrl-I and not within 10 s of the first typed line's prompt (the first new prompt behind the relay). The judge's last looks: ['=output decision=Wait(LineDirty) kind=Relay leader=Relay comm="sudo" tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=77 lines=0 age_ms=4350 user_line_at_cursor=false line_editor_announced=false t=1794412774280.533', '=output decision=Wait(LineDirty) kind=Relay leader=Relay comm="sudo" tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=78 lines=0 age_ms=4365 user_line_at_cursor=false line_editor_announced=false t=1794412774296.005', '=output decision=Wait(LineDirty) kind=Relay leader=Relay comm="sudo" tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=79 lines=0 age_ms=4382 user_line_at_cursor=false line_editor_announced=false t=1794412774312.502']; armed: True
+injector accounting: injector sent 288; app saw 288; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 282 unbound keydown/typed, 3 taken by a key binding, 3 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="job_control" time="10.20">
+</testcase>
+<testcase classname="terminal" name="ssh_failing_not_local" time="15.10">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="164.30">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="311.10">
+</testcase>
+<testcase classname="terminal" name="routing_table_powershell" time="0.60">
+<skipped message="Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="6.70">
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="7.60">
+</testcase>
+<testcase classname="terminal" name="flood_scrollback_find" time="15.20">
+<skipped message="NO-REFERENCE (not a pass): flood_scrollback_find; app log: 31 find_scroll hop(s), moved=true in 1, last: result=scroll block=127 moved=true viewport_lines=52.11 rendered_mode=PinnedToBottom scroll_mode=Pinne"/>
+</testcase>
+<testcase classname="terminal" name="remote_heredoc_paste" time="60.20">
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_failing_not_local_managed" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_bootstrap_in_command" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_typeahead_managed" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_kill_switch" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ui_readline_keys" time="10.10">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 211; app saw 210; lost-before-app 1 (Enter: sent 3, app saw 3); of the app's: 199 unbound keydown/typed, 8 taken by a key binding, 3 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="hostile_output_recovers" time="46.20">
+</testcase>
+<testcase classname="terminal" name="latency_enter_ssh" time="167.90">
+</testcase>
+<testcase classname="terminal" name="intl_compose_linux" time="26.40">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 703; app saw 695; lost-before-app 8 (Enter: sent 6, app saw 6); of the app's: 682 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="history_up_recall" time="7.50">
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="23.40">
+</testcase>
+<testcase classname="terminal" name="ime_compose" time="74.80">
+<failure message="ime_nihao_raw: marked text / dead key leaked ['6e', '69', '68', '61', '6f'] to the pty before the commit">ime_nihao_raw: marked text / dead key leaked ['6e', '69', '68', '61', '6f'] to the pty before the commit
+ime_nihao_raw: pty received 20, expected e4bda0e5a5bd
+editor ime_nihao: file bytes 6e6968616f0a, expected e4bda0e5a5bd0a (text '你好' [utf8 e4bda0e5a5bd])
+editor ime_nihao: shell received 'echo nihao  &gt;&gt; ce_ime_nihao.txt' [utf8 6563686f206e6968616f20203e3e2063655f696d655f6e6968616f2e747874], expected 'echo 你好 &gt;&gt; ce_ime_nihao.txt' [utf8 6563686f20e4bda0e5a5bd203e3e2063655f696d655f6e6968616f2e747874]
+editor ime_zhongwen: file bytes 7a686f6e6777656e0a, expected e4b8ade696870a (text '中文' [utf8 e4b8ade69687])
+editor ime_zhongwen: shell received 'echo zhongwen  &gt;&gt; ce_ime_zhongwen.txt' [utf8 6563686f207a686f6e6777656e20203e3e2063655f696d655f7a686f6e6777656e2e747874], expected 'echo 中文 &gt;&gt; ce_ime_zhongwen.txt' [utf8 6563686f20e4b8ade69687203e3e2063655f696d655f7a686f6e6777656e2e747874]
+injector accounting: injector sent 334; app saw 334; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 321 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="scroll_keys_foreground" time="27.60">
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_output" time="11.30">
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_drag" time="11.40">
+</testcase>
+<testcase classname="terminal" name="selection_modes" time="25.40">
+</testcase>
+<testcase classname="terminal" name="primary_and_middle_click" time="23.50">
+<failure message="[copy_on_select off] `echo ` + middle click in the input + ` &gt;&gt; pm_off_t73_m6t1u.txt`: the shell received ['echo SENTINEL_NOT_THE_PASTE &gt;&gt; pm_off_t73_m6t1u.txt'], expected exactly ['echo yreffnm &gt;&gt; pm_off_t73_m6t1u.txt'] (SENTINEL_NOT_THE_PASTE in it = the paste came from CLIPBOARD, not PRIMARY)">[copy_on_select off] `echo ` + middle click in the input + ` &gt;&gt; pm_off_t73_m6t1u.txt`: the shell received ['echo SENTINEL_NOT_THE_PASTE &gt;&gt; pm_off_t73_m6t1u.txt'], expected exactly ['echo yreffnm &gt;&gt; pm_off_t73_m6t1u.txt'] (SENTINEL_NOT_THE_PASTE in it = the paste came from CLIPBOARD, not PRIMARY)
+[copy_on_select off] pm_off_t73_m6t1u.txt = ['SENTINEL_NOT_THE_PASTE'], expected ['yreffnm']
+[copy_on_select on] drag over 'h4x3fc2'..'r2fkr7y': PRIMARY: the clipboard 'TINEL_NOT_THE_P'... is not a piece of the printed line (characters changed, lost or added, or nothing of it copied)
+[copy_on_select on] double click on 'd3c4hem': PRIMARY holds 'pm_off_t73_m6t1u.txt', expected exactly the word
+[copy_on_select on] after the double click CLIPBOARD holds 'pm_off_t73_m6t1u.txt', expected 'd3c4hem'
+injector accounting: injector sent 197; app saw 197; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 184 unbound keydown/typed, 8 taken by a key binding, 5 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="link_and_path_click" time="59.10">
+<failure message="Ctrl+click on `paxywuhde.rs:140`: nothing opened: no call to the desktop opener and the file's text is not on screen">Ctrl+click on `paxywuhde.rs:140`: nothing opened: no call to the desktop opener and the file's text is not on screen
+injector accounting: injector sent 188; app saw 188; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 181 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="resize_reflow_output" time="58.40">
+</testcase>
+<testcase classname="terminal" name="editor_daily" time="58.90">
+<failure message="a file changed on disk with no unsaved edits was not reloaded: an edit typed and saved afterwards wrote 'AFTER_T106_t14xb5_alpha line one\nsecond line éü café\n\ttabbed third\nlas', expected it on top of the new content 'AFTER_T106_t14xb5_EXTERNAL_T105_uzemlm\nalpha line one\nsecond line éü c' (the other program's change was overwritten without a word)">a file changed on disk with no unsaved edits was not reloaded: an edit typed and saved afterwards wrote 'AFTER_T106_t14xb5_alpha line one\nsecond line éü café\n\ttabbed third\nlas', expected it on top of the new content 'AFTER_T106_t14xb5_EXTERNAL_T105_uzemlm\nalpha line one\nsecond line éü c' (the other program's change was overwritten without a word)
+replace: opener exit code 0
+close: opener exit code 0
+close_enter: opener exit code 0
+external: opener exit code 0
+injector accounting: injector sent 556; app saw 556; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 349 unbound keydown/typed, 200 taken by a key binding, 7 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="pane_resize_maximize" time="53.40">
+<failure message="command palette 'move divider left' twice: the right pane went -1 columns and the left pane +1: expected the right one wider and the left one narrower (shots/*pr_palette_*.png show the entry that ran)">command palette 'move divider left' twice: the right pane went -1 columns and the left pane +1: expected the right one wider and the left one narrower (shots/*pr_palette_*.png show the entry that ran)
+injector accounting: injector sent 778; app saw 778; lost-before-app 0 (Enter: sent 19, app saw 19); of the app's: 745 unbound keydown/typed, 14 taken by a key binding, 19 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 17 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="focus_cycle" time="19.80">
+</testcase>
+<testcase classname="terminal" name="gitbash_typeahead_reps" time="0.60">
+<skipped message="Git Bash pane only (#1393: the ConPTY prompt hold of a bash pane on Windows)"/>
+</testcase>
+<testcase classname="terminal" name="minimize_fullscreen" time="82.80">
+</testcase>
+<testcase classname="terminal" name="desktop_notification" time="78.60">
+</testcase>
+<testcase classname="terminal" name="drag_drop_file" time="11.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the drag source reported no drag at all (events []): the pointer press and motion did not start a drag on it. The app was never offered the file; nothin"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="5.60">
+</testcase>
+<testcase classname="terminal" name="md_viewer_big" time="7.00">
+</testcase>
+<testcase classname="terminal" name="md_viewer_first_frame" time="52.80">
+</testcase>
+<testcase classname="terminal" name="zero_network_startup" time="178.30">
+</testcase>
+<testcase classname="terminal" name="restore_shows_history" time="90.20">
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_many" time="110.60">
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_panel_click" time="44.20">
+</testcase>
+<testcase classname="terminal" name="tab_pointer_use" time="93.00">
+<skipped message="NO-REFERENCE (not a pass): vertical panel: tab 2 at (125, 155), tab 3 at (125, 218), tab 4 at (125, 280)"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="66.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the denial notice (toast naming the purpose and host), its 'Allow this origin' link and the log row's 'Allow' button need a request the gate refuses, wh"/>
+</testcase>
+<testcase classname="terminal" name="depth_check_off_before_tab_lifecycle_keys" time="0.00">
+<skipped message="root shell pid not recorded after relaunch_by_case: the PID probe got no answer; the depth check is off until the next relaunch"/>
+</testcase>
+<testcase classname="terminal" name="tab_lifecycle_keys" time="21.30">
+<failure message="precondition: before the case opened any tab, the pane that has the keyboard answered no command ('&lt;none&gt;': no shell is in front), expected the pane's shell in '/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>': an earlier case left another tab or a non-shell pane in front; nothing else was typed (every line of this case would have gone to the wrong place)">precondition: before the case opened any tab, the pane that has the keyboard answered no command ('&lt;none&gt;': no shell is in front), expected the pane's shell in '/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>': an earlier case left another tab or a non-shell pane in front; nothing else was typed (every line of this case would have gone to the wrong place)
+injector accounting: injector sent 168; app saw 168; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 162 unbound keydown/typed, 4 taken by a key binding, 2 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal" name="pane_wedged_after_tab_lifecycle_keys" time="0.00">
+<failure message="the default pane did not run a marker command (no effect file) after tab_lifecycle_keys, twice: the app is relaunched so the remaining cases measure something">the default pane did not run a marker command (no effect file) after tab_lifecycle_keys, twice: the app is relaunched so the remaining cases measure something</failure>
+</testcase>
+<testcase classname="terminal" name="gpu_real_render" time="74.80">
+<skipped message="NO-REFERENCE (not a pass): 'a lost device recovers' (the third oracle of r14-test-gaps T48; #2091) is judged by its own case, gpu_lost_device_recovers (a renderer test hook reports the loss; the kernel's res"/>
+</testcase>
+<testcase classname="terminal" name="keybinding_rebind" time="94.00">
+</testcase>
+<testcase classname="terminal" name="soak" time="3657.30">
+</testcase>
+<testcase classname="terminal" name="gpu_lost_device_recovers" time="45.10">
+<skipped message="NO-REFERENCE (not a pass): device reported lost once; renderer rebuilt on Intel(R) UHD Graphics 630 (CFL GT2) (Vulkan); 15 frame(s) drawn after the rebuild"/>
+</testcase>
+<testcase classname="terminal" name="upgrade_over_previous" time="47.00">
+<skipped message="NO-REFERENCE (not a pass): the previous build's state is packed in /home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/fixtures/prev-state.tar.gz (keep it as a CI artifact "/>
+</testcase>
+<testcase classname="terminal" name="cb_ui_action_latency" time="18.90">
+</testcase>
+<testcase classname="terminal" name="meta_and_word_keys" time="31.50">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 761; app saw 760; lost-before-app 1 (Enter: sent 18, app saw 18); of the app's: 616 unbound keydown/typed, 126 taken by a key binding, 18 Enter b"/>
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_meta_and_word_keys" time="0.00">
+<failure message="after meta_and_word_keys the pane's shell was not the root shell (none; root pid 3727867); the app is relaunched so later cases start clean">after meta_and_word_keys the pane's shell was not the root shell (none; root pid 3727867); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="big_paste" time="5.80">
+</testcase>
+<testcase classname="agent" name="subshell_ready_relay_shape" time="37.90">
+<failure message="the setup was written behind sudo: not after Ctrl-I and not within 10 s of the first typed line's prompt (the first new prompt behind the relay). The judge's last looks: ['=output decision=Wait(LineDirty) kind=Relay leader=Relay comm=&quot;sudo&quot; tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=77 lines=0 age_ms=4365 user_line_at_cursor=false line_editor_announced=false t=1794419088564.187', '=output decision=Wait(LineDirty) kind=Relay leader=Relay comm=&quot;sudo&quot; tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=78 lines=0 age_ms=4378 user_line_at_cursor=false line_editor_announced=false t=1794419088577.648', '=output decision=Wait(LineDirty) kind=Relay leader=Relay comm=&quot;sudo&quot; tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=79 lines=0 age_ms=4395 user_line_at_cursor=false line_editor_announced=false t=1794419088594.070']; armed: True">the setup was written behind sudo: not after Ctrl-I and not within 10 s of the first typed line's prompt (the first new prompt behind the relay). The judge's last looks: ['=output decision=Wait(LineDirty) kind=Relay leader=Relay comm="sudo" tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=77 lines=0 age_ms=4365 user_line_at_cursor=false line_editor_announced=false t=1794419088564.187', '=output decision=Wait(LineDirty) kind=Relay leader=Relay comm="sudo" tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=78 lines=0 age_ms=4378 user_line_at_cursor=false line_editor_announced=false t=1794419088577.648', '=output decision=Wait(LineDirty) kind=Relay leader=Relay comm="sudo" tail=ShellPrompt queue_empty=Some(true) reader_blocked=None newline_since_line_end=false bytes=79 lines=0 age_ms=4395 user_line_at_cursor=false line_editor_announced=false t=1794419088594.070']; armed: True
+injector accounting: injector sent 288; app saw 288; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 282 unbound keydown/typed, 3 taken by a key binding, 3 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="job_control" time="9.90">
+</testcase>
+<testcase classname="agent" name="ssh_failing_not_local" time="15.10">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="164.40">
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="311.00">
+</testcase>
+<testcase classname="agent" name="routing_table_powershell" time="0.60">
+<skipped message="Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)"/>
+</testcase>
+<testcase classname="agent" name="agent_lrc_no_false_takeover" time="145.80">
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="6.70">
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="7.30">
+</testcase>
+<testcase classname="agent" name="flood_scrollback_find" time="13.30">
+</testcase>
+<testcase classname="agent" name="remote_heredoc_paste" time="60.90">
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_managed" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_failing_not_local_managed" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_bootstrap_in_command" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_typeahead_managed" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_kill_switch" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ui_readline_keys" time="9.90">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 210; app saw 209; lost-before-app 1 (Enter: sent 3, app saw 3); of the app's: 199 unbound keydown/typed, 7 taken by a key binding, 3 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="hostile_output_recovers" time="46.40">
+</testcase>
+<testcase classname="agent" name="latency_enter_ssh" time="168.10">
+</testcase>
+<testcase classname="agent" name="intl_compose_linux" time="26.50">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 702; app saw 694; lost-before-app 8 (Enter: sent 6, app saw 6); of the app's: 682 unbound keydown/typed, 6 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="history_up_recall" time="8.30">
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="20.80">
+<failure message="block-up then Home did not move the view above where PageUp left it (numbered lines on screen 462..500, before 316..363; shots/*skp_3_top.png)">block-up then Home did not move the view above where PageUp left it (numbered lines on screen 462..500, before 316..363; shots/*skp_3_top.png)
+after one typed key none of the job's last 8 lines is on screen: the key did not bring the view back to the bottom (shots/*skp_5_after_key.png)
+injector accounting: injector sent 192; app saw 192; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 178 unbound keydown/typed, 11 taken by a key binding, 3 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="ime_compose" time="73.60">
+<failure message="ime_nihao_raw: marked text / dead key leaked ['6e', '69', '68', '61', '6f'] to the pty before the commit">ime_nihao_raw: marked text / dead key leaked ['6e', '69', '68', '61', '6f'] to the pty before the commit
+ime_nihao_raw: pty received 20, expected e4bda0e5a5bd
+editor ime_nihao: file bytes 6e6968616f0a, expected e4bda0e5a5bd0a (text '你好' [utf8 e4bda0e5a5bd])
+editor ime_nihao: shell received 'echo nihao  &gt;&gt; ce_ime_nihao.txt' [utf8 6563686f206e6968616f20203e3e2063655f696d655f6e6968616f2e747874], expected 'echo 你好 &gt;&gt; ce_ime_nihao.txt' [utf8 6563686f20e4bda0e5a5bd203e3e2063655f696d655f6e6968616f2e747874]
+editor ime_zhongwen: file bytes 7a686f6e6777656e0a, expected e4b8ade696870a (text '中文' [utf8 e4b8ade69687])
+editor ime_zhongwen: shell received 'echo zhongwen  &gt;&gt; ce_ime_zhongwen.txt' [utf8 6563686f207a686f6e6777656e20203e3e2063655f696d655f7a686f6e6777656e2e747874], expected 'echo 中文 &gt;&gt; ce_ime_zhongwen.txt' [utf8 6563686f20e4b8ade69687203e3e2063655f696d655f7a686f6e6777656e2e747874]
+injector accounting: injector sent 331; app saw 331; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 321 unbound keydown/typed, 4 taken by a key binding, 6 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="scroll_keys_foreground" time="27.80">
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_output" time="11.20">
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_drag" time="11.90">
+</testcase>
+<testcase classname="agent" name="selection_modes" time="25.70">
+</testcase>
+<testcase classname="agent" name="primary_and_middle_click" time="23.70">
+<failure message="[copy_on_select off] `echo ` + middle click in the input + ` &gt;&gt; pm_off_t78_wihqj.txt`: the shell received ['echo SENTINEL_NOT_THE_PASTE &gt;&gt; pm_off_t78_wihqj.txt'], expected exactly ['echo p7mdmnr &gt;&gt; pm_off_t78_wihqj.txt'] (SENTINEL_NOT_THE_PASTE in it = the paste came from CLIPBOARD, not PRIMARY)">[copy_on_select off] `echo ` + middle click in the input + ` &gt;&gt; pm_off_t78_wihqj.txt`: the shell received ['echo SENTINEL_NOT_THE_PASTE &gt;&gt; pm_off_t78_wihqj.txt'], expected exactly ['echo p7mdmnr &gt;&gt; pm_off_t78_wihqj.txt'] (SENTINEL_NOT_THE_PASTE in it = the paste came from CLIPBOARD, not PRIMARY)
+[copy_on_select off] pm_off_t78_wihqj.txt = ['SENTINEL_NOT_THE_PASTE'], expected ['p7mdmnr']
+[copy_on_select on] drag over 'c4hem4k'..'24pwraa': PRIMARY: the clipboard 'TINEL_NOT_THE_P'... is not a piece of the printed line (characters changed, lost or added, or nothing of it copied)
+[copy_on_select on] double click on 'n72uaer': PRIMARY holds 'pm_off_t78_wihqj.txt', expected exactly the word
+[copy_on_select on] after the double click CLIPBOARD holds 'pm_off_t78_wihqj.txt', expected 'n72uaer'
+injector accounting: injector sent 197; app saw 197; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 184 unbound keydown/typed, 8 taken by a key binding, 5 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="link_and_path_click" time="39.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Wayland harness cannot synthesize pointer input / read this text by OCR reliably; feature verified manually by the owner on a Wayland desktop (2026-11-05); covered on"/>
+</testcase>
+<testcase classname="agent" name="resize_reflow_output" time="57.20">
+</testcase>
+<testcase classname="agent" name="editor_daily" time="58.90">
+<failure message="a file changed on disk with no unsaved edits was not reloaded: an edit typed and saved afterwards wrote 'AFTER_T110_424kr7_alpha line one\nsecond line éü café\n\ttabbed third\nlas', expected it on top of the new content 'AFTER_T110_424kr7_EXTERNAL_T109_0m6596\nalpha line one\nsecond line éü c' (the other program's change was overwritten without a word)">a file changed on disk with no unsaved edits was not reloaded: an edit typed and saved afterwards wrote 'AFTER_T110_424kr7_alpha line one\nsecond line éü café\n\ttabbed third\nlas', expected it on top of the new content 'AFTER_T110_424kr7_EXTERNAL_T109_0m6596\nalpha line one\nsecond line éü c' (the other program's change was overwritten without a word)
+replace: opener exit code 0
+close: opener exit code 0
+close_enter: opener exit code 0
+external: opener exit code 0
+injector accounting: injector sent 556; app saw 556; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 349 unbound keydown/typed, 200 taken by a key binding, 7 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="pane_resize_maximize" time="53.20">
+<failure message="command palette 'move divider left' twice: the right pane went -1 columns and the left pane +1: expected the right one wider and the left one narrower (shots/*pr_palette_*.png show the entry that ran)">command palette 'move divider left' twice: the right pane went -1 columns and the left pane +1: expected the right one wider and the left one narrower (shots/*pr_palette_*.png show the entry that ran)
+injector accounting: injector sent 777; app saw 777; lost-before-app 0 (Enter: sent 19, app saw 19); of the app's: 745 unbound keydown/typed, 13 taken by a key binding, 19 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 17 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="focus_cycle" time="19.70">
+</testcase>
+<testcase classname="agent" name="gitbash_typeahead_reps" time="0.60">
+<skipped message="Git Bash pane only (#1393: the ConPTY prompt hold of a bash pane on Windows)"/>
+</testcase>
+<testcase classname="agent" name="minimize_fullscreen" time="82.80">
+</testcase>
+<testcase classname="agent" name="desktop_notification" time="79.00">
+</testcase>
+<testcase classname="agent" name="drag_drop_file" time="11.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the drag source reported no drag at all (events []): the pointer press and motion did not start a drag on it. The app was never offered the file; nothin"/>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="5.50">
+</testcase>
+<testcase classname="agent" name="md_viewer_first_frame" time="52.80">
+</testcase>
+<testcase classname="agent" name="restore_shows_history" time="114.60">
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_many" time="105.80">
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_panel_click" time="28.30">
+<skipped message="NO-REFERENCE (not a pass): vertical tabs: on in the profile's settings (the owner's layout)"/>
+</testcase>
+<testcase classname="agent" name="tab_pointer_use" time="46.10">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: vertical panel: the tabs' titles could not be located in the strip (the rows are not top to bottom in tab order: tab 2 at (332, 459), tab 3 at (332, 459"/>
+</testcase>
+<testcase classname="agent" name="tab_lifecycle_keys" time="54.00">
+</testcase>
+<testcase classname="agent" name="gpu_real_render" time="75.00">
+<skipped message="NO-REFERENCE (not a pass): 'a lost device recovers' (the third oracle of r14-test-gaps T48; #2091) is judged by its own case, gpu_lost_device_recovers (a renderer test hook reports the loss; the kernel's res"/>
+</testcase>
+<testcase classname="agent" name="keybinding_rebind" time="94.60">
+</testcase>
+<testcase classname="agent" name="soak" time="3657.40">
+</testcase>
+<testcase classname="agent" name="gpu_lost_device_recovers" time="45.40">
+<skipped message="NO-REFERENCE (not a pass): device reported lost once; renderer rebuilt on Intel(R) UHD Graphics 630 (CFL GT2) (Vulkan); 17 frame(s) drawn after the rebuild"/>
+</testcase>
+<testcase classname="agent" name="meta_and_word_keys" time="33.00">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 811; app saw 810; lost-before-app 1 (Enter: sent 19, app saw 19); of the app's: 665 unbound keydown/typed, 126 taken by a key binding, 19 Enter b"/>
+</testcase>
+<testcase classname="agent@fake" name="desktop_notification_agent_question" time="60.80">
+<failure message="question: the card arrived while the reference terminal had the focus: the notification service received 2 notification(s), expected 1: [&quot;'Fake conversation title' blocked | Phosphor Agent needs your confirmation to continue&quot;, &quot;'Fake conversation title' blocked | Phosphor Agent needs your confirmation to continue&quot;]">question: the card arrived while the reference terminal had the focus: the notification service received 2 notification(s), expected 1: ["'Fake conversation title' blocked | Phosphor Agent needs your confirmation to continue", "'Fake conversation title' blocked | Phosphor Agent needs your confirmation to continue"]
+question: the card arrived while the reference terminal had the focus: the app logged 2 hop=desktop_notification line(s), expected 1
+answered: the turn ended with the focus on Phosphor (still one in total): the notification service received 2 notification(s), expected 1: ["'Fake conversation title' blocked | Phosphor Agent needs your confirmation to continue", "'Fake conversation title' blocked | Phosphor Agent needs your confirmation to continue"]
+answered: the turn ended with the focus on Phosphor (still one in total): the app logged 2 hop=desktop_notification line(s), expected 1
+injector accounting: injector sent 39; app saw 39; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 34 unbound keydown/typed, 2 taken by a key binding, 3 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_close_undo_call_status" time="21.20">
+</testcase>
+</testsuite>

@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="46" failures="4" skipped="13">
+<testcase classname="terminal" name="mac_pointer_chord_proof" time="32.60">
+<failure message="a click on the menu bar at (756, 6) points was NOT refused by mptr ('pointer injector failed: mptr exit 4 ( Window Server (pid 547, layer 24), not to pid 84331; windows at the point, front to back: Window Server (pid 547, layer 24, 0,0,1512,33) &gt; Dock (pid 90039, layer 20, 0,0,1512,982); area clear of the Dock bar and the menu bar: 0,33,1512,874)'): the fence that keeps clicks inside the app's own windows is not live">a click on the menu bar at (756, 6) points was NOT refused by mptr ('pointer injector failed: mptr exit 4 ( Window Server (pid 547, layer 24), not to pid 84331; windows at the point, front to back: Window Server (pid 547, layer 24, 0,0,1512,33) &gt; Dock (pid 90039, layer 20, 0,0,1512,982); area clear of the Dock bar and the menu bar: 0,33,1512,874)'): the fence that keeps clicks inside the app's own windows is not live
+display scale 2 (screenshot 3024x1964 px over a display of 1512x982 points)
+close key for the cases after this one: none (the proof did not pass: APPCI_KEY_CLOSE stays empty)
+injector accounting: injector sent 689; app saw 689; lost-before-app 0 (Enter: sent 9, app saw 9); of the app's: 670 unbound keydown/typed, 4 taken by a key binding, 9 Enter by a binding; macOS: 689 key-down(s) reached NSApplication, 689 dispatched as key events (6 of them a menu key equivalent), 0 not (3 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 9 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="big_paste" time="7.40">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="2.40">
+<skipped message="no passwordless sudo on this runner (`sudo -n true` failed (rc 1: sudo: a password is required) and APPCI_SUDO_USER is not set). NEEDS: a sudoers entry on this test machine (owner: machine change; the"/>
+</testcase>
+<testcase classname="terminal" name="job_control" time="15.00">
+</testcase>
+<testcase classname="terminal" name="ssh_failing_not_local" time="16.50">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="493.20">
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="753.40">
+<skipped message="NO-REFERENCE (not a pass): First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is"/>
+</testcase>
+<testcase classname="terminal" name="routing_table_powershell" time="1.50">
+<skipped message="Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="9.50">
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="11.70">
+</testcase>
+<testcase classname="terminal" name="flood_scrollback_find" time="19.50">
+</testcase>
+<testcase classname="terminal" name="remote_heredoc_paste" time="696.70">
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="1.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_failing_not_local_managed" time="1.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_bootstrap_in_command" time="1.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_typeahead_managed" time="1.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_kill_switch" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="hostile_output_recovers" time="53.20">
+</testcase>
+<testcase classname="terminal" name="history_up_recall" time="11.60">
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="33.60">
+</testcase>
+<testcase classname="terminal" name="ime_compose" time="1.60">
+<skipped message="macOS: NEEDS: the owner enables the Pinyin - Simplified input source for the runner user (System Settings &gt; Keyboard &gt; Text Input &gt; Input Sources). The macOS arm of this test is intl_ime_pinyin / intl"/>
+</testcase>
+<testcase classname="terminal" name="scroll_keys_foreground" time="42.30">
+</testcase>
+<testcase classname="terminal" name="ui_mouse_select_copy" time="14.20">
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_output" time="15.50">
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_drag" time="14.00">
+</testcase>
+<testcase classname="terminal" name="context_menu_actions" time="20.00">
+</testcase>
+<testcase classname="terminal" name="selection_modes" time="31.80">
+</testcase>
+<testcase classname="terminal" name="link_and_path_click" time="60.20">
+<failure message="Cmd+click on `pan2yw2r4.rs:140`: nothing opened: no call to the desktop opener and the file's text is not on screen">Cmd+click on `pan2yw2r4.rs:140`: nothing opened: no call to the desktop opener and the file's text is not on screen
+after_links: file has 0/4 lines, exact match False first diff: exp='t87_0jiqm09d86' got=None [first bad line 0: injector call #1009 posted its ENTER at 09:56:43.285]
+macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other outbound connection' is NOT judged here
+after_links: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+injector accounting: injector sent 188; app saw 188; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 181 unbound keydown/typed, 1 taken by a key binding, 5 Enter by a binding; macOS: 188 key-down(s) reached NSApplication, 188 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="resize_reflow_output" time="77.40">
+</testcase>
+<testcase classname="terminal" name="editor_daily" time="54.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way "/>
+</testcase>
+<testcase classname="terminal" name="focus_cycle" time="32.50">
+</testcase>
+<testcase classname="terminal" name="gitbash_typeahead_reps" time="1.50">
+<skipped message="Git Bash pane only (#1393: the ConPTY prompt hold of a bash pane on Windows)"/>
+</testcase>
+<testcase classname="terminal" name="precmd_secret_honor_ps1" time="64.20">
+</testcase>
+<testcase classname="terminal" name="minimize_fullscreen" time="98.70">
+<failure message="fullscreen off: the window says it left fullscreen, but `stty size` is (56, 153), it was (45, 124) before fullscreen (the grid did not follow)">fullscreen off: the window says it left fullscreen, but `stty size` is (56, 153), it was (45, 124) before fullscreen (the grid did not follow)
+at the end `stty size` is (56, 153), it was (45, 124) before the case
+injector accounting: injector sent 933; app saw 933; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 899 unbound keydown/typed, 1 taken by a key binding, 21 Enter by a binding; macOS: 933 key-down(s) reached NSApplication, 933 dispatched as key events (12 of them a menu key equivalent), 0 not (11 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="precmd_question_echo" time="41.90">
+</testcase>
+<testcase classname="terminal" name="desktop_notification" time="2.50">
+<skipped message="macOS: NEEDS: on the Mac runner the owner answers the macOS prompt 'Phosphor would like to send you notifications' once for the test bundle, then sets APPCI_MAC_NOTIFY_OK=1 for the job. With notificat"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="12.70">
+</testcase>
+<testcase classname="terminal" name="md_viewer_big" time="11.90">
+</testcase>
+<testcase classname="terminal" name="md_viewer_first_frame" time="12.30">
+</testcase>
+<testcase classname="terminal" name="zero_network_startup" time="163.40">
+</testcase>
+<testcase classname="terminal" name="restore_shows_history" time="71.50">
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_many" time="115.90">
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_panel_click" time="50.50">
+</testcase>
+<testcase classname="terminal" name="tab_pointer_use" time="98.40">
+<skipped message="NO-REFERENCE (not a pass): vertical panel: tab 2 at (468, 415), tab 3 at (468, 540), tab 4 at (468, 664)"/>
+</testcase>
+<testcase classname="terminal" name="keybinding_rebind" time="71.90">
+</testcase>
+<testcase classname="terminal" name="needs_owner" time="0.00">
+<failure message="NEEDS OWNER: a macOS system dialog is in front and would take our keys: window of UserNotificationCenter (pid 13893) on screen: 13893&#9;UserNotificationCenter&#9;8&#9;626,170,260,250&#9;. The owner must click ALLOW once, in the gitrunner GUI session (Screen Sharing / the console as user gitrunner): the dialog reads 'Allow &quot;Phosphor&quot; to find devices on local networks?'. A new ad-hoc-signed build can re-trigger it (docs/testing.md 3.3). The harness never clicks it. Then re-run the job.">NEEDS OWNER: a macOS system dialog is in front and would take our keys: window of UserNotificationCenter (pid 13893) on screen: 13893	UserNotificationCenter	8	626,170,260,250	. The owner must click ALLOW once, in the gitrunner GUI session (Screen Sharing / the console as user gitrunner): the dialog reads 'Allow "Phosphor" to find devices on local networks?'. A new ad-hoc-signed build can re-trigger it (docs/testing.md 3.3). The harness never clicks it. Then re-run the job.</failure>
+</testcase>
+</testsuite>

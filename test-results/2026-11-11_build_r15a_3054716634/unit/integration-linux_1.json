@@ -1,0 +1,46 @@
+{
+ "summary_line": "Summary [ 158.453s] 87 tests run: 87 passed, 234 skipped",
+ "duration_s": 158.453,
+ "run": 82,
+ "passed": 82,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 239,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [
+  "5 scenario(s) skipped themselves (exit 0, counted as passed by nextest): counted here as skipped, each listed with what it needs"
+ ],
+ "skips": [
+  {
+   "surface": "integration",
+   "scenario": "test_auto_title",
+   "reason": "zsh as the local shell under test"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_pwsh_vi_edit_mode_does_not_corrupt_commands",
+   "reason": "PowerShell as the local shell under test"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_ssh_into_ash",
+   "reason": "the local sshd fixture with remote shell `ash`: the remote shell `ash` is not installed"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_undo_close_stack_timeout_cleanup",
+   "reason": "macOS"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_zsh_bootstraps_with_nounset_option",
+   "reason": "zsh as the local shell under test"
+  }
+ ],
+ "job": "integration-linux: [1]",
+ "status": "success",
+ "duration": 477.895916
+}

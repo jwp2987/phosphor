@@ -1,0 +1,72 @@
+{
+ "summary_line": "Summary [ 794.973s] 11836 tests run: 11834 passed (10 slow, 7 leaky), 2 failed, 47 skipped",
+ "duration_s": 794.973,
+ "run": 11836,
+ "passed": 11834,
+ "failed": 2,
+ "timed_out": 0,
+ "skipped": 47,
+ "slow": 10,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::pairs_failing_command::on",
+   "seconds": 53.115
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::pairs_question::on",
+   "seconds": 50.846
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::controller::tests::stop_while_preprocessing_2104::a_new_turn_settles_the_calls_of_an_earlier_batch_that_is_still_preprocessing",
+   "seconds": 0.159
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "context_chips::current_prompt::tests::test_chips_rerun_when_the_blocks_session_registers",
+   "seconds": 0.433
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "context_chips::current_prompt::tests::test_unchanged_chip_refetch_does_not_respawn_on_click_command",
+   "seconds": 0.506
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::cli_agent_sessions::plugin_manager::claude::tests::truncate_chars_cuts_by_characters_not_bytes",
+   "seconds": 0.326
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_closing_a_code_pane_drops_its_editor_and_buffer",
+   "seconds": 1.87
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_closing_a_code_pane_releases_a_retained_editors_heavy_state",
+   "seconds": 2.518
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_open_file_with_target_event_preserves_requested_line",
+   "seconds": 2.23
+  }
+ ],
+ "regressions": [],
+ "notes": [],
+ "job": "test-windows",
+ "status": "canceled",
+ "duration": 14602.571545
+}

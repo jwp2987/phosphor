@@ -1,0 +1,29 @@
+{
+ "summary_line": "Summary [1161.384s] 12119 tests run: 12118 passed (10 slow), 1 failed, 35 skipped",
+ "duration_s": 1161.384,
+ "run": 12119,
+ "passed": 12118,
+ "failed": 1,
+ "timed_out": 0,
+ "skipped": 35,
+ "slow": 10,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::controller::tests::stop_while_preprocessing_2104::a_new_turn_settles_the_calls_of_an_earlier_batch_that_is_still_preprocessing",
+   "seconds": 0.095
+  }
+ ],
+ "regressions": [
+  "ai::blocklist::controller::tests::stop_while_preprocessing_2104::a_new_turn_settles_the_calls_of_an_earlier_batch_that_is_still_preprocessing"
+ ],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures.txt:"
+ ],
+ "job": "test-linux",
+ "status": "failed",
+ "duration": 1524.820397
+}

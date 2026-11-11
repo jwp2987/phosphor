@@ -1,0 +1,41 @@
+{
+ "summary_line": "Summary [ 109.128s] 86 tests run: 86 passed, 235 skipped",
+ "duration_s": 109.128,
+ "run": 82,
+ "passed": 82,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 239,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [
+  "4 scenario(s) skipped themselves (exit 0, counted as passed by nextest): counted here as skipped, each listed with what it needs"
+ ],
+ "skips": [
+  {
+   "surface": "integration",
+   "scenario": "test_color_overrides_in_prompt_dont_crash",
+   "reason": "zsh as the local shell under test"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_detect_powerlevel10k",
+   "reason": "zsh as the local shell under test (Powerlevel10k)"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_warp_honors_user_title_zsh",
+   "reason": "zsh as the local shell under test"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_zshrc_keypress",
+   "reason": "zsh as the local shell under test"
+  }
+ ],
+ "job": "integration-linux: [2]",
+ "status": "success",
+ "duration": 166.346201
+}

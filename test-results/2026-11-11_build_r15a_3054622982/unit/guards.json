@@ -1,0 +1,9 @@
+{
+ "failing_lines": [
+  "FAIL: 3MB: took 3.06s then 3.25s on a re-measure (limit 3s)",
+  "ERROR: Job failed: exit status 1"
+ ],
+ "job": "guards",
+ "status": "failed",
+ "duration": 173.476535
+}

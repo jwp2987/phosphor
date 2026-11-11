@@ -1,0 +1,46 @@
+{
+ "summary_line": "Summary [ 106.143s] 86 tests run: 86 passed, 235 skipped",
+ "duration_s": 106.143,
+ "run": 81,
+ "passed": 81,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 240,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [
+  "5 scenario(s) skipped themselves (exit 0, counted as passed by nextest): counted here as skipped, each listed with what it needs"
+ ],
+ "skips": [
+  {
+   "surface": "integration",
+   "scenario": "test_block_filtering_keybinding",
+   "reason": "macOS"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_input_reporting_powershell",
+   "reason": "PowerShell as the local shell under test"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_instant_prompt_bootstrap",
+   "reason": "zsh as the local shell under test"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_open_new_tab_with_specific_shell_from_new_session_menu",
+   "reason": "Windows"
+  },
+  {
+   "surface": "integration",
+   "scenario": "test_warp_prompt_unsets_zsh_rprompt",
+   "reason": "zsh as the local shell under test"
+  }
+ ],
+ "job": "integration-linux: [3]",
+ "status": "success",
+ "duration": 161.434926
+}

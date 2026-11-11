@@ -1,0 +1,29 @@
+{
+ "summary_line": "Summary [  40.761s] 3536 tests run: 3535 passed, 1 failed, 24 skipped",
+ "duration_s": 40.761,
+ "run": 3536,
+ "passed": 3535,
+ "failed": 1,
+ "timed_out": 0,
+ "skipped": 24,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "remote_server",
+   "test": "shellcmd::git::write::tests::discard_validates_then_restores_and_removes",
+   "seconds": 1.259
+  }
+ ],
+ "regressions": [
+  "shellcmd::git::write::tests::discard_validates_then_restores_and_removes"
+ ],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures_windows.txt:"
+ ],
+ "job": "test-workspace-rest-windows",
+ "status": "failed",
+ "duration": 398.038021
+}

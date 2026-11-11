@@ -1,0 +1,751 @@
+{
+ "pipeline": 3054622982,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3054622982",
+ "ref": "build/r15a",
+ "commit": "f546422bd0345a0371dfa2f6440c2f63cd1ec3b8",
+ "created_at": "2026-11-11T14:01:12.066Z",
+ "date": "2026-11-11",
+ "tier": "targeted",
+ "pipeline_status": "running",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163886,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163885,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-lab-linux-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163884,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163883,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163882,
+   "runner": null,
+   "note": "not run"
+  },
+  "collect-windows-run": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163881,
+   "runner": null,
+   "note": "not run"
+  },
+  "collect-macos-run": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163880,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-replay-linux": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163879,
+   "runner": null
+  },
+  "app-test-lab-windows": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163878,
+   "runner": null
+  },
+  "app-test-lab-macos": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163877,
+   "runner": null
+  },
+  "app-test-lab-linux": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163876,
+   "runner": null
+  },
+  "lab-helper": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163875,
+   "runner": null,
+   "note": "not run"
+  },
+  "sshlab-image": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163874,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "created",
+   "duration": null,
+   "id": 17936163873,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos": {
+   "status": "created",
+   "duration": null,
+   "id": 17936163872,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163871,
+   "runner": null
+  },
+  "app-test-linux-wayland": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163870,
+   "runner": null
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163869,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163868,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163867,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "pending",
+   "duration": null,
+   "id": 17936163866,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163865,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-arm64": {
+   "status": "running",
+   "duration": 187.741225047,
+   "id": 17936163864,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "guards-helper-deps": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163863,
+   "runner": null
+  },
+  "bench-remote-server": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163862,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163861,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163860,
+   "runner": null
+  },
+  "bench-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163859,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163858,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163857,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163856,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163855,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163854,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163853,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163852,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163851,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163850,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163849,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163848,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163847,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163846,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163845,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163844,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163843,
+   "runner": null
+  },
+  "mutants-warpui-core": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163842,
+   "runner": null
+  },
+  "mutants": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163841,
+   "runner": null
+  },
+  "fuzz-smoke": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163840,
+   "runner": null
+  },
+  "test-shuttle-loom": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163839,
+   "runner": null
+  },
+  "input-timers-strict": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163838,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163837,
+   "runner": null
+  },
+  "integration-linux: [3]": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163836,
+   "runner": null
+  },
+  "integration-linux: [2]": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163835,
+   "runner": null
+  },
+  "integration-linux: [1]": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163834,
+   "runner": null
+  },
+  "test-workspace-rest": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163833,
+   "runner": null
+  },
+  "insta-snapshots": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163832,
+   "runner": null
+  },
+  "test-warpui-core": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163831,
+   "runner": null
+  },
+  "test-linux": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163830,
+   "runner": null
+  },
+  "advisories": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163829,
+   "runner": null
+  },
+  "licenses": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163828,
+   "runner": null
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163827,
+   "runner": null,
+   "note": "not run"
+  },
+  "guards-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163826,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163825,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163824,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17936163823,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17936163822,
+   "runner": null
+  },
+  "guards": {
+   "status": "failed",
+   "duration": 173.476535,
+   "id": 17936163821,
+   "runner": ""
+  }
+ },
+ "unit": {},
+ "app": {},
+ "notes": [
+  "TARGETED run (ci_seq.py --tier targeted): only the cases and suites of its cases file were played. A pass here proves those cases on those platforms and nothing else; a job with the note `not run` was not part of it."
+ ],
+ "targeted": {
+  "platforms": {
+   "linux-wayland": {
+    "cases": [
+     "agent_close_undo_call_status",
+     "agent_lrc_no_false_takeover",
+     "big_paste",
+     "cb_ui_action_latency",
+     "desktop_notification",
+     "desktop_notification_agent_question",
+     "drag_drop_file",
+     "editor_daily",
+     "flood_scrollback_find",
+     "focus_cycle",
+     "gitbash_typeahead_reps",
+     "gpu_lost_device_recovers",
+     "gpu_real_render",
+     "history_up_recall",
+     "hostile_output_recovers",
+     "ime_compose",
+     "intl_compose_linux",
+     "job_control",
+     "keybinding_rebind",
+     "latency_enter",
+     "latency_enter_ssh",
+     "latency_first_key_after_idle",
+     "link_and_path_click",
+     "md_viewer",
+     "md_viewer_big",
+     "md_viewer_first_frame",
+     "meta_and_word_keys",
+     "minimize_fullscreen",
+     "network_gate_switch",
+     "pane_resize_maximize",
+     "primary_and_middle_click",
+     "remote_heredoc_paste",
+     "remote_tab_enter_no_helper",
+     "remote_tab_no_helper",
+     "resize_reflow_output",
+     "restore_shows_history",
+     "routing_table_powershell",
+     "scroll_keys_foreground",
+     "scroll_keys_position",
+     "selection_modes",
+     "soak",
+     "ssh_failing_not_local",
+     "ssh_gitbash_bootstrap_in_command",
+     "ssh_gitbash_failing_not_local_managed",
+     "ssh_gitbash_kill_switch",
+     "ssh_gitbash_managed",
+     "ssh_gitbash_typeahead_managed",
+     "subshell_ready_relay_shape",
+     "tab_lifecycle_keys",
+     "tab_pointer_use",
+     "ui_copy_wrapped_drag",
+     "ui_copy_wrapped_output",
+     "ui_readline_keys",
+     "ui_vertical_tabs_many",
+     "ui_vertical_tabs_panel_click",
+     "upgrade_over_previous",
+     "zero_network_startup"
+    ]
+   },
+   "linux-lab": {
+    "cases": [
+     "lab_agent_nld_predict_ssh.*",
+     "lab_agent_remote_*",
+     "lab_agent_suggestions_ssh.*",
+     "lab_chips.*",
+     "lab_codebase_index_remote.*",
+     "lab_ctrl_c_no_esc_i.*",
+     "lab_diff_apply_remote.*",
+     "lab_diff_panel_remote.*",
+     "lab_enter_no_network_wait.*",
+     "lab_enter_start.*.150.*",
+     "lab_fam_agent_*",
+     "lab_fam_fs_basic.*",
+     "lab_fam_git_read.*",
+     "lab_fam_run_command.*",
+     "lab_file_tree_remote.*",
+     "lab_freeze_and_wake.*",
+     "lab_gh_chip_remote.*",
+     "lab_git_write_remote.*",
+     "lab_helper_*",
+     "lab_no_helper_chip.*",
+     "lab_nohelper_*",
+     "lab_nohelper_sh_login_keys.ash.lan.nohelper",
+     "lab_nohelper_sh_login_keys.bash.lan.nohelper",
+     "lab_nohelper_sh_login_keys.dash.lan.nohelper",
+     "lab_nohelper_sh_login_profile.ash.lan.nohelper",
+     "lab_nohelper_sh_login_profile.dash.lan.nohelper",
+     "lab_nu_agent_pager_env.*",
+     "lab_password_prompt.p_kbdint.lan.nohelper",
+     "lab_password_prompt.p_password.lan.nohelper",
+     "lab_path_detect.*",
+     "lab_path_detect.p_exec.lan.nohelper",
+     "lab_path_detect.p_tinypath.lan.nohelper",
+     "lab_raw_key_arrival.*",
+     "lab_read_files_remote.*",
+     "lab_remote_edit.*",
+     "lab_skills_remote.*",
+     "lab_ssh_drop_reconnect.*",
+     "lab_ssh_drop_reconnect.bash.lan.nohelper.rst",
+     "lab_ssh_drop_reconnect.bash.lan.nohelper.stall10",
+     "lab_tab_remote_dir.*"
+    ],
+    "lab_matrix": "quick"
+   },
+   "macos": {
+    "cases": [
+     "agent_close_undo_call_status",
+     "agent_lrc_no_false_takeover",
+     "big_paste",
+     "cb_ui_action_latency",
+     "context_menu_actions",
+     "desktop_notification",
+     "desktop_notification_agent_question",
+     "editor_daily",
+     "flood_scrollback_find",
+     "focus_cycle",
+     "gitbash_typeahead_reps",
+     "history_up_recall",
+     "hostile_output_recovers",
+     "ime_compose",
+     "job_control",
+     "keybinding_rebind",
+     "latency_enter",
+     "latency_first_key_after_idle",
+     "link_and_path_click",
+     "mac_pointer_chord_proof",
+     "md_viewer",
+     "md_viewer_big",
+     "md_viewer_first_frame",
+     "meta_and_word_keys",
+     "minimize_fullscreen",
+     "precmd_question_echo",
+     "precmd_secret_honor_ps1",
+     "remote_heredoc_paste",
+     "remote_tab_enter_no_helper",
+     "remote_tab_no_helper",
+     "resize_reflow_output",
+     "restore_shows_history",
+     "routing_table_powershell",
+     "scroll_keys_foreground",
+     "scroll_keys_position",
+     "selection_modes",
+     "ssh_failing_not_local",
+     "ssh_gitbash_bootstrap_in_command",
+     "ssh_gitbash_failing_not_local_managed",
+     "ssh_gitbash_kill_switch",
+     "ssh_gitbash_managed",
+     "ssh_gitbash_typeahead_managed",
+     "subshell_ready_relay_shape",
+     "tab_pointer_use",
+     "ui_copy_wrapped_drag",
+     "ui_copy_wrapped_output",
+     "ui_mouse_select_copy",
+     "ui_vertical_tabs_many",
+     "ui_vertical_tabs_panel_click",
+     "upgrade_over_previous",
+     "zero_network_startup"
+    ]
+   },
+   "macos-lab": {
+    "cases": [
+     "lab_agent_nld_predict_ssh.*",
+     "lab_agent_remote_*",
+     "lab_agent_suggestions_ssh.*",
+     "lab_chips.*",
+     "lab_codebase_index_remote.*",
+     "lab_ctrl_c_no_esc_i.*",
+     "lab_diff_apply_remote.*",
+     "lab_diff_panel_remote.*",
+     "lab_enter_no_network_wait.*",
+     "lab_enter_start.*.150.*",
+     "lab_fam_agent_*",
+     "lab_fam_fs_basic.*",
+     "lab_fam_git_read.*",
+     "lab_fam_run_command.*",
+     "lab_file_tree_remote.*",
+     "lab_freeze_and_wake.*",
+     "lab_gh_chip_remote.*",
+     "lab_git_write_remote.*",
+     "lab_helper_*",
+     "lab_no_helper_chip.*",
+     "lab_nohelper_*",
+     "lab_nohelper_sh_login_keys.ash.lan.nohelper",
+     "lab_nohelper_sh_login_keys.dash.lan.nohelper",
+     "lab_nohelper_sh_login_profile.ash.lan.nohelper",
+     "lab_nohelper_sh_login_profile.dash.lan.nohelper",
+     "lab_nu_agent_pager_env.*",
+     "lab_password_prompt.p_kbdint.lan.nohelper",
+     "lab_password_prompt.p_password.lan.nohelper",
+     "lab_path_detect.*",
+     "lab_path_detect.p_exec.lan.nohelper",
+     "lab_path_detect.p_tinypath.lan.nohelper",
+     "lab_raw_key_arrival.*",
+     "lab_read_files_remote.*",
+     "lab_remote_edit.*",
+     "lab_skills_remote.*",
+     "lab_ssh_drop_reconnect.*",
+     "lab_ssh_drop_reconnect.bash.lan.nohelper.rst",
+     "lab_ssh_drop_reconnect.bash.lan.nohelper.stall10",
+     "lab_tab_remote_dir.*"
+    ],
+    "lab_matrix": "quick"
+   },
+   "windows": {
+    "cases": [
+     "agent_close_undo_call_status",
+     "agent_lrc_no_false_takeover",
+     "alt_screen_programs",
+     "big_paste",
+     "cb_agent_pickers",
+     "cb_ui_action_latency",
+     "ctrl_c_d",
+     "desktop_notification",
+     "desktop_notification_agent_question",
+     "editor_daily",
+     "expert_fuzz",
+     "flood_scrollback_find",
+     "focus_cycle",
+     "gitbash_subshell",
+     "gitbash_typeahead_reps",
+     "history_survives_restart",
+     "history_up_recall",
+     "hostile_output_recovers",
+     "ime_compose",
+     "intl_altgr_bash",
+     "intl_altgr_ps",
+     "intl_wide_paste",
+     "intl_wide_type",
+     "job_control",
+     "keybinding_rebind",
+     "latency_enter",
+     "latency_enter_ssh",
+     "latency_first_key_after_idle",
+     "md_viewer",
+     "md_viewer_big",
+     "md_viewer_first_frame",
+     "meta_and_word_keys",
+     "minimize_fullscreen",
+     "network_gate_switch",
+     "output_frames",
+     "remote_heredoc_paste",
+     "remote_session_ext",
+     "remote_session_legacy",
+     "remote_tab_enter_no_helper",
+     "remote_tab_no_helper",
+     "resize_reflow_output",
+     "restore_shows_history",
+     "routing_table_powershell",
+     "scroll_keys_foreground",
+     "scroll_keys_position",
+     "selection_modes",
+     "soak",
+     "ssh_connect_typing_wrapper",
+     "ssh_failing_not_local",
+     "ssh_gitbash_bootstrap_in_command",
+     "ssh_gitbash_failing_not_local_managed",
+     "ssh_gitbash_kill_switch",
+     "ssh_gitbash_managed",
+     "ssh_gitbash_typeahead_managed",
+     "ssh_nested_typeahead_wrapper",
+     "subshell_ready_relay_shape",
+     "tab_lifecycle_keys",
+     "tab_pointer_use",
+     "ui_completions_as_you_type_local",
+     "ui_copy_wrapped_drag",
+     "ui_copy_wrapped_output",
+     "ui_vertical_tabs_many",
+     "ui_vertical_tabs_panel_click",
+     "upgrade_over_previous",
+     "zero_network_startup"
+    ]
+   }
+  },
+  "suites": {
+   "linux": [
+    "test-linux",
+    "test-warpui-core",
+    "test-workspace-rest",
+    "integration-linux: [1]",
+    "integration-linux: [2]",
+    "integration-linux: [3]"
+   ],
+   "macos": [
+    "test-macos",
+    "test-warpui-core-macos",
+    "test-workspace-rest-macos"
+   ],
+   "windows": [
+    "test-windows",
+    "test-warpui-core-windows",
+    "test-workspace-rest-windows"
+   ]
+  }
+ }
+}

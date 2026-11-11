@@ -1,0 +1,3590 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "macos",
+  "seed": "1",
+  "commit": "b06800e9",
+  "sha": "b06800e98e86e6097650fa8fc8f41dd9ec23f3d0",
+  "owner_settings": "sha256 81d188e9844d",
+  "tier": "targeted",
+  "scale": "1"
+ },
+ "generated": "2026-11-11T10:14:16-0600",
+ "summary": {
+  "pass": 29,
+  "fail": 4,
+  "skip": 10,
+  "noref": 3
+ },
+ "cases": [
+  {
+   "name": "mac_pointer_chord_proof",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 32.6,
+   "evidence": [
+    "enter_route: 9 Enter(s) reached the input editor: Shell=9 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794410244.329,
+    1794410276.936
+   ],
+   "detail": [
+    "a click on the menu bar at (756, 6) points was NOT refused by mptr ('pointer injector failed: mptr exit 4 ( Window Server (pid 547, layer 24), not to pid 84331; windows at the point, front to back: Window Server (pid 547, layer 24, 0,0,1512,33) > Dock (pid 90039, layer 20, 0,0,1512,982); area clear of the Dock bar and the menu bar: 0,33,1512,874)'): the fence that keeps clicks inside the app's own windows is not live",
+    "display scale 2 (screenshot 3024x1964 px over a display of 1512x982 points)",
+    "close key for the cases after this one: none (the proof did not pass: APPCI_KEY_CLOSE stays empty)",
+    "injector accounting: injector sent 689; app saw 689; lost-before-app 0 (Enter: sent 9, app saw 9); of the app's: 670 unbound keydown/typed, 4 taken by a key binding, 9 Enter by a binding; macOS: 689 key-down(s) reached NSApplication, 689 dispatched as key events (6 of them a menu key equivalent), 0 not (3 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 9 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "display_scale": 2,
+    "cursor_readback": [
+     [
+      [
+       756.0,
+       451.0
+      ],
+      [
+       756.0,
+       451.0
+      ]
+     ],
+     [
+      [
+       786.0,
+       451.0
+      ],
+      [
+       786.0,
+       451.0
+      ]
+     ]
+    ],
+    "word_at": {
+     "hook": [
+      860,
+      1394
+     ],
+     "ocr": [
+      859,
+      1395
+     ]
+    },
+    "chord_via": "pid",
+    "close_key_after_proof": "",
+    "injector": {
+     "sent": 689,
+     "enters_sent": 9,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 689,
+     "unbound": 670,
+     "bound": 4,
+     "enters_bound": 9,
+     "os_keys": 689,
+     "undispatched": 0,
+     "cmd_chords": 3,
+     "menu": 6,
+     "menu_cmd": 3,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 689,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 9
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 9
+    },
+    "enter_taint": {
+     "taps": 9,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_mac_pointer_chord_proof_FAIL.png"
+   ]
+  },
+  {
+   "name": "big_paste",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 7.4,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794410279.732,
+    1794410287.163
+   ],
+   "detail": [
+    "injector accounting: injector sent 21; app saw 21; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 15 unbound keydown/typed, 2 taken by a key binding, 1 Enter by a binding; macOS: 21 key-down(s) reached NSApplication, 21 dispatched as key events (3 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "bytes_expected": 1000001,
+    "bytes_got": 1000001,
+    "big_paste_ui_items": {
+     "over_4ms": 1,
+     "over_16ms": 0,
+     "max_ms": 4.88,
+     "by_kind": {
+      "action": [
+       1,
+       4.88
+      ]
+     }
+    },
+    "big_paste_lock_holds": {},
+    "big_paste_time_to_enter_ms": 262.9,
+    "big_paste_budgets": {
+     "time_to_enter_ms": 1500.0,
+     "ui_item_ms": 250.0
+    },
+    "big_paste_pasteboard_read": {
+     "n": 1,
+     "max_ms": 4.66,
+     "bytes": 1000000,
+     "kind": "TextAndPaths",
+     "budget_ms": 250.0
+    },
+    "injector": {
+     "sent": 21,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 21,
+     "unbound": 15,
+     "bound": 2,
+     "enters_bound": 1,
+     "os_keys": 21,
+     "undispatched": 0,
+     "cmd_chords": 1,
+     "menu": 3,
+     "menu_cmd": 1,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 21,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 2,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_big_paste.png"
+   ]
+  },
+  {
+   "name": "subshell_ready_relay_shape",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 2.4,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794410288.288,
+    1794410290.73
+   ],
+   "detail": [
+    "no passwordless sudo on this runner (`sudo -n true` failed (rc 1: sudo: a password is required) and APPCI_SUDO_USER is not set). NEEDS: a sudoers entry on this test machine (owner: machine change; the harness never edits sudoers or adds a user). EITHER an unprivileged test user: `sudo sysadminctl -addUser appci-priv -shell /bin/bash`, a file /etc/sudoers.d/appci-priv (mode 0440, checked with `visudo -cf`) holding the two lines `gitrunner ALL=(appci-priv) NOPASSWD: ALL` and `Defaults:gitrunner use_pty`, and the line `APPCI_SUDO_USER=appci-priv` in ~/.config/phosphor-ci/ci.env of the CI user (the CI user can then become only that user, never root). OR, where the CI user may be root: `gitrunner ALL=(ALL) NOPASSWD: ALL`. The relay shape itself needs `Defaults use_pty` in effect (the default since sudo 1.9.14). Has never run on any machine",
+    "injector accounting: injector sent 51; app saw 51; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 48 unbound keydown/typed, 1 taken by a key binding, 1 Enter by a binding; macOS: 51 key-down(s) reached NSApplication, 51 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 51,
+     "enters_sent": 1,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 51,
+     "unbound": 48,
+     "bound": 1,
+     "enters_bound": 1,
+     "os_keys": 51,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 51,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 1
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_subshell_ready_relay_shape.png"
+   ]
+  },
+  {
+   "name": "job_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 15.0,
+   "evidence": [
+    "enter_route: 9 Enter(s) reached the input editor: Shell=9 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794410290.868,
+    1794410305.876
+   ],
+   "detail": [
+    "injector accounting: injector sent 231; app saw 231; lost-before-app 0 (Enter: sent 11, app saw 11); of the app's: 217 unbound keydown/typed, 3 taken by a key binding, 9 Enter by a binding; macOS: 231 key-down(s) reached NSApplication, 231 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 9 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 231,
+     "enters_sent": 11,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 231,
+     "unbound": 217,
+     "bound": 3,
+     "enters_bound": 9,
+     "os_keys": 231,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 231,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 11
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 9
+    },
+    "enter_taint": {
+     "taps": 11,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_job_control.png"
+   ]
+  },
+  {
+   "name": "ssh_failing_not_local",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 16.5,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794410306.965,
+    1794410323.429
+   ],
+   "detail": [
+    "ssh_failing_not_local: ssh started 2.27 s before the first MUSTNOT key; the hanging listener had accepted 1 connection(s), 1 still open when typing began and 1 when it ended (ConnectTimeout 6 s)",
+    "ssh gate at the first MUSTNOT key: t=+0.195s [DEBUG] input_order hop=kh_hold_entry seq=1300 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794410310535.499; first gate release/exit after it: t=+0.195s [DEBUG] input_order hop=kh_hold_exit seq=1300 branch=held held_bytes=0 table=1 t=1794410310535.508; ssh failed (connection closed) 5.76 s after typing began; listener-side typing window 0.69 s",
+    "injector accounting: injector sent 147; app saw 147; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 142 unbound keydown/typed, 2 taken by a key binding, 1 Enter by a binding; macOS: 147 key-down(s) reached NSApplication, 147 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 147,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 147,
+     "unbound": 142,
+     "bound": 2,
+     "enters_bound": 1,
+     "os_keys": 147,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 147,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 2,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_failing_not_local.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 493.2,
+   "evidence": [
+    "enter_route: 112 Enter(s) reached the input editor: Shell=112 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=3.08 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794410325.388,
+    1794410818.633
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+    "app share of Enter->start: enter_begin -> pty_write median 0.82 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "shell side: pty_write -> first pty_read median 1.70 ms (n=74)",
+    "M3: Enter -> start with zle_bracketed_paste unset 79.4 ms vs default 77.7 ms (+1.7 ms; 36 app Enters): what zle's bracketed-paste mode costs as a whole (the mode switches around each prompt and, for a wrapped line, the paste widget; ~0 means the mode is not the gap)",
+    "Enter split (Phosphor - reference, medians ms, #1606): t0_to_inj +5.01, inj_to_post +0.01, t0_to_post +4.82, post_to_lf +1.48, lf_to_px +1.87, px_to_stamp -0.03, post_to_stamp +3.58, post_to_px +3.60, t0_to_lf +7.06, lf_to_stamp +1.86, lf_to_ah +0.36, ah_to_p0 +0.79, p0_to_px +0.72; Phosphor app: event_age 0.92, event_to_enter 0.76, enter_to_write 0.82, submit_bookkeeping 0.02, effect_flush 0.21, pty_lock_wait 0.00",
+    "OS split (#1606, medians ms on the OS event clock): phosphor  75, n_matc 75, post_to_evts 45.94, evts_to_tap 0.21, evts_to_app 0.92, evts_to_lf 3.98; reference  75, n_matc 75, post_to_evts 46.39, evts_to_tap 0.35, evts_to_lf 2.05; delta post_to_evts -0.45, evts_to_tap -0.14, evts_to_lf 1.93",
+    "app segment per hop (enter_begin -> pty_write 0.82 ms; medians ms, #2114): enter_to_execute 0.38, submit_bookkeeping 0.02, effect_flush 0.21, command_to_pty 0.21 (sum of the hop medians 0.82)",
+    "REPORT-ONLY: Enter to command start: Phosphor overhead 3.95 +/- 0.3 ms (SE) over Terminal.app (.command via open) vs the 2 ms budget, NOT judged (macOS-bound; #1606 closed by owner 2026-11-05); the app's own share and the OS split are in the notes/metrics",
+    "Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "injector accounting: injector sent 9562; app saw 9562; lost-before-app 0 (Enter: sent 111, app saw 111); of the app's: 9417 unbound keydown/typed, 17 taken by a key binding, 111 Enter by a binding; macOS: 9562 key-down(s) reached NSApplication, 9562 dispatched as key events (17 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 111 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pane_shell": "/bin/zsh",
+    "stamp_line": "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px:-0} ${__pa_lf:-0} > lat_%d",
+    "enter_sample_start": "injector_spawn",
+    "host_load": "loadavg1=3.08 cpus=8",
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      77.1
+     ],
+     [
+      "reference",
+      73.67
+     ],
+     [
+      "phosphor",
+      80.66
+     ],
+     [
+      "reference",
+      74.37
+     ],
+     [
+      "phosphor",
+      76.63
+     ],
+     [
+      "reference",
+      73.32
+     ],
+     [
+      "phosphor",
+      77.19
+     ],
+     [
+      "reference",
+      73.7
+     ],
+     [
+      "phosphor",
+      77.86
+     ],
+     [
+      "reference",
+      73.5
+     ],
+     [
+      "phosphor",
+      75.62
+     ],
+     [
+      "reference",
+      73.12
+     ],
+     [
+      "phosphor",
+      81.91
+     ],
+     [
+      "reference",
+      73.9
+     ],
+     [
+      "phosphor",
+      78.34
+     ],
+     [
+      "reference",
+      73.67
+     ],
+     [
+      "phosphor",
+      77.78
+     ],
+     [
+      "reference",
+      73.47
+     ],
+     [
+      "phosphor",
+      77.72
+     ],
+     [
+      "reference",
+      73.31
+     ],
+     [
+      "phosphor",
+      76.36
+     ],
+     [
+      "reference",
+      74.58
+     ],
+     [
+      "phosphor",
+      76.87
+     ],
+     [
+      "reference",
+      74.03
+     ]
+    ],
+    "enter_to_start_ms": {
+     "n": 60,
+     "p50": 77.68,
+     "p95": 83.89,
+     "max": 88.94
+    },
+    "app_enter_to_pty_write_ms": 0.82,
+    "app_segments_ms": {
+     "event_age_ms": 0.92,
+     "event_age_n": 75,
+     "event_to_enter_ms": 0.76,
+     "event_to_enter_n": 75,
+     "enter_to_write_ms": 0.82,
+     "enter_to_write_n": 75,
+     "submit_bookkeeping_ms": 0.02,
+     "submit_bookkeeping_n": 75,
+     "effect_flush_ms": 0.21,
+     "effect_flush_n": 75,
+     "write_to_first_read_ms": 1.7,
+     "write_to_first_read_n": 74,
+     "write_to_preexec_ms": 3.26,
+     "write_to_preexec_n": 75,
+     "pty_lock_wait_ms": 0.0,
+     "pty_lock_wait_n": 75,
+     "enter_to_execute_ms": 0.38,
+     "enter_to_execute_n": 75,
+     "command_to_pty_ms": 0.21,
+     "command_to_pty_n": 75,
+     "platform": "macos"
+    },
+    "harness_floor_ms": 146.879,
+    "unset_bracketed_paste_app_enters": 36,
+    "unset_bracketed_paste_enter_to_start_ms": {
+     "n": 30,
+     "p50": 79.39,
+     "p95": 83.27,
+     "max": 83.4
+    },
+    "unset_bracketed_paste_minus_default_ms": 1.7,
+    "reference_enter_to_start_ms": {
+     "n": 60,
+     "p50": 73.73,
+     "p95": 76.17,
+     "max": 83.36
+    },
+    "reference": "Terminal.app (.command via open)",
+    "reference_shell": "/bin/zsh",
+    "enter_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "t0_to_inj_ms": 124.06,
+      "inj_to_post_ms": 24.99,
+      "t0_to_post_ms": 148.84,
+      "post_to_lf_ms": 50.03,
+      "lf_to_px_ms": 2.13,
+      "px_to_stamp_ms": 0.02,
+      "post_to_stamp_ms": 52.41,
+      "post_to_px_ms": 52.39,
+      "t0_to_lf_ms": 199.74,
+      "lf_to_stamp_ms": 2.16,
+      "lf_to_ah_ms": 0.55,
+      "ah_to_p0_ms": 0.83,
+      "p0_to_px_ms": 0.74
+     },
+     "reference": {
+      "n": 75,
+      "t0_to_inj_ms": 119.05,
+      "inj_to_post_ms": 24.98,
+      "t0_to_post_ms": 144.02,
+      "post_to_lf_ms": 48.55,
+      "lf_to_px_ms": 0.26,
+      "px_to_stamp_ms": 0.05,
+      "post_to_stamp_ms": 48.83,
+      "post_to_px_ms": 48.79,
+      "t0_to_lf_ms": 192.68,
+      "lf_to_stamp_ms": 0.3,
+      "lf_to_ah_ms": 0.19,
+      "ah_to_p0_ms": 0.04,
+      "p0_to_px_ms": 0.02
+     },
+     "delta": {
+      "t0_to_inj_ms": 5.01,
+      "inj_to_post_ms": 0.01,
+      "t0_to_post_ms": 4.82,
+      "post_to_lf_ms": 1.48,
+      "lf_to_px_ms": 1.87,
+      "px_to_stamp_ms": -0.03,
+      "post_to_stamp_ms": 3.58,
+      "post_to_px_ms": 3.6,
+      "t0_to_lf_ms": 7.06,
+      "lf_to_stamp_ms": 1.86,
+      "lf_to_ah_ms": 0.36,
+      "ah_to_p0_ms": 0.79,
+      "p0_to_px_ms": 0.72
+     },
+     "phosphor_app": {
+      "event_age_ms": 0.92,
+      "event_to_enter_ms": 0.76,
+      "enter_to_write_ms": 0.82,
+      "submit_bookkeeping_ms": 0.02,
+      "effect_flush_ms": 0.21,
+      "pty_lock_wait_ms": 0.0
+     }
+    },
+    "enter_os_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "n_matched": 75,
+      "post_to_evts_ms": 45.94,
+      "evts_to_tap_ms": 0.21,
+      "evts_to_app_ms": 0.92,
+      "evts_to_lf_ms": 3.98
+     },
+     "reference": {
+      "n": 75,
+      "n_matched": 75,
+      "post_to_evts_ms": 46.39,
+      "evts_to_tap_ms": 0.35,
+      "evts_to_lf_ms": 2.05
+     },
+     "delta": {
+      "post_to_evts_ms": -0.45,
+      "evts_to_tap_ms": -0.14,
+      "evts_to_lf_ms": 1.93
+     }
+    },
+    "enter_hops_ms": {
+     "hops": {
+      "enter_to_execute_ms": 0.38,
+      "submit_bookkeeping_ms": 0.02,
+      "effect_flush_ms": 0.21,
+      "command_to_pty_ms": 0.21
+     },
+     "whole_ms": 0.82,
+     "sum_ms": 0.82,
+     "vs": []
+    },
+    "lat": {
+     "enter_to_start": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 60,
+       "p50": 77.68,
+       "p95": 83.89,
+       "max": 88.94
+      },
+      "reference": {
+       "n": 60,
+       "p50": 73.73,
+       "p95": 76.17,
+       "max": 83.36
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 146.8792906962335,
+      "notes": [
+       "reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.29
+       },
+       "reference": {
+        "n": 60,
+        "se_median_ms": 0.09
+       }
+      },
+      "overhead_ms": 3.95,
+      "overhead_se_ms": 0.3,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": 0.63,
+       "reference": 0.12
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 96.09,
+       "p95": 110.22,
+       "delta_ms": -18.41,
+       "delta_pct": -19.2,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "fail"
+     }
+    },
+    "injector": {
+     "sent": 9562,
+     "enters_sent": 111,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 9562,
+     "unbound": 9417,
+     "bound": 17,
+     "enters_bound": 111,
+     "os_keys": 9562,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 17,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 9562,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 111
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 111
+    },
+    "enter_taint": {
+     "taps": 187,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 76
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_enter.png"
+   ]
+  },
+  {
+   "name": "latency_first_key_after_idle",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 753.4,
+   "evidence": [
+    "host load after the case: loadavg1=1.97 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794410818.767,
+    1794411572.134
+   ],
+   "detail": [
+    "First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+    "First key after 2 s idle: first key after 2 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+    "NO-REFERENCE: First key after 5 s idle: the reference measured implausibly slow (overhead -16.3 ms): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+    "First key after 5 s idle: first key after 5 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+    "First key after 5 s idle: IMPLAUSIBLE reference: Phosphor is 16.30 ms FASTER than the reference (> 5 ms, beyond 2 SE of 1.9172294455228511): an ordering / focus / idle-wake artifact of the reference window, not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)",
+    "injector accounting: injector sent 119; app saw 119; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 51 unbound keydown/typed, 58 taken by a key binding, 0 Enter by a binding; macOS: 119 key-down(s) reached NSApplication, 119 dispatched as key events (10 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "first_key_paint_gap1s": {
+     "n": 30,
+     "p50": 33.94,
+     "p95": 96.8,
+     "max": 112.34
+    },
+    "reference_first_key_paint_gap1s": {
+     "n": 30,
+     "p50": 34.36,
+     "p95": 101.05,
+     "max": 102.92
+    },
+    "lat": {
+     "gap1s": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 33.94,
+       "p95": 96.8,
+       "max": 112.34
+      },
+      "reference": {
+       "n": 30,
+       "p50": 34.36,
+       "p95": 101.05,
+       "max": 102.92
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 5.0,
+      "budget_kind": "overhead",
+      "floor_ms": 146.8792906962335,
+      "notes": [
+       "first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.44
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 0.57
+       }
+      },
+      "overhead_ms": -0.42,
+      "overhead_se_ms": 0.74,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": 1.53,
+       "reference": -0.21
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 45.55,
+       "p95": 116.91,
+       "delta_ms": -11.61,
+       "delta_pct": -25.5,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     },
+     "gap2s": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 34.33,
+       "p95": 95.75,
+       "max": 110.36
+      },
+      "reference": {
+       "n": 30,
+       "p50": 38.03,
+       "p95": 104.74,
+       "max": 133.31
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 5.0,
+      "budget_kind": "overhead",
+      "floor_ms": 146.8792906962335,
+      "notes": [
+       "first key after 2 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.63
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 2.54
+       }
+      },
+      "overhead_ms": -3.7,
+      "overhead_se_ms": 2.65,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": 0.02,
+       "reference": 7.24
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 45.46,
+       "p95": 53.32,
+       "delta_ms": -11.13,
+       "delta_pct": -24.5,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     },
+     "gap5s": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 37.43,
+       "p95": 102.07,
+       "max": 103.25
+      },
+      "reference": {
+       "n": 30,
+       "p50": 53.73,
+       "p95": 82.67,
+       "max": 132.09
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 5.0,
+      "budget_kind": "overhead",
+      "floor_ms": 146.8792906962335,
+      "notes": [
+       "first key after 5 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+       "IMPLAUSIBLE reference: Phosphor is 16.30 ms FASTER than the reference (> 5 ms, beyond 2 SE of 1.9172294455228511): an ordering / focus / idle-wake artifact of the reference window, not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 1.13
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 1.63
+       }
+      },
+      "overhead_ms": -16.3,
+      "overhead_se_ms": 1.92,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "implausible": true,
+      "drift_ms": {
+       "phosphor": 1.01,
+       "reference": -2.94
+      },
+      "budget_verdict": "no-compare",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 46.75,
+       "p95": 53.31,
+       "delta_ms": -9.32,
+       "delta_pct": -19.9,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "no-compare"
+     }
+    },
+    "first_key_paint_gap2s": {
+     "n": 30,
+     "p50": 34.33,
+     "p95": 95.75,
+     "max": 110.36
+    },
+    "reference_first_key_paint_gap2s": {
+     "n": 30,
+     "p50": 38.03,
+     "p95": 104.74,
+     "max": 133.31
+    },
+    "first_key_paint_gap5s": {
+     "n": 30,
+     "p50": 37.43,
+     "p95": 102.07,
+     "max": 103.25
+    },
+    "reference_first_key_paint_gap5s": {
+     "n": 30,
+     "p50": 53.73,
+     "p95": 82.67,
+     "max": 132.09
+    },
+    "injector": {
+     "sent": 119,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 119,
+     "unbound": 51,
+     "bound": 58,
+     "enters_bound": 0,
+     "os_keys": 119,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 10,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 119,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 1
+    },
+    "host_load": "loadavg1=1.97 cpus=8"
+   },
+   "shots": [
+    "shots/terminal_latency_first_key_after_idle.png"
+   ]
+  },
+  {
+   "name": "routing_table_powershell",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 1.5,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794411572.268,
+    1794411573.723
+   ],
+   "detail": [
+    "Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_routing_table_powershell.png"
+   ]
+  },
+  {
+   "name": "remote_tab_no_helper",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 9.5,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: Shell=6 [Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794411573.862,
+    1794411583.386
+   ],
+   "detail": [
+    "path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)",
+    "injector accounting: injector sent 133; app saw 133; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 122 unbound keydown/typed, 3 taken by a key binding, 6 Enter by a binding; macOS: 133 key-down(s) reached NSApplication, 133 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "remote_tab_in_band_ms": 11,
+    "injector": {
+     "sent": 133,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 133,
+     "unbound": 122,
+     "bound": 3,
+     "enters_bound": 6,
+     "os_keys": 133,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 133,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_remote_tab_no_helper.png"
+   ]
+  },
+  {
+   "name": "remote_tab_enter_no_helper",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 11.7,
+   "evidence": [
+    "enter_route: 10 Enter(s) reached the input editor: Shell=10 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794411585.349,
+    1794411597.033
+   ],
+   "detail": [
+    "injector accounting: injector sent 155; app saw 155; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 138 unbound keydown/typed, 5 taken by a key binding, 10 Enter by a binding; macOS: 155 key-down(s) reached NSApplication, 155 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 10 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 155,
+     "enters_sent": 10,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 155,
+     "unbound": 138,
+     "bound": 5,
+     "enters_bound": 10,
+     "os_keys": 155,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 155,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 10
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 10
+    },
+    "enter_taint": {
+     "taps": 10,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_remote_tab_enter_no_helper.png"
+   ]
+  },
+  {
+   "name": "flood_scrollback_find",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 19.5,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794411598.968,
+    1794411618.492
+   ],
+   "detail": [
+    "flood_scrollback_find; app log: 31 find_scroll hop(s), moved=true in 1, last: result=scroll block=165 moved=true viewport_lines=39.61 rendered_mode=PinnedToBottom scroll_mode=PinnedToBottom agent_fullscreen=false match_line=34.61 block_visible=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(7756.095001757145))) } t=1794411613889.924",
+    "injector accounting: injector sent 209; app saw 209; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 202 unbound keydown/typed, 2 taken by a key binding, 3 Enter by a binding; macOS: 209 key-down(s) reached NSApplication, 209 dispatched as key events (2 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "marker_visible_before_find": false,
+    "marker_visible_after_find": true,
+    "tail_visible_before_find": true,
+    "tail_visible_after_find": false,
+    "find_scroll_hops": 31,
+    "find_match_geometry": {
+     "viewport_lines": 39.61,
+     "rendered_mode": "PinnedToBottom",
+     "scroll_mode": "PinnedToBottom",
+     "agent_fullscreen": false,
+     "match_line": 34.61,
+     "on_screen": true
+    },
+    "injector": {
+     "sent": 209,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 209,
+     "unbound": 202,
+     "bound": 2,
+     "enters_bound": 3,
+     "os_keys": 209,
+     "undispatched": 0,
+     "cmd_chords": 1,
+     "menu": 2,
+     "menu_cmd": 1,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 209,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "enter_taint": {
+     "taps": 3,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_flood_scrollback_find.png"
+   ]
+  },
+  {
+   "name": "remote_heredoc_paste",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 696.7,
+   "evidence": [
+    "enter_route: 14 Enter(s) reached the input editor: Shell=14 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794411619.605,
+    1794412316.353
+   ],
+   "detail": [
+    "bash: 2000-line here-doc (142166 bytes): the remote shell was still busy with the payload after the timeout; the harness ended it (SIGKILL to 0 descendant(s), SIGHUP to the remote shell (pid 2200): it exited) so the pane is not left inside it; pane now: local",
+    "bash: 8495-line here-doc (600008 bytes, wrapper path): the remote shell was still busy with the payload after the timeout; the harness ended it (SIGKILL to 0 descendant(s), SIGHUP to the remote shell (pid 14868): it exited) so the pane is not left inside it; pane now: local",
+    "control H (plain ssh, the here-doc pasted): not done (no file within 120 s (0 of 142224 bytes still unwritten to the pty))",
+    "control W (plain ssh, the app's 189910-byte wrapper line): 83.6 s",
+    "KNOWN: bash: 2000-line here-doc (142166 bytes): remote file not byte-exact (expected 142166 bytes, got no file in the 90 s budget, 90.2s); peak %cpu while waiting: {'ssh': 29.1, 'bash': 1.6, 'app': 30.1, 'zsh': 0.0, 'sh': 0.0} (the busy side is the bottleneck: the remote line editor or the app). ENV: plain ssh (no Phosphor) needed 83.6 s for the app's 189910-byte wrapper line of the 2,000-line here-doc (peak %cpu {'bash': 100, 'app': 0, 'zsh': 0, 'ssh': 9, 'sh': 0}); scaled linearly (a lower bound) to this 189910-byte line: >= 84 s, so plain ssh could not have done it in the 90 s the app was given (budget 90 s): the remote shell's line editor is the bottleneck, not the app. A plain paste of the here-doc itself: no file within 120 s (0 of 142224 bytes still unwritten to the pty). [ACCEPTED_FOR_RELEASE #1129 v0.1.17: owner rule for STUCK items, relayed 2026-11-04 (fixed, or proven ENV and KNOWN): the remote shell's line editor is the bottleneck, proven by the plain-ssh control; the wrapper's design for bash < 4.4 is open]",
+    "KNOWN: bash: 8495-line here-doc (600008 bytes, wrapper path): remote file not byte-exact (expected 600008 bytes, got no file in the 180 s budget, 180.6s); peak %cpu while waiting: {'ssh': 14.5, 'bash': 10.8, 'app': 242.2, 'zsh': 0.0, 'sh': 0.0} (the busy side is the bottleneck: the remote line editor or the app). ENV: plain ssh (no Phosphor) needed 83.6 s for the app's 189910-byte wrapper line of the 2,000-line here-doc (peak %cpu {'bash': 100, 'app': 0, 'zsh': 0, 'ssh': 9, 'sh': 0}); scaled linearly (a lower bound) to this 800366-byte line: >= 352 s, so plain ssh could not have done it in the 181 s the app was given (budget 180 s): the remote shell's line editor is the bottleneck, not the app. A plain paste of the here-doc itself: no file within 120 s (0 of 142224 bytes still unwritten to the pty). [ACCEPTED_FOR_RELEASE #1129 v0.1.17: owner rule for STUCK items, relayed 2026-11-04 (fixed, or proven ENV and KNOWN): the remote shell's line editor is the bottleneck, proven by the plain-ssh control; the wrapper's design for bash < 4.4 is open]",
+    "injector accounting: injector sent 547; app saw 547; lost-before-app 0 (Enter: sent 22, app saw 22); of the app's: 524 unbound keydown/typed, 3 taken by a key binding, 12 Enter by a binding; macOS: 547 key-down(s) reached NSApplication, 547 dispatched as key events (8 of them a menu key equivalent), 0 not (5 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "remote_bash_bracketed_paste": false,
+    "hd_2k_txt_s": 90.24,
+    "hd_2k_txt_bytes_got": -1,
+    "hd_2k_txt_peak_cpu": {
+     "ssh": 29.1,
+     "bash": 1.6,
+     "app": 30.1,
+     "zsh": 0.0,
+     "sh": 0.0
+    },
+    "hd_line_txt_s": 0.54,
+    "hd_line_txt_bytes_got": 10001,
+    "hd_line_txt_peak_cpu": {
+     "ssh": 8.8,
+     "bash": 13.0,
+     "app": 42.5,
+     "zsh": 0.0
+    },
+    "hd_zsh_txt_s": 9.16,
+    "hd_zsh_txt_bytes_got": 142166,
+    "hd_zsh_txt_peak_cpu": {
+     "ssh": 4.8,
+     "bash": 0.0,
+     "app": 11.1,
+     "zsh": 0.0
+    },
+    "hd_fish_txt_s": 9.18,
+    "hd_fish_txt_bytes_got": 142166,
+    "hd_fish_txt_peak_cpu": {
+     "ssh": 3.1,
+     "bash": 0.0,
+     "app": 8.2,
+     "zsh": 0.0,
+     "fish": 0.0
+    },
+    "hd_big_txt_s": 180.63,
+    "hd_big_txt_bytes_got": -1,
+    "hd_big_txt_peak_cpu": {
+     "ssh": 14.5,
+     "bash": 10.8,
+     "app": 242.2,
+     "zsh": 0.0,
+     "sh": 0.0
+    },
+    "control_H_s": -1,
+    "control_H_bytes_got": -1,
+    "control_H_peak_cpu": {
+     "bash": 0.6,
+     "app": 2.7,
+     "zsh": 0.0,
+     "ssh": 1.7,
+     "sh": 0.0
+    },
+    "control_W_s": 83.57,
+    "control_W_bytes_got": 142166,
+    "control_W_peak_cpu": {
+     "bash": 100.0,
+     "app": 0.0,
+     "zsh": 0.0,
+     "ssh": 9.1,
+     "sh": 0.0
+    },
+    "injector": {
+     "sent": 547,
+     "enters_sent": 22,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 547,
+     "unbound": 524,
+     "bound": 3,
+     "enters_bound": 12,
+     "os_keys": 547,
+     "undispatched": 0,
+     "cmd_chords": 5,
+     "menu": 8,
+     "menu_cmd": 5,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 547,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 22
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 22,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_remote_heredoc_paste.png"
+   ]
+  },
+  {
+   "name": "ssh_gitbash_managed",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 1.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794412318.311,
+    1794412319.907
+   ],
+   "detail": [
+    "Windows only (ConPTY)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_gitbash_managed.png"
+   ]
+  },
+  {
+   "name": "ssh_gitbash_failing_not_local_managed",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 1.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794412320.046,
+    1794412321.661
+   ],
+   "detail": [
+    "Windows only (ConPTY)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_gitbash_failing_not_local_managed.png"
+   ]
+  },
+  {
+   "name": "ssh_gitbash_bootstrap_in_command",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 1.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794412321.8,
+    1794412323.372
+   ],
+   "detail": [
+    "Windows only (ConPTY)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_gitbash_bootstrap_in_command.png"
+   ]
+  },
+  {
+   "name": "ssh_gitbash_typeahead_managed",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 1.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794412323.511,
+    1794412325.081
+   ],
+   "detail": [
+    "Windows only (ConPTY)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_gitbash_typeahead_managed.png"
+   ]
+  },
+  {
+   "name": "ssh_gitbash_kill_switch",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 1.5,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794412325.218,
+    1794412326.703
+   ],
+   "detail": [
+    "Windows only (ConPTY)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_gitbash_kill_switch.png"
+   ]
+  },
+  {
+   "name": "hostile_output_recovers",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 53.2,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412326.842,
+    1794412379.998
+   ],
+   "detail": [
+    "largest main-thread item after the output 0.0 ms (< 16 ms; before: 0.0 ms)",
+    "injector accounting: injector sent 683; app saw 683; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 464 unbound keydown/typed, 202 taken by a key binding, 10 Enter by a binding; macOS: 683 key-down(s) reached NSApplication, 683 dispatched as key events (7 of them a menu key equivalent), 0 not (3 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "hostile_bytes": {
+     "n": 2000000,
+     "sha256": "a66de09de7166251",
+     "seed": 20261110
+    },
+    "find": {
+     "before": "scroll",
+     "after": "scroll",
+     "absent_token": "no_match"
+    },
+    "errors": {
+     "panics": 0,
+     "new": 0,
+     "also_before_the_case": 0
+    },
+    "ui_item_max_ms": {
+     "before": 0.0,
+     "after_bytes": 0.0,
+     "after_script": 0.0,
+     "during": 7.26
+    },
+    "injector": {
+     "sent": 683,
+     "enters_sent": 10,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 683,
+     "unbound": 464,
+     "bound": 202,
+     "enters_bound": 10,
+     "os_keys": 683,
+     "undispatched": 0,
+     "cmd_chords": 3,
+     "menu": 7,
+     "menu_cmd": 3,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 683,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 10
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 7
+    },
+    "enter_taint": {
+     "taps": 10,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_hostile_output_recovers.png"
+   ]
+  },
+  {
+   "name": "history_up_recall",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 11.6,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412381.709,
+    1794412393.34
+   ],
+   "detail": [
+    "injector accounting: injector sent 135; app saw 135; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 114 unbound keydown/typed, 8 taken by a key binding, 6 Enter by a binding; macOS: 135 key-down(s) reached NSApplication, 135 dispatched as key events (7 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "history_effect_lines": {
+     "hu.txt": 5,
+     "hu_e.txt": 1
+    },
+    "history_received_lines": 6,
+    "pane_history_lines": 2235,
+    "injector": {
+     "sent": 135,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 135,
+     "unbound": 114,
+     "bound": 8,
+     "enters_bound": 6,
+     "os_keys": 135,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 7,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 135,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 7
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_history_up_recall.png"
+   ]
+  },
+  {
+   "name": "scroll_keys_position",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 33.6,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412394.425,
+    1794412428.02
+   ],
+   "detail": [
+    "injector accounting: injector sent 193; app saw 193; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 179 unbound keydown/typed, 6 taken by a key binding, 3 Enter by a binding; macOS: 193 key-down(s) reached NSApplication, 193 dispatched as key events (5 of them a menu key equivalent), 0 not (2 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "skp_lines_read_at_bottom": 35,
+    "skp_after_pageup": {
+     "first": 362,
+     "last": 397,
+     "read": 36
+    },
+    "skp_pageup_hold": {
+     "verdict": "pass",
+     "new_lines": 26,
+     "read_before": 36,
+     "read_after": 36
+    },
+    "skp_top_hold": {
+     "new_lines": 26,
+     "anchor_words": 36,
+     "kept": 0.92,
+     "stream_lines_on_screen": 0
+    },
+    "skp_tail_lines_on_screen_after_key": 8,
+    "injector": {
+     "sent": 193,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 193,
+     "unbound": 179,
+     "bound": 6,
+     "enters_bound": 3,
+     "os_keys": 193,
+     "undispatched": 0,
+     "cmd_chords": 2,
+     "menu": 5,
+     "menu_cmd": 2,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 193,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    },
+    "enter_taint": {
+     "taps": 3,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_scroll_keys_position.png"
+   ]
+  },
+  {
+   "name": "ime_compose",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 1.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794412429.13,
+    1794412430.766
+   ],
+   "detail": [
+    "macOS: NEEDS: the owner enables the Pinyin - Simplified input source for the runner user (System Settings > Keyboard > Text Input > Input Sources). The macOS arm of this test is intl_ime_pinyin / intl_ime_japanese (cases_caseintl.py), which type the same compositions and skip with NEEDS_OWNER until then",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ime_compose.png"
+   ]
+  },
+  {
+   "name": "scroll_keys_foreground",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 42.3,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412430.905,
+    1794412473.245
+   ],
+   "detail": [
+    "injector accounting: injector sent 132; app saw 132; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 99 unbound keydown/typed, 22 taken by a key binding, 4 Enter by a binding; macOS: 132 key-down(s) reached NSApplication, 132 dispatched as key events (7 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "sfg_hold": {
+     "new_lines": 42,
+     "anchor_words": 61,
+     "kept": 1.0,
+     "newest_on_screen": null
+    },
+    "sfg_keys": [
+     {
+      "key": "prompt Shift+PageUp x2",
+      "hops": [
+       "page_up",
+       "page_up"
+      ]
+     },
+     {
+      "key": "prompt Shift+Home",
+      "hops": [
+       "top"
+      ]
+     },
+     {
+      "key": "prompt Shift+PageDown",
+      "hops": [
+       "page_down"
+      ]
+     },
+     {
+      "key": "prompt Shift+End",
+      "hops": [
+       "bottom"
+      ]
+     },
+     {
+      "key": "prompt Shift+Home with text",
+      "hops": [],
+      "got": [
+       "echo sfgnewt48_3k6cy"
+      ]
+     },
+     {
+      "key": "PageUp",
+      "bytes": "1b5b357e",
+      "hops": []
+     },
+     {
+      "key": "Shift+PageUp x3",
+      "bytes": "",
+      "hops": [
+       "page_up",
+       "page_up",
+       "page_up"
+      ]
+     },
+     {
+      "key": "Shift+Home",
+      "bytes": "",
+      "hops": [
+       "top"
+      ]
+     },
+     {
+      "key": "Shift+PageDown",
+      "bytes": "",
+      "hops": [
+       "page_down"
+      ]
+     },
+     {
+      "key": "Shift+End",
+      "bytes": "",
+      "hops": [
+       "bottom"
+      ]
+     },
+     {
+      "key": "Shift+PageUp",
+      "bytes": "",
+      "hops": [
+       "page_up"
+      ]
+     }
+    ],
+    "sfg_alt_keys": [
+     {
+      "key": "Shift+PageUp",
+      "bytes": "1b5b353b327e",
+      "hops": []
+     },
+     {
+      "key": "Shift+Home",
+      "bytes": "1b5b313b3248",
+      "hops": []
+     }
+    ],
+    "injector": {
+     "sent": 132,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 132,
+     "unbound": 99,
+     "bound": 22,
+     "enters_bound": 4,
+     "os_keys": 132,
+     "undispatched": 0,
+     "cmd_chords": 1,
+     "menu": 7,
+     "menu_cmd": 1,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 132,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 4,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_scroll_keys_foreground.png"
+   ]
+  },
+  {
+   "name": "ui_mouse_select_copy",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 14.2,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412474.369,
+    1794412488.557
+   ],
+   "detail": [
+    "injector accounting: injector sent 196; app saw 196; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 187 unbound keydown/typed, 1 taken by a key binding, 5 Enter by a binding; macOS: 196 key-down(s) reached NSApplication, 196 dispatched as key events (3 of them a menu key equivalent), 0 not (2 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "word": "msel2wnpwecyx",
+    "dblclick_screen_diff": 0.001,
+    "injector": {
+     "sent": 196,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 196,
+     "unbound": 187,
+     "bound": 1,
+     "enters_bound": 5,
+     "os_keys": 196,
+     "undispatched": 0,
+     "cmd_chords": 2,
+     "menu": 3,
+     "menu_cmd": 2,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 196,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ui_mouse_select_copy.png"
+   ]
+  },
+  {
+   "name": "ui_copy_wrapped_output",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 15.5,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: Shell=6 [Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412488.691,
+    1794412504.153
+   ],
+   "detail": [
+    "injector accounting: injector sent 234; app saw 234; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 218 unbound keydown/typed, 1 taken by a key binding, 6 Enter by a binding; macOS: 234 key-down(s) reached NSApplication, 234 dispatched as key events (9 of them a menu key equivalent), 0 not (9 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pane_cols": 124,
+    "clipboard_chars": {
+     "block": 609,
+     "output": 594,
+     "printed": 594
+    },
+    "injector": {
+     "sent": 234,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 234,
+     "unbound": 218,
+     "bound": 1,
+     "enters_bound": 6,
+     "os_keys": 234,
+     "undispatched": 0,
+     "cmd_chords": 9,
+     "menu": 9,
+     "menu_cmd": 9,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 234,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ui_copy_wrapped_output.png"
+   ]
+  },
+  {
+   "name": "ui_copy_wrapped_drag",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 14.0,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: Shell=6 [Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412505.264,
+    1794412519.307
+   ],
+   "detail": [
+    "injector accounting: injector sent 230; app saw 230; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 219 unbound keydown/typed, 1 taken by a key binding, 6 Enter by a binding; macOS: 230 key-down(s) reached NSApplication, 230 dispatched as key events (4 of them a menu key equivalent), 0 not (3 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pane_cols": 124,
+    "drag_from_to": [
+     [
+      1716,
+      1170
+     ],
+     [
+      1780,
+      1202
+     ]
+    ],
+    "injector": {
+     "sent": 230,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 230,
+     "unbound": 219,
+     "bound": 1,
+     "enters_bound": 6,
+     "os_keys": 230,
+     "undispatched": 0,
+     "cmd_chords": 3,
+     "menu": 4,
+     "menu_cmd": 3,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 230,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ui_copy_wrapped_drag.png"
+   ]
+  },
+  {
+   "name": "context_menu_actions",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 20.0,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412520.41,
+    1794412540.418
+   ],
+   "detail": [
+    "injector accounting: injector sent 161; app saw 161; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 149 unbound keydown/typed, 4 taken by a key binding, 5 Enter by a binding; macOS: 161 key-down(s) reached NSApplication, 161 dispatched as key events (3 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "block_token_at": [
+     860,
+     1394
+    ],
+    "injector": {
+     "sent": 161,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 161,
+     "unbound": 149,
+     "bound": 4,
+     "enters_bound": 5,
+     "os_keys": 161,
+     "undispatched": 0,
+     "cmd_chords": 1,
+     "menu": 3,
+     "menu_cmd": 1,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 161,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_context_menu_actions.png"
+   ]
+  },
+  {
+   "name": "selection_modes",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 31.8,
+   "evidence": [
+    "enter_route: 8 Enter(s) reached the input editor: Shell=8 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412541.573,
+    1794412573.348
+   ],
+   "detail": [
+    "injector accounting: injector sent 289; app saw 289; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 267 unbound keydown/typed, 2 taken by a key binding, 8 Enter by a binding; macOS: 289 key-down(s) reached NSApplication, 289 dispatched as key events (12 of them a menu key equivalent), 0 not (11 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 8 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "cross_block_middle_lines": 1,
+    "stream_ticks_around_drag": [
+     4,
+     25,
+     30
+    ],
+    "injector": {
+     "sent": 289,
+     "enters_sent": 8,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 289,
+     "unbound": 267,
+     "bound": 2,
+     "enters_bound": 8,
+     "os_keys": 289,
+     "undispatched": 0,
+     "cmd_chords": 11,
+     "menu": 12,
+     "menu_cmd": 11,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 289,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 8
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 8
+    },
+    "enter_taint": {
+     "taps": 8,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_selection_modes.png"
+   ]
+  },
+  {
+   "name": "link_and_path_click",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 60.2,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: AI=4 Shell=1 [Shell,AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412574.466,
+    1794412634.669
+   ],
+   "detail": [
+    "Cmd+click on `pan2yw2r4.rs:140`: nothing opened: no call to the desktop opener and the file's text is not on screen",
+    "after_links: file has 0/4 lines, exact match False first diff: exp='t87_0jiqm09d86' got=None [first bad line 0: injector call #1009 posted its ENTER at 09:56:43.285]",
+    "macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other outbound connection' is NOT judged here",
+    "after_links: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only",
+    "injector accounting: injector sent 188; app saw 188; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 181 unbound keydown/typed, 1 taken by a key binding, 5 Enter by a binding; macOS: 188 key-down(s) reached NSApplication, 188 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "link_positions": {
+     "uanuardcf": [
+      1188,
+      1266
+     ],
+     "haryxwdfu": [
+      900,
+      1330
+     ],
+     "pan2yw2r4": [
+      916,
+      1394
+     ]
+    },
+    "path_opened_by": "nothing",
+    "injector": {
+     "sent": 188,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 188,
+     "unbound": 181,
+     "bound": 1,
+     "enters_bound": 5,
+     "os_keys": 188,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 188,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_link_and_path_click_FAIL.png"
+   ]
+  },
+  {
+   "name": "resize_reflow_output",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 77.4,
+   "evidence": [
+    "enter_route: 13 Enter(s) reached the input editor: Shell=13 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412637.561,
+    1794412714.963
+   ],
+   "detail": [
+    "injector accounting: injector sent 580; app saw 580; lost-before-app 0 (Enter: sent 15, app saw 15); of the app's: 532 unbound keydown/typed, 1 taken by a key binding, 13 Enter by a binding; macOS: 580 key-down(s) reached NSApplication, 580 dispatched as key events (34 of them a menu key equivalent), 0 not (33 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 13 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "window": {
+     "original": [
+      1280,
+      800
+     ],
+     "rows_cols": [
+      43,
+      124
+     ]
+    },
+    "pane_cols": 124,
+    "reflow_narrow": {
+     "window": [
+      900,
+      600
+     ],
+     "proof": "hop",
+     "rows_cols": [
+      30,
+      77
+     ]
+    },
+    "reflow_wide": {
+     "window": [
+      1150,
+      710
+     ],
+     "proof": "hop",
+     "rows_cols": [
+      37,
+      108
+     ]
+    },
+    "rapid_resizes": {
+     "planned": 60,
+     "sent": 58,
+     "seconds": 11.36,
+     "errors": []
+    },
+    "sigwinch_trap_runs": 58,
+    "after_rapid": {
+     "stty": [
+      38,
+      112
+     ],
+     "program_end": [
+      38,
+      112
+     ],
+     "last_trap": [
+      38,
+      112
+     ]
+    },
+    "vim": {
+     "window": [
+      1060,
+      660
+     ],
+     "vim": [
+      35,
+      101
+     ],
+     "grid_while_open": [
+      35,
+      101
+     ],
+     "stty_after_quit": [
+      34,
+      97
+     ]
+    },
+    "injector": {
+     "sent": 580,
+     "enters_sent": 15,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 580,
+     "unbound": 532,
+     "bound": 1,
+     "enters_bound": 13,
+     "os_keys": 580,
+     "undispatched": 0,
+     "cmd_chords": 33,
+     "menu": 34,
+     "menu_cmd": 33,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 580,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 15
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 13
+    },
+    "enter_taint": {
+     "taps": 15,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_resize_reflow_output.png"
+   ]
+  },
+  {
+   "name": "editor_daily",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 54.5,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412716.074,
+    1794412770.526
+   ],
+   "detail": [
+    "NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way to answer the native dialog (r14-test-gaps T32)",
+    "injector accounting: injector sent 465; app saw 465; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 262 unbound keydown/typed, 190 taken by a key binding, 8 Enter by a binding; macOS: 465 key-down(s) reached NSApplication, 465 dispatched as key events (5 of them a menu key equivalent), 0 not (18 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "replace_one_index": 0,
+    "external_under_edits": "flagged",
+    "save_while_flagged": "asked",
+    "save_ask_enter_alone": "cancelled",
+    "save_ask_overwrite": "wrote",
+    "injector": {
+     "sent": 465,
+     "enters_sent": 8,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 465,
+     "unbound": 262,
+     "bound": 190,
+     "enters_bound": 8,
+     "os_keys": 465,
+     "undispatched": 0,
+     "cmd_chords": 18,
+     "menu": 5,
+     "menu_cmd": 4,
+     "cmd_allowed": 14,
+     "app_undelivered": 0,
+     "seen": 465,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 8
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "enter_taint": {
+     "taps": 8,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_editor_daily.png"
+   ]
+  },
+  {
+   "name": "focus_cycle",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 32.5,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412771.694,
+    1794412804.169
+   ],
+   "detail": [
+    "injector accounting: injector sent 346; app saw 346; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 336 unbound keydown/typed, 3 taken by a key binding, 5 Enter by a binding; macOS: 346 key-down(s) reached NSApplication, 346 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "reference": "Terminal.app (.command via open)",
+    "app_keys_while_away": 0,
+    "focus_reporting": "1b5b4f1b5b496b03",
+    "injector": {
+     "sent": 346,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 346,
+     "unbound": 336,
+     "bound": 3,
+     "enters_bound": 5,
+     "os_keys": 346,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 346,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 10,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 5
+    }
+   },
+   "shots": [
+    "shots/terminal_focus_cycle.png"
+   ]
+  },
+  {
+   "name": "gitbash_typeahead_reps",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 1.5,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794412805.353,
+    1794412806.899
+   ],
+   "detail": [
+    "Git Bash pane only (#1393: the ConPTY prompt hold of a bash pane on Windows)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_gitbash_typeahead_reps.png"
+   ]
+  },
+  {
+   "name": "precmd_secret_honor_ps1",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 64.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794412807.038,
+    1794412871.21
+   ],
+   "detail": [
+    "injector accounting: injector sent 537; app saw 537; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 522 unbound keydown/typed, 4 taken by a key binding, 10 Enter by a binding; macOS: 537 key-down(s) reached NSApplication, 537 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "honor_ps1_in_profile": "absent",
+    "pane_made_bash": true,
+    "pp_hp0_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.42,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "pane_hp0": "honor_ps1=False bash=True",
+    "question_on_screen_hp0": true,
+    "secret_log_control_keys_shown_hp0": 19,
+    "secret_log_guard_engaged_hp0": true,
+    "secret_log_keys_counted_hp0": 13,
+    "secret_log_keys_shown_hp0": 0,
+    "secret_log_lines_with_secret_hp0": 0,
+    "pp_hp1_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.44,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "pane_hp1": "honor_ps1=True bash=True",
+    "question_on_screen_hp1": true,
+    "secret_log_control_keys_shown_hp1": 19,
+    "secret_log_guard_engaged_hp1": true,
+    "secret_log_keys_counted_hp1": 13,
+    "secret_log_keys_shown_hp1": 0,
+    "secret_log_lines_with_secret_hp1": 0,
+    "pp_restore_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.43,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "injector": {
+     "sent": 537,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 537,
+     "unbound": 522,
+     "bound": 4,
+     "enters_bound": 10,
+     "os_keys": 537,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 537,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 12
+    }
+   },
+   "shots": [
+    "shots/terminal_precmd_secret_honor_ps1.png"
+   ]
+  },
+  {
+   "name": "minimize_fullscreen",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 98.7,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794412871.349,
+    1794412970.091
+   ],
+   "detail": [
+    "fullscreen off: the window says it left fullscreen, but `stty size` is (56, 153), it was (45, 124) before fullscreen (the grid did not follow)",
+    "at the end `stty size` is (56, 153), it was (45, 124) before the case",
+    "injector accounting: injector sent 933; app saw 933; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 899 unbound keydown/typed, 1 taken by a key binding, 21 Enter by a binding; macOS: 933 key-down(s) reached NSApplication, 933 dispatched as key events (12 of them a menu key equivalent), 0 not (11 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "hide": {
+     "how": "AXMinimized through System Events",
+     "error": null,
+     "hidden": true,
+     "seconds": 30.0
+    },
+    "restore": {
+     "first_frame_ms": null,
+     "frames_in_3s": 118,
+     "frames_while_hidden": 1008
+    },
+    "restore_ui_ms": {
+     "control_max": 0.0,
+     "after_return_max": 0.0,
+     "bound": 16.0
+    },
+    "fullscreen": {
+     "before": [
+      45,
+      124
+     ],
+     "full": [
+      56,
+      153
+     ],
+     "error": null
+    },
+    "fullscreen_off": {
+     "back": [
+      56,
+      153
+     ],
+     "request_error": null,
+     "window_says_fullscreen": false,
+     "state_error": null
+    },
+    "injector": {
+     "sent": 933,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 933,
+     "unbound": 899,
+     "bound": 1,
+     "enters_bound": 21,
+     "os_keys": 933,
+     "undispatched": 0,
+     "cmd_chords": 11,
+     "menu": 12,
+     "menu_cmd": 11,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 933,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    },
+    "enter_taint": {
+     "taps": 21,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_minimize_fullscreen_FAIL.png"
+   ]
+  },
+  {
+   "name": "precmd_question_echo",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 41.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794412973.029,
+    1794413014.916
+   ],
+   "detail": [
+    "injector accounting: injector sent 365; app saw 365; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 353 unbound keydown/typed, 3 taken by a key binding, 8 Enter by a binding; macOS: 365 key-down(s) reached NSApplication, 365 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "pane_shell": "zsh",
+    "shell_own": "zsh",
+    "echo_question_on_screen_own": true,
+    "echo_noted_by_marker_own": true,
+    "qe_bash_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.42,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "shell_bash": "bash",
+    "echo_question_on_screen_bash": true,
+    "echo_noted_by_marker_bash": true,
+    "qe_restore_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.44,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "injector": {
+     "sent": 365,
+     "enters_sent": 10,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 365,
+     "unbound": 353,
+     "bound": 3,
+     "enters_bound": 8,
+     "os_keys": 365,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 365,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 10
+    },
+    "enter_taint": {
+     "taps": 10,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 10
+    }
+   },
+   "shots": [
+    "shots/terminal_precmd_question_echo.png"
+   ]
+  },
+  {
+   "name": "desktop_notification",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 2.5,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794413015.055,
+    1794413017.551
+   ],
+   "detail": [
+    "macOS: NEEDS: on the Mac runner the owner answers the macOS prompt 'Phosphor would like to send you notifications' once for the test bundle, then sets APPCI_MAC_NOTIFY_OK=1 for the job. With notifications enabled the app asks macOS for permission; an unanswered prompt belongs to UserNotificationCenter, which the harness treats as a system dialog in front of the app and stops every later case",
+    "injector accounting: injector sent 52; app saw 52; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 49 unbound keydown/typed, 1 taken by a key binding, 1 Enter by a binding; macOS: 52 key-down(s) reached NSApplication, 52 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 52,
+     "enters_sent": 1,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 52,
+     "unbound": 49,
+     "bound": 1,
+     "enters_bound": 1,
+     "os_keys": 52,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 52,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 1
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_desktop_notification.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 12.7,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794413017.69,
+    1794413030.361
+   ],
+   "detail": [
+    "no pointer synthesis on this backend: the pointer stays where the last case left it",
+    "injector accounting: injector sent 75; app saw 75; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 70 unbound keydown/typed, 1 taken by a key binding, 2 Enter by a binding; macOS: 75 key-down(s) reached NSApplication, 75 dispatched as key events (2 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "md_small_text_visible_s": 1.59,
+    "injector": {
+     "sent": 75,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 75,
+     "unbound": 70,
+     "bound": 1,
+     "enters_bound": 2,
+     "os_keys": 75,
+     "undispatched": 0,
+     "cmd_chords": 1,
+     "menu": 2,
+     "menu_cmd": 1,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 75,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 2,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_md_viewer.png"
+   ]
+  },
+  {
+   "name": "md_viewer_big",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 11.9,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794413031.538,
+    1794413043.399
+   ],
+   "detail": [
+    "injector accounting: injector sent 75; app saw 75; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 70 unbound keydown/typed, 1 taken by a key binding, 2 Enter by a binding; macOS: 75 key-down(s) reached NSApplication, 75 dispatched as key events (2 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "md_bytes": 1825721,
+    "md_big_render_s": 4.0,
+    "md_big_rss_delta_mb": 855.9,
+    "injector": {
+     "sent": 75,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 75,
+     "unbound": 70,
+     "bound": 1,
+     "enters_bound": 2,
+     "os_keys": 75,
+     "undispatched": 0,
+     "cmd_chords": 1,
+     "menu": 2,
+     "menu_cmd": 1,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 75,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 2,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_md_viewer_big.png"
+   ]
+  },
+  {
+   "name": "md_viewer_first_frame",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 12.3,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794413044.531,
+    1794413056.794
+   ],
+   "detail": [
+    "the viewer laid its file out at its first size 985x652.76 (1 held edit(s)); no block was painted without a width",
+    "control arm (the same file with PHOSPHOR_MD_FIRST_LAYOUT_HOLD=0) not run: this platform's launcher cannot relaunch the app with an extra environment",
+    "injector accounting: injector sent 75; app saw 75; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 70 unbound keydown/typed, 1 taken by a key binding, 2 Enter by a binding; macOS: 75 key-down(s) reached NSApplication, 75 dispatched as key events (2 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "first_sizes": [
+     [
+      985.0,
+      652.76,
+      1
+     ]
+    ],
+    "suspicious_image_paints": 0,
+    "injector": {
+     "sent": 75,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 75,
+     "unbound": 70,
+     "bound": 1,
+     "enters_bound": 2,
+     "os_keys": 75,
+     "undispatched": 0,
+     "cmd_chords": 1,
+     "menu": 2,
+     "menu_cmd": 1,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 75,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 2,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_md_viewer_first_frame.png"
+   ]
+  },
+  {
+   "name": "zero_network_startup",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 163.4,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794413057.971,
+    1794413221.363
+   ],
+   "detail": [
+    "Escape left the settings page open (the shell did not take the probe line); closed it with palette cmd+p + 'Close Current Session'",
+    "scripted session: settings page walked with the keyboard (best effort; shots/zns_settings_*), allowlist beyond loopback: none",
+    "the scripted session's commands made 1 connection(s) to the configured model endpoint (destination hash 01319e5302): allowed, the user configured it",
+    "trace=poll (lsof -nP -i -a -p <pid>, control connection listed): a connection that opens and closes between two polls (0.34 s apart on this run), a UDP datagram sent without connect(), and DNS (the resolver service makes the query, not the app) are NOT visible to this trace; the Linux strace run sees all three",
+    "injector accounting: injector sent 199; app saw 201; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 172 unbound keydown/typed, 17 taken by a key binding, 6 Enter by a binding; macOS: 201 key-down(s) reached NSApplication, 201 dispatched as key events (6 of them a menu key equivalent), 0 not (2 Cmd chord(s) injected); app logged 2 more than were injected (keys from an earlier case or another source)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "poll_period_s": 0.342,
+    "trace": "poll lsof -nP -i -a -p <pid>",
+    "polls": 472,
+    "rows_seen": 1,
+    "pids_with_rows": 1,
+    "outbound_attempts": 0,
+    "provider_connects_in_session": 1,
+    "injector": {
+     "sent": 199,
+     "enters_sent": 7,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 201,
+     "unbound": 172,
+     "bound": 17,
+     "enters_bound": 6,
+     "os_keys": 201,
+     "undispatched": 0,
+     "cmd_chords": 2,
+     "menu": 6,
+     "menu_cmd": 2,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 201,
+     "lost": 0,
+     "extra": 2,
+     "enters_seen": 7
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 7,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_zero_network_startup.png"
+   ]
+  },
+  {
+   "name": "restore_shows_history",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 71.5,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794413221.502,
+    1794413292.954
+   ],
+   "detail": [
+    "no quit key on this platform: the app was stopped by pid (stop-by-pid); this proves the restore after a stop, not after a quit",
+    "injector accounting: injector sent 462; app saw 462; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 252 unbound keydown/typed, 201 taken by a key binding, 5 Enter by a binding; macOS: 462 key-down(s) reached NSApplication, 462 dispatched as key events (4 of them a menu key equivalent), 0 not (3 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "rs_setup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.46,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "rs_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.4,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "rs_store": {
+     "after_stop": [
+      1,
+      1
+     ],
+     "after_relaunch": [
+      1,
+      1
+     ]
+    },
+    "find_after_restore": [
+     "result=scroll block=0 moved=false viewport_lines=39.61 rendered_mode=PinnedToBottom scroll_mode=PinnedToBottom agent_fullscreen=false match_line=36.11 block_visible=true from=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(0.0))) } to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(0.0))) } t=1794413268675.565"
+    ],
+    "rs_cleanup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.39,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "injector": {
+     "sent": 462,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 462,
+     "unbound": 252,
+     "bound": 201,
+     "enters_bound": 5,
+     "os_keys": 462,
+     "undispatched": 0,
+     "cmd_chords": 3,
+     "menu": 4,
+     "menu_cmd": 3,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 462,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 5
+    }
+   },
+   "shots": [
+    "shots/terminal_restore_shows_history.png"
+   ]
+  },
+  {
+   "name": "ui_vertical_tabs_many",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 115.9,
+   "evidence": [
+    "enter_route: 42 Enter(s) reached the input editor: Shell=42 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794413293.093,
+    1794413409.018
+   ],
+   "detail": [
+    "vertical tabs: on in the profile's settings (the owner's layout)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "injector accounting: injector sent 3298; app saw 3298; lost-before-app 0 (Enter: sent 42, app saw 42); of the app's: 3218 unbound keydown/typed, 30 taken by a key binding, 42 Enter by a binding; macOS: 3298 key-down(s) reached NSApplication, 3298 dispatched as key events (8 of them a menu key equivalent), 0 not (29 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 42 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "tab_activate_hops": 8,
+    "tabs_left": -1,
+    "injector": {
+     "sent": 3298,
+     "enters_sent": 42,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3298,
+     "unbound": 3218,
+     "bound": 30,
+     "enters_bound": 42,
+     "os_keys": 3298,
+     "undispatched": 0,
+     "cmd_chords": 29,
+     "menu": 8,
+     "menu_cmd": 7,
+     "cmd_allowed": 22,
+     "app_undelivered": 0,
+     "seen": 3298,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 42
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 42
+    },
+    "enter_taint": {
+     "taps": 42,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ui_vertical_tabs_many.png"
+   ]
+  },
+  {
+   "name": "ui_vertical_tabs_panel_click",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 50.5,
+   "evidence": [
+    "enter_route: 16 Enter(s) reached the input editor: Shell=16 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794413410.185,
+    1794413460.701
+   ],
+   "detail": [
+    "vertical tabs: on in the profile's settings (the owner's layout)",
+    "panel rows (OCR): tab 2 at (483, 416), tab 3 at (485, 540), tab 4 at (483, 666)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "injector accounting: injector sent 1209; app saw 1209; lost-before-app 0 (Enter: sent 16, app saw 16); of the app's: 1180 unbound keydown/typed, 9 taken by a key binding, 16 Enter by a binding; macOS: 1209 key-down(s) reached NSApplication, 1209 dispatched as key events (4 of them a menu key equivalent), 0 not (8 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 16 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "panel_rows_found": [
+     [
+      2,
+      483,
+      416
+     ],
+     [
+      3,
+      485,
+      540
+     ],
+     [
+      4,
+      483,
+      666
+     ]
+    ],
+    "tabs_left": -1,
+    "injector": {
+     "sent": 1209,
+     "enters_sent": 16,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1209,
+     "unbound": 1180,
+     "bound": 9,
+     "enters_bound": 16,
+     "os_keys": 1209,
+     "undispatched": 0,
+     "cmd_chords": 8,
+     "menu": 4,
+     "menu_cmd": 3,
+     "cmd_allowed": 5,
+     "app_undelivered": 0,
+     "seen": 1209,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 16
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 16
+    },
+    "enter_taint": {
+     "taps": 16,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ui_vertical_tabs_panel_click.png"
+   ]
+  },
+  {
+   "name": "tab_pointer_use",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 98.4,
+   "evidence": [
+    "enter_route: 19 Enter(s) reached the input editor: Shell=19 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794413461.87,
+    1794413560.233
+   ],
+   "detail": [
+    "vertical panel: tab 2 at (468, 415), tab 3 at (468, 540), tab 4 at (468, 664)",
+    "tab 3's title was located by OCR (no `appci_find` line for 'vt2p2tmyafp')",
+    "NO-REFERENCE: UNVERIFIABLE: horizontal bar: the tabs' titles could not be located in the strip (the topmost sightings are not on one row (a title is not drawn in the tab bar): tab 2 at (1826, 994), tab 3 at (1066, 140)): the hook saw no title with the tab's directory name, or the layout shows neither the directory nor the command; the pointer actions in this layout are NOT judged",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "injector accounting: injector sent 1623; app saw 1623; lost-before-app 0 (Enter: sent 19, app saw 19); of the app's: 1588 unbound keydown/typed, 12 taken by a key binding, 19 Enter by a binding; macOS: 1623 key-down(s) reached NSApplication, 1623 dispatched as key events (4 of them a menu key equivalent), 0 not (12 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 19 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "tp_cleanup_closes": 2,
+    "injector": {
+     "sent": 1623,
+     "enters_sent": 19,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1623,
+     "unbound": 1588,
+     "bound": 12,
+     "enters_bound": 19,
+     "os_keys": 1623,
+     "undispatched": 0,
+     "cmd_chords": 12,
+     "menu": 4,
+     "menu_cmd": 3,
+     "cmd_allowed": 9,
+     "app_undelivered": 0,
+     "seen": 1623,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 19
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 19
+    },
+    "enter_taint": {
+     "taps": 19,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_tab_pointer_use.png"
+   ]
+  },
+  {
+   "name": "keybinding_rebind",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 71.9,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794413561.363,
+    1794413633.31
+   ],
+   "detail": [
+    "control: Alt-R not played: macOS: Option-R types a character by design unless Option is set to act as Meta (terminal.input.extra_meta_keys)",
+    "arm_c: Alt-R not played: macOS: Option-R types a character by design unless Option is set to act as Meta (terminal.input.extra_meta_keys)",
+    "injector accounting: injector sent 120; app saw 120; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 80 unbound keydown/typed, 23 taken by a key binding, 2 Enter by a binding; macOS: 120 key-down(s) reached NSApplication, 120 dispatched as key events (15 of them a menu key equivalent), 0 not (14 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "control_ctrl_r_opens_search": true,
+    "kbr_a_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.46,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "kbr_b_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.44,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "arm_b_moved_opens_search": true,
+    "kbr_c_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.45,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "steps_judged": 6,
+    "kbr_restore_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.45,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "injector": {
+     "sent": 120,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 120,
+     "unbound": 80,
+     "bound": 23,
+     "enters_bound": 2,
+     "os_keys": 120,
+     "undispatched": 0,
+     "cmd_chords": 14,
+     "menu": 15,
+     "menu_cmd": 1,
+     "cmd_allowed": 13,
+     "app_undelivered": 0,
+     "seen": 120,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "enter_taint": {
+     "taps": 2,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 2
+    }
+   },
+   "shots": [
+    "shots/terminal_keybinding_rebind.png"
+   ]
+  },
+  {
+   "name": "needs_owner",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "NEEDS OWNER: a macOS system dialog is in front and would take our keys: window of UserNotificationCenter (pid 13893) on screen: 13893\tUserNotificationCenter\t8\t626,170,260,250\t. The owner must click ALLOW once, in the gitrunner GUI session (Screen Sharing / the console as user gitrunner): the dialog reads 'Allow \"Phosphor\" to find devices on local networks?'. A new ad-hoc-signed build can re-trigger it (docs/testing.md 3.3). The harness never clicks it. Then re-run the job."
+   ]
+  }
+ ]
+}
