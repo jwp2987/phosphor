@@ -518,12 +518,17 @@ def endless_flood(kind, stop_f, min_lines=0, min_s=0):
     return ("__s=$SECONDS; __i=0; while [ ! -e %s ] || [ $__i -lt %d ] || [ $((SECONDS-__s)) -lt %d ]; do %s; __i=$((__i+%d)); done" % (stop_f, min_lines, min_s, chunk, n))
 
 
-# The last OUTPUT lines of a `seq` flood: a line that is only 499999 or 500000 (OCR may add stray punctuation around it).
-FLOOD_TAIL_LINE = re.compile(r"^\W*(?:500000|499999)\W*$")
+# The last OUTPUT lines of a `seq` flood: a line that is only 499999 or 499998 (OCR may add stray punctuation around it). NOT 500000: the flood's
+# command holds `seq 1 500000` and `__i+500000`, its header stays on screen below the marker after a Find, and an OCR engine that returns one text
+# box per run of words (Apple Vision; the header is clipped at the pane's bottom edge and its `__` are read as gaps) gives a box that is just
+# `500000;`. Round 14 (r14a, macOS): the Find had put the marker on screen (shots/terminal_find_after: highlighted, Find bar 1/1, no flood output line
+# in view; the app's own match_line 34.61 of a 39.61-line viewport) and the case said "the view is still on the flood's tail". The command holds
+# neither 499999 nor 499998.
+FLOOD_TAIL_LINE = re.compile(r"^\W*(?:499999|499998)\W*$")
 
 
 def flood_tail_on_screen(ocr_text):
-    """True when the `seq` flood's last output lines (a line of just 499999 / 500000) are in the OCR text.
+    """True when the `seq` flood's last output lines (a line of just 499999 / 499998) are in the OCR text.
     r18u26 (#1775, Mac + Wayland): the check was a substring test, which also matched the flood's own COMMAND
     (`... do seq 1 500000; __i=$((__i+500000)); done ...`). The block header keeps that command on screen, and a Find that scrolls to
     the marker block puts the marker 5 lines above the viewport's bottom (block_list_viewport.rs scroll_to_match_if_not_visible), with
@@ -727,7 +732,7 @@ def c_flood_find(ctx, r):
     seen = marker in after_flat
     r.metric("marker_visible_after_find", seen)
     # The marker is also typed in the Find field, so seeing it proves nothing about the output: the view must have SCROLLED. The flood's last
-    # OUTPUT lines (a line of just 499999 / 500000) are on screen before the Find; after a Find that went to the older block they are not.
+    # OUTPUT lines (a line of just 499999 / 499998) are on screen before the Find; after a Find that went to the older block they are not.
     # r18u26 (#1775): a substring test also matched the flood's command header (`seq 1 500000`), which stays in view below the marker.
     tail_before = flood_tail_on_screen(before)
     tail_after = flood_tail_on_screen(after)

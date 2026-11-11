@@ -2796,6 +2796,12 @@ pub struct TerminalViewRenderContext {
     /// auto-scroll the selection (#890). Shared with the view, which outlives each frame's
     /// element.
     pub rich_content_drag_selecting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// Set by the block list while a left press that began inside it is held, and taken by
+    /// its mouse-up: a release over an unfocused pane whose press was in another pane or on
+    /// the split divider must not click that pane or move the keyboard to it (#2119). Shared
+    /// with the view, which outlives each frame's element.
+    pub left_press_began_in_block_list: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -3445,6 +3451,9 @@ pub struct TerminalView {
 
     /// See [`TerminalViewRenderContext::rich_content_drag_selecting`].
     rich_content_drag_selecting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// See [`TerminalViewRenderContext::left_press_began_in_block_list`].
+    left_press_began_in_block_list: std::sync::Arc<std::sync::atomic::AtomicBool>,
 
     context_menu: ViewHandle<Menu<TerminalAction>>,
 
@@ -5556,6 +5565,7 @@ impl TerminalView {
             horizontal_clipped_scroll_state: Default::default(),
             is_selecting: false,
             rich_content_drag_selecting: Default::default(),
+            left_press_began_in_block_list: Default::default(),
             context_menu_state: None,
             context_menu,
             hovered_secret: None,
@@ -10632,7 +10642,15 @@ impl TerminalView {
     ) {
         if has_block_list_selection {
             self.copy(ctx);
-            self.clear_selections_when_shell_mode_without_focusing_input(ctx);
+            if ctrl_c_copy_drops_text_selection(is_long_running) {
+                // #2117: this Ctrl-C would have been the interrupt. With the selection left
+                // up (the clear below keeps it while the agent view feature is on) every
+                // later Ctrl-C copied again and none reached the program.
+                self.clear_selected_text(ctx);
+                ctx.notify();
+            } else {
+                self.clear_selections_when_shell_mode_without_focusing_input(ctx);
+            }
             return;
         } else if has_alt_screen_selection {
             self.copy(ctx);
@@ -35063,6 +35081,7 @@ impl TerminalView {
                 .map(|card| card.id()),
             is_terminal_selecting: self.is_selecting(),
             rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),
+            left_press_began_in_block_list: self.left_press_began_in_block_list.clone(),
             is_context_menu_open: self.is_context_menu_open(),
             is_waterfall_gap_mode: self.is_waterfall_gap_mode(model, app),
             pane_state,
@@ -41794,6 +41813,16 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
         .map(|name| dir.join(name))
         .find(|path| path.is_file())
         .unwrap_or_else(|| dir.join(RULES_FILE_PATTERN[0]))
+}
+
+/// Windows, Ctrl-C with text selected in the block list: the key copies and is not sent as an
+/// interrupt. Whether that copy also drops the text selection (#2117): yes while a command is
+/// in front, so the NEXT Ctrl-C is the interrupt the user is reaching for. At an idle prompt
+/// the selection is treated as before (kept as agent context while the agent view feature is
+/// on); there is no program a Ctrl-C has to reach.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ctrl_c_copy_drops_text_selection(command_in_front: bool) -> bool {
+    command_in_front
 }
 
 /// Whether an appearing approval card may take keyboard focus (#1195, #1350): never from the

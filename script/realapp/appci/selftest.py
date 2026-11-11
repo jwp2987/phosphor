@@ -4414,7 +4414,11 @@ def r18u13_mac_harness_fixes():
     # r18u23: the marker is its own proven command before the flood; Find must also have scrolled the view away from the flood's tail
     assert "marker_cmd in ctx.cmds_since" in src and "scrolled" in src and "tail_before" in src and src.index("marker_cmd") < src.index("endless_flood")
     # r18u26 (#1775): the flood's tail is a line of just 499999/500000, never the flood COMMAND's `seq 1 500000` (the block header keeps it on screen)
-    assert _R.flood_tail_on_screen("499998\n499999\n500000\n") and _R.flood_tail_on_screen("  500000 |\n")
+    assert _R.flood_tail_on_screen("499998\n499999\n500000\n") and _R.flood_tail_on_screen("  499999 |\n") and _R.flood_tail_on_screen("499998\n")
+    # r19 (r14a, macOS): a line of just 500000 is no longer the tail. The flood's command header holds `seq 1 500000` and Apple Vision returned a text
+    # box that was only that number, so a Find that HAD scrolled to the marker read "still on the flood's tail". 499999 / 499998 are not in the command.
+    assert not _R.flood_tail_on_screen("  500000 |\n") and not _R.flood_tail_on_screen("do seq 1\n500000;\ni=$\n")
+    assert "499999" not in _R.endless_flood("seq", "ff_stop.txt", 300000, 3) and "499998" not in _R.endless_flood("seq", "ff_stop.txt", 300000, 3)
     assert not _R.flood_tail_on_screen("3 ]; do seq 1 500000; __i=$((__i+500000)); done; now >> ff_end.txt\n450001\n450002")
     assert not _R.flood_tail_on_screen("") and not _R.flood_tail_on_screen(None) and not _R.flood_tail_on_screen("1500000\n4999990")
     assert "flood_tail_on_screen(before)" in src and "flood_tail_on_screen(after)" in src and "hop=find_scroll" in src
@@ -8808,7 +8812,8 @@ def r14_window_use_cases_pure_parts():
     assert W.judge_restore_ui(0.0, 12.0) == (True, 16.0) and W.judge_restore_ui(0.0, 16.1)[0] is False
     assert W.judge_restore_ui(20.0, 59.0) == (True, 60.0) and W.judge_restore_ui(20.0, 61.0) == (False, 60.0), "3x the control, never unbounded"
     body = inspect.getsource(W._hide_under_stream) + inspect.getsource(W._fullscreen_twice) + inspect.getsource(W.c_minimize_fullscreen)
-    for needle in ("judge_stream_copy(got, tag, n)", "ms <= limit", "judge_restore_ui(ctl_max, res_max)", "now == size0", "back == before", "full != before", "not win.has_wm()"):
+    for needle in ("judge_stream_copy(got, tag, n)", "ms <= limit", "judge_restore_ui(ctl_max, res_max)", "now == size0",
+                   "judge_fullscreen_off(before, back, off_err, ax_state, ax_why)", "full != before", "not win.has_wm()"):
         assert needle in body, needle
     # a Skip after a failed check would hide the failure (run.py turns the row into a skip): the cases skip only before their first check
     for fn in (W.c_resize_reflow_output, W.c_context_menu_actions, W.c_tab_pointer_use, W.c_focus_cycle, W.c_minimize_fullscreen):
@@ -8834,6 +8839,108 @@ def r14_window_use_cases_pure_parts():
             assert winmap.skip_reason(n, "gitbash") is None and "Git Bash" in winmap.skip_reason(n, "powershell"), n
         else:
             assert n in winmap.NOT_WINDOWS and "r14-test-gaps T3" in winmap.skip_reason(n, "gitbash"), n
+@check
+def r19_copy_window_pointer_faults():
+    """round 14 candidate (r14a), docs/design/r10-r19-copy.md, #2117 #2118 #2119: the corrected oracles pass the right result and FAIL the wrong one,
+    and the facts each correction rests on are still in the sources (nothing was compiled or run on a display here)."""
+    import inspect, random
+    import cases_window_use as W
+    import cases_wrap_vtabs as V
+    import cases_daily_b as D
+    import cases_pointer as P
+    import cases_robust as R_
+    import backend
+    root = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+    view = open(os.path.join(root, "app", "src", "terminal", "view.rs"), encoding="utf-8").read()
+    ble = open(os.path.join(root, "app", "src", "terminal", "block_list_element.rs"), encoding="utf-8").read()
+    # R1: the focus-input key keeps a selected block (agent view feature on); block-down from the newest block is the way out
+    fib = view[view.index("    fn focus_input_box(&mut self"):]
+    fib = fib[:fib.index("\n    }\n")]
+    assert "!FeatureFlag::AgentView.is_enabled()" in fib and "self.clear_selected_blocks(ctx);" in fib
+    assert 'CustomAction::SelectBlockBelow => Keystroke::parse("cmdorctrl-down").ok()' in open(
+        os.path.join(root, "app", "src", "util", "bindings.rs"), encoding="utf-8").read()
+    lin, mac_ = types.SimpleNamespace(be=types.SimpleNamespace(name="wayland")), types.SimpleNamespace(be=types.SimpleNamespace(name="mac"))
+    assert V.KX(lin, "block_down") == "ctrl+down" and V.KX(mac_, "block_down") == "cmd+down"
+    k = V.KX(mac_, "block_down").split("+")[-1]
+    assert k not in backend.MacBackend.NEVER_CMD and (k in backend.MacBackend.SPECIAL or k in backend.MacBackend.LETTERS), k
+    sent = []
+    ctx = types.SimpleNamespace(be=types.SimpleNamespace(name="wayland", key=lambda k: sent.append(k)))
+    real_sleep, V.time.sleep = V.time.sleep, lambda s: None
+    try:
+        V.leave_block_selection(ctx)
+        assert sent == ["ctrl+down", "ctrl+down"], sent
+        V.leave_block_selection(ctx, 3)
+        assert len(sent) == 5
+        boom = types.SimpleNamespace(be=types.SimpleNamespace(name="wayland", key=lambda k: (_ for _ in ()).throw(RuntimeError("no focus"))))
+        V.leave_block_selection(boom)                       # never raises: it runs in `finally` blocks
+    finally:
+        V.time.sleep = real_sleep
+    for fn in (W.copy_last_block_output, V.c_copy_wrapped_output):
+        src = inspect.getsource(fn)
+        up, back = src.index('"block_up"'), src.rindex("back_to_input(ctx, r)")
+        first, last = src.index("leave_block_selection("), src.rindex("leave_block_selection(")
+        assert first < up < last < back, "%s: block-down before the block-up (a selection left by another case) and again before focus-input" % fn.__name__
+    # R2: vim is judged against the app's grid while vim is open, never against `stty size` after it quit
+    assert W.vim_grid_expected((37, 101), (37, 101)) == (37, 101) and W.vim_grid_expected(None, (37, 101)) == (37, 101)
+    assert W.vim_grid_expected((38, 101), (37, 101)) == (38, 101), "a later layout pass before vim wrote its size wins"
+    src = inspect.getsource(W._vim_during_resize)
+    assert "seen == vim_grid_expected(grid_open, (a, b))" in src and "seen == now" not in src and 'how != "hop" or grid_open is None' in src
+    assert src.index("grid_open = ") < src.index('":q!"'), "the grid is read while vim is still open"
+    # R8: the fullscreen-off step says who failed
+    assert W.parse_ax_bool(0, "true\n", "") == (True, None) and W.parse_ax_bool(0, "false", "") == (False, None)
+    assert W.parse_ax_bool(1, "", "System Events got an error: Can't get window 1")[0] is None and "window 1" in W.parse_ax_bool(1, "", "System Events got an error: Can't get window 1")[1]
+    assert W.parse_ax_bool(0, "missing value", "")[0] is None
+    b, f = (45, 124), (56, 153)
+    assert W.judge_fullscreen_off(b, b, None, False, None) == ("pass", "") and W.judge_fullscreen_off(b, b, "err", None, "x")[0] == "pass"
+    assert W.judge_fullscreen_off(b, f, "not allowed assistive access", None, None)[0] == "noref"
+    v, why = W.judge_fullscreen_off(b, f, None, True, None)
+    assert v == "fail" and "still" in why and "(56, 153)" in why
+    v, why = W.judge_fullscreen_off(b, f, None, False, None)
+    assert v == "fail" and "left fullscreen" in why
+    v, why = W.judge_fullscreen_off(b, f, None, None, "not read on wayland")
+    assert v == "fail" and "not read on wayland" in why, "a backend without a readable state keeps the plain size comparison"
+    assert W.judge_fullscreen_off(b, None, None, False, None)[0] == "fail", "no `stty size` answer is not a pass"
+    src = inspect.getsource(W.c_minimize_fullscreen)
+    assert "off_refused and end != size0" in src and "r.check(end == size0" in src
+    # R5: the reader of job_control part 2 is a shell read loop (BSD cat exits on EINTR after fg), and nothing is typed for a reader that is not in front
+    assert D.reader_cmd("jc_reader_ab.sh", "jc_cat_ab.txt") == "sh jc_reader_ab.sh jc_cat_ab.txt"
+    assert "while IFS= read -r l; do" in D.READER_PROG and "printf '%s\\n' \"$l\"" in D.READER_PROG and 'done > "$1"' in D.READER_PROG and "cat" not in D.READER_PROG
+    rows = D.parse_ps_rows("  10   1 S+   sh jc_reader_ab.sh jc_cat_ab.txt\n  11   1 T    sh jc_reader_cd.sh jc_cat_cd.txt\n")
+    assert D.proc_state(rows, D.reader_cmd("jc_reader_ab.sh", "jc_cat_ab.txt")) == "running"
+    assert D.proc_state(rows, D.reader_cmd("jc_reader_cd.sh", "jc_cat_cd.txt")) == "stopped" and D.proc_state(rows, "cat") is None
+    src = inspect.getsource(D.c_job_control)
+    assert "typed(reader)" in src and '"cat > %s"' not in src and "_kill_leftovers(ctx, sleep_cmd, reader)" in src
+    assert src.index("back = proc_state(ps_rows(), reader)") < src.index("typed(after)") < src.index('ctx.be.key("ctrl+d")\n        r.check(bool(ctx.until(lambda: ctx.prompts() > p, 8))')
+    assert "were NOT typed" in src
+    # R4: Windows, Ctrl-C with text selected copies and does not interrupt; the second Ctrl-C ends the program (#2117)
+    assert P.ctrl_c_copy_errors("abc def", "abc def\n", "S", 12, 17, True) == []
+    assert "nothing was copied" in P.ctrl_c_copy_errors("S", "abc def", "S", 12, 17, True)[0]
+    assert "the copy key gave" in P.ctrl_c_copy_errors("abc", "abc def", "S", 12, 17, True)[0]
+    assert "interrupted it" in P.ctrl_c_copy_errors("abc def", "abc def", "S", 12, 12, True)[0]
+    assert P.ctrl_c_copy_errors("abc def", "abc def", "S", 12, 12, False) == [], "ticks are judged only for a program proven to be streaming"
+    src = inspect.getsource(P.stream_arm)
+    assert src.count('ctx.be.key("ctrl+c")') == 2 and "two_step = U.is_windows(ctx) and dragged not in (None, SENTINEL)" in src
+    assert 'r.check(ended, "Ctrl-C did not end the streaming program' in src
+    win_arm = view[view.index("    #[cfg(windows)]\n    fn ctrl_c_internal("):]
+    win_arm = win_arm[:win_arm.index("self.ctrl_c_to_active_block(")]
+    assert "if has_block_list_selection {\n            self.copy(ctx);\n            if ctrl_c_copy_drops_text_selection(is_long_running) {" in win_arm
+    assert "self.clear_selected_text(ctx);" in win_arm
+    # R3 (#2119): a release over an unfocused pane whose press began elsewhere is ignored by that pane's block list
+    assert "fn left_mouse_up_is_foreign(press_began_here: bool, pane_is_focused: bool) -> bool {\n    !press_began_here && !pane_is_focused\n}" in ble
+    up = ble[ble.index("    fn mouse_up(\n"):]
+    up = up[:up.index("    fn mouse_over(")]
+    assert up.index("BlockTextSelectAction::End") < up.index("left_mouse_up_is_foreign(press_began_here, self.pane_state.is_focused())") < up.index("TerminalAction::ClickOnGrid")
+    assert "self.left_press_began_here.swap(false, Ordering::Relaxed)" in up
+    # R6 is in r18u13_mac_harness_fixes (flood_tail_on_screen); R7: the pointer tool's fence looks through the Dock's backing window only
+    mptr = open(os.path.join(HERE, "..", "mac", "tools", "mptr.swift"), encoding="utf-8").read()
+    assert 'guard own == "Dock", layer == dockLayer, r.contains(mainBounds.insetBy(dx: 1, dy: 1)), let c = clearOfBars else { return false }' in mptr
+    assert "return c.contains(p)" in mptr and "s.visibleFrame" in mptr and "CGWindowLevelForKey(.dockWindow)" in mptr
+    assert "if isDockBacking(w.1, w.2, w.3, p) { lookedThroughDock = true; continue }" in mptr and "windows at the point, front to back" in mptr
+    assert "ignoreOwners.contains(own)" in mptr, "APPCI_MAC_PTR_IGNORE_OWNERS is unchanged"
+    assert R_.flood_tail_on_screen("499999") and not R_.flood_tail_on_screen("500000;")
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    for needle in ("leave_block_selection", "#2117", "#2118", "#2119", "judge_fullscreen_off", "READER_PROG", "r10-r19-copy.md"):
+        assert needle in doc, "docs/testing.md does not mention %s" % needle
 import selftest_pointer  # noqa: E402  (round 14 wave 3a: cases_pointer.py; its checks live in their own file)
 CHECKS.extend(selftest_pointer.CHECKS)
 import selftest_w4core  # noqa: E402  (round 15 wave 4 core, #2075: cases_w4core.py; its checks live in their own file)

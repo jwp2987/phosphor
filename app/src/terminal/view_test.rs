@@ -128,6 +128,15 @@ fn unfocused_input_lets_the_approval_card_take_focus() {
     assert!(approval_card_may_take_focus(false));
 }
 
+// #2117 (Windows): a Ctrl-C that copied a block-list text selection while a command is in front
+// drops that selection, so the next Ctrl-C interrupts. Fails on old code: the helper did not
+// exist and the selection was kept whenever the agent view feature was on, so every Ctrl-C copied.
+#[test]
+fn ctrl_c_copy_drops_the_text_selection_only_with_a_command_in_front() {
+    assert!(ctrl_c_copy_drops_text_selection(true));
+    assert!(!ctrl_c_copy_drops_text_selection(false));
+}
+
 fn tool_call_message_with_tool_for_test(
     id: &str,
     call_id: &str,
