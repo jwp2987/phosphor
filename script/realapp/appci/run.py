@@ -19,6 +19,10 @@ def skip_status(r, why):
     if r.fails:
         r.notes.insert(0, "ALSO SKIPPED after the failed check(s) above: %s" % why)
         return "fail"
+    if isinstance(why, cases.SettingsMismatch):  # round 16: the app does not run with a setting the case needs: not judged (NOREF), never a pass, never a failure
+        r.noref.append("UNVERIFIABLE: " + str(why))
+        r.notes.insert(0, "NO-REFERENCE: UNVERIFIABLE: " + str(why))
+        return "noref"
     if isinstance(why, cases.HostMissing):      # #2043: a required test host did not start: not judged (NOREF, the trend report lists it), never a plain skip
         r.noref.append(str(why))
         r.notes.insert(0, "NO-REFERENCE: " + str(why))
@@ -480,6 +484,7 @@ def main():
                     except Exception as e:
                         print("[appci] app log re-resolve failed: %r" % (e,), flush=True)
                 log_off = ctx.log_size() if (ctx.log_path and not sim) else None      # job-log evidence: the app-side Enter destinations of THIS case
+                settings_before = cases.settings_text(ctx)       # round 16: a case that leaves the settings file changed says so in its row (names only)
                 status = "pass"
                 try:       # r18e9: the app instance this case started on (a case that relaunches the app itself ends in a fresh TERMINAL session)
                     pid_start = app.pid() if app is not None and hasattr(app, "pid") else None
@@ -499,6 +504,7 @@ def main():
                 try:
                     if sim and c["gui"]:
                         raise cases.Skip("needs a GUI backend")
+                    cases.requires_declared(ctx, r, c["name"])      # round 16: the pass baseline + the case's declared settings, before its first key
                     if not sim:
                         if hasattr(be, "check_injector"):
                             be.check_injector()       # r18d8: a dead keyboard holder is recorded and restarted, never read as app key loss
@@ -517,6 +523,13 @@ def main():
                     traceback.print_exc()
                 finally:
                     disarm()
+                try:
+                    drift = cases.settings_left_changed(settings_before, cases.settings_text(ctx))
+                    if drift:
+                        r.note(drift)
+                        print("[appci] %s [%s]: %s" % (c["name"], label, drift), flush=True)
+                except Exception as e:
+                    r.note("settings comparison failed: %r" % (e,))
                 # audit #9 / F (#1916): state a case must have put back before anything else is typed (the screenshot, the probes, the next case)
                 leaks = post_case_invariants(ctx, prof, be)
                 if leaks:

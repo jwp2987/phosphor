@@ -79,24 +79,9 @@ def attention_verdict(before, hidden):
 
 
 # ---- T17: the settings file as flat keys
-_KEY_RE = re.compile(r'^[ \t]*("[^"\n]+"|[A-Za-z0-9_.\-]+)[ \t]*=', re.M)
-
-
 def toml_flat(text):
-    """{'table.key': literal} for every `key = value` of a settings.toml TEXT, tables as toml_text reads them (column-0 [table] headers; a value may span
-    lines). The literal has its whitespace removed, so a re-indented multi-line value is the same value. Never round-trips through a TOML library."""
-    out = {}
-    for name, _hs, bs, be in T._sections(text):
-        pos = bs
-        while pos < be:
-            m = _KEY_RE.search(text, pos, be)
-            if not m:
-                break
-            end = T._value_end(text, m.end())
-            key = m.group(1).strip('"')
-            out[(name + "." if name else "") + key] = re.sub(r"\s+", "", text[m.end():end])
-            pos = max(end, m.end()) + 1
-    return out
+    """{'table.key': literal} for every `key = value` of a settings.toml TEXT (toml_text.flat, where the reader lives since round 16)"""
+    return T.flat(text)
 
 
 def changed_keys(a, b):

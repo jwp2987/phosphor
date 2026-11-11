@@ -8523,6 +8523,8 @@ import selftest_r15_w5a  # noqa: E402  (round 15 wave 5 part A: cases_r15_w5a.py
 CHECKS.extend(selftest_r15_w5a.CHECKS)
 import selftest_r16_harness  # noqa: E402  (round 16 harness decisions, owner 2026-11-11: sudo arms, the macOS close key, lab job variables, MOVE-AFTER-ONE-RUN, guards)
 CHECKS.extend(selftest_r16_harness.CHECKS)
+import selftest_r16_settings  # noqa: E402  (round 16: the test settings model: case_settings.py, cases.requires, the tables of docs/testing.md)
+CHECKS.extend(selftest_r16_settings.CHECKS)
 
 
 def missing_required(required, passed):

@@ -565,7 +565,8 @@ def _panel_rows_from_hook(ctx, r, toks, n, since):
     rows = hook_panel_rows(sightings)
     if len(rows) < 2:
         r.unverifiable("the panel rows of tabs 2..%d could not be located: the app logged `appci_find` lines for %d of %d tab tokens (window origin %r; "
-                       "shots/*vt_panel.png). The panel's view mode / primary info in this profile may show neither the command nor the directory, or "
+                       "shots/*vt_panel.png). The profile's panel shows the command or the directory in each row (checked before the case, "
+                       "case_settings.py: vertical_tabs_primary_info), so the rows of this session mode showed another text, or "
                        "the build has no find hook; Windows has no OCR engine to fall back on. Stacking and the row click are NOT checked"
                        % (n, len(rows), n - 1, origin))
         return None
@@ -609,8 +610,9 @@ def c_vertical_tabs_panel_click(ctx, r):
                     rows.append((k + 1, hits[0][1], hits[0][2]))
         r.metric("panel_rows_found", [list(x) for x in rows])
         if len(rows) < 2:
-            r.no_reference("the panel rows of tabs 2..%d could not be read by OCR (found %d of %d tokens, shots/*vt_panel.png): the panel's view mode / primary info "
-                           "in this profile may show neither the command nor the directory, or the text is too small for tesseract; stacking and the row click are NOT checked"
+            r.no_reference("the panel rows of tabs 2..%d could not be read by OCR (found %d of %d tokens, shots/*vt_panel.png): the profile's panel shows the command or "
+                           "the directory in each row (checked before the case, case_settings.py: vertical_tabs_primary_info), so the rows of this session mode showed "
+                           "another text, or the text is too small for tesseract; stacking and the row click are NOT checked"
                            % (n, len(rows), n - 1))
             return
         ok, desc = rows_stacked(rows)
