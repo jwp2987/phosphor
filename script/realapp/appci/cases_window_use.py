@@ -278,6 +278,8 @@ def window_origin(ctx):
     if U.on_wayland(ctx):
         rect = U.sway_window_rect(pid)
         return (rect[0], rect[1]) if rect else None
+    if U.mac(ctx):                                              # #2061: winrect points times the display scale (cases_ui.mac_window_origin)
+        return U.mac_window_origin(ctx)
     return U.x11_window_origin(pid) if ctx.be.name == "x11" else None
 
 
@@ -695,12 +697,12 @@ def c_context_menu_actions(ctx, r):
     exactly its command line (the clipboard holds a sentinel first). In the input: 'Paste' puts exactly the clipboard text in the input (the app's
     hop=enter_begin at the next Enter), and in a terminal session the shell runs exactly it. The pointer is placed from the app's `appci_find`
     lines only (the printed token, the probe typed into the input, the menu entries): no OCR."""
-    m = U.mouse_or_skip(ctx, r)
+    m = U.mouse_or_skip(ctx, r, mac=True)
     sp = U.settings_path(ctx)
     if os.path.isfile(sp) and right_click_pastes(open(sp, encoding="utf-8", errors="replace").read()):
         r.skip("this profile sets terminal.input.right_click_behavior to paste: a right click pastes at once and no context menu exists to test")
     if window_origin(ctx) is None:
-        r.skip("the app window's position on screen could not be read (sway / xdotool): the app's position lines cannot be turned into pointer positions")
+        r.skip("the app window's position on screen could not be read (sway / xdotool / winrect): the app's position lines cannot be turned into pointer positions")
     out_tok = safe_token(ctx, "cmo")
     U.register_find(ctx, out_tok, "Copy output", "Copy command", "Paste")
     cmd = "printf 'cmo%%s\\n' %s" % out_tok[3:]                 # the command line does not hold the token it prints
@@ -873,7 +875,7 @@ def tab_spots(ctx, r, toks, tabs, vertical, since, tag):
     """where the titles of `tabs` (tab numbers, 1-based) are in the tab strip -> ({tab: (cx, cy)}, description) or (None, why). The app's position lines
     since `since` first; a tab the hook never reported is looked for by OCR when tesseract is there."""
     cands = {k: [(w[1], w[2]) for w in hook_rows(ctx, toks[k - 1], since)] for k in tabs}
-    if any(not v for v in cands.values()) and shutil.which("tesseract"):
+    if any(not v for v in cands.values()) and U.have_word_ocr(ctx):
         ws, _p = U.words(ctx, tag)
         for k in tabs:
             if not cands[k]:
@@ -954,9 +956,9 @@ def c_tab_pointer_use(ctx, r):
     middle click on the last tab closes it (its shell process is gone, the tab count drops by one, no other shell died). Then the other layout is
     switched on live and the same three actions run on the three tabs left. The profile's settings file gets its bytes back."""
     V.vt_need(ctx, r)
-    m = U.mouse_or_skip(ctx, r)
-    if window_origin(ctx) is None and not shutil.which("tesseract"):
-        r.skip("neither the app window's position (sway / xdotool) nor tesseract: a tab's title cannot be located")
+    m = U.mouse_or_skip(ctx, r, mac=True)
+    if window_origin(ctx) is None and not U.have_word_ocr(ctx):
+        r.skip("neither the app window's position (sway / xdotool / winrect) nor a word reader (tesseract; ocrw on macOS): a tab's title cannot be located")
     if not V.first_tab_in_front(ctx, r, "tp"):
         return
     lay = TabsLayout(ctx, r)

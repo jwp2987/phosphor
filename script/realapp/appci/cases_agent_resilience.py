@@ -442,7 +442,7 @@ SCENARIOS = ("stream", "queued", "blocked")
 def restart_body(ctx, r, how, scenario):
     R.need_relaunch_app(ctx, "agent_restart_%s_%s" % (how, scenario))
     if how == "quit":
-        R.need_linux_app(ctx, "a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows)")
+        R.need_quit_app(ctx, "a clean quit through the app's own quit key (the harness has no usable quit key on Windows)")
     need_fake(ctx, r)
     f = fake()
     dbs_why = None
@@ -507,7 +507,7 @@ def restart_body(ctx, r, how, scenario):
         req_before, mark = f.requests, ctx.cmd_mark()
         # 3. the stop
         if how == "quit":
-            q = R.stop_for_restart(ctx, r, float(os.environ.get("APPCI_QUIT_BOUND_S", "10")), label)
+            q = R.stop_for_restart(ctx, r, float(os.environ.get("APPCI_QUIT_BOUND_S", "10")), label, mac_quit=True)       # #2061: Cmd-Q on macOS, the quit key on Linux
             r.check(q["exited"], "%s: the app was still alive after the quit key (%r)" % (label, q))
             if not q["exited"]:
                 return

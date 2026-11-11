@@ -206,6 +206,7 @@ NOT_WINDOWS = {
     "agent_plugins_offline": "needs `unshare -rn` (Linux network namespaces) and the Linux pty; the Codex and Gemini hook scripts are bash+jq and write to /dev/tty",
     "tab_pointer_use": "r14 T28: not ported in r15 wave 4 (r14-test-gaps T31 names five cases, this is not one): the pointer, the middle button and the live settings rewrite now exist; the shell-pid probe (`$$` against os.kill) is POSIX",
     "minimize_fullscreen": "r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33 built the resize only)",
+    "mac_pointer_chord_proof": "r15 T32 (#2061): macOS only by design: it proves the Mac harness's own pointer tool (mptr) and app-only chords (appkey)",
 }
 # round 15 wave 4 (cases_desk.py, r14-test-gaps T35 / T37 / T38 / T39). The two notification cases run in both panes (append_cmd / pane_shell, the fake
 # model on the host, the app's hop=desktop_notification; the reference console takes the focus). ime_compose reads UTF-8 bytes a bash `echo >>` wrote.

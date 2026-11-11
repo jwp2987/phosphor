@@ -276,6 +276,7 @@ class MacApp:
         env_args = []
         for k, v in (("HOME", self.home), ("SHELL", "/bin/zsh"), ("ZDOTDIR", self.home), ("APPCI_W", self.home + "/w"),
                      ("PA_CTL", os.path.join(self.run, "ctl")),
+                     ("PHOSPHOR_APPCI_FIND_FILE", os.path.join(self.home, "appci_find.txt")),      # #2061: the find hook, as the Linux launcher and WindowsApp arm it
                      ("RUST_LOG", "warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug"),
                      ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
             env_args += ["--env", "%s=%s" % (k, v)]

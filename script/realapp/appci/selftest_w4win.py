@@ -497,7 +497,10 @@ def w4win_registry_winmap_and_docs():
     assert "resize only" in winmap.NOT_WINDOWS["minimize_fullscreen"] and "r14-test-gaps T3" in winmap.NOT_WINDOWS["tab_pointer_use"]
     assert W.WIN_STATE_WHY in inspect.getsource(W) and "WIN_STATE_WHY" in inspect.getsource(W.c_minimize_fullscreen)
     assert "ctx.win" not in inspect.getsource(W.need_window), "the Window resizes on Windows: no blanket skip"
-    assert "U.mouse_or_skip(ctx, r)" in inspect.getsource(P.c_selection_modes) and "need_tesseract(r, ctx)" in inspect.getsource(P.c_selection_modes)
+    # merged with #2061 (macOS pointer): the direct call now also carries mac=True. What this guards is unchanged: selection_modes asks cases_ui for the
+    # pointer itself and never goes through linux_pointer_or_skip, which SKIPs on Windows
+    sel = inspect.getsource(P.c_selection_modes)
+    assert "U.mouse_or_skip(ctx, r, mac=True)" in sel and "linux_pointer_or_skip(" not in sel and "need_tesseract(r, ctx)" in sel
     for fn in (U.c_mouse_copy, V.c_copy_wrapped_drag, V.c_vertical_tabs_panel_click):
         assert "need_tesseract(r, ctx)" in inspect.getsource(fn), fn.__name__
     assert "need_tesseract" not in inspect.getsource(W.c_context_menu_actions), "placed from the app's position lines only, on every platform"

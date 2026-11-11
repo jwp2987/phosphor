@@ -56,6 +56,14 @@ for t in htype2 kl3 ocr winrect tis ktap; do
   if [ ! -x "$b" ]; then swiftc -O "$TSRC/$t.swift" -o "$b.tmp.$$" 2> "$OUT/swiftc-$t.log" && mv "$b.tmp.$$" "$b" || { rm -f "$b.tmp.$$"; fail3 "swiftc failed for $t.swift (see swiftc-$t.log in the job artifacts)"; }; fi
   cp "$b" "$TOOLS/$t"
 done
+# round 15 (#2061, r14-test-gaps T32): the pointer (mptr), the app-only Cmd-W / Cmd-Q sender (appkey), Vision word boxes (ocrw) and the recording URL
+# handler's query (openrec). A compile error in one of these does NOT stop the run: the tool is then absent, mac_pointer_chord_proof FAILS naming it
+# and the cases that need it SKIP with "NEEDS: the <tool> tool compiled ..." (swiftc-<tool>.log is in the artifacts). Nothing is installed or registered.
+for t in mptr appkey ocrw openrec; do
+  h=$(shasum -a 256 "$TSRC/$t.swift" | cut -c1-16); b="$TCACHE/$t-$h"
+  if [ ! -x "$b" ]; then swiftc -O "$TSRC/$t.swift" -o "$b.tmp.$$" 2> "$OUT/swiftc-$t.log" && mv "$b.tmp.$$" "$b" || { rm -f "$b.tmp.$$"; echo "WARNING: swiftc failed for $t.swift (swiftc-$t.log): the cases that need $t will say so"; continue; }; fi
+  cp "$b" "$TOOLS/$t"
+done
 export APPCI_MAC_TOOLS="$TOOLS"
 [ "$(launchctl managername 2>/dev/null)" = Aqua ] || fail3 "the job is not in a GUI (Aqua) session (managername=$(launchctl managername 2>&1)). The gitlab-runner must run as a LaunchAgent of a logged-in, unlocked user, not a LaunchDaemon."
 
@@ -80,9 +88,12 @@ export APPCI_PREV_ARTIFACT="appci-out/macos/run/results.json"
 export APPCI_MAC_BUNDLE="$OUT/Phosphor.app" APPCI_MAC_PROCESS="$(basename "$BIN")"
 export APPCI_DIST="$(cd "$DIST" && pwd)"   # r15 (T43 installer_smoke): the .dmg, for the case that installs it into a scratch Applications folder itself
 export APPCI_KEY_NEWTAB="cmd+t" APPCI_KEY_NEWWIN="cmd+n"
-# editor_memory_7mb: the palette is cmd+p on macOS. Phosphor's close-pane/tab shortcut on macOS is cmd-shift-W (app/src/util/bindings.rs CloseCurrentSession), which the
-# frontmost-app guard refuses by policy (every Cmd+W chord), so APPCI_KEY_CLOSE stays EMPTY here: cases that need a keyboard close SKIP with the reason (soak) or
-# note it (flood_typing_latency ends its throw-away tab with Ctrl-D); none may pass the empty value to be.key(). editor_memory_7mb (#1607/#1407) closes its code
+# editor_memory_7mb: the palette is cmd+p on macOS. Phosphor's close-pane/tab shortcut on macOS is Cmd-W (app/src/util/bindings.rs CloseCurrentSession =
+# cmd_or_ctrl_shift("w"), "cmd-w" on macOS) and its quit is Cmd-Q. htype2 never carries either. Since round 15 (#2061) the backend sends them to the app
+# under test only (MacBackend.app_chord through the appkey tool; APPCI_MAC_CHORD_VIA=hid switches its delivery from CGEvent.postToPid to the HID tap), and the
+# cases written for it ask cases_robust.close_key / quit_key. APPCI_KEY_CLOSE still stays EMPTY here until that path has a passing run, so every case written
+# against "no close key" behaves as before: it SKIPs with the reason (soak) or notes it (flood_typing_latency ends its throw-away tab with Ctrl-D); none
+# may pass the empty value to be.key(). Setting APPCI_KEY_CLOSE="cmd+w" here is then the one-line change that gives them the key. editor_memory_7mb (#1607/#1407) closes its code
 # pane through the COMMAND palette instead: cmd+p (CustomAction::CommandPalette = cmd_or_ctrl_shift("p"); cmd+shift+p is the navigation palette), then
 # 'Close Current Session' (the same PaneGroupAction::RemoveActive the chord is bound to); the case proves it by the app's buffer_dropped log line.
 export APPCI_KEY_PALETTE="cmd+p" APPCI_KEY_CLOSE="" APPCI_KEY_CMD_PALETTE="cmd+p"
