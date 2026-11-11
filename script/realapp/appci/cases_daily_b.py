@@ -19,7 +19,7 @@ import hostile_out  # noqa: E402
 import injacct  # noqa: E402
 from cases import case  # noqa: E402
 
-ISSUE_ALT_WORD = 2079     # Alt-B / Alt-F are bound to Meta only off macOS
+ISSUE_ALT_WORD = 2079     # Alt-B / Alt-F / Alt-Backspace were bound to Meta only off macOS; since round 15 they are the Alt key's (kill switch PHOSPHOR_ALT_WORD_KEYS=0)
 
 
 # ---------------------------------------------------------------- shared
@@ -488,7 +488,7 @@ def prompt_steps(t, family, meta):
     dot = "alt+." if mac else "alt+period"            # the macOS injector names keys by character
     wl, wr = ("alt+Left", "alt+Right") if mac else ("ctrl+Left", "ctrl+Right")
     no_meta = None if (meta or not mac) else "macOS: Option types a character by design unless it is set to act as Meta (terminal.input.extra_meta_keys)"
-    alt_issue = None if (mac or meta) else ISSUE_ALT_WORD
+    alt_issue = None      # #2079 worked in round 15: Alt-B / Alt-F are expected to PASS off macOS; a failure is a regression, not a known issue
     steps = []
 
     def add(name, key, ops, readline, default=None, issue=None, skip=None, seed=None):
@@ -525,6 +525,8 @@ def prompt_steps(t, family, meta):
     w = key_words(t, 13)
     add("delete", "Delete", [("t", "echo %s x%s" % (w["a"], w["b"])), ("k", "Left", L + 1), ("k", "Delete", 1)], "echo %s %s" % (w["a"], w["b"]),
         skip="macOS: the injector has no forward-Delete key code (its `delete` is Backspace, key code 51)" if mac else None)
+    w = key_words(t, 16)     # #2079: Alt-Backspace cuts the word before the cursor (Linux / Windows: a default since round 15; macOS: Option-Backspace always was)
+    add("alt_backspace", "Alt-Backspace", [("t", "echo %s %s" % (w["a"], w["x"])), ("k", "alt+BackSpace", 1), ("t", w["b"])], "echo %s %s" % (w["a"], w["b"]))
     w = key_words(t, 14)
     add("word_left", "Option-Left" if mac else "Ctrl-Left", [("t", "echo %s %s" % (w["a"], w["c"])), ("k", wl, 1), ("t", w["b"] + " ")], "echo %s %s %s" % (w["a"], w["b"], w["c"]))
     w = key_words(t, 15)
@@ -589,11 +591,11 @@ def _settings_text(ctx):
 
 @case("meta_and_word_keys", order=96, gui=True)
 def c_meta_and_word_keys(ctx, r):
-    """T9 (r14-test-gaps G17). (1) At the prompt, one command per key: Alt-B, Alt-F, Alt-D, Alt-., Ctrl-A, E, K, U, W, Y, Home, End, Delete, the
+    """T9 (r14-test-gaps G17). (1) At the prompt, one command per key: Alt-B, Alt-F, Alt-D, Alt-., Ctrl-A, E, K, U, W, Y, Home, End, Delete, Alt-Backspace, the
     word-left and word-right keys (Ctrl-arrows; Option-arrows on macOS). Each is built so a key that does nothing, types its letter or cuts the
     wrong span gives another line; the line the shell received (rec.log; PSReadLine history in the PowerShell pane) must be the readline result or,
     where the source documents a different default on purpose (Linux / Windows: Ctrl-A selects all, Ctrl-E does not move, Ctrl-Y deletes to the line
-    start), that default, named in the metric as `app_default`. Alt-B / Alt-F are expected to FAIL off macOS until #2079 is decided. (2) The same
+    start), that default, named in the metric as `app_default`. Alt-B / Alt-F / Alt-Backspace are word keys off macOS since #2079 (round 15) and must pass. (2) The same
     keys into a raw reader: the exact bytes (bytes_reader.py; bytes_reader.sh in the Git Bash pane; not in the PowerShell pane, where a program
     gets key records, not bytes). Runs late in a pass: Ctrl-A / Ctrl-E show the Linux "emacs bindings" banner."""
     family = "mac" if ctx.be.name == "mac" else "other"

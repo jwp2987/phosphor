@@ -2516,8 +2516,9 @@ Notes that decide how a row is read:
   accepted only where `app/src/editor/view/mod.rs` documents a different Linux / Windows default on purpose: Ctrl-A selects all (the
   line becomes `echo`), Ctrl-E does not move the cursor (Linux shows the one-time "emacs bindings" banner), Ctrl-Y deletes to the line
   start. Whether those should be readline by default is an owner question; the case names them in a note and does not fail on them.
-  **Alt-B and Alt-F are expected to FAIL on Linux and Windows until #2079 is decided** (bound to Meta only; same class as #1989); the
-  failure text names the issue. On macOS the Alt keys run only when the profile sets Option as Meta (`terminal.input.extra_meta_keys`),
+  **Alt-B, Alt-F and Alt-Backspace are expected to PASS on Linux and Windows since round 15** (#2079: they were bound to Meta only,
+  the same class as #1989; now the Alt key's defaults, kill switch `PHOSPHOR_ALT_WORD_KEYS=0`). Until round 15 the first two were
+  expected to fail and the failure text named the issue; a failure now is a regression. Alt-Backspace is a step of its own since then. On macOS the Alt keys run only when the profile sets Option as Meta (`terminal.input.extra_meta_keys`),
   and forward Delete is not run (the injector has no key code for it); both are named in a note. Ctrl-U is pressed with the cursor at
   the end of the line, where "clear the row" (the app) and "kill to the line start" (readline) give the same line.
 - `meta_and_word_keys` (order 96) and `first_run_defaults` (order 97) run late in a pass: the first shows the Linux banner, the second
@@ -5596,8 +5597,8 @@ Notes for whoever reads the first run:
   `app/src/terminal/find/model_tests.rs` and by the self-test). Trace only: nothing is read unless input-order logging is on. Counts only,
   never the query.
 - **`scroll_keys_position` streams from a background job** because, while a foreground command runs, PageUp and Home are written to that
-  program and no key scrolls the scrollback (#2080, filed from reading the code; an owner question). The case therefore does not cover a
-  foreground stream. Its scroll-to-top step is block-up then Home (Home alone moves the cursor in the input).
+  program (#2080). The case therefore does not cover a foreground stream; since round 15 `scroll_keys_foreground` does (Shift+PageUp /
+  PageDown / Home / End scroll there, see the round 15 section). Its scroll-to-top step is block-up then Home (Home alone moves the cursor in the input).
 - **`tab_lifecycle_keys` waits for the undo-close window.** A tab closed with a running command keeps its shell for
   `general.undo_close.grace_period` (60 s) so the close can be undone; "the loop is gone" is judged at 75 s (`APPCI_UNDO_CLOSE_WAIT_S`).
   The close / undo half runs inside that wait. Escape and Enter are sent only after the app logged that it asked: without that line the case
@@ -5785,7 +5786,7 @@ Details a reader of a red row needs:
 - **The divider drag** (Linux): the divider is 2 px wide. A SIGWINCH logger runs in the right pane, and the pointer drags from 1, 2, ... 40 px left of that pane's first column until the logger sees a resize. No hit is UNVERIFIABLE, not a failure.
 Self-tests (`script/realapp/appci/selftest_pointer.py`, run by `run.py --self-test` and `selftest.py`): `pointer_cases_registry_r14_w3a` (PROVING only, both modes, Windows reasons, this section, the maximise key and the palette text against the app's sources), `pointer_fixture_and_screen_read_parts`, `pointer_sgr_and_reporting_parts`, `pointer_selection_and_clipboard_parts`, `pointer_link_opener_parts`, `pointer_pane_probe_parts`. Each judge is fed the wrong results it must reject (only the key arriving, arrow keys instead of wheel reports, a screen that did not move, the OSC 8 text opened instead of its target, a file opened at line 1, a maximise that did nothing, a divider that moved the other way).
 Run: `python3 script/realapp/appci/run.py --cases link_and_path_click,selection_modes,primary_and_middle_click,wheel_scroll,pane_resize_maximize`.
-Harness finding, not changed here (#2082): `app.py` sets `PHOSPHOR_APPCI_FIND_FILE` only in the Windows launcher, so the find hook (#1789) has never been on in a Linux or macOS run and every Linux pointer case has placed the pointer by OCR (r12a rows carry "app find hook gave no position"). The statement above in 2.8 that `app.py` sets it holds for Windows only.
+Harness finding, not changed here (#2082): `app.py` sets `PHOSPHOR_APPCI_FIND_FILE` only in the Windows launcher, so the find hook (#1789) has never been on in a Linux or macOS run and every Linux pointer case has placed the pointer by OCR (r12a rows carry "app find hook gave no position"). The statement above in 2.8 that `app.py` sets it holds for Windows only. **Since closed:** the Linux launcher arms it since round 14 (`e9018de13`, #2069) and the macOS launcher since round 15 (`app.find_hook_env`), so the statement in 2.8 now holds on all three platforms; see the round 15 section at the end.
 
 ## Round 15: the defects the round 14 cases found (`appci/cases_r15_defects.py`; design `docs/design/r15-defects.md`; #2079 #2080 #2081 #2082; nothing compiled, no app run when written)
 
@@ -5797,6 +5798,48 @@ harness. Worked, unproven: nothing was compiled and no app case has run.
 | #2079 | Alt-F / Alt-B (word motion) and Alt-Backspace (cut the word before the cursor) are defaults of the input editor on Linux and Windows; the code and notebook editors take the same Alt-F / Alt-B. `meta-f` / `meta-b` / `meta-backspace` stay as fixed bindings (an Alt key set to act as Meta). macOS unchanged | `PHOSPHOR_ALT_WORD_KEYS=0` (read at app start) | `util/bindings_tests.rs`: `test_alt_word_keys_kill_switch_is_off_only_for_zero`, `test_word_keys_default_bindings_per_platform` | `meta_and_word_keys` (existing; its Alt-B / Alt-F steps now expect a pass, and Alt-Backspace is a new step) |
 | #2080 | Shift+PageUp / Shift+PageDown / Shift+Home / Shift+End scroll the scrollback while a command runs in the foreground. Not in the alternate screen (a full-screen program keeps them) and not while the input editor has focus. Nothing is written to the pty for them | `PHOSPHOR_SCROLLBACK_KEYS=0` (the bindings are not registered) | `terminal/view/scrollback_keys_tests.rs` (the predicate per state, keystrokes, the hop format, the switch); `terminal/view/scrollback_keys_view_tests.rs` (scrolls, writes nothing; control: plain PageUp is written) | `scroll_keys_foreground` (new) |
 | #2081 | A write meant for the PRIMARY selection is dropped on a display that has none, instead of landing on CLIPBOARD. PRIMARY's only writer is a text selection, and whether a selection goes to CLIPBOARD is `terminal.copy_on_select`, written separately | `PHOSPHOR_PRIMARY_FALLS_BACK_TO_CLIPBOARD=1` (the old fallback) | `warpui/.../linux/clipboard_tests.rs` `primary_write_tests` (a backend answering `ClipboardNotSupported`) | `primary_absent_clipboard_kept` (new; SKIPs with `NEEDS:` on every display the CI has today) |
+| #2082 | The macOS launcher sets `PHOSPHOR_APPCI_FIND_FILE` (`app.find_hook_env`); Linux has had it since round 14 (`e9018de13`), Windows always | `APPCI_NO_FIND_HOOK=1` (macOS: the variable is not set; Linux: positions by OCR) | self-test `r15_find_hook_armed_on_every_launcher_2082` | none: no macOS case asks the hook (the macOS harness has no pointer tool; `cases_ui._hook_word` answers on Wayland and X11 only) |
 
 Trace-only log line added: `input_order hop=scrollback_key key=<page_up|page_down|top|bottom>` (debug, the input-order log; a fixed
 word, no user text), one per scrollback key handled. Its format is pinned by `the_hop_detail_format_is_pinned` and by the self-test.
+
+**`scroll_keys_foreground`** (PROVING; both modes; Wayland, X11, macOS, the Windows Git Bash pane; the PowerShell pane SKIPs with its
+winmap reason; about 60 s). The case writes `sfg_run.sh` and types `bash sfg_run.sh main`: a raw reader (`bytes_reader.py`; the bash
+twin on Windows) is the foreground program and logs every byte the pty hands it, while a job prints ten lines a second.
+
+- Control: plain PageUp reaches the program (`ESC [ 5 ~`) and the app logs no scrollback key. Without this the "received nothing"
+  verdicts below would also pass with a dead injector.
+- Shift+PageUp three times, Shift+Home, Shift+PageDown, Shift+End: for each the app logged exactly that many
+  `hop=scrollback_key key=...` lines and the program received no byte. The old behaviour fails the second half (the key's bytes are
+  in the reader's log), a key that does nothing fails the first.
+- Where the pane has an OCR engine: after the three Shift+PageUp the newest job line is not on screen, 3 s and about 30 new lines
+  later half of the words on screen are still there and no line printed after the key is; after Shift+End the newest lines are back.
+  Without OCR (Windows) the case says so in a note with `NEEDS:` and judges the hops and bytes only.
+- One typed `x` then reaches the program exactly, and (OCR) the bottom is back.
+- Second half, `bash sfg_run.sh alt`: the reader runs in the alternate screen. Shift+PageUp and Shift+Home reach it as bytes
+  (`ESC [ 1 ; 2 H` exactly for Shift+Home off Windows) and the app logs no scrollback key.
+
+Not covered: the shifted keys at a prompt (not bound there: PageUp / PageDown scroll at a prompt and Shift+Home / Shift+End select in
+the editor), and the keys while the rich input of a CLI agent has focus (the editor keeps them).
+
+**`primary_absent_clipboard_kept`** (PROVING; both modes; Linux pointer; macOS and Windows SKIP). It first writes and reads back
+PRIMARY. Where that works it SKIPs with `NEEDS: a display WITHOUT a primary selection ...`: the defect cannot occur there and
+`primary_and_middle_click` judges the split. On a display without one: copy on select ON first (control: after a drag over two words
+CLIPBOARD holds the selection, so the drag selects and the setting is live), then OFF: CLIPBOARD still holds its sentinel. The old
+fallback fails the OFF arm. Both CI displays (headless sway, Xvfb) have a primary selection, so this case has no judged row until a
+session without the protocol exists; the unit test is what covers the fix until then.
+
+**Changed expectations.** `meta_and_word_keys`: Alt-B / Alt-F carried "known: #2079" and were expected to fail off macOS; the keys
+are now defaults, so the same readline expectation must pass (nothing was loosened: the expected line is unchanged, only the
+"known issue" tag is gone). The skip text of `primary_and_middle_click` on a display without PRIMARY now says the app drops the
+write and names the new case.
+
+Self-tests (`appci/selftest_r15_defects.py`, appended to `selftest.py`'s list): `r15_defect_cases_registry`,
+`r15_scroll_keys_pure_parts` (each verdict with the input the defect produces, the Rust texts the case reads),
+`r15_scroll_foreground_script_on_a_pty` (the script really runs on a pty: bytes logged exactly, the job's lines arrive, Ctrl-C ends
+it and stops the job, the alt arm enters and leaves the alternate screen), `r15_primary_absent_verdict_and_source`,
+`r15_alt_word_keys_source_2079`, `r15_find_hook_armed_on_every_launcher_2082`.
+
+What the next run should show: `meta_and_word_keys` with Alt-B, Alt-F and Alt-Backspace `readline` on Linux and both Windows panes;
+`scroll_keys_foreground` passing in both modes on Linux and macOS and in the Git Bash pane; `primary_absent_clipboard_kept` SKIP with
+its `NEEDS:` text; the pointer cases on Linux unchanged (hook positions, as since round 14).

@@ -220,6 +220,15 @@ class App:
         return int(f[11]) + int(f[12]), int(open("/proc/%d/statm" % p).read().split()[1]) * os.sysconf("SC_PAGE_SIZE") // 1024
 
 
+def find_hook_env(home):
+    """{name: value} that arms the app's find hook (#1789) for a launch whose scratch home is `home`: the app logs `appci_find token=...` for the
+    tokens cases_ui.register_find appends to that file. Empty with APPCI_NO_FIND_HOOK=1 (the kill switch cases_ui._hook_word also reads).
+    #2082: the macOS launcher never set it (RUST_LOG enabled the target, the variable was missing), so a macOS app logged no position at all."""
+    if os.environ.get("APPCI_NO_FIND_HOOK") == "1":
+        return {}
+    return {"PHOSPHOR_APPCI_FIND_FILE": os.path.join(home, "appci_find.txt")}
+
+
 class MacApp:
     """macOS: `open -n` the extracted .app (a proper GUI launch, so it can become frontmost) with a PRIVATE HOME
     (`open --env HOME=...`, the method the hand-run round-18 harness proved): the app derives every path from it, so the
@@ -261,6 +270,8 @@ class MacApp:
                      ("PA_CTL", os.path.join(self.run, "ctl")),
                      ("RUST_LOG", "warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug"),
                      ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
+            env_args += ["--env", "%s=%s" % (k, v)]
+        for k, v in find_hook_env(self.home).items():            # #2082: the find hook is armed on macOS too (positions in the log; no macOS case reads them yet)
             env_args += ["--env", "%s=%s" % (k, v)]
         for k, v in passthrough_env().items():
             env_args += ["--env", "%s=%s" % (k, v)]
