@@ -546,6 +546,55 @@ fn test_readline_meta_keys_reach_the_program_in_front() {
     validate_keystroke_test_cases(test_cases, &terminal_model_mock);
 }
 
+/// #2130 (owner decision 2026-11-11): the word keys with a program in front, per platform. Off
+/// macOS they are xterm's Ctrl+Left / Ctrl+Right; macOS keeps readline's `ESC b` / `ESC f`.
+/// Fails on old code: the function did not exist and the bindings carried `ESC b` / `ESC f` on
+/// every platform.
+#[test]
+fn word_keys_are_xterm_ctrl_arrows_off_macos_and_meta_letters_on_macos() {
+    // Linux and Windows
+    assert_eq!(word_key_sequence_for(true, false, true), b"\x1b[1;5D");
+    assert_eq!(word_key_sequence_for(false, false, true), b"\x1b[1;5C");
+    // macOS
+    assert_eq!(word_key_sequence_for(true, true, true), b"\x1bb");
+    assert_eq!(word_key_sequence_for(false, true, true), b"\x1bf");
+}
+
+/// The bytes of #2130 are the ones the terminal's encoder gives the same chord when no binding
+/// claims it, so a rebound or unbound Ctrl+Left reaches the program as the same key.
+#[test]
+fn word_keys_off_macos_match_the_encoder_for_ctrl_arrows() {
+    let test_cases: &[(Keystroke, Vec<u8>)] = &[
+        (
+            Keystroke::parse("ctrl-left").unwrap(),
+            word_key_sequence_for(true, false, true).to_vec(),
+        ),
+        (
+            Keystroke::parse("ctrl-right").unwrap(),
+            word_key_sequence_for(false, false, true).to_vec(),
+        ),
+    ];
+    let mut terminal_model_mock = TerminalModelMock::new();
+    validate_keystroke_test_cases(test_cases, &terminal_model_mock);
+    // Application cursor mode changes the plain arrows only, not the modified ones.
+    terminal_model_mock.set_mode(TermMode::APP_CURSOR);
+    validate_keystroke_test_cases(test_cases, &terminal_model_mock);
+}
+
+/// The kill switch `PHOSPHOR_WORD_KEYS_XTERM=0` puts `ESC b` / `ESC f` back on every platform;
+/// anything else (unset, empty, another value) leaves the decision on.
+#[test]
+fn the_word_keys_kill_switch_is_off_only_for_zero() {
+    assert!(word_keys_xterm_enabled_for(None));
+    assert!(word_keys_xterm_enabled_for(Some("")));
+    assert!(word_keys_xterm_enabled_for(Some("1")));
+    assert!(!word_keys_xterm_enabled_for(Some("0")));
+    for mac in [false, true] {
+        assert_eq!(word_key_sequence_for(true, mac, false), b"\x1bb");
+        assert_eq!(word_key_sequence_for(false, mac, false), b"\x1bf");
+    }
+}
+
 /// #2105: Page Up / Page Down with a modifier are xterm's `CSI 5;<mods>~` / `CSI 6;<mods>~`
 /// (they had no encoding, so Shift+Page Up was lost to a full-screen program). A chord with the
 /// Meta key keeps its ESC-prefixed form, and the plain keys are not encoded here (the terminal

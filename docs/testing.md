@@ -326,6 +326,7 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK=0` | `general.show_warning_before_quitting = false` again also switches off the question about unsaved code editor edits on quit and close (#2092; default: those edits always ask, and that dialog has no "Don't show again"). `app/src/quit_warning/mod_tests.rs` |
 | `PHOSPHOR_EDITOR_SAVE_CONFLICT_ASK=0` | a save while the code editor's disk-conflict banner shows overwrites the file without asking again (#2092; default: it asks Overwrite / Reload / Cancel). `app/src/code/save_conflict_tests.rs`; app case `editor_daily` |
 | `PHOSPHOR_EDITOR_OVERWRITE_ENTER_CANCELS=0` | Enter on the code editor's overwrite question is its first button, Overwrite, again, and Tab does nothing there (owner decision 2026-11-11; default: the question comes up with Cancel selected, Enter cancels, Tab then Enter overwrites). `app/src/code/save_conflict_tests.rs`, `app/src/workspace/native_modal_tests.rs`; app case `editor_daily` |
+| `PHOSPHOR_WORD_KEYS_XTERM=0` | Linux / Windows: Ctrl+Left / Ctrl+Right with a program in front write readline's `ESC b` / `ESC f` again (#2130, owner decision 2026-11-11; default: xterm's `CSI 1;5D` / `CSI 1;5C`; macOS Option+arrows are `ESC b` / `ESC f` either way). Read once per run. `escape_sequences_test.rs` `word_keys_are_xterm_ctrl_arrows_off_macos_and_meta_letters_on_macos`, `the_word_keys_kill_switch_is_off_only_for_zero`; app case `meta_and_word_keys` |
 | `PHOSPHOR_CTRL_C_INTERRUPTS_ACTION=0` | agent, a tool that is running and is not a shell command (a read, a search, an MCP call): Ctrl-C and the Stop button both cancel that one action as a user stop again and leave the later actions of the reply queued (#2034; default: the key interrupts what runs and the turn goes on, the button and a stop of the running action by id stop the whole turn). `action_model_tests.rs` `ctrl_c_interrupts_action_kill_switch` |
 | `PHOSPHOR_DEFER_TURN_SUCCESS=0` | agent: the turn reads `success` again at the end of every reply without actions, also when the app is about to ask the model again by itself (a tool call it answered with an error), i.e. `success`, `in_progress`, `success` within a few ms (#2029; default: the status is held until that follow-up is decided, and written at once when it does not happen). `controller_tests.rs` `a_reply_that_left_a_local_error_result_expects_a_follow_up`, `agent_fuzz::turn_status_tests` |
 | `PHOSPHOR_CONNECTION_LOST_TOOL_RESULT=0` | agent: a tool call with no result that a broken reply stream left behind is answered to the model as `interrupted_by_user` again (#2036; default: `connection_lost`, with the note that the call did not run). `controller_tests.rs` `a_call_left_by_a_broken_reply_is_answered_as_connection_lost_not_as_a_user_interrupt` |
@@ -7511,3 +7512,17 @@ Not changed, and why the existing dash / ash lab arms do not prove this: `lab_en
 are declared, but the quick and candidate matrices have no dash / ash shell, and their connect step waits for `prompt.log`, which the lab's
 dash hook writes only from `~/.profile`; the remote command starts the shell with `exec "$SHELL"` (not a login shell), so that file is never
 read in the app's session. That difference from a plain `ssh host` is #2126; this round changes no wrapper text.
+
+## Round 19: owner decisions of 2026-11-11 in the app (design `docs/design/r10-r19-decide-app.md`; #2130 #2131 #2132; nothing compiled, no app run when written)
+Decisions the round 14 verdicts had left as owner questions (one commit each; this section grows with them). Each has a kill switch (the table of section 2.6) and an
+`IMPROVED` entry in `DECLINED.md`.
+
+| issue | decision | app | unit tests | app case |
+|---|---|---|---|---|
+| #2130 | Linux / Windows: Ctrl+Left / Ctrl+Right with a program in front are xterm's `CSI 1;5D` / `CSI 1;5C`; macOS Option+arrows keep `ESC b` / `ESC f` | `escape_sequences::word_key_sequence_for`, read by the two bindings in `terminal/view/init.rs` | `escape_sequences_test.rs`: `word_keys_are_xterm_ctrl_arrows_off_macos_and_meta_letters_on_macos` (both platforms by argument), `word_keys_off_macos_match_the_encoder_for_ctrl_arrows`, `the_word_keys_kill_switch_is_off_only_for_zero` | `meta_and_word_keys`, raw half |
+
+**Changed expectations (each follows an owner decision, none is weaker):**
+- `meta_and_word_keys`, raw half: Ctrl-Left / Ctrl-Right expect `1b5b313b3544` / `1b5b313b3543` on Linux and in the Git Bash pane (`raw_expect`;
+  the r19-keys change had set `1b62` / `1b66`, what the app sent then). macOS: unchanged (`1b62` / `1b66`; `CSI 1;3D/C` with Option as Meta). A
+  key that arrives in the old form prints the reason (`word_key_hint`). The self-test pins the Rust constants, the function's match arms, the
+  two bindings and the switch's name.

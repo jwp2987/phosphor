@@ -8559,8 +8559,9 @@ def r14_w1b_pure_parts():
             assert byname["Ctrl-A"][2] == b"\x01" and byname["Ctrl-Y"][2] == b"\x19" and byname["Home"][2] == b"\x1b[H" and byname["End"][2] == b"\x1b[F"
             assert all((x[2] is None) == bool(x[3]) for x in raw)
             if not mac:
-                # round 19: the word keys under a running command are the app's bindings (ESC b / ESC f), not xterm's CSI 1;5D / 1;5C
-                assert byname["Ctrl-Left"][2] == b"\x1bb" and byname["Ctrl-Right"][2] == b"\x1bf"
+                # #2130 (owner decision 2026-11-11): off macOS the word keys under a running command are xterm's CSI 1;5D / 1;5C (the r19-keys
+                # change had set ESC b / ESC f, what the app did then)
+                assert byname["Ctrl-Left"][2] == b"\x1b[1;5D" and byname["Ctrl-Right"][2] == b"\x1b[1;5C"
                 assert byname["Delete"][2] == b"\x1b[3~" and (byname["Alt-B"][2] == b"\x1bb") == (not meta)
                 assert byname["Alt-."][1] == "alt+period"
             else:
@@ -8568,17 +8569,28 @@ def r14_w1b_pure_parts():
                 assert (byname["Alt-F"][2] == b"\x1bf") == meta and byname["Delete"][2] is None
                 assert all(x[1].lower().split("+")[-1] in be_cls.SPECIAL or x[1].lower().split("+")[-1] in be_cls.LETTERS for x in raw if x[2] is not None)
     assert D.classify_key_line("echo a ", "echo a", None) == "readline" and D.classify_key_line("echo", "echo a b", "echo") == "app_default"
-    # round 19: the bytes the raw half expects for the word keys are the ones the app's bindings carry (a change there must fail here)
+    # round 19, #2130: the bytes the raw half expects for the word keys are the ones the app's bindings carry, per platform (a change there must
+    # fail here)
     ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
     _esc = open(os.path.join(ROOT, "crates", "warp_terminal", "src", "model", "escape_sequences.rs"), encoding="utf-8").read()
     assert "pub const WORD_LEFT: &[u8] = &[C0::ESC, b'b'];" in _esc and "pub const WORD_RIGHT: &[u8] = &[C0::ESC, b'f'];" in _esc
+    assert "pub const XTERM_CTRL_LEFT: &[u8] = &[C0::ESC, b'[', b'1', b';', b'5', b'D'];" in _esc
+    assert "pub const XTERM_CTRL_RIGHT: &[u8] = &[C0::ESC, b'[', b'1', b';', b'5', b'C'];" in _esc
+    _fn = _esc[_esc.index("pub fn word_key_sequence_for(left: bool, mac: bool, xterm_form: bool)"):]
+    _fn = _fn[:_fn.index("\n}\n")]
+    assert "match (left, xterm_form && !mac) {" in _fn and "(true, true) => EscCodes::XTERM_CTRL_LEFT," in _fn and "(false, true) => EscCodes::XTERM_CTRL_RIGHT," in _fn
+    assert "(true, false) => EscCodes::WORD_LEFT," in _fn and "(false, false) => EscCodes::WORD_RIGHT," in _fn
+    assert 'std::env::var("%s")' % D.WORD_KEYS_SWITCH in _esc and "OperatingSystem::get().is_mac()," in _esc
     _init = open(os.path.join(ROOT, "app", "src", "terminal", "view", "init.rs"), encoding="utf-8").read()
-    for _name, _code, _mac, _other in (("left", "WORD_LEFT", "alt-left", "ctrl-left"), ("right", "WORD_RIGHT", "alt-right", "ctrl-right")):
+    for _name, _left, _mac, _other in (("left", "true", "alt-left", "ctrl-left"), ("right", "false", "alt-right", "ctrl-right")):
         _at = _init.index('"terminal:executing_command_move_cursor_word_%s"' % _name)
         _blk = _init[_at:_at + 520]
-        assert ("EscCodes::%s" % _code) in _blk and ('.with_mac_key_binding("%s")' % _mac) in _blk and ('.with_linux_or_windows_key_binding("%s")' % _other) in _blk, _name
+        assert ("escape_sequences::word_key_sequence(%s)" % _left) in _blk and ('.with_mac_key_binding("%s")' % _mac) in _blk and ('.with_linux_or_windows_key_binding("%s")' % _other) in _blk, _name
         assert 'id!("LongRunningCommand")' in _blk, "the word keys are the app's only while a command runs"
-    assert (D.WORD_LEFT_BYTES, D.WORD_RIGHT_BYTES) == (b"\x1bb", b"\x1bf")
+    assert (D.WORD_LEFT_BYTES, D.WORD_RIGHT_BYTES) == (b"\x1bb", b"\x1bf") and (D.XTERM_CTRL_LEFT_BYTES, D.XTERM_CTRL_RIGHT_BYTES) == (b"\x1b[1;5D", b"\x1b[1;5C")
+    # a word key that arrives in the old form names the reason; any other mismatch does not
+    assert "#2130" in D.word_key_hint(b"\x1bb", b"\x1b[1;5D") and "#2130" in D.word_key_hint(b"\x1bf", b"\x1b[1;5C")
+    assert D.word_key_hint(b"", b"\x1b[1;5D") == "" and D.word_key_hint(b"\x1bf", b"\x1b[1;5D") == "" and D.word_key_hint(b"\x1bb", b"\x1bb") == ""
     # the Windows injector can post every key spec too (no display needed: the chord table is static)
     for spec in ("alt+b", "alt+f", "alt+d", "alt+period", "ctrl+a", "ctrl+Left", "ctrl+Right", "Home", "End", "Delete", "Left"):
         k = spec.lower().split("+")[-1]

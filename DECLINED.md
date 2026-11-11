@@ -3536,3 +3536,18 @@ away. With a command in front the copy now drops the text selection
 selection is treated as before (an owner question in #2117). Found by the app case
 `selection_modes` in the Git Bash pane (round 14). Design: `docs/design/r10-r19-copy.md`.
 <!-- markers: keep:ctrl_c_copy_drops_text_selection keep:ctrl_c_copy_drops_the_text_selection_only_with_a_command_in_front -->
+
+## Linux / Windows: Ctrl+Left / Ctrl+Right with a program in front are xterm's CSI 1;5D / CSI 1;5C (#2130) — IMPROVED 2026-11-11
+
+Upstream (identical at `42effe840`, `app/src/terminal/view/init.rs`) binds
+`terminal:executing_command_move_cursor_word_left` / `_right` (Ctrl+Left / Ctrl+Right off macOS,
+Option+Left / Option+Right on macOS) to readline's `ESC b` / `ESC f` on every platform, while every
+other modified arrow key goes through the encoder as `CSI 1;<mods><letter>`. A program that does not
+read Meta-prefixed keys takes `ESC b` as Escape followed by `b`. Owner decision 2026-11-11: on Linux
+and Windows the two bindings write `CSI 1;5D` / `CSI 1;5C` (what xterm, Konsole and Windows Terminal
+send); macOS keeps `ESC b` / `ESC f` (`escape_sequences::word_key_sequence_for`). Off:
+`PHOSPHOR_WORD_KEYS_XTERM=0`. The other word keys of that table (Ctrl+Backspace = `0x17`, the
+macOS-only Cmd keys) are as at the pin. A re-pin must not point the two bindings back at
+`EscCodes::WORD_LEFT` / `WORD_RIGHT` for every platform. App case `meta_and_word_keys` (raw half).
+Design: `docs/design/r10-r19-decide-app.md`.
+<!-- markers: keep:word_key_sequence_for keep:word_keys_are_xterm_ctrl_arrows_off_macos_and_meta_letters_on_macos -->

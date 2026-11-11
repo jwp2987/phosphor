@@ -567,7 +567,12 @@ def classify_key_line(got, readline, default):
     return "fail"
 
 
-WORD_LEFT_BYTES, WORD_RIGHT_BYTES = b"\x1bb", b"\x1bf"       # crates/warp_terminal/src/model/escape_sequences.rs EscCodes::WORD_LEFT / WORD_RIGHT
+# The word keys with a program in front, per platform (crates/warp_terminal/src/model/escape_sequences.rs word_key_sequence_for). Owner decision
+# 2026-11-11 (#2130): Linux and Windows send xterm's Ctrl+Left / Ctrl+Right (EscCodes::XTERM_CTRL_LEFT / _RIGHT); macOS keeps readline's
+# ESC b / ESC f (EscCodes::WORD_LEFT / WORD_RIGHT).
+WORD_LEFT_BYTES, WORD_RIGHT_BYTES = b"\x1bb", b"\x1bf"
+XTERM_CTRL_LEFT_BYTES, XTERM_CTRL_RIGHT_BYTES = b"\x1b[1;5D", b"\x1b[1;5C"
+WORD_KEYS_SWITCH = "PHOSPHOR_WORD_KEYS_XTERM"                # =0 in the app's environment: ESC b / ESC f everywhere, as before #2130
 
 
 def raw_expect(family, meta):
@@ -589,12 +594,17 @@ def raw_expect(family, meta):
     out.append(("End", "End", b"\x1b[F", None))
     out.append(("Delete", "Delete", None if mac else b"\x1b[3~", "macOS: the injector has no forward-Delete key code" if mac else None))
     # The word keys while a command runs are the app's own editable bindings `terminal:executing_command_move_cursor_word_left` / `_right`
-    # (app/src/terminal/view/init.rs; alt-left / alt-right on macOS, ctrl-left / ctrl-right elsewhere; inherited from upstream): they write
-    # readline's `ESC b` / `ESC f` (EscCodes::WORD_LEFT / WORD_RIGHT), so the key moves by a word in every line editor, not xterm's
-    # `CSI 1;5D` / `CSI 1;5C`. Until round 19 this table expected the xterm form, which no build ever sent (round 14 candidate: Wayland and
-    # both Git Bash rows failed on exactly these two keys, with `1b62` / `1b66` received). On macOS with Option set to act as Meta the key
-    # arrives as meta-left, which that binding does not match: the terminal's own encoding answers (`CSI 1;3D`).
-    wl, wr = (b"\x1b[1;3D", b"\x1b[1;3C") if (mac and meta) else (WORD_LEFT_BYTES, WORD_RIGHT_BYTES)
+    # (app/src/terminal/view/init.rs; alt-left / alt-right on macOS, ctrl-left / ctrl-right elsewhere). Their bytes are per platform since the
+    # owner's decision of 2026-11-11 (#2130): Linux and Windows write xterm's `CSI 1;5D` / `CSI 1;5C`, macOS keeps readline's `ESC b` / `ESC f`.
+    # History of this expectation: until round 19 it was the xterm form, which no build sent (the round 14 candidate received `1b62` / `1b66` on
+    # Wayland and both Git Bash rows); the r19-keys change set it to `ESC b` / `ESC f`, what the app did; the decision makes the app send the
+    # xterm form off macOS, so a build before #2130 (or one run with PHOSPHOR_WORD_KEYS_XTERM=0) fails these two keys with `1b62` / `1b66`.
+    # On macOS with Option set to act as Meta the key arrives as meta-left, which that binding does not match: the terminal's own encoding
+    # answers (`CSI 1;3D`).
+    if mac:
+        wl, wr = (b"\x1b[1;3D", b"\x1b[1;3C") if meta else (WORD_LEFT_BYTES, WORD_RIGHT_BYTES)
+    else:
+        wl, wr = XTERM_CTRL_LEFT_BYTES, XTERM_CTRL_RIGHT_BYTES
     if mac:
         out.append(("Option-Left", "alt+Left", wl, None))
         out.append(("Option-Right", "alt+Right", wr, None))
@@ -602,6 +612,13 @@ def raw_expect(family, meta):
         out.append(("Ctrl-Left", "ctrl+Left", wl, None))
         out.append(("Ctrl-Right", "ctrl+Right", wr, None))
     return out
+
+
+def word_key_hint(got, expect):
+    """pure: the reason to print when a word key arrived in the form of before #2130 (ESC b / ESC f where xterm's Ctrl+arrow is expected), else ''"""
+    if (expect, got) in ((XTERM_CTRL_LEFT_BYTES, WORD_LEFT_BYTES), (XTERM_CTRL_RIGHT_BYTES, WORD_RIGHT_BYTES)):
+        return " (readline's Meta form: a build before #2130, or %s=0)" % WORD_KEYS_SWITCH
+    return ""
 
 
 def run_ops(ctx, ops, delay):
@@ -629,7 +646,8 @@ def c_meta_and_word_keys(ctx, r):
     Since the #2079 decision (round 16) that holds for Ctrl-A / Ctrl-E / Ctrl-Y on Linux and Windows too: no step accepts an `app_default` any
     more (the outcome stays in the classifier for a later documented default). Alt-B / Alt-F / Alt-Backspace are word keys off macOS since #2079
     (round 15) and must pass. (2) The same
-    keys into a raw reader: the exact bytes (bytes_reader.py; bytes_reader.sh in the Git Bash pane; not in the PowerShell pane, where a program
+    keys into a raw reader: the exact bytes (the word keys per platform, #2130: xterm's CSI 1;5D / 1;5C on Linux and Windows, ESC b / ESC f on
+    macOS) (bytes_reader.py; bytes_reader.sh in the Git Bash pane; not in the PowerShell pane, where a program
     gets key records, not bytes). Runs late in a pass (historic: Ctrl-A / Ctrl-E showed the Linux "emacs bindings" banner before round 16)."""
     family = "mac" if ctx.be.name == "mac" else "other"
     meta = alt_is_meta(_settings_text(ctx))
@@ -704,7 +722,7 @@ def c_meta_and_word_keys(ctx, r):
         time.sleep(0.3)
         got = b"".join(U._reader_chunks(ctx, rf)[n0:])
         raw_rows.append(dict(key=label, got=got.hex(), want=expect.hex()))
-        r.check(got == expect, "%s with a program in front: the pty received %s, expected %s" % (label, got.hex() or "nothing", expect.hex()))
+        r.check(got == expect, "%s with a program in front: the pty received %s, expected %s%s" % (label, got.hex() or "nothing", expect.hex(), word_key_hint(got, expect)))
     r.metric("raw_keys", raw_rows)
     if [x for x in not_run if "into a program" in x]:
         r.note("not run into a program: " + "; ".join(x for x in not_run if "into a program" in x))
