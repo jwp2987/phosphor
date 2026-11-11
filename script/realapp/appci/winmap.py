@@ -25,6 +25,9 @@ BOTH = {
     "agent_restart_quit_stream", "agent_restart_quit_queued", "agent_restart_quit_blocked", "agent_restart_kill_stream", "agent_restart_kill_queued", "agent_restart_kill_blocked",
     "agent_question_answer", "agent_question_cut", "agent_question_nodone", "agent_question_trunc", "agent_question_empty", "agent_question_slow",   # #1851: the fake model on the host
     "agent_question_ctrl_c", "agent_question_steer", "agent_question_after_command", "agent_question_steer_at_end",
+    # #2072 (r14-test-gaps T9, T10): both handle the pane themselves. meta_and_word_keys reads PSReadLine history in the PowerShell pane and runs its
+    # raw-reader half in the Git Bash pane only; first_run_defaults SKIPs in the Git Bash pane (that pane exists only through a setting)
+    "meta_and_word_keys", "first_run_defaults",
     "crash_kill9_restore", "crash_corrupt_db",       # #1541: taskkill /F /T + relaunch on the same profile (cases_robust.hard_kill; state under %LOCALAPPDATA%\\phosphor)
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
@@ -81,6 +84,7 @@ GITBASH_ONLY = {
     "ssh_gitbash_typeahead_managed": "keys typed during a one-connection managed ssh login stay managed (#1959): only the Git Bash pane has the wrapper",
     "ssh_gitbash_kill_switch": "the default and PHOSPHOR_MSYS_MANAGED_SSH=0 in the bash pane are plain ssh (#1933, #2051): only the Git Bash pane has the wrapper",
     "agent_approval": "uses rec.log and effect files in bash syntax: runs in the Git Bash pane (needs the CI model)",
+    "hostile_output_recovers": "#2072 (T8): `cat` of a binary file, a POSIX command list around hostile_out.py and rec.log for the exact line: runs in the Git Bash pane",
 }
 # PowerShell-only: the same idea as a case that already exists for the other pane
 PS_ONLY = {
@@ -88,6 +92,7 @@ PS_ONLY = {
     "ps_ctrl_scrolllock_break": "#1906: Ctrl+ScrollLock (the other VK_CANCEL key) to the same SIGBREAK receiver; the Git Bash pane's msys signals differ",
     "ps_fast_command_young_enter": "#1889: PowerShell's Add-Content lines and its ConPTY young-Enter window; the Git Bash pane has the prompt-hold gates instead",
     "agent_interactive_password": "#1882: the hand-over on ConPTY is the PowerShell bootstrap's Read-Host marker; bash `read -s` in a Git Bash pane announces nothing (no termios), so the POSIX form of the case does not apply there",
+    "agent_basics_powershell": "#2072 (T6): the PowerShell pane's twin of agent_input_exact and agent_mode_switch (PSReadLine history instead of rec.log); the Git Bash pane runs those two",
     "ps_read_host_secure": "#1882/#1891: Read-Host -AsSecureString is PowerShell; the Git Bash twin is gitbash_precmd_secret",
 }
 # not on Windows at all, with the reason
@@ -104,6 +109,7 @@ NOT_WINDOWS = {
     "agent_multitab_streaming": "#1833: needs the rc-hook received-command proof and the pty-echo frame pairing, neither verified for a Windows pane; Linux and macOS run it",
     "agent_mcp_faults": "#1834: the fake MCP servers are configured through the HOME-relative ~/.warp/.mcp.json, which the Windows profile does not use in this harness",
     "agent_edit_touch_only": "#1835: same as agent_edit_accept",
+    "job_control": "#2072 (T7): Ctrl-Z / bg / fg are POSIX tty job control judged from `ps` process states; PowerShell has no job-control keys and an msys bash under ConPTY gets no SIGTSTP from the terminal",
     "subshells": "uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)",
     "ctrl_c_flood_ab": "#1838: the blocked-frame gate it A/Bs exists only in the macOS renderer",
     "latency_paint_ab": "#1848: the key frame at the end of the key press it A/Bs exists only in the macOS renderer (and kl3 is macOS only)",

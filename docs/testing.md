@@ -2479,6 +2479,45 @@ covers Legacy and Table: a drain inside a synced arrival keeps the user's own ke
 steer sends exactly one; #1896), `exit_shell_removes_the_sessions_typeahead_mode` (terminal_model_test.rs; #1897) and `an_empty_first_chunk_keeps_the_first_event_window`
 (chat_stream.rs; #1898).
 
+### 2.22 Daily-use cases, wave 1b: T6 to T10 of the round 14 gap review (`appci/cases_daily_b.py`, `hostile_out.py`, `bytes_reader.sh`; #2072)
+
+Source: `docs/design/r14-test-gaps.md` 7.1 wave 1; design note `docs/design/r10-r14-w1b.md`. Owner 2026-11-10: "build out the tests".
+**Worked, unproven: only the harness self-test ran; no app run has played these.** All five are in `cases.PROVING` (fix tier) and stay
+there until the owner graduates them. Both modes each. No app code changed: every hop they read already exists. Typing is at 10 to 25 ms
+per key with the Enter in the same injector call, and the received line is compared exactly (`rec.log`; PSReadLine history in the
+PowerShell pane). Self-test of the pure parts: `r14_w1b_pure_parts`.
+
+| case | platforms (elsewhere: SKIP with the reason) | what it does | what fails it | estimate, both modes |
+|---|---|---|---|---|
+| `agent_basics_powershell` (T6) | Windows PowerShell pane (`winmap.PS_ONLY`; Linux, macOS and Git Bash run `agent_input_exact` + `agent_mode_switch`) | prose into the agent input, Escape, one `Add-Content` line, back to the agent view (Ctrl+Shift+Enter), prose again | the agent text is not byte-exact in `hop=enter_begin buffer=.. input_type=AI`; the shell line is not exactly `(line, Shell)` in the app log, not the ONLY new PSReadLine history line, or its effect file is not exactly the token; a prose nonce in the history or in `hop=pty_write_bytes`; a view switch the log does not confirm. No new history line at all is NOREF, never a pass | 2 min |
+| `job_control` (T7) | Wayland, X11, macOS (`winmap.NOT_WINDOWS`) | `sleep <n>` (n unique to the run), Ctrl-Z, `jobs > a`, `bg`, `jobs > b`, `fg`, Ctrl-C, `jobs > c`; then `cat > f`, a line, Ctrl-Z, a shell command, `fg`, a line, Ctrl-D | the OS (`ps` stat) does not show the process stopped after Ctrl-Z, running after `bg`, running in front after `fg`, gone after Ctrl-C; a `jobs` file that is not stopped / running / absent; no prompt after a step; the shell's received lines are not exactly the typed ones; cat's file is not exactly the two lines (a key went to the wrong program) | 2 min |
+| `hostile_output_recovers` (T8) | Wayland, X11, macOS, Git Bash pane (`winmap.GITBASH_ONLY`) | `cat` of a 2 MB binary file (seeded: the same bytes on every run, sha256 in the metric `hostile_bytes`), then `hostile_out.py script` (2000 window titles, a 1 MB OSC 8 link, mouse reporting left on, alternate screen never left). After each: Ctrl-C, Ctrl-U and one typed command | a typed command that is not exact (effect file and `rec.log`); `panicked at` in the app log; an `[ERROR]` line whose kind (digits masked) the launch had not logged before the case (kinds logged before too are a note); the largest `hop=ui_item` while typing AFTER the output at or over 16 ms and more than twice the same typing before it (control); Find (`hop=find_scroll`) matching the token before the output and not after, or matching a token that was never printed (control). A Find that matched nothing before the output is NOREF. The modes are switched off at the very end as cleanup, after the verdicts | 3 min |
+| `meta_and_word_keys` (T9) | all five (`winmap.BOTH`); the raw half not in the PowerShell pane | at the prompt, one command per key: Alt-B, Alt-F, Alt-D, Alt-., Ctrl-A, E, K, U, W, Y, Home, End, Delete, word-left, word-right (Ctrl-arrows; Option-arrows on macOS). Then each key into a raw reader (`bytes_reader.py`; `bytes_reader.sh` in the Git Bash pane, whose Python has no termios) | prompt: the received line is neither the readline result nor the documented app default; raw: the bytes differ from the encoder's (`ESC b`, `0x01`, `CSI H`, `CSI 3 ~`, `CSI 1;5 D` ...) | 3 min |
+| `first_run_defaults` (T10) | Wayland, X11, macOS, Windows PowerShell pane (`winmap.BOTH`; the Git Bash pane SKIPs: it exists only through a setting) | stops the app, moves the config directory aside (`~/.config/phosphor`; `~/.phosphor` on macOS; Windows: `WindowsApp.prepare` wipes the known folders), wipes the state directories, launches with NO settings file, and with no Escape and no click types the first command in the pass's view (at most one view-switch key first). Then the profile is put back and the app relaunched | no prompt in 90 s, or later than `APPCI_STARTUP_MAX` (20 s); the first command not received exactly; a key the injector sent missing from the app's key trace (`injacct`: a dialog or focus took it); a panic; an `[ERROR]` kind this pass's ordinary launch had not logged. macOS: a system dialog on screen fails it without a key being sent. Metric `first_run_view`: the view a default first run shows | 3 min |
+
+Notes that decide how a row is read:
+
+- **`meta_and_word_keys` reports three outcomes per key** (metric `prompt_keys`): `readline`, `app_default`, `fail`. `app_default` is
+  accepted only where `app/src/editor/view/mod.rs` documents a different Linux / Windows default on purpose: Ctrl-A selects all (the
+  line becomes `echo`), Ctrl-E does not move the cursor (Linux shows the one-time "emacs bindings" banner), Ctrl-Y deletes to the line
+  start. Whether those should be readline by default is an owner question; the case names them in a note and does not fail on them.
+  **Alt-B and Alt-F are expected to FAIL on Linux and Windows until #2079 is decided** (bound to Meta only; same class as #1989); the
+  failure text names the issue. On macOS the Alt keys run only when the profile sets Option as Meta (`terminal.input.extra_meta_keys`),
+  and forward Delete is not run (the injector has no key code for it); both are named in a note. Ctrl-U is pressed with the cursor at
+  the end of the line, where "clear the row" (the app) and "kill to the line start" (readline) give the same line.
+- `meta_and_word_keys` (order 96) and `first_run_defaults` (order 97) run late in a pass: the first shows the Linux banner, the second
+  relaunches the app (in the agent pass the runner then relaunches once more for the agent view, as after `ui_startup_time`).
+- `bytes_reader.sh` limits: bash's own `read` turns ISIG and ICRNL back on for each read, so Ctrl-C ends it by signal and CR reads as
+  `0a`. None of the judged keys is affected. The expected bytes in the Git Bash pane are from reading the encoder; ConPTY and msys
+  re-encode keys, so the first Windows run decides whether a red raw row there is TEST or APP.
+- `first_run_defaults` on macOS cannot remove preferences the OS keeps outside HOME.
+- ERROR lines are compared by kind against a control of the same launch or pass, because an ERROR the app logs on every launch is not
+  caused by the hostile output or the first run; such kinds are listed in a note, never dropped.
+
+What the first real run must show: section "first run" of the report `r14-w1b` (in short: rows for every platform named above, the
+`prompt_keys` / `raw_keys` / `first_run_view` / `find` metrics present, Alt-B / Alt-F red off macOS and nothing else red without a
+TEST-vs-APP verdict).
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate
