@@ -23,6 +23,7 @@ use sctk::shm::slot::SlotPool;
 use sctk::shm::{Shm, ShmHandler};
 use sctk::subcompositor::SubcompositorState;
 
+use crate::platform_impl::wayland::dnd::DndState;
 use crate::platform_impl::wayland::event_loop::sink::EventSink;
 use crate::platform_impl::wayland::output::MonitorHandle;
 use crate::platform_impl::wayland::seat::{
@@ -109,6 +110,10 @@ pub struct WinitState {
     /// KWin blur manager.
     pub kwin_blur_manager: Option<KWinBlurManager>,
 
+    /// The drop target for dragged files (Phosphor #2085). `None`: turned off by
+    /// `PHOSPHOR_WAYLAND_DND=0`, or the compositor has no data device manager.
+    pub dnd: Option<DndState>,
+
     /// Loop handle to re-register event sources, such as keyboard repeat.
     pub loop_handle: LoopHandle<'static, Self>,
 
@@ -147,6 +152,9 @@ impl WinitState {
         for seat in seat_state.seats() {
             seats.insert(seat.id(), WinitSeatState::new());
         }
+
+        // Phosphor #2085: one data device per seat, to take files dropped on a window.
+        let dnd = DndState::new(globals, queue_handle, seat_state.seats());
 
         let (viewporter_state, fractional_scaling_manager) =
             if let Ok(fsm) = FractionalScalingManager::new(globals, queue_handle) {
@@ -189,6 +197,7 @@ impl WinitState {
 
             monitors: Arc::new(Mutex::new(monitors)),
             events_sink: EventSink::new(),
+            dnd,
             loop_handle,
             // Make it true by default.
             dispatched_events: true,
