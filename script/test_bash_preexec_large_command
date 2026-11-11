@@ -77,7 +77,14 @@ def check(label, literal, limit):
     if got != expected:
         failures.append(f"{label}: escaped command does not round-trip")
     if elapsed > limit:
-        failures.append(f"{label}: took {elapsed:.2f}s (limit {limit}s)")
+        # One re-measure, as the latency gates do (lat.py): a CI runner shared with other jobs can
+        # miss by a few percent once (r14a guards: 3MB took 3.06s against 3s while sshlab-image ran).
+        # The limit is unchanged and both runs must miss for a FAIL.
+        got2, elapsed2 = run(literal, limit)
+        if got2 is None or elapsed2 > limit:
+            failures.append(f"{label}: took {elapsed:.2f}s then {elapsed2:.2f}s on a re-measure (limit {limit}s)")
+        else:
+            print(f"note {label}: {elapsed:.2f}s over the {limit}s limit once, {elapsed2:.2f}s on the re-measure")
 
 
 def lines(n):
