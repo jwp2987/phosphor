@@ -2676,6 +2676,318 @@ fallback for builds that predate the line.
 - **Results**: pass/fail table with repro counts (>=3 tries per failure), numbers vs the baselines in 3.6,
   evidence paths, issues filed. Do not close issues; post notes on the ones verified.
 
+### 3.1b Test settings model (appci: which settings a case runs with)
+
+Round 16 (owner 2026-11-11: "you never defined the tests' settings so they don't know what they are testing"). About 95 cases were written or
+changed in rounds 14 and 15 by authors who were never told what settings the app has in a pass. This section is that definition; the code is
+`script/realapp/appci/case_settings.py` (declarations), `cases.requires` (the check) and `run.py` (which runs the check before every declared
+case). Worked, unproven when written: nothing was run against an app.
+
+**The three layers.** The app under test is launched on one `settings.toml`, built per pass:
+
+1. **The owner seed.** A machine-local file on each test machine (`~/.config/phosphor-ci/owner-settings.toml` of the runner user, or the file
+   `APPCI_OWNER_SETTINGS` names; `profile.py` `OWNER_SEED`). It is the owner's own settings file, so a pass tests the app as the owner uses it. It is
+   never in the repo or in GitLab variables, never printed, never modified. `results.json` records only `owner_settings = sha256 <12 hex>`: the same
+   hash on every machine of a round means every machine ran the same seed. With no seed file the profile is a bare one (`owner_settings = not found
+   (bare profile)`): the app's defaults plus layer 2.
+2. **Harness overrides** (`profile.py` `write_settings`), applied textually to the seed (`toml_text.py`; every other key, comment and layout of the
+   seed stays byte for byte). The full list is the `harness` column of the first table below, each with its reason. Anything not in the list is the
+   seed's value, and where the seed is silent the app's default.
+3. **Per-case overrides.** A case that needs another value writes it itself, with the app stopped (`cases_robust.settings_file`, then a relaunch) or
+   while it runs (`cases_ui.set_setting`: the app reloads the file), and puts the file's bytes back before it ends.
+
+Beside `settings.toml` the scratch home has no `keybindings.yaml` (the harness never seeds one): every pass runs the app's default key bindings.
+The provider endpoint of layer 2 comes from the machine-local `~/.config/phosphor-ci/ci.env` (`APPCI_OLLAMA_URL`, `APPCI_OLLAMA_MODEL`), also never
+in the repo.
+
+**The rule.** A case never assumes a setting. For every setting its oracle depends on it does one of three things, and says which in
+`case_settings.py`:
+
+- **needs** it: the value the case was written against is declared, and `run.py` checks it against the settings file the running app uses before
+  the case's first key. When it differs the case is not run and its row is **UNVERIFIABLE** (status `noref`) with
+  `SETTINGS: <name>=<actual>, case needs <expected>`. Never a pass, and never a failure for that reason (a check that failed before it stands).
+- **sets** it: the case writes the value itself (layer 3) and puts it back. A case that tests both values of a switch sets both.
+- **judges by the value in force**: the case reads the value from the file and judges by what it read (the routing table reads natural-language
+  detection, `tab_pointer_use` reads which tab layout is on screen, the OSC 52 case reads the access setting), or the value is one the harness
+  forces in every pass (the provider, the added subshell commands, the pass's startup shell).
+
+A setting that is none of the three for a case is not part of its oracle: the note column says so where a reader would expect otherwise (sizes
+come from the pane's own `stty size`, positions from the app's own geometry lines, tabs are reached by their number keys).
+
+The **baseline** is needed by every declared case: the session mode of the pass, `restore_session` false, vim keys off, and in the agent pass
+detection on (a shell line typed in the agent view must reach the shell). A case that judges nothing on the pass's settings file is listed as
+**settings-independent** with the reason. A case in `SMOKE` or `PROVING` that is in neither list fails the self-test
+(`r16_every_fix_tier_case_declares_its_settings`), so a new case cannot reach the fix tier without saying what it runs on.
+
+**How a case declares it.** One line in `case_settings.py`:
+
+```python
+decl("my_case", needs=dict(copy_on_select=True, keybindings_file="absent"), sets=("vertical_tabs",), reads=("quit_warning",), note="why")
+independent("my_other_case", "launches the app on a profile of its own making: ...")
+```
+
+Names are the first column of the first table. A value is a bool, number or string, a tuple of acceptable values, `APP_DEFAULT` (the key absent,
+or written with the app's default), `ABSENT` or `PASS_MODE`. A case that changes a setting and wants the new state proven calls the same check
+itself: `cases.requires(ctx, r, vertical_tabs=True)` reads the file the running app uses at that moment and ends the case UNVERIFIABLE on a
+mismatch. A misspelt name raises instead of reading as satisfied. Then `python3 script/realapp/appci/case_settings.py --write` rewrites the two
+tables below; the self-test fails while they differ from the code.
+
+**What a run says.** A row that ends with the settings file other than the case found it carries the note
+`SETTINGS LEFT CHANGED: ... in: <key names>` (names only; not a failure, since the app writes the file too). When a later case of the pass is
+UNVERIFIABLE for its settings, that note names the case that left them.
+
+**Not covered yet.** The declarations cover the fix tier (`SMOKE` + `PROVING`). The full-tier-only cases and the lab families (`PROVING_LAB`)
+have no declaration and are not checked. The seed carries no `keybindings.yaml`, so a key binding changed on the owner's own machine is not what
+the passes run. The values in `needs` come from reading each case's code, not from a run.
+
+Self-tests (`selftest_r16_settings.py`, run by `run.py --self-test`): `r16_requires_matching_and_mismatching_profile` (a matching profile, a
+mismatching one, a live rewrite, the `noref` status), `r16_harness_overrides_hold_on_a_seeded_profile` (a seed that says the opposite of every forced
+key), `r16_settings_reader_forms_and_values` (table, dotted and inline forms), `r16_effective_settings_path_per_platform`,
+`r16_every_fix_tier_case_declares_its_settings` (every case declared, the tables below current, each key still a setting in the app source).
+
+**The settings a case can name** (app defaults read from the Rust definitions; no value of any seed):
+
+<!-- settings-names-table: generated by `python3 script/realapp/appci/case_settings.py --write`; do not edit by hand -->
+| name | settings.toml key | app default | harness |
+|---|---|---|---|
+| session_mode | `general.default_session_mode` | terminal | set to the pass's mode: every case runs once per mode |
+| restore_session | `general.restore_session` | true | false: a relaunch inside a pass must not bring back another case's tabs |
+| vim_mode | `text_editing.vim_mode_enabled` | false | not touched: the seed's value, else the app default |
+| autodetect | `agents.warp_agent.input.ai_auto_detection_enabled` | true | true in the agent pass (a shell line typed in the agent view must reach the shell); the terminal pass keeps the seed's value |
+| nld_in_terminal | `agents.warp_agent.input.nld_in_terminal_enabled` | true | true in the agent pass; the terminal pass keeps the seed's value |
+| nld_predict_in_ssh | `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` | false | not touched: the seed's value, else the app default |
+| vertical_tabs | `appearance.vertical_tabs.enabled` | false | not touched: the seed's value, else the app default |
+| vertical_tabs_primary_info | `appearance.vertical_tabs.primary_info` | command | not touched: the seed's value, else the app default |
+| vertical_tabs_view_mode | `appearance.vertical_tabs.view_mode` | compact | not touched: the seed's value, else the app default |
+| vertical_tabs_granularity | `appearance.vertical_tabs.display_granularity` | panes | not touched: the seed's value, else the app default |
+| copy_on_select | `terminal.copy_on_select` | true | not touched: the seed's value, else the app default |
+| linux_selection_clipboard | `system.linux_selection_clipboard` | true | not touched: the seed's value, else the app default |
+| middle_click_paste | `terminal.input.middle_click_paste_enabled` | true | not touched: the seed's value, else the app default |
+| right_click | `terminal.input.right_click_behavior` | context_menu | not touched: the seed's value, else the app default |
+| honor_ps1 | `terminal.input.honor_ps1` | false | not touched: the seed's value, else the app default |
+| secret_redaction | `privacy.secret_redaction.enabled` | false | not touched: the seed's value, else the app default |
+| secret_regexes | `privacy.custom_secret_regex_list` | (not one literal) | not touched: the seed's value, else the app default |
+| quit_warning | `general.show_warning_before_quitting` | true | not touched: the seed's value, else the app default |
+| completions_while_typing | `terminal.input.completions_open_while_typing` | true | not touched: the seed's value, else the app default |
+| autosuggestions | `terminal.input.autosuggestions.enabled` | true | not touched: the seed's value, else the app default |
+| extra_meta_keys | `terminal.input.extra_meta_keys` | (not one literal) | not touched: the seed's value, else the app default |
+| osc52_clipboard | `terminal.osc52_clipboard_access` | write_only | not touched: the seed's value, else the app default |
+| mouse_reporting | `terminal.mouse_reporting_enabled` | true | not touched: the seed's value, else the app default |
+| scroll_reporting | `terminal.scroll_reporting_enabled` | true | not touched: the seed's value, else the app default |
+| focus_reporting | `terminal.focus_reporting_enabled` | true | not touched: the seed's value, else the app default |
+| ssh_warpification | `warpify.ssh.enable_ssh_warpification` | true | true only with APPCI_SSH_WRAPPER=1 (the Windows *_wrapper ssh cases, #1884); else the seed's value |
+| legacy_ssh_wrapper | `warpify.ssh.enable_legacy_ssh_wrapper` | true | true only with APPCI_SSH_WRAPPER=1; else the seed's value |
+| ssh_extension_install | `warpify.ssh.ssh_extension_install_mode` | always_ask | "never_install": no helper is the primary remote design, and no case may be stopped by the install question |
+| reuse_control_master | `warpify.ssh.reuse_existing_control_master` | false | not touched: the seed's value, else the app default |
+| helper_hosts | `warpify.ssh.remote_helper_allowed_hosts` | (not one literal) | not touched: the seed's value, else the app default |
+| subshell_commands | `warpify.subshells.added_subshell_commands` | (not one literal) | the seed's list plus profile.PROBE_SUBSHELL_COMMANDS (dash, busybox ash, bash --rcfile, tcsh -f, docker run -t) |
+| startup_shell | `session.startup_shell_override` | (not one literal) | removed (the rc files that log prompts and commands belong to the login shell); set by the harness for the Windows Git Bash, pwsh 7, cmd.exe and WSL passes |
+| network_gate | `network.gate_enabled` | true | not touched: the seed's value, else the app default |
+| allowed_origins | `network.allowed_origins` | (not one literal) | not touched: the seed's value, else the app default |
+| open_file_editor | `code.editor.open_file_editor` | system_default | not touched: the seed's value, else the app default |
+| agent_file_read | `agents.profiles.agent_mode_coding_permissions` | always_ask_before_reading | not touched: the seed's value, else the app default |
+| agent_readonly_autorun | `agents.profiles.agent_mode_execute_readonly_commands` | false | not touched: the seed's value, else the app default |
+| safe_command_allowlist | `agents.warp_agent.permissions.safe_command_allowlist_enabled` | false | not touched: the seed's value, else the app default |
+| persist_conversations | `general.persist_conversations` | true | not touched: the seed's value, else the app default |
+| agent_notifications | `agents.warp_agent.other.show_agent_notifications` | true | not touched: the seed's value, else the app default |
+| providers | `agents.warp_agent.providers` | (not one literal) | with APPCI_OLLAMA_URL (ci.env): the CI endpoint alone, as the active model; in the agent@fake pass the scripted fake model. Without either: the seed's list (a bare profile has none) |
+| codebase_index | `code.indexing.agent_mode_codebase_context` | (not one literal) | true only with APPCI_FAKE_EMBEDDINGS_URL (the lab's index case) |
+| notifications | `notifications.preferences` | (not one literal) | not touched: the seed's value, else the app default |
+| toast_seconds | `notifications.toast_duration_secs` | 8 | not touched: the seed's value, else the app default |
+| system_theme | `appearance.themes.system_theme` | false | not touched: the seed's value, else the app default |
+| font_size | `appearance.text.font_size` | 13.0 | not touched: the seed's value, else the app default |
+| zoom | `appearance.window.zoom_level` | 100 | not touched: the seed's value, else the app default |
+| mcp_config | `<mcp config file>` | (not one literal) | not touched: the seed's value, else the app default |
+| keybindings_file | `<keybindings.yaml>` | absent | never seeded: every pass runs the app's default key bindings |
+<!-- /settings-names-table -->
+
+**Per case** (the order of `SMOKE`, then `PROVING`):
+
+<!-- case-settings-table: generated by `python3 script/realapp/appci/case_settings.py --write`; do not edit by hand -->
+| case | needs (beyond the baseline) | sets itself, puts back | judges by the value in force | note |
+|---|---|---|---|---|
+| `mode_proof` | - | - | providers | the pass's mode itself: the view a new session opens in (baseline session_mode) |
+| `key_loss_control` | autosuggestions = true, completions_while_typing = true | - | - | typed lines at the prompt, judged by the exact line the shell received |
+| `enter_loss_control` | autosuggestions = true, completions_while_typing = true | - | - | typed lines at the prompt, judged by the exact line the shell received |
+| `cadence` | autosuggestions = true, completions_while_typing = true | - | - | typed lines at the prompt, judged by the exact line the shell received |
+| `fast_typing` | autosuggestions = true, completions_while_typing = true | - | - | typed lines at the prompt, judged by the exact line the shell received |
+| `paste_instant_enter` | autosuggestions = true, completions_while_typing = true | - | - | typed lines at the prompt, judged by the exact line the shell received |
+| `tab_enter` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | - | Tab completion then Enter; the 'Completion took too long' give-up is read from the app log, not from the toast |
+| `ctrl_c_d` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `ssh_connect_typing` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - | managed ssh without the helper; in the agent pass the shell-or-prompt verdict of each line is part of the path. As in every ssh case, reuse_control_master is the seed's and is not read: the harness's ssh config names no ControlMaster to attach to |
+| `ssh_enter_then_immediate_command` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - | managed ssh without the helper; in the agent pass the shell-or-prompt verdict of each line is part of the path. As in every ssh case, reuse_control_master is the seed's and is not read: the harness's ssh config names no ControlMaster to attach to |
+| `ssh_nested_typeahead` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - | managed ssh without the helper; in the agent pass the shell-or-prompt verdict of each line is part of the path. As in every ssh case, reuse_control_master is the seed's and is not read: the harness's ssh config names no ControlMaster to attach to |
+| `shell_fish` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | fish / nu as a subshell of the pane's shell (built-in subshell commands) |
+| `shell_nu` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | fish / nu as a subshell of the pane's shell (built-in subshell commands) |
+| `latency_enter` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | budgets are measured with the input editor's default helpers on |
+| `latency_key_log` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - | budgets are measured with the input editor's default helpers on |
+| `latency_paint` | autosuggestions = true, completions_while_typing = true, font_size = app default, honor_ps1 = false, zoom = app default | - | - | key -> paint watches a screen rectangle: measured at the default text size; the theme (system_theme: the seed's) is not read |
+| `md_viewer` | keybindings_file = absent | - | - | the file is opened through the app's own open-file path (not a click: open_file_editor is not involved); OCR of the viewer |
+| `routing_table` | autodetect = true, autosuggestions = true, completions_while_typing = true | - | nld_in_terminal | prose goes to the agent in the terminal pass only when nld_in_terminal is not false: the case reads it and judges by it |
+| `agent_stream_cancel` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_input_exact` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_mode_switch` | autodetect = true, autosuggestions = true, completions_while_typing = true, keybindings_file = absent, nld_in_terminal = true | - | - | routing after each agent <-> terminal switch, in both passes |
+| `agent_edit_accept` | keybindings_file = absent | - | providers | the diff card of an edit the scripted model proposes (no file read is asked for first); accept and reject are the card's default keys |
+| `agent_edit_reject` | keybindings_file = absent | - | providers | the diff card of an edit the scripted model proposes (no file read is asked for first); accept and reject are the card's default keys |
+| `agent_edit_conflict` | keybindings_file = absent | - | providers | the diff card of an edit the scripted model proposes (no file read is asked for first); accept and reject are the card's default keys |
+| `agent_edit_touch_only` | keybindings_file = absent | - | providers | the diff card of an edit the scripted model proposes (no file read is asked for first); accept and reject are the card's default keys |
+| `agent_edit_endings` | keybindings_file = absent | - | providers | the diff card of an edit the scripted model proposes (no file read is asked for first); accept and reject are the card's default keys |
+| `agent_interactive_password` | agent_readonly_autorun = false, honor_ps1 = false, safe_command_allowlist = false | - | providers |  |
+| `agent_interactive_vim` | agent_readonly_autorun = false, honor_ps1 = false, safe_command_allowlist = false | - | providers |  |
+| `agent_interactive_ssh` | agent_readonly_autorun = false, honor_ps1 = false, legacy_ssh_wrapper = true, safe_command_allowlist = false, ssh_extension_install = never_install, ssh_warpification = true | - | providers |  |
+| `agent_interactive_less` | agent_readonly_autorun = false, honor_ps1 = false, safe_command_allowlist = false | - | providers |  |
+| `agent_noninteractive_no_takeover` | agent_readonly_autorun = false, honor_ps1 = false, safe_command_allowlist = false | - | providers |  |
+| `agent_interactive_ssh_takeover` | agent_readonly_autorun = false, honor_ps1 = false, legacy_ssh_wrapper = true, safe_command_allowlist = false, ssh_extension_install = never_install, ssh_warpification = true | - | providers |  |
+| `agent_latency_key` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_latency_enter` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_steer_fast` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_mcp_faults` | keybindings_file = absent | mcp_config | providers, agent_readonly_autorun | the MCP call is approved at its card where the profile shows one; the case notes when none was shown |
+| `agent_multitab_streaming` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | providers | tabs by their number keys: the tab layout (vertical_tabs: the seed's) is not read |
+| `mcp_basic` | keybindings_file = absent | mcp_config | providers, agent_readonly_autorun | the MCP call is approved at its card where the profile shows one; the case notes when none was shown |
+| `agent_gate_deny_allow` | keybindings_file = absent | network_gate, allowed_origins, providers | - | the gate and the origin list are written by the case (live and with the app stopped) and put back |
+| `agent_gate_off_live` | keybindings_file = absent | network_gate, allowed_origins, providers | - | the gate and the origin list are written by the case (live and with the app stopped) and put back |
+| `agent_gate_key_never_leaves` | keybindings_file = absent | network_gate, allowed_origins, providers | - | the gate and the origin list are written by the case (live and with the app stopped) and put back |
+| `network_gate_notice` | keybindings_file = absent | network_gate, allowed_origins | - | the toast is found on screen while it is up (toast_seconds: the seed's, not read) |
+| `network_gate_switch` | keybindings_file = absent | network_gate, allowed_origins | - | starts from a file with NO network.gate_enabled key (absent must mean on); a profile that already carries the key fails the case's own first check |
+| `agent_fault_429` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_fault_500` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_fault_disconnect` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_fault_down` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_fault_slow_cancel` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_fault_queued_rows` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_restart_quit_stream` | agent_readonly_autorun = false, keybindings_file = absent, persist_conversations = true, safe_command_allowlist = false | restore_session | providers | restore_session is switched on for the restart and put back |
+| `agent_restart_quit_queued` | agent_readonly_autorun = false, keybindings_file = absent, persist_conversations = true, safe_command_allowlist = false | restore_session | providers | restore_session is switched on for the restart and put back |
+| `agent_restart_quit_blocked` | agent_readonly_autorun = false, keybindings_file = absent, persist_conversations = true, safe_command_allowlist = false | restore_session | providers | restore_session is switched on for the restart and put back |
+| `agent_restart_kill_stream` | agent_readonly_autorun = false, keybindings_file = absent, persist_conversations = true, safe_command_allowlist = false | restore_session | providers | restore_session is switched on for the restart and put back |
+| `agent_restart_kill_queued` | agent_readonly_autorun = false, keybindings_file = absent, persist_conversations = true, safe_command_allowlist = false | restore_session | providers | restore_session is switched on for the restart and put back |
+| `agent_restart_kill_blocked` | agent_readonly_autorun = false, keybindings_file = absent, persist_conversations = true, safe_command_allowlist = false | restore_session | providers | restore_session is switched on for the restart and put back |
+| `agent_lrc_no_false_takeover` | agent_readonly_autorun = false, autosuggestions = true, completions_while_typing = true, safe_command_allowlist = false | - | providers |  |
+| `ctrl_c_no_esc_i_local` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `ui_completions_as_you_type_local` | completions_while_typing absent | - | - | the option NOT written by the profile: an explicit value wins over the local-session default (the case skipped on one; now UNVERIFIABLE) |
+| `remote_tab_enter_no_helper` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - |  |
+| `remote_tab_no_helper` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - |  |
+| `keyring_unavailable_startup` | autosuggestions = true, completions_while_typing = true | - | providers | relaunches on the pass profile without a secret service |
+| `cb_report_problem` | keybindings_file = absent | - | - | the bundle's copy of the pass's settings is checked for the home path, host name and user name, whatever the settings are |
+| `zero_network_startup` | network_gate = true | - | providers | NOT default settings: the pass profile. With a provider configured the scripted session may reach that endpoint and only it |
+| `claude_plugin_offline` | autosuggestions = true, completions_while_typing = true | - | - | the bundled plugins; the per-agent toolbar settings of the seed are not read by the checks |
+| `agent_plugins_offline` | autosuggestions = true, completions_while_typing = true | - | - | the bundled plugins; the per-agent toolbar settings of the seed are not read by the checks |
+| `subshell_sh_probe` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `subshell_ready_rc_questions` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `subshell_ready_vim_typeahead` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `subshell_ready_unsupported_tcsh` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `subshell_ready_secret_after_prompt` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `ctrl_c_flood_ab` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `routing_typo_head` | autodetect = true, autosuggestions = true, completions_while_typing = true | - | - |  |
+| `editor_save_mixed_endings` | keybindings_file = absent | - | - |  |
+| `routing_plain_installed_head` | autodetect = true, autosuggestions = true, completions_while_typing = true, keybindings_file = absent, nld_in_terminal = true | - | - | with detection off on the plain terminal every line reaches the shell and the installed-head rule would be 'proven' by nothing |
+| `latency_paint_ab` | autosuggestions = true, completions_while_typing = true, font_size = app default, zoom = app default | - | - |  |
+| `latency_echo_ab` | autosuggestions = true, completions_while_typing = true, font_size = app default, zoom = app default | - | - |  |
+| `latency_key_views_ab` | autosuggestions = true, completions_while_typing = true | - | - |  |
+| `agent_question_answer` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_question_cut` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_question_nodone` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_question_trunc` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_question_empty` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_question_slow` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_question_ctrl_c` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_question_steer` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `agent_question_after_command` | agent_readonly_autorun = false, autosuggestions = true, completions_while_typing = true, safe_command_allowlist = false | - | providers |  |
+| `agent_question_steer_at_end` | autosuggestions = true, completions_while_typing = true | - | providers |  |
+| `ssh_connect_typing_wrapper` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - | Windows Git Bash; the job sets APPCI_SSH_WRAPPER=1 so the two wrapper switches are written, not defaulted |
+| `ssh_nested_typeahead_wrapper` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - | Windows Git Bash; the job sets APPCI_SSH_WRAPPER=1 so the two wrapper switches are written, not defaulted |
+| `ps_ctrl_break` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `ps_ctrl_scrolllock_break` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `ps_fast_command_young_enter` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `ssh_gitbash_managed` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - |  |
+| `ssh_gitbash_typeahead_managed` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - |  |
+| `ssh_gitbash_kill_switch` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - |  |
+| `ssh_gitbash_bootstrap_in_command` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - |  |
+| `gitbash_long_osc_reaches_app` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `ps_read_host_secure` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `gitbash_precmd_secret` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `gitbash_typeahead_reps` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `precmd_secret_honor_ps1` | autosuggestions = true, completions_while_typing = true | honor_ps1, startup_shell | - | both arms written by the case: honor PS1 off (control) and on; macOS forces bash |
+| `precmd_question_echo` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | startup_shell | - | macOS: the startup shell is set to bash for the case and put back |
+| `subshell_ready_relay_shape` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `subshell_ready_exec_fish_rc` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `subshell_ready_docker_t_without_i` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `subshell_ready_zsh_newuser_install` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `subshell_ready_rc_clear` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `subshell_ready_secret_after_probe` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `subshell_sh_probe_empty_ps1` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | subshell_commands | the subshell banner needs the commands the harness adds to the seed's list (forced in every pass) |
+| `giveup_keys_reach_shell` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `output_frames` | keybindings_file = absent | - | - | frame counts from the app log with hidden tabs; the tab layout (vertical_tabs: the seed's) is not read |
+| `ui_copy_wrapped_output` | keybindings_file = absent | - | - |  |
+| `ui_copy_wrapped_drag` | keybindings_file = absent | - | - | every copy is the copy key after the selection (a sentinel is on the clipboard first), so copy_on_select is not what is judged |
+| `ui_vertical_tabs_many` | keybindings_file = absent | vertical_tabs | - | taken as it is when the profile has the panel on (the owner's layout), else switched on live and put back |
+| `ui_vertical_tabs_panel_click` | keybindings_file = absent, vertical_tabs_primary_info = command or working_directory | vertical_tabs | - | the rows are found by each tab's last command or directory name, so the panel must show one of them first; panel on as ui_vertical_tabs_many; the panel's view mode and granularity are the seed's and are not read |
+| `editor_memory_7mb` | keybindings_file = absent | - | - |  |
+| `flood_scrollback_find` | keybindings_file = absent | - | - | positions come from the app's own geometry lines; where OCR is used the theme and text size are the seed's and are not read |
+| `ui_readline_keys` | autosuggestions = true, completions_while_typing = true, extra_meta_keys = app default, keybindings_file = absent | - | - |  |
+| `history_up_recall` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `scroll_keys_position` | keybindings_file = absent | - | - | positions come from the app's own geometry lines; where OCR is used the theme and text size are the seed's and are not read |
+| `find_basic` | keybindings_file = absent | - | - | positions come from the app's own geometry lines; where OCR is used the theme and text size are the seed's and are not read |
+| `tab_lifecycle_keys` | keybindings_file = absent | - | quit_warning | with quit_warning false the close key does not ask: the cancel half is not run (noted) |
+| `routing_table_powershell` | autodetect = true, autosuggestions = true, completions_while_typing = true | - | nld_in_terminal, providers |  |
+| `agent_basics_powershell` | autodetect = true, autosuggestions = true, completions_while_typing = true | - | nld_in_terminal, providers |  |
+| `job_control` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, keybindings_file = absent | - | - |  |
+| `hostile_output_recovers` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, keybindings_file = absent | - | - |  |
+| `meta_and_word_keys` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | extra_meta_keys | default key bindings: Ctrl-A / Ctrl-E / Ctrl-Y off macOS are the app's documented defaults, not readline (an open owner question); whether Alt acts as Meta is read from the file |
+| `first_run_defaults` | settings-independent | - | - | stops the app, moves the config directory aside and launches with NO settings file: the app's own defaults are what is judged; the profile is put back at the end |
+| `agent_model_switch` | agent_readonly_autorun = false, keybindings_file = absent, safe_command_allowlist = false | providers | - | its own provider list, written with the app stopped and put back |
+| `agent_anthropic_wire` | agent_readonly_autorun = false, keybindings_file = absent, safe_command_allowlist = false | providers | - | its own provider list, written with the app stopped and put back |
+| `agent_autorun_permissions` | agent_readonly_autorun = false | safe_command_allowlist | - | the allow list off (the control: `ls` asks) and on, both written by the case |
+| `agent_conversation_resume` | keybindings_file = absent, persist_conversations = true | restore_session | providers |  |
+| `agent_block_context` | keybindings_file = absent | secret_redaction, secret_regexes | providers | redaction off and on, both written by the case with its own pattern |
+| `agent_hidden_tab_attention` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | vertical_tabs | providers | the panel is taken as it is when on, else switched on live and put back (Windows: only when the profile has it on) |
+| `settings_ui_toggle_persists` | keybindings_file = absent | vertical_tabs, font_size | - | toggles vertical tabs from whichever state the profile has and raises the font size one step from the file's value; the file's bytes are put back |
+| `osc52_write_read` | honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | osc52_clipboard | the expectation follows terminal.osc52_clipboard_access when the profile sets it |
+| `history_survives_restart` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | - | the quit goes through the app's quit key; its question is answered when it comes (quit_warning is not read) |
+| `restore_shows_history` | keybindings_file = absent, persist_conversations = true | restore_session | providers |  |
+| `resize_reflow_output` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | - | sizes are read from the pane's own `stty size`, never assumed, so the tab layout and text size (the seed's) are not read |
+| `context_menu_actions` | right_click = context_menu | - | - | a right click that pastes has no menu to test (the case skipped on it; now UNVERIFIABLE) |
+| `tab_pointer_use` | keybindings_file = absent | vertical_tabs | - | both layouts: the one the profile shows first, then the other, written live and put back |
+| `focus_cycle` | autosuggestions = true, completions_while_typing = true, focus_reporting = true | - | - |  |
+| `minimize_fullscreen` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | - | sizes are read from the pane's own `stty size`, never assumed, so the tab layout and text size (the seed's) are not read |
+| `link_and_path_click` | - | - | open_file_editor | a clicked path is judged by what opened it: the desktop opener or the app's own file pane, whichever the profile names |
+| `selection_modes` | keybindings_file = absent | - | - | every copy is the copy key after the selection (a sentinel is on the clipboard first), so copy_on_select is not what is judged |
+| `primary_and_middle_click` | linux_selection_clipboard = true, middle_click_paste = true | copy_on_select | - | copy on select off, then on, both written live by the case |
+| `wheel_scroll` | - | - | mouse_reporting, scroll_reporting | where the profile turns reporting off the program must receive nothing |
+| `pane_resize_maximize` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | - | pane sizes from each pane's own `stty size` |
+| `session_restore` | keybindings_file = absent | restore_session | - | restore_session on for the restart, put back; the quit goes through the app's quit key and its question |
+| `crash_kill9_restore` | keybindings_file = absent | restore_session | - | restore_session on for the restart, put back; the quit goes through the app's quit key and its question |
+| `ui_resize_typing` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | - | sizes are read from the pane's own `stty size`, never assumed, so the tab layout and text size (the seed's) are not read |
+| `ui_split_panes` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | - | sizes are read from the pane's own `stty size`, never assumed, so the tab layout and text size (the seed's) are not read |
+| `ui_ctrl_r` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | - |  |
+| `ui_ghost_accept` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | - |  |
+| `ui_tab_menu` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | - |  |
+| `big_paste` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `paste_multiline_prompt` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
+| `ssh_password_prompt` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - |  |
+| `remote_session_legacy` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | ssh_extension_install | - |  |
+| `alt_screen_programs` | autosuggestions = true, completions_while_typing = true | - | - | vim, less, tmux by keyboard only |
+| `agent_approval` | agent_readonly_autorun = false, autosuggestions = true, completions_while_typing = true, safe_command_allowlist = false | - | providers |  |
+| `scroll_keys_foreground` | keybindings_file = absent | - | - | positions come from the app's own geometry lines; where OCR is used the theme and text size are the seed's and are not read |
+| `primary_absent_clipboard_kept` | - | copy_on_select | - | copy on select off, then on, both written live by the case |
+| `agent_code_recycle` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | providers |  |
+| `gpu_real_render` | - | - | - | two launches on the same profile are compared with each other, so the seed's theme and text size cancel out |
+| `soak` | autosuggestions = true, completions_while_typing = true, keybindings_file = absent | - | providers |  |
+| `installer_smoke` | settings-independent | - | - | installs the build's artefact and runs the installed copy on data of its own making; the pass's app is stopped meanwhile |
+| `upgrade_from_previous_release` | settings-independent | - | - | the previous release writes its own profile (or the checked-in fixture's) and the build under test upgrades that |
+| `startup_shell_pane` | autosuggestions = true, completions_while_typing = true | - | startup_shell | the pass's own startup shell (set by the harness for the pwsh 7 / cmd / WSL passes) |
+| `mac_pointer_chord_proof` | keybindings_file = absent | - | - | proves the pointer tool and the app-only chords: default bindings |
+| `keychain_startup_macos` | settings-independent | - | - | three launches judged on first frame, log and exact typing against keychains the harness creates; no setting of the profile is read |
+| `keybinding_rebind` | keybindings_file = absent | keybindings_file | - | starts from NO keybindings.yaml (the control), writes its own, removes it |
+| `editor_daily` | keybindings_file = absent | - | quit_warning | quit_warning false also switches off the unsaved-changes question: the case says UNVERIFIABLE itself |
+| `grid_snapshot_render` | autosuggestions = true, completions_while_typing = true | - | - | cells are compared through the app's grid snapshot hook, not from pixels: theme, text size and tab layout are not read |
+| `freeze_and_wake` | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | providers |  |
+| `scale_matrix` | keybindings_file = absent, zoom = app default | - | - | the grid at a display scale is compared with the same profile at scale 1; the word is copied with the copy key |
+| `desktop_notification` | - | notifications | - | notifications enabled with its own long-running threshold, app relaunched, put back |
+| `desktop_notification_agent_question` | - | notifications | providers | as desktop_notification, with the agent's needs-attention notification on |
+| `drag_drop_file` | autosuggestions = true, completions_while_typing = true | - | - |  |
+| `ime_compose` | autosuggestions = true, completions_while_typing = true | - | - |  |
+<!-- /case-settings-table -->
+
 ### 3.2 Linux
 
 - Where: laptop or the build box, private Xvfb display (e.g. `:75`, `:98`/`:99`; two agents can use two

@@ -223,6 +223,77 @@ class HostMissing(Skip):
     case for two rounds. Code that handles Skip (cleanup that re-raises it) handles this the same way."""
 
 
+class SettingsMismatch(Skip):
+    """round 16: the app is not running with a setting the case needs (requires()). run.py turns it into status 'noref' with the reason
+    'UNVERIFIABLE: SETTINGS: <name>=<actual>, case needs <expected>': never a pass, and never a failure for that reason (a check that failed before it
+    stands, #1498). Code that handles Skip (cleanup that re-raises it) handles this the same way."""
+
+
+def effective_settings_path(ctx):
+    """the settings.toml the RUNNING app reads: what it was launched with plus any live rewrite. Linux: the profile's own file. macOS: MacApp.settings.
+    Windows: <WindowsApp.config>/settings.toml. (The same file as cases_ui.settings_path, which cannot be imported here.)"""
+    app = getattr(ctx, "app", None)
+    if getattr(ctx, "win", False) and getattr(app, "config", None):
+        return os.path.join(app.config, "settings.toml")
+    return getattr(app, "settings", None) or os.path.join(ctx.prof.home, ".config", "phosphor", "settings.toml")
+
+
+def requires(ctx, r, **settings):
+    """The case needs these settings in force, by the names of case_settings.SETTINGS: requires(ctx, r, vertical_tabs=False, copy_on_select=True).
+    A value is a bool / number / string, a tuple of acceptable values, case_settings.APP_DEFAULT (the key absent or at the app's default),
+    ABSENT or PASS_MODE. Read from the settings file the running app uses, so a case that rewrote a setting live (or relaunched on its own file)
+    can call it again and is judged on what is in force then. A setting that differs ends the case as UNVERIFIABLE (SettingsMismatch) with
+    'SETTINGS: <name>=<actual>, case needs <expected>'; an unreadable file does the same, since nothing about the settings is then known.
+    Declared needs (case_settings.CASE_SETTINGS) are checked by run.py through requires_declared before the case's first key."""
+    import case_settings
+    path = effective_settings_path(ctx)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError as e:
+        raise SettingsMismatch("SETTINGS: the settings file the app runs with could not be read (%s: %s), so what the case needs (%s) is not known to hold"
+                               % (os.path.basename(path), e.__class__.__name__, ", ".join(sorted(settings))))
+    bad = case_settings.mismatches(text, settings, ctx.mode, os.path.dirname(path))
+    if bad:
+        raise SettingsMismatch(case_settings.message(bad))
+    return True
+
+
+def requires_declared(ctx, r, name):
+    """run.py, before a case's first key: the baseline of the pass plus the case's own declared needs (case_settings.py). A case with no declaration
+    (not in SMOKE / PROVING: the full-tier-only cases have not been audited) and a settings-independent one are not checked. Returns what was checked."""
+    import case_settings
+    d = case_settings.CASE_SETTINGS.get(name)
+    if d is None:
+        return None
+    wants = dict(case_settings.baseline(ctx.mode))
+    wants.update(d["needs"])
+    requires(ctx, r, **wants)
+    return wants
+
+
+def settings_text(ctx):
+    """the text of the settings file the running app uses, or None when it cannot be read"""
+    try:
+        with open(effective_settings_path(ctx), encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def settings_left_changed(before, after):
+    """a note for a case that ended with the settings file other than it found it, else None. Key NAMES only (the values may be the owner's). Not a
+    failure: the app writes the file too (a model picked in the UI, a setting changed by a key the case is about); the note is the pointer when a later
+    case of the pass is UNVERIFIABLE for its settings."""
+    if before is None or after is None or before == after:
+        return None
+    import case_settings
+    keys = case_settings.changed_keys(before, after)
+    if not keys:
+        return None
+    return "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: %s%s" % (", ".join(keys[:12]), " and %d more" % (len(keys) - 12) if len(keys) > 12 else "")
+
+
 NO_SSH_HOST = "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, i.e. apt package openssh-server; or python3-paramiko for fakesshd.py)"
 
 

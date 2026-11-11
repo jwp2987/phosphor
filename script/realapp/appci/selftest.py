@@ -8322,6 +8322,8 @@ import selftest_r15_lab  # noqa: E402  (round 15 lab: the helper artifact, the l
 CHECKS.extend(selftest_r15_lab.CHECKS)
 import selftest_r15_w5a  # noqa: E402  (round 15 wave 5 part A: cases_r15_w5a.py, nettrace.py; its checks live in their own file)
 CHECKS.extend(selftest_r15_w5a.CHECKS)
+import selftest_r16_settings  # noqa: E402  (round 16: the test settings model: case_settings.py, cases.requires, the tables of docs/testing.md)
+CHECKS.extend(selftest_r16_settings.CHECKS)
 
 
 def main():
