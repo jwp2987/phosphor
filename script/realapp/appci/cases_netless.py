@@ -161,7 +161,16 @@ def zero_network_polled(ctx, r, kind):
     t_idle_end = None
     allow = set()
     try:
-        _, up = R.start_app(ctx, r, "zns_polled")
+        # #2114 (round 14, Windows terminal@gitbash: "held a connection ... port 11434 (idle)"): on Windows start_app ends with the key proof (ctx.reprove:
+        # a typed marker COMMAND, the pane's cwd, the root-pid probe). A command that ran makes the app ask the configured model for a suggestion, which
+        # this case allows in its scripted session only, so the harness's own launch put a provider connection inside launch + idle. Linux and macOS
+        # type nothing in a launch and passed the same round. The launch here types nothing either; the key proof runs after the idle, as the first
+        # step of the session (where the provider, and only the provider, is allowed).
+        reprove, ctx.reprove = getattr(ctx, "reprove", None), None
+        try:
+            _, up = R.start_app(ctx, r, "zns_polled")
+        finally:
+            ctx.reprove = reprove
         if not up:
             return
         t0 = time.time()
@@ -170,7 +179,11 @@ def zero_network_polled(ctx, r, kind):
             if not r.check(ctx.app.alive(), "the app exited while idling"):
                 break
         t_idle_end = time.time()
-        allow = scripted_session(ctx, r)
+        unproven = reprove() if reprove else None
+        if unproven:
+            r.check(False, "zns_polled: after the idle %s (the scripted session was not played)" % unproven)
+        else:
+            allow = scripted_session(ctx, r)
     finally:
         poller.stop()
     t_end = time.time() + 1.0

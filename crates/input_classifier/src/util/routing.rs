@@ -135,7 +135,9 @@ pub enum Rule {
     /// command-shaped body.
     WrapperChain,
     /// Syntax of the shell the line is typed into: a PowerShell cmdlet or `$variable` assignment,
-    /// a nushell keyword or pipeline, a fish builtin with its subcommand.
+    /// a nushell keyword or pipeline, a fish builtin with its subcommand; in a PowerShell session
+    /// also an `@(`/`@{` literal (#1344), a `[Type]::member` / `[Type]$var` expression and a
+    /// numeric range (#2113).
     ShellSyntax,
     /// The line reads as a request to the agent (#834, #897, #964, #965).
     RequestShape,
@@ -276,6 +278,17 @@ pub fn route(input: &ParsedTokensSnapshot, ctx: &RoutingContext) -> Decision {
         // Only assignments (`FOO=bar`): valid shell, but also what "x=5" in a question looks like.
         return Decision::undecided(Rule::Model);
     };
+    // #2113: in a PowerShell session a type literal followed by a member access or a variable
+    // (`[IO.File]::WriteAllText('f', 'x')`, `[int]$x`) and a numeric range (`1..10`) are
+    // expressions, which no English line opens with. Decided before the quoted-first-word return
+    // below: the call's first argument is usually a quoted string glued to the head, and that
+    // return left such a line to the model, which sent it to the agent or the shell by turns.
+    if ctx.shell == ShellFamily::PowerShell
+        && first_index == 0
+        && is_powershell_expression_head(&first.text)
+    {
+        return Decision::shell(Rule::ShellSyntax);
+    }
     if first.quoted {
         return Decision::undecided(Rule::Model);
     }
@@ -1049,6 +1062,59 @@ fn is_powershell_literal_head(head: &str) -> bool {
         _ => head,
     };
     value.starts_with("@(") || value.starts_with("@{")
+}
+
+/// A PowerShell expression head that is neither a cmdlet nor a `$variable` (#2113): a type literal
+/// followed by a member access or a variable (`[IO.File]::Exists(`, `[math]::PI`, `[int]$x`,
+/// `[Collections.Generic.List[string]]::new()`), or a numeric range (`1..10`, `0..$n`). `[WIP] fix
+/// it`, `[1]: see below` and `1.5` are none of these. `word` is the whole first word, which may
+/// carry more of the expression glued to it.
+fn is_powershell_expression_head(word: &str) -> bool {
+    is_powershell_type_head(word) || is_powershell_range_head(word)
+}
+
+fn is_powershell_type_head(word: &str) -> bool {
+    let name_starts = word
+        .strip_prefix('[')
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_alphabetic()));
+    if !name_starts {
+        return false;
+    }
+    // The matching `]`: a generic or array type nests brackets (`List[string]`, `int[]`).
+    let mut depth = 0usize;
+    let mut close = None;
+    for (index, c) in word.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(index);
+                    break;
+                }
+            }
+            c if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ',' | '`') => {}
+            _ => return false,
+        }
+    }
+    let Some(close) = close else {
+        return false;
+    };
+    let after = &word[close + 1..];
+    if let Some(member) = after.strip_prefix("::") {
+        return member.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_');
+    }
+    after.strip_prefix('$').is_some_and(|name| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || matches!(c, '_' | '{' | '('))
+    })
+}
+
+fn is_powershell_range_head(word: &str) -> bool {
+    word.split_once("..").is_some_and(|(from, to)| {
+        !from.is_empty()
+            && from.chars().all(|c| c.is_ascii_digit())
+            && to.starts_with(|c: char| c.is_ascii_digit() || c == '$')
+    })
 }
 
 /// The one-off natural-language words that open a message rather than a command when more words

@@ -148,6 +148,10 @@ def r15_nettrace_control_and_poller():
     src = inspect.getsource(NL.zero_network_polled)
     assert src.index("nettrace.control(sampler)") < src.index("ctx.app.stop()") and 'raise cases.Skip("NEEDS:' in src and "POLL_LIMITS" in src
     assert "poller.ticks >= 4 and poller.errors == 0" in src
+    # #2114: nothing is typed inside launch + idle. The Windows key proof (a typed command, which makes the app ask the configured model for a
+    # suggestion) is taken out of the launch and runs after the idle, before the scripted session
+    assert src.index("ctx.reprove = getattr(ctx, \"reprove\", None), None") < src.index("R.start_app(ctx, r, \"zns_polled\")") < src.index("ctx.reprove = reprove")
+    assert src.index("t_idle_end = time.time()") < src.index("reprove() if reprove else None") < src.index("scripted_session(ctx, r)")
     top = inspect.getsource(NL.c_zero_network_startup)
     assert top.index("nettrace.platform_kind(ctx)") < top.index("R.need_linux_app"), "macOS and Windows take the polled path before the Linux-only guard"
     assert "DNS" in NL.POLL_LIMITS and "between two polls" in NL.POLL_LIMITS

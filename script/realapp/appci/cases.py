@@ -917,6 +917,14 @@ def depth_probe_cmd(pane, tok):
     return "sh -c 'echo %s:$PPID >> ~/.appci_pid'" % tok
 
 
+def posix_probe_cmd(tok):
+    """pure: a line only a bash or zsh can run, which records `tok:<its pid>` in ~/.appci_pid. For a Windows PowerShell pane (#2114): there the PID probe
+    is PowerShell syntax, which a Git Bash started from the pane cannot run, and the where probe (`echo tok >> ~/.appci_where`) runs in both shells and
+    lands in the same home, so neither can tell the nested bash from the pane's root PowerShell. PowerShell (5.1 and 7) refuses this whole line at parse
+    time (`[ -n` is no type literal: "Missing type name after '['"), so nothing of it runs there and an answer proves a POSIX shell is in front."""
+    return '[ -n "$BASH_VERSION$ZSH_VERSION" ] && echo %s:$$ >> ~/.appci_pid' % tok
+
+
 def where_probe_cmd(remote_shell, tok):
     """pure: the line where_now() types to learn which shell is in front: it appends `tok` to ~/.appci_where of whatever shell runs it. `remote_shell` is the
     login shell of the remote the pane may be in (the lab arm's; None when it is not known, the same-machine sshd: bash or zsh).
@@ -1176,6 +1184,8 @@ class Ctx:
         pid = self.shell_pid() if root is not None else None
         if pid is not None and pid == root:
             why = "the PID probe names the pane's ROOT shell (%s)" % root
+        elif pid is None and getattr(self, "pane", None) == "powershell" and self.posix_shell_in_front():
+            pass          # #2114: a PowerShell pane whose root shell did not answer and a POSIX-only probe did: a nested bash/zsh is in front
         elif pid is None:
             where = self.where_now()
             if where == "remote":
@@ -1373,6 +1383,18 @@ class Ctx:
         _where, toks = self.probe(cmd, probe, ".appci_pid", timeout=timeout)
         return parse_depth_probe(toks, probe)
 
+    def posix_shell_in_front(self, timeout=8):
+        """#2114, Windows PowerShell pane only: True when a line that only bash/zsh can run (posix_probe_cmd) had its effect, i.e. a POSIX shell
+        started from the pane (Git Bash) is in front of the pane's root PowerShell. False in every other pane (their probes already tell), and when
+        nothing answered. Round 14: exit_nested had no proof of a Git Bash nested in the PowerShell pane (the PID probe is PowerShell syntax, the where
+        probe lands in the same home, shell_count is None on Windows), so `exit` was never typed, bash stayed in front, and every PowerShell line
+        after it was typed into bash (gitbash_subshell, intl_altgr_bash -> editor_daily, and the wedge rows after them)."""
+        if getattr(self, "pane", None) != "powershell":
+            return False
+        probe = "x" + self.ptok(8)
+        _where, toks = self.probe(posix_probe_cmd(probe), probe, ".appci_pid", timeout=timeout)
+        return parse_depth_probe(toks, probe) is not None
+
     def leave_nested(self, root_pid, max_exits=3):
         """After a case: leave every LOCAL nested shell until the shell in front is the pane's ROOT shell (`root_pid`). `exit` is typed only while a
         probe proves a DIFFERENT shell is in front, never at the root. Returns "root", "nested" (still nested after max_exits) or "none" (no shell
@@ -1384,6 +1406,13 @@ class Ctx:
             if pid is None:
                 self.reset()
                 pid = self.shell_pid()
+                if pid is None and i < max_exits and getattr(self, "pane", None) == "powershell" and self.posix_shell_in_front():
+                    # #2114: a Git Bash left in front of the PowerShell pane: proven by the POSIX-only probe, so `exit` is safe (it cannot be the root)
+                    before = self.prof.prompts()
+                    t_exit = time.time()
+                    self.be.type("exit", 12, enter=True)
+                    self.wait_prompt_after_exit(before, t_exit, 10)
+                    continue
                 if pid is None:
                     return "none" if getattr(self, "pane", None) not in ("cmd", "wsl") else "unprobed"
             if pid == root_pid:
@@ -5484,7 +5513,12 @@ def c_lat_first_key_idle(ctx, r):
             r.metric("second_key_" + tag, stats(second))
             r.check(len(first) >= 0.9 * n, "idle %g s: only %d of %d first-key key->frame pairs in the app log (keys not reaching the `cat`, or no input_order logging)" % (g, len(first), n))
             if len(first) >= 2:
+                # #2114 (round 14, Windows agent@gitbash gap1s: +0.54 ms against the baseline, 0.04 ms over the gate's floor, while this case's own control
+                # and latency_key_log in the same arm showed no change): lat.py re-measures a suspected regression once (a second clean set makes it a
+                # WARN, never a pass; a second regressed set stays FAIL) and this path passed no re-measure, so one sample set decided.
+                again = lambda g=g: idle_log_block(ctx, g, n + warm)[0][warm:]      # noqa: E731
                 rec = lat.evaluate("%s/latency_first_key_after_idle/%s" % (ctx.label, tag), first, second, budget, "overhead", plat(), ref_name="second key 0.3 s later (same session)",
+                                   remeasure=again,
                                    expected=n, notes=["key -> first frame from the app's input_order log (Phosphor-side); the control is the following non-idle key, so the figure is the idle penalty, not an overhead vs another terminal"])
                 r.metrics.setdefault("lat", {})[tag] = rec
                 lat_checks(r, rec, "First key after %g s idle" % g)

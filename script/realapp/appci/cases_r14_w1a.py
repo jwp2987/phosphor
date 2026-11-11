@@ -889,7 +889,10 @@ def c_tab_lifecycle_keys(ctx, r):
 PS_SHELL_LINES = ["Get-Date", "Write-Host hello world", "Get-ChildItem -Recurse", "dir", "git status", "echo $env:PATH", "$x = Get-Date", "$env:PATH -split ';'",
                   "@(1,2,3)", "Get-Content log.txt | Select-String error", "ls | Where-Object { $_.Length -gt 1kb }",
                   "Get-Process | Sort-Object CPU -Descending | Select-Object -First 5",
-                  "xyz_nocmd > out_nc.txt", "foo_nocmd --bar | grep x"]
+                  "xyz_nocmd > out_nc.txt", "foo_nocmd --bar | grep x",
+                  # #2113 (round 14: intl_wide_type / intl_wide_paste / intl_altgr_ps / soak in the PowerShell pane): a .NET static call and a range are
+                  # PowerShell syntax; no rule knew them, the model decided, and in agent mode they went to the agent
+                  "[math]::Sqrt(2)", "[IO.File]::Exists('log.txt')", "1..3"]
 
 
 def ps_routing_table(mode, nld):
