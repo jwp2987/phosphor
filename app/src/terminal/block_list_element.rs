@@ -273,6 +273,23 @@ fn cli_subagent_has_room_to_layout(max_size: Vector2F) -> bool {
     max_size.y() >= CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT
 }
 
+/// Whether a left mouse-up over this block list belongs to a gesture that began somewhere
+/// else and so must not act on this pane (#2119).
+///
+/// A mouse-up is delivered to every block list it lands on, so a gesture can always finish.
+/// One whose press was in another pane (a text selection dragged past the pane's edge) or
+/// on the split divider used to act on the pane under the release as if it had been clicked:
+/// `ClickOnGrid` at the release point and `BlockSelectAction::MouseUp`, whose focus
+/// redetermination moved the keyboard to that pane. The next keys then went to a pane the
+/// user never clicked.
+///
+/// Only an UNFOCUSED pane ignores such a release. In the focused pane nothing changes: a
+/// press an overlay took (a menu entry, a card) and released over the block list is handled
+/// as before.
+fn left_mouse_up_is_foreign(press_began_here: bool, pane_is_focused: bool) -> bool {
+    !press_began_here && !pane_is_focused
+}
+
 /// Whether a CLI subagent bubble's `dispatch_event` loop should hand it a given event.
 ///
 /// #803: once a bubble is skipped by `cli_subagent_has_room_to_layout` (or suppressed by
@@ -763,6 +780,8 @@ pub struct BlockListElement {
     is_terminal_selecting: bool,
     /// See `TerminalViewRenderContext::rich_content_drag_selecting` (#890).
     rich_content_drag_selecting: Arc<AtomicBool>,
+    /// See `TerminalViewRenderContext::left_press_began_in_block_list` (#2119).
+    left_press_began_here: Arc<AtomicBool>,
     /// This map contains the IDs of sessions that were subshells as keys. Their corresponding
     /// values are the command that spawned the subshell, which is needed to paint the "flag"
     subshell_sessions: HashMap<SessionId, SubshellSource>,
@@ -1136,6 +1155,7 @@ impl BlockListElement {
             ssh_choice_card_view_id: terminal_view_render_context.ssh_choice_card_view_id,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
+            left_press_began_here: terminal_view_render_context.left_press_began_in_block_list,
             subshell_sessions: terminal_view_render_context.spawning_command_for_subshell_sessions,
             subshell_flags: HashMap::new(),
             size: None,
@@ -2046,6 +2066,13 @@ impl BlockListElement {
         // its selection (and so never honour copy-on-select, #1012). The view knows whether a
         // selection is really pending and ignores the action otherwise.
         ctx.dispatch_typed_action(TerminalAction::BlockTextSelect(BlockTextSelectAction::End));
+
+        // #2119: a release whose press was not in this block list does nothing more to an
+        // unfocused pane (no click on its grid, no block selection, no focus change).
+        let press_began_here = self.left_press_began_here.swap(false, Ordering::Relaxed);
+        if left_mouse_up_is_foreign(press_began_here, self.pane_state.is_focused()) {
+            return false;
+        }
 
         let handled = if self.is_mouse_position_within_bounds(position) {
             if let Some(point) = self.coord_to_point(
@@ -5098,6 +5125,26 @@ impl Element for BlockListElement {
                 .store(false, Ordering::Relaxed);
         }
 
+        // #2119: where the left press of the gesture in progress began. Recorded for every
+        // press this element is shown, handled or not (an unfocused pane's first press is
+        // handled higher up, a card's by the card), and dropped by a move with no button held
+        // (the release was missed). `mouse_up` takes it.
+        match event_at_z_index {
+            Event::LeftMouseDown { position, .. } => {
+                let began_here =
+                    self.bounds.is_some() && self.is_mouse_position_within_bounds(*position);
+                self.left_press_began_here
+                    .store(began_here, Ordering::Relaxed);
+            }
+            Event::MouseMoved {
+                is_synthetic: false,
+                ..
+            } => {
+                self.left_press_began_here.store(false, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+
         let mut handled = false;
         let events_to_propagate_on = matches!(
             event_at_z_index,
@@ -5610,6 +5657,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2119: a left mouse-up acts on an unfocused pane only when its press began in that
+    /// pane's block list. Fails on old code: the helper did not exist and every release over a
+    /// block list ran the click and the focus redetermination, so a selection dragged out of
+    /// the right pane and released over the left one moved the keyboard to the left pane.
+    #[test]
+    fn foreign_left_mouse_up_is_ignored_by_an_unfocused_pane_only() {
+        // Press elsewhere, release over an unfocused pane: ignored.
+        assert!(left_mouse_up_is_foreign(false, false));
+        // A click on an unfocused pane (press and release in it) still focuses it.
+        assert!(!left_mouse_up_is_foreign(true, false));
+        // The focused pane keeps every release, whoever took the press (a menu, a card).
+        assert!(!left_mouse_up_is_foreign(false, true));
+        assert!(!left_mouse_up_is_foreign(true, true));
+    }
 
     /// #1145: the PS1 run time shows only for user command blocks that honour PS1, with the
     /// setting on. Fails on old code: the helper (and the whole PS1 duration) did not exist; the

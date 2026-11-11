@@ -2796,6 +2796,12 @@ pub struct TerminalViewRenderContext {
     /// auto-scroll the selection (#890). Shared with the view, which outlives each frame's
     /// element.
     pub rich_content_drag_selecting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// Set by the block list while a left press that began inside it is held, and taken by
+    /// its mouse-up: a release over an unfocused pane whose press was in another pane or on
+    /// the split divider must not click that pane or move the keyboard to it (#2119). Shared
+    /// with the view, which outlives each frame's element.
+    pub left_press_began_in_block_list: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -3445,6 +3451,9 @@ pub struct TerminalView {
 
     /// See [`TerminalViewRenderContext::rich_content_drag_selecting`].
     rich_content_drag_selecting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// See [`TerminalViewRenderContext::left_press_began_in_block_list`].
+    left_press_began_in_block_list: std::sync::Arc<std::sync::atomic::AtomicBool>,
 
     context_menu: ViewHandle<Menu<TerminalAction>>,
 
@@ -5556,6 +5565,7 @@ impl TerminalView {
             horizontal_clipped_scroll_state: Default::default(),
             is_selecting: false,
             rich_content_drag_selecting: Default::default(),
+            left_press_began_in_block_list: Default::default(),
             context_menu_state: None,
             context_menu,
             hovered_secret: None,
@@ -35063,6 +35073,7 @@ impl TerminalView {
                 .map(|card| card.id()),
             is_terminal_selecting: self.is_selecting(),
             rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),
+            left_press_began_in_block_list: self.left_press_began_in_block_list.clone(),
             is_context_menu_open: self.is_context_menu_open(),
             is_waterfall_gap_mode: self.is_waterfall_gap_mode(model, app),
             pane_state,

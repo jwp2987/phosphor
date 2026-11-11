@@ -3498,3 +3498,18 @@ Not removed, and not legacy: `delivering` / `requeue_request` (a key a stage hol
 delivery), the bytes take-and-write of the hand-off's and the PowerShell gate's keys,
 `paste_routing` (three writers read it), `refresh_ssh_connect_gate` (the events and the signal
 rows use it). Design note and the full list: `docs/design/r17-step8.md`.
+
+## A mouse release over another pane does not move the keyboard there (#2119) — IMPROVED
+
+A drag that starts in one pane (a text selection run past the pane's edge) or on the split divider
+and is released over another pane used to end with the keyboard in the pane under the release:
+`BlockListElement::mouse_up` ran for every block list the release landed on, dispatched
+`ClickOnGrid` and `BlockSelectAction::MouseUp`, and `TerminalView::block_select` finished with
+`redetermine_global_focus`. Identical at the pin (`42effe840:app/src/terminal/block_list_element.rs`,
+where `mouse_down` already refuses a press in an unfocused pane and `mouse_up` has no such rule).
+The fork now records whether the left press began inside the block list
+(`left_press_began_in_block_list`) and an UNFOCUSED pane ignores a release with no press of its own
+(`left_mouse_up_is_foreign`). The focused pane is unchanged. Found by the app case
+`pane_resize_maximize` (round 14). Reverse only with another rule that keeps the next key out of a
+pane the user did not click. Design: `docs/design/r10-r19-copy.md`.
+<!-- markers: keep:left_mouse_up_is_foreign keep:foreign_left_mouse_up_is_ignored_by_an_unfocused_pane_only -->
