@@ -7192,6 +7192,13 @@ logs `hop=agent_action id=<id> kind=<tool> status=cancelled` like any cancelled 
   preprocessing, in queue order, next to the parked actions; `abandon_all`, the kill switch's arm, returns the parked ones only; fails on
   the old code, where a batch knew ids only), `a_batch_that_came_back_is_not_handed_back_as_preprocessing` (and its late result is still
   reported as stale, #1894), `take_actions_of_abandoned_hands_the_calls_back_once_and_keeps_the_markers` (the new-turn site, #1859).
+  Since #2136 (design `docs/design/r21-newturn.md`; nothing compiled or run when written):
+  `a_new_turn_takes_the_abandoned_calls_before_the_parked_ones_are_released` walks the order `queue_actions` uses (abandon, take the
+  kept copies, then `release_ready`) with a hung batch and a parked one behind it: the copies come back in the reply's order, the parked
+  action is released for its cancel, `release_ready` has popped the abandoned marker (so a take after it finds nothing), and the hung
+  batch's late result is stale. Fails on the old order. The round 15 failure of
+  `a_new_turn_settles_the_calls_of_an_earlier_batch_that_is_still_preprocessing` (below) was this order in the app, not the test; the
+  test is unchanged.
 - **Unit, `ai/blocklist/controller_tests.rs`, module `stop_while_preprocessing_2104`** (a real controller and action model, the batch
   queued through `queue_actions` and held in preprocessing):
   - `a_stop_gives_the_calls_of_a_preprocessing_batch_their_cancelled_result_at_the_stop`: `cancel_conversation_progress(ManuallyCancelled)`

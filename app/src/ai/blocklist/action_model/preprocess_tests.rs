@@ -414,3 +414,60 @@ fn take_actions_of_abandoned_hands_the_calls_back_once_and_keeps_the_markers() {
     assert_eq!(stale.len(), 2);
     assert_eq!(actions.0.len(), 0);
 }
+
+/// #2136: the order a new turn uses (`queue_actions`): give up on what is still preprocessing,
+/// take the kept copies of its calls, THEN release what was parked. `release_ready` pops the
+/// abandoned markers, so the copies must be in hand before it; afterwards they are gone.
+///
+/// Fails on the old order (release, then take) at the first assertion: nothing was taken.
+#[test]
+fn a_new_turn_takes_the_abandoned_calls_before_the_parked_ones_are_released() {
+    let mut actions = PendingPreprocessedActions::default();
+    let (hung_a, hung_b, parked_id) = (
+        generate_new_action_id(),
+        generate_new_action_id(),
+        generate_new_action_id(),
+    );
+    let hung = actions.insert_preprocess_actions(&[
+        create_test_action(hung_a.clone()),
+        create_test_action(hung_b.clone()),
+    ]);
+    let parked = actions.insert_preprocess_actions(&[create_test_action(parked_id.clone())]);
+    let queued = actions
+        .handle_preprocess_actions_result(parked, vec![create_test_action(parked_id.clone())]);
+    assert!(queued.is_empty(), "parked behind the hung batch");
+
+    assert_eq!(actions.abandon_pending().len(), 2);
+    let still_preprocessing = actions.take_actions_of_abandoned();
+    let stale = actions.release_ready();
+
+    assert_eq!(
+        still_preprocessing
+            .iter()
+            .map(|action| action.id.clone())
+            .collect::<Vec<_>>(),
+        vec![hung_a.clone(), hung_b.clone()],
+        "the calls of the batch given up on, in the reply's order"
+    );
+    assert_eq!(
+        stale
+            .iter()
+            .map(|action| action.id.clone())
+            .collect::<Vec<_>>(),
+        vec![parked_id]
+    );
+    assert_eq!(actions.0.len(), 0, "release_ready popped the markers too");
+    assert!(
+        actions.take_actions_of_abandoned().is_empty(),
+        "which is why the copies are taken first"
+    );
+
+    // The hung batch's late result is that of a missing batch: handed back as stale, for the
+    // caller to drop (its calls were settled at the new turn).
+    let (queue, late) = actions.handle_preprocess_actions_result_with_stale(
+        hung,
+        vec![create_test_action(hung_a), create_test_action(hung_b)],
+    );
+    assert!(queue.is_empty());
+    assert_eq!(late.len(), 2);
+}

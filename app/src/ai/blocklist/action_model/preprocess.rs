@@ -186,6 +186,10 @@ impl PendingPreprocessedActions {
     /// Pops the leading batches that are no longer `Pending` and returns the actions of the
     /// finished ones. Used after `abandon_pending`: the caller CANCELS these stale actions
     /// (owner decision 2026-11-09), it never runs them.
+    ///
+    /// An `Abandoned` batch popped here is gone with its kept copies (#2136): whoever settles
+    /// its calls takes them first ([`Self::take_actions_of_abandoned`]). Its late result is
+    /// then that of a missing batch, which is stale all the same.
     pub fn release_ready(&mut self) -> Vec<AIAgentAction> {
         let mut ready = Vec::new();
         while let Some(batch) = self.0.pop_front() {
@@ -253,9 +257,12 @@ impl PendingPreprocessedActions {
     }
 
     /// #2104: the kept copies of the calls of every batch [`Self::abandon_pending`] gave up
-    /// on, taken out (a second call returns nothing). The markers stay in place so later
-    /// batches still drain in order; the caller settles the returned calls now instead of
-    /// when, or if, the batch's future comes back.
+    /// on, taken out (a second call returns nothing). This call leaves the markers in place;
+    /// the caller settles the returned calls now instead of when, or if, the batch's future
+    /// comes back.
+    ///
+    /// #2136: call it BEFORE [`Self::release_ready`], which pops the abandoned markers at the
+    /// front of the queue and their copies with them.
     pub fn take_actions_of_abandoned(&mut self) -> Vec<AIAgentAction> {
         let mut actions = Vec::new();
         for batch in self.0.iter_mut() {

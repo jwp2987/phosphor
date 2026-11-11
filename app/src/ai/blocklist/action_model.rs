@@ -1646,19 +1646,22 @@ impl BlocklistAIActionModel {
                 log::warn!(
                     "hop=agent_action status=parked abandoned unresolved preprocess batches ids={abandoned:?} at new turn"
                 );
-                // Owner decision 2026-11-09: leftovers of an earlier turn that had finished
-                // preprocessing but were parked behind an abandoned batch are CANCELLED, never
-                // executed. Nothing from an old turn runs on its own.
-                let stale = batches.release_ready();
                 // #2104: the calls of the batches just given up on are settled now as well,
                 // from the batches' kept copies, not when (or if) their futures come back:
                 // one rule for every dropped batch, and no result is recorded later behind
                 // the back of whatever the pane is doing then (a close, a later turn).
+                // #2136: the copies are read BEFORE `release_ready`. With nothing `Pending`
+                // any more, that call pops every batch, the markers just abandoned included,
+                // and their copies would go with them.
                 let still_preprocessing = if stop_settles_preprocessing_enabled() {
                     batches.take_actions_of_abandoned()
                 } else {
                     Vec::new()
                 };
+                // Owner decision 2026-11-09: leftovers of an earlier turn that had finished
+                // preprocessing but were parked behind an abandoned batch are CANCELLED, never
+                // executed. Nothing from an old turn runs on its own.
+                let stale = batches.release_ready();
                 self.record_stale_cancelled(conversation_id, stale);
                 let still_preprocessing =
                     self.mark_settled_while_preprocessing(conversation_id, still_preprocessing);
