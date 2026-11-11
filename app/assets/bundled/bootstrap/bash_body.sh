@@ -2775,7 +2775,8 @@ fi
 $warp_remote_env
 {
 $warp_hook_print
-exec -a bash bash --rcfile <(echo '$warp_rc_snippet'; command -p cat <&9) 9<&-
+shopt -s execfail 2>/dev/null
+exec -a bash "'"${BASH:-$SHELL}"'" --rcfile <(echo '$warp_rc_snippet'; command -p cat <&9) 9<&-
 } 9<<'$warp_bs_delim'
 $__warp_ssh_bs_text
 $warp_bs_delim
@@ -2835,7 +2836,9 @@ fi
 
 case "'${SHELL##*/}'" in
   bash)
-    exec -a bash bash --rcfile <(echo '$warp_rc_snippet')
+    shopt -s execfail 2>/dev/null
+    exec -a bash "'"${BASH:-$SHELL}"'" --rcfile <(echo '$warp_rc_snippet')
+    exec "'$SHELL'" -l
       unset _hostname _user _msg _ju _jh _i _o _c _h
       ;;
   zsh) WARP_TMP_DIR="'$(command -p mktemp -d warptmp.XXXXXX)'"
