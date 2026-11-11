@@ -7924,3 +7924,22 @@ the classic (PS1) and universal input layouts in an app case (one `render_input_
 height; no pass runs those layouts, and the PS1 prompt's prefix and right-prompt inset are untested on a build); the input pinned to
 the top and the waterfall input; a same-line prompt that is not the shell's own (context chips inside the editor, only without the
 agent view feature) keeps the banner.
+
+## Round 21, Wayland: editor reload, pane divider, and four rows that were test faults (design `docs/design/r21-wlpanes.md`; #2143 #2144 #2145 #2146; nothing compiled, no app run when written)
+
+Source: the round 15 targeted run, build/r15a `b06800e98`, `app-test-linux-wayland` job 17936839261. Each part below is added by the commit that changes its tests.
+
+### A file replaced by rename is reloaded (#2143; APP)
+
+- Defect: on Linux an open, unmodified file that another program replaced by rename (new file, renamed over the old one) kept its old text; the
+  next save overwrote the change. `editor_daily`'s "file changed on disk" arm is the app case (unchanged): it replaces the file by rename and
+  expects `editor_disk outcome=reloaded external=true` and the next edit on top of the new text. The whole round 15 log had no `editor_disk`
+  line: with the change the editor's own save also logs `editor_disk outcome=reloaded external=false` about 200 ms after it, on Linux and
+  Windows as on macOS before.
+- Unit tests (not compiled when written): `crates/warp_files/src/lib_test.rs` `a_file_replaced_by_rename_is_reloaded`,
+  `added_and_modified_paths_are_still_reloaded`, `the_reload_on_rename_kill_switch_restores_the_old_set`; `crates/watcher/src/lib_tests.rs`
+  `an_unpaired_move_in_is_an_added_path`, `a_paired_rename_adds_no_path`, `the_target_of_a_replace_by_rename_has_changed_content`.
+- Kill switch: `PHOSPHOR_FILE_RELOAD_ON_RENAME=0` in the app's environment. With it `editor_daily` fails that arm on Linux again, with the
+  message of round 15.
+- Not covered by an app case: a file moved in from another directory over an open file (`mv ../new file.txt`); the unit test of the merge
+  covers the report, no case plays it.

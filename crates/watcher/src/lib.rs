@@ -327,6 +327,21 @@ impl BulkFilesystemWatcherEvent {
         self.added_or_updated_iter().cloned().collect()
     }
 
+    /// The paths whose CONTENT may differ from what a reader last saw: added, modified, and the
+    /// targets of renames (#2143).
+    ///
+    /// Replacing a file by rename (write a new file next to it, rename it over the old one) is
+    /// how git, most editors, `sed -i` and this app's own save write a file. inotify and
+    /// ReadDirectoryChangesW report that as a rename, which lands in `moved`, not in `added` or
+    /// `modified`; FSEvents reports it as a path that now exists, which lands in `added`. A
+    /// consumer that reloads a file's text when it changes wants this set on every platform.
+    pub fn content_changed_set(&self) -> HashSet<PathBuf> {
+        self.added_or_updated_iter()
+            .chain(self.moved.keys())
+            .cloned()
+            .collect()
+    }
+
     fn is_empty(&self) -> bool {
         self.added.is_empty()
             && self.modified.is_empty()
@@ -622,6 +637,14 @@ fn deduplicate_and_merge_raw_notifier_events(
                         paths.first().expect("Checked above").clone(),
                         paths.get(1).expect("Checked above").clone(),
                     ),
+                    // #2143: a `To` with no `From` before it is a file moved in from outside
+                    // the watched tree (`mv ../new file.txt`). It matched no arm and was
+                    // dropped, so nothing heard that the path now holds another file. The
+                    // path exists now and nothing says where it came from: an added path.
+                    RenameMode::To if !paths.is_empty() => {
+                        created.insert(paths.first().expect("Checked above").clone());
+                        break 'rename;
+                    }
                     _ => break 'rename,
                 };
 
