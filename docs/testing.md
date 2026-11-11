@@ -5821,7 +5821,7 @@ Outcomes that are not a verdict, each stated on the row:
 - a node, but the session offers no hardware adapter the app can present to (Xvfb has no DRI3): SKIP, NEEDS: the headless-sway job with `WLR_RENDERER=gles2`, and Mesa's driver packages;
 - a presentable hardware adapter listed and a software one used: FAIL;
 - fewer than 30 frames, no `Surface configured:` line, a software launch that did not come up or did not take the software rasteriser, a control pair that does not differ: NOREF with the reason;
-- "a lost device recovers" (the spec's third oracle): `NOT RUN:` on every row. NEEDS: a way to take the device away that the CI user has (the kernel's reset switches need root) or a test hook in the renderer. The recovery policy is unit-tested (`draw_retry_tests.rs`).
+- "a lost device recovers" (the spec's third oracle; #2091): `NOT RUN:` on every row. NEEDS: a way to take the device away that the CI user has (the kernel's reset switches need root) or a test hook in the renderer. The recovery policy is unit-tested (`draw_retry_tests.rs`).
 
 **T49, the soak on macOS and Windows (`appci/procsample.py`).** `procsample.sample(ctx)` returns the app's pids, memory in KiB and CPU seconds: `/proc` on Linux (the same figures as before), `ps -axo pid=,rss=,time=,command=` filtered to the job's private bundle on macOS (the main process and its terminal-server helper; before, one process), and on Windows the app's Win32 job for the exact pids plus `GetProcessTimes` / `GetProcessMemoryInfo` for those running the app's exe (the calls `Get-Process` wraps; without a job, one `Get-Process` by the exe path). The Windows memory figure is private bytes (#1340: the working set is trimmed and shared).
 

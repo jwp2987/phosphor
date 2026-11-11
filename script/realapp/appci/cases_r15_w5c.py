@@ -38,7 +38,7 @@ FRAME_P50_MS, FRAME_P95_MS = 4.0, 16.0     # owner's UI budget: 4 ms of the app'
 SHOT_DIFF_MAX = 0.02                       # fraction of pixels that may differ between the GPU and the software picture of the same screen
 MIN_FRAMES = 30
 PATTERN_ROWS = 24
-LOST_DEVICE_NOT_RUN = ("NOT RUN: 'a lost device recovers' (the third oracle of r14-test-gaps T48). NEEDS: a way to take the device away that the CI user "
+LOST_DEVICE_NOT_RUN = ("NOT RUN: 'a lost device recovers' (the third oracle of r14-test-gaps T48; #2091). NEEDS: a way to take the device away that the CI user "
                        "has (the kernel's reset switches under /sys/kernel/debug/dri need root), or a test hook in the renderer; the recovery policy "
                        "itself is unit-tested (crates/warpui/src/windowing/winit/event_loop/draw_retry_tests.rs)")
 
