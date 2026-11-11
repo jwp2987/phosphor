@@ -154,6 +154,8 @@ PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wa
 PROVING += ("grid_snapshot_render", "freeze_and_wake")
 PROVING_FAKE += ("freeze_and_wake",)
 PROVING_LAB += ("lab_freeze_and_wake.*",)
+# #2094 (round 16): lab_agent_suggestions_ssh, no next-command / prompt-suggestion request from an ssh pane by default (per-purpose local control).
+PROVING_LAB += ("lab_agent_suggestions_ssh.*",)
 # round 15 wave 4, desktop integration (docs/design/r14-test-gaps.md T35 / T37 / T38 / T39, design docs/design/r15-w4desk.md; #2075, #2078): display
 # scale 1.25 / 1.5 / 2 and a second output, desktop notifications (a recording service on the app's private bus), a real file drag, a real input method
 PROVING += ("scale_matrix", "desktop_notification", "desktop_notification_agent_question", "drag_drop_file", "ime_compose")

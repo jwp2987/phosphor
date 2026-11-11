@@ -509,7 +509,19 @@ impl NextCommandModel {
         // BYOP cfg must be resolved before spawning (&AppContext isn't available
         // inside spawn). Uses a None terminal_view_id to go through the global
         // current active profile.
-        let byop_cfg = byop_next_command::resolve(ctx, None);
+        //
+        // #2094: in an ssh session (or one that is not known) the model is not asked unless the
+        // user turned `intelligent_autosuggestions_in_ssh_enabled` on. The session is the one
+        // the suggestion is for (the active block's). With no config the model call below is a
+        // silent no-op; the history and completer suggestions need no request and still run.
+        let in_ssh_session = completer_data
+            .active_block_session_id()
+            .and_then(|session_id| {
+                self.sessions
+                    .read(ctx, |sessions, _| sessions.get(session_id))
+            })
+            .map(|session| crate::ai::agent_providers::active_ai::is_ssh_session(&session));
+        let byop_cfg = byop_next_command::resolve_for_session(ctx, None, in_ssh_session);
         // Global Rules are likewise resolved before spawning (&AppContext isn't
         // available inside spawn). This gate is kept consistent with the chat path
         // (`api.rs::RequestParams::new`): both use `is_memory_enabled` as the

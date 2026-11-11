@@ -2487,13 +2487,28 @@ upstream's behavior is actually a defect rather than a preference.
 
 - **No query prediction request from an ssh session unless the user turns it on** (`#1982`,
   2026-11-10, owner decision, `app/src/ai/agent_providers/active_ai/mod.rs`
-  `nld_predict::allowed_for_session`, `app/src/settings/ai.rs`). **Upstream:** the ghosted
+  `allowed_for_session` (shared with #2094 since round 16), `app/src/settings/ai.rs`). **Upstream:** the ghosted
   completion of an agent prompt is requested at every typing pause in any session. **We do:**
   in an ssh session (and when the pane's session is not known) the request is not built unless
   `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` is true
   (default false; a switch on the AI settings page). Each request carries the input buffer to
   the model provider, which on a remote session is traffic and context the user did not ask for.
   <!-- markers: keep:allowed_for_session keep:NaturalLanguageAutosuggestionsInSshEnabled -->
+
+- **No next-command or prompt-suggestion request from an ssh session unless the user turns it
+  on** (`#2094`, 2026-11-11, owner decision, `app/src/ai/agent_providers/active_ai/mod.rs`
+  `allowed_for_session`, `next_command::resolve_for_session`, `prompt_suggestions::dispatch`,
+  `app/src/ai/predict/next_command_model.rs`, `app/src/settings/ai.rs`). **Upstream:** after a
+  command finishes (and while a command is typed) the model is asked for the next command and
+  for a prompt suggestion in any session. **We do:** in an ssh session (and when the session is
+  not known) neither request is built unless
+  `agents.warp_agent.active_ai.intelligent_autosuggestions_in_ssh_enabled` /
+  `agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled` is true (default false; a
+  switch under each parent on the AI settings page). The requests carry remote commands, a
+  summary of remote output and the typed prefix to the model provider, which the user did not
+  ask for. History and completer suggestions and the static prompt suggestions need no request
+  and are unchanged.
+  <!-- markers: keep:resolve_for_session keep:IntelligentAutosuggestionsInSshEnabled keep:PromptSuggestionsInSshEnabled -->
 
 - **A completion result that changes nothing does not re-render the input** (`#1995`,
   2026-11-11, owner decision, `app/src/terminal/input.rs`

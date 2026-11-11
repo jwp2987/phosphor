@@ -104,6 +104,58 @@ pub struct RenderedRequest {
 }
 
 // ---------------------------------------------------------------------------
+// The ssh gate shared by nld_predict (#1982), prompt_suggestions and next_command (#2094)
+// ---------------------------------------------------------------------------
+
+/// Whether an active-AI request may be built for a session (#1982, #2094). Each of these
+/// requests carries what the user typed or ran (the input buffer; a finished command and a
+/// summary of its output; recent commands) to the model provider without the user asking, so in
+/// an ssh session it is built only when the user allowed that for the feature.
+/// `in_ssh_session` is `None` when the session is not known; that is treated like an ssh
+/// session, so not knowing never sends.
+pub(crate) fn allowed_for_session(in_ssh_session: Option<bool>, allowed_in_ssh: bool) -> bool {
+    allowed_in_ssh || in_ssh_session == Some(false)
+}
+
+/// Whether `session` runs on another host over ssh: one the ssh wrapper set up, or one
+/// bootstrapped in a plain `ssh` the user ran.
+pub(crate) fn is_ssh_session(session: &crate::terminal::model::session::Session) -> bool {
+    !session.is_local() || session.is_legacy_ssh_session()
+}
+
+/// Whether the active session of the pane `terminal_view_id` is an ssh session; `None` when
+/// there is no such pane or it has no active session.
+fn pane_is_in_ssh_session(
+    app: &warpui::AppContext,
+    terminal_view_id: warpui::EntityId,
+) -> Option<bool> {
+    let terminal_view = app.window_ids().find_map(|window_id| {
+        app.view_with_id::<crate::terminal::TerminalView>(window_id, terminal_view_id)
+    })?;
+    let session = terminal_view
+        .as_ref(app)
+        .active_session()
+        .as_ref(app)
+        .session(app)?;
+    Some(is_ssh_session(&session))
+}
+
+/// [`allowed_for_session`] for the pane a request is for. The pane is looked up only when the
+/// answer depends on it.
+fn allowed_for_pane(
+    app: &warpui::AppContext,
+    terminal_view_id: Option<warpui::EntityId>,
+    allowed_in_ssh: bool,
+) -> bool {
+    let in_ssh_session = if allowed_in_ssh {
+        None
+    } else {
+        terminal_view_id.and_then(|id| pane_is_in_ssh_session(app, id))
+    };
+    allowed_for_session(in_ssh_session, allowed_in_ssh)
+}
+
+// ---------------------------------------------------------------------------
 // prompt_suggestions
 // ---------------------------------------------------------------------------
 
@@ -124,6 +176,17 @@ pub mod prompt_suggestions {
         terminal_view_id: Option<EntityId>,
         input: Input,
     ) -> Option<RenderedRequest> {
+        // #2094: the request carries the finished command and a summary of its output. In an
+        // ssh session (or an unknown one) it is built only when the user turned that on.
+        let allowed_in_ssh =
+            crate::settings::AISettings::as_ref(app).is_prompt_suggestions_in_ssh_enabled();
+        if !allowed_for_pane(app, terminal_view_id, allowed_in_ssh) {
+            log::debug!(
+                "[active_ai] prompt_suggestions not requested: ssh session (or unknown) and \
+                 prompt_suggestions_in_ssh_enabled is off"
+            );
+            return None;
+        }
         let cfg = resolve_active_ai_oneshot_with(app, terminal_view_id, WhileKeysLoading::Skip)?;
         let language = (*LanguageSettings::as_ref(app).language).prompt_language_name();
         let overrides = active_prompt_overrides(app, terminal_view_id);
@@ -177,43 +240,12 @@ pub mod nld_predict {
     use super::*;
     use warpui::{AppContext, EntityId, SingletonEntity as _};
 
-    use crate::{
-        settings::AISettings,
-        terminal::{TerminalView, model::session::Session},
-    };
+    use crate::settings::AISettings;
 
     pub struct Input {
         pub partial_query: String,
         pub last_block: Option<LastBlockSnippet>,
         pub system_context: Option<String>,
-    }
-
-    /// Whether a query prediction may be requested for a pane (#1982). A prediction sends the
-    /// input buffer to the model provider at every typing pause, so in an ssh session it is
-    /// requested only when the user allowed that. `in_ssh_session` is `None` when the pane's
-    /// session is not known; that is treated like an ssh session, so not knowing never sends.
-    pub(crate) fn allowed_for_session(in_ssh_session: Option<bool>, allowed_in_ssh: bool) -> bool {
-        allowed_in_ssh || in_ssh_session == Some(false)
-    }
-
-    /// Whether `session` runs on another host over ssh: one the ssh wrapper set up, or one
-    /// bootstrapped in a plain `ssh` the user ran.
-    fn is_ssh_session(session: &Session) -> bool {
-        !session.is_local() || session.is_legacy_ssh_session()
-    }
-
-    /// Whether the active session of the pane `terminal_view_id` is an ssh session; `None` when
-    /// there is no such pane or it has no active session.
-    fn pane_is_in_ssh_session(app: &AppContext, terminal_view_id: EntityId) -> Option<bool> {
-        let terminal_view = app
-            .window_ids()
-            .find_map(|window_id| app.view_with_id::<TerminalView>(window_id, terminal_view_id))?;
-        let session = terminal_view
-            .as_ref(app)
-            .active_session()
-            .as_ref(app)
-            .session(app)?;
-        Some(is_ssh_session(&session))
     }
 
     pub fn dispatch(
@@ -223,13 +255,7 @@ pub mod nld_predict {
     ) -> Option<RenderedRequest> {
         let allowed_in_ssh =
             AISettings::as_ref(app).is_natural_language_autosuggestions_in_ssh_enabled();
-        // The pane is looked up only when the answer depends on it.
-        let in_ssh_session = if allowed_in_ssh {
-            None
-        } else {
-            terminal_view_id.and_then(|id| pane_is_in_ssh_session(app, id))
-        };
-        if !allowed_for_session(in_ssh_session, allowed_in_ssh) {
+        if !allowed_for_pane(app, terminal_view_id, allowed_in_ssh) {
             log::debug!(
                 "[active_ai] nld_predict not requested: ssh session (or unknown) and \
                  natural_language_autosuggestions_in_ssh_enabled is off"
@@ -535,6 +561,29 @@ pub mod next_command {
     /// Pre-spawn: resolve the BYOP config (needs `&AppContext`). `None` ⇒ silent no-op.
     pub fn resolve(app: &AppContext, terminal_view_id: Option<EntityId>) -> Option<OneshotConfig> {
         resolve_next_command_oneshot(app, terminal_view_id)
+    }
+
+    /// [`resolve`] for a suggestion in a known session (#2094). The request carries recent
+    /// commands, similar history and the typed prefix; in an ssh session (`in_ssh_session`
+    /// `Some(true)`, or `None` = not known) it is not made, so `None` comes back, unless
+    /// `intelligent_autosuggestions_in_ssh_enabled` is on. The suggestions that need no request
+    /// (history, completions) are the caller's and are not affected.
+    pub fn resolve_for_session(
+        app: &AppContext,
+        terminal_view_id: Option<EntityId>,
+        in_ssh_session: Option<bool>,
+    ) -> Option<OneshotConfig> {
+        use warpui::SingletonEntity as _;
+        let allowed_in_ssh = crate::settings::AISettings::as_ref(app)
+            .is_intelligent_autosuggestions_in_ssh_enabled();
+        if !allowed_for_session(in_ssh_session, allowed_in_ssh) {
+            log::debug!(
+                "[active_ai] next_command not requested: ssh session (or unknown) and \
+                 intelligent_autosuggestions_in_ssh_enabled is off"
+            );
+            return None;
+        }
+        resolve(app, terminal_view_id)
     }
 
     /// Pre-spawn: resolve this profile's override for the next-command system

@@ -132,3 +132,67 @@ Tab, any suggestions) are every branch that writes state; the skipped case write
 `latency_key_log`: `input_notify_causes` no longer led by
 `Input:handle_completion_suggestions_results_3`; `hop=key_frame_build views=1` for a character
 typed into a non-empty buffer in terminal mode.
+
+## 3. #2094: next-command and prompt suggestions in ssh sessions follow the #1982 rule
+
+### Today (by reading)
+
+* **Next command** (`app/src/ai/predict/next_command_model.rs`,
+  `generate_next_command_suggestion_with_prefix`): after a block completes and while a command
+  is typed, when history is not confident enough, `byop_generate_input_suggestions` sends
+  recent commands, similar history and the typed prefix to the model. The config is resolved
+  with no pane (`byop_next_command::resolve(ctx, None)`); nothing looks at the session.
+* **Prompt suggestions** (`app/src/ai/blocklist/passive_suggestions/legacy.rs` ->
+  `active_ai::prompt_suggestions::dispatch`): after a block completes, the finished command
+  and a summary of its output go to the model. Nothing looks at the session.
+
+#1982 left both out on purpose (`r14-secure.md`, Risk). Owner decision 2026-11-11: gate them
+the same way.
+
+### Fix
+
+* The rule moves from `nld_predict` to the `active_ai` module so the three features share it:
+  `allowed_for_session(in_ssh_session: Option<bool>, allowed_in_ssh)` (unknown = ssh),
+  `is_ssh_session`, `pane_is_in_ssh_session`, `allowed_for_pane`. `nld_predict::dispatch`
+  behaves as before.
+* Two settings in the same family, default false, not synced, a switch under each parent on
+  the AI settings page (greyed while the parent is off), strings in en, ja, zh-CN:
+  `agents.warp_agent.active_ai.intelligent_autosuggestions_in_ssh_enabled`,
+  `agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled`. They are the kill
+  switches: on restores today's behaviour.
+* Prompt suggestions: the gate is at the top of `prompt_suggestions::dispatch` (the one place
+  the request is built; it has the pane id).
+* Next command: `next_command::resolve_for_session(app, None, in_ssh_session)` returns no
+  config when not allowed, and no config is already the silent no-op of the model call. The
+  session is the one the suggestion is for: `completer_data.active_block_session_id()` looked
+  up in the model's `Sessions`. History-based and completer suggestions run as before (they
+  send nothing).
+
+### Rejected
+
+* **One setting for both.** #1982 has its own; a user may want next commands on a trusted
+  host and no output summaries sent.
+* **Gate the passive-suggestions model at its trigger** (skip the whole
+  `maybe_generate_prompt_suggestions`). The static suggestions are local and stay; only the
+  request is the concern.
+* **Treat an unknown session as local for next command** (as completions-as-you-type does,
+  `is_completions_while_typing_turned_on`). The decision says unknown = ssh: not knowing must
+  not send.
+
+### Risk
+
+* A local pane whose active block has no session id yet (the first prompt before bootstrap
+  finishes) gets no model next command until it has one. History suggestions still show.
+* Not compiled. `self.sessions.read(ctx, |sessions, _| sessions.get(id))` and the new settings
+  macros are the compile doubts.
+* Not gated here, same class, for the owner to rule on: passive code diffs
+  (`maybe_generate_passive_code_diff`, `passive_suggestions/maa.rs`), which a static prompt
+  suggestion can still start in an ssh session; command explanation and commit messages are
+  user-triggered.
+
+### Tests
+
+Unit: `active_ai/mod_test.rs` `every_active_ai_request_shares_the_ssh_rule`;
+`settings/ai_tests.rs` `next_command_and_prompt_suggestions_in_ssh_default_off`.
+App: `lab_agent_suggestions_ssh.bash.lan.nohelper` (agent mode, fake model, `PROVING_LAB`):
+per-purpose local control, then silence on the ssh pane.

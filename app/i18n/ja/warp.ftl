@@ -872,6 +872,8 @@ settings-ai-prompt-suggestions-label = プロンプト候補
 settings-ai-suggested-code-banners-label = コード候補バナー
 settings-ai-natural-language-autosuggestions-label = 自然言語オートサジェスト
 settings-ai-natural-language-autosuggestions-in-ssh-label = SSH セッションでの自然言語オートサジェスト
+settings-ai-next-command-in-ssh-label = SSH セッションでの次のコマンド
+settings-ai-prompt-suggestions-in-ssh-label = SSH セッションでのプロンプト候補
 settings-ai-git-operations-autogen-label = コミット & プルリクエスト生成
 
 # Permissions dropdown options
@@ -1566,6 +1568,8 @@ settings-ai-prompt-suggestions-description = 最近のコマンドと出力に�
 settings-ai-suggested-code-banners-description = 最近のコマンドと出力に基づき、ブロック一覧のインラインバナーとして AI にコード差分とクエリを提案させます。
 settings-ai-natural-language-autosuggestions = 最近のコマンドと出力に基づき、AI に自然言語の自動候補を提案させます。
 settings-ai-natural-language-autosuggestions-in-ssh-description = ペインが SSH セッション中でも候補を要求します。入力が止まるたびに、入力欄のテキストがモデルプロバイダーに送信されます。既定ではオフです。
+settings-ai-next-command-in-ssh-description = セッションが SSH セッション中でもモデルに問い合わせます。リクエストのたびに、最近のコマンドと入力中のテキストがモデルプロバイダーに送信されます。既定ではオフです。履歴からの候補は引き続き表示されます。
+settings-ai-prompt-suggestions-in-ssh-description = ペインが SSH セッション中でもモデルに問い合わせます。リクエストのたびに、完了したコマンドとその出力の要約がモデルプロバイダーに送信されます。既定ではオフです。
 settings-ai-git-operations-autogen-description = コミットメッセージ、プルリクエストのタイトルと説明を AI に生成させます。
 # =============================================================================
 # SECTION: ai (Owner: agent-ai)

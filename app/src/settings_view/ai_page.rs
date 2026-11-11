@@ -26,9 +26,10 @@ use crate::settings::{
     AgentModeCommandExecutionPredicate, AgentModeQuerySuggestionsEnabled,
     AutoApproveBypassesCommandDenylist, AwsBedrockAutoLogin, AwsBedrockCredentialsEnabled,
     EnableAiCommandSearchHashTrigger, FileBasedMcpEnabled, GitOperationsAutogenEnabled,
-    IncludeAgentCommandsInHistory, IntelligentAutosuggestionsEnabled, MemoryEnabled,
-    NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled,
-    NaturalLanguageAutosuggestionsInSshEnabled, PromptTemplateDir, RuleSuggestionsEnabled,
+    IncludeAgentCommandsInHistory, IntelligentAutosuggestionsEnabled,
+    IntelligentAutosuggestionsInSshEnabled, MemoryEnabled, NLDInTerminalEnabled,
+    NaturalLanguageAutosuggestionsEnabled, NaturalLanguageAutosuggestionsInSshEnabled,
+    PromptSuggestionsInSshEnabled, PromptTemplateDir, RuleSuggestionsEnabled,
     SafeCommandAllowlistEnabled, ShouldRenderCLIAgentToolbar,
     ShouldRenderUseAgentToolbarForUserCommands, ShowAgentTips, ShowAgentZeroStateHints,
     ShowConversationHistory, ShowHintText, ThinkingDisplayMode, TokenPrice, VoiceInputEnabled,
@@ -2854,6 +2855,8 @@ pub enum AISettingsPageAction {
     ToggleCodeSuggestions,
     ToggleNaturalLanguageAutosuggestions,
     ToggleNaturalLanguageAutosuggestionsInSsh,
+    ToggleIntelligentAutosuggestionsInSsh,
+    TogglePromptSuggestionsInSsh,
     ToggleGitOperationsAutogen,
     ToggleAIInputAutoDetection,
     ToggleNLDInTerminal,
@@ -3255,6 +3258,30 @@ impl TypedActionView for AISettingsPageView {
                 }) {
                     log::warn!(
                         "Failed to set value for Natural Language Autosuggestions in ssh sessions setting: {e:?}"
+                    );
+                }
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleIntelligentAutosuggestionsInSsh => {
+                if let Err(e) = AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    settings
+                        .intelligent_autosuggestions_in_ssh_enabled_internal
+                        .toggle_and_save_value(ctx)
+                }) {
+                    log::warn!(
+                        "Failed to set value for Next Command in ssh sessions setting: {e:?}"
+                    );
+                }
+                ctx.notify();
+            }
+            AISettingsPageAction::TogglePromptSuggestionsInSsh => {
+                if let Err(e) = AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    settings
+                        .prompt_suggestions_in_ssh_enabled_internal
+                        .toggle_and_save_value(ctx)
+                }) {
+                    log::warn!(
+                        "Failed to set value for Prompt Suggestions in ssh sessions setting: {e:?}"
                     );
                 }
                 ctx.notify();
@@ -5317,6 +5344,8 @@ struct ActiveAIWidget {
     code_suggestions_toggle: SwitchStateHandle,
     natural_language_autosuggestions_toggle: SwitchStateHandle,
     natural_language_autosuggestions_in_ssh_toggle: SwitchStateHandle,
+    intelligent_autosuggestions_in_ssh_toggle: SwitchStateHandle,
+    prompt_suggestions_in_ssh_toggle: SwitchStateHandle,
     git_operations_autogen_toggle: SwitchStateHandle,
 }
 
@@ -5365,6 +5394,8 @@ impl ActiveAIWidget {
     ) -> Box<dyn warpui::Element> {
         let ai_settings = AISettings::as_ref(app);
         let is_toggleable = ai_settings.is_active_ai_enabled(app);
+        // The ssh switch refines the one above it: it decides nothing while that one is off.
+        let is_in_ssh_toggleable = ai_settings.is_intelligent_autosuggestions_enabled(app);
 
         Flex::column()
             .with_child(
@@ -5383,6 +5414,22 @@ impl ActiveAIWidget {
                 is_toggleable,
                 app,
             ))
+            .with_child(render_ai_setting_toggle::<
+                IntelligentAutosuggestionsInSshEnabled,
+            >(
+                crate::t!("settings-ai-next-command-in-ssh-label"),
+                AISettingsPageAction::ToggleIntelligentAutosuggestionsInSsh,
+                ai_settings.is_intelligent_autosuggestions_in_ssh_enabled(),
+                is_in_ssh_toggleable,
+                self.intelligent_autosuggestions_in_ssh_toggle.clone(),
+                &view.local_only_icon_tooltip_states,
+                app,
+            ))
+            .with_child(render_ai_setting_description(
+                crate::t!("settings-ai-next-command-in-ssh-description"),
+                is_in_ssh_toggleable,
+                app,
+            ))
             .finish()
     }
 
@@ -5393,6 +5440,8 @@ impl ActiveAIWidget {
     ) -> Box<dyn warpui::Element> {
         let ai_settings = AISettings::as_ref(app);
         let is_toggleable = ai_settings.is_active_ai_enabled(app);
+        // The ssh switch refines the one above it: it decides nothing while that one is off.
+        let is_in_ssh_toggleable = ai_settings.is_prompt_suggestions_enabled(app);
         Flex::column()
             .with_child(
                 render_ai_setting_toggle::<AgentModeQuerySuggestionsEnabled>(
@@ -5408,6 +5457,20 @@ impl ActiveAIWidget {
             .with_child(render_ai_setting_description(
                 crate::t!("settings-ai-prompt-suggestions-description"),
                 is_toggleable,
+                app,
+            ))
+            .with_child(render_ai_setting_toggle::<PromptSuggestionsInSshEnabled>(
+                crate::t!("settings-ai-prompt-suggestions-in-ssh-label"),
+                AISettingsPageAction::TogglePromptSuggestionsInSsh,
+                ai_settings.is_prompt_suggestions_in_ssh_enabled(),
+                is_in_ssh_toggleable,
+                self.prompt_suggestions_in_ssh_toggle.clone(),
+                &view.local_only_icon_tooltip_states,
+                app,
+            ))
+            .with_child(render_ai_setting_description(
+                crate::t!("settings-ai-prompt-suggestions-in-ssh-description"),
+                is_in_ssh_toggleable,
                 app,
             ))
             .finish()

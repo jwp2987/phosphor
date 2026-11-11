@@ -328,3 +328,88 @@ def c_agent_nld_predict_ssh(ctx, r, arm):
     leaked = [c for _, c in ctx.remote.commands() if "nldssh%s" % uid in c]
     r.check(not leaked, "the untyped-Enter prompt reached the remote shell: %r" % leaked[:2])
     CL.finish_remote(ctx, r)
+
+
+SUGGESTION_PURPOSES = ("next_command", "prompt_suggestions")
+
+
+def suggestion_requests(fake):
+    return {p: fake.by_purpose.get(p, 0) for p in SUGGESTION_PURPOSES}
+
+
+def suggestion_deltas(before, after):
+    return {p: after.get(p, 0) - before.get(p, 0) for p in SUGGESTION_PURPOSES}
+
+
+def suggestions_verdict(local_delta, ssh_delta):
+    """pure: (#2094) -> ("pass" | "fail" | "unverifiable", why, per) with per = {purpose: "pass" | "fail" | "no_control"}. Each purpose is judged only against
+    its own local control: a purpose the LOCAL pane never requested proves nothing on the ssh pane (the feature is off, unconfigured, or the block did not
+    qualify). Any request of a controlled purpose from the ssh pane is the defect. No controlled purpose at all: UNVERIFIABLE, never a pass."""
+    per, leaks = {}, []
+    for p in SUGGESTION_PURPOSES:
+        if local_delta.get(p, 0) < 1:
+            per[p] = "no_control"
+        elif ssh_delta.get(p, 0) > 0:
+            per[p] = "fail"
+            leaks.append("%d %s" % (ssh_delta[p], p))
+        else:
+            per[p] = "pass"
+    if leaks:
+        return "fail", "%s request(s) reached the model from the ssh session (the ..._in_ssh_enabled settings are off by default)" % ", ".join(leaks), per
+    if "pass" not in per.values():
+        return "unverifiable", "the LOCAL control produced no next_command and no prompt_suggestions request, so none from the ssh session proves nothing", per
+    return "pass", "", per
+
+
+def run_and_count_suggestions(ctx, fake, commands, wait_s, until_request):
+    """run `commands` in the pane (a suggestion is requested after a block completes) and return the per-purpose request deltas. `until_request`: stop
+    waiting once every purpose has a request (the control); otherwise wait the whole time (the pane that must stay silent)."""
+    before = suggestion_requests(fake)
+    for cmd in commands:
+        AG.type_fast(ctx, cmd)
+        time.sleep(1.5)
+    if until_request:
+        ctx.until(lambda: all(v > 0 for v in suggestion_deltas(before, suggestion_requests(fake)).values()), wait_s, step=0.25)
+    else:
+        time.sleep(wait_s)
+    got = suggestion_deltas(before, suggestion_requests(fake))
+    ctx.reset()
+    time.sleep(1.5)       # a request still in flight lands before the next baseline
+    return got
+
+
+@CL.lab_case("agent_suggestions_ssh", shells=("bash",), lat=("lan",), helper=("nohelper",), modes=("agent",))
+def c_agent_suggestions_ssh(ctx, r, arm):
+    """#2094: a finished command asks the model for a next command / a prompt suggestion on a local pane, and asks for nothing on an ssh pane (default
+    settings). The sibling of lab_agent_nld_predict_ssh (#1982)."""
+    fake = fake_model_or_skip(ctx, r)
+    uid = CL.unique(ctx, 6)
+    ctx.reset()
+    # one command that succeeds and one that fails: a failed command is what a prompt suggestion is most often offered for
+    local_delta = run_and_count_suggestions(ctx, fake, ["echo sugloc_%s" % uid, "ls /nonexistent_sugloc_%s" % uid], 12, True)
+    ctx.shot("agent_suggestions_local_%s" % arm["shell"])
+    for p in SUGGESTION_PURPOSES:
+        r.metric("%s_requests_local" % p, local_delta[p])
+    if CL.connect_or_fail(ctx, r, arm) is None:
+        ctx.reset()
+        return
+    time.sleep(1.0 + 2 * CL.rtt_s(arm))
+    ssh_delta = run_and_count_suggestions(ctx, fake, ["echo sugrem_%s" % uid, "ls /nonexistent_sugrem_%s" % uid], 8 + 4 * CL.rtt_s(arm), False)
+    ran = any("sugrem_%s" % uid in c for _, c in ctx.remote.commands())
+    r.check(ran, "`echo sugrem_%s` did not run in the remote shell, so the ssh pane has no completed block to suggest from" % uid)
+    ctx.shot("agent_suggestions_ssh_%s" % arm["shell"])
+    for p in SUGGESTION_PURPOSES:
+        r.metric("%s_requests_ssh" % p, ssh_delta[p])
+    verdict, why, per = suggestions_verdict(local_delta, ssh_delta)
+    r.metric("suggestions_ssh_per_purpose", per)
+    for p, v in sorted(per.items()):
+        if v == "no_control":
+            r.note("#2094 %s: the local control produced no request, so the ssh pane is not judged for it" % p)
+    if not ran:
+        pass                      # already failed above: no verdict on a pane where nothing ran
+    elif verdict == "unverifiable":
+        r.unverifiable(why)
+    else:
+        r.check(verdict == "pass", why)
+    CL.finish_remote(ctx, r)
+

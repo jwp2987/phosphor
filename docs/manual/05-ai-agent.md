@@ -938,7 +938,9 @@ Per-model fields: `name`, `id`, `context_window` (0 = unknown),
 | `agents.warp_agent.input.ai_command_denylist` | string | empty |
 | `agents.warp_agent.input.include_agent_commands_in_history` | bool | `false` |
 | `agents.warp_agent.active_ai.intelligent_autosuggestions_enabled` | bool | `true` |
+| `agents.warp_agent.active_ai.intelligent_autosuggestions_in_ssh_enabled` | bool | `false` |
 | `agents.warp_agent.active_ai.agent_mode_query_suggestions_enabled` | bool | `true` |
+| `agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled` | bool | `false` |
 | `agents.warp_agent.active_ai.code_suggestions_enabled` | bool | `true` |
 | `agents.warp_agent.active_ai.natural_language_autosuggestions_enabled` | bool | `true` |
 | `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` | bool | `false` |

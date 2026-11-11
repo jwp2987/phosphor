@@ -2013,6 +2013,32 @@ define_settings_group!(AISettings, settings: [
         description: "Controls whether ghosted text autosuggestions for AI input queries are also requested in ssh sessions; false (default) sends nothing to the model while typing in an ssh session.",
         feature_flag: FeatureFlag::PredictAMQueries,
     }
+    // #2094 (owner decision 2026-11-11, the #1982 rule for two more features): a next-command
+    // suggestion request carries recent commands, similar history and the typed prefix to the
+    // model provider. In an ssh session that is off unless the user turns this on (default
+    // false). Not synced. Read through `is_intelligent_autosuggestions_in_ssh_enabled()`. The
+    // suggestions that need no request (history, completions) are not affected.
+    intelligent_autosuggestions_in_ssh_enabled_internal: IntelligentAutosuggestionsInSshEnabled {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.warp_agent.active_ai.intelligent_autosuggestions_in_ssh_enabled",
+        description: "Controls whether AI next-command suggestions are also requested in ssh sessions; false (default) sends nothing to the model for them from an ssh session.",
+    }
+    // #2094: a prompt suggestion request carries the finished command and a summary of its
+    // output to the model provider. Same rule, same default. Read through
+    // `is_prompt_suggestions_in_ssh_enabled()`.
+    prompt_suggestions_in_ssh_enabled_internal: PromptSuggestionsInSshEnabled {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.warp_agent.active_ai.prompt_suggestions_in_ssh_enabled",
+        description: "Controls whether prompt suggestions are also requested from the model in ssh sessions; false (default) sends nothing to the model for them from an ssh session.",
+    }
     // This field should not be referenced directly to lookup git operations AI autogen
     // enablement -- use the `is_git_operations_autogen_enabled()` getter.
     git_operations_autogen_enabled_internal: GitOperationsAutogenEnabled {
@@ -3028,6 +3054,19 @@ impl AISettings {
 
     pub fn is_intelligent_autosuggestions_enabled(&self, app: &warpui::AppContext) -> bool {
         self.is_active_ai_enabled(app) && *self.intelligent_autosuggestions_enabled_internal
+    }
+
+    /// Whether next-command suggestions may also be requested from the model while the session
+    /// is an ssh session (#2094). Only meaningful when
+    /// [`Self::is_intelligent_autosuggestions_enabled`] is true.
+    pub fn is_intelligent_autosuggestions_in_ssh_enabled(&self) -> bool {
+        *self.intelligent_autosuggestions_in_ssh_enabled_internal
+    }
+
+    /// Whether prompt suggestions may also be requested from the model while the pane is in an
+    /// ssh session (#2094). Only meaningful when [`Self::is_prompt_suggestions_enabled`] is true.
+    pub fn is_prompt_suggestions_in_ssh_enabled(&self) -> bool {
+        *self.prompt_suggestions_in_ssh_enabled_internal
     }
 
     pub fn is_voice_input_enabled(&self, app: &warpui::AppContext) -> bool {
