@@ -345,24 +345,17 @@ def judge_find(base, after, absent):
     if base != "scroll":
         return "noref", "the Find BEFORE the hostile output gave %s, not a match: Find could not be judged in this pass" % (base or "no find_scroll hop")
     if absent == "scroll":
-        return "fail", "TEST control: a Find for a token that was never printed reported a match, so the hop cannot tell"
+        return "fail", "control: after Enter the app went to a match for a token that was never printed, so the hop cannot tell a match from none"
     if after != "scroll":
         return "fail", "Find matched the token before the hostile output and not after it (%s)" % (after or "no find_scroll hop: the alternate screen may still be active")
     return "ok", ""
 
 
 def do_find(ctx, token, wait=8.0):
-    """open Find, type the token + Enter, read the app's find_scroll hops, Escape. -> find_result"""
-    off = ctx.log_size()
-    ctx.be.guard()
-    ctx.be.key(os.environ.get("APPCI_KEY_FIND", "cmd+f" if ctx.be.name == "mac" else "ctrl+shift+f"))
-    time.sleep(0.8)
-    ctx.be.type(token, 20, enter=True)
-    ctx.until(lambda: find_result(find_hops(ctx.log_since(off))) == "scroll", wait, step=0.25)
-    res = find_result(find_hops(ctx.log_since(off)))
-    ctx.be.key("Escape")
-    time.sleep(0.5)
-    return res
+    """one Find for `token`, judged from what its Enter caused (cases_r14_w1a.find_enter: the bar re-runs the previous query when it opens, and
+    round 14 read that line as this Find's) -> 'scroll' | 'no_match' | None"""
+    import cases_r14_w1a as W1A          # imported here: cases.py loads that module just before this one
+    return W1A.find_enter(ctx, token, wait)[0]
 
 
 def typed_exact(ctx, r, label, fname, word):

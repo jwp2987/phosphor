@@ -885,10 +885,11 @@ def tab_spots(ctx, r, toks, tabs, vertical, since, tag):
     return pick_tab_spots(cands, vertical)
 
 
-def _tab_round(ctx, r, m, toks, dirs, pids, order, vertical, since, tag):
+def _tab_round(ctx, r, m, toks, dirs, pids, order, vertical, since, tag, closed_at):
     """one layout: click the third tab, drag the second onto the third, middle-click the last. `order` = the tab ids (0-based indexes into toks / dirs /
     pids) left to right (top to bottom), the first being the case's own tab -> (the order afterwards, known): known is False when a step failed and
-    the real order is no longer certain (the caller then judges nothing more that depends on it)."""
+    the real order is no longer certain (the caller then judges nothing more that depends on it). `closed_at` gets {tab id: time} for the tab the
+    middle click closed (its shell is judged by the caller, after the undo-close window)."""
     name = "vertical panel" if vertical else "horizontal bar"
     ctx.be.guard()
     ctx.be.key(R.tab_key(ctx, 1))                              # tab 1 shown: the other tabs' tokens are on screen only in the strip
@@ -926,27 +927,53 @@ def _tab_round(ctx, r, m, toks, dirs, pids, order, vertical, since, tag):
     if not moved:
         return order, False
     order = want
-    # middle click on the last slot
+    # middle click on the last slot. Round 14 (#2109): the case waited 15 s for the tab's SHELL to be gone. A tab closed by middle click goes to the
+    # undo-close stack (WorkspaceAction::CloseTab -> close_tab(index, false, true)) and its shell lives for the grace period (60 s), so that
+    # check failed on a tab that had closed. Closed means: the LAST tab now answers from the tab that was before the victim. The victim's shell is
+    # judged by the caller once the undo window is over (it must not outlive it).
     victim = order[-1]
     off = ctx.log_size()
     m.click(slot[len(order) - 1][0], slot[len(order) - 1][1], 2)
-    gone = bool(ctx.until(lambda: not pid_alive(pids[victim]), 15, step=0.2))
+    time.sleep(1.2)
     ctx.shot("tp_%s_closed" % tag)
-    if not ptr_check(ctx, r, gone, "%s: middle click on the last tab at %r: the shell of that tab (pid %d) is still running 15 s later" % (
-            name, slot[len(order) - 1], pids[victim])):
-        return order, False
-    order = order[:-1]
     ctx.be.guard()
     ctx.be.key(R.tab_key(ctx, 9))
     time.sleep(0.6)
     cnt = V.window_tab_count(ctx, off)
+    got = V.tab_answer(ctx, "%s_last" % tag)
+    if not ptr_check(ctx, r, got == dirs[order[-2]], "%s: middle click on the last tab at %r: the last tab answers from %r, expected %r (the tab before it)%s" % (
+            name, slot[len(order) - 1], got, dirs[order[-2]], ": the tab did not close" if got == dirs[victim] else "")):
+        return order, False
+    closed_at[victim] = time.time()
+    order = order[:-1]
     if cnt is not None:
         r.check(cnt == len(order), "%s: the window has %d tab(s) after the middle click, expected %d" % (name, cnt, len(order)))
-    got = V.tab_answer(ctx, "%s_last" % tag)
-    r.check(got == dirs[order[-1]], "%s: after the middle click the last tab answers from %r, expected %r" % (name, got, dirs[order[-1]]))
     others = [t for t in order[1:] if not pid_alive(pids[t])]
     r.check(not others, "%s: the middle click also ended the shell of tab(s) %s" % (name, [toks[t] for t in others]))
     return order, not others
+
+
+def close_until_first_tab(ctx, r, home, most):
+    """the case's clean-up: close the last tab while it is not the case's own first tab (its cwd probe answers `home`), at most `most` times ->
+    how many closes were sent. Round 14 (#2109): the clean-up counted the tabs by their live shells and sent that many closes; a closed tab's shell
+    lives through the undo-close window, so one close too many closed the last tab, which ends the app. A last tab that answers nothing is left
+    alone too (it cannot be told from the first)."""
+    sent = 0
+    for _ in range(most):
+        ctx.be.guard()
+        ctx.be.key(R.tab_key(ctx, 9))
+        time.sleep(0.6)
+        if V.tab_answer(ctx, "tp_cl%d" % sent) in (home, "<none>"):
+            break
+        R.close_tab_best_effort(ctx, r)
+        time.sleep(0.9)
+        sent += 1
+    return sent
+
+
+def undo_window_left(closed_at_s, now_s, window_s):
+    """pure: seconds until a tab closed at `closed_at_s` is past the undo-close window (never negative)"""
+    return max(0.0, closed_at_s + window_s - now_s)
 
 
 @case("tab_pointer_use", order=87, gui=True)
@@ -965,14 +992,14 @@ def c_tab_pointer_use(ctx, r):
     toks = V.vt_tokens(ctx, 4)
     U.register_find(ctx, *toks)                                 # before any title holds a token: a title laid out earlier carries no position
     order = [0, 1, 2, 3]
-    opened, pids = False, None
+    opened, pids, closed_at = False, None, {}
     try:
         since = ctx.log_size()
         opened = True
         dirs, pids = open_tabs_tp(ctx, r, toks)
         if pids is None:
             return
-        order, known = _tab_round(ctx, r, m, toks, dirs, pids, order, lay.vertical, since, "a")
+        order, known = _tab_round(ctx, r, m, toks, dirs, pids, order, lay.vertical, since, "a", closed_at)
         other = "horizontal bar" if lay.vertical else "vertical panel"
         if not known:
             r.note("a step of the first layout failed, so the tab order is no longer certain: the %s is not played" % other)
@@ -982,18 +1009,23 @@ def c_tab_pointer_use(ctx, r):
         else:
             since = ctx.log_size()
             if r.check(lay.switch(), "the screen did not change within 10 s of writing appearance.vertical_tabs.enabled: the %s did not appear" % other):
-                order, _known = _tab_round(ctx, r, m, toks, dirs, pids, order, lay.vertical, since, "b")
+                order, _known = _tab_round(ctx, r, m, toks, dirs, pids, order, lay.vertical, since, "b", closed_at)
         r.check(ctx.app.alive(), "the app died in the tab pointer case")
     finally:
         try:
             if opened:
-                # the tabs whose shells still run: without the app's tab count close_extra_tabs sends exactly this many closes, never one more
-                V.close_extra_tabs(ctx, r, 1 + (sum(1 for p in pids[1:] if pid_alive(p)) if pids else len(toks) - 1))
+                r.metric("tp_cleanup_closes", close_until_first_tab(ctx, r, R.norm_path(ctx.W), len(toks) - 1))
         finally:
             lay.restore()
     got = V.tab_answer(ctx, "tp_end")
     r.check(got == R.norm_path(ctx.W), "after the tabs were closed the pane that answers is in %r, expected the first tab (%r)" % (got, R.norm_path(ctx.W)))
     U.exact_burst(ctx, r, "tp_after", 3)
+    # the shells of the tabs the middle clicks closed: gone once the undo-close window is over (general.undo_close.grace_period, 60 s), not before
+    window = float(os.environ.get("APPCI_UNDO_CLOSE_WAIT_S", "75"))
+    for victim, t_closed in sorted(closed_at.items(), key=lambda kv: kv[1]):
+        gone = bool(ctx.until(lambda: not pid_alive(pids[victim]), undo_window_left(t_closed, time.time(), window) + 5, step=0.5))
+        r.check(gone, "the shell of the tab closed by middle click (pid %d) is still running %.0f s after the close (undo window 60 s): an orphan"
+                % (pids[victim], time.time() - t_closed))
 
 
 # ---------------------------------------------------------------- T29 focus_cycle

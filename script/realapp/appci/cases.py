@@ -1038,6 +1038,7 @@ class Ctx:
         self.opts = {}                # tier options of this pass (winmap.tier_plan): ref, ft_gaps, cc_short; empty = the full tier
         self.enter_control = None     # cached result of run_enter_control (#1482)
         self.cc_integrity = {}        # ctrlc_samples: per output file, how many typed sample lines the shell received exactly
+        self.view_pane = None         # (app pid, pane id) of the agent pass's own pane (note_view_pane; read by mode_now)
         self.root_pid = None          # PID of the pane's root shell (run.py records it at the first checked case after a launch; see leave_nested)
         self.root_app_pid = None
         self.ctrlc_ts = []            # wall time of every Ctrl-C the harness sent (r18d2: see reset())
@@ -1934,13 +1935,44 @@ class Ctx:
                 last = m.group(1)
         return last
 
+    def log_view_rows(self):
+        """[(mode, pane id or None)] of every `hop=view_mode` line of the app log, oldest first (the files log_view_mode reads)"""
+        import glob
+        src = self.log_path
+        if not src:
+            return []
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        rows = []
+        for f in parts:
+            try:
+                rows += view_mode_rows(open(f, errors="replace").read())
+            except OSError:
+                continue
+        return rows
+
+    def note_view_pane(self, app_pid):
+        """run.py, before every case of an agent pass: remember WHICH pane is the pass's own (the pane of the latest view_mode line, when that
+        line says agent), once per app instance. mode_now then knows a later line of another pane (a throw-away tab) from this pane's."""
+        own = getattr(self, "view_pane", None)
+        if own is not None and own[0] != app_pid:
+            own = None                                   # another app instance: its pane ids are its own
+        if own is None:
+            rows = self.log_view_rows()
+            if rows and rows[-1][0] == "agent" and rows[-1][1]:
+                own = (app_pid, rows[-1][1])
+        self.view_pane = own
+
     def mode_now(self, tag):
         """'agent' | 'terminal' | None. The app's own `hop=view_mode` log line first (#1568, works without OCR, e.g. on Windows); only when the
         log has none (older build) it falls back to OCR of a screenshot. Agent view: its header
         'New Phosphor Agent conversation', the 'ESC for terminal' bar, or the 'Ask anything' placeholder. Terminal session: the
-        'new /agent conversation' hint or 'New terminal session' (r18cx: the agent pass had silently become a terminal session)."""
-        logged = self.log_view_mode()
-        if logged:
+        'new /agent conversation' hint or 'New terminal session' (r18cx: the agent pass had silently become a terminal session).
+        Round 19 (#2109): the latest line may be ANOTHER pane's (soak's throw-away tab logs `mode=terminal pane=<new>` when it opens and is then
+        closed: left_agent_mode_after_soak, 2026-11-05 and round 14). When the pass's own pane is known (note_view_pane) and the panes' latest
+        lines disagree, the log cannot say which pane is in front: the screen decides (OCR), and without a reader there is no verdict."""
+        own = getattr(self, "view_pane", None)
+        logged = view_mode_verdict(self.log_view_rows(), own[1] if own else None)
+        if logged in ("agent", "terminal"):
             return logged
         txt = self.ocr(tag)
         if txt is None:
@@ -6529,6 +6561,30 @@ def file_viewer_opened(log):
     return FILE_PANE_OPENED in log
 
 
+VIEW_MODE_RE = re.compile(r"hop=view_mode mode=(agent|terminal)\b(?: pane=(\S+))?")       # app/src/ai/blocklist/agent_view/controller.rs view_mode_detail
+
+
+def view_mode_rows(text):
+    """pure: [(mode, pane id or None)] of the `hop=view_mode mode=... pane=...` lines of an app-log excerpt, in order"""
+    return [(m.group(1), m.group(2)) for m in VIEW_MODE_RE.finditer(text or "")]
+
+
+def view_mode_verdict(rows, own_pane):
+    """pure: 'agent' | 'terminal' | 'other' | None for the view_mode rows of a launch and the pass's own pane id (None: not known).
+    None: no row. The latest row's mode when the own pane is not known (as before round 19), when the latest row IS the own pane's, or when
+    every pane's latest row says the same (whichever pane is in front, that is its mode). 'other': the latest row is another pane's and the
+    panes disagree, so the log cannot say what the pane in front shows."""
+    if not rows:
+        return None
+    mode, pane = rows[-1]
+    if own_pane is None or pane is None or pane == own_pane:
+        return mode
+    latest = {}
+    for m, p in rows:
+        latest[p] = m
+    return mode if len(set(latest.values())) == 1 else "other"
+
+
 def viewer_close_verdict(pid, root_pid, has_probe):
     """pure: after the viewer tab was closed, is a shell pane in front again? -> (ok, text). `pid` is the PID probe's answer (None: nothing answered),
     `root_pid` the pane's recorded root shell (None: not recorded), `has_probe` whether this pane has a PID probe at all (cmd.exe has none)."""
@@ -6541,13 +6597,18 @@ def viewer_close_verdict(pid, root_pid, has_probe):
     return True, "shell pid %s answers" % pid
 
 
-def close_file_viewer(ctx, r, off, what):
+ROOT_ON_RECORD = object()      # close_file_viewer: compare with the root shell pid run.py recorded for this launch (ctx.root_pid)
+
+
+def close_file_viewer(ctx, r, off, what, root_pid=ROOT_ON_RECORD):
     """Close the viewer TAB open_file_in_app() opened and PROVE a shell is in front again. Round 10 macOS: md_viewer left its tab open and in front
     (uri::open_file adds a tab and focuses it); the four cases after it SKIP there, so ui_vertical_tabs_many typed its first line into the viewer
     (9 tabs for 8, tab 2 = '<none>') and the runner then relaunched the app (pane_not_local_after_ui_vertical_tabs_many). On Linux a case that
     relaunches the app (zero_network_startup) happened to run in between. Nothing is pressed unless the app log since `off` shows the tab opening
     (the close acts on whatever is in front). The close is editor_close(): APPCI_KEY_CLOSE, else (macOS) the command palette's 'Close Current
-    Session'. The proof is the PID probe: a shell answers, and it is the pane's root shell when that pid is recorded."""
+    Session'. The proof is the PID probe: a shell answers, and it is the pane's root shell when that pid is recorded. `root_pid`: a case that
+    relaunched the app itself passes the root shell pid of ITS instance (round 14, #2109: md_viewer_first_frame's control arm was compared with
+    the pid recorded for the instance before the relaunch and failed on a viewer tab that had closed)."""
     if not ctx.until(lambda: file_viewer_opened(ctx.log_since(off)), 3, step=0.3):
         r.note("%s: no '%s' line in the app log: no viewer tab is known to be open, nothing was closed" % (what, FILE_PANE_OPENED))
         return
@@ -6557,7 +6618,8 @@ def close_file_viewer(ctx, r, off, what):
         return
     time.sleep(1.2)
     has_probe = depth_probe_cmd(getattr(ctx, "pane", None), "x") is not None
-    ok, text = viewer_close_verdict(ctx.shell_pid() if has_probe else None, getattr(ctx, "root_pid", None), has_probe)
+    root = getattr(ctx, "root_pid", None) if root_pid is ROOT_ON_RECORD else root_pid
+    ok, text = viewer_close_verdict(ctx.shell_pid() if has_probe else None, root, has_probe)
     if ok is None:
         r.note("%s: viewer tab closed by %s; %s" % (what, how, text))
         return

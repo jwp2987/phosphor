@@ -139,6 +139,9 @@ def c_md_viewer_first_frame(ctx, r):
             r.unverifiable("control arm: the app did not reach a prompt with %s=0 (%s): the switch is not judged" % (HOLD_SWITCH, "; ".join(tmp.fails)))
         else:
             ctx.reset()
+            # the root shell of THIS instance, before the viewer tab opens: ctx.root_pid is the instance's before the relaunch (run.py records it
+            # per launch it makes). None (no probe answer) = "not recorded": the close then still needs a shell to answer.
+            croot = ctx.shell_pid() if cases.depth_probe_cmd(getattr(ctx, "pane", None), "x") is not None else None
             clog, coff = _open_and_read(ctx, r, path, "md_viewer_first_frame control")
             try:
                 if clog is not None:
@@ -148,7 +151,7 @@ def c_md_viewer_first_frame(ctx, r):
                     if cok:
                         r.note(ctext)
             finally:
-                cases.close_file_viewer(ctx, r, coff, "md_viewer_first_frame control")
+                cases.close_file_viewer(ctx, r, coff, "md_viewer_first_frame control", root_pid=croot)
     finally:
         tmp = cases.Result(r.name, r.mode)
         ctx.app.extra_env = {}

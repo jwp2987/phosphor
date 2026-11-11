@@ -188,29 +188,37 @@ def own_records(records):
     return [x for x in records if x.get("app") != CONTROL_APP]
 
 
-def judge_notifications(records, hops, want, needle=None, recorded=True):
+TITLE_START_CHARS = 8          # the title is "'<the command's first characters>...' finished after Ns" (terminal/view.rs create_notification_content)
+
+
+def judge_notifications(records, hops, want, needle=None, recorded=True, starts=None):
     """problems. records = what the notification service received (judged when `recorded`), hops = the app's hop lines, want = how many are right.
-    With a needle and want == 1 the one notification must name it (the command line)."""
+    With want == 1: a `needle` must be in the one notification's text (a token the command PRINTED: the body is "Latest output: <the end of the
+    output>"), and with `starts` (the command line) the title must begin with the command's first characters in a quote. Round 14 (#2109): the
+    needle was a token at character 16 of the command line; the title holds the command's first 16 characters by design, so it was never there."""
     probs = []
     if recorded:
         shown = [("%s | %s" % (x.get("summary", ""), x.get("body", "")))[:120] for x in records]
         if len(records) != want:
             probs.append("the notification service received %d notification(s), expected %d: %r" % (len(records), want, shown[:4]))
         elif want == 1 and needle and needle not in (records[0].get("summary", "") + " " + records[0].get("body", "")):
-            probs.append("the notification does not name the command (%r not in %r)" % (needle, shown[0]))
+            probs.append("the notification is not this command's: the token it printed (%r) is not in %r" % (needle, shown[0]))
+        elif want == 1 and starts and not records[0].get("summary", "").startswith("'" + starts[:TITLE_START_CHARS]):
+            probs.append("the notification's title does not start with the command (%r): %r" % ("'" + starts[:TITLE_START_CHARS], shown[0]))
     if len(hops) != want:
         probs.append("the app logged %d hop=desktop_notification line(s), expected %d%s" % (
             len(hops), want, " (the service and the app's own trace disagree)" if recorded and len(records) == want else ""))
     return probs
 
 
-def long_cmd(shell, secs, append):
-    """a command that runs `secs` seconds, then runs `append` (Ctx.append_cmd of the pane's shell)"""
+def long_cmd(shell, secs, append, say=None):
+    """a command that runs `secs` seconds, then runs `append` (Ctx.append_cmd of the pane's shell); with `say` it then prints that word as the
+    last line of its output (what a notification's body quotes)"""
     if shell == "pwsh":
-        return "Start-Sleep -Seconds %d; %s" % (secs, append)
+        return "Start-Sleep -Seconds %d; %s%s" % (secs, append, "; Write-Output %s" % say if say else "")
     if shell == "cmd":
-        return "ping -n %d 127.0.0.1 >nul & %s" % (secs + 1, append)
-    return "sleep %d; %s" % (secs, append)
+        return "ping -n %d 127.0.0.1 >nul & %s%s" % (secs + 1, append, " & echo %s" % say if say else "")
+    return "sleep %d; %s%s" % (secs, append, "; echo %s" % say if say else "")
 
 
 # ---- T38 drag and drop
@@ -782,10 +790,10 @@ class NotifySetup:
             return (len(recs) if self.recorded else len(hops)) >= n
         return bool(self.ctx.until(seen, timeout, step=0.2))
 
-    def judge(self, mark, want, what, needle=None):
+    def judge(self, mark, want, what, needle=None, starts=None):
         recs, hops = self.since(mark)
         self.r.metric("notify_%s" % what.split(":")[0].replace(" ", "_"), dict(recorded=len(recs) if self.recorded else None, hops=len(hops)))
-        probs = judge_notifications(recs, hops, want, needle, self.recorded)
+        probs = judge_notifications(recs, hops, want, needle, self.recorded, starts)
         for p in probs:
             self.r.check(False, "%s: %s" % (what, p))
         return not probs
@@ -811,11 +819,12 @@ def notify_or_skip(ctx, r, name):
         r.skip("no app log: hop=desktop_notification cannot be read")
 
 
-def timed_command(ctx, sh, secs, tag):
-    """type a `secs`-second command with an effect file at the owner rate + Enter -> (token, effect file, time of the Enter)"""
+def timed_command(ctx, sh, secs, tag, say=None):
+    """type a `secs`-second command with an effect file at the owner rate + Enter -> (token, effect file, time of the Enter). With `say` the
+    command prints that word last (long_cmd)."""
     tok, f = ctx.tok(8).lower(), "dn_%s_%s.txt" % (tag, ctx.tok(4).lower())
     ctx.rm(f)
-    ctx.be.type(long_cmd(sh, secs, ctx.append_cmd(sh, tok, f)), ctx.rng.randint(10, 25), enter=True)
+    ctx.be.type(long_cmd(sh, secs, ctx.append_cmd(sh, tok, f), say), ctx.rng.randint(10, 25), enter=True)
     return tok, f, time.time()
 
 
@@ -849,7 +858,8 @@ def c_desktop_notification(ctx, r):
         ns.judge(mark, 0, "focused: a %d s command ended while Phosphor had the focus" % LONG_S)
         # ---- the same command ends while the reference terminal has the focus
         mark = ns.mark()
-        tok, f, t_enter = timed_command(ctx, sh, LONG_S, "away")
+        said = "dnsaid" + ctx.tok(8).lower().replace("_", "")      # printed by the command: the notification's body quotes the end of the output
+        tok, f, t_enter = timed_command(ctx, sh, LONG_S, "away", say=said)
         why = away.leave()
         left_after = time.time() - t_enter
         r.metric("focus_left_after_enter_s", round(left_after, 2))
@@ -867,7 +877,8 @@ def c_desktop_notification(ctx, r):
         ns.wait(mark, 1, 8)
         time.sleep(2.0)                  # a second notification for the same block would arrive here
         ctx.shot("dn_unfocused")
-        ns.judge(mark, 1, "unfocused: a %d s command ended while the reference terminal had the focus" % LONG_S, needle=tok)
+        ns.judge(mark, 1, "unfocused: a %d s command ended while the reference terminal had the focus" % LONG_S, needle=said,
+                 starts=long_cmd(sh, LONG_S, ""))
         why = away.back()
         if why:
             r.check(False, "the focus did not return to Phosphor: %s" % why)

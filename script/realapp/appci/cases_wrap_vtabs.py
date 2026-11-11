@@ -554,24 +554,50 @@ def c_vertical_tabs_many(ctx, r):
     U.exact_burst(ctx, r, "vt_many_closed", 4)
 
 
+def left_of_pane(rows, pane_left):
+    """pure: the find-hook rows (text, cx, cy, left, right, top, bottom) that lie wholly left of the pane's own left edge: drawn in the panel.
+    pane_left None (the edge is not known): every row, as before round 19."""
+    return list(rows) if pane_left is None else [w for w in rows if w[4] < pane_left]
+
+
+def _pane_left_edge(ctx):
+    """the x of the pane's leftmost text column, from the find hook: tab 1 prints a probe at column 0 of a command's OUTPUT (the command line never
+    holds it: `printf '%s%s\\n' A B`, so no panel row shows it) -> the smallest left edge it was drawn at, or None when the hook reported none.
+    Round 14 (#2109, Git Bash agent pass): in the agent view the panel rows do not show a tab's token, and the token's sightings in the PANE were
+    taken for panel rows (x=356; the panel is at x=149) and clicked."""
+    import cases_window_use as WU                        # imported here: cases_window_use imports this module
+    probe = WU.safe_token(ctx, "vtq")
+    U.register_find(ctx, probe)
+    half = len(probe) // 2
+    off = ctx.log_size()
+    U.run_cmd(ctx, "printf '%%s%%s\\n' %s %s" % (probe[:half], probe[half:]))
+    if not WU.wait_hook(ctx, probe, off, 4.0):
+        return None
+    return min(w[3] for w in WU.hook_rows(ctx, probe, off))
+
+
 def _panel_rows_from_hook(ctx, r, toks, n, since):
-    """Windows: the panel rows of tabs 2..n from the app's `appci_find` lines since the tabs were opened (hook_panel_rows) -> rows, or None after
-    reporting that they cannot be located (not judged: the VM has no OCR engine to fall back on)"""
+    """Windows: the panel rows of tabs 2..n from the app's `appci_find` lines since the tabs were opened (hook_panel_rows), only the sightings left
+    of the pane's own left edge (_pane_left_edge) -> (rows, pane_left), or (None, pane_left) after reporting that they cannot be located (not
+    judged: the VM has no OCR engine to fall back on)"""
     import cases_window_use as WU                        # imported here: cases_window_use imports this module
     origin = ctx.be.client_origin()
+    pane_left = _pane_left_edge(ctx) if origin else None
     ctx.shot("vt_panel")
     text = ctx.log_since(since)
-    sightings = {k + 1: [(w[1], w[2]) for w in WU.find_rows(text, toks[k], origin)] for k in range(1, n)} if origin else {}
+    found = {k + 1: WU.find_rows(text, toks[k], origin) for k in range(1, n)} if origin else {}
+    sightings = {k: [(w[1], w[2]) for w in left_of_pane(ws, pane_left)] for k, ws in found.items()}
     rows = hook_panel_rows(sightings)
     if len(rows) < 2:
-        r.unverifiable("the panel rows of tabs 2..%d could not be located: the app logged `appci_find` lines for %d of %d tab tokens (window origin %r; "
-                       "shots/*vt_panel.png). The profile's panel shows the command or the directory in each row (checked before the case, "
-                       "case_settings.py: vertical_tabs_primary_info), so the rows of this session mode showed another text, or "
-                       "the build has no find hook; Windows has no OCR engine to fall back on. Stacking and the row click are NOT checked"
-                       % (n, len(rows), n - 1, origin))
-        return None
-    r.note("panel rows located from the app's find hook (the newest sighting in each token's leftmost column), not by OCR")
-    return rows
+        in_pane = sum(1 for ws in found.values() if ws)
+        r.unverifiable("the panel rows of tabs 2..%d could not be located: the app logged `appci_find` lines for %d of %d tab tokens, %d of them left of "
+                       "the pane's left edge (x=%s; window origin %r; shots/*vt_panel.png). The profile's panel shows the command or the directory in "
+                       "each row (checked before the case, case_settings.py: vertical_tabs_primary_info), so the rows of this session mode showed "
+                       "another text, or the build has no find hook; Windows has no OCR engine to fall back on. Stacking and the row click are NOT "
+                       "checked" % (n, in_pane, n - 1, len(rows), pane_left, origin))
+        return None, pane_left
+    r.note("panel rows located from the app's find hook (the newest sighting in each token's leftmost column, left of the pane's edge x=%s), not by OCR" % pane_left)
+    return rows, pane_left
 
 
 @case("ui_vertical_tabs_panel_click", order=87, gui=True)
@@ -597,8 +623,9 @@ def c_vertical_tabs_panel_click(ctx, r):
         got = tab_answer(ctx, "p0")
         if not r.check(got == dirs[0], "the tab 1 key did not show tab 1 (the pane that answers is in %r): the other tabs' tokens may be in the pane, not only in the panel" % got):
             return
+        pane_left = None
         if U.is_windows(ctx):
-            rows = _panel_rows_from_hook(ctx, r, toks, n, seen)
+            rows, pane_left = _panel_rows_from_hook(ctx, r, toks, n, seen)
             if rows is None:
                 return
         else:
@@ -617,7 +644,14 @@ def c_vertical_tabs_panel_click(ctx, r):
             return
         ok, desc = rows_stacked(rows)
         if U.is_windows(ctx):
-            r.check(bool(ok), "vertical tabs panel (positions from the app's find hook): %s" % desc)
+            # with the pane's edge known the rows are the panel's: not stacked is the app's. Without it (the probe was not sighted) a column
+            # that is not stacked may be the pane's text: not judged. Either way nothing is clicked at places that are not rows.
+            if not ok and pane_left is None:
+                r.unverifiable("the tokens' leftmost sightings are not a stacked column (%s) and the pane's left edge could not be read from the "
+                               "find hook, so they cannot be told from text in the pane: stacking and the row click are NOT checked" % desc)
+                return
+            if not r.check(bool(ok), "vertical tabs panel (positions from the app's find hook, left of the pane's edge x=%s): %s" % (pane_left, desc)):
+                return
         else:
             U.wl_check(ctx, r, bool(ok), "vertical tabs panel: %s" % desc, "OCR")
         r.note("panel rows (%s): %s" % ("find hook" if U.is_windows(ctx) else "OCR", desc))

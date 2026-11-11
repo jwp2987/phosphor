@@ -267,7 +267,14 @@ def notification_verdicts_and_settings():
     assert "received 0 notification(s), expected 1" in D.judge_notifications([], [], 1, needle="tok9")[0]
     assert "received 2 notification(s), expected 1" in D.judge_notifications(ok * 2, [(1, 1), (1, 1)], 1)[0]
     assert "received 1 notification(s), expected 0" in D.judge_notifications(ok, [(1, 1)], 0)[0]
-    assert "does not name the command" in D.judge_notifications([rec("Notification")], [(1, 1)], 1, needle="tok9")[0]
+    # round 19 (#2109): the needle is a token the command PRINTED (the body quotes the output's end); the title holds the command's first characters
+    assert "is not this command's" in D.judge_notifications([rec("Notification")], [(1, 1)], 1, needle="tok9")[0]
+    real = [rec("'sleep 12; echo t...' finished after 12s", "Latest output: dnsaidabc")]
+    assert D.judge_notifications(real, [(1, 1)], 1, needle="dnsaidabc", starts="sleep 12; echo t9 >> f; echo dnsaidabc") == []
+    assert "is not this command's" in D.judge_notifications(real, [(1, 1)], 1, needle="dnsaidxyz", starts="sleep 12; ")[0], "another block's output"
+    assert "title does not start with the command" in D.judge_notifications(real, [(1, 1)], 1, needle="dnsaidabc", starts="make all; ")[0]
+    assert D.long_cmd("bash", 12, "echo t >> f", "w1") == "sleep 12; echo t >> f; echo w1" and D.long_cmd("pwsh", 3, "Add-Content f t", "w1").endswith("; Write-Output w1")
+    assert D.long_cmd("cmd", 3, "echo t>>f", "w1").endswith(" & echo w1") and D.long_cmd("bash", 12, "") [:D.TITLE_START_CHARS] == "sleep 12"
     p = D.judge_notifications(ok, [], 1, needle="tok9")
     assert len(p) == 1 and "logged 0 hop=desktop_notification" in p[0] and "disagree" in p[0]
     assert D.judge_notifications([], [(3, 4)], 1, recorded=False) == [] and D.judge_notifications([], [], 1, recorded=False) != []

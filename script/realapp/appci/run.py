@@ -497,6 +497,8 @@ def main():
                 # be.guard() and ctx.reset(), once named a previous case's leaked nested shell as the root, and two consistent probes then `exit`ed the real root.
                 # Only when a CASE relaunched the app itself (ui_startup_time, remote_session_ext: the pane is a fresh terminal session) is it recorded here, and
                 # record_root_pid still refuses unless exactly one shell runs under the app.
+                if not sim and ctx.mode == "agent":
+                    ctx.note_view_pane(pid_start)         # round 19 (#2109): which pane is the pass's own, for the "left agent mode" check after the case
                 if not sim and not win and pid_start and getattr(ctx, "root_app_pid", None) != pid_start:
                     bad = record_root_pid(ctx, app, "relaunch_by_case")
                     if bad:

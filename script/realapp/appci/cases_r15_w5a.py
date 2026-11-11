@@ -291,6 +291,18 @@ def _same_bytes(r, path, text, label):
 
 # ================================================================ T50 editor_daily
 CLOSE_WARNING_LINE = "Displaying unsaved changes warning for pane"      # app/src/pane_group/mod.rs close_pane_with_confirmation (log::info!)
+# Round 14 (#2109): with an editor pane in front the close key closes the editor TAB (pane_group close_active_pane_with_confirmation ->
+# CodeViewAction::RemoveTabAtIndex -> code/view.rs remove_tab_with_confirmation). That question (Save / Don't save / Cancel) never logs the pane
+# path's line above, so the case said "did not ask" while the question was on screen. The in-app dialog logs its own line whichever path asked
+# (#2108, app/src/workspace/view.rs show_native_modal).
+MODAL_SHOWN_LINE = "hop=native_modal event=shown"
+
+
+def close_question_up(log):
+    """pure: whether an app-log excerpt shows a close question coming up: the pane path's line, or the in-app dialog's own"""
+    return CLOSE_WARNING_LINE in (log or "") or MODAL_SHOWN_LINE in (log or "")
+
+
 DISK_TRACE = re.compile(r"editor_disk outcome=(\w+) external=(true|false)(?: flagged=(true|false))?")     # app/src/code/global_buffer_model.rs disk_event_trace
 SAVE_ASK_TRACE = re.compile(r"editor_save_ask outcome=(\w+)")                                             # app/src/code/save_conflict.rs save_ask_trace (#2092)
 NO_CLOSE_QUESTION_MAC = ("macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the "
@@ -461,8 +473,12 @@ def close_editor(ctx, r, tag, clean):
         else:
             off = ctx.log_size()
             ctx.be.key(R.CLOSE_PANE or "ctrl+shift+w")
-            if ctx.until(lambda: CLOSE_WARNING_LINE in ctx.log_since(off), 1.5 if clean else 3.0):
-                ctx.be.key("Return")
+            if ctx.until(lambda: close_question_up(ctx.log_since(off)), 1.5 if clean else 3.0):
+                off2 = ctx.log_size()
+                ctx.be.key("Return")               # the editor tab's question: Save (its first button); a pane's: Yes, close
+                # the Save met the conflict banner (#2092): it asks before it overwrites. The file is the case's own: Overwrite (Tab, Enter)
+                if ctx.until(lambda: "asked" in save_ask_events(ctx.log_since(off2)), 1.5):
+                    press_overwrite(ctx)
             time.sleep(1.0)
     except Exception as e:
         r.note("%s: closing the editor pane raised %r" % (tag, e))
@@ -530,7 +546,7 @@ def _arm_close_question(ctx, r, d):
         off = ctx.log_size()
         ctx.be.guard()
         ctx.be.key(R.CLOSE_PANE)
-        asked = bool(ctx.until(lambda: CLOSE_WARNING_LINE in ctx.log_since(off), 4))
+        asked = bool(ctx.until(lambda: close_question_up(ctx.log_since(off)), 4))
         ctx.shot("edd_close_question")
         if not asked:
             time.sleep(1.0)
@@ -541,7 +557,8 @@ def _arm_close_question(ctx, r, d):
             off_note = (" general.show_warning_before_quitting is false in this profile; that setting no longer covers unsaved editor edits (#2092), so this "
                         "is a build before that change or one run with PHOSPHOR_UNSAVED_EDITS_ALWAYS_ASK=0."
                         if CA.setting_bool(ctx, "show_warning_before_quitting") is False else "")
-            r.check(False, "the close key on an editor with unsaved edits did not ask (no %r line within 4 s). The file on disk is %s.%s" % (CLOSE_WARNING_LINE, what, off_note))
+            r.check(False, "the close key on an editor with unsaved edits did not ask (neither %r nor %r within 4 s). The file on disk is %s.%s"
+                    % (MODAL_SHOWN_LINE, CLOSE_WARNING_LINE, what, off_note))
             return
         r.check(R.disk(path) == R.EDIT_ORIG, "while the close question is up the file on disk already changed")
         ctx.be.key("Escape")                                   # keep editing
@@ -557,7 +574,8 @@ def _arm_close_question(ctx, r, d):
         off = ctx.log_size()
         ctx.be.guard()
         ctx.be.key(R.CLOSE_PANE)
-        if not r.check(bool(ctx.until(lambda: CLOSE_WARNING_LINE in ctx.log_since(off), 4)), "the second close key did not ask again; Enter was NOT sent"):
+        if not r.check(bool(ctx.until(lambda: close_question_up(ctx.log_since(off)), 4)), "the second close key did not ask again (after Escape the "
+                       "keyboard is not back in the editor, #2108, or the question is gone); Enter was NOT sent"):
             return
         ctx.be.key("Return")
         time.sleep(1.5)

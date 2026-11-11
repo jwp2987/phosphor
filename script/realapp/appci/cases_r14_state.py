@@ -213,6 +213,46 @@ def find_result(hops):
     return "no_match" if hops else "none"
 
 
+def store_note(counts):
+    """pure: what the stored block rows say about a restore that does not show the earlier output (#2110). counts = {'after_stop': (rows, rows that
+    hold the token) | None, 'after_relaunch': the same}; None = the store could not be read."""
+    a, b = counts.get("after_stop"), counts.get("after_relaunch")
+    if a is None:
+        return "the block store could not be read after the stop: whether the output was stored is not known"
+    if a[1] == 0:
+        return ("after the stop the store held %d block row(s), none with the token: the output was not stored, or the stop dropped it (the view "
+                "has nothing to restore)" % a[0])
+    if b is not None and b[1] == 0:
+        return "the store held the token after the stop (%d row(s)) and not after the relaunch (%d row(s) left): the launch dropped the rows" % (a[1], b[0])
+    return "the store holds the token (%d row(s) after the stop%s): the rows are there and the restored view does not show them" % (
+        a[1], "" if b is None else ", %d after the relaunch" % b[1])
+
+
+def stored_blocks_with(ctx, token):
+    """(block rows, block rows whose command or output bytes hold `token`) over every warp.sqlite of the profile, read-only; None when no store
+    or no `blocks` table can be read. A diagnostic for #2110, never a verdict: the output is stored as styled bytes, and a token that a style run
+    happens to split would not be found."""
+    import sqlite3
+    import cases_coverage_a as CA2
+    needle, rows, hits, seen = token.encode(), 0, 0, False
+    for p in CA2.find_db(ctx):
+        try:
+            con = AR.sqlite_ro(p)
+        except sqlite3.Error:
+            continue
+        try:
+            for cmd, out in con.execute("SELECT stylized_command, stylized_output FROM blocks").fetchall():
+                seen, rows = True, rows + 1
+                blob = b"".join(x if isinstance(x, bytes) else str(x or "").encode() for x in (cmd, out))
+                hits += 1 if needle in blob else 0
+            seen = True
+        except sqlite3.Error:
+            pass
+        finally:
+            con.close()
+    return (rows, hits) if seen else None
+
+
 def split_token(tok):
     """(first half, second half): `printf '%s%s\\n' A B` prints the token while the command's own text never holds it"""
     k = len(tok) // 2
@@ -242,18 +282,11 @@ FIND_KEY = lambda ctx: os.environ.get("APPCI_KEY_FIND", "cmd+f" if ctx.be.name =
 
 
 def find_in_pane(ctx, tok, wait):
-    """open Find, type `tok`, Enter; wait up to `wait` s for the app to focus a match; Escape. -> the find_scroll hops of this Find"""
-    off = ctx.log_size()
-    ctx.be.guard()
-    ctx.be.key(FIND_KEY(ctx))
-    time.sleep(0.8)
-    ctx.be.type(tok, 20, enter=True)
-    ctx.until(lambda: find_result(find_hops(ctx.log_since(off))) == "scroll", wait, step=0.25)
-    hops = find_hops(ctx.log_since(off))
-    ctx.shot("find_%s" % tok[:6].lower())
-    ctx.be.key("Escape")
-    time.sleep(0.5)
-    return hops
+    """one Find for `tok` (cases_r14_w1a.find_enter: Find key, the field emptied, the token, Enter, Escape) -> the find_scroll hops logged AFTER
+    the Enter. Round 14: the hops since the Find key were read; opening the bar re-runs the previous query, so the control for a token never
+    printed saw the earlier token's `result=scroll`."""
+    import cases_r14_w1a as W1A          # imported here: cases.py loads that module before this one
+    return W1A.find_enter(ctx, tok, wait, shot="find_%s" % tok[:6].lower())[1]
 
 
 def palette_run(ctx, text):
@@ -937,11 +970,14 @@ def c_restore_shows_history(ctx, r):
         if not r.check(q["exited"], "the app did not exit for the restore (%r)" % q):
             return
         R.keep_log(ctx, "rs_stop")
+        store = {"after_stop": stored_blocks_with(ctx, tok)}             # #2110: what the store holds, before the next launch touches it
         mark2 = ctx.cmd_mark()
         newp, up = R.start_app(ctx, r, "rs_restored", restored_min=1)
         if not up:
             return
         ctx.shot("rs_restored")
+        store["after_relaunch"] = stored_blocks_with(ctx, tok)
+        r.metric("rs_store", store)
         # ---- nothing re-ran
         r.check(ctx.lines(eff) == eff_before, "RE-RUN: the effect file changed across the restore: before %r, after %r" % (eff_before, ctx.lines(eff)))
         ran = [c for c in ctx.cmds_since(mark2)]
@@ -950,12 +986,13 @@ def c_restore_shows_history(ctx, r):
         hops = find_in_pane(ctx, tok, 12)
         r.metric("find_after_restore", hops[-2:])
         r.check(find_result(hops) == "scroll", "after the restore Find for the token the earlier command printed gave %s (%s): the restored view does "
-                                               "not show the earlier output" % (find_result(hops), hops[-1:] or "no hop=find_scroll line"))
+                                               "not show the earlier output. Store (#2110): %s" % (find_result(hops), hops[-1:] or "no hop=find_scroll line after Enter",
+                                                                                                    store_note(store)))
         ctl = find_in_pane(ctx, never, 3)
-        r.check(find_result(ctl) != "scroll", "control: Find for a token that was never printed focused a match (%r): the Find oracle cannot tell a "
-                                              "restored block from anything" % ctl[-1:])
+        r.check(find_result(ctl) != "scroll", "control: after Enter, Find for a token that was never printed went to a match (%r): the Find oracle "
+                                              "cannot tell a restored block from anything" % [h for h in ctl if h.startswith("result=scroll")][-1:])
         if find_result(ctl) == "none":
-            r.note("control: Find for a token never printed logged no hop=find_scroll line at all (it logs only when a scroll is asked for)")
+            r.note("control: Find for a token never printed logged no hop=find_scroll line after its Enter")
         if ctx.mode == "agent":
             if conv_tok:
                 hc = find_in_pane(ctx, conv_tok, 12)
