@@ -8,7 +8,8 @@ A local bash or zsh tab was handed the 52 KB bootstrap as a here-document: the s
 editor read ~1,400 lines (a prompt and redraw each) and the tty echoed ~100 KB back, which cost
 174 ms (bash) / 92 ms (zsh) from the InitShell hook to the Bootstrapped hook; a sudo/su subshell
 paced it in 2 KB writes 25 ms apart: 746 ms. `bootstrap.rs` (`counted_read_rewrite`) now sends
-`stty -echo; WARP_BOOTSTRAP_VAR=$(head -c N); stty echo` and the body raw (128 / 59 / 222 ms,
+`stty -echo; WARP_BOOTSTRAP_VAR=$(head -c N); stty echo; <what followed the here-document>` and
+the body raw, with nothing after it (#1549) (128 / 59 / 222 ms,
 measured with this script's replay). The rewrite must not change what the shell does with it:
 this script runs both forms through a real pty, the way the app does, and checks
 
@@ -94,9 +95,15 @@ ZSH_OPEN = b" read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; "
 CLOSE = b"\nEOM\n"
 
 
+BASH_AFTER_READ = [b"stty sane", b'eval "$WARP_BOOTSTRAP_VAR"; unset WARP_BOOTSTRAP_VAR']
+BASH_RUN = b'; stty sane; eval "$WARP_BOOTSTRAP_VAR"; unset WARP_BOOTSTRAP_VAR'
+
+
 def counted(script, shell):
     """Mirror of counted_read_rewrite: (rewritten script, length of the part ending with the
-    command line's CR)."""
+    command line's CR). The body is the end of the result (#1549): what bash.sh has after the
+    here-document runs from the command line, and a script with anything else there is not
+    rewritten (None, like the app, which then keeps the here-document)."""
     marker = BASH_OPEN if shell == "bash" else ZSH_OPEN
     o = script.index(marker)
     start = o + len(marker)
@@ -107,12 +114,18 @@ def counted(script, shell):
         start = nl + 1
     c = start + script[start:].index(CLOSE)
     body = script[start:c + 1]
+    tail = [l.strip() for l in script[c + len(CLOSE):].split(b"\n")]
+    tail = [l for l in tail if l and not l.startswith(b"#")]
+    if tail != ([] if shell == "zsh" else BASH_AFTER_READ):
+        return None
     cmd = b" command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c %d); command -p stty echo" % len(body)
     if shell == "zsh":
         cmd += b"; " + rest
+    else:
+        cmd += BASH_RUN
     cmd += b"\r"
     head = script[:o] + cmd
-    return head + body + script[c + len(CLOSE):], len(head)
+    return head + body, len(head)
 
 
 def init_bash():
@@ -287,8 +300,22 @@ def paced(script, prefix_len):
 def run_shell(shell):
     print("== %s (%s)" % (shell, SHELLS[shell]))
     script = assemble(shell + ".sh")
-    new, prefix_len = counted(script, shell)
+    # #2098: the opener of the here-document is in the script once, on the line that opens it.
+    # A body that spells it too (a comment does not count: comments are not sent) makes "is the
+    # here-document gone?" unanswerable for the check below and for the Rust test of the bundled
+    # script; spell such a text in two pieces (bash_body.sh warp_ssh_msys_bootstrap_text).
+    check(
+        shell + ": the text << 'EOM' is in the bundled script once, where the here-document opens",
+        script.count(b"<< 'EOM'") == 1,
+        "%d times" % script.count(b"<< 'EOM'"),
+    )
+    rewritten = counted(script, shell)
+    check(shell + ": the rewrite applies to the bundled script (nothing unexpected after the here-document)", rewritten is not None)
+    if rewritten is None:
+        return
+    new, prefix_len = rewritten
     check(shell + ": the bundled script has the here-document the rewrite replaces", b"<< 'EOM'" not in new and b"head -c" in new)
+    check(shell + ": the counted body is the end of what is sent (#1549)", len(new) - prefix_len == int(re.search(rb"head -c (\d+)\)", new).group(1)))
 
     cmd = b" builtin printf 'ECHO:%s\\n' \"$(command -p stty -a | command -p grep -c -- ' echo ')\" ; builtin printf 'VAR:%s\\n' \"${WARP_BOOTSTRAP_VAR-unset}\"\n"
     ok_old, out_old, ms_old = bootstrap(shell, [(0, script)], then=cmd)
