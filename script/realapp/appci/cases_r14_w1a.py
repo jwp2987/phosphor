@@ -324,9 +324,9 @@ def skp_after_key_verdict(state, tail_on_screen, numbered, total):
         return "fail", ("after one typed key the end of the numbered lines is not on screen (read %s of %d): the key did not bring the view back to the "
                         "end of what the agent view shows" % (("%d..%d" % (numbered[0], numbered[-1])) if numbered else "none", total))
     return "noref", ("the agent view does not draw the output of a background job (#%d, owner question): 'the view holds while new output is DRAWN' and "
-                     "'the newest output is on screen after a key' are NOT judged in this mode. Judged and passed here: PageUp moved the view, it "
-                     "stayed for 3 s, %s reached the top, it stayed for 3 s, one key brought the end of the numbered lines back"
-                     % (ISSUE_AGENT_BG_OUTPUT, SKP_TOP_KEY_AGENT))
+                     "'the newest output is on screen after a key' are NOT judged in this mode. Judged here, each with its own line when it failed: "
+                     "PageUp moves the view, the view stays for 3 s, %s reaches the top, the view stays for 3 s; one key brought the end of the "
+                     "numbered lines back" % (ISSUE_AGENT_BG_OUTPUT, SKP_TOP_KEY_AGENT))
 
 
 def skp_word(tag, i):
@@ -505,10 +505,7 @@ def c_scroll_keys_position(ctx, r):
         r.metric("skp_tail_lines_on_screen_after_key", len(on_screen))
         verdict, why = skp_after_key_verdict(stream_state, len(on_screen), skp_visible(t5, tag, SKP_LINES), SKP_LINES)
         if verdict == "noref":
-            if not r.fails:                           # a failed check above already says more than "not judged"
-                r.no_reference(why)
-            else:
-                r.note(why)
+            r.no_reference(why)                       # a failed check above keeps the row a FAIL; this line then says what was not judged
         else:
             r.check(verdict == "pass", "%s (the job's last %d lines were looked for; shots/*skp_5_after_key.png)" % (why, len(tail)))
         typed(ctx, last[1:])
