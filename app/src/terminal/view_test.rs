@@ -33773,6 +33773,11 @@ mod give_up_to_pty_tests;
 #[path = "view/group2_timer_tests.rs"]
 mod group2_timer_tests;
 
+// #2000 (an event that keeps a deferred Enter unrun keeps the keys behind it with its line).
+// Declared here for the same reason as group 1.
+#[path = "view/keep_deferred_enter_tests.rs"]
+mod keep_deferred_enter_tests;
+
 // #1658 (keys follow the editor's kept line). Declared here for the same reason as group 1.
 #[path = "view/keys_follow_editor_tests.rs"]
 mod keys_follow_editor_tests;

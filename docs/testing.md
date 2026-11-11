@@ -6874,4 +6874,20 @@ unit test cannot flip it: each change has a pure function that takes the switch 
   the switch off in the view. No appci case: the state needs a shell that refuses a command at a prompt (#1572's window), which no
   case builds; `giveup_keys_reach_shell` reports "no hold gave up" in its runs. Hop to read if it happens:
   `hop=held_lines_kept_behind_enter entries=N` with `enter_held_gate` just before it.
-
+- **#2000, an event that keeps a deferred Enter unrun keeps the keys behind it with its line.** New file
+  `terminal/view/keep_deferred_enter_tests.rs` (a child of `view_test.rs`):
+  `an_unrun_deferred_enter_keeps_its_keys_with_its_line_unless_switched_off` (pure: `unrun_deferred_enter_keys_then` for the three
+  callers' reasons and both switch values; `kept_enter_keys_stay_with_line` for an empty line and a secret read;
+  `gate_keys_may_follow_a_waiting_enter` for the three `GateKeysThen`),
+  `a_line_typed_behind_a_deferred_enter_kept_unrun_stays_with_that_line_in_the_input` (Legacy and Table, once per caller reason:
+  `cd build`, a deferred Enter, `make clean` + Enter behind it, the report, then `keep_deferred_enter_text`; nothing at the pty,
+  nothing executed, the input holds `cd build\nmake clean\n`, the hand-back guard is armed, the `HandoffReport` gate is gone, the queue
+  idle; before the change `make clean\r` was written), `keys_behind_a_bare_deferred_enter_kept_unrun_are_released_as_before` (an empty
+  input: `echo 1\r` reaches the pty once, nothing becomes editor text),
+  `keys_behind_an_unrun_deferred_enter_go_to_a_secret_read_not_into_the_input` (#1957 kept: with the secret probe true the keys are
+  written and the input still holds only line one). Not covered: each caller reached through its own trigger (a refused report needs a
+  second report of another line; `CannotRun` and `KeepInEditor` need a prose line with autodetection on and no session to classify
+  against); the tests call the one function the three share, with each caller's reason. Not covered either: the deferred take (a busy
+  queue) for `KeepWithLine` (it shares `finish_taken_gate_keys` with the direct take), the switch off in the view. No appci case: none
+  of the three paths can be forced from outside the app. Hop to read if it happens: `hop=deferred_enter_kept_with_keys why=<..> keys=<n>`
+  after `hop=give_up_keys_kept_with_line`.

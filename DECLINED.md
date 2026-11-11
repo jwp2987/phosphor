@@ -3084,6 +3084,18 @@ plain terminal"). The owner saw it on macOS at an EMPTY remote prompt: a toast f
   `PHOSPHOR_BARE_ENTER_HOLDS_LINES=0`. A gate that waits for a verdict, a completion or its route
   with an empty buffer is not a bare Enter (its line was already submitted) and is unchanged. Do
   not restore the direct write past a held bare Enter.
+- **Keep-together on the three EVENT paths that keep a deferred Enter unrun (#2000, owner
+  2026-11-11).** `keep_deferred_enter_text` (the editor refused the shell's report as another
+  line's text, #1569; a young line that cannot be classified; `YoungSubmit::KeepInEditor`) leaves
+  the Enter's line in the input, unrun. The keys typed behind that Enter now stay WITH the line, as
+  text on the lines after it, in typed order, under the hand-back guard
+  (`GateKeysThen::KeepWithLine` -> `keep_given_up_keys_with_line`), as the timer paths already
+  placed them. They were released like the keys behind an Enter that ran nothing, so a complete
+  second line was written to the pty and ran without the first. Unchanged on purpose: a bare
+  Enter on an empty input (no unrun line; the keys are released as before), and a tty that reads
+  a secret (#1957: the keys go to that reader, never into the input). Kill switch
+  `PHOSPHOR_KEEP_DEFERRED_ENTER_KEYS_WITH_LINE=0`. Do not go back to releasing those keys to the
+  pty while their line stays in the input.
 - **The consequence the first ruling left open is closed.** Under the first ruling (a few hours on
   2026-11-09) the unrun line stayed in the editor and the keys typed after it were written to the
   pty, so a second complete command ran without the first. The owner ruled "keep them together":

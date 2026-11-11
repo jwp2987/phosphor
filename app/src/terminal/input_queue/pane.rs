@@ -138,6 +138,15 @@ pub enum GateKeysThen {
     /// order (owner decision 2026-11-09, reversing #1661). A bare Enter (an empty editor line)
     /// goes to the pty in front of them: it was a key too.
     GiveUp(&'static str),
+    /// #2000 (owner decision 2026-11-11): an EVENT ended the deferred Enter without running it
+    /// (the reason names it: the editor refused the report as another line's text, the young line
+    /// cannot be classified, the young wait keeps the line in the editor) and its line stays in
+    /// the editor. The keys typed behind it stay WITH that line, as text on the lines after it,
+    /// in typed order, under the hand-back guard, as the timer paths place them; nothing reaches
+    /// the pty (a later line never runs without the line typed before it). With an EMPTY editor
+    /// line (a bare Enter) there is no unrun line to keep them with: they are released exactly
+    /// as [`Self::Release`] releases them.
+    KeepWithLine(&'static str),
 }
 
 /// What happens to the keys of a `Deferred::TakePowershellKeys` once taken.

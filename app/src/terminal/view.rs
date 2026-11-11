@@ -15574,8 +15574,8 @@ impl TerminalView {
                     // #1569: the editor refused the report as another line's text (it does not
                     // extend the editor's own typeahead): the Enter must not run the fragment the
                     // buffer holds instead. It is given up like one that cannot run; the keys held
-                    // behind it are released as for any unsubmitted Enter.
-                    self.keep_deferred_enter_text(ctx);
+                    // behind it stay with that unrun text (#2000).
+                    self.keep_deferred_enter_text("report_refused", ctx);
                     return;
                 }
                 // #1659: a Tab pressed while this report was pending runs on the merged line
@@ -15676,7 +15676,9 @@ impl TerminalView {
                 self.young_enter_wait_id = self.young_enter_wait_id.wrapping_add(1);
                 self.submit_deferred_enter_after_detection(Instant::now(), ctx);
             }
-            YoungTypeaheadDetection::CannotRun => self.keep_deferred_enter_text(ctx),
+            YoungTypeaheadDetection::CannotRun => {
+                self.keep_deferred_enter_text("young_cannot_classify", ctx)
+            }
         }
     }
 
@@ -16082,7 +16084,7 @@ impl TerminalView {
             YoungSubmit::Wait => self.watch_young_detection(ctx),
             YoungSubmit::KeepInEditor => {
                 self.young_enter_released = true;
-                self.keep_deferred_enter_text(ctx);
+                self.keep_deferred_enter_text("young_keep_in_editor", ctx);
             }
         }
     }
@@ -16204,13 +16206,49 @@ impl TerminalView {
         self.submit_deferred_enter_after_detection(Instant::now(), ctx);
     }
 
-    /// Ends a deferred Enter without submitting: the text stays in the editor for the user to
-    /// submit, and the keys held behind the Enter are released as they are after an unsubmitted
-    /// Enter.
-    fn keep_deferred_enter_text(&mut self, ctx: &mut ViewContext<Self>) {
+    /// Ends a deferred Enter without submitting, on an EVENT (`why` names it: `report_refused`,
+    /// #1569; `young_cannot_classify`; `young_keep_in_editor`): the text stays in the editor for
+    /// the user to submit.
+    ///
+    /// #2000 (owner decision 2026-11-11, the rule of the timer paths on these three event paths):
+    /// the keys held behind that Enter stay WITH the unrun line, as text on the lines after it, in
+    /// typed order, under the hand-back guard; nothing reaches the pty. They used to be released
+    /// like the keys behind an Enter that ran nothing, so a complete second line was written to
+    /// the pty and RAN while the line typed before it stayed in the input. A bare Enter on an
+    /// empty input keeps that release (there is no unrun line). `GateKeysThen::KeepWithLine`
+    /// decides between the two when the keys are taken. Kill switch
+    /// `PHOSPHOR_KEEP_DEFERRED_ENTER_KEYS_WITH_LINE`.
+    fn keep_deferred_enter_text(&mut self, why: &'static str, ctx: &mut ViewContext<Self>) {
         self.input
             .update(ctx, |input, _| input.clear_handoff_enter_hold());
-        self.release_keys_held_behind_unsubmitted_enter(ctx);
+        let then = paste_queue::unrun_deferred_enter_keys_then(
+            input_queue::switches::keep_deferred_enter_keys_with_line(),
+            why,
+        );
+        let gate = self.handoff.write().release_after_unsubmitted_enter();
+        if let Some(gate) = gate {
+            self.take_deferred_gate_keys_then(gate, then, ctx);
+        }
+    }
+
+    /// #2000: the keys taken from behind a deferred Enter that an event kept unrun (`why`) stay
+    /// with its line in the editor, placed and guarded as a timer's give-up places them
+    /// ([`Self::keep_given_up_keys_with_line`], then the guard of a line left with nothing typed
+    /// after it). Nothing is written to the pty.
+    fn keep_unrun_deferred_enter_keys_with_line(
+        &mut self,
+        taken: Vec<crate::terminal::input_queue::InputEntry>,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let keys = self.keep_given_up_keys_with_line(taken, why, ctx);
+        warpui::input_order::log_hop("deferred_enter_kept_with_keys", || {
+            format!("why={why} keys={keys}")
+        });
+        self.guard_line_after_deferred_enter_give_up(ctx);
+        self.note_keys_follow_editor_if_text(ctx);
+        self.note_editor_took_over();
+        self.redetermine_terminal_focus(ctx);
     }
 
     /// Runs the Enter the typeahead hand-off deferred while a report was outstanding. It runs
