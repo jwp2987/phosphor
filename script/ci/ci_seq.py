@@ -354,7 +354,12 @@ def targeted_vars(key, ent):
     else; the arm filters only when the file gives them (x11: both session modes, as in every tier, #2058); a lab job gets the scripted model and the
     matrix of the candidate tier (an exactly named arm bypasses the matrix in run.py; a glob is filtered by it)."""
     p = TARGETED_APP[key][0]
-    v = {"APPCI_TIER": TARGETED_APP_TIER, "APPCI_CASES": ",".join(ent["cases"])}
+    cases = list(ent["cases"])
+    if not key.endswith("-lab") and "mode_proof" not in cases:
+        # owner (repeatedly, last 2026-11-11): every app run must PROVE the app is in the mode a row claims. A targeted list that names only
+        # the failed cases left mode_proof out, so nothing proved terminal vs agent mode on any platform. It always plays first (order=1).
+        cases.insert(0, "mode_proof")
+    v = {"APPCI_TIER": TARGETED_APP_TIER, "APPCI_CASES": ",".join(cases)}
     if ent.get("modes"):
         v["APPCI_MODES"] = ",".join(ent["modes"])
     elif key == "linux-x11":
@@ -988,10 +993,10 @@ def self_test_targeted(yml, src):
         (ok_run and sorted(set(played(o))) == sorted({BUILD[LINUX], BUILD[WIN], "test-linux", "integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]",
                                                        "test-windows", "test-warpui-core-windows", "test-workspace-rest-windows", "app-test-linux-wayland", "app-test-windows"}),
          "targeted plays only the jobs the cases file names (builds for the platforms with cases, the listed suites, the app jobs with cases)"),
-        (vars_of["app-test-linux-wayland"] == {"APPCI_TIER": "targeted", "APPCI_CASES": "tab_enter,ssh_*", "APPCI_MODES": "agent"}
+        (vars_of["app-test-linux-wayland"] == {"APPCI_TIER": "targeted", "APPCI_CASES": "mode_proof,tab_enter,ssh_*", "APPCI_MODES": "agent"}
          and next(v for k, n, v in o.calls if k == "play_wait" and n == "app-test-linux-wayland") == vars_of["app-test-linux-wayland"],
-         "APPCI_CASES is passed exactly: the file's names, in the file's order, each once, with the mode filter as APPCI_MODES"),
-        (vars_of["app-test-windows"] == {"APPCI_TIER": "targeted", "APPCI_CASES": "big_paste,gitbash_subshell", "APPCI_WIN_SHELLS": "gitbash"},
+         "APPCI_CASES is the file's names, in the file's order, each once, after mode_proof (always first on an app job: the mode is proven), with the mode filter as APPCI_MODES"),
+        (vars_of["app-test-windows"] == {"APPCI_TIER": "targeted", "APPCI_CASES": "mode_proof,big_paste,gitbash_subshell", "APPCI_WIN_SHELLS": "gitbash"},
          "the Windows pane filter is passed as APPCI_WIN_SHELLS; no APPCI_MODES when the file gives none"),
         (all(idx(o, "play_wait", u) < idx(o, "play_wait", "app-test-linux-wayland") for u in ("test-linux", "integration-linux: [3]"))
          and all(idx(o, "play_wait", u) < idx(o, "play_wait", "app-test-windows") for u in unit_suites(WIN)),
@@ -1023,7 +1028,10 @@ def self_test_targeted(yml, src):
         (oi.timeline[LAB_APP[MAC]][0] == LAB_IMAGE_FAIL == oi.timeline[LAB_APP[LINUX]][0] and LAB_APP[MAC] not in played(oi), "no lab image: the planned lab jobs are FAIL rows, not played"),
         (targeted_vars("linux-x11", {"cases": ["a"]})["APPCI_MODES"] == X11_MODES and targeted_vars("linux-x11", {"cases": ["a"], "modes": ["terminal"]})["APPCI_MODES"] == "terminal",
          "the x11 job gets both session modes unless the file narrows them"),
-        (targeted_vars("macos", {"cases": ["a"], "vars": {"APPCI_FAKE_MODEL": "1"}}) == {"APPCI_TIER": "targeted", "APPCI_CASES": "a", "APPCI_FAKE_MODEL": "1"}, "extra APPCI_* variables of a platform are passed on"),
+        (targeted_vars("windows", {"cases": ["a"]})["APPCI_CASES"].split(",")[0] == "mode_proof" and targeted_vars("macos", {"cases": ["mode_proof", "a"]})["APPCI_CASES"] == "mode_proof,a"
+         and "mode_proof" not in targeted_vars("linux-lab", {"cases": ["lab_x.bash.lan.nohelper"]})["APPCI_CASES"],
+         "every targeted app job plays mode_proof first, once (owner: the mode a row claims is proven every run); a lab job is left as listed"),
+        (targeted_vars("macos", {"cases": ["a"], "vars": {"APPCI_FAKE_MODEL": "1"}}) == {"APPCI_TIER": "targeted", "APPCI_CASES": "mode_proof,a", "APPCI_FAKE_MODEL": "1"}, "extra APPCI_* variables of a platform are passed on"),
         (units_only["machines"] == {MAC: [("test-macos", None, "unit")]} and BUILD[MAC] in units_only["not_played"], "suites alone need no build"),
         # a wrong file is an error, never a smaller run
         (all(raises(d) for d in (

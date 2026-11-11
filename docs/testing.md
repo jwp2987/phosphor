@@ -1195,6 +1195,9 @@ the table, never a pass, and it does not fail the tier. A job the plan names tha
 **The targeted tier: prove a round's fixes first, then run the whole harness (owner 2026-11-11; `docs/design/r10-r19-targeted.md`). Worked, unproven: only the self-tests and `--dry-run` ran; no pipeline was played when written.**
 Fixes that come out of a round are proven with a TARGETED run first: only the cases that failed, on the OS where they failed, plus the cases that touch the
 changed code. Only when that is green is the whole harness (fix / candidate) worth its hours.
+**Every targeted app job plays `mode_proof` first** (ci_seq `targeted_vars`; not lab jobs), whatever the cases file lists: the round 15 Windows targeted
+run had no `mode_proof` row, so nothing proved the app was in the mode its rows claimed (owner 2026-11-11, raised repeatedly). Self-test: "every targeted
+app job plays mode_proof first".
 `python3 script/ci/ci_seq.py build/<ref> --tier targeted --cases-file FILE [--skip job ...] [--collect] [--dry-run]`.
 
 - **The cases file is the plan** (JSON; TOML with the same keys on Python 3.11+). `--platforms`, `--tests` and `--reuse-job` are refused with it.
