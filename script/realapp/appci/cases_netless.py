@@ -661,6 +661,10 @@ def c_network_gate_switch(ctx, r):
     if linux:
         R.need_linux_app(ctx, "network_gate_switch")
     marker_host = "gate-switch-%s.example.invalid" % ctx.tok(5).lower()
+    # Round 21 (#2146): the Settings tab this case opens must not be in front when it ends, on ANY platform. Until then the proof below ran off Linux
+    # only (round 15 added it with the macOS / Windows port), and `close_settings` is two Escapes, which do not close the Settings tab: round 15
+    # Wayland ended this case with the keyboard in the "Allowed origins" field, and tab_lifecycle_keys typed its first probe into it.
+    page_open = False
     try:
         # 1. gate_enabled absent (the v0.1.17 file shape): the gate is on, nothing is logged about the switch.
         q = R.stop_for_restart(ctx, r, 20, "ngs_absent")
@@ -701,6 +705,7 @@ def c_network_gate_switch(ctx, r):
         # settings file and the log never naming the host (the hop lines carry a host hash only).
         import cases_agent_netgate as NG
         off = ctx.log_size()
+        page_open = True
         NG.open_network_kb(ctx, r)
         # round 6: the page showed "No extra origins" here, so there was no Remove stop to Tab to. Say whether the file still held the origin.
         r.check(NG.origin_count(ctx, marker_host) == 1, "before the keyboard Remove, settings.toml no longer holds the allowed origin the case wrote (the page then has no Remove stop)")
@@ -711,7 +716,7 @@ def c_network_gate_switch(ctx, r):
         time.sleep(0.8)
         if ctx.win and not ctx.until(lambda: NG.hop_line("remove_origin", marker_host) in ctx.log_since(off), 10, step=0.3) and NG.origin_count(ctx, marker_host) == 1:
             NG.close_settings(ctx)
-            shell_back_in_front(ctx, r, "ngs")
+            page_open = not shell_back_in_front(ctx, r, "ngs")
             r.unverifiable("the Settings > Network page showed no action on Windows (no remove_origin hop, the origin still in the file): the settings chord "
                            "(ctrl+comma) and the palette entry have never been proven on the Windows backend, so the page half is NOT judged here; the launch half was")
             return
@@ -728,12 +733,17 @@ def c_network_gate_switch(ctx, r):
         r.check(NG.origin_count(ctx, marker_host) == 1, "keyboard add: settings.toml holds the origin %d times (expected once)" % NG.origin_count(ctx, marker_host))
         ctx.shot("ngs_kb_added")
         NG.close_settings(ctx)
-        if not linux:
-            shell_back_in_front(ctx, r, "ngs")
+        page_open = not shell_back_in_front(ctx, r, "ngs")
         r.check(marker_host not in ctx.log_since(0), "the app log names the allowed origin's host after the page edits (hop lines carry a host hash only)")
         r.unverifiable("the denial notice (toast naming the purpose and host), its 'Allow this origin' link and the log row's 'Allow' button need a request the gate refuses, which no setting "
                        "this case writes can cause (every setting that names an origin also allows it); agent_gate_deny_allow and network_gate_notice trigger one and judge those rows")
     finally:
+        if page_open:
+            # the page half ended early (an exception, or the proof above failed once): the next case must still not type into the Settings tab
+            try:
+                shell_back_in_front(ctx, r, "ngs_end")
+            except Exception as e:
+                r.note("network_gate_switch: proving the shell in front after the Settings page raised %r" % (e,))
         try:
             p = R.settings_file(ctx)
             t = open(p, encoding="utf-8", errors="replace").read()

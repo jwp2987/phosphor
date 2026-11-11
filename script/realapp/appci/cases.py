@@ -937,6 +937,48 @@ def wants_depth_check(name, proving):
     return name in proving or name.startswith(DEPTH_PREFIXES)
 
 
+def shell_lineage(pid, root_pid, app_pid, ppid_of, max_steps=64):
+    """pure (round 21, #2146): what the shell `pid` in front is, from the process table `ppid_of` ({pid: parent pid}):
+    'nested'      `root_pid` is one of its ancestors: a shell started from the pane's root shell. `exit` leaves it.
+    'other_pane'  the app is one of its ancestors and the root shell is not: the shell of ANOTHER tab or pane (or one started from it). `exit`
+                  there closes that tab; when it is the only tab left, the window. An earlier case closed the pass's own tab or left a tab in front.
+    'unknown'     neither is an ancestor, or the table does not hold `pid` (a shell reached over ssh, no process table): the caller does what it
+                  did before this function existed.
+    Round 15 Wayland: cb_ui_action_latency closed the pass's own tab and left its throw-away tab in front; after the next case the depth check
+    read a pid that was not the root's, took it for a nested shell and typed `exit`, which closed the only tab and the window."""
+    try:
+        pid, root_pid, app_pid = int(pid), int(root_pid), (int(app_pid) if app_pid else None)
+    except (TypeError, ValueError):
+        return "unknown"
+    if pid not in ppid_of:
+        return "unknown"
+    seen, cur = set(), pid
+    for _ in range(max_steps):
+        cur = ppid_of.get(cur)
+        if cur is None or cur in seen or cur <= 1:
+            break
+        seen.add(cur)
+    if root_pid in seen:
+        return "nested"
+    if app_pid is not None and app_pid in seen:
+        return "other_pane"
+    return "unknown"
+
+
+def ppid_table():
+    """{pid: parent pid} of every process, from `ps` (Linux, macOS); {} when ps is missing or fails"""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return {}
+    table = {}
+    for l in out.splitlines():
+        f = l.split()
+        if len(f) == 2 and f[0].isdigit() and f[1].isdigit():
+            table[int(f[0])] = int(f[1])
+    return table
+
+
 def depth_probe_cmd(pane, tok):
     """the line that records `tok:<pid of the shell it runs in>` in ~/.appci_pid; None for a pane with no usable syntax (cmd.exe has no PID variable)"""
     if pane == "cmd":
@@ -1432,7 +1474,8 @@ class Ctx:
     def leave_nested(self, root_pid, max_exits=3):
         """After a case: leave every LOCAL nested shell until the shell in front is the pane's ROOT shell (`root_pid`). `exit` is typed only while a
         probe proves a DIFFERENT shell is in front, never at the root. Returns "root", "nested" (still nested after max_exits) or "none" (no shell
-        answered, even after Ctrl-C/Ctrl-U) or "unprobed" (no PID probe in this pane / no root pid recorded)."""
+        answered, even after Ctrl-C/Ctrl-U) or "unprobed" (no PID probe in this pane / no root pid recorded) or "other" (round 21: the shell in
+        front belongs to another tab or pane, shell_lineage; `exit` was not typed and self.other_pane_note says what was found)."""
         if root_pid is None:
             return "unprobed"
         for i in range(max_exits + 1):
@@ -1461,6 +1504,25 @@ class Ctx:
                 if again == root_pid:
                     return "root"
                 continue
+            # round 21 (#2146): a pid that is not the root's is not yet a NESTED shell. The shell of another tab or pane answers the same probe, and
+            # `exit` there closes that tab (round 15 Wayland: the only tab, and with it the window). Only POSIX has the process table; elsewhere,
+            # and for a shell the table cannot place (over ssh), nothing changes.
+            if not getattr(self, "win", False):
+                try:
+                    app_pid = self.app.pid() if getattr(self, "app", None) is not None and hasattr(self.app, "pid") else None
+                except Exception:
+                    app_pid = None
+                table = ppid_table() if app_pid else {}
+                if shell_lineage(pid, root_pid, app_pid, table) == "other_pane":
+                    try:
+                        root_alive = int(root_pid) in table
+                    except (TypeError, ValueError):
+                        root_alive = None
+                    self.other_pane_note = ("the shell in front (pid %s) was not started from the pane's root shell (pid %s, %s): it is another tab's or "
+                                            "pane's shell, so an earlier case closed the pass's own tab or left another tab in front; `exit` was NOT typed"
+                                            % (pid, root_pid, "still running" if root_alive else "gone"))
+                    print("[appci] leave_nested: " + self.other_pane_note, flush=True)
+                    return "other"
             before = self.prof.prompts()         # after the second probe's own prompt (probe()): the next prompt is the `exit`'s
             t_exit = time.time()
             self.be.type("exit", 12, enter=True)

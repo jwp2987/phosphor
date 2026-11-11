@@ -8348,7 +8348,9 @@ def r14_w1a_wave1_cases_pure_parts_and_registry():
     assert stayed[-1] == 500 and not (stayed[-1] < 500 - 10), "a view still at the bottom reads its real lines and fails `moved`"
     assert w.skp_visible(w.skp_word("nwp", 0) + " " + w.skp_word("nwp", 501), "nwp", w.SKP_LINES) == [], "0 and 501 are not printed lines"
     kp = inspect.getsource(w.c_scroll_keys_position)
-    assert kp.count("tag, SKP_LINES)") == 4 and kp.count("stag, SKP_STREAM_LINES)") == 2, "every read of the case is bounded by what was printed"
+    # round 21 (#2146): two reads were added (the stream control at the bottom, the numbered lines after the key), both bounded: 5 and 3, were 4 and 2
+    assert kp.count("tag, SKP_LINES)") == 5 and kp.count("stag, SKP_STREAM_LINES)") == 3, "every read of the case is bounded by what was printed"
+    assert kp.count("skp_visible(") == 8, "a read of the case that is not bounded by what was printed"
     a, b = w.skp_tags(random.Random(3))
     assert a != b and len(a) == len(b) == 3
     before = list(range(300, 340))
@@ -8361,8 +8363,11 @@ def r14_w1a_wave1_cases_pure_parts_and_registry():
     job = w.skp_stream_cmd("s.txt", "seen.txt", "stop")
     assert job.startswith("(sleep 1; while read -r l; do [ -e stop ] && break;") and job.endswith("done < s.txt &)") and 'echo "$l" >> seen.txt; sleep 0.1' in job
     body = inspect.getsource(w.c_scroll_keys_position)
-    for needle in ('key_name(ctx, "pageup")] * 3', 'WV.KX(ctx, "block_up"), "Home"', "skp_hold_verdict(v1, v2", "typed(ctx, last[0], enter=False)", "got == [cat, job, last]"):
+    # round 21 (#2146): the top keys are chosen per mode by skp_top_keys. The terminal pass still presses block-up then Home; the agent pass Shift+Home.
+    for needle in ('key_name(ctx, "pageup")] * 3', 'skp_top_keys(ctx.mode, WV.KX(ctx, "block_up"))', "ctx.be.keys(top_keys, delay_ms=120)", "skp_hold_verdict(v1, v2",
+                   "typed(ctx, last[0], enter=False)", "got == [cat, job, last]"):
         assert needle in body, needle
+    assert w.skp_top_keys("terminal", "BLOCK_UP") == ["BLOCK_UP", "Home"], "the terminal pass's keys are the ones of before round 21"
 
     # --- T3: the hop parser reads the app's own format; next / previous verdicts fail when the focus does not move or does not return
     log = ("x input_order hop=find_state event=query count=0 focused=none scanning=true t=1.0\n"
@@ -9120,6 +9125,8 @@ import selftest_r21_chip  # noqa: E402  (round 21, #2138: the prompt suggestion 
 CHECKS.extend(selftest_r21_chip.CHECKS)
 import selftest_r21_wlinput  # noqa: E402  (round 21, #2139 #2140 #2141: the Wayland input rows of the round 15 targeted run; own file)
 CHECKS.extend(selftest_r21_wlinput.CHECKS)
+import selftest_r21_wlpanes  # noqa: E402  (round 21 Wayland, #2143 #2144 #2145 #2146: accounting of quoted keys, the depth check's lineage, the tab cb_ui_action_latency closes, scroll_keys_position in the agent view; own file)
+CHECKS.extend(selftest_r21_wlpanes.CHECKS)
 
 
 def missing_required(required, passed):

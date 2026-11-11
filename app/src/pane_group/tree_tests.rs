@@ -894,3 +894,129 @@ fn test_divider_drag_accumulates_across_events_between_paints() {
         "the fix must accumulate strictly more travel than the overwrite it replaced"
     );
 }
+
+/// The root branch of a tree that has one.
+fn root_branch(tree: &PaneData) -> &PaneBranch {
+    match &tree.root {
+        PaneNode::Branch(branch) => branch,
+        PaneNode::Leaf(_) => panic!("the tree has no split"),
+    }
+}
+
+/// #2144, the layout of the round 15 run: a left pane, editor splits that were opened to its
+/// right and closed (hidden for the undo-close window, still in the branch), then a new split
+/// to the right. The keyboard resize of the right pane must move the divider between the two
+/// panes on screen. It used to pair the right pane with the hidden pane after it, which made
+/// "move divider left" shrink the right pane.
+#[test]
+fn keyboard_resize_pairs_the_focused_pane_with_a_drawn_neighbour() {
+    let left = PaneId::dummy_pane_id();
+    let closed = [PaneId::dummy_pane_id(), PaneId::dummy_pane_id()];
+    let right = PaneId::dummy_pane_id();
+    let mut tree = PaneData::new(left);
+    for pane in closed {
+        tree.split(left, pane, Direction::Right);
+        tree.hide_closed_pane(pane);
+    }
+    tree.split(left, right, Direction::Right);
+
+    let branch = root_branch(&tree);
+    // In the branch: left, right, then the closed panes (each split went right of `left`).
+    assert_eq!(branch.direct_children()[..2], [left, right]);
+    assert_eq!(branch.direct_children().len(), 4);
+    let drawn = branch.drawn_node_indices(&tree.hidden_panes);
+    assert_eq!(drawn, vec![0, 1]);
+
+    // The right pane (index 1) is the last one drawn: its pair is (left, right).
+    assert_eq!(resize_pair_for_child(&drawn, 1), Some((0, 1)));
+    // The left pane: the same divider.
+    assert_eq!(resize_pair_for_child(&drawn, 0), Some((0, 1)));
+    // What the code before #2144 did for the right pane: nodes 1 and 2, the second one hidden.
+    let old_pair = (1usize, 2usize);
+    assert_ne!(resize_pair_for_child(&drawn, 1), Some(old_pair));
+    assert!(!drawn.contains(&old_pair.1));
+}
+
+/// #2144: a hidden node BETWEEN two drawn ones. The pair skips it, for the keyboard and for the
+/// divider that is drawn between the two (divider 0 on screen).
+#[test]
+fn resize_pairs_skip_a_hidden_node_between_drawn_ones() {
+    let panes = [
+        PaneId::dummy_pane_id(),
+        PaneId::dummy_pane_id(),
+        PaneId::dummy_pane_id(),
+    ];
+    let mut tree = PaneData::new(panes[0]);
+    tree.split(panes[0], panes[2], Direction::Right);
+    tree.split(panes[0], panes[1], Direction::Right);
+    tree.hide_pane_for_child_agent(panes[1]);
+
+    let branch = root_branch(&tree);
+    assert_eq!(branch.direct_children(), panes.to_vec());
+    let drawn = branch.drawn_node_indices(&tree.hidden_panes);
+    assert_eq!(drawn, vec![0, 2]);
+    assert_eq!(resize_pair_for_child(&drawn, 0), Some((0, 2)));
+    assert_eq!(resize_pair_for_child(&drawn, 2), Some((0, 2)));
+    // The hidden pane itself has no divider to move.
+    assert_eq!(resize_pair_for_child(&drawn, 1), None);
+    // The one divider on screen is the first of the branch's dividers.
+    assert_eq!(resize_pair_for_divider(&drawn, 0), Some((0, 2)));
+    // The branch's second divider is not drawn between anything.
+    assert_eq!(resize_pair_for_divider(&drawn, 1), None);
+}
+
+/// #2144: with nothing hidden the pairs are the ones of before: a child and its next sibling,
+/// the last child and the one before it; divider k between nodes k and k + 1.
+#[test]
+fn resize_pairs_are_unchanged_when_nothing_is_hidden() {
+    let drawn = [0, 1, 2];
+    assert_eq!(resize_pair_for_child(&drawn, 0), Some((0, 1)));
+    assert_eq!(resize_pair_for_child(&drawn, 1), Some((1, 2)));
+    assert_eq!(resize_pair_for_child(&drawn, 2), Some((1, 2)));
+    assert_eq!(resize_pair_for_divider(&drawn, 0), Some((0, 1)));
+    assert_eq!(resize_pair_for_divider(&drawn, 1), Some((1, 2)));
+    assert_eq!(resize_pair_for_divider(&drawn, 2), None);
+    // One drawn node: nothing to resize against.
+    assert_eq!(resize_pair_for_child(&[3], 3), None);
+    assert_eq!(resize_pair_for_child(&[], 0), None);
+}
+
+/// #2144: "move divider left" on the right-most pane, in numbers: the pair is (left, right) and
+/// a negative delta takes flex from the FIRST of the pair, so the left pane narrows and the
+/// right one widens. With the old pair (right, hidden) the same delta took it from the right
+/// pane.
+#[test]
+fn move_divider_left_on_the_right_pane_widens_it() {
+    let drawn = [0, 1];
+    let (first, second) = resize_pair_for_child(&drawn, 1).expect("two panes on screen");
+    assert_eq!((first, second), (0, 1));
+    let (total_size, total_flex) = (1352., 2.);
+    let mut flex = [1., 1.];
+    for _ in 0..2 {
+        let current = flex[first] / total_flex * total_size;
+        let new_first = redistributed_flex(current, -10., total_size, total_flex);
+        flex[second] = total_flex - new_first;
+        flex[first] = new_first;
+    }
+    assert!(
+        flex[0] < 1. && flex[1] > 1.,
+        "left {} right {}",
+        flex[0],
+        flex[1]
+    );
+    let left_px = flex[0] / total_flex * total_size;
+    assert!(
+        (left_px - (676. - 20.)).abs() < 0.01,
+        "left pane {left_px} px"
+    );
+}
+
+/// #2144: the kill switch; only `0` is off.
+#[test]
+fn resize_drawn_pair_kill_switch_values() {
+    assert!(resize_drawn_pair_enabled_from(None));
+    assert!(resize_drawn_pair_enabled_from(Some("1")));
+    assert!(resize_drawn_pair_enabled_from(Some("")));
+    assert!(!resize_drawn_pair_enabled_from(Some("0")));
+    assert!(!resize_drawn_pair_enabled_from(Some(" 0\n")));
+}

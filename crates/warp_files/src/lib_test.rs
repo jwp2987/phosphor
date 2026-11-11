@@ -1383,3 +1383,64 @@ fn remote_write_expectation_names_the_exact_bytes_that_were_read() {
         None
     );
 }
+
+/// #2143: what inotify reports when another program replaces `notes.txt` the safe way (a new
+/// file written next to it, renamed over it): the temp file is added, the rename is a move.
+fn replaced_by_rename() -> BulkFilesystemWatcherEvent {
+    BulkFilesystemWatcherEvent {
+        added: HashSet::from([PathBuf::from("/work/notes.txt.tmp")]),
+        moved: HashMap::from([(
+            PathBuf::from("/work/notes.txt"),
+            PathBuf::from("/work/notes.txt.tmp"),
+        )]),
+        ..Default::default()
+    }
+}
+
+/// #2143: the file that was replaced by rename is read again. Before, only added and modified
+/// paths were, so on Linux an open file kept its old text and the next save overwrote the other
+/// program's change.
+#[test]
+fn a_file_replaced_by_rename_is_reloaded() {
+    let paths = paths_to_reload(&replaced_by_rename(), true);
+    assert!(paths.contains(Path::new("/work/notes.txt")));
+    // The source of the rename no longer exists under that name and is not asked for as a
+    // rename source; it is in the set only because the same report says it was added, and
+    // `reload_file_paths` keeps tracked files only.
+    assert_eq!(
+        paths,
+        HashSet::from([
+            PathBuf::from("/work/notes.txt"),
+            PathBuf::from("/work/notes.txt.tmp"),
+        ])
+    );
+}
+
+/// #2143: added and modified paths are reloaded as before, with or without the switch.
+#[test]
+fn added_and_modified_paths_are_still_reloaded() {
+    let event = BulkFilesystemWatcherEvent {
+        added: HashSet::from([PathBuf::from("/work/new.txt")]),
+        modified: HashSet::from([PathBuf::from("/work/edited.txt")]),
+        deleted: HashSet::from([PathBuf::from("/work/gone.txt")]),
+        ..Default::default()
+    };
+    let want = HashSet::from([
+        PathBuf::from("/work/new.txt"),
+        PathBuf::from("/work/edited.txt"),
+    ]);
+    assert_eq!(paths_to_reload(&event, true), want);
+    assert_eq!(paths_to_reload(&event, false), want);
+}
+
+/// #2143: the kill switch gives the set of before (no rename target), and only `0` is off.
+#[test]
+fn the_reload_on_rename_kill_switch_restores_the_old_set() {
+    let paths = paths_to_reload(&replaced_by_rename(), false);
+    assert!(!paths.contains(Path::new("/work/notes.txt")));
+    assert!(reload_on_rename_enabled_from(None));
+    assert!(reload_on_rename_enabled_from(Some("1")));
+    assert!(reload_on_rename_enabled_from(Some("")));
+    assert!(!reload_on_rename_enabled_from(Some("0")));
+    assert!(!reload_on_rename_enabled_from(Some(" 0 ")));
+}

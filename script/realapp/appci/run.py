@@ -641,10 +641,14 @@ def main():
                     # r6 (Mac fix tier): a subshell_ready case left the pane in a LOCAL bash subshell (same HOME, so where_now saw "local") and every later case
                     # typed into it. After a checked case the shell in front must be the pane's ROOT shell (its PID); `exit` only while a probe proves otherwise.
                     nest = ctx.leave_nested(ctx.root_pid)
-                    if nest in ("nested", "none"):
+                    if nest in ("nested", "none", "other"):
+                        # round 21 (#2146): "other" = another tab's or pane's shell is in front (no `exit` typed); the row names that, because the
+                        # case it is filed under is then usually not the one that caused it
+                        why = ("%s; root pid %s" % (nest, ctx.root_pid) if nest != "other" else
+                               "other tab or pane: %s. The cause is an EARLIER case, not necessarily %s" % (getattr(ctx, "other_pane_note", "no detail"), c["name"]))
                         emit(dict(name="pane_not_local_after_" + c["name"], mode=label, status="fail", seconds=0,
                                   shots=[ctx.shot("not_local_after_" + c["name"]) or ""],
-                                  detail=["after %s the pane's shell was not the root shell (%s; root pid %s); the app is relaunched so later cases start clean" % (c["name"], nest, ctx.root_pid)]))
+                                  detail=["after %s the pane's shell was not the root shell (%s); the app is relaunched so later cases start clean" % (c["name"], why)]))
                         instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "pane_not_root_after_" + c["name"])
                         continue
                 if ctx.mode == "agent" and c["name"] != "mode_proof":

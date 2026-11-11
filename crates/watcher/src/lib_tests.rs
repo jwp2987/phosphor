@@ -191,6 +191,59 @@ fn replaying_all_three_halves_would_misreport_a_chain() {
     assert_eq!(naive.moved, moved(&[("/C", "/B")]));
 }
 
+/// #2143: a file moved in from outside the watched tree is an unpaired `To`. It used to match
+/// no arm of the merge and vanish; the path now holds another file, so it is reported as added.
+#[test]
+fn an_unpaired_move_in_is_an_added_path() {
+    let view = consumer_view(vec![rename(RenameMode::To, &["/dir/file.txt"])]);
+    assert_eq!(view.added, HashSet::from([PathBuf::from("/dir/file.txt")]));
+    assert!(view.moved.is_empty() && view.modified.is_empty() && view.deleted.is_empty());
+}
+
+/// #2143: a paired rename is still one move, never an added path as well.
+#[test]
+fn a_paired_rename_adds_no_path() {
+    let view = consumer_view(vec![
+        rename(RenameMode::From, &["/dir/file.txt.tmp"]),
+        rename(RenameMode::To, &["/dir/file.txt"]),
+        rename(RenameMode::Both, &["/dir/file.txt.tmp", "/dir/file.txt"]),
+    ]);
+    assert!(view.added.is_empty());
+    assert_eq!(view.moved, moved(&[("/dir/file.txt", "/dir/file.txt.tmp")]));
+}
+
+/// #2143: the set a reloading consumer reads. A file replaced by rename (the temp file is
+/// created and written in the same window, as inotify reports an atomic save) is in it, although
+/// it is in neither `added` nor `modified`.
+#[test]
+fn the_target_of_a_replace_by_rename_has_changed_content() {
+    let created = DebouncedEvent::new(
+        notify::Event::new(EventKind::Create(notify::event::CreateKind::File))
+            .add_path(PathBuf::from("/dir/file.txt.tmp")),
+        Instant::now(),
+    );
+    let view = consumer_view(vec![
+        created,
+        rename(RenameMode::From, &["/dir/file.txt.tmp"]),
+        rename(RenameMode::To, &["/dir/file.txt"]),
+        rename(RenameMode::Both, &["/dir/file.txt.tmp", "/dir/file.txt"]),
+    ]);
+    assert!(
+        !view
+            .added_or_updated_set()
+            .contains(Path::new("/dir/file.txt"))
+    );
+    assert!(
+        view.content_changed_set()
+            .contains(Path::new("/dir/file.txt"))
+    );
+    // Everything `added_or_updated_set` holds is in it too.
+    assert!(
+        view.content_changed_set()
+            .is_superset(&view.added_or_updated_set())
+    );
+}
+
 /// An unpaired `From` (a move out of the tree) is left alone for the merge.
 #[test]
 fn unpaired_halves_are_kept() {

@@ -38,7 +38,11 @@ import re
 
 from backend import is_modifier
 
-_LINE = re.compile(r"input_order (keydown key=(\S+)|typed_characters)\b.* t=(\d+(?:\.\d+)?) seq=(\d+)")
+# Round 21 (#2146): the key's name is everything up to ` ctrl=`. Until then it was read as `(\S+)\b`, and a quoted punctuation key has no word
+# boundary after it (`key="." ctrl=...`): the line did not match. A key that types something was still counted by its `typed_characters` line (same
+# seq), so only a punctuation key in a chord that types nothing was dropped: Alt-. sent to a program, once per meta_and_word_keys, which made that
+# case "1 of 761 injected key(s) never reached the app's key trace" (NOREF) in rounds 14 and 15 while the app had logged every key.
+_LINE = re.compile(r"input_order (keydown key=(.+?) ctrl=(?:true|false)\b|typed_characters\b).* t=(\d+(?:\.\d+)?) seq=(\d+)")
 _HOP_ENTER = re.compile(r"input_order hop=enter_begin deferred=(\w+)\b.* t=(\d+(?:\.\d+)?)")
 _KEYBOUND = re.compile(r"input_order hop=keydown_keybound dispatch_seq=(\d+) key=(.*?) ctrl=\w+\b.* t=(\d+(?:\.\d+)?)")
 _CORE_ENTER = re.compile(r"input_order hop=core_enter stage=dispatch_result handled=(\w+)\b.* t=(\d+(?:\.\d+)?)")

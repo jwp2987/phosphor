@@ -476,6 +476,43 @@ fn remote_pre_image_refusal<E: std::fmt::Display>(
     }
 }
 
+/// Environment variable that, set to `0`, makes an individually watched file reload only when
+/// the watcher reports it as added or modified, as before #2143: a file replaced by rename is
+/// then not reloaded on Linux and Windows.
+const RELOAD_ON_RENAME_ENV: &str = "PHOSPHOR_FILE_RELOAD_ON_RENAME";
+
+/// Whether the target of a rename is reloaded: it is, unless the kill switch says `0`.
+fn reload_on_rename_env_enabled() -> bool {
+    reload_on_rename_enabled_from(std::env::var(RELOAD_ON_RENAME_ENV).ok().as_deref())
+}
+
+/// [`reload_on_rename_env_enabled`] with the variable's value passed in (tests).
+fn reload_on_rename_enabled_from(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
+/// The paths of a watcher report whose files should be read again (#2143).
+///
+/// Until this, only `added` and `modified` paths were. A file replaced by rename (git, most
+/// editors, `sed -i`, this app's own save: a new file renamed over the old one) is reported by
+/// inotify and ReadDirectoryChangesW as a rename, so its path is the TARGET of a `moved` entry
+/// and in neither set: an open, unmodified file kept its old text and the next save wrote that
+/// text over the other program's change. FSEvents reports the same replace as an added path,
+/// which is why macOS reloaded. The repository-level path (`handle_repository_update`) has
+/// always reloaded rename targets.
+///
+/// `include_rename_targets` false is the kill switch: the set of before.
+fn paths_to_reload(
+    event: &BulkFilesystemWatcherEvent,
+    include_rename_targets: bool,
+) -> HashSet<PathBuf> {
+    if include_rename_targets {
+        event.content_changed_set()
+    } else {
+        event.added_or_updated_set()
+    }
+}
+
 /// Tracks how a file is being watched for changes.
 #[derive(Clone, PartialEq, Eq, Default)]
 enum WatcherType {
@@ -763,8 +800,7 @@ impl FileModel {
         event: &BulkFilesystemWatcherEvent,
         ctx: &mut ModelContext<Self>,
     ) {
-        let updated_files = event.added_or_updated_set();
-        self.reload_file_paths(updated_files, ctx);
+        self.reload_file_paths(paths_to_reload(event, reload_on_rename_env_enabled()), ctx);
     }
 
     pub fn file_path(&self, file_id: FileId) -> Option<PathBuf> {

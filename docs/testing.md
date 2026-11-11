@@ -7972,3 +7972,60 @@ the classic (PS1) and universal input layouts in an app case (one `render_input_
 height; no pass runs those layouts, and the PS1 prompt's prefix and right-prompt inset are untested on a build); the input pinned to
 the top and the waterfall input; a same-line prompt that is not the shell's own (context chips inside the editor, only without the
 agent view feature) keeps the banner.
+
+## Round 21, Wayland: editor reload, pane divider, and four rows that were test faults (design `docs/design/r21-wlpanes.md`; #2143 #2144 #2145 #2146; nothing compiled, no app run when written)
+
+Source: the round 15 targeted run, build/r15a `b06800e98`, `app-test-linux-wayland` job 17936839261. Each part below is added by the commit that changes its tests.
+
+### A file replaced by rename is reloaded (#2143; APP)
+
+- Defect: on Linux an open, unmodified file that another program replaced by rename (new file, renamed over the old one) kept its old text; the
+  next save overwrote the change. `editor_daily`'s "file changed on disk" arm is the app case (unchanged): it replaces the file by rename and
+  expects `editor_disk outcome=reloaded external=true` and the next edit on top of the new text. The whole round 15 log had no `editor_disk`
+  line: with the change the editor's own save also logs `editor_disk outcome=reloaded external=false` about 200 ms after it, on Linux and
+  Windows as on macOS before.
+- Unit tests (not compiled when written): `crates/warp_files/src/lib_test.rs` `a_file_replaced_by_rename_is_reloaded`,
+  `added_and_modified_paths_are_still_reloaded`, `the_reload_on_rename_kill_switch_restores_the_old_set`; `crates/watcher/src/lib_tests.rs`
+  `an_unpaired_move_in_is_an_added_path`, `a_paired_rename_adds_no_path`, `the_target_of_a_replace_by_rename_has_changed_content`.
+- Kill switch: `PHOSPHOR_FILE_RELOAD_ON_RENAME=0` in the app's environment. With it `editor_daily` fails that arm on Linux again, with the
+  message of round 15.
+- Not covered by an app case: a file moved in from another directory over an open file (`mv ../new file.txt`); the unit test of the merge
+  covers the report, no case plays it.
+
+### Keyboard pane resize moves the divider that is on screen (#2144; APP)
+
+- Defect: with a closed pane still in the branch (undo-close window, 60 s) or a pane hidden for a job / as a child agent next to the focused
+  pane, "Resize pane > Move divider left / right / up / down" moved flex between the focused pane and the pane that is not drawn: the divider
+  went the wrong way by about half a step. `pane_resize_maximize` is the app case (unchanged): after `editor_daily` closed four editor splits
+  it read 81 / 79 columns after "move divider left" twice on the right pane, expected the right one wider.
+- Unit tests (`app/src/pane_group/tree_tests.rs`, not compiled when written): `keyboard_resize_pairs_the_focused_pane_with_a_drawn_neighbour`
+  (the round 15 layout), `resize_pairs_skip_a_hidden_node_between_drawn_ones`, `resize_pairs_are_unchanged_when_nothing_is_hidden`,
+  `move_divider_left_on_the_right_pane_widens_it`, `resize_drawn_pair_kill_switch_values`.
+- Kill switch: `PHOSPHOR_PANE_RESIZE_DRAWN_PAIR=0` (read once at first use): pairs by raw index and the divider after the last drawn pane, as
+  before. With it `pane_resize_maximize` fails again when it runs within a minute of a case that closed a split.
+- Not covered by an app case: a pointer drag of a divider with a pane hidden for a job or as a child agent between the two panes (the unit
+  test covers the pair; `pane_resize_maximize` drags with closed panes only, which the drag drops first); the divider that used to be drawn
+  after the last pane is not looked for by any case.
+
+### Four rows that were test faults (#2146; harness only)
+
+| row (round 15 Wayland) | fault | change |
+|---|---|---|
+| `tab_lifecycle_keys` [terminal] FAIL, `pane_wedged_after_tab_lifecycle_keys` | `network_gate_switch` ended with the Settings tab in front on Linux: its `close_settings` is two Escapes (they do not close the tab) and the shell-in-front proof ran off Linux only. The next case's probe was typed into "Allowed origins". | `network_gate_switch` runs `shell_back_in_front` (probe line; close key when it does not answer; probe again) on every platform, and in its `finally` when the page half ended early. |
+| `pane_not_local_after_meta_and_word_keys` [terminal] FAIL | `cb_ui_action_latency` opened a tab, pressed next-tab (two tabs: the pass's OWN tab comes to the front) and closed the tab in front. The depth check after the next case then read a pid that was not the root's and typed `exit`, closing the only tab and the window. | `cb_ui_action_latency` reads its shell's pid before the tab and sends the close key only with another shell in front (`throwaway_tab_step`, `close_throwaway_tab`; next-tab once more when needed; metric `throwaway_tab_close`), then proves its own shell is back. The depth check (`Ctx.leave_nested`) asks the process table (`shell_lineage`, `ppid_table`; POSIX): a shell under the app that was not started from the root shell is another tab's, `exit` is not typed, the result is `"other"` and the row says so and that the cause is an earlier case. |
+| `meta_and_word_keys` NOREF, both modes; `ui_readline_keys` [terminal] NOREF ("1 of N injected key(s) never reached the app's key trace") | The app logged every key. `injacct._LINE` read the key's name as `(\S+)\b`; `key="."` has no word boundary after it, and Alt-. into a program types nothing, so there was no `typed_characters` line to count it by. | The name is everything up to ` ctrl=`. With the round 15 log the case reads 761 sent, 761 seen. |
+| `scroll_keys_position` [agent] FAIL | (a) Home after block-up is the input editor's in the agent view (a keyboard block selection leaves the keyboard in the input there, by design). (b) The agent view does not draw a background job's output (#2145), so "the job's last lines are on screen" cannot hold. | Agent pass: Shift+Home scrolls to the top (`skp_top_keys`). A control after the job starts reads whether its lines are drawn (`skp_stream_state`, shot `skp_0_stream`, metric `skp_stream_drawn`): not drawn in a terminal session is a FAIL of the control. Not drawn in the agent view: after one key the end of the numbered lines must be back (FAIL otherwise), and the row is NO-REFERENCE with "#2145 ... NOT judged" for the two facts that need drawn output (`skp_after_key_verdict`). Drawn in the agent view (after an answer to #2145): the checks of the terminal pass apply unchanged. The terminal pass is unchanged apart from the control. |
+
+- **What the next run should show.** `tab_lifecycle_keys` [terminal] and `meta_and_word_keys` (both modes) judged on their own checks; no
+  `pane_not_local_after_meta_and_word_keys`; `network_gate_switch` with a note "Escape left the settings page open ...; closed it with key ..." on
+  Linux; `cb_ui_action_latency` with `throwaway_tab_close = closed`; `scroll_keys_position` [agent] NO-REFERENCE naming #2145 (not FAIL), with
+  `skp_stream_drawn.state = agent_hidden`.
+- **Accounting, other rows.** The same fix moves any row whose only "lost" key was a quoted punctuation chord. `intl_compose_linux` (8 lost) and
+  `upgrade_over_previous` (112 lost) have other causes and were not looked at here.
+- **Not changed.** `cases.KEYDOWN_RE` and `cases._KD_SEQ_RE` read the key name as `\S+` too and do not match `key=" "` (a quoted space); they
+  serve the latency cases, which type no chord, and were left alone.
+- Self-tests (`script/realapp/appci/selftest_r21_wlpanes.py`, run by `run.py --self-test`): `r21_injacct_counts_a_quoted_punctuation_chord`
+  (the old pattern is shown to lose the key), `r21_shell_lineage_tells_a_nested_shell_from_another_tabs`,
+  `r21_leave_nested_types_no_exit_in_another_tabs_shell`, `r21_cb_ui_action_latency_closes_only_the_throwaway_tab`,
+  `r21_network_gate_switch_proves_the_shell_in_front_on_every_platform`, `r21_scroll_keys_position_agent_view_judges`,
+  `r21_app_kill_switches_named_in_the_sources_and_the_docs`.

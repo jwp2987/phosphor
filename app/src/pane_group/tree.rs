@@ -769,7 +769,8 @@ impl PaneData {
         delta: f32,
         ctx: &mut ViewContext<PaneGroup>,
     ) {
-        self.root.adjust_pane_size(border_id, delta, ctx);
+        self.root
+            .adjust_pane_size(border_id, delta, &self.hidden_panes, ctx);
     }
 
     /// Resets every pane's flex in the [`PaneBranch`] that owns `border_id`
@@ -789,7 +790,7 @@ impl PaneData {
         ctx: &mut ViewContext<PaneGroup>,
     ) {
         self.root
-            .adjust_pane_size_by_id(pane_id, direction, delta, ctx);
+            .adjust_pane_size_by_id(pane_id, direction, delta, &self.hidden_panes, ctx);
     }
 
     pub fn panes_by_direction(
@@ -1089,11 +1090,14 @@ impl PaneNode {
         &mut self,
         border_id: EntityId,
         delta: f32,
+        hidden_panes: &[HiddenPane],
         ctx: &mut ViewContext<PaneGroup>,
     ) -> bool {
         match self {
             PaneNode::Leaf(_) => false,
-            PaneNode::Branch(branch) => branch.adjust_pane_size(border_id, delta, ctx),
+            PaneNode::Branch(branch) => {
+                branch.adjust_pane_size(border_id, delta, hidden_panes, ctx)
+            }
         }
     }
 
@@ -1116,12 +1120,13 @@ impl PaneNode {
         pane_id: PaneId,
         direction: SplitDirection,
         delta: f32,
+        hidden_panes: &[HiddenPane],
         ctx: &mut ViewContext<PaneGroup>,
     ) -> bool {
         match self {
             PaneNode::Leaf(id) => *id == pane_id,
             PaneNode::Branch(branch) => {
-                branch.adjust_pane_size_by_id(pane_id, direction, delta, ctx)
+                branch.adjust_pane_size_by_id(pane_id, direction, delta, hidden_panes, ctx)
             }
         }
     }
@@ -1244,6 +1249,55 @@ fn redistributed_flex(current_size_1: f32, delta: f32, total_size: f32, total_fl
     ((current_size_1 + delta) / total_size * total_flex)
         .max(0.)
         .min(total_flex)
+}
+
+/// Environment variable that, set to `0`, makes a divider move the two nodes at its raw index in
+/// the branch again, drawn or not, as before #2144. Read once.
+const RESIZE_DRAWN_PAIR_ENV: &str = "PHOSPHOR_PANE_RESIZE_DRAWN_PAIR";
+
+/// Whether a resize picks its pair among the nodes that are drawn: it does, unless the kill
+/// switch says `0`.
+fn resize_drawn_pair_env_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        resize_drawn_pair_enabled_from(std::env::var(RESIZE_DRAWN_PAIR_ENV).ok().as_deref())
+    })
+}
+
+/// [`resize_drawn_pair_env_enabled`] with the variable's value passed in (tests).
+fn resize_drawn_pair_enabled_from(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
+/// The two nodes a keyboard resize of the child at index `child` moves flex between, as indices
+/// into the branch's nodes (#2144). `drawn` are the indices of the nodes that are on screen, in
+/// order ([`PaneBranch::drawn_node_indices`]).
+///
+/// The child and the next drawn node; the last drawn child pairs with the drawn node before it,
+/// so "move divider left" on the right-most pane moves the divider on its left. `None` when the
+/// child is not drawn or is the only drawn node: there is no divider to move.
+///
+/// Until this, the pair was `nodes[child]` and `nodes[child + 1]` whatever was drawn. A pane that
+/// was closed stays in the branch, hidden, for the undo-close window (and a pane hidden for a job
+/// or as a child agent stays for as long as it is hidden). With `[left, right, closed]` and the
+/// right pane focused the pair was (right, closed): the right pane gave flex to a pane that is not
+/// drawn and shrank against the left one, so the divider went the wrong way.
+fn resize_pair_for_child(drawn: &[usize], child: usize) -> Option<(usize, usize)> {
+    let position = drawn.iter().position(|&index| index == child)?;
+    if position + 1 < drawn.len() {
+        Some((drawn[position], drawn[position + 1]))
+    } else if position > 0 {
+        Some((drawn[position - 1], drawn[position]))
+    } else {
+        None
+    }
+}
+
+/// The two nodes the divider at index `divider` of the branch's dividers moves flex between
+/// (#2144): `render` gives divider k to the k-th DRAWN node, so the pair is the k-th and
+/// (k+1)-th drawn nodes. `None` when there are not that many drawn nodes.
+fn resize_pair_for_divider(drawn: &[usize], divider: usize) -> Option<(usize, usize)> {
+    Some((*drawn.get(divider)?, *drawn.get(divider + 1)?))
 }
 
 impl PaneBranch {
@@ -1476,7 +1530,15 @@ impl PaneBranch {
         // Collect divider positions to render them as positioned elements later.
         let mut divider_positions = Vec::new();
 
-        for (flex, node) in self.nodes.iter() {
+        // #2144: a divider belongs between two drawn nodes. Hidden nodes after the last drawn
+        // one (a closed pane kept for undo) used to leave one more divider at the far edge.
+        let last_drawn = if resize_drawn_pair_env_enabled() {
+            self.drawn_node_indices(hidden_panes).last().copied()
+        } else {
+            None
+        };
+
+        for (index, (flex, node)) in self.nodes.iter().enumerate() {
             // Skip nodes that have no visible children, but preserve nodes with children
             // hidden for move operations as they serve as drop targets
             if !node.has_visible_children(hidden_panes)
@@ -1496,6 +1558,9 @@ impl PaneBranch {
             parent.add_child(
                 Shrinkable::new(flex_value, node.render(theme, hidden_panes, app)).finish(),
             );
+            if last_drawn == Some(index) {
+                continue;
+            }
             if let Some(divider) = dividers.next() {
                 if matches!(node, PaneNode::Leaf(id) if pane_hidden_for_move(hidden_panes, id)) {
                     continue;
@@ -1540,10 +1605,95 @@ impl PaneBranch {
         stack.finish()
     }
 
+    /// The indices in `nodes` of the nodes [`Self::render`] draws: those with a visible pane,
+    /// and those kept as drop targets while a pane is dragged. Dividers sit between these, in
+    /// order (#2144).
+    fn drawn_node_indices(&self, hidden_panes: &[HiddenPane]) -> Vec<usize> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, node))| {
+                node.has_visible_children(hidden_panes)
+                    || node.has_children_hidden_for_move(hidden_panes)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Moves the divider between the nodes at `first` and `second` (indices into `nodes`, in
+    /// that order on screen) by `delta` pixels, by moving flex from one to the other.
+    fn adjust_node_pair(
+        &mut self,
+        first: usize,
+        second: usize,
+        delta: f32,
+        ctx: &mut ViewContext<PaneGroup>,
+    ) {
+        if first >= self.nodes.len() || second >= self.nodes.len() || first == second {
+            return;
+        }
+        let pane_size_1 = self.nodes[first].1.pane_size(ctx);
+        let pane_size_2 = self.nodes[second].1.pane_size(ctx);
+
+        let flex_1 = self.nodes[first].0.0;
+        let flex_2 = self.nodes[second].0.0;
+
+        let total_flex = flex_1 + flex_2;
+
+        let (size_1, size_2) = match self.axis {
+            SplitDirection::Horizontal => (pane_size_1.x(), pane_size_2.x()),
+            SplitDirection::Vertical => (pane_size_1.y(), pane_size_2.y()),
+        };
+
+        // The pair's *combined* extent is invariant while their shared divider is
+        // dragged -- only the ratio between them moves -- so it stays correct even when
+        // the measurement behind it is stale. The individual sizes do not, and that
+        // distinction is the whole bug this guards against.
+        let total_size = size_1 + size_2;
+        if total_size <= 0. || total_flex <= 0. {
+            return;
+        }
+
+        // Where the divider sits according to the flex already applied, rather than
+        // according to the last painted frame.
+        //
+        // `pane_size` reads the position cache, which only `build_scene` refreshes, and
+        // paint is deliberately deferred from input handling ("We'll do all of the actual
+        // work later", `warpui_core`'s window-invalidation callback) while every raw
+        // `CursorMoved` is dispatched uncoalesced. So several drag events routinely arrive
+        // between two paints. Recomputing an absolute flex from the *measured* `size_1`
+        // made each of those events start from the same stale position and overwrite the
+        // previous one, so only the last event before each repaint survived and the rest
+        // of the cursor's travel was discarded -- the divider moved roughly a fraction
+        // 1/N of the mouse, with N the drag events per painted frame. Undershoot, not lag:
+        // it never caught up. Deriving the position from the flex we have already applied
+        // makes each event accumulate, independent of paint cadence.
+        //
+        // When the cache *is* fresh this is identical to the old expression, because a
+        // completed layout leaves the measured ratio equal to the flex ratio.
+        let current_size_1 = flex_1 / total_flex * total_size;
+
+        // Omit noise in dragging.
+        let minimum_pane_size = get_minimum_pane_size(ctx);
+        if current_size_1 + delta < minimum_pane_size
+            || (total_size - current_size_1) - delta < minimum_pane_size
+            || delta.abs() < f32::EPSILON
+        {
+            return;
+        }
+
+        // Re-distribute the flex factors.
+        let new_flex = redistributed_flex(current_size_1, delta, total_size, total_flex);
+
+        self.nodes[first].0 = PaneFlex(new_flex);
+        self.nodes[second].0 = PaneFlex(total_flex - new_flex);
+    }
+
     pub fn adjust_pane_size(
         &mut self,
         border_id: EntityId,
         delta: f32,
+        hidden_panes: &[HiddenPane],
         ctx: &mut ViewContext<PaneGroup>,
     ) -> bool {
         if let Some(idx) = self
@@ -1551,67 +1701,20 @@ impl PaneBranch {
             .iter()
             .position(|divider| divider.id == border_id)
         {
-            let pane_size_1 = self.nodes[idx].1.pane_size(ctx);
-            let pane_size_2 = self.nodes[idx + 1].1.pane_size(ctx);
-
-            let flex_1 = self.nodes[idx].0.0;
-            let flex_2 = self.nodes[idx + 1].0.0;
-
-            let total_flex = flex_1 + flex_2;
-
-            let (size_1, size_2) = match self.axis {
-                SplitDirection::Horizontal => (pane_size_1.x(), pane_size_2.x()),
-                SplitDirection::Vertical => (pane_size_1.y(), pane_size_2.y()),
+            // #2144: the divider drawn k-th sits between the k-th and (k+1)-th DRAWN nodes.
+            let pair = if resize_drawn_pair_env_enabled() {
+                resize_pair_for_divider(&self.drawn_node_indices(hidden_panes), idx)
+            } else {
+                Some((idx, idx + 1))
             };
-
-            // The pair's *combined* extent is invariant while their shared divider is
-            // dragged -- only the ratio between them moves -- so it stays correct even when
-            // the measurement behind it is stale. The individual sizes do not, and that
-            // distinction is the whole bug this guards against.
-            let total_size = size_1 + size_2;
-            if total_size <= 0. || total_flex <= 0. {
-                return true;
+            if let Some((first, second)) = pair {
+                self.adjust_node_pair(first, second, delta, ctx);
             }
-
-            // Where the divider sits according to the flex already applied, rather than
-            // according to the last painted frame.
-            //
-            // `pane_size` reads the position cache, which only `build_scene` refreshes, and
-            // paint is deliberately deferred from input handling ("We'll do all of the actual
-            // work later", `warpui_core`'s window-invalidation callback) while every raw
-            // `CursorMoved` is dispatched uncoalesced. So several drag events routinely arrive
-            // between two paints. Recomputing an absolute flex from the *measured* `size_1`
-            // made each of those events start from the same stale position and overwrite the
-            // previous one, so only the last event before each repaint survived and the rest
-            // of the cursor's travel was discarded -- the divider moved roughly a fraction
-            // 1/N of the mouse, with N the drag events per painted frame. Undershoot, not lag:
-            // it never caught up. Deriving the position from the flex we have already applied
-            // makes each event accumulate, independent of paint cadence.
-            //
-            // When the cache *is* fresh this is identical to the old expression, because a
-            // completed layout leaves the measured ratio equal to the flex ratio.
-            let current_size_1 = flex_1 / total_flex * total_size;
-
-            // Omit noise in dragging.
-            let minimum_pane_size = get_minimum_pane_size(ctx);
-            if current_size_1 + delta < minimum_pane_size
-                || (total_size - current_size_1) - delta < minimum_pane_size
-                || delta.abs() < f32::EPSILON
-            {
-                return true;
-            }
-
-            // Re-distribute the flex factors.
-            let new_flex = redistributed_flex(current_size_1, delta, total_size, total_flex);
-
-            self.nodes[idx].0 = PaneFlex(new_flex);
-            self.nodes[idx + 1].0 = PaneFlex(total_flex - new_flex);
-
             return true;
         }
 
         for (_, node) in &mut self.nodes {
-            if node.adjust_pane_size(border_id, delta, ctx) {
+            if node.adjust_pane_size(border_id, delta, hidden_panes, ctx) {
                 return true;
             }
         }
@@ -1659,18 +1762,34 @@ impl PaneBranch {
         pane_id: PaneId,
         direction: SplitDirection,
         delta: f32,
+        hidden_panes: &[HiddenPane],
         ctx: &mut ViewContext<PaneGroup>,
     ) -> bool {
-        for (idx, (_, node)) in self.nodes.iter_mut().enumerate() {
-            if node.adjust_pane_size_by_id(pane_id, direction, delta, ctx) {
+        for idx in 0..self.nodes.len() {
+            if self.nodes[idx].1.adjust_pane_size_by_id(
+                pane_id,
+                direction,
+                delta,
+                hidden_panes,
+                ctx,
+            ) {
                 // If the resizing direction is different from the splitting direction
                 // of the branch, we return for the parents to handle.
                 if direction != self.axis {
                     return true;
                 }
 
-                let divider_id = self.dividers[idx.min(self.dividers.len() - 1)].id;
-                self.adjust_pane_size(divider_id, delta, ctx);
+                // #2144: the pair is chosen among the nodes that are drawn (a closed pane kept
+                // for undo, or one hidden for a job, is in `nodes` but not on screen).
+                let pair = if resize_drawn_pair_env_enabled() {
+                    resize_pair_for_child(&self.drawn_node_indices(hidden_panes), idx)
+                } else {
+                    let first = idx.min(self.dividers.len().saturating_sub(1));
+                    Some((first, first + 1))
+                };
+                if let Some((first, second)) = pair {
+                    self.adjust_node_pair(first, second, delta, ctx);
+                }
                 break;
             }
         }
