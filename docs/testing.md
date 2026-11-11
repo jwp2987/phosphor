@@ -1671,7 +1671,7 @@ the look that finds the alt screen off and the line clean. In an appci log the h
 | view | `view_test.rs`: `vim_typeahead_waits_through_the_alt_screen_and_the_setup_follows_it` | `vim f\r` into a cooked reading bash re-arms; vim (Unknown, alt screen) waits; after the alt screen closes and readline reads: written |
 | view, Legacy and Table (parity (a)) | `view_test.rs`: `e_secret_hands_the_held_keys_back_in_the_same_wakeup_and_re_arms` | relay `sudo -s` at `# ` writes the probe; `sec`+`ret` held; a Secret sample at the next wakeup: ZERO further pty writes, editor `secret` with the guard, announcement / in-flight / net cleared, re-armed; `pw` typed next passes straight through |
 | view, Legacy and Table (parity (b)) | `view_test.rs`: `e_question_cancels_and_later_keys_reach_the_pty_in_order_in_both_modes` | `Continue? [y/N] ` drawn after the write with no marker: Idle, `held` back in the editor, nothing written; `y`,`\r`,`ls` then reach the pty in order; the byte lists of both modes are equal |
-| view | `view_test.rs`: `e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_prompt` | a prompt shape BEFORE the echo ended is no verdict; the echo through its LF then an error and a fresh `bash-5.1$ ` with the queue empty: Idle, the held `ls` delivered to the pty in order, editor empty, the attempt's ID unregistered Changed by #1991 (see "Round 17, queue 3"): two readers now, the cooked echo under a dash and readline's own drawing under bash (the grid proof). |
+| view | `view_test.rs`: `e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_prompt` | a prompt shape BEFORE the echo ended is no verdict; the echo through its LF then an error and a fresh `bash-5.1$ ` with the queue empty: Idle, the held `ls` delivered to the pty in order, editor empty, the attempt's ID unregistered Changed by #1991 (see "Round 17, queue 3"): two readers now, the cooked echo under a dash and readline's own drawing under bash (the grid proof). Round 18 (`docs/design/r10-r18-bootsub.md`): the bash arm's prompt is `sh$ ` (the test pane is 7 columns wide; the old 10-character prompt soft-wrapped, which is by design no proof for the grid), and the test asserts its prompt fits the pane. |
 | view | `view_test.rs`: `a_marker_between_the_echo_and_the_prompt_keeps_the_written_attempt` | our token's marker before the prompt is progress; another token's marker is not ours |
 | view | `view_test.rs`: `the_banner_click_arms_and_the_pre_ready_ceiling_cancels_without_writing` | a click arms and judges; a second click resets `armed_at`; at 60 s with vim in front: Idle (NotAShell), nothing written before or after |
 | view | `view_test.rs`: `a_relay_writes_on_its_first_prompt_only_with_a_raw_local_tty` | `/ # ` behind a relay with a COOKED local tty waits (R4); with a raw one the sh probe's prelude goes out |
@@ -7065,3 +7065,13 @@ What the next run should show: `md_viewer_first_frame` PASS in both modes with a
 - **New, `terminal/view_test.rs`: `a_waiting_question_with_no_card_in_the_pane_is_stopped`.** The pane's half of #1967, which had no
   test: a question waiting with no card in the pane gets exactly one cancelled result and nothing of the turn stays pending. It logs
   the `hop=agent_turn_stuck` ERROR line on purpose.
+**Round 18, two round-14 unit failures, both TEST verdicts (`docs/design/r10-r18-bootsub.md`; worked, unproven: nothing compiled or run).**
+`terminal/bootstrap_test.rs` `msys_ssh_wrapper_sends_the_bootstrap_in_the_remote_command` (#2051): the remote command is run on the test machine, and
+its plain login prints that machine's MotD (no ssh is started; the CI host has a MotD file, the authoring machine none). Each plain login (`zsh login`,
+`mode byte P`, `no mode byte`) is now run twice: with `.hushlogin` in the remote HOME (the exact old text, on every machine) and without (NEW: the
+same text with this machine's MotD, the first readable file of the command's own list, between the hook and the login shell's line; the MotD is
+re-read after the run and the run repeated if a login rewrote it meanwhile). `terminal/view_test.rs`
+`e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_prompt` (#1991), `LineEditor` arm: the fixture's prompt fits the 7-column
+test pane (`sh$ `) and the test asserts that it does; no assertion changed. Not covered in a view test: a prompt that soft-wraps staying `written`
+(the pure rule's `continues` cases cover it).
+What the next run should show: both PASS in test-linux.

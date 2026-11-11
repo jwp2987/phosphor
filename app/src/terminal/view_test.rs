@@ -35305,6 +35305,14 @@ fn the_r9_flush_spares_a_secret_read_and_bytes_the_user_sent_whatever_the_echo_f
 /// it. The bash arm now feeds readline's form and asserts the filter stays out of it; the cooked
 /// echo is asserted where it does occur, in the dash arm. Every assertion on the outcome (the
 /// verdict's order, the held keys at the pty, the ID unregistered) is kept for both.
+///
+/// Fixture history (round 14, `docs/design/r10-r18-bootsub.md`; the rule and every assertion are
+/// unchanged): the bash arm's prompt was `bash-5.1$ `, ten characters, and the pane of
+/// `TerminalView::new_for_test` is 7 columns wide. That prompt soft-wraps there, and a prompt on
+/// a row that continues the row above it is by design no proof for the grid
+/// (`line_editor_took_the_line`: a soft wrap is one logical line, maybe still the editor's), so
+/// the attempt rightly stayed written. The prompt is now one that fits the pane, and the test
+/// says so itself before it draws it.
 #[test]
 fn e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_prompt() {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35318,8 +35326,10 @@ fn e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_promp
             app.add_singleton_model(|_| crate::ToastStack);
             let terminal = add_window_with_terminal(&mut app, None);
             let written = subshell_pty_writes(&mut app, &terminal);
+            // Not `$ ` for the line editor: a prompt whose whole text occurs in the setup line is
+            // never the grid's proof (an accepted loss of #1991).
             let prompt = match reader {
-                Reader::LineEditor => "bash-5.1$ ",
+                Reader::LineEditor => "sh$ ",
                 Reader::CookedTty => "$ ",
             };
             let (token, line0) = terminal.update(&mut app, |view, ctx| {
@@ -35328,6 +35338,19 @@ fn e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_promp
                     Reader::CookedTty => ("dash", dash_cooked(), None),
                 };
                 view.model.lock().simulate_long_running_block(comm, "");
+                let columns = view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .output_grid()
+                    .grid_handler()
+                    .columns();
+                assert!(
+                    prompt.len() < columns,
+                    "{reader:?}: the fixture's prompt must fit the test pane ({columns} columns): \
+                     a prompt that soft-wraps is no proof for the grid, by design"
+                );
                 install_subshell_tty_for_test(view, sample);
                 // #1934: the line editor reads AT A PROMPT IT DREW; the shape is asked for.
                 view.model.lock().process_bytes(prompt);
