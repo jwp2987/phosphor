@@ -64,10 +64,12 @@ fn assemble_sorts_drops_non_utf8_and_oversized_files_and_marks_home_skills() {
             "/h/.claude/skills/b/SKILL.md"
         ]
     );
-    assert!(snapshot
-        .skills
-        .iter()
-        .all(|s| matches!(s.source, Some(remote_skill_proto::Source::Home(_)))));
+    assert!(
+        snapshot
+            .skills
+            .iter()
+            .all(|s| matches!(s.source, Some(remote_skill_proto::Source::Home(_))))
+    );
     assert_eq!(snapshot.global_rules.len(), 1);
     assert_eq!(snapshot.global_rules[0].content, "rules");
 }
@@ -136,9 +138,11 @@ fn commands_exist_for_every_shell_kind() {
         "{skills}"
     );
     assert!(skills.contains(".agents/skills"), "{skills}");
-    assert!(rules_command(ShellKind::Pwsh)
-        .unwrap()
-        .contains(".agents/AGENTS.md"));
+    assert!(
+        rules_command(ShellKind::Pwsh)
+            .unwrap()
+            .contains(".agents/AGENTS.md")
+    );
     assert!(home_command(ShellKind::Pwsh).unwrap().contains("$HOME"));
 }
 
