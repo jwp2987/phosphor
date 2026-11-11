@@ -295,6 +295,25 @@ pub struct Env {
     /// the behaviour under that key; any other command is `Quick("")`.
     #[serde(default)]
     pub commands: BTreeMap<String, CmdBehaviour>,
+    /// What the preprocessing of every reply's tool calls does (L1; the app preprocesses a
+    /// reply's calls as one batch before any of them is queued). `None`, the default and what
+    /// every random scenario has: nothing is added, a batch is queued as soon as the app's own
+    /// preprocessing is done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preprocess: Option<PreprocessBehaviour>,
+}
+
+/// A batch of tool calls that does not leave preprocessing by itself (#2104): the shape of a
+/// slow or hung diff apply (#1894), for any tool. Only a stop (or a new turn) ends such a
+/// batch, so a scenario that uses it has to stop the turn while the batch is preprocessing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PreprocessBehaviour {
+    /// The batch's preprocessing never comes back.
+    Hung,
+    /// The batch's preprocessing comes back `ms` milliseconds AFTER the batch was dropped (a
+    /// stop), never before: the late result of a batch the user already stopped.
+    LateAfterDrop { ms: u64 },
 }
 
 /// What a command does once the harness runs it. `RealPrompt` is the only behaviour that reads
@@ -482,6 +501,30 @@ mod tests {
         });
         let back = Scenario::from_json(&s.to_json()).unwrap();
         assert_eq!(s, back);
+    }
+
+    /// `env.preprocess` (#2104) is optional and absent from a scenario that does not use it, so
+    /// every corpus file written before it reads and writes as it did.
+    #[test]
+    fn env_preprocess_is_optional_and_round_trips() {
+        let plain = Scenario::new(3);
+        assert!(!plain.to_json().contains("preprocess"));
+        let old_file = r#"{"v":1,"seed":3,"turns":[],"env":{"commands":{}},"actor":[]}"#;
+        assert_eq!(Scenario::from_json(old_file).unwrap().env.preprocess, None);
+
+        for behaviour in [
+            PreprocessBehaviour::Hung,
+            PreprocessBehaviour::LateAfterDrop { ms: 30 },
+        ] {
+            let mut s = Scenario::new(3);
+            s.env.preprocess = Some(behaviour);
+            assert_eq!(Scenario::from_json(&s.to_json()).unwrap(), s);
+        }
+        let hung = r#"{"v":1,"seed":3,"turns":[],"env":{"preprocess":{"kind":"hung"}}}"#;
+        assert_eq!(
+            Scenario::from_json(hung).unwrap().env.preprocess,
+            Some(PreprocessBehaviour::Hung)
+        );
     }
 
     #[test]

@@ -243,3 +243,67 @@ fn a_reply_that_closes_with_no_end_runs_no_search() {
         "a reply with no End dispatched its websearch"
     );
 }
+
+/// #2104: a plain Stop while the reply's batch of tool calls is still preprocessing. The two
+/// `stop2104_*` scenarios hold every batch in preprocessing (`env.preprocess`): one for good (a
+/// hung apply, #1894), one until 30 ms after the stop dropped it (a slow apply's late result),
+/// followed by the user's next message.
+///
+/// The invariants are judged by the replay above, with the oracle as it was. What fails there
+/// on the code before #2104: the stop left the batch's calls with no status and no result, the
+/// turn watch (#1967) confirmed them as lost three main-loop hops later and logged
+/// `hop=agent_turn_stuck fault=unsettled_calls` (an ERROR: I6). This test adds what the replay
+/// cannot say: that the Stop really met a batch that was preprocessing (so a scenario that
+/// stops too late cannot pass for the wrong reason), how the turn ended, and that the model
+/// then got ONE result for the one call, not two (the late result is dropped).
+#[test]
+fn a_stop_while_the_batch_is_preprocessing_settles_its_calls_and_drops_the_late_result() {
+    let entries = corpus();
+    let scenario = |name: &str| {
+        entries
+            .iter()
+            .find(|(stem, _)| stem == name)
+            .map(|(_, scenario)| scenario.clone())
+            .unwrap_or_else(|| panic!("missing corpus/{name}.json"))
+    };
+
+    let hung = scenario("stop2104_stop_while_preprocessing_hung_apply");
+    assert_eq!(
+        hung.env.preprocess,
+        Some(fake_llm::scenario::PreprocessBehaviour::Hung)
+    );
+    let report = run_case(&hung).unwrap_or_else(|failure| panic!("{failure}"));
+    assert_eq!(
+        (report.steps[0].op, report.steps[0].stage),
+        ("stop", Some("preprocessing")),
+        "the Stop must meet the batch while it is preprocessing: {:?}",
+        report.steps
+    );
+    assert_eq!(
+        report.final_status,
+        Some(crate::ai::agent::conversation::ConversationStatus::Cancelled)
+    );
+    assert_eq!(report.requests, 1, "a stop opens no request (#1942)");
+
+    let late = scenario("stop2104_stop_while_preprocessing_late_result_then_follow_up");
+    assert!(matches!(
+        late.env.preprocess,
+        Some(fake_llm::scenario::PreprocessBehaviour::LateAfterDrop { .. })
+    ));
+    let report = run_case(&late).unwrap_or_else(|failure| panic!("{failure}"));
+    assert_eq!(
+        (report.steps[0].op, report.steps[0].stage),
+        ("stop", Some("preprocessing")),
+        "the Stop must meet the batch while it is preprocessing: {:?}",
+        report.steps
+    );
+    assert_eq!(
+        report.requests, 2,
+        "the reply's request and the user's next message, nothing else"
+    );
+    assert_eq!(
+        report.tool_messages_in_last_request, 1,
+        "the stopped call is answered once in the user's next request: its cancelled result \
+         from the stop, and no second one from the batch's late preprocess result"
+    );
+}

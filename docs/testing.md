@@ -4203,7 +4203,7 @@ Request recovery (`agent_providers/stream_recovery.rs`, driven from `generate_by
 | file | role |
 |---|---|
 | `player.rs` | scenario -> `SeamTurn` per request (`Match`: nth request / last tool result / user token / default; an unmatched request gets `END`); records the call ids each reply emitted. `Missing` id = the id genai assigns (`call_<index>`), `DuplicateOf` = a repeated id, chaos = open error / mid-stream error / stall / no `End` |
-| `rig.rs` | setup, `observe` (conversation status, stream in flight, action snapshot, actionable cards, queue rows), `drive_commands` (finishes `Quick`/`SetE` commands through `complete_command_for_test`; reports a never-ending one to the agent after a short wait, as the executor's stall snapshot does), `settle_until` |
+| `rig.rs` | setup, `observe` (conversation status, stream in flight, action snapshot, actionable cards, queue rows), `drive_commands` (finishes `Quick`/`SetE` commands through `complete_command_for_test`; reports a never-ending one to the agent after a short wait, as the executor's stall snapshot does), `settle_until` Since #2104: `env.preprocess` holds every batch of tool calls in preprocessing (`set_preprocess_hold_for_test` at setup) and `drive_preprocessing` lets a `late_after_drop` batch go N ms after a stop dropped it |
 | `actor.rs` | the scripted user, through the UI's entry points (table in the file header): Ctrl-C is the view's real key handling (`press_ctrl_c_for_test`) except into a running agent command, where the view would write the ^C to the pty and do nothing else: the rig has no pty and no block for the command, so it delivers the ^C itself (`Rig::interrupt_commands` -> `interrupt_command_for_test`, round 12; before that the view's handler did not find the command and took the status bar's cancel, which is the Stop path), a follow-up is typed into the input and `maybe_queue_input_for_in_progress_conversation` decides queue-or-submit (`type_and_try_queue_for_test`), Stop is the status bar's controller call. `AnswerQuestion` acts only on a question that is Blocked and has a card up, stages the answers, executes by id and then discards what was not taken (as `ask_user_question_view.rs` does), so it never completes a cardless question and works whether or not `ask_user_question` needs an approval step first |
 | `oracle.rs` | I1-I4, I6, I7, I8 (I5 is `prompt_tests.rs`); its own unit tests cover the I4 and I8 checks on hand-built requests |
 | `stop_tests.rs` | Stop means stop (#1942) end to end, counted on the seam's requests: a reply asks for a read and a command, the read finishes, the user presses Stop on the command's card -> no request is opened; the next user message opens exactly one request, which carries a result for both calls. Second test, the other half of the decision: the same reply, the user presses the card's Reject -> one automatic request is opened with no user message, it carries a result for both calls exactly once, the rejected command's persisted result says `rejected_by_user` (the read's does not), and the conversation goes on to `Success` |
@@ -7082,12 +7082,31 @@ logs `hop=agent_action id=<id> kind=<tool> status=cancelled` like any cancelled 
     with the flag passed in (`cancel_all_pending_actions_with(.., false, ..)`): no status at the stop, one result when the batch comes
     back. It is also the positive control of the late-result test: the same release and the same wait DO deliver a late result here.
   - `a_stop_reports_the_preprocessing_calls_it_cancelled`: `CancelledPendingActions { cancelled_any: true, dropped_preprocessing: true }`.
+- **Scenario schema (`crates/fake_llm/src/scenario.rs`): `env.preprocess`**, optional, absent by default and from every existing file
+  (`env_preprocess_is_optional_and_round_trips`; still `"v": 1`). `{"kind": "hung"}`: every batch stays in preprocessing for good.
+  `{"kind": "late_after_drop", "ms": N}`: a batch stays in preprocessing until N ms AFTER it was dropped (a stop), never before, so the
+  stop meets a preprocessing batch however slow the box is. L1 only: `rig.rs` turns the hold on at setup and `drive_preprocessing`
+  (called from `drive_commands`) releases a `late_after_drop` batch. The random strategies never set it: the generated cases are
+  unchanged.
+- **Agent fuzz corpus (replayed on every run by `corpus_replay_tests`, allowlist off and on):**
+  `stop2104_stop_while_preprocessing_hung_apply.json` (a command and a read in one reply, held for good; Stop after the stream's end, a
+  second Stop) and `stop2104_stop_while_preprocessing_late_result_then_follow_up.json` (one command, held until 30 ms after the stop;
+  Stop, two waits, the user's next message). On a build without the fix both fail I6 (`hop=agent_turn_stuck fault=unsettled_calls`).
+  **The oracle is unchanged** (`oracle.rs` and `runner.rs` are not touched; no ERROR allowance was added).
+- **Agent fuzz, `corpus_replay_tests::a_stop_while_the_batch_is_preprocessing_settles_its_calls_and_drops_the_late_result`:** runs the
+  two scenarios and pins what the replay cannot say: the Stop was performed with the front of the snapshot in the `preprocessing` stage
+  (a scenario that stopped too late cannot pass for the wrong reason), the hung one ends `Cancelled` with one request, and the other
+  opens exactly two requests, the second carrying ONE tool message for the one call.
 - **Not covered:** the cards' look after a stop during preprocessing (a cancelled card, as before by the "orphaned" rule; no log line
   tells the two apart), and no app case: holding a batch in preprocessing needs a hung diff apply, which the app cases cannot stage.
   The first run with a slow remote apply that the user stops is the app-level evidence: `hop=agent_action ... status=cancelled` for
   the call at the stop, no `hop=agent_turn_stuck`, and at most one `hop=agent_late_preprocess_result` afterwards.
-- **What the next run should show.** The nine new unit tests pass. Run (on the box, in the usual `-p warp -p warp_tui --lib --features warp/gui`
-  unit run): the filters `stop_while_preprocessing_2104` and `action_model::preprocess::tests`.
+- **What the next run should show.** The nine new unit tests, the new fuzz test and the schema test (`fake_llm`) pass; `corpus_replays_as_listed_and_reaches_the_wave0_cells`
+  and `corpus_replays_with_the_allowlist_on` pass with the two new files; both paced fuzz tests are unaffected (their scenarios never
+  hold a batch). A fuzz I2b / I3 failure after a Stop on a preprocessing batch would be this change (the turn now ends through the
+  cancelled calls' `FinishedAction`): triage it against `docs/design/r18-stoppre.md`, "Risk".
+  Run (on the box, in the usual `-p warp -p warp_tui --lib --features warp/gui` unit run): the filters `stop_while_preprocessing_2104`,
+  `action_model::preprocess::tests`, `corpus_replay_tests`; and `fake_llm`'s `scenario::tests`.
 
 ## Round 18: a pane close keeps the status of the calls whose results it discards (design `docs/design/r18-retire.md`; #2103, #848; nothing compiled or run when written)
 

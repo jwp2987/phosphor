@@ -1,0 +1,79 @@
+{
+  "v": 1,
+  "name": "stop2104_stop_while_preprocessing_late_result_then_follow_up",
+  "seed": 2105,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "run_shell_command",
+            "args": {
+              "kind": "command",
+              "cmd": "c0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {
+      "c0": {
+        "kind": "quick",
+        "out": "ok"
+      }
+    },
+    "preprocess": {
+      "kind": "late_after_drop",
+      "ms": 30
+    }
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "stop"
+      },
+      "timing": "after_end"
+    },
+    {
+      "op": {
+        "kind": "wait",
+        "ms": 200
+      },
+      "timing": "fast"
+    },
+    {
+      "op": {
+        "kind": "wait",
+        "ms": 200
+      },
+      "timing": "fast"
+    },
+    {
+      "op": {
+        "kind": "follow_up",
+        "text": "and then list the files"
+      },
+      "timing": "fast"
+    }
+  ]
+}

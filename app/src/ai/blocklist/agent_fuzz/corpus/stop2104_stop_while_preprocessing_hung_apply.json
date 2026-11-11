@@ -1,0 +1,62 @@
+{
+  "v": 1,
+  "name": "stop2104_stop_while_preprocessing_hung_apply",
+  "seed": 2104,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "run_shell_command",
+            "args": {
+              "kind": "command",
+              "cmd": "c0"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "read_files",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "env": {
+    "commands": {
+      "c0": {
+        "kind": "quick",
+        "out": "ok"
+      }
+    },
+    "preprocess": {
+      "kind": "hung"
+    }
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "stop"
+      },
+      "timing": "after_end"
+    },
+    {
+      "op": {
+        "kind": "stop"
+      },
+      "timing": "fast"
+    }
+  ]
+}

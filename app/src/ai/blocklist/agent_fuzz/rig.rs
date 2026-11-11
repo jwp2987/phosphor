@@ -55,6 +55,11 @@ pub struct Rig {
     pub lrc_alive: bool,
     /// Every message the user sent, in order (I8): the opening one and each follow-up.
     pub submitted: Vec<Submitted>,
+    /// `env.preprocess` (#2104): a held batch has been seen in preprocessing and is not yet
+    /// released.
+    preprocess_listed: bool,
+    /// `env.preprocess`: since when that batch is no longer listed (a stop dropped it).
+    preprocess_dropped_at: Option<Instant>,
 }
 
 /// One message the scripted user sent.
@@ -157,6 +162,11 @@ pub fn setup(app: &mut App, scenario: &Scenario, safe_allowlist: bool) -> Rig {
     let conversation_id = BlocklistAIHistoryModel::handle(app).update(app, |history, ctx| {
         history.start_new_conversation(terminal_id, false, false, ctx)
     });
+    // `env.preprocess` (#2104): every batch of tool calls stays in preprocessing until the rig
+    // lets it go (`drive_preprocessing`), or for good.
+    if scenario.env.preprocess.is_some() {
+        action_model.update(app, |model, _| model.set_preprocess_hold_for_test(true));
+    }
 
     Rig {
         terminal,
@@ -169,6 +179,8 @@ pub fn setup(app: &mut App, scenario: &Scenario, safe_allowlist: bool) -> Rig {
         running_since: HashMap::new(),
         lrc_alive: false,
         submitted: Vec::new(),
+        preprocess_listed: false,
+        preprocess_dropped_at: None,
     }
 }
 
@@ -377,11 +389,48 @@ impl Rig {
         interrupted
     }
 
+    /// `env.preprocess` (#2104). `Hung`: nothing, the batch never comes back. `LateAfterDrop`:
+    /// once a held batch that was listed as preprocessing is no longer listed (a stop dropped
+    /// it), its preprocessing comes back `ms` later, as the future of a slow apply does after
+    /// the user has stopped the turn. Never while the batch is still listed, so the stop
+    /// always meets a batch that is preprocessing, however slow the box is.
+    fn drive_preprocessing(&mut self, app: &mut App, obs: &Obs) {
+        let after = match &self.player.scenario().env.preprocess {
+            Some(fake_llm::scenario::PreprocessBehaviour::LateAfterDrop { ms }) => {
+                Duration::from_millis(*ms)
+            }
+            Some(fake_llm::scenario::PreprocessBehaviour::Hung) | None => return,
+        };
+        let listed = obs
+            .snapshot
+            .iter()
+            .any(|s| s.stage == PendingStage::Preprocessing);
+        if listed {
+            self.preprocess_listed = true;
+            self.preprocess_dropped_at = None;
+            return;
+        }
+        if !self.preprocess_listed {
+            return;
+        }
+        let dropped_at = *self.preprocess_dropped_at.get_or_insert_with(Instant::now);
+        if dropped_at.elapsed() < after {
+            return;
+        }
+        self.action_model.update(app, |model, _| {
+            model.release_held_preprocessing_for_test();
+        });
+        self.preprocess_listed = false;
+        self.preprocess_dropped_at = None;
+    }
+
     /// Finishes the running commands whose behaviour ends them, and reports the ones that never
     /// end to the agent after a short wait (what the executor's stall snapshot does), leaving
-    /// them alive.
+    /// them alive. Also lets a held preprocessing batch go when its time has come
+    /// (`env.preprocess`).
     pub fn drive_commands(&mut self, app: &mut App, stall_after: Duration) {
         let obs = self.observe(app);
+        self.drive_preprocessing(app, &obs);
         let running: Vec<AIAgentActionId> = obs
             .snapshot
             .iter()
