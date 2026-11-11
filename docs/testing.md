@@ -7861,6 +7861,10 @@ block of `selftest.py` (R8).
   the pending write and the image come from; the kill switch `PHOSPHOR_PRIMARY_READS_CLIPBOARD_TEXT=1`) and
   `a_primary_read_never_returns_the_clipboards_text` (a real round trip; it skips where the display has no writable PRIMARY). Real-app
   proof: `primary_and_middle_click`, `[copy_on_select off]`. Not compiled when written.
+- **App side, #2140 (one notification per blocked action / finished turn).** `terminal/view/agent_notify_once_tests.rs`: one blocked
+  action once, the next one again, a status that does not notify ends the episode, a finished turn once, conversations kept apart, the
+  kill switch `PHOSPHOR_AGENT_NOTIFY_EVERY_EVENT=1`. The wiring in `view.rs` has no unit test; real-app proof:
+  `desktop_notification_agent_question`. Not compiled when written.
 
 ## Round 21: the prompt suggestion is a chip that moves no output row (design `docs/design/r21-chip.md`; #2138, owner decision 2026-11-11; nothing compiled, no app run when written)
 A model's prompt suggestion arrives seconds after the command it is about. It was a banner laid out only while it showed: the input

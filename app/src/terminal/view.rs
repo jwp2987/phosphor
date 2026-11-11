@@ -3992,6 +3992,10 @@ pub struct TerminalView {
     /// Whether we've already inserted the conversation-ended tombstone for this view.
     has_inserted_conversation_ended_tombstone: bool,
 
+    /// #2140: what the agent desktop notification was last sent for, per conversation, so the
+    /// several events of one blocked action or one finished turn send one notification.
+    agent_notified: agent_notify_once::NotifiedEpisodes<AIConversationId>,
+
     /// Memoizes `canonical_session_pwd_if_local`, keyed by the non-canonical
     /// path it was derived from. Canonicalization touches the filesystem, and
     /// the LSP idle-shutdown scan calls this for every terminal on every pass.
@@ -5823,6 +5827,7 @@ impl TerminalView {
             shared_session: None,
             auto_stop_sharing_on_cli_end: false,
             has_inserted_conversation_ended_tombstone: false,
+            agent_notified: Default::default(),
             canonical_session_pwd_cache: RefCell::new(None),
             display_cwd_cache: RefCell::new(None),
             last_completed_command_title_cache: RefCell::new(None),
@@ -25917,6 +25922,15 @@ impl TerminalView {
         conversation_id: &AIConversationId,
         ctx: &mut ViewContext<Self>,
     ) {
+        // #2140: a status that sends no notification ends the conversation's episode, with the
+        // window in front or not: whatever blocks or ends the conversation next is told again.
+        let status_notifies = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(conversation_id)
+            .map(|conversation| agent_notify_once::status_notifies(conversation.status()));
+        if status_notifies == Some(false) {
+            self.agent_notified.episode_ended(conversation_id);
+        }
+
         if !self.is_navigated_away_from_window(ctx) {
             return;
         }
@@ -25926,13 +25940,7 @@ impl TerminalView {
             return;
         };
         let status = conversation.status();
-        let should_trigger = matches!(
-            status,
-            ConversationStatus::Success
-                | ConversationStatus::Blocked { .. }
-                | ConversationStatus::Error
-        );
-        if conversation.is_entirely_passive() || !should_trigger {
+        if conversation.is_entirely_passive() || !agent_notify_once::status_notifies(status) {
             return;
         }
 
@@ -25945,6 +25953,32 @@ impl TerminalView {
         } else {
             NotificationsTrigger::AgentTaskCompleted(block_summary.success)
         };
+
+        // #2140: this is called for the conversation's status change AND for the AI block's own
+        // event about the same thing (`ActionBlockedOnUserConfirmation`, `Finished`). One
+        // notification per blocked action and per finished turn.
+        let episode = agent_notify_once::Episode {
+            state: status.hop_state_name(),
+            marker: if status.is_blocked() {
+                self.ai_action_model
+                    .as_ref(ctx)
+                    .get_pending_actions_for_conversation(conversation_id)
+                    .next()
+                    .map(|action| action.id.to_string())
+            } else {
+                conversation
+                    .root_task_exchanges()
+                    .last()
+                    .map(|exchange| exchange.id.to_string())
+            },
+        };
+        if !self.agent_notified.should_send(
+            *conversation_id,
+            episode,
+            agent_notify_once::every_event(),
+        ) {
+            return;
+        }
         self.send_agent_desktop_notification_or_show_banner(
             trigger,
             block_summary.title,
@@ -42355,6 +42389,8 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
 mod abandoned_session;
 /// #1984: Escape in the agent view stays in a pane whose keys are vi keys.
 mod agent_escape;
+/// #2140: one agent desktop notification per blocked action / finished turn.
+mod agent_notify_once;
 mod dest_table;
 /// Owner decision 2026-11-09 (reversing #1661): a hold that gives up writes its keys to the pty.
 mod give_up_to_pty;

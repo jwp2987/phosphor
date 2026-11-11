@@ -3659,3 +3659,16 @@ only: `probes_images`). Off: `PHOSPHOR_PRIMARY_READS_CLIPBOARD_TEXT=1`. NOT chan
 no PRIMARY the read still falls back to CLIPBOARD (see #2081 above). A re-pin must not put the bare
 `.text()` back. App case `primary_and_middle_click`. Design: `docs/design/r10-r21-wlinput.md`.
 <!-- markers: keep:text_selection_for keep:pending_target_for keep:the_text_comes_from_the_selection_asked_for -->
+
+## Agent: one desktop notification per blocked action and per finished turn (#2140) — IMPROVED 2026-11-11
+
+Upstream (identical at `4111d08f9`, `app/src/terminal/view.rs`) calls
+`maybe_send_agent_mode_desktop_notification` for the conversation's status change AND for the AI
+block's own event about the same thing (`ActionBlockedOnUserConfirmation`, `Finished`), so one
+question that waits for the user sent two identical notifications. The view now remembers, per
+conversation, the episode it last notified for (`terminal/view/agent_notify_once.rs`: the status
+name and the blocked action's or the last exchange's id) and sends once per episode; a status that
+does not notify ends the episode. Off: `PHOSPHOR_AGENT_NOTIFY_EVERY_EVENT=1`. The three call sites
+are as at the pin; a re-pin must keep the `should_send` gate in front of the send. App case
+`desktop_notification_agent_question`. Design: `docs/design/r10-r21-wlinput.md`.
+<!-- markers: keep:NotifiedEpisodes keep:one_blocked_action_is_notified_for_once -->
