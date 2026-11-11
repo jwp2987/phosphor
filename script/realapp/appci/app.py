@@ -45,6 +45,7 @@ WINDOWS_RUST_LOG = ",".join([
     "remote_server::manager=info", "remote_server::backend::router=info",
     "warp::input_order=debug", "warp::terminal::model_lock_trace=debug", "warpui::frame_cause=debug", "warpui::appci_find=info",
     "phosphor::routing=debug", "editor_memory=debug",
+    "warp::uri=info",          # r15 installer_smoke: `received url scheme=.. host=.. path=..` (uri::handle_incoming_uri), the proof a second launch was handed over
 ])
 
 

@@ -1306,6 +1306,10 @@ app-test-windows:
   stage: apptest
   variables:
     APPCI_SSH_WRAPPER: "1"   # #2066: as app-test-linux-wayland; the *_wrapper cases run in the Git Bash pane (merged with .windows_job's variables)
+    # r15 (r14-test-gaps T46, #2076): the pane-shell passes after the two ordinary panes. PowerShell 7, cmd.exe and WSL are chosen through the app's own
+    # shell settings; each pass runs winmap.VARIANT_CASES (startup_shell_pane, history_up_recall, the routing table). A shell that is not installed on
+    # the VM is ONE skip row naming the machine change (winmap.VARIANT_NEEDS); a pass none of whose cases is selected (the lab job) starts no app.
+    APPCI_WIN_SHELLS: "powershell,gitbash,pwsh7,cmd,wsl"
   when: manual
   allow_failure: true
   resource_group: windows-gui

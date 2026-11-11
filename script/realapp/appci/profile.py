@@ -220,7 +220,7 @@ class Profile:
     def local_prompts(self):
         """False when the pane's shell cannot run the rc hook that writes prompt.log / rec.log: the app starts PowerShell with -NoProfile, so a
         PowerShell pane has neither (cases fall back to effect files and fixed waits and say so)"""
-        return not (self.win and self.pane in ("powershell", "cmd"))        # cmd.exe and pwsh 7 (family "powershell") have no rc hook either
+        return not (self.win and self.pane in ("powershell", "cmd", "wsl"))        # cmd.exe and pwsh 7 (family "powershell") have no rc hook either; a WSL shell's home is inside the distribution (r15 T46)
 
     def _c(self, p):
         """a path as it goes INTO a shell rc file: C:/forward/slashes on Windows, unchanged elsewhere"""
@@ -494,6 +494,18 @@ class Profile:
             return None
         return '{ executable = "%s" }' % _fwd(b) if new_session else '"%s"' % _fwd(b)
 
+    def wsl_toml(self):
+        """r15 (T46): TOML value of session.new_session_shell_override for the "wsl" pass, else None: `{ wsl = "<distribution>" }` (NewSessionShell::WSL,
+        app/src/terminal/session_settings/new_session_shell.rs), the default distribution of this machine. A startup shell cannot name WSL
+        (StartupShell has no such variant); the new-session setting is the one the app reads first (available_shells.rs)."""
+        if not (self.win and self.variant == "wsl"):
+            return None
+        import winapi
+        d = winapi.wsl_distro()
+        if not d:
+            raise RuntimeError("no WSL distribution found: the wsl pane cannot start")
+        return '{ wsl = "%s" }' % d
+
     @staticmethod
     def apply_fake_embeddings(t, T, ollama_url, ollama_model):
         """P9b: with APPCI_FAKE_EMBEDDINGS the user's BYOP embeddings provider is the loopback fake_embeddings.py (model text-embedding-3-small, a sentinel header as the
@@ -535,6 +547,9 @@ class Profile:
             if gb:              # Windows Git Bash pane: the app's startup + new-tab shell is Git for Windows' bash.exe (HOME = scratch home, so ~/.bashrc logs)
                 t = T.set_key(t, "session", "startup_shell_override", gb)
                 t = T.set_key(t, "session", "new_session_shell_override", self.gitbash_toml(True))
+            ws = self.wsl_toml()
+            if ws:              # r15 (T46): the WSL pass; nothing else in the profile changes
+                t = T.set_key(t, "session", "new_session_shell_override", ws)
             if mode == "agent":
                 t = T.set_key(t, "agents.warp_agent.input", "ai_auto_detection_enabled", "true")
                 t = T.set_key(t, "agents.warp_agent.input", "nld_in_terminal_enabled", "true")
@@ -553,6 +568,9 @@ class Profile:
         gb = self.gitbash_toml()
         if gb:
             lines += ['[session]', 'startup_shell_override = ' + gb, 'new_session_shell_override = ' + self.gitbash_toml(True), '']
+        ws = self.wsl_toml()
+        if ws:                  # r15 (T46): the WSL pass
+            lines += ['[session]', 'new_session_shell_override = ' + ws, '']
         if mode == "agent":
             lines += ['[agents.warp_agent.input]', 'ai_auto_detection_enabled = true', 'nld_in_terminal_enabled = true', '']
         if ollama_url:

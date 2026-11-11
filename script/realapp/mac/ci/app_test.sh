@@ -78,6 +78,7 @@ p=backend.make('mac').preflight(); print('\n'.join(p))")
 # the reference terminal is Terminal.app (cases.ref_terminal), driven by the same htype2/osascript path under the frontmost-app guard.
 export APPCI_PREV_ARTIFACT="appci-out/macos/run/results.json"
 export APPCI_MAC_BUNDLE="$OUT/Phosphor.app" APPCI_MAC_PROCESS="$(basename "$BIN")"
+export APPCI_DIST="$(cd "$DIST" && pwd)"   # r15 (T43 installer_smoke): the .dmg, for the case that installs it into a scratch Applications folder itself
 export APPCI_KEY_NEWTAB="cmd+t" APPCI_KEY_NEWWIN="cmd+n"
 # editor_memory_7mb: the palette is cmd+p on macOS. Phosphor's close-pane/tab shortcut on macOS is cmd-shift-W (app/src/util/bindings.rs CloseCurrentSession), which the
 # frontmost-app guard refuses by policy (every Cmd+W chord), so APPCI_KEY_CLOSE stays EMPTY here: cases that need a keyboard close SKIP with the reason (soak) or

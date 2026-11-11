@@ -214,14 +214,14 @@ def c_upgrade_from_v0_1_17(ctx, r):
         pre_text = seed_text
         if prev_bin:
             old_app = CB.old_app_like(new_app, prev_bin)
-            ctx.app = old_app
+            R.use_app(ctx, old_app)
             _n, up = R.start_app(ctx, r, "uf_old", restored_min=1)
             if not up:
                 r.check(False, "the v0.1.17 build did not reach a prompt on the seeded profile: the old profile is not usable (%s)" % why)
                 return
             time.sleep(4.0)                                     # the database writer and the settings watcher run at least once
             ctx.app.stop()
-            ctx.app = new_app
+            R.use_app(ctx, new_app)
             pre_text = open(p["settings"], encoding="utf-8", errors="replace").read()
             dropped = [("%s.%s" % k) for k in sorted(U.seeded_keys()) if U.norm_value(T.get_key(pre_text, *k)) is None]
             r.metric("seed_keys_dropped_by_v0_1_17_itself", dropped)
@@ -294,12 +294,12 @@ def c_upgrade_from_v0_1_17(ctx, r):
         # ---- downgrade note: v0.1.17 on the migrated profile (recorded, never a failure)
         if prev_bin and up2:
             migrated = open(p["settings"], encoding="utf-8", errors="replace").read()
-            ctx.app = CB.old_app_like(new_app, prev_bin)
+            R.use_app(ctx, CB.old_app_like(new_app, prev_bin))
             _n, reached = R.start_app(ctx, r, "uf_down", restored_min=1, timeout=60)
             time.sleep(2)
             log_d = open(ctx.log_path, errors="replace").read() if ctx.log_path and os.path.exists(ctx.log_path) else ""
             ctx.app.stop()
-            ctx.app = new_app
+            R.use_app(ctx, new_app)
             after_down = open(p["settings"], encoding="utf-8", errors="replace").read()
             rep = downgrade_report(migrated, after_down, reached, log_d)
             r.metric("downgrade_v0_1_17_on_migrated_profile", rep)
@@ -313,7 +313,7 @@ def c_upgrade_from_v0_1_17(ctx, r):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        ctx.app = new_app
+        R.use_app(ctx, new_app)
         try:
             new_app.stop()
             for sub in CB.STATE_SUBDIRS:

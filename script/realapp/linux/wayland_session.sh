@@ -214,6 +214,8 @@ log "session up: renderer=$RENDERER WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-} DISPLAY
 { echo "== uname"; uname -srm; echo "== dri"; ls -l /dev/dri 2>&1; echo "== vulkan"; vulkaninfo --summary 2>&1 | head -20; } > "$OUT/gpu.txt" 2>&1
 
 RUNDIR="$OUT/run"; mkdir -p "$RUNDIR"
+# r15 (T43 installer_smoke): where the build's artefacts are (.deb / .AppImage), for the case that installs one itself; unset with --bin alone
+[ -n "$DIST" ] && [ -d "$DIST" ] && export APPCI_DIST="$(cd "$DIST" && pwd)"
 # r18d8: run.py in its OWN process group (setsid; in a non-interactive shell the background child is not a group leader, so setsid execs
 # in place and $! is the pgid), recorded in $PIDS so the teardown and the next job's stale-reaper find it. `wait` is interruptible by the traps.
 setsid python3 "$APPCI/run.py" --run "$RUNDIR" --bin "$BIN" --backend "$BACKEND" --app-display "$APPDISP" --modes "$SMODES" \

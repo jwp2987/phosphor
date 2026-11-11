@@ -16,31 +16,52 @@ IDENT = {
     "pwsh7": ("Add-Content -LiteralPath who.txt -Value ('PS{0}_{1}' -f $PSVersionTable.PSVersion.Major, $PSVersionTable.PSEdition)", "ps7_core", "Start-Sleep 60"),
     "cmd": ("echo CMDOK_%COMSPEC:~-7%>>who.txt", "cmdok_cmd.exe", "ping -n 60 127.0.0.1 >nul"),
 }
+# r15 (r14-test-gaps T46): the WSL pass. /proc/version of a WSL kernel names Microsoft; Git Bash (msys) has no such line and PowerShell has no `$(`...`)` grep.
+IDENT["wsl"] = ("echo WSLOK_$(grep -ci microsoft /proc/version) >> who.txt", "wslok_1", "sleep 60")
+
+
+def pane_pass_skip_reason(win):
+    """pure: why startup_shell_pane does not run outside a pane-shell pass. Since r15 (T46) the app-test-windows job names the passes in APPCI_WIN_SHELLS,
+    so on Windows this is the ordinary PowerShell / Git Bash pass saying where the case runs; Linux and macOS have no such pass at all."""
+    if win:
+        return ("runs in the pane-shell passes only (terminal@pwsh7, terminal@cmd, terminal@wsl: APPCI_WIN_SHELLS of the app-test-windows job names them; "
+                "a pass whose shell is not installed is one startup_shell_pass SKIP row with the machine change it needs)")
+    return "Windows only: the pane-shell passes (PowerShell 7, cmd.exe, WSL chosen through the app's own shell settings) exist on the Windows runner; no machine change makes it run here"
 
 
 def identity_ok(variant, lines):
     """True when who.txt (lines) names the shell the variant should be: PowerShell 7 reports edition Core and major version 7, cmd.exe expands %COMSPEC%
-    (a PowerShell pane would write the unexpanded text)"""
+    (a PowerShell pane would write the unexpanded text), a WSL shell counts one `microsoft` line in /proc/version"""
     want = IDENT[variant][1]
     return any(l.strip().lower() == want for l in lines)
+
+
+def identity_hint(variant, lines):
+    """pure: what a wrong identity line most likely means, for the failure text"""
+    if not lines:
+        return " (nothing was written: the line did not run in any shell that understands it)"
+    if variant == "cmd" and any("%comspec" in l.replace("\0", "").lower() for l in lines):      # Windows PowerShell's `>>` writes UTF-16
+        return " (the text was not expanded: the pane is PowerShell, the app fell back to its default shell; #2084: cmd.exe is not a shell type the app starts)"
+    return ""
 
 
 @case("startup_shell_pane", modes=("terminal",), order=72, gui=True)
 def c_startup_shell_pane(ctx, r):
     """#1534: the pane's shell is the one `session.startup_shell_override` names. (1) identity by effect, (2) N lines typed at 10-25 ms/key with an instant
     Enter arrive exactly once and in order, (3) a long-running command is ended by Ctrl-C and the next line runs, (4) the app is still up. Runs only in the
-    cmd / pwsh7 passes."""
+    cmd / pwsh7 / wsl passes (r15: played by the app-test-windows job)."""
     variant = getattr(ctx, "variant", None)
     if variant not in IDENT:
-        r.skip("runs only in a startup_shell_override pass, and no tier plays one. NEEDS: a Windows run with APPCI_WIN_SHELLS=powershell,gitbash,pwsh7,cmd (a job variable "
-               "no tier sets: owner decision), with PowerShell 7 installed on the Windows VM for the pwsh7 pass (owner: machine change; cmd.exe is always there). "
-               "Linux and macOS have no such pass. Has never run on any machine")
+        r.skip(pane_pass_skip_reason(ctx.win))
     ident, _want, longcmd = IDENT[variant]
     ctx.rm("who.txt")
     ctx.be.type(ident, 12, enter=True)
     ctx.until(lambda: ctx.lines("who.txt"), 8)
     got = ctx.lines("who.txt")
-    r.check(identity_ok(variant, got), "the pane is not %s: who.txt holds %r" % (variant, got))
+    if not r.check(identity_ok(variant, got), "the pane is not %s: who.txt holds %r%s" % (variant, got, identity_hint(variant, got))):
+        ctx.shot("startup_shell_%s_identity" % variant)
+        ctx.reset()
+        return                 # every line below is in this shell's syntax: typed into another shell it would only add noise
     ctx.shot("startup_shell_%s_identity" % variant)
     n = ctx.count(20)
     f = "ssp_lines.txt"

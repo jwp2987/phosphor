@@ -36,9 +36,26 @@ class Received:
     def __init__(self, ctx):
         self.ctx = ctx
         self.ps = ctx.pane == "powershell"
-        self.mark = len(ctx.ps_history_lines()) if self.ps else ctx.cmd_mark()
+        # r15 (T46): a cmd.exe pane has neither; its console keeps the history, read by typing `doskey /history>file` (once here, once per lines())
+        self.cmd = ctx.pane == "cmd"
+        self._dk_n, self._dk_ok = 0, False
+        self.mark = len(self._doskey()) if self.cmd else (len(ctx.ps_history_lines()) if self.ps else ctx.cmd_mark())
+
+    def _doskey(self):
+        """the console history of the cmd.exe pane, without the probe lines themselves. One typed line per call: never call it between the steps
+        of a recall (the probe would become the newest history entry)."""
+        self._dk_n += 1
+        f = "dk_%s_%d.txt" % (self.ctx.tok(4).lower(), self._dk_n)
+        self.ctx.rm(f)
+        self.ctx.be.type(DOSKEY_PROBE + f, 12, enter=True)
+        got = self.ctx.until(lambda: self.ctx.lines(f), 6)
+        time.sleep(0.3)
+        self._dk_ok = self._dk_ok or bool(got)
+        return doskey_lines(self.ctx.lines(f))
 
     def lines(self):
+        if self.cmd:
+            return [l for l in self._doskey()[self.mark:] if not self.ctx.HARNESS_MARKER_RE.search(l)]
         if self.ps:
             return [l for l in self.ctx.ps_history_lines()[self.mark:] if not self.ctx.HARNESS_MARKER_RE.search(l)]
         return self.ctx.cmds_since(self.mark)
@@ -46,6 +63,8 @@ class Received:
     def recorded(self):
         """False when this pane's shell keeps no record at all (the rc hook did not run; PSReadLine wrote no history file): the exact line cannot
         be judged then, and the case says so instead of passing on the effect file alone"""
+        if self.cmd:
+            return self._dk_ok
         if self.ps:
             p = self.ctx.ps_history_path()
             return bool(p) and os.path.exists(p)
@@ -53,9 +72,19 @@ class Received:
 
     def wait(self, want, timeout=6.0):
         """wait until the record holds `want` lines (an int) or satisfies it (a predicate over the list); a give-up net, the comparison decides"""
+        if self.cmd:                 # reading the cmd.exe history types a line: no polling, the effect files are what the steps wait for
+            return []
         pred = want if callable(want) else (lambda ls: len(ls) >= want)
         self.ctx.until(lambda: pred(self.lines()), timeout)
         return self.lines()
+
+
+DOSKEY_PROBE = "doskey /history>"
+
+
+def doskey_lines(lines):
+    """pure: the commands in the text `doskey /history` printed, in order, without the probe lines that asked for it and without empty lines"""
+    return [l.rstrip() for l in lines if l.strip() and not l.strip().lower().startswith(DOSKEY_PROBE)]
 
 
 def first_diff(want, got):
@@ -102,20 +131,28 @@ def hist_edit_plan(shell, fname, tok):
     if shell == "pwsh":
         line = "Add-Content %s %s" % (fname, tok)
         return dict(line=line, backspaces=3, typed="e9z", edited=line[:-3] + "e9z", eff_file=fname, eff_tok=tok[:-3] + "e9z")
-    line = "echo %s >> %s" % (tok, fname)
+    fmt = "echo %s>>%s" if shell == "cmd" else "echo %s >> %s"        # r15 (T46) cmd.exe: no space before `>>` (it would end up in the line)
+    line = fmt % (tok, fname)
     stem = fname[:-4] if fname.endswith(".txt") else fname
-    return dict(line=line, backspaces=len(fname) - len(stem), typed="_e.txt", edited="echo %s >> %s_e.txt" % (tok, stem), eff_file=stem + "_e.txt", eff_tok=tok)
+    return dict(line=line, backspaces=len(fname) - len(stem), typed="_e.txt", edited=fmt % (tok, stem + "_e.txt"), eff_file=stem + "_e.txt", eff_tok=tok)
 
 
 def hist_expected(shell, fname, toks):
     """pure: toks = 4 tokens (three seeded commands and the new one). -> (lines the shell must receive in order, {effect file: lines})."""
-    cmd = (lambda t: "Add-Content %s %s" % (fname, t)) if shell == "pwsh" else (lambda t: "echo %s >> %s" % (t, fname))
+    cmd = (lambda t: "Add-Content %s %s" % (fname, t)) if shell == "pwsh" else (
+        (lambda t: "echo %s>>%s" % (t, fname)) if shell == "cmd" else (lambda t: "echo %s >> %s" % (t, fname)))
     plan = hist_edit_plan(shell, fname, toks[1])
     lines = [cmd(toks[0]), cmd(toks[1]), cmd(toks[2]), cmd(toks[1]), plan["edited"], cmd(toks[3])]
     eff = {fname: [toks[0], toks[1], toks[2], toks[1]]}
     eff.setdefault(plan["eff_file"], []).append(plan["eff_tok"])
     eff[fname].append(toks[3])
     return lines, eff
+
+
+def hist_clear_keys(shell):
+    """pure: the keys of step (c), a recalled line given up for an empty one. Up then Down in readline and PSReadLine; cmd.exe's console editor has
+    no empty line below the newest entry (Down does nothing there), its key for an empty line is Escape."""
+    return ["Up", "Escape"] if shell == "cmd" else ["Up", "Down"]
 
 
 def hist_diagnose(want, got, seeded):
@@ -146,8 +183,6 @@ def c_history_up_recall(ctx, r):
     edit at the end of the line, Enter: the edited line runs; (c) Up then Down: the line is empty again and a new command runs alone. The shell's
     record holds exactly those six lines and the effect files hold exactly their tokens: a wrong, doubled, merged or empty line fails."""
     shell = ctx.pane_shell()
-    if shell == "cmd":
-        r.skip("cmd.exe pane: no record of the received line (no rc hook, no PSReadLine): the PowerShell and Git Bash panes run this case")
     fname = "hu.txt"
     toks = [ctx.tok(8).lower() for _ in range(4)]
     plan = hist_edit_plan(shell, fname, toks[1])
@@ -180,7 +215,7 @@ def c_history_up_recall(ctx, r):
     typed(ctx, plan["typed"])
     step(5, 5)
     # (c) Up then Down returns to the empty line; the new command is typed onto it
-    fast_keys(ctx, ["Up", "Down"])
+    fast_keys(ctx, hist_clear_keys(shell))
     typed(ctx, want[5])
     step(6, 6)
     ctx.shot("history_up_recall_c")
@@ -194,7 +229,10 @@ def c_history_up_recall(ctx, r):
     r.metric("history_received_lines", len(got))
     if not rec.recorded():
         r.unverifiable("this pane's shell kept no record of the lines it received (%s): the effect files were checked, the exact recalled and edited "
-                       "lines were NOT" % ("no PSReadLine history file" if rec.ps else "rec.log is empty: the rc hook did not run"))
+                       "lines were NOT" % ("no PSReadLine history file" if rec.ps else (
+                           "`doskey /history` wrote nothing" if rec.cmd else "rec.log is empty: the rc hook did not run%s" % (
+                               "; a WSL pane has no rc hook the harness can read (its home is inside the distribution). NEEDS: the harness's "
+                               "history hook installed in the distribution's ~/.bashrc, which needs WSL on the VM first (owner)" if ctx.pane == "wsl" else ""))))
     elif rec.ps and len(got) != len(want) and all(first_diff(eff[f], got_eff[f]) is None for f in eff):
         r.unverifiable("PSReadLine's history holds %d new line(s) for 6 received (effect files exact): the history file was filtered or not yet "
                        "written, so the exact recalled and edited lines were NOT checked" % len(got))
@@ -831,6 +869,17 @@ def ps_row_verdict(kind, want, dest, surface, rule):
     return dest == want, None
 
 
+def routing_ps_skip_reason(pane):
+    """pure: why the PowerShell routing table is not judged in another Windows pane (r15 T46 runs it in every pane-shell pass and says what is missing)"""
+    if pane == "cmd":
+        return ("cmd.exe pane: there is no routing table to judge. NEEDS: cmd.exe as a pane shell in the app (#2084: the app does not start it; owner decision) "
+                "and cmd.exe rows in the routing corpus (crates/input_classifier/src/routing_corpus.rs has bash and PowerShell rows only)")
+    if pane == "wsl":
+        return ("WSL pane: the shell is bash, whose table is routing_table, judged from rec.log. NEEDS: the harness's history hook in the distribution's "
+                "~/.bashrc (not built: the pane's home is inside the distribution), which needs WSL on the Windows VM first (owner: machine change)")
+    return "runs in the PowerShell pane (routing_table judges the Git Bash pane from rec.log)"
+
+
 @case("routing_table_powershell", order=48, gui=True)
 def c_routing_table_powershell(ctx, r):
     """T5: the autodetect routing table in the Windows PowerShell pane (routing_table needs rec.log, so it runs in the Git Bash pane only). Each line
@@ -840,7 +889,7 @@ def c_routing_table_powershell(ctx, r):
     if not ctx.win:
         r.skip("Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)")
     if ctx.pane != "powershell":
-        r.skip("runs in the PowerShell pane (routing_table judges the Git Bash pane from rec.log)")
+        r.skip(routing_ps_skip_reason(ctx.pane))
     need_app_log(ctx, r, "the routing decision")
     for name, text in (("foo.txt", "foo\nbar\n"), ("log.txt", "ok\nerror here\n")):
         with open(os.path.join(ctx.W, name), "w") as f:

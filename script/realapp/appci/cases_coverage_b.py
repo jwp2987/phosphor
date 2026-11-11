@@ -504,7 +504,10 @@ def c_upgrade_over_previous(ctx, r):
     exact typing, log no panic / migration / database ERROR, keep every database file (not moved aside as warp.sqlite.corrupt-*, not shrunk to under half) and
     not have FEWER applied migrations than the old build left (the count is a metric). Where CI gets the previous release's artifact is the owner's
     decision: without either variable the case SKIPS with that reason."""
-    fixture, prev_bin, prev_bundle = (os.environ.get(k, "") for k in ("APPCI_PREV_FIXTURE", "APPCI_PREV_BIN", "APPCI_PREV_BUNDLE"))
+    # r15 (T44): ci_env.get = the environment, else the machine-local ~/.config/phosphor-ci/ci.env. The owner put APPCI_PREV_BIN there on all three test
+    # machines (#1546, 2026-11-07) and this line read os.environ only, so the case went on skipping "no previous-release data" on every one of them.
+    import ci_env
+    fixture, prev_bin, prev_bundle = ((ci_env.get(k) or "") for k in ("APPCI_PREV_FIXTURE", "APPCI_PREV_BIN", "APPCI_PREV_BUNDLE"))
     if ctx.app is None or not hasattr(ctx.app, "stop"):
         r.skip("sim backend: no app process")
     if not (fixture or prev_bin):
@@ -530,7 +533,7 @@ def c_upgrade_over_previous(ctx, r):
         if fixture:
             r.metric("fixture_files", unpack_state(fixture, ctx.prof.home))
         else:
-            ctx.app = old_app_like(new_app, prev_bin, prev_bundle)
+            R.use_app(ctx, old_app_like(new_app, prev_bin, prev_bundle))
             _n, up = R.start_app(ctx, r, "uo_old", restored_min=1)
             if not up:
                 return
@@ -538,7 +541,7 @@ def c_upgrade_over_previous(ctx, r):
             U.exact_burst(ctx, r, "uo_old", 3)
             time.sleep(4.0)                                    # the database writer and the session writer run at least once
             ctx.app.stop()
-            ctx.app = new_app
+            R.use_app(ctx, new_app)
             if not ctx.win:
                 out = os.path.join(ctx.run, "fixtures", "prev-state.tar.gz")
                 r.metric("fixture_packed_files", pack_state(ctx.prof.home, out))
@@ -570,7 +573,12 @@ def c_upgrade_over_previous(ctx, r):
         r.check(not worse, "fewer applied migrations after the new build ran than the old build left: %s" % worse)
         r.check(ctx.app.alive(), "the new build died on the previous build's data")
     finally:
-        ctx.app = new_app
+        try:
+            if ctx.app is not new_app:
+                ctx.app.stop()                                 # the previous build, when the case left early
+        except Exception:
+            pass
+        R.use_app(ctx, new_app)
         if not new_app.alive():
             R.start_app(ctx, r, "uo_end", restored_min=1)
 

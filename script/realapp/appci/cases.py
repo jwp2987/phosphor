@@ -115,6 +115,10 @@ PROVING = (
     # round 14 wave 3a (docs/design/r14-test-gaps.md 7.1, T21 to T25): pointer and pane cases. Linux pointer for the first four (macOS and Windows SKIP
     # naming the missing pointer tool); pane_resize_maximize also runs on macOS by keyboard
     "link_and_path_click", "selection_modes", "primary_and_middle_click", "wheel_scroll", "pane_resize_maximize",
+    # round 15 wave 5 part B (docs/design/r14-test-gaps.md T43, T44, T46; design docs/design/r15-w5b.md; #2076, #1546): the build's artefact installed,
+    # launched, joined by a second launch, `phosphor <path>`, uninstalled with the user's data kept; the upgrade from the previous release fetched from
+    # the project's package registry; and the pane-shell case of the Windows pwsh7 / cmd / wsl passes, which no tier had ever played
+    "installer_smoke", "upgrade_from_previous_release", "startup_shell_pane",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
@@ -720,6 +724,8 @@ def depth_probe_cmd(pane, tok):
     """the line that records `tok:<pid of the shell it runs in>` in ~/.appci_pid; None for a pane with no usable syntax (cmd.exe has no PID variable)"""
     if pane == "cmd":
         return None
+    if pane == "wsl":          # r15 (T46): `~` is the distribution's home, which the harness cannot read: no PID probe in a WSL pane
+        return None
     if pane == "powershell":
         return "Add-Content ~/.appci_pid %s:$PID" % tok
     # shell-agnostic: fish has no `$$` (it is `$fish_pid`; `echo tok:$$` errors there and no probe answers, the Mac round-7 "got none"). A
@@ -1178,7 +1184,7 @@ class Ctx:
                 self.reset()
                 pid = self.shell_pid()
                 if pid is None:
-                    return "none" if getattr(self, "pane", None) != "cmd" else "unprobed"
+                    return "none" if getattr(self, "pane", None) not in ("cmd", "wsl") else "unprobed"
             if pid == root_pid:
                 return "root"
             if i == max_exits:
@@ -6477,3 +6483,4 @@ import cases_agent_w2  # noqa: E402,F401  (round 14 wave 2, T11-T15: agent_model
 import cases_r14_state  # noqa: E402,F401  (round 14 wave 2b, T16-T20: agent_hidden_tab_attention, settings_ui_toggle_persists, osc52_write_read, history_survives_restart, restore_shows_history)
 import cases_window_use  # noqa: E402,F401  (r14 wave 3, T26-T30: resize_reflow_output, context_menu_actions, tab_pointer_use, focus_cycle, minimize_fullscreen)
 import cases_pointer  # noqa: E402,F401  (r14 wave 3a: link_and_path_click, selection_modes, primary_and_middle_click, wheel_scroll, pane_resize_maximize)
+import cases_install  # noqa: E402,F401  (#2076 / #1546, round 15 wave 5 part B: installer_smoke, upgrade_from_previous_release)
