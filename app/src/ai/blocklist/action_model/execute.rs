@@ -1157,6 +1157,11 @@ pub enum BlocklistAIActionExecutorEvent {
 const MAX_FILE_READ_BYTES: usize = 1_000_000;
 
 /// The results of a [`read_local_file_context`] call.
+/// The failure text for a requested file that does not exist. The one place the wording lives:
+/// the readers below produce it, and the remote-server conversion turns it into the typed
+/// `FailedFileRead.not_found` flag (#2151), so no consumer matches on text.
+pub const FILE_DOES_NOT_EXIST_MESSAGE: &str = "File does not exist";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ReadFileContextResult {
     /// [`FileContext`] data for all files that could be read.
@@ -1346,7 +1351,7 @@ pub async fn read_local_file_context(
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     result.failed_files.push(ReadFilesFailedFile {
                         path: absolute_file_path.to_string_lossy().to_string(),
-                        message: "File does not exist".to_string(),
+                        message: FILE_DOES_NOT_EXIST_MESSAGE.to_string(),
                     });
                     continue;
                 }
@@ -1466,7 +1471,7 @@ pub async fn read_local_file_context(
                 }
                 BinaryFileReadResult::NotFound => result.failed_files.push(ReadFilesFailedFile {
                     path: path_str,
-                    message: "File does not exist".to_string(),
+                    message: FILE_DOES_NOT_EXIST_MESSAGE.to_string(),
                 }),
                 BinaryFileReadResult::TooLarge {
                     size_bytes,

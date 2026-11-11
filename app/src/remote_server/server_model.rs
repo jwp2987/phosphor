@@ -4630,6 +4630,7 @@ impl ServerModel {
                             error: Some(FileOperationError {
                                 message: format!("{err:#}"),
                             }),
+                            not_found: false,
                         }],
                     },
                 };
@@ -5170,6 +5171,9 @@ fn file_context_result_to_proto(result: ReadFileContextResult) -> ReadFileContex
         .failed_files
         .into_iter()
         .map(|failed_file| FailedFileRead {
+            // The local reader words a missing file as `FILE_DOES_NOT_EXIST_MESSAGE` (the one
+            // constant both it and this conversion use); carry that as the typed flag.
+            not_found: failed_file.message == crate::ai::blocklist::FILE_DOES_NOT_EXIST_MESSAGE,
             path: failed_file.path,
             error: Some(FileOperationError {
                 message: failed_file.message,

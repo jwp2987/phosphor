@@ -32,11 +32,11 @@ pub(crate) use execute::coerce_integer_args;
 pub(crate) use execute::pty_write_for_target_command;
 pub use execute::{
     EditAcceptAndContinueClickedEvent, EditAcceptClickedEvent, EditResolvedEvent, EditStats,
-    NewConversationDecision, PromptSuggestionExecutor, PromptSuggestionExecutorEvent,
-    ReadFileContextResult, RequestFileEditsExecutor, RequestFileEditsFormatKind,
-    RequestFileEditsTelemetryEvent, ShellCommandExecutor, ShellCommandExecutorEvent,
-    StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome, StartAgentRequest,
-    StartAgentRequestId, read_local_file_context,
+    FILE_DOES_NOT_EXIST_MESSAGE, NewConversationDecision, PromptSuggestionExecutor,
+    PromptSuggestionExecutorEvent, ReadFileContextResult, RequestFileEditsExecutor,
+    RequestFileEditsFormatKind, RequestFileEditsTelemetryEvent, ShellCommandExecutor,
+    ShellCommandExecutorEvent, StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome,
+    StartAgentRequest, StartAgentRequestId, read_local_file_context,
 };
 
 use futures::future::{BoxFuture, join_all};

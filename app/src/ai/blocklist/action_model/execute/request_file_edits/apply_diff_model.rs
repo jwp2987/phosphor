@@ -164,20 +164,32 @@ async fn read_remote_file(
                     None => FileReadResult::Found(String::new()),
                 }
             } else if let Some(failed) = response.failed_files.into_iter().next() {
-                let message = failed
-                    .error
-                    .map(|e| e.message)
-                    .unwrap_or_else(|| "Unknown error".to_string());
-                if message.contains("not found") || message.contains("Not found") {
-                    FileReadResult::NotFound
-                } else {
-                    FileReadResult::ReadError(message)
-                }
+                classify_failed_read(failed)
             } else {
                 FileReadResult::NotFound
             }
         }
         Err(err) => FileReadResult::ReadError(format!("{err}")),
+    }
+}
+
+/// Turns one per-file read failure of a `ReadFileContext` answer into a [`FileReadResult`].
+/// The single place a remote read failure is classified (#2151).
+///
+/// The backends (the helper and the no-helper shell arm alike) set the typed `not_found` flag
+/// on a missing file; that flag is what decides. A server that predates the flag leaves it
+/// false and says "File does not exist", so that one exact text, the reader's own constant,
+/// is also taken as not-found. Every other failure (permission denied, a directory, a
+/// truncated or unreadable file, a failed host command) stays a read error, so a create is
+/// still refused when the host could not say whether the file exists.
+fn classify_failed_read(failed: remote_server::proto::FailedFileRead) -> FileReadResult {
+    let message = failed.error.map(|e| e.message);
+    if failed.not_found
+        || message.as_deref() == Some(crate::ai::blocklist::FILE_DOES_NOT_EXIST_MESSAGE)
+    {
+        FileReadResult::NotFound
+    } else {
+        FileReadResult::ReadError(message.unwrap_or_else(|| "Unknown error".to_string()))
     }
 }
 
