@@ -55,8 +55,8 @@ pub const TTY_OWNED_AT_ARM: bool = cfg!(all(windows, not(test)));
 /// whether an `InitShell` can follow the `SSH` hook that names it. The remote command prints the
 /// hook for every login shell (`remote_shell` is the last component of the remote `$SHELL`) and
 /// then starts a bootstrapped shell for exactly these two names; for every other one (sh, dash,
-/// ash, ksh, mksh, ...) it prints the MotD, sources `/etc/profile` and runs `exec "$SHELL"`: a
-/// plain login from there on. Keep in step with the `case` at the end of the remote command in
+/// ash, ksh, mksh, ...) it prints the MotD and runs `exec "$SHELL" -l` (#2126; `exec "$SHELL"`
+/// after sourcing `/etc/profile` for a shell that refuses `-l`): a plain login from there on. Keep in step with the `case` at the end of the remote command in
 /// `bootstrap/bash_body.sh`, `zsh_body.sh` and `fish.sh`.
 pub fn ssh_remote_command_bootstraps(remote_shell: &str) -> bool {
     matches!(remote_shell, "bash" | "zsh")

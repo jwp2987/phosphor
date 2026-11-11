@@ -1623,6 +1623,14 @@ builtin read "$@"'
           # #1641: the master login is over; the managed session starts. Held keys stay held until the
           # remote shell's first prompt (they must never reach the bootstrap payload).
           warp_send_json_message "{\"hook\": \"ManagedSSHSessionStarting\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
+          # #2126: a login shell the remote command does not bootstrap (sh, dash, ash, ksh, ...)
+          # is started as a login shell. Kill switch, read in this (the local) shell and sent
+          # as a digit: PHOSPHOR_SSH_LOGIN_SHELL=0 gives the start before #2126 (not a login
+          # shell; the remote command sources /etc/profile, ~/.profile is not read).
+          local warp_login_l=1
+          if [[ ${PHOSPHOR_SSH_LOGIN_SHELL-} == 0 ]]; then
+              warp_login_l=0
+          fi
           local warp_session_rc
           {
           command ssh "${warp_ipqos_args[@]}" -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
@@ -1660,7 +1668,15 @@ if test "'"${SHELL##*/}" != "bash" -a "${SHELL##*/}" != "zsh"'"; then
       command -p cat /usr/lib/motd.dynamic
     fi
   fi
-  # Likewise, emulate a login shell by sourcing /etc/profile
+  # #2126: start the login shell AS a login shell, as sshd does for a plain ssh, so it reads
+  # /etc/profile and ~/.profile itself. -l is asked for, not a dash in argv[0]: the shell
+  # running this text is the login shell and dash has no exec -a. The check runs the shell
+  # with -n (read, run nothing) to learn whether it takes -l at all; one that does not is
+  # started the old way below. The MotD above is printed here only: a login shell prints none.
+  if test $warp_login_l = 1 && "'$SHELL'" -n -l -c : </dev/null >/dev/null 2>&1; then
+    exec "'$SHELL'" -l
+  fi
+  # No -l in this shell (or PHOSPHOR_SSH_LOGIN_SHELL=0): source /etc/profile here instead.
   if test -r /etc/profile; then
     . /etc/profile
   fi

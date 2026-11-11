@@ -1040,8 +1040,9 @@ def c_nohelper_sh_login_keys(ctx, r, arm):
     clock; macOS: 15 s, by a give-up). Oracle: one line typed right behind the ssh command's Enter (held while ssh connects) and five lines typed at
     10-25 ms/key with an instant Enter once the session is up all arrive in the host's effect file exactly once, in typed order (the host's file, read by
     labd: no prompt hook is needed, and dash / ash have none in this session); the app log of the connect has the plain-login event of the SSH hook and
-    NO ssh give-up (the release is the hook, not a net). dash / ash: "the session is up" is that event in the app log, not `prompt.log`: a dash started
-    by the remote command is not a login shell and never reads the `~/.profile` that carries the lab's prompt hook.
+    NO ssh give-up (the release is the hook, not a net). dash / ash: "the session is up" is that event in the app log, not `prompt.log`: when this case
+    was written a dash started by the remote command was not a login shell and never read the `~/.profile` that carries the lab's hook (#2126;
+    lab_nohelper_sh_login_profile judges that), and this case must not depend on it.
     The bash arm is the control (and the arm the candidate matrix, which has no dash, plays): a login shell the remote command DOES bootstrap. Same typed
     lines, same effect-file oracle, the session is up at its first remote prompt, and the plain-login event must NOT be in the log."""
     rt = rtt_s(arm)
@@ -1084,6 +1085,53 @@ def c_nohelper_sh_login_keys(ctx, r, arm):
         r.check(not facts["plain"], "control: the app logged the plain-login event of an SSH hook for a %s login shell, which the remote command bootstraps" % arm["shell"])
     elif not facts["managed"]:
         r.note("the app log has no managed-session line for this connect: the wrapper did not take the managed way, so this run did not go through the path of #2120")
+    finish_remote(ctx, r)
+
+
+# ------------------------------------------------------------------ 6a2. that login shell is a LOGIN shell: ~/.profile is read (#2126)
+def sh_login_profile_verdict(tok, hook, lines):
+    """pure: None when the effect file holds exactly the one typed line and its $ENV is the lab hook that only ~/.profile sets; else the reason"""
+    want = "%s %s" % (tok, hook)
+    got = [" ".join(x.split()) for x in lines if x.strip()]
+    if got == [want]:
+        return None
+    if got == ["%s noenv" % tok]:
+        return "ENV is not set in the session's shell: ~/.profile was not read, the shell is not a login shell (#2126)"
+    return "effect file: expected exactly %r, got %r" % ([want], got)
+
+
+@lab_case("nohelper_sh_login_profile", shells=("dash", "ash", "bash"), lat=("lan",), helper=("nohelper",))
+def c_sh_login_profile(ctx, r, arm):
+    """#2126: `ssh <host>` to a host whose LOGIN shell is dash / busybox ash starts that shell as a login shell, as a plain `ssh <host>` does, so it reads
+    `~/.profile`. The lab user's `~/.profile` is `ENV=<the lab hook>; export ENV; . <the lab hook>` (labd.rc_plan) and nothing else names that hook, so:
+    (1) the connect is the REMOTE prompt in prompt.log, which the hook's PS1 writes (before the fix the remote command ran `exec "$SHELL"`: no ~/.profile,
+    no hook, no line, and this step times out); (2) a line typed at that prompt appends `$ENV` to the host's effect file: exactly one line, and the value
+    is the hook path of this user. The app log facts of #2120 (plain-login event, give-ups) are metrics here; lab_nohelper_sh_login_keys judges them.
+    The bash arm is the control (and the arm the candidate matrix, which has no dash, plays): a login shell the remote command bootstraps, whose arm of
+    the remote command #2126 did not touch. Same steps; the typed line carries the word `control` in place of `$ENV` and must arrive once."""
+    rt = rtt_s(arm)
+    control = arm["shell"] in ("bash", "zsh")
+    tok = "pf" + unique(ctx, 5)
+    eff = work(arm, "shp_%s.txt" % unique(ctx, 4))
+    hook = "control" if control else "/etc/sshlab/hooks/hook.sh.%s" % arm["user"]      # labd.rc_plan, hook_shell_key: dash and ash share the `sh` hook
+    off = ctx.log_size()
+    secs = CR.connect(ctx, host_of(arm), 90)
+    r.metric("sh_login_log_facts", sh_login_log_facts(ctx.log_since(off)))
+    if control:
+        r.check(secs is not None, "control: no remote prompt 90 s after `ssh %s`. Test host: %s" % (host_of(arm), ctx.ssh_diag() if secs is None else ""))
+    else:
+        r.check(secs is not None, "no remote prompt in prompt.log 90 s after `ssh %s`: the %s login shell did not read ~/.profile, which alone carries the "
+                                  "lab's prompt hook, so it was not started as a login shell (#2126). Test host: %s" % (
+                                      host_of(arm), arm["shell"], ctx.ssh_diag() if secs is None else ""))
+    if secs is None:
+        ctx.reset()
+        return
+    time.sleep(1.0 + 2 * rt)
+    ctx.be.type('echo %s %s >> %s' % (tok, "control" if control else '"${ENV:-noenv}"', eff), type_pace(ctx), enter=True)
+    ctx.until(lambda: any(tok in x for x in ctx.remote.lines(eff)), 10 + 4 * rt, step=0.05)
+    time.sleep(0.5 + 2 * rt)                                       # a second copy of the line would land here
+    why = sh_login_profile_verdict(tok, hook, ctx.remote.lines(eff))
+    r.check(why is None, why or "")
     finish_remote(ctx, r)
 
 

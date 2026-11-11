@@ -3536,3 +3536,22 @@ away. With a command in front the copy now drops the text selection
 selection is treated as before (an owner question in #2117). Found by the app case
 `selection_modes` in the Git Bash pane (round 14). Design: `docs/design/r10-r19-copy.md`.
 <!-- markers: keep:ctrl_c_copy_drops_text_selection keep:ctrl_c_copy_drops_the_text_selection_only_with_a_command_in_front -->
+## ssh: a login shell the remote command does not bootstrap is started as a login shell (#2126) — IMPROVED
+`ssh <host>` from a pane hands sshd a remote command; for a login shell that is neither bash nor zsh
+(sh, dash, busybox ash, ksh, mksh, ...) that command printed the MotD, sourced `/etc/profile` itself
+and ran `exec "$SHELL"`: not a login shell, so `~/.profile` was never read (PATH additions, `ENV=`
+for the interactive rc file of dash / ash / ksh), while a plain `ssh <host>` starts a login shell.
+Identical at the pin (`42effe840:app/assets/bundled/bootstrap/bash_body.sh`, the same text in
+`zsh_body.sh` and `fish.sh`). Owner rule: a managed ssh behaves like a plain ssh. The three wrappers
+now ask the shell once whether it takes `-l` (`"$SHELL" -n -l -c :`: `-n` executes nothing, output
+discarded) and run `exec "$SHELL" -l`; the shell reads `/etc/profile` and `~/.profile` itself, the
+MotD is still printed by the remote command alone. A shell that refuses `-l` is started the old way.
+`-l`, not a dash in `argv[0]`: the remote command is run by the login shell itself and dash has no
+`exec -a`; the one visible difference from sshd's start is `$0` (`/bin/dash`, not `-dash`). The bash /
+zsh arms and the fish / nu plain session (#2019) are unchanged. Kill switch
+`PHOSPHOR_SSH_LOGIN_SHELL=0` in the pane's local shell. A re-pin must not bring the non-login start
+back. Tests: `ssh_remote_command_starts_an_unbootstrapped_login_shell_as_a_login_shell`
+(`terminal/bootstrap_test.rs`), lab `lab_nohelper_sh_login_profile`. Design:
+`docs/design/r19-loginshell.md`. Worked, unproven when written (nothing compiled; the wrapper text was
+run by hand against a real dash and a real busybox ash).
+<!-- markers: keep:PHOSPHOR_SSH_LOGIN_SHELL keep:ssh_remote_command_starts_an_unbootstrapped_login_shell_as_a_login_shell -->
