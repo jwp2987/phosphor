@@ -266,6 +266,10 @@ pub struct BindingLens<'a> {
     pub original_trigger: Option<&'a Trigger>,
     pub group: Option<&'static str>,
     pub id: BindingId,
+    /// Whether this binding stands aside for a binding the user bound to the same chord (see
+    /// [`EditableBinding::yielding_to_user_bindings`]). Only ever true for an editable binding
+    /// that is marked and still has its default trigger.
+    pub yields_to_user_bindings: bool,
 }
 
 /// A unique identifier for a Binding within the application.
@@ -315,6 +319,8 @@ pub struct EditableBinding {
     group: Option<&'static str>,
     /// A unique identifier that identifies this binding.
     id: BindingId,
+    /// See [`EditableBinding::yielding_to_user_bindings`].
+    yields_to_user_bindings: bool,
 }
 
 /// A lens into an editable binding, allowing for the trigger to be updated where necessary
@@ -329,6 +335,8 @@ pub struct EditableBindingLens<'a> {
     pub original_trigger: Option<&'a Trigger>,
     pub group: Option<&'static str>,
     pub id: BindingId,
+    /// True while the binding is marked as yielding and has no custom trigger.
+    yields_to_user_bindings: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
@@ -439,6 +447,66 @@ impl Keymap {
                     binding.is_enabled().then(|| binding.as_lens())
                 }
             })
+    }
+
+    /// Marks every editable binding called `name` as yielding to the user's own bindings (see
+    /// [`EditableBinding::yielding_to_user_bindings`]). For a binding whose registration the
+    /// caller does not own. Returns whether a binding of that name exists.
+    fn mark_yielding_to_user_bindings(&mut self, name: &str) -> bool {
+        let mut found = false;
+        for binding in self
+            .editable_custom_action_bindings
+            .iter_mut()
+            .filter(|b| b.name == name)
+        {
+            binding.yields_to_user_bindings = true;
+        }
+        for binding in self.editable_bindings.iter_mut().filter(|b| b.name == name) {
+            binding.yields_to_user_bindings = true;
+            found = true;
+        }
+        found
+    }
+
+    /// Whether an enabled binding that the USER bound (it has a custom trigger) to a chord
+    /// beginning with `first` applies in at least one of `contexts` (the contexts of the focused
+    /// view's responder chain).
+    fn user_binding_claims(&self, first: &Keystroke, contexts: &[Context]) -> bool {
+        self.first_keystroke_index
+            .get(first)
+            .into_iter()
+            .flatten()
+            .any(|slot| match *slot {
+                BindingSlot::Editable(idx) => {
+                    let binding = &self.editable_bindings[idx];
+                    if binding.custom_trigger.is_none() {
+                        return false;
+                    }
+                    let lens = binding.as_lens();
+                    lens.is_enabled() && contexts.iter().any(|context| lens.in_context(context))
+                }
+                BindingSlot::Fixed(_) => false,
+            })
+    }
+
+    /// Whether a key press of `first` must skip the bindings marked as yielding: one of them has
+    /// `first` as its default chord, and a binding the user bound to a chord beginning with
+    /// `first` applies in one of `contexts`. Costs one index lookup for a key no yielding binding
+    /// has.
+    fn user_binding_outranks_default(&self, first: &Keystroke, contexts: &[Context]) -> bool {
+        let has_yielding_default = self
+            .first_keystroke_index
+            .get(first)
+            .into_iter()
+            .flatten()
+            .any(|slot| match *slot {
+                BindingSlot::Editable(idx) => {
+                    let lens = self.editable_bindings[idx].as_lens();
+                    lens.yields_to_user_bindings && lens.is_enabled()
+                }
+                BindingSlot::Fixed(_) => false,
+            });
+        has_yielding_default && self.user_binding_claims(first, contexts)
     }
 
     /// Returns the earliest-registered currently-enabled binding with the given name.
@@ -707,6 +775,7 @@ impl FixedBinding {
             original_trigger: None,
             group: self.group,
             id: self.id,
+            yields_to_user_bindings: false,
         }
     }
 }
@@ -729,7 +798,18 @@ impl EditableBinding {
             trigger: Trigger::Empty,
             custom_trigger: None,
             id: BindingId::new(),
+            yields_to_user_bindings: false,
         }
+    }
+
+    /// Marks this binding as one that stands aside for the user's own bindings: while it has its
+    /// default trigger, and a binding the user bound (a custom trigger) to the same chord applies
+    /// somewhere in the focused view's responder chain, a key press does not match this binding,
+    /// so the user's binding gets the chord whichever view it belongs to. Without the mark the
+    /// deepest view's binding wins, user-bound or not. See [`Keymap::user_binding_outranks_default`].
+    pub fn yielding_to_user_bindings(mut self) -> Self {
+        self.yields_to_user_bindings = true;
+        self
     }
 
     pub fn with_context_predicate(mut self, context: ContextPredicate) -> Self {
@@ -819,6 +899,7 @@ impl EditableBinding {
             original_trigger,
             group: self.group,
             id: self.id,
+            yields_to_user_bindings: self.yields_to_user_bindings && self.custom_trigger.is_none(),
         }
     }
 }
@@ -837,6 +918,7 @@ impl<'a> EditableBindingLens<'a> {
             original_trigger: self.original_trigger,
             group: self.group,
             id: self.id,
+            yields_to_user_bindings: self.yields_to_user_bindings,
         }
     }
 

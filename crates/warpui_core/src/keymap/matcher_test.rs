@@ -467,6 +467,178 @@ fn indexed_binding_respects_enabled_predicate_at_lookup_time() {
     assert!(matcher.test_keystroke("a", view_id, &ctx).is_some());
 }
 
+/// Walks a responder chain the way `AppContext::dispatch_keystroke` does (leaf first) and returns
+/// the first action a view's bindings give for the key.
+fn walk_chain<A: Action + Clone>(
+    matcher: &mut Matcher,
+    keystroke: &str,
+    views: &[EntityId],
+    contexts: &[Context],
+) -> Option<A> {
+    let keystroke = Keystroke::parse(keystroke).unwrap();
+    let outranks = matcher.user_binding_outranks_default(&keystroke, contexts);
+    for (view_id, ctx) in views.iter().zip(contexts).rev() {
+        if let MatchResult::Action(action) =
+            matcher.push_keystroke_yielding(keystroke.clone(), *view_id, ctx, outranks)
+        {
+            return Some(action.as_action::<A>().clone());
+        }
+    }
+    None
+}
+
+/// #1988: a binding the user bound to a chord gets it over a built-in default marked as
+/// yielding, although the default belongs to a deeper view. Without the user's binding, without
+/// the mark, or where the user's binding does not apply, the default keeps the chord.
+#[test]
+fn user_bound_binding_outranks_a_yielding_default_of_a_deeper_view() {
+    #[derive(Debug, PartialEq, Clone)]
+    enum Action {
+        Search,
+        Users,
+        Other,
+    }
+
+    let mut parent_ctx = Context::default();
+    parent_ctx.set.insert("parent");
+    let mut input_ctx = Context::default();
+    input_ctx.set.insert("input");
+    let contexts = vec![parent_ctx.clone(), input_ctx.clone()];
+    let views = vec![EntityId::new(), EntityId::new()];
+
+    let build = |yielding: bool| {
+        let search = EditableBinding::new("search", "Search", Action::Search)
+            .with_key_binding("ctrl-r")
+            .with_context_predicate(id!("input"));
+        let mut keymap = Keymap::default();
+        keymap.register_editable_bindings([
+            if yielding {
+                search.yielding_to_user_bindings()
+            } else {
+                search
+            },
+            EditableBinding::new("users", "Users", Action::Users)
+                .with_context_predicate(id!("parent")),
+            EditableBinding::new("other", "Other", Action::Other)
+                .with_key_binding("ctrl-t")
+                .with_context_predicate(id!("parent")),
+        ]);
+        Matcher::new(keymap)
+    };
+    let ctrl_r = || Trigger::Keystrokes(vec![Keystroke::parse("ctrl-r").unwrap()]);
+
+    // Nothing bound by the user: the default has its chord.
+    let mut matcher = build(true);
+    assert_eq!(
+        walk_chain::<Action>(&mut matcher, "ctrl-r", &views, &contexts),
+        Some(Action::Search)
+    );
+
+    // The user binds the parent view's action to the chord: it wins from the deeper view.
+    matcher.set_custom_trigger("users".to_owned(), ctrl_r());
+    assert_eq!(
+        walk_chain::<Action>(&mut matcher, "ctrl-r", &views, &contexts),
+        Some(Action::Users)
+    );
+    // Other chords are untouched.
+    assert_eq!(
+        walk_chain::<Action>(&mut matcher, "ctrl-t", &views, &contexts),
+        Some(Action::Other)
+    );
+
+    // Where the user's binding does not apply (no such view in the chain) the default answers.
+    let input_only_views = vec![views[1]];
+    let input_only = vec![input_ctx.clone()];
+    assert_eq!(
+        walk_chain::<Action>(&mut matcher, "ctrl-r", &input_only_views, &input_only),
+        Some(Action::Search)
+    );
+
+    // The user also binds the default itself to the chord: it is the user's binding now and no
+    // longer stands aside (the deeper view wins, as for any two bindings).
+    matcher.set_custom_trigger("search".to_owned(), ctrl_r());
+    assert_eq!(
+        walk_chain::<Action>(&mut matcher, "ctrl-r", &views, &contexts),
+        Some(Action::Search)
+    );
+    matcher.remove_custom_trigger("search");
+
+    // The user removes their binding again: the default is back.
+    matcher.remove_custom_trigger("users");
+    assert_eq!(
+        walk_chain::<Action>(&mut matcher, "ctrl-r", &views, &contexts),
+        Some(Action::Search)
+    );
+
+    // Control (the kill switch: the binding is not marked): the deeper default wins, as before.
+    let mut unmarked = build(false);
+    unmarked.set_custom_trigger("users".to_owned(), ctrl_r());
+    assert_eq!(
+        walk_chain::<Action>(&mut unmarked, "ctrl-r", &views, &contexts),
+        Some(Action::Search)
+    );
+    // Marking by name afterwards is the same as marking at registration.
+    assert!(unmarked.mark_yielding_to_user_bindings("search"));
+    assert!(!unmarked.mark_yielding_to_user_bindings("no-such-binding"));
+    assert_eq!(
+        walk_chain::<Action>(&mut unmarked, "ctrl-r", &views, &contexts),
+        Some(Action::Users)
+    );
+}
+
+/// The user's binding of the same view also wins, whatever the registration order, and a
+/// user-bound chord of two keys that begins with the key keeps the default out of its way.
+#[test]
+fn user_bound_binding_outranks_a_yielding_default_of_the_same_view() {
+    #[derive(Debug, PartialEq, Clone)]
+    enum Action {
+        Search,
+        Users,
+    }
+
+    let mut ctx = Context::default();
+    ctx.set.insert("input");
+    let contexts = vec![ctx.clone()];
+    let views = vec![EntityId::new()];
+
+    let mut keymap = Keymap::default();
+    keymap.register_editable_bindings([
+        EditableBinding::new("users", "Users", Action::Users).with_context_predicate(id!("input")),
+        // Registered later, so it has precedence over `users` on a shared chord.
+        EditableBinding::new("search", "Search", Action::Search)
+            .with_key_binding("ctrl-r")
+            .with_context_predicate(id!("input"))
+            .yielding_to_user_bindings(),
+    ]);
+    let mut matcher = Matcher::new(keymap);
+
+    matcher.set_custom_trigger(
+        "users".to_owned(),
+        Trigger::Keystrokes(vec![Keystroke::parse("ctrl-r").unwrap()]),
+    );
+    assert_eq!(
+        walk_chain::<Action>(&mut matcher, "ctrl-r", &views, &contexts),
+        Some(Action::Users)
+    );
+
+    matcher.set_custom_trigger(
+        "users".to_owned(),
+        Trigger::Keystrokes(vec![
+            Keystroke::parse("ctrl-r").unwrap(),
+            Keystroke::parse("ctrl-r").unwrap(),
+        ]),
+    );
+    assert_eq!(
+        walk_chain::<Action>(&mut matcher, "ctrl-r", &views, &contexts),
+        None,
+        "the first key of the user's chord is pending, not the default's"
+    );
+    assert_eq!(
+        walk_chain::<Action>(&mut matcher, "ctrl-r", &views, &contexts),
+        Some(Action::Users)
+    );
+}
+
 impl Matcher {
     fn test_keystroke(
         &mut self,
