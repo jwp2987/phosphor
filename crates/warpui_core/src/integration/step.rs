@@ -1,4 +1,4 @@
-use super::{TestSetupUtils, action_log, overlay};
+use super::{TestSetupUtils, action_log, evidence, overlay};
 use crate::keymap::PerPlatformKeystroke;
 use crate::platform::OperatingSystem;
 use crate::{
@@ -653,6 +653,7 @@ pub(super) async fn run_step(
                 record_overlay_event_for_event(&event, step_data_map);
                 let dispatch_result =
                     app.update(|ctx| (window.callbacks().event_callback)(event.clone(), ctx));
+                evidence::log_injected_event(&step.name, &event, None, dispatch_result.handled);
                 if !dispatch_result.handled {
                     if let Event::KeyDown {
                         chars,
@@ -663,14 +664,18 @@ pub(super) async fn run_step(
                         if !is_composing {
                             // The input system expects a TypedCharacters event to follow keydown
                             // in order to update the editor's input unless is_composing is set
-                            app.update(|ctx| {
-                                (window.callbacks().event_callback)(
-                                    Event::TypedCharacters {
-                                        chars: chars.clone(),
-                                    },
-                                    ctx,
-                                )
+                            let typed = Event::TypedCharacters {
+                                chars: chars.clone(),
+                            };
+                            let typed_result = app.update(|ctx| {
+                                (window.callbacks().event_callback)(typed.clone(), ctx)
                             });
+                            evidence::log_injected_event(
+                                &step.name,
+                                &typed,
+                                None,
+                                typed_result.handled,
+                            );
                         }
                     }
                 }
@@ -763,7 +768,15 @@ pub(super) async fn run_step(
                             modifiers: Default::default(),
                         };
                         for event in [mouse_down, mouse_up] {
-                            app.update(|ctx| (window.callbacks().event_callback)(event, ctx));
+                            let result = app.update(|ctx| {
+                                (window.callbacks().event_callback)(event.clone(), ctx)
+                            });
+                            evidence::log_injected_event(
+                                &step.name,
+                                &event,
+                                Some(position_id.as_str()),
+                                result.handled,
+                            );
                         }
                         record_overlay_kind(
                             overlay::OverlayKind::MouseUp {
@@ -781,17 +794,20 @@ pub(super) async fn run_step(
                             },
                             step_data_map,
                         );
-                        app.update(|ctx| {
-                            (window.callbacks().event_callback)(
-                                Event::RightMouseDown {
-                                    position: center,
-                                    cmd: false,
-                                    shift: false,
-                                    click_count: 1,
-                                },
-                                ctx,
-                            )
-                        });
+                        let event = Event::RightMouseDown {
+                            position: center,
+                            cmd: false,
+                            shift: false,
+                            click_count: 1,
+                        };
+                        let result = app
+                            .update(|ctx| (window.callbacks().event_callback)(event.clone(), ctx));
+                        evidence::log_injected_event(
+                            &step.name,
+                            &event,
+                            Some(position_id.as_str()),
+                            result.handled,
+                        );
                         record_overlay_kind(
                             overlay::OverlayKind::MouseUp {
                                 x: center.x(),
@@ -801,17 +817,20 @@ pub(super) async fn run_step(
                         );
                     }
                     MouseEvent::Hover => {
-                        app.update(|ctx| {
-                            (window.callbacks().event_callback)(
-                                Event::MouseMoved {
-                                    position: center,
-                                    cmd: false,
-                                    shift: false,
-                                    is_synthetic: false,
-                                },
-                                ctx,
-                            )
-                        });
+                        let event = Event::MouseMoved {
+                            position: center,
+                            cmd: false,
+                            shift: false,
+                            is_synthetic: false,
+                        };
+                        let result = app
+                            .update(|ctx| (window.callbacks().event_callback)(event.clone(), ctx));
+                        evidence::log_injected_event(
+                            &step.name,
+                            &event,
+                            Some(position_id.as_str()),
+                            result.handled,
+                        );
                     }
                 }
             }

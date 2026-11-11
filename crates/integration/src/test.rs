@@ -3933,6 +3933,15 @@ pub fn test_command_xray_hover() -> Builder {
     new_builder()
         // TODO(CORE-2732): Flakey on Powershell (Linux)
         .set_should_run_test(skip_if_powershell_core_2303)
+        // #2122: the hover x-ray is not shown while a suggestions menu is up (the input view's
+        // rule, the same at the oracle pin), and this fork opens the completions menu as you
+        // type by default (the pin's default is off), so typing `git status` leaves a menu
+        // over the very text the scenario hovers. The scenario is about the hover: it runs
+        // with the as-you-type menu off, said explicitly, as the as-you-type scenarios say on.
+        .with_user_defaults(HashMap::from([(
+            CompletionsOpenWhileTyping::storage_key().to_string(),
+            false.to_string(),
+        )]))
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(
             new_step_with_default_assertions("Type in command")

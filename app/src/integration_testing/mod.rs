@@ -13,6 +13,7 @@ pub mod code_review;
 pub mod command_palette;
 pub mod command_search;
 pub mod context_chips;
+pub mod evidence;
 pub mod find;
 pub mod goto_line;
 pub mod input;

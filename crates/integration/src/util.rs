@@ -231,7 +231,10 @@ pub fn per_shell_output(
 /// eventually be removing all uses of this function.
 pub fn skip_if_powershell_core_2303() -> bool {
     let (starter, _) = current_shell_starter_and_version();
-    !matches!(starter.shell_type(), ShellType::PowerShell)
+    warpui::integration::needs(
+        !matches!(starter.shell_type(), ShellType::PowerShell),
+        "a local shell other than PowerShell (CORE-2303)",
+    )
 }
 
 /// Gets the name of the system user for which the test binary is running.

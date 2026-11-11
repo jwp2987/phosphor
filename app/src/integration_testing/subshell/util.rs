@@ -19,8 +19,8 @@
 //!   during it are real typeahead) and `pwkey` (passphrase [`SSH_KEY_PASSPHRASE`]), the only
 //!   password-style prompt an unprivileged sshd can give (`Enter passphrase for key ...`).
 //!
-//! If `sshd`, `ssh-keygen` or the requested shell is missing the scenario is SKIPPED with the
-//! reason on stderr -- unless `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` (set by the `integration-linux` CI
+//! If `sshd`, `ssh-keygen` or the requested shell is missing the scenario is SKIPPED and says
+//! so (`INTEG-SKIP <scenario> NEEDS: ...`, #2122: counted as a skip, never as a pass) -- unless `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` (set by the `integration-linux` CI
 //! job), where a missing fixture is a hard failure so it can never pass by not running.
 
 use std::path::PathBuf;
@@ -311,7 +311,7 @@ pub fn stop_ssh_fixtures() {}
 /// This starts the local sshd (see the module docs), so call it LAST in a scenario's
 /// `set_should_run_test`, after the cheap checks, and register `stop_ssh_fixtures` as the
 /// builder's cleanup. When it is not available the scenario is skipped and the reason is
-/// printed to stderr. With `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` (the `integration-linux` CI job)
+/// recorded for the driver's `INTEG-SKIP ... NEEDS:` line (#2122). With `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` (the `integration-linux` CI job)
 /// a missing or broken sshd panics instead (a missing remote shell still skips), so the
 /// scenarios cannot silently stop running.
 pub fn ssh_test_fixture_available(shell: &str) -> bool {
@@ -328,8 +328,11 @@ pub fn ssh_test_fixture_available(shell: &str) -> bool {
                     "PHOSPHOR_REQUIRE_SSH_FIXTURE=1 but the ssh fixture for `{shell}` is unavailable: {why}"
                 );
             }
-            eprintln!("SKIP ssh integration scenario (remote shell `{shell}`): {why}");
-            false
+            // #2122: the driver prints this as `INTEG-SKIP <scenario> NEEDS: ...` and the CI
+            // summary counts it; the scenario is never reported as one that ran.
+            warpui::integration::skip_because(format!(
+                "the local sshd fixture with remote shell `{shell}`: {why}"
+            ))
         }
     }
 }

@@ -2,6 +2,7 @@ use super::{
     RootDir, TestSetupUtils,
     action_log::{self, ACTION_LOG_KEY, ActionLog},
     artifacts::{self, ARTIFACTS_KEY, TestArtifacts},
+    evidence,
     overlay::{OVERLAY_LOG_KEY, OverlayLog},
     step::{AssertionOutcome, StepDataMap, TestStep, run_step},
     video_recorder::{self, VIDEO_RECORDER_KEY, VideoRecorder},
@@ -34,6 +35,9 @@ pub type OnFinishFn = Box<
     dyn FnMut(&mut App, WindowId, &mut PersistedDataMap) -> Pin<Box<dyn Future<Output = ()> + Send>>
         + 'static,
 >;
+/// Says what the app shows right now, for the log of a scenario whose step just failed (#2122).
+/// Must not panic: it runs on the failure path, before the step's own failure is reported.
+pub type FailureDumpFn = Box<dyn FnMut(&mut App, WindowId) -> String + 'static>;
 
 pub struct Builder {
     use_real_display: bool,
@@ -45,6 +49,7 @@ pub struct Builder {
     /// Note that this cannot run if the app panics, so make sure your assertions don't panic if you rely on this.
     /// Also, this function relies on the presence of an active window after the test steps have finished.
     on_finish: Option<OnFinishFn>,
+    failure_dump: Option<FailureDumpFn>,
     timeout: Option<Duration>,
     root_dir: RootDirKind,
     step_group_name_to_apply_to_new_steps: Option<String>,
@@ -66,6 +71,7 @@ impl Builder {
             setup: None,
             cleanup: Box::new(|_| {}),
             on_finish: None,
+            failure_dump: None,
             timeout: None,
             root_dir: RootDirKind::Named { work_dir },
             step_group_name_to_apply_to_new_steps: None,
@@ -149,6 +155,17 @@ impl Builder {
         self
     }
 
+    /// What to write into the scenario's log when a step fails: the state the failing assertion
+    /// looked at (#2122). Unlike `with_on_finish` it runs only on a failure, takes no part in
+    /// the test, and a scenario's own `with_on_finish` does not replace it.
+    pub fn with_failure_dump<C>(mut self, callback: C) -> Self
+    where
+        C: FnMut(&mut App, WindowId) -> String + 'static,
+    {
+        self.failure_dump = Some(Box::new(callback));
+        self
+    }
+
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
@@ -172,6 +189,7 @@ impl Builder {
             setup: self.setup.unwrap_or_else(|| Box::new(|_| {})),
             cleanup: self.cleanup,
             on_finish: self.on_finish,
+            failure_dump: self.failure_dump,
             timeout: self.timeout,
             persisted_data: self.static_persisted_data,
         };
@@ -218,6 +236,7 @@ pub struct TestDriver {
     /// Note that this cannot run if the app panics, so make sure your assertions don't panic if you rely on this.
     /// Also, this function relies on the presence of an active window after the test steps have finished.
     on_finish: Option<OnFinishFn>,
+    failure_dump: Option<FailureDumpFn>,
     timeout: Option<Duration>,
     persisted_data: PersistedDataMap,
 }
@@ -239,6 +258,9 @@ impl TestDriver {
     /// executor after initializing the application.
     pub async fn run_test_and_cleanup(mut self, mut app: App) {
         if !(self.should_run_test)() {
+            // #2122: the process still exits 0, which nextest reports as PASS. The line and
+            // the marker file say this scenario did NOT run, and what it needs.
+            evidence::report_skip(&self.test_name);
             log::info!("Skipping test ...");
             app.as_mut()
                 .terminate_app(TerminationMode::ForceTerminate, None);
@@ -518,6 +540,31 @@ impl TestDriver {
         }
     }
 
+    /// #2122: what a failed step leaves behind for whoever judges it. The app state the
+    /// scenario's builder knows how to describe goes to the log as one `integ_failure_state`
+    /// line, and the action log (every injected event and assertion, with offsets) is written
+    /// now: `finalize_recording` only runs for a scenario that got through its steps.
+    fn record_failure_evidence(
+        &mut self,
+        step_name: &str,
+        app: &mut App,
+        window_id: WindowId,
+        step_data_map: &StepDataMap,
+    ) {
+        if let Some(dump) = self.failure_dump.as_mut() {
+            let state = dump(app, window_id);
+            log::error!("{}", evidence::failure_state_line(step_name, &state));
+        }
+        let log_output = artifacts::get_artifacts(step_data_map)
+            .map(|artifacts| artifacts.path("recording.log"));
+        if let (Some(log_output), Some(action_log)) =
+            (log_output, action_log::get_action_log(step_data_map))
+            && let Err(e) = action_log.write_to_file(&log_output)
+        {
+            log::error!("ActionLog: could not be written after the failed step: {e}");
+        }
+    }
+
     /// Runs the on_finish callback and exports runtime tags. This should be called
     /// everywhere on_finish is invoked to ensure runtime tags are always exported.
     async fn run_on_finish_and_export_tags(&mut self, app: &mut App, window_id: WindowId) {
@@ -644,6 +691,7 @@ impl TestDriver {
                         );
                         self.persisted_data
                             .insert(RUNTIME_TAG_FAILURE_REASON.to_owned(), message.clone());
+                        self.record_failure_evidence(step.name(), app, window_id, step_data_map);
                         self.run_on_finish_and_export_tags(app, window_id).await;
                         panic!(
                             "Test step '{}' failed after {} attempts: {message}\nFailed in step group: {step_group_name}\n{backtrace_message}",
@@ -686,6 +734,7 @@ impl TestDriver {
                         );
                         self.persisted_data
                             .insert(RUNTIME_TAG_FAILURE_REASON.to_owned(), message.clone());
+                        self.record_failure_evidence(step.name(), app, window_id, step_data_map);
                         self.run_on_finish_and_export_tags(app, window_id).await;
                         panic!(
                             "Test step '{}' failed after {} attempts: {message}\nFailed in step group: {step_group_name}\n{backtrace_message}",

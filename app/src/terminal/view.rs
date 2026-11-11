@@ -20836,6 +20836,12 @@ impl TerminalView {
         self.ssh_on_setup_changed(ctx);
     }
 
+    /// Whether the "install the remote helper?" question is on screen (#2122: the failure
+    /// state of an integration scenario says so, because the session waits for its answer).
+    pub fn ssh_helper_question_showing(&self) -> bool {
+        self.active_ssh_remote_server_choice_block().is_some()
+    }
+
     /// Returns a clone of the `SshRemoteServerChoiceView` handle for the
     /// first active SSH remote-server choice block, if any.
     fn active_ssh_remote_server_choice_block(

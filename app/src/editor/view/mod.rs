@@ -4353,6 +4353,8 @@ impl EditorView {
     /// on the editor view so that the editor element can do hit testing on the token
     /// boundaries when there is a mouse move.
     pub fn set_command_x_ray(&mut self, description: Arc<Description>) {
+        // #2122: the x-ray is up (the description itself is the user's command: not logged).
+        warpui::input_order::log_hop("xray", || "set".to_owned());
         self.command_x_ray_state = Some(description);
     }
 
@@ -4369,6 +4371,9 @@ impl EditorView {
             .expect("should get mouse handle lock");
         if let Some(state) = state {
             state.user_dismissed = true;
+        }
+        if self.command_x_ray_state.is_some() {
+            warpui::input_order::log_hop("xray", || "cleared".to_owned());
         }
         self.command_x_ray_state = None;
     }

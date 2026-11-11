@@ -28,10 +28,45 @@ impl InputSuggestionsModeModel {
         &self.mode
     }
 
+    /// What a log line may say about a mode (#2122): which menu, and for the completion menu
+    /// what opened it and how many candidates it holds. Never the candidates or the buffer.
+    pub fn mode_evidence(mode: &InputSuggestionsMode) -> String {
+        match mode {
+            InputSuggestionsMode::Closed => "closed".to_owned(),
+            InputSuggestionsMode::CompletionSuggestions {
+                completion_results,
+                trigger,
+                ..
+            } => format!(
+                "completions trigger={trigger:?} candidates={}",
+                completion_results.suggestions.len()
+            ),
+            InputSuggestionsMode::HistoryUp { .. } => "history_up".to_owned(),
+            InputSuggestionsMode::AIContextMenu { .. } => "ai_context_menu".to_owned(),
+            InputSuggestionsMode::SlashCommands => "slash_commands".to_owned(),
+            InputSuggestionsMode::InlineHistoryMenu { .. } => "inline_history".to_owned(),
+            _ => "other_menu".to_owned(),
+        }
+    }
+
+    /// [`Self::mode_evidence`] of the current mode.
+    pub fn evidence(&self) -> String {
+        Self::mode_evidence(&self.mode)
+    }
+
     pub fn set_mode(&mut self, mode: InputSuggestionsMode, ctx: &mut ModelContext<Self>) {
         if self.mode == mode {
             return;
         }
+        // #2122: every menu open and close, so a run shows whether a Tab opened the completion
+        // menu, what an as-you-type listing opened before it, and what was up when a hover came.
+        warpui::input_order::log_hop("suggestions_mode", || {
+            format!(
+                "from=[{}] to=[{}]",
+                Self::mode_evidence(&self.mode),
+                Self::mode_evidence(&mode)
+            )
+        });
 
         let input_config_to_restore = self.mode.input_config_to_restore();
 
@@ -73,6 +108,12 @@ impl InputSuggestionsModeModel {
             return;
         }
 
+        warpui::input_order::log_hop("suggestions_mode", || {
+            format!(
+                "from=[{}] to=[closed] restore_buffer=true",
+                Self::mode_evidence(&self.mode)
+            )
+        });
         let buffer_to_restore = self.buffer_to_restore.take();
         let input_config_to_restore = self.mode.input_config_to_restore();
         self.mode = InputSuggestionsMode::Closed;

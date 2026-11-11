@@ -548,6 +548,9 @@ impl EditorElement {
                 //    want to describe the last token if the cursor is actually well past the buffer text)
                 let timer_elapsed = Instant::now() >= state.hover_at;
                 if timer_elapsed && within_last_mouse_move_radius && !possible_point.is_clamped {
+                    // #2122: the hover asked for the x-ray; whether it shows is the input
+                    // view's decision (`hop=xray set` follows when it does).
+                    warpui::input_order::log_hop("xray_hover", || "ask".to_owned());
                     ctx.dispatch_typed_action(EditorAction::TryToShowXRay(
                         possible_point.display_point,
                     ));
@@ -559,6 +562,12 @@ impl EditorElement {
                     // state as long as the mouse has moved more than a radius away since the
                     // last tracked mouse position.
                     return self.reset_x_ray(&mut state_guard, Some(position), ctx);
+                } else if timer_elapsed {
+                    // #2122: the pointer rested long enough but is past the text, so nothing
+                    // is asked for (said for each pointer event while it stays there).
+                    warpui::input_order::log_hop("xray_hover", || {
+                        format!("no_ask past_text={}", possible_point.is_clamped)
+                    });
                 }
             }
         } else {
@@ -623,6 +632,14 @@ impl EditorElement {
         }
 
         if let Some(position) = new_position {
+            // #2122: a pointer rest starts counting (or starts over after a move).
+            warpui::input_order::log_hop("xray_hover", || {
+                format!(
+                    "arm x={:.1} y={:.1} hid={updated}",
+                    position.x(),
+                    position.y()
+                )
+            });
             let (timer_id, hover_at) = ctx.notify_after(COMMAND_X_RAY_HOVER_DELAY);
             *x_ray_state = Some(CommandXRayMouseState {
                 visible: false,
