@@ -118,6 +118,12 @@ PS_ONLY = {
 }
 # not on Windows at all, with the reason
 NOT_WINDOWS = {
+    # round 14 wave 3a (T21 to T25): the Windows backend has no pointer synthesis (mouse SendInput, gap H1 / T31) and no OCR; the pane case's probe is POSIX
+    "link_and_path_click": "T21: no pointer synthesis in the Windows backend yet (mouse SendInput, T31); the recording opener is a POSIX xdg-open and the trace is strace",
+    "selection_modes": "T22: no pointer synthesis in the Windows backend yet (mouse SendInput, T31) and no OCR engine to place it",
+    "primary_and_middle_click": "T23: the PRIMARY selection is an X11 / Wayland concept; Windows has one clipboard",
+    "wheel_scroll": "T24: no pointer or wheel synthesis in the Windows backend yet (mouse SendInput, T31), no OCR engine, and bytes_reader.py needs termios",
+    "pane_resize_maximize": "T25: not ported: the probe is POSIX `sh -c 'echo $PPID $(stty size)'` and the divider drag needs the pointer (T31); the Git Bash pane is a follow-up",
     "agent_interactive_vim": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
     "agent_interactive_ssh": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
     "agent_interactive_ssh_takeover": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
