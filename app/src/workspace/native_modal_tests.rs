@@ -1,4 +1,38 @@
-use super::{enter_button_index, initial_selection, moved_selection, should_run_disable_callback};
+use super::{
+    closed_dialog_hands_focus_to_tab, enter_button_index, focus_back_enabled_for,
+    initial_selection, last_button_index, moved_selection, should_run_disable_callback,
+};
+
+/// #2108: Cancel on a close question does nothing but close the dialog, so the focus was left on
+/// the dialog's view, which is no longer drawn: no key reached the pane until a click. The
+/// workspace takes the focus back for its active tab, but only while the dialog's view still has
+/// it: a handler that put the focus somewhere itself keeps its choice.
+#[test]
+fn a_closed_dialog_hands_the_focus_back_only_while_it_still_has_it() {
+    assert!(closed_dialog_hands_focus_to_tab(true, true));
+    assert!(!closed_dialog_hands_focus_to_tab(true, false));
+}
+
+/// The kill switch `PHOSPHOR_MODAL_FOCUS_BACK=0` puts back the old behaviour; anything else
+/// (unset, empty, another value) leaves the fix on.
+#[test]
+fn the_focus_back_kill_switch_is_off_only_for_zero() {
+    assert!(focus_back_enabled_for(None));
+    assert!(focus_back_enabled_for(Some("")));
+    assert!(focus_back_enabled_for(Some("1")));
+    assert!(!focus_back_enabled_for(Some("0")));
+    assert!(!closed_dialog_hands_focus_to_tab(false, true));
+    assert!(!closed_dialog_hands_focus_to_tab(false, false));
+}
+
+/// Escape presses the last button; with no dialog up there is none (this used to be
+/// `len() - 1` on an empty list).
+#[test]
+fn escape_presses_the_last_button_and_nothing_without_a_dialog() {
+    assert_eq!(last_button_index(3), Some(2));
+    assert_eq!(last_button_index(1), Some(0));
+    assert_eq!(last_button_index(0), None);
+}
 
 /// #2092: the "don't show again" callback toggles `general.show_warning_before_quitting`. A
 /// dialog that has to show whatever that setting says (unsaved editor edits) must never run it:

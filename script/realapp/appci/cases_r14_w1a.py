@@ -502,6 +502,52 @@ def find_press(ctx, off, key, event="next", timeout=4.0):
     return rows[-1] if len(rows) > n0 else None
 
 
+# ---- one Find, judged from what its Enter caused (round 19, #2109)
+# Round 14 (hostile_output_recovers on four platforms, the control of restore_shows_history): opening the Find bar re-runs the PREVIOUS query
+# (app/src/terminal/view.rs show_find_bar: "Start find using the previous query") and logs `hop=find_scroll result=scroll` for it, and every edit of
+# the query runs a find too. A case that read every find_scroll line since the Find key therefore saw the earlier token's match in the Find for a
+# token that was never printed. Only the lines logged AFTER the Enter belong to the query that was typed.
+def find_scroll_hops(text):
+    """pure: the payloads of the `hop=find_scroll` lines of an app-log excerpt, in order"""
+    return [l.split("hop=find_scroll", 1)[1].strip()[:400] for l in (text or "").splitlines() if "hop=find_scroll" in l]
+
+
+def find_enter_verdict(after_enter):
+    """pure: 'scroll' | 'no_match' | None for the app log since the Enter of ONE Find. scroll: the app focused a match and went to it
+    (`find_scroll result=scroll`). no_match: it said it had none (`find_scroll result=no_match`, or `find_state event=next count=0`). None: the
+    Enter logged neither (it did not reach the Find field, or the alternate screen is up: no scroll is logged there)."""
+    hops = find_scroll_hops(after_enter)
+    if any(h.startswith("result=scroll") for h in hops):
+        return "scroll"
+    if any(h.startswith("result=no_match") for h in hops):
+        return "no_match"
+    if any(s["event"] == "next" and s["count"] == 0 for s in find_states(after_enter)):
+        return "no_match"
+    return None
+
+
+def find_enter(ctx, token, wait=8.0, shot=None):
+    """One Find for `token`: the Find key, the field emptied (an earlier query stays in it), the token typed, the scan awaited, THEN Enter; up to
+    `wait` s for the app to go to a match; Escape. -> (find_enter_verdict of the log since the Enter, the find_scroll payloads since the Enter)."""
+    off0 = ctx.log_size()
+    ctx.be.guard()
+    ctx.be.key(os.environ.get("APPCI_KEY_FIND", "cmd+f" if U.mac(ctx) else "ctrl+shift+f"))
+    time.sleep(0.8)
+    clear_field(ctx)
+    typed(ctx, token, enter=False)
+    ctx.until(lambda: (find_last_state(ctx, off0, "query") or {}).get("scanning") is False, 6)     # a build without hop=find_state: the full 6 s
+    time.sleep(0.3)
+    off = ctx.log_size()
+    ctx.be.key("Return")
+    ctx.until(lambda: find_enter_verdict(ctx.log_since(off)) == "scroll", wait, step=0.25)
+    text = ctx.log_since(off)
+    if shot:
+        ctx.shot(shot)
+    ctx.be.key("Escape")
+    time.sleep(0.5)
+    return find_enter_verdict(text), find_scroll_hops(text)
+
+
 @case("find_basic", order=67, gui=True)
 def c_find_basic(ctx, r):
     """T3: Find in an ordinary scrollback. Ten blocks of 30 lines; the third holds a token three times on one line. Open Find, a query that is not

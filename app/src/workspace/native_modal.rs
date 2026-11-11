@@ -160,6 +160,37 @@ fn enter_button_index(selected: Option<usize>) -> usize {
     selected.unwrap_or(0)
 }
 
+/// The button Escape presses: the last one ("Cancel"). `None` when no dialog is up.
+fn last_button_index(button_count: usize) -> Option<usize> {
+    button_count.checked_sub(1)
+}
+
+/// Env kill switch (#2108): `PHOSPHOR_MODAL_FOCUS_BACK=0` puts back the behaviour before the fix:
+/// a dialog that closes leaves the focus where its button handler left it, which after Cancel is
+/// this (no longer drawn) view. Read once per run.
+pub(super) fn focus_back_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        focus_back_enabled_for(std::env::var("PHOSPHOR_MODAL_FOCUS_BACK").ok().as_deref())
+    })
+}
+
+/// The kill switch's rule: on unless the variable is exactly `0`.
+fn focus_back_enabled_for(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
+/// Whether the workspace takes the focus back for its active tab when the dialog has closed
+/// (#2108). Only while the dialog's view still has the focus: a button handler that moved the
+/// focus itself (the editor's overwrite question, "Show running processes" opening the palette,
+/// a close that focused the next pane) keeps what it chose.
+pub(super) fn closed_dialog_hands_focus_to_tab(
+    enabled: bool,
+    dialog_view_still_focused: bool,
+) -> bool {
+    enabled && dialog_view_still_focused
+}
+
 /// Whether pressing a button also runs the dialog's "don't show again" callback: only for a
 /// dialog that offers the checkbox, and only with the checkbox ticked.
 fn should_run_disable_callback(can_disable: bool, dont_show_again: bool) -> bool {
@@ -278,11 +309,21 @@ impl TypedActionView for NativeModal {
                 ctx.notify();
             }
             NativeModalAction::Close => {
-                let last_button_idx = self.modal_button_mouse_states.len() - 1;
-                self.trigger_button_callback(last_button_idx, ctx);
+                // #2108: Escape with no dialog up (the focus was left on this view after a
+                // dialog closed) has no last button; the workspace still hears `Close` and takes
+                // the focus back.
+                match last_button_index(self.modal_button_mouse_states.len()) {
+                    Some(last_button_idx) => self.trigger_button_callback(last_button_idx, ctx),
+                    None => ctx.emit(NativeModalEvent::Close),
+                }
             }
             NativeModalAction::Confirm => {
-                self.trigger_button_callback(enter_button_index(self.selected_button), ctx);
+                if self.alert_dialog.is_some() {
+                    self.trigger_button_callback(enter_button_index(self.selected_button), ctx);
+                } else {
+                    // #2108: as for Escape above, with no dialog up there is no button to press.
+                    ctx.emit(NativeModalEvent::Close);
+                }
             }
             NativeModalAction::SelectNext | NativeModalAction::SelectPrevious => {
                 let forward = matches!(action, NativeModalAction::SelectNext);

@@ -17923,6 +17923,9 @@ impl Workspace {
         });
         self.current_workspace_state.is_native_quit_modal_open = true;
         ctx.focus(&self.native_modal);
+        // #2108: the real-app cases read this line to know a question is up, whichever close
+        // path asked it (pane, tab, window, quit, editor tab). A fixed word only.
+        warpui::input_order::log_hop("native_modal", || "event=shown".to_string());
         ctx.notify();
     }
 
@@ -17946,6 +17949,25 @@ impl Workspace {
         match event {
             NativeModalEvent::Close => {
                 self.current_workspace_state.is_native_quit_modal_open = false;
+                // #2108: the dialog's view had the focus and is no longer drawn. A button whose
+                // handler moved the focus (a close that focused the next pane, the palette, the
+                // editor's overwrite question) keeps that; Cancel moves nothing, and without
+                // this the window took no key until a click.
+                let focus_back = super::native_modal::closed_dialog_hands_focus_to_tab(
+                    super::native_modal::focus_back_enabled(),
+                    self.native_modal.is_focused(ctx),
+                );
+                if focus_back {
+                    // Not `focus_active_tab`: a confirm that closed every tab leaves no active
+                    // tab to ask for.
+                    match self.get_pane_group_view(self.active_tab_index).cloned() {
+                        Some(tab) => tab.update(ctx, |tab, ctx| tab.focus(ctx)),
+                        None => ctx.focus_self(),
+                    }
+                }
+                warpui::input_order::log_hop("native_modal", || {
+                    format!("event=closed focus_back={focus_back}")
+                });
                 ctx.notify();
             }
         }

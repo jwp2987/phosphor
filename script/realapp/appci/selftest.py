@@ -25,6 +25,7 @@ def _ctx(tmp, log_path=None):
     c = types.SimpleNamespace(W=tmp, prof=types.SimpleNamespace(rhome=tmp), log_path=log_path, ocr_calls=0)
     c.lines = lambda name, remote=False: cases.Ctx.lines(c, name, remote)
     c.log_view_mode = lambda: cases.Ctx.log_view_mode(c)
+    c.log_view_rows = lambda: cases.Ctx.log_view_rows(c)
     c.log_size = lambda: cases.Ctx.log_size(c)
     c.log_since = lambda off: cases.Ctx.log_since(c, off)
     return c
@@ -8973,6 +8974,8 @@ import selftest_r17_misc  # noqa: E402  (round 17 misc: #2028 md_viewer_first_fr
 CHECKS.extend(selftest_r17_misc.CHECKS)
 import selftest_r19_winmisc  # noqa: E402  (round 19, Windows rest after the round 14 candidate: #2113 #2114)
 CHECKS.extend(selftest_r19_winmisc.CHECKS)
+import selftest_r19_tabs  # noqa: E402  (round 19, #2108 / #2109 / #2110: the round 14 candidate's tab, Find, viewer and notification verdicts; own file)
+CHECKS.extend(selftest_r19_tabs.CHECKS)
 
 
 def missing_required(required, passed):

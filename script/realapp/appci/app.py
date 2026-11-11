@@ -62,6 +62,12 @@ WINDOWS_RUST_LOG = ",".join([
 #   editor_disk=debug        the code editor's file-watcher trace (`editor_disk outcome=...`, editor_daily); also in the Linux and macOS launchers
 #   warp::pane_group=info    'Displaying unsaved changes warning for pane' (editor_daily's close question; tab_lifecycle_keys reads the same line)
 WINDOWS_RUST_LOG += ",editor_disk=debug,warp::pane_group=info"
+# Round 19 (#2109): two plain Info lines the md_viewer cases read were hidden by the bare `warn` base, on Windows only:
+#   warpui_core::core::app=info       'dispatching action for "root_view:add_file_pane"' (cases.FILE_PANE_OPENED): without it md_viewer_first_frame
+#                                     failed ("the app did not open the file") and md_viewer / md_viewer_big never closed their viewer tab
+#                                     ("nothing was closed"), which left it in front of the pane (pane_wedged_after_md_viewer_first_frame)
+#   warp_editor::render::model=info   'rich text: first size ..' (cases_r17_misc.FIRST_SIZE_RE, #2028)
+WINDOWS_RUST_LOG += ",warpui_core::core::app=info,warp_editor::render::model=info"
 # macOS: the same trace, and the CLI-agent event line the two plugin cases read (the Linux launcher has had it since they were written)
 MAC_RUST_LOG_MORE = ",editor_disk=debug,warp::terminal::cli_agent_sessions::event=info"
 
