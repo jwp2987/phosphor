@@ -547,6 +547,9 @@ def classify_key_line(got, readline, default):
     return "fail"
 
 
+WORD_LEFT_BYTES, WORD_RIGHT_BYTES = b"\x1bb", b"\x1bf"       # crates/warp_terminal/src/model/escape_sequences.rs EscCodes::WORD_LEFT / WORD_RIGHT
+
+
 def raw_expect(family, meta):
     """pure: the raw half as [(label, key spec, expected bytes or None, reason when None)]: what a program with the terminal gets for each key
     (crates/warp_terminal/src/model/escape_sequences.rs: Alt is the Meta prefix off macOS, Meta on macOS; CSI 1;<mods> for modified arrows)."""
@@ -565,12 +568,19 @@ def raw_expect(family, meta):
     out.append(("Home", "Home", b"\x1b[H", None))
     out.append(("End", "End", b"\x1b[F", None))
     out.append(("Delete", "Delete", None if mac else b"\x1b[3~", "macOS: the injector has no forward-Delete key code" if mac else None))
+    # The word keys while a command runs are the app's own editable bindings `terminal:executing_command_move_cursor_word_left` / `_right`
+    # (app/src/terminal/view/init.rs; alt-left / alt-right on macOS, ctrl-left / ctrl-right elsewhere; inherited from upstream): they write
+    # readline's `ESC b` / `ESC f` (EscCodes::WORD_LEFT / WORD_RIGHT), so the key moves by a word in every line editor, not xterm's
+    # `CSI 1;5D` / `CSI 1;5C`. Until round 19 this table expected the xterm form, which no build ever sent (round 14 candidate: Wayland and
+    # both Git Bash rows failed on exactly these two keys, with `1b62` / `1b66` received). On macOS with Option set to act as Meta the key
+    # arrives as meta-left, which that binding does not match: the terminal's own encoding answers (`CSI 1;3D`).
+    wl, wr = (b"\x1b[1;3D", b"\x1b[1;3C") if (mac and meta) else (WORD_LEFT_BYTES, WORD_RIGHT_BYTES)
     if mac:
-        out.append(("Option-Left", "alt+Left", b"\x1b[1;3D", None))
-        out.append(("Option-Right", "alt+Right", b"\x1b[1;3C", None))
+        out.append(("Option-Left", "alt+Left", wl, None))
+        out.append(("Option-Right", "alt+Right", wr, None))
     else:
-        out.append(("Ctrl-Left", "ctrl+Left", b"\x1b[1;5D", None))
-        out.append(("Ctrl-Right", "ctrl+Right", b"\x1b[1;5C", None))
+        out.append(("Ctrl-Left", "ctrl+Left", wl, None))
+        out.append(("Ctrl-Right", "ctrl+Right", wr, None))
     return out
 
 

@@ -8080,6 +8080,16 @@ def r14_w1a_wave1_cases_pure_parts_and_registry():
     assert len(set(words)) == 500 and all(len(x) == 6 for x in words)
     text = "junk %s 7\n %s 480 \n$ CAT x\n%s\n" % (words[6], words[479].upper(), "pqr" + words[3][3:])
     assert w.skp_visible(text, "kmn") == [7, 480] and w.skp_visible(None, "kmn") == [] and w.skp_visible(text, "pqr") == [4]
+    # round 19 (round 14 candidate, macOS): one glyph read wrong (`c` as `e`) decoded line 394 as 906 of 500, and "PageUp did not move the view"
+    # was reported for a view showing 362..397. A number no printed line has is dropped; a view that really stayed at the bottom still fails.
+    assert w.skp_word("nwp", 394) == "nwpcnr" and w.skp_word("nwp", 906) == "nwpenr", "the misread of the run"
+    shot = " ".join(w.skp_word("nwp", i) for i in range(362, 394)) + " nwpenr " + " ".join(w.skp_word("nwp", i) for i in range(395, 398))
+    assert w.skp_visible(shot, "nwp")[-1] == 906 and w.skp_visible(shot, "nwp", w.SKP_LINES)[-1] == 397 and w.skp_visible(shot, "nwp", w.SKP_LINES)[0] == 362
+    stayed = w.skp_visible(" ".join(w.skp_word("nwp", i) for i in range(466, 501)), "nwp", w.SKP_LINES)
+    assert stayed[-1] == 500 and not (stayed[-1] < 500 - 10), "a view still at the bottom reads its real lines and fails `moved`"
+    assert w.skp_visible(w.skp_word("nwp", 0) + " " + w.skp_word("nwp", 501), "nwp", w.SKP_LINES) == [], "0 and 501 are not printed lines"
+    kp = inspect.getsource(w.c_scroll_keys_position)
+    assert kp.count("tag, SKP_LINES)") == 4 and kp.count("stag, SKP_STREAM_LINES)") == 2, "every read of the case is bounded by what was printed"
     a, b = w.skp_tags(random.Random(3))
     assert a != b and len(a) == len(b) == 3
     before = list(range(300, 340))
@@ -8340,12 +8350,26 @@ def r14_w1b_pure_parts():
             assert byname["Ctrl-A"][2] == b"\x01" and byname["Ctrl-Y"][2] == b"\x19" and byname["Home"][2] == b"\x1b[H" and byname["End"][2] == b"\x1b[F"
             assert all((x[2] is None) == bool(x[3]) for x in raw)
             if not mac:
-                assert byname["Ctrl-Left"][2] == b"\x1b[1;5D" and byname["Delete"][2] == b"\x1b[3~" and (byname["Alt-B"][2] == b"\x1bb") == (not meta)
+                # round 19: the word keys under a running command are the app's bindings (ESC b / ESC f), not xterm's CSI 1;5D / 1;5C
+                assert byname["Ctrl-Left"][2] == b"\x1bb" and byname["Ctrl-Right"][2] == b"\x1bf"
+                assert byname["Delete"][2] == b"\x1b[3~" and (byname["Alt-B"][2] == b"\x1bb") == (not meta)
                 assert byname["Alt-."][1] == "alt+period"
             else:
-                assert byname["Option-Right"][2] == b"\x1b[1;3C" and (byname["Alt-F"][2] == b"\x1bf") == meta and byname["Delete"][2] is None
+                assert byname["Option-Right"][2] == (b"\x1b[1;3C" if meta else b"\x1bf") and byname["Option-Left"][2] == (b"\x1b[1;3D" if meta else b"\x1bb")
+                assert (byname["Alt-F"][2] == b"\x1bf") == meta and byname["Delete"][2] is None
                 assert all(x[1].lower().split("+")[-1] in be_cls.SPECIAL or x[1].lower().split("+")[-1] in be_cls.LETTERS for x in raw if x[2] is not None)
     assert D.classify_key_line("echo a ", "echo a", None) == "readline" and D.classify_key_line("echo", "echo a b", "echo") == "app_default"
+    # round 19: the bytes the raw half expects for the word keys are the ones the app's bindings carry (a change there must fail here)
+    ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+    _esc = open(os.path.join(ROOT, "crates", "warp_terminal", "src", "model", "escape_sequences.rs"), encoding="utf-8").read()
+    assert "pub const WORD_LEFT: &[u8] = &[C0::ESC, b'b'];" in _esc and "pub const WORD_RIGHT: &[u8] = &[C0::ESC, b'f'];" in _esc
+    _init = open(os.path.join(ROOT, "app", "src", "terminal", "view", "init.rs"), encoding="utf-8").read()
+    for _name, _code, _mac, _other in (("left", "WORD_LEFT", "alt-left", "ctrl-left"), ("right", "WORD_RIGHT", "alt-right", "ctrl-right")):
+        _at = _init.index('"terminal:executing_command_move_cursor_word_%s"' % _name)
+        _blk = _init[_at:_at + 520]
+        assert ("EscCodes::%s" % _code) in _blk and ('.with_mac_key_binding("%s")' % _mac) in _blk and ('.with_linux_or_windows_key_binding("%s")' % _other) in _blk, _name
+        assert 'id!("LongRunningCommand")' in _blk, "the word keys are the app's only while a command runs"
+    assert (D.WORD_LEFT_BYTES, D.WORD_RIGHT_BYTES) == (b"\x1bb", b"\x1bf")
     # the Windows injector can post every key spec too (no display needed: the chord table is static)
     for spec in ("alt+b", "alt+f", "alt+d", "alt+period", "ctrl+a", "ctrl+Left", "ctrl+Right", "Home", "End", "Delete", "Left"):
         k = spec.lower().split("+")[-1]
@@ -8597,6 +8621,12 @@ def r14_window_use_cases_pure_parts():
     for needle in ('keys["count"] == 0', "ctx.lines(f_back) == [tok]", "mine == [line]", "not leaked", "judge_focus_bytes(got)", "\\\\033[?1004h"):
         assert needle in body, needle
     assert "time.sleep" not in body[body.index('ref.switch("phosphor")'):body.index("ctx.be.type(line,")], "the first line after the return is typed with no settle"
+    # round 19: the Git Bash reference has its OWN rc, so what is typed into it is logged to refctl and can never be read back as the pane's (round
+    # 14 candidate: both Git Bash rows "received" the three reference lines while the app's key trace had 0 keys). Other panes: the default reference.
+    assert W.focus_cycle_ref_rc(True, "gitbash", "C:\\run\\home\\.refrc") == "C:/run/home/.refrc"
+    assert W.focus_cycle_ref_rc(True, "powershell", "C:\\x\\.refrc") is None and W.focus_cycle_ref_rc(False, None, "/h/.refrc") is None
+    assert "ref = focus_cycle_reference(ctx)" in body and "C.ref_terminal_windows(ctx, rcfile=rc)" in inspect.getsource(W.focus_cycle_reference)
+    assert '_wr(self.ref_rc, BASHRC % {"ctl": self._c(self.refctl)})' in inspect.getsource(profile), "prof.ref_rc logs to refctl, not to the pane's ctl"
     # T30: the first frame and the main-thread bound
     t0 = 1000.0
     flog = ("a input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=1.0 t=999900.0\n"

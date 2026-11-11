@@ -10,6 +10,8 @@
 #                                 the PROMPT, with an empty input, each of the four shifted keys logs its hop; with text in the input
 #                                 Shift+Home selects it instead (no hop; the line typed over the selection is the one the shell receives).
 #                                 Wayland / X11 / macOS / the Windows Git Bash pane (the PowerShell pane has no POSIX raw reader).
+#                                 Round 19: the "text in the input" step really presses Shift+Home (it sent no key: sfg_press_plan); the
+#                                 alternate-screen keys are #2105 (Shift+PageUp had no encoding) and #2106 (macOS dropped Shift+Home).
 #   primary_absent_clipboard_kept #2081. On a display with NO primary selection: copy on select off, a drag over two words leaves CLIPBOARD holding
 #                                 its sentinel; control with copy on select on: CLIPBOARD holds the selection (the drag selects, the setting is
 #                                 live). On a display that has a primary selection the case SKIPs with the machine change it needs (the split is
@@ -128,17 +130,29 @@ def _sfg_press(ctx, rf, off, spec, n=1, want_bytes=0, want_hops=0):
     net), then a settle so a byte or a hop that should NOT come still has time to."""
     b0 = len(b"".join(U._reader_chunks(ctx, rf)))
     h0 = len(scrollback_hops(ctx.log_since(off)))
-    ctx.be.keys([spec] * n, delay_ms=60)
+    ctx.be.keys(sfg_press_plan(spec, n)[0], delay_ms=60)
     ctx.until(lambda: len(b"".join(U._reader_chunks(ctx, rf))) - b0 >= want_bytes and len(scrollback_hops(ctx.log_since(off))) - h0 >= want_hops, 4)
     time.sleep(0.6)
     return b"".join(U._reader_chunks(ctx, rf))[b0:], scrollback_hops(ctx.log_since(off))[h0:]
 
 
-def _sfg_prompt_press(ctx, off, spec, n=1):
-    """press `spec` n times at the prompt -> the scrollback hops the app logged for it (a give-up net, then a settle)"""
+def sfg_press_plan(spec, n, want_hops=None):
+    """pure: (the keys to send, the number of hops to wait for) for `n` presses of `spec`. `want_hops` None: one hop per press; 0: a key that must
+    NOT scroll (the wait is skipped and only the settle runs). A press count below 1 is an error of the case, never a silent no-op: round 14 passed
+    the expected hop count (0) as the press count, so "Shift+Home with text in the input" pressed no key and the typed line was appended."""
+    if n < 1:
+        raise ValueError("a key step must press its key at least once (n=%r for %r): the expected hop count is `want_hops`, not `n`" % (n, spec))
+    return [spec] * n, (n if want_hops is None else want_hops)
+
+
+def _sfg_prompt_press(ctx, off, spec, n=1, want_hops=None):
+    """press `spec` n times at the prompt -> the scrollback hops the app logged for it (a give-up net for `want_hops` of them, default one per
+    press; then a settle, so a hop that should NOT come still has time to)"""
+    keys, want = sfg_press_plan(spec, n, want_hops)
     h0 = len(scrollback_hops(ctx.log_since(off)))
-    ctx.be.keys([spec] * n, delay_ms=60)
-    ctx.until(lambda: len(scrollback_hops(ctx.log_since(off))) - h0 >= n, 4)
+    ctx.be.keys(keys, delay_ms=60)
+    if want:
+        ctx.until(lambda: len(scrollback_hops(ctx.log_since(off))) - h0 >= want, 4)
     time.sleep(0.5)
     return scrollback_hops(ctx.log_since(off))[h0:]
 
@@ -158,7 +172,7 @@ def _sfg_prompt_half(ctx, r, off, key, rows):
     replaced, want = "echo sfgold%s" % tok, "echo sfgnew%s" % tok
     m = ctx.cmd_mark()
     W1.typed(ctx, replaced, enter=False)
-    hops = _sfg_prompt_press(ctx, off, key("home", True), 0)
+    hops = _sfg_prompt_press(ctx, off, key("home", True), 1, want_hops=0)        # ONE press that must log no hop (r19: `0` here was the press count)
     W1.typed(ctx, want)
     ctx.until(lambda: len(ctx.cmds_since(m)) >= 1, 6)
     got = ctx.cmds_since(m)
@@ -209,7 +223,7 @@ def c_scroll_keys_foreground(ctx, r):
     with open(os.path.join(ctx.W, "sfg_run.sh"), "w", newline="\n") as f:
         f.write(sfg_script(reader, stream, seen, stop, rf))
     printed = lambda: len(ctx.lines(seen))
-    newest = lambda text: (W1.skp_visible(text, stag) or [None])[-1]
+    newest = lambda text: (W1.skp_visible(text, stag, SFG_STREAM_LINES) or [None])[-1]      # a misread glyph cannot name a line the job never prints
     ctx.reset()
     off = ctx.log_size()
     key = lambda name, shift=False: nav_key(ctx.be.name, name, shift)

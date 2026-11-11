@@ -324,6 +324,38 @@ def ime_switch_argv(plan, target):
     return ["ibus", "engine", target], ["ibus", "engine"]
 
 
+FCITX_IC_RE = re.compile(r"IC \[[0-9a-fA-F]*\] program:(.*?) frontend:(\S+) cap:\S+ focus:(\d)")
+FCITX_DEBUG_ARGVS = (
+    ["dbus-send", "--session", "--print-reply=literal", "--dest=org.fcitx.Fcitx5", "/controller", "org.fcitx.Fcitx.Controller1.DebugInfo"],
+    ["busctl", "--user", "call", "org.fcitx.Fcitx5", "/controller", "org.fcitx.Fcitx.Controller1", "DebugInfo"],
+    ["gdbus", "call", "--session", "--dest", "org.fcitx.Fcitx5", "--object-path", "/controller", "--method", "org.fcitx.Fcitx.Controller1.DebugInfo"],
+)
+
+
+def fcitx_focused_contexts(debug_info):
+    """pure: fcitx5's own list of input contexts (Controller1.DebugInfo: `IC [uuid] program:<p> frontend:<f> cap:<hex> focus:<0|1>` per context)
+    -> [(program, frontend)] of the contexts that have the focus, or None when the text is not that report (no tool could ask, another fcitx5).
+    busctl / gdbus print the string with `\\n` escapes: both forms are read. An empty list is the fact the case needs: the daemon runs and can be
+    told to select Pinyin, but NO text input of any client is attached to it with the focus, so every key goes to the app untouched."""
+    text = (debug_info or "").replace("\\n", "\n")
+    if "InputContext" not in text and "Input Context" not in text:
+        return None
+    return [(m.group(1).strip(), m.group(2)) for m in FCITX_IC_RE.finditer(text) if m.group(3) == "1"]
+
+
+def ime_engaged_verdict(focused, log_tail=""):
+    """pure: -> None when the input method is in the key path (or that cannot be asked: the case goes on as before and its checks decide), else
+    the UNVERIFIABLE text. Round 14 candidate (Wayland, both modes): `fcitx5-remote -s pinyin` read back `pinyin`, and yet the typed letters
+    reached the app as plain key presses (the app's key trace counted every one, the pty received `nihao`): the daemon's own state proved
+    nothing about the app's text input. With no focused context the case typed past the input method, so 'marked text leaked' was never tested."""
+    if focused is None or focused:
+        return None
+    return ("fcitx5 runs and reports Pinyin selected, but it has NO focused input context (org.fcitx.Fcitx.Controller1.DebugInfo lists none with "
+            "focus:1): no text input of the app is attached to it, so keys typed now reach the app untouched and nothing about composition can be "
+            "judged. Either the daemon is not the session's input method (Wayland: it must bind the compositor's input-method-v2, one client "
+            "only; run/desk/ime_daemon.log) or the app's window did not enable its text input. Daemon log tail: %r" % (log_tail or "")[-400:])
+
+
 def win_pinyin_installed(langs):
     """True when the user's language list (Get-WinUserLanguageList as [{tag, tips}]) has Chinese (Simplified) with at least one input method"""
     for l in langs or []:
@@ -1184,6 +1216,30 @@ class LinuxIme:
     def ime(self):
         self._select(self.plan["engine"])
 
+    def focused_contexts(self):
+        """fcitx5 only: the input contexts that have the focus, as the daemon itself lists them (fcitx_focused_contexts); None when it cannot be
+        asked (ibus, no D-Bus tool on the machine, a call that failed)"""
+        if self.plan["framework"] != "fcitx5":
+            return None
+        for argv in FCITX_DEBUG_ARGVS:
+            if not shutil.which(argv[0]):
+                continue
+            try:
+                out = subprocess.run(argv, env=self._env(), capture_output=True, timeout=15).stdout.decode(errors="replace")
+            except Exception:
+                continue
+            got = fcitx_focused_contexts(out)
+            if got is not None:
+                return got
+        return None
+
+    def log_tail(self):
+        try:
+            with open(self.log, errors="replace") as f:
+                return f.read()[-400:]
+        except OSError:
+            return ""
+
     def restore(self):
         if not self.armed:
             return
@@ -1287,6 +1343,18 @@ def c_ime_compose(ctx, r):
             return
         sw.ime()
         ctx.shot("ime_selected")
+        if not ctx.win:
+            ctx.be.guard()                                       # the app's window has the focus: its text input is the one the daemon must hold
+            focused = sw.focused_contexts()
+            r.metric("ime_focused_contexts", None if focused is None else ["%s/%s" % pf for pf in focused])
+            why = ime_engaged_verdict(focused, sw.log_tail())
+            if why:
+                sw.abc()
+                r.unverifiable(why)
+                return
+            if focused is None:
+                r.note("the input method's own context list could not be read (no dbus-send / busctl / gdbus, or not fcitx5): whether it is in the "
+                       "key path is shown only by the checks below")
         sw.abc()
         if sw.unproven:
             r.unverifiable("the input method could not be selected for the app (%s): the app may not have registered a text input with it, or the "
