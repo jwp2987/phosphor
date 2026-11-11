@@ -1,6 +1,6 @@
 # appci/cases_win_input.py: the Windows input-parity cases (docs/design/windows-input-parity-audit.md, findings 3, 7, 8; issues #1884, #1888, #1889).
-# Registered with the same @case decorator as cases.py (one import line at its end). Windows panes only; each SKIPs elsewhere with its reason.
-#   ssh_connect_typing_wrapper / ssh_nested_typeahead_wrapper   Git Bash pane, the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1 in the profile) and the
+# Registered with the same @case decorator as cases.py (one import line at its end). Windows panes only (the two *_wrapper cases also run on Linux); each SKIPs elsewhere with its reason.
+#   ssh_connect_typing_wrapper / ssh_nested_typeahead_wrapper   (also the Linux pane, #2066) Git Bash pane, the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, a job variable) and the
 #                                                               one-connection managed ssh switched on in the pane's shell (#2051): the existing ssh cases, plus
 #                                                               proof from the app log that the wrapper announcement was ACCEPTED on the born-owned ConPTY
 #                                                               window (hop ssh_wrapper "announced reclaimed=true", #1884) and that the verdict was managed
@@ -48,33 +48,48 @@ def _need_windows_pane(ctx, r, pane):
         r.skip("runs in the %s pane" % pane)
 
 
+WRAPPER_PIN_NEEDS = ("this job does not pin the ssh wrapper. NEEDS: APPCI_SSH_WRAPPER=1 in the job's variables (.gitlab-ci.yml sets it for app-test-linux-wayland and "
+                     "app-test-windows; a hand run exports it), so that profile.py writes warpify.ssh.enable_ssh_warpification and enable_legacy_ssh_wrapper "
+                     "explicitly (#1884)")
+
+
+def wrapper_hops(log):
+    """pure: (lines, verdict texts) of the app's `hop=ssh_wrapper` lines in `log`"""
+    lines = [ln for ln in (log or "").splitlines() if "hop=ssh_wrapper" in ln]
+    return lines, [ln.split("hop=ssh_wrapper", 1)[-1].strip()[:60] for ln in lines if "verdict" in ln]
+
+
 def _wrapper_variant(ctx, r, base):
-    _need_windows_pane(ctx, r, "gitbash")
+    """#2066: these two cases were SKIP in every pane of every run, because nothing set APPCI_SSH_WRAPPER=1 and they refused every pane but Windows Git
+    Bash. The wrapper's announcement and verdict are handled by the same code on every platform (terminal/view.rs ssh_on_wrapper_announced /
+    ssh_on_wrapper_verdict), so they run in any pane whose shell has the wrapper once the job pins it: the Windows Git Bash pane (the born-owned ConPTY
+    window, #1884; the one-connection managed ssh is switched on by in_msys_managed_ssh, #2051, since it is off by default) and the Linux pane (the
+    ControlMaster wrapper). The PowerShell pane has no wrapper (winmap.py)."""
+    if ctx.win and ctx.pane != "gitbash":
+        r.skip("runs in the gitbash pane (the PowerShell pane's ssh is not the bash wrapper)")
     if os.environ.get("APPCI_SSH_WRAPPER", "") != "1":
-        r.skip("set APPCI_SSH_WRAPPER=1 so the profile pins the managed-ssh wrapper on (#1884)")
+        r.skip(WRAPPER_PIN_NEEDS)
     off = ctx.log_size()
-    # #2051: the managed path these two cases are about is off by default; they switch it on for the pane's shell
+    # #2051: on Windows the managed path these two cases are about is off by default; they switch it on for the pane's shell (a no-op elsewhere)
     R.in_msys_managed_ssh(ctx, lambda: base(ctx, r))
-    log = ctx.log_since(off)
-    wrapper = [ln for ln in log.splitlines() if "hop=ssh_wrapper" in ln]
-    r.check(any("verdict managed=true" in ln for ln in wrapper),
-            "with the one-connection managed ssh switched on, the wrapper's verdict was managed=true; verdicts seen: %r"
-            % [ln.split("hop=ssh_wrapper", 1)[-1].strip()[:60] for ln in wrapper if "verdict" in ln][:4])
+    wrapper, verdicts = wrapper_hops(ctx.log_since(off))
+    where = "with the one-connection managed ssh switched on" if ctx.win else "with the ssh wrapper pinned on"
+    r.check(any("verdict managed=true" in ln for ln in wrapper), "%s, the wrapper's verdict was managed=true; verdicts seen: %r" % (where, verdicts[:4]))
     r.check(any("announced" in ln for ln in wrapper),
-            "the wrapper announcement was handled on the Windows window (hop ssh_wrapper announced); hops seen: %d" % len(wrapper))
+            "the wrapper announcement was handled on the connect window (hop ssh_wrapper announced); hops seen: %d" % len(wrapper))
     r.check(not any("verdict_ignored" in ln for ln in wrapper),
-            "no wrapper verdict was ignored on the born-owned window (#1884): %r" % [ln[-120:] for ln in wrapper if "verdict_ignored" in ln][:2])
+            "no wrapper verdict was ignored (#1884: the born-owned window on ConPTY): %r" % [ln[-120:] for ln in wrapper if "verdict_ignored" in ln][:2])
 
 
 @case("ssh_connect_typing_wrapper", order=30)
 def c_ssh_connect_typing_wrapper(ctx, r):
-    """#1884: ssh_connect_typing with the managed-ssh wrapper pinned on, Git Bash pane"""
+    """#1884: ssh_connect_typing with the managed-ssh wrapper pinned on (Windows Git Bash pane, Linux pane)"""
     _wrapper_variant(ctx, r, cases.c_ssh)
 
 
 @case("ssh_nested_typeahead_wrapper", order=30)
 def c_ssh_nested_typeahead_wrapper(ctx, r):
-    """#1884: ssh_nested_typeahead with the managed-ssh wrapper pinned on, Git Bash pane"""
+    """#1884: ssh_nested_typeahead with the managed-ssh wrapper pinned on (Windows Git Bash pane, Linux pane)"""
     _wrapper_variant(ctx, r, cases.c_ssh_nested)
 
 

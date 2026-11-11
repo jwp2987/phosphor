@@ -1219,6 +1219,10 @@ usage-test-macos:
 # same build once more under XWayland for X11 parity (reduced case set).
 app-test-linux-wayland:
   extends: .appci_linux
+  variables:
+    # #2066: ssh_connect_typing_wrapper / ssh_nested_typeahead_wrapper were SKIP in every run because no job set this. profile.py then writes the two
+    # warpify.ssh wrapper switches as true explicitly (their default), for the whole job. Merged with .appci_linux's variables.
+    APPCI_SSH_WRAPPER: "1"
   needs:
     - job: build-linux-x86_64
       artifacts: false
@@ -1293,6 +1297,8 @@ app-test-macos:
 app-test-windows:
   extends: .windows_job
   stage: apptest
+  variables:
+    APPCI_SSH_WRAPPER: "1"   # #2066: as app-test-linux-wayland; the *_wrapper cases run in the Git Bash pane (merged with .windows_job's variables)
   when: manual
   allow_failure: true
   resource_group: windows-gui

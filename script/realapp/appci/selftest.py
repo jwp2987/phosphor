@@ -6242,6 +6242,60 @@ def agent_mcp_pure_pieces():
 
 
 @check
+def ssh_wrapper_cases_have_a_job_that_pins_them():
+    """#2066: the two *_wrapper ssh cases were SKIP everywhere: no job set APPCI_SSH_WRAPPER=1, and they refused every pane but Windows Git Bash. The CI
+    jobs that carry them set the variable (read from .gitlab-ci.yml, so removing it fails here), the cases run on Linux and in the Git Bash pane with the
+    pin and skip with the exact need without it, and the three log checks hold or fail on the app's hops."""
+    import re
+    import cases_win_input as wi
+    yml = open(os.path.join(HERE, "..", "..", "..", ".gitlab-ci.yml"), encoding="utf-8").read()
+    for job in ("app-test-linux-wayland", "app-test-windows"):
+        m = re.search(r"^%s:\n(.*?)(?=^\S)" % re.escape(job), yml, re.S | re.M)
+        assert m and re.search(r'^  variables:\n(?:    .*\n)*?    APPCI_SSH_WRAPPER: "1"', m.group(1), re.M), "%s no longer sets APPCI_SSH_WRAPPER=1: the *_wrapper cases would SKIP in every run again" % job
+    good = "x hop=ssh_wrapper announced reclaimed=false holding=true held_bytes=3\ny hop=ssh_wrapper verdict managed=true tty_owned_deferred=false remote_plain=false\n"
+
+    class Skipped(Exception):
+        pass
+
+    class R:
+        def __init__(self):
+            self.fails = []
+
+        def skip(self, why):
+            raise Skipped(why)
+
+        def check(self, ok, msg):
+            if not ok:
+                self.fails.append(msg)
+            return ok
+
+    def run(win, pane, pin, log):
+        ctx = types.SimpleNamespace(win=win, pane=pane, log_size=lambda: 0, log_since=lambda off: log, be=types.SimpleNamespace(type=lambda *a, **k: None))
+        saved, ran, r = os.environ.get("APPCI_SSH_WRAPPER"), [], R()
+        os.environ["APPCI_SSH_WRAPPER"] = "1" if pin else ""
+        real_sleep, wi.R.time.sleep = wi.R.time.sleep, lambda s: None
+        try:
+            wi._wrapper_variant(ctx, r, lambda c, rr: ran.append(1))
+            return ran, r.fails
+        except Skipped as e:
+            return "skip", str(e)
+        finally:
+            wi.R.time.sleep = real_sleep
+            if saved is None:
+                del os.environ["APPCI_SSH_WRAPPER"]
+            else:
+                os.environ["APPCI_SSH_WRAPPER"] = saved
+    assert run(False, None, True, good) == ([1], []), "Linux pane with the pin: the case body runs and the hops satisfy it"
+    assert run(True, "gitbash", True, good) == ([1], [])
+    how, why = run(False, None, False, good)
+    assert how == "skip" and "NEEDS: APPCI_SSH_WRAPPER=1" in why and "app-test-linux-wayland" in why, why
+    assert run(True, "powershell", True, good)[0] == "skip"
+    ran, fails = run(False, None, True, "y hop=ssh_wrapper verdict managed=false tty_owned_deferred=false remote_plain=false\nz hop=ssh_wrapper verdict_ignored managed=true state=Off session_differs=false\n")
+    assert ran == [1] and len(fails) == 3 and "verdicts seen" in fails[0] and "managed=false" in fails[0], fails
+    assert len(run(False, None, True, "")[1]) == 2, "no hop at all fails the verdict and the announcement checks"
+
+
+@check
 def mcp_config_is_where_the_app_reads_it():
     """#2065: agent_mcp_faults was SKIP on every platform in every run because the harness wrote `~/.warp/.mcp.json` and the app under test (Channel::Oss)
     reads `<home>/.phosphor/.mcp.json`. The directory name is pinned against the app's source, so a renamed directory fails here and not as a silent skip;
