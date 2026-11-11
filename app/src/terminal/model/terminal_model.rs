@@ -538,6 +538,10 @@ pub struct TerminalModel {
     /// platform that has none (ConPTY); cleared by `TtyReadEnd` and by the next Precmd/Preexec.
     /// Shared so a lock-free reader of [`Self::secret_read_probe`] sees it.
     tty_read_secret_marker: Arc<AtomicBool>,
+    /// #2040: this pane's answers to "may the keys typed now be a secret?" for the input-order
+    /// log (`input_order::register_secret_input_probe`): the marker above with the hand-off's
+    /// noted reader, and the termios probe once it is installed. Removed when the model drops.
+    secret_log_probes: Vec<warpui::input_order::SecretInputProbeRegistration>,
     /// #1641: whether the foreground program is blocked reading the tty (an OS fact).
     tty_read_probe: Option<super::block::interactive_latch::SecretReadProbe>,
     /// #1679 step 3: the pty sample behind [`Self::subshell_tty_sample`] (unix local ptys,
@@ -1289,22 +1293,27 @@ impl TerminalModel {
             key_model.clone(),
         );
 
+        // #1353 phase 6: the kill switch for the prompt-sequence decisions.
+        let mut handoff = TypeaheadHandoff::default();
+        handoff.set_prompt_seq_enabled(super::typeahead_handoff::prompt_seq_env_enabled());
+        // #2052: the one kill switch of the reader marker, read once per pane.
+        handoff.set_reader_marker_enabled(super::typeahead_handoff::reader_marker_env_enabled());
+        let tty_read_secret_marker = Arc::new(AtomicBool::new(false));
+        // #2040: while a command announced a secret read or a prompt's reader has the keys, the
+        // input-order log shows no text. Two atomic loads, no lock (the log asks on any thread).
+        let secret_log_probes = vec![warpui::input_order::register_secret_input_probe({
+            let marker = tty_read_secret_marker.clone();
+            let reader_noted = handoff.prompt_reader_noted_flag();
+            Arc::new(move || marker.load(Ordering::Relaxed) || reader_noted.load(Ordering::Relaxed))
+        })];
+
         Self {
             alt_screen,
             is_input_dirty: false,
             pty_bracketed_paste: false,
             block_list,
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
-            typeahead_handoff: {
-                // #1353 phase 6: the kill switch for the prompt-sequence decisions.
-                let mut handoff = TypeaheadHandoff::default();
-                handoff.set_prompt_seq_enabled(super::typeahead_handoff::prompt_seq_env_enabled());
-                // #2052: the one kill switch of the reader marker, read once per pane.
-                handoff.set_reader_marker_enabled(
-                    super::typeahead_handoff::reader_marker_env_enabled(),
-                );
-                PaneHandoff::from(handoff)
-            },
+            typeahead_handoff: PaneHandoff::from(handoff),
             key_facts: KeyFactsCell::default(),
             key_model,
             facts_gen: AtomicU64::new(0),
@@ -1322,7 +1331,8 @@ impl TerminalModel {
             alt_screen_active: false,
             interactive_probe: None,
             secret_read_probe: None,
-            tty_read_secret_marker: Arc::new(AtomicBool::new(false)),
+            tty_read_secret_marker,
+            secret_log_probes,
             tty_read_probe: None,
             subshell_tty_probe: None,
             subshell_tty_flush: None,
@@ -2040,7 +2050,22 @@ impl TerminalModel {
         &mut self,
         probe: super::block::interactive_latch::SecretReadProbe,
     ) {
+        // #2040: the same tty fact keeps typed text out of the input-order log. The first entry
+        // is the marker's; a probe installed again replaces the earlier termios one.
+        self.secret_log_probes.truncate(1);
+        self.secret_log_probes
+            .push(warpui::input_order::register_secret_input_probe(
+                probe.clone(),
+            ));
         self.secret_read_probe = Some(probe);
+    }
+
+    /// #2040: whether one of this pane's probes tells the input-order log to show no text now.
+    #[cfg(test)]
+    pub(crate) fn input_log_withholds_text(&self) -> bool {
+        self.secret_log_probes
+            .iter()
+            .any(|probe| probe.says_secret())
     }
 
     /// Whether the pty is canonical with echo off right now (a program reads a secret); `false`

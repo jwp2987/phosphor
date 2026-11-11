@@ -234,10 +234,13 @@ fn keystroke_to_csi_u(
         format!("\x1b[{key_part}u")
     };
 
+    // #2040: the key and its sequence are what the user typed (a password at a full-screen
+    // program's prompt): their text only under the input-order log's opt-in, never while a
+    // secret is read; else the key's name or length and the sequence's length.
     log::debug!(
-        "Generated CSI u sequence for key '{}': {}",
-        keystroke.key,
-        sequence.escape_default()
+        "Generated CSI u sequence for key {}: {}",
+        warpui::input_order::describe_key(&keystroke.key),
+        warpui::input_order::describe_user_key_bytes_escaped(sequence.as_bytes())
     );
     Some(sequence.into_bytes())
 }

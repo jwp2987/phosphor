@@ -3754,6 +3754,48 @@ fn line_editor_markers_become_terminal_events_in_order() {
     );
 }
 
+/// #2040: the input-order log shows no typed text while this pane may be reading a secret: a
+/// command's announced secret read (the `TtyRead` marker), the tty being canonical with echo off
+/// (the termios probe), or a reader noted ahead of the line editor. Each ends with its own event.
+#[test]
+fn the_input_log_withholds_text_while_the_pane_may_read_a_secret() {
+    use crate::terminal::model::ansi::TtyReadValue;
+    let mut terminal = TerminalModel::mock(None, None);
+    assert!(!terminal.input_log_withholds_text());
+
+    // The marker of a secret read; an echoing read is no secret.
+    let read = |secret| TtyReadValue {
+        session_id: Some(5),
+        seq: Some(3),
+        secret,
+    };
+    terminal.tty_read(read(false));
+    assert!(!terminal.input_log_withholds_text());
+    terminal.tty_read(read(true));
+    assert!(terminal.input_log_withholds_text());
+    assert!(warpui::input_order::secret_input_active());
+    terminal.tty_read_end(read(true));
+    assert!(!terminal.input_log_withholds_text());
+
+    // The tty fact, as the pty installs it; a probe installed again replaces the earlier one.
+    let echo_off = Arc::new(AtomicBool::new(true));
+    let flag = echo_off.clone();
+    terminal.set_secret_read_probe(Arc::new(move || flag.load(Ordering::Relaxed)));
+    assert!(terminal.input_log_withholds_text());
+    echo_off.store(false, Ordering::Relaxed);
+    assert!(!terminal.input_log_withholds_text());
+    echo_off.store(true, Ordering::Relaxed);
+    terminal.set_secret_read_probe(Arc::new(|| false));
+    assert!(!terminal.input_log_withholds_text());
+
+    // A reader noted ahead of the line editor (the hand-off's fact), until the hand-off ends it.
+    let noted = terminal.typeahead_handoff().prompt_reader_noted_flag();
+    noted.store(true, Ordering::Relaxed);
+    assert!(terminal.input_log_withholds_text());
+    noted.store(false, Ordering::Relaxed);
+    assert!(!terminal.input_log_withholds_text());
+}
+
 /// #1882: the `TtyRead` marker (PowerShell's `Read-Host`) reaches the event channel and is the
 /// secret-read fact on a platform with no termios: the model's probe answers true for a secret
 /// read until `TtyReadEnd` or the next Precmd/Preexec; a non-secret read never claims a secret.

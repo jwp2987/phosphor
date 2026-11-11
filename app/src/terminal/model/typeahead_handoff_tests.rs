@@ -4867,6 +4867,62 @@ fn the_tty_is_asked_for_a_secret_read_only_between_a_precmd_and_its_line_editor(
     assert!(noted.prompt_reader_asks());
 }
 
+/// #2040: the lock-free copy of "a reader is noted" (what the input-order log's secret guard
+/// reads) is set where the reader is noted, from the tty or from the screen, and cleared where
+/// it ends: it never differs from the hand-off's own answer.
+#[test]
+fn the_noted_reader_flag_follows_the_reader_for_the_logs_secret_guard() {
+    let secret = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut handoff = sampled_prompt_the_editor_owns(&secret);
+    let noted = handoff.prompt_reader_noted_flag();
+    assert!(!noted.load(Ordering::SeqCst));
+    assert_eq!(handoff.take_input_for_secret_reader(), Some(true));
+    assert!(handoff.prompt_reader_asks());
+    assert!(noted.load(Ordering::SeqCst));
+    // A PIN typed now is logged by `hand_route reason=prompt_reader bytes_len=..` only.
+    assert_eq!(
+        type_and_flush(&mut handoff, b"4711"),
+        UserBytesRoute::WriteCounted
+    );
+    assert!(noted.load(Ordering::SeqCst));
+    handoff.on_preexec(true);
+    assert!(!handoff.prompt_reader_asks());
+    assert!(!noted.load(Ordering::SeqCst));
+
+    // The screen fact (ConPTY): noted by the view, ended by the line editor's signal.
+    let mut handoff = conpty_prompt_after_a_command_in_a_shell_that_signalled();
+    let noted = handoff.prompt_reader_noted_flag();
+    assert_eq!(handoff.on_user_bytes(b"p"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a prompt hold");
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::GiveUp
+    );
+    assert!(!noted.load(Ordering::SeqCst));
+    assert!(handoff.note_prompt_reader_asks());
+    assert!(noted.load(Ordering::SeqCst));
+    assert!(handoff.expire_queued_prompt_hold(id));
+    assert!(handoff.route_released_chunk(b"p"));
+    handoff.finish_queued_prompt_hold(id);
+    let _ = handoff.on_line_editor_active(true, false);
+    assert_eq!(noted.load(Ordering::SeqCst), handoff.prompt_reader_asks());
+    handoff.on_preexec(true);
+    assert!(!handoff.prompt_reader_asks());
+    assert!(!noted.load(Ordering::SeqCst));
+
+    // The session ends with a reader noted: the cell the pane registered is the one cleared (a
+    // fresh cell would leave the log withholding text for the rest of the run).
+    let mut handoff = sampled_prompt_the_editor_owns(&secret);
+    let noted = handoff.prompt_reader_noted_flag();
+    secret.store(true, Ordering::SeqCst);
+    assert_eq!(handoff.take_input_for_secret_reader(), Some(true));
+    assert!(noted.load(Ordering::SeqCst));
+    handoff.reset_on_exit();
+    assert!(!handoff.prompt_reader_asks());
+    assert!(!noted.load(Ordering::SeqCst));
+    assert!(Arc::ptr_eq(&noted, &handoff.prompt_reader_noted_flag()));
+}
+
 /// #2050: the reader ends on the events of #2038 here too, and keys it left unread are the
 /// shell's line. `ls` typed after the PIN's Enter is in the tty when the line editor starts: the
 /// decision asks the shell for it. A Preexec and the next Precmd end the reader; after the next

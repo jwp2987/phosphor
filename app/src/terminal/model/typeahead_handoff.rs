@@ -67,7 +67,7 @@
 use std::collections::VecDeque;
 use std::mem;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use warpui_core::sync_shim::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -886,6 +886,10 @@ pub struct TypeaheadHandoff {
     /// shell's line or as an Enter a prompt must answer. Ended by events only: the line editor's
     /// signal, a Preexec, the next Precmd, a new session ([`Self::end_prompt_reader`]).
     prompt_reader_asks: bool,
+    /// #2040: [`Self::prompt_reader_asks`] for a reader without this hand-off's lock (the log's
+    /// secret guard, asked on any thread while a line is formatted). Written only by
+    /// [`Self::set_prompt_reader_asks`].
+    prompt_reader_noted: Arc<AtomicBool>,
     /// #2052: the reader of this prompt was announced by the shell itself (the `TtyReaderAsks`
     /// marker a precmd function's `read` sends, [`Self::on_tty_reader_asks`]). Such a reader has
     /// the pane's keys whatever view has focus, also where the tty is not sampled
@@ -1862,7 +1866,7 @@ impl TypeaheadHandoff {
         if !self.prompt_reader_may_ask() {
             return false;
         }
-        self.prompt_reader_asks = true;
+        self.set_prompt_reader_asks(true);
         self.prompt_reader_line_dirty = false;
         warpui::input_order::log_hop("prompt_reader_asks", || {
             format!("hold_queued={}", self.prompt_hold_queued)
@@ -1873,6 +1877,19 @@ impl TypeaheadHandoff {
     /// Whether a reader ahead of the line editor is noted for this prompt (#2038).
     pub fn prompt_reader_asks(&self) -> bool {
         self.prompt_reader_asks
+    }
+
+    /// The one place [`Self::prompt_reader_asks`] changes, so its lock-free copy never differs.
+    fn set_prompt_reader_asks(&mut self, asks: bool) {
+        self.prompt_reader_asks = asks;
+        self.prompt_reader_noted.store(asks, Ordering::Relaxed);
+    }
+
+    /// #2040: whether a reader ahead of the line editor is noted, readable without this
+    /// hand-off's lock. While it is, the keys typed are that reader's (a PIN, a passphrase, an
+    /// answer) and the input-order log shows no text (`input_order::register_secret_input_probe`).
+    pub fn prompt_reader_noted_flag(&self) -> Arc<AtomicBool> {
+        self.prompt_reader_noted.clone()
     }
 
     /// #2050: whether the tty should be asked now if something reads a secret ahead of the
@@ -1950,7 +1967,7 @@ impl TypeaheadHandoff {
         // Text the editor holds stays there; the keys do not follow it into the editor (#1658)
         // while something else reads the tty.
         self.end_keys_follow_editor("secret_reader");
-        self.prompt_reader_asks = true;
+        self.set_prompt_reader_asks(true);
         self.prompt_reader_line_dirty = false;
         warpui::input_order::log_hop("prompt_reader_asks", || {
             format!("by={by} took_from_editor={took_from_editor}")
@@ -2081,7 +2098,7 @@ impl TypeaheadHandoff {
         // unnoticed prompt (`finish_young_hold_handed_back`).
         self.young_line = false;
         self.end_keys_follow_editor("young_hold_reader");
-        self.prompt_reader_asks = true;
+        self.set_prompt_reader_asks(true);
         self.prompt_reader_line_dirty = false;
         self.young_hold_for_reader = Some(self.young_hold_id);
         warpui::input_order::log_hop("prompt_reader_asks", || {
@@ -2097,9 +2114,10 @@ impl TypeaheadHandoff {
     fn end_prompt_reader(&mut self, why: &'static str) {
         self.prompt_reader_by_marker = false;
         self.marker_reader_news = None;
-        if !mem::take(&mut self.prompt_reader_asks) {
+        if !self.prompt_reader_asks {
             return;
         }
+        self.set_prompt_reader_asks(false);
         let dirty = mem::take(&mut self.prompt_reader_line_dirty);
         if dirty
             && let HandoffState::PtyOwned {
@@ -2435,7 +2453,7 @@ impl TypeaheadHandoff {
         self.enter_prompt_seq = None;
         self.tty_read_marker = None;
         // #2038: the reader, and the keys written to it, were the old session's.
-        self.prompt_reader_asks = false;
+        self.set_prompt_reader_asks(false);
         self.prompt_reader_by_marker = false;
         self.marker_reader_news = None;
         self.prompt_reader_line_dirty = false;
@@ -3917,7 +3935,8 @@ impl TypeaheadHandoff {
 
     /// Logs why a user write was held or let through (#1490): the reason, the hand-off state and
     /// whether the shell's line-editor signal is still awaited for the current prompt. The bytes
-    /// are shown only for synthetic test text (`WARP_INPUT_ORDER_LOG_TEXT=1`).
+    /// are shown only for synthetic test text (`WARP_INPUT_ORDER_LOG_TEXT=1` together with
+    /// `WARP_INPUT_ORDER_LOG_KEY_BYTES_MAY_INCLUDE_PASSWORDS=1`, #2040), else their length.
     ///
     /// #1958: `prompt_fact=` is the fact the decision itself sampled for this write
     /// (`sampled_fact`), or `unsampled` when it decided without one (a plain key into a running
@@ -3958,7 +3977,9 @@ impl TypeaheadHandoff {
                 self.prompt_seq_mode(),
                 describe_sampled_fact(sampled_fact),
                 self.young_hold_id,
-                warpui::input_order::describe_bytes_escaped(bytes)
+                // #2040: a user key's bytes: their length unless the tester took the extra
+                // opt-in, and never while a secret is read.
+                warpui::input_order::describe_user_key_bytes_escaped(bytes)
             )
         });
     }
@@ -4864,6 +4885,11 @@ impl TypeaheadHandoff {
             pty_writes: self.pty_writes.clone(),
             // #2052: the kill switch is the pane's, not the session's.
             reader_marker_off: self.reader_marker_off,
+            // #2040: the pane's log guard reads this same cell; the reader ended with the session.
+            prompt_reader_noted: {
+                self.prompt_reader_noted.store(false, Ordering::Relaxed);
+                self.prompt_reader_noted.clone()
+            },
             ..Self::default()
         };
     }
