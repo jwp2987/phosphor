@@ -2964,6 +2964,7 @@ one row per lab family, for every arm of it; the lab harness's own two settings 
 | `ssh_gitbash_typeahead_managed` | fix | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - |  |
 | `ssh_gitbash_kill_switch` | fix | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - |  |
 | `ssh_gitbash_bootstrap_in_command` | fix | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - |  |
+| `ssh_gitbash_failing_not_local_managed` | fix | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, legacy_ssh_wrapper = true, ssh_extension_install = never_install, ssh_warpification = true | - | - | an ssh that fails or hangs while connecting: the typed line runs locally once (plain-terminal pass-through of the managed ssh path) |
 | `gitbash_long_osc_reaches_app` | fix | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
 | `ps_read_host_secure` | fix | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
 | `gitbash_precmd_secret` | fix | autosuggestions = true, completions_while_typing = true, honor_ps1 = false | - | - |  |
@@ -7198,3 +7199,51 @@ re-read after the run and the run repeated if a login rewrote it meanwhile). `te
 test pane (`sh$ `) and the test asserts that it does; no assertion changed. Not covered in a view test: a prompt that soft-wraps staying `written`
 (the pure rule's `continues` cases cover it).
 What the next run should show: both PASS in test-linux.
+
+## Round 19: the Windows Git Bash managed-ssh group of round 14 (design `docs/design/r10-r19-winssh.md`; #2051, #1393; harness only; nothing run on Windows when written)
+
+Round 14 (build/r14a `42ef67839`, job app-test-windows) failed every Git Bash case that goes through the managed one-connection ssh, in terminal
+and agent mode, as rounds 12 and 13 had. Verdict: the TEST HOST, not the app. The app log slices of that job were not uploaded (its
+`after_script` hit the time limit before `run_slim` was made), so the verdicts rest on `results.json`, on the sshd.log lines quoted in it and on
+round 13's logs.
+
+- **What was wrong.** An exec with a pty (a managed session) is served by the `app` arm: a pseudo console of the app's own `conpty.dll`. That
+  console host talks to its terminal before any program runs: `ESC [ 1 t`, a DA1 request, focus-event mode and win32-input-mode
+  (`ESC [ ? 9001 h`). The test sshd sent all of it to the client. The client's terminal is the console host around msys `ssh.exe` in the app's
+  pane; it obeyed and from then on gave ssh every control key as win32-input key records, which ssh sent on as bytes. `sshd.log`, round 14:
+  `89 bytes in 84 chunks (... ESC 5, CR 0, LF 0; starts b'M\x1b[?62cecho T408_m8bgnr\x1b[17;29;0;1;8;1_\x1b[13;28;1`; the remote shell's
+  line: `62cssh fake29;0;1;8;1_;28;10;1;8;1_;28;10;0;8;1_29;0;0;0;1_echo T178_mohi6h >> ~/rn.txt`. No Enter reached the remote bash, so no
+  probe and no typed line ran ("probe ran in: none"). Round 13's typed bootstrap shows the same: 62007 bytes written by the app, 75934
+  received, `ESC 3000, CR 0, LF 0`. The plain-ssh cases of the same pane pass because a shell request is served by Windows' own pseudo
+  console, which asks for none of this. A POSIX sshd's pty says nothing to its client.
+- **`ptyhost.ConsoleHostFilter`** (used by `fakesshd_win.py` for the `app` arm only): removes the DA1 request (answered by the test sshd, as
+  #2051's `strip_startup_da1` meant to, which only looked at the head of the first read and so never matched: the first read is `ESC [ 1 t`),
+  `ESC [ ? 9001 h/l` and `ESC [ ? 1004 h/l` anywhere, `ESC [ 1 t` before the first other byte; a sequence cut by a read is held for the next
+  one. `sshd.log` says once per kind `console host start-up request <hex> answered|dropped by the test sshd, not sent to the client` and at
+  the end `console host said to its terminal (not sent to the client): <hex xN, ...>`.
+- **`client input ended`** now counts win32-input key records in what the client sent (`ESC 5, of which 4 in win32-input key records (the
+  client's console was switched to win32-input-mode)`). After this change the count must be absent on every managed session; if it is still
+  there, the mode comes from somewhere else than the test host and the verdict above is wrong.
+- **One where-probe per verdict.** Seven rows printed `probe ran in: <a second probe's answer>`; in agent mode two rows said `probe ran in:
+  remote` on a pane judged not remote. The text now names the probe that was judged (`cases_caseremote.py`, `cases_win_input.py`).
+- **The managed switch is restored and proven.** `cases_caseremote.msys_managed_ssh_restore`: after `unset PHOSPHOR_MSYS_MANAGED_SSH` a
+  line appends `<token>:<value or off>` to `~/.appci_where`; proven = the local shell answered `off`. Not proven: the pane is brought back to
+  the local shell and both lines are typed once more; still not proven: the runner emits `pane_switch_left_on_after_<case>` (FAIL) and
+  relaunches the app. Round 14, agent@gitbash: `ssh_failing_not_local` ran with the switch left on by `ssh_nested_typeahead_wrapper` (its
+  `unset` went to the remote shell) and failed; the three rows of that case without the leak pass.
+- **`ssh_failing_not_local`: "ssh failed" is the last close.** `cases.wait_ssh_gave_up`: no connection to the hanging listener open for 3 s in
+  a row. With the managed path on, the wrapper's banner check (`ssh-keyscan -T 5`) is a first connection that closes before ssh itself
+  connects; the case used to read the effect file 6 s after that first close. The oracle is unchanged (the line runs locally exactly once,
+  after the failure).
+- **New case, `cases.PROVING`: `ssh_gitbash_failing_not_local_managed`** (Git Bash pane only): the same oracle with the managed path switched
+  on on purpose. A FAIL there is an app finding in the managed path (off by default): file it then.
+- **`gitbash_typeahead_reps` (#1393)** failed in agent@gitbash only (tr13 6/10 lines, tr14 two lines merged; all keys reached the app; `AI=7`
+  on the row). APP, the open issue #1393; not worked here, the app log of the job is gone. Each rep now notes its Enters that were not routed
+  to the shell with the text they carried (`hop=enter_begin ... buffer= input_type=`), and whether the precmd set-up line itself was routed
+  elsewhere. Evidence only: no check was added or removed.
+- Selftests: `console_host_filter_r19`, `managed_switch_restore_is_proven_r19`, `typeahead_reps_names_non_shell_enters_r19`;
+  `fakesshd_app_arm_da1_and_input_stats_2051` reads the new wiring.
+- **What the next Windows run must show**: on every managed session `sshd.log` has the `console host ...` lines and no `win32-input key
+  records`; `ssh_gitbash_managed`, `ssh_gitbash_bootstrap_in_command`, `ssh_gitbash_typeahead_managed`, `ssh_connect_typing_wrapper`,
+  `ssh_nested_typeahead_wrapper`, `remote_tab_no_helper`, `remote_tab_enter_no_helper` are judged past their precondition (PASS, or a FAIL that
+  names an app hop), with no `pane_not_local_after_*` row behind them.

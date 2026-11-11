@@ -474,6 +474,7 @@ def main():
                 t0 = time.time()
                 ctx.t_case0 = t0
                 ctx.extra_logs = []
+                ctx.relaunch_wanted = None      # a case's own clean-up could not be proven (cases_caseremote.msys_managed_ssh_restore): the reason
                 k_start = len(be.calls) if getattr(be, "calls", None) is not None else None     # injector accounting (#1509)
                 if win and not os.environ.get("APPCI_APP_LOG"):
                     # r18e9: ctx.log_path was resolved ONCE, at the first launch. After a relaunch (the death / pane_not_local / left-agent-mode branches) the new instance
@@ -616,6 +617,14 @@ def main():
                                   detail=["after %s the pane could not be proven back in the local shell (%s); the app is relaunched so later cases start clean" % (c["name"], where)]))
                         instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "pane_not_local_after_" + c["name"])
                         continue
+                if getattr(ctx, "relaunch_wanted", None):        # set only by a case that ran (reset before every case): no probe is typed here
+                    # round 14: a switch a case typed into the pane's shell (PHOSPHOR_MSYS_MANAGED_SSH=1) was still on for the NEXT case, because the
+                    # `unset` went to a remote shell and the pane came back to the local one afterwards. Not provably off = a fresh pane.
+                    emit(dict(name="pane_switch_left_on_after_" + c["name"], mode=label, status="fail", seconds=0, shots=[],
+                              detail=["after %s: %s; the app is relaunched so later cases start with the default" % (c["name"], ctx.relaunch_wanted)]))
+                    ctx.relaunch_wanted = None
+                    instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "pane_switch_left_on_after_" + c["name"])
+                    continue
                 if depth_check and ctx.root_pid is not None:
                     try:
                         if pid_start and app.pid() != pid_start:       # the case relaunched the app itself: a fresh pane, its root is recorded at the next case

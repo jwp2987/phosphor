@@ -7149,7 +7149,8 @@ def fakesshd_app_arm_da1_and_input_stats_2051():
     assert "bytes/s" not in quick.text() and quick.text().startswith("0.0 s first to last byte, ESC 0"), quick.text()
     fs = open(os.path.join(HERE, "fakesshd_win.py")).read()
     compile(fs, "fakesshd_win.py", "exec")
-    for needle in ('if arm == "app":', "d, asked = ptyhost.strip_startup_da1(d)", "cp.write(ptyhost.DA1_REPLY)", "stats = ptyhost.InputStats()",
+    # round 14: the request is taken out wherever it stands (ConsoleHostFilter, console_host_filter_r19 below), not only at the head of the first read
+    for needle in ('host = ptyhost.ConsoleHostFilter() if arm == "app" else None', "d, answer = host.feed(d)", "cp.write(answer)", "stats = ptyhost.InputStats()",
                    "stats.add(d)", "written to the pseudo console (%s)\" % (got, chunks, wrote, stats.text())", "(starts %s)"):
         assert needle in fs, needle
     assert fs.index('arm = "inbox"') < fs.index("if kind == \"shell\":")        # a shell request keeps kernel32's console and is never answered for
@@ -7173,6 +7174,142 @@ def fakesshd_app_arm_da1_and_input_stats_2051():
     assert src.count('r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)" % dt)') == 2     # the budget is not touched
     doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
     assert "fakesshd_app_arm_da1_and_input_stats_2051" in doc and "#2051" in doc
+
+
+@check
+def typeahead_reps_names_non_shell_enters_r19():
+    """round 14, agent@gitbash gitbash_typeahead_reps (#1393): the row said `AI=7` and two bad reps, not which text those Enters carried or
+    in which rep; each rep now notes its Enters that were not routed to the shell (evidence only, the file and rec.log checks are untouched)"""
+    import inspect
+    import cases_win_handover as wh
+    log = "\n".join([
+        "03:17:21.1 [DEBUG] input_order hop=enter_begin deferred=false buffer=len=34 'echo t640_a >> r_tr13.txt' input_type=Shell t=1",
+        "03:17:22.4 [DEBUG] input_order hop=enter_begin deferred=false buffer=len=20 't641_plg3poawbx >> r' input_type=AI t=2",
+        "03:17:22.9 [DEBUG] input_order hop=enter_begin deferred=true buffer=len=0 '' input_type=AI { locked: true } t=3",
+        "03:17:23.0 [DEBUG] input_order hop=kh_hold_entry seq=1 input_type=AI t=4",
+        "03:17:23.1 [DEBUG] input_order hop=enter_begin deferred=false buffer=len=3 'x input_type=AI y' input_type=Shell t=5"])
+    got = wh.non_shell_enters(log)
+    assert got == ["deferred=false buffer=len=20 't641_plg3poawbx >> r' input_type=AI t=2", "deferred=true buffer=len=0 '' input_type=AI { locked: true } t=3"], got
+    assert wh.non_shell_enters("") == [] and wh.non_shell_enters("hop=enter_begin deferred=false") == []
+    src = inspect.getsource(wh.c_gitbash_typeahead_reps)
+    assert src.count("non_shell_enters(ctx.log_since(off))") == 2 and "cases.effect_run(ctx, r, tag, TYPEAHEAD_LINES, 0.0)" in src
+    assert "r.check(" not in src and wh.TYPEAHEAD_REPS == 24 and wh.TYPEAHEAD_LINES == 10       # no verdict added or removed here, the count is the issue's
+    rs = open(os.path.join(HERE, "..", "..", "..", "app", "src", "terminal", "input.rs"), encoding="utf-8").read()
+    assert '"deferred={} buffer={} input_type={:?}"' in rs and 'log_hop("enter_begin"' in rs       # the line this reads
+
+
+@check
+def managed_switch_restore_is_proven_r19():
+    """round 14, agent@gitbash: a failing wrapper case left PHOSPHOR_MSYS_MANAGED_SSH=1 in the pane's local shell (its `unset` was typed into the
+    remote shell) and the next case ran managed. The restore is proven by a line the local shell answers; unproven twice = the runner relaunches.
+    Also: one where-probe per verdict (a second probe typed for the message said `remote` on a row judged not remote), the failing-ssh wait
+    covers the wrapper's banner check, and the managed failing-ssh case is registered"""
+    import inspect
+    import cases_caseremote as rm
+    import cases_win_input as wi
+    real_sleep, rm.time.sleep = rm.time.sleep, lambda s: None
+    try:
+        def ctx_with(answers):
+            typed, returns = [], []
+            c = types.SimpleNamespace(be=types.SimpleNamespace(type=lambda text, delay, enter=False: typed.append(text)), n=0, relaunch_wanted=None)
+            c.ptok = lambda k: "tok%d" % len(typed)
+
+            def probe(cmd, token, name, remote=False):
+                typed.append(cmd)
+                where, val = answers.pop(0)
+                return where, ([] if val is None else [token + ":" + val])
+            c.probe = probe
+            c.return_to_local = lambda: returns.append(1) or "local"
+            return c, typed, returns
+        c, typed, returns = ctx_with([("local", "off")])
+        assert rm.msys_managed_ssh_restore(c) is None and c.relaunch_wanted is None and returns == []
+        assert typed == ["unset PHOSPHOR_MSYS_MANAGED_SSH", "echo mtok1:${PHOSPHOR_MSYS_MANAGED_SSH:-off} >> ~/.appci_where"], typed
+        # round 14: the first `unset` ran in the remote shell; back in the local shell the second one is proven, no relaunch
+        c, typed, returns = ctx_with([("remote", "off"), ("local", "off")])
+        assert rm.msys_managed_ssh_restore(c) is None and c.relaunch_wanted is None and returns == [1] and typed.count("unset PHOSPHOR_MSYS_MANAGED_SSH") == 2
+        # the local shell still has the value, or nothing answers: the reason is handed to the runner
+        for answers, needle in (([("local", "1"), ("local", "1")], "ran in the local shell and answered ['1']"), ([("none", None), ("none", None)], "ran in no shell"),
+                                ([("remote", "off"), ("remote", "off")], "ran in the REMOTE shell")):
+            c, typed, returns = ctx_with(list(answers))
+            why = rm.msys_managed_ssh_restore(c)
+            assert why and needle in why and c.relaunch_wanted == why and returns == [1], (why, returns)
+    finally:
+        rm.time.sleep = real_sleep
+    assert "msys_managed_ssh_restore(ctx)" in inspect.getsource(rm.in_msys_managed_ssh) and "R.msys_managed_ssh_restore(ctx)" in inspect.getsource(wi.c_ssh_gitbash_kill_switch)
+    run_src = open(os.path.join(HERE, "run.py")).read()
+    assert "ctx.relaunch_wanted = None      # a case's own clean-up could not be proven" in run_src        # reset before every case
+    assert '"pane_switch_left_on_after_" + c["name"]' in run_src
+    assert run_src.index('"pane_not_local_after_" + c["name"])') < run_src.index('if getattr(ctx, "relaunch_wanted", None):')
+    # one probe per verdict: no message types a second probe
+    for mod in (rm, wi):
+        for ln in inspect.getsource(mod).splitlines():
+            assert not ("probe ran in: %s" in ln and "ctx.where_now()" in ln), ln.strip()[:160]
+    # "ssh failed" = no connection open for `quiet` seconds in a row; a second connection (the wrapper's ssh after its banner check) restarts the wait
+    clock = [0.0]
+    polls = iter([(1, 1)] * 50 + [(1, 0)] * 10 + [(2, 1)] * 60 + [(2, 0)] * 1000)
+    srv = types.SimpleNamespace(poll=lambda: next(polls))
+    t_failed, n = cases.wait_ssh_gave_up(srv, 6, now=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, round(clock[0] + s, 3)))
+    assert n == 2 and abs(t_failed - 12.0) < 0.01 and abs(clock[0] - 15.0) < 0.2, (t_failed, n, clock)
+    clock[0] = 0.0
+    srv = types.SimpleNamespace(poll=lambda: (1, 1))                     # never closes: bounded, and the time is "now"
+    t_failed, n = cases.wait_ssh_gave_up(srv, 6, now=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, round(clock[0] + s, 3)))
+    assert n == 1 and 27.9 < t_failed <= 28.2, t_failed
+    body = inspect.getsource(cases.ssh_fail_body)
+    assert 'r.check(got == ["MUSTNOT"]' in body and "ran_at >= t_failed - 1.0" in body and "wait_ssh_gave_up(srv, ct)" in body       # the oracle is the old one
+    assert "ssh_fail_body(ctx, r)" in inspect.getsource(cases.c_ssh_fail)
+    mc = inspect.getsource(wi.c_ssh_gitbash_failing_not_local_managed)
+    assert "R.in_msys_managed_ssh(ctx, lambda: cases.ssh_fail_body(ctx, r))" in mc and '_need_windows_pane(ctx, r, "gitbash")' in mc
+    n = "ssh_gitbash_failing_not_local_managed"
+    assert n in {c["name"] for c in cases.CASES} and n in cases.PROVING and n not in cases.SMOKE and n in winmap.GITBASH_ONLY
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md"), encoding="utf-8").read()
+    assert "managed_switch_restore_is_proven_r19" in doc and "typeahead_reps_names_non_shell_enters_r19" in doc and n in doc
+
+
+@check
+def console_host_filter_r19():
+    """round 14, Windows Git Bash managed ssh (docs/design/r10-r19-winssh.md): the `app` arm's console host talks to its terminal (window shown,
+    DA1 request, win32-input-mode, focus events) and that reached the ssh client's console, which then sent Enter as win32-input key records.
+    The test sshd takes those requests out of the arm's output wherever a read cuts them, answers DA1 itself, leaves program output alone,
+    and counts key records in what the client sends"""
+    import ptyhost as PH
+    f = PH.ConsoleHostFilter()
+    # rounds 13 and 14: the first read was the 4 bytes `ESC [ 1 t`, the requests came in later reads
+    assert f.feed(b"\x1b[1t") == (b"", b"")
+    assert f.feed(b"\x1b[c\x1b[?1004h\x1b[?90") == (b"", PH.DA1_REPLY)
+    assert f.feed(b"01h\x1b[?25l\x1b[2J\x1b[m\x1b[Hhi") == (b"\x1b[?25l\x1b[2J\x1b[m\x1b[Hhi", b"")
+    # after program output: `ESC [ 1 t` is the program's own and stays; the mode requests and a DA1 request never pass, even cut in two
+    assert f.feed(b"\x1b[1t\x1b") == (b"\x1b[1t", b"")
+    assert f.feed(b"[0cX\x1b[?9001l\x1b[?1004l\x1b") == (b"X", PH.DA1_REPLY)
+    assert f.flush() == b"\x1b" and f.flush() == b""
+    assert f.seen == {b"\x1b[1t": 1, b"\x1b[c": 1, b"\x1b[0c": 1, b"\x1b[?1004h": 1, b"\x1b[?9001h": 1, b"\x1b[?9001l": 1, b"\x1b[?1004l": 1}, f.seen
+    assert f.text().startswith("1b5b3063 x1, 1b5b3174 x1, ")
+    # nothing else is touched: the hooks, a DA1 ANSWER, other private modes, a cursor report request, every byte value, one byte per read
+    plain = b"\x1b]9278;d;00\x07PRB1\x1b[?62c\x1b[?2004h\x1b[6n\x1b[?9001\x1b[?1049h" + bytes(range(256)).replace(b"\x1b", b"")
+    g = PH.ConsoleHostFilter()
+    out = b"".join(g.feed(bytes([b]))[0] for b in plain) + g.flush()
+    assert out == plain and g.seen == {} and g.text() == "none", (out, g.seen)
+    whole = b"\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h" + plain + b"\x1b[?9001l"
+    h = PH.ConsoleHostFilter()
+    parts = [h.feed(bytes([b])) for b in whole]
+    assert b"".join(p[0] for p in parts) + h.flush() == plain and b"".join(p[1] for p in parts) == PH.DA1_REPLY
+    # the input side: round 14's own bytes (sshd.log of ssh_gitbash_typeahead_managed): one typed line, its Enter as four key records
+    st = PH.InputStats(now=lambda: 1.0)
+    st.add(b"M\x1b[?62cecho T408_m8bgnr\x1b[17;29;0;1;8;1_\x1b[13;28;1")
+    st.add(b"0;1;8;1_\x1b[13;28;10;0;8;1_\x1b[17;29;0;0;0;1_")
+    assert (st.esc, st.win32, st.cr, st.lf) == (5, 4, 0, 0), vars(st)
+    assert "ESC 5, of which 4 in win32-input key records (the client's console was switched to win32-input-mode), CR 0, LF 0" in st.text(), st.text()
+    ok = PH.InputStats(now=lambda: 1.0)
+    ok.add(b"M\x1b[?62c\x1b[A\x1b[1;5C\x1b_echo x_y\r\x1b[13;28")      # an answer, arrow keys, a lone ESC _, an unfinished record: none is a key record
+    assert ok.win32 == 0 and "win32-input" not in ok.text() and ", ESC 5, CR 1," in ", " + ok.text().split(", ", 1)[1], ok.text()
+    import cases_caseremote as rm
+    assert rm.sshd_input_bytes(["client input ended: 89 bytes in 84 chunks, 89 written to the pseudo console (%s)" % st.text()]) == 89
+    fs = open(os.path.join(HERE, "fakesshd_win.py")).read()
+    for needle in ("rest = host.flush()", 'log("console host said to its terminal (not sent to the client): %s" % host.text())',
+                   '"answered by the test sshd" if q in ptyhost.DA1_QUERIES else "dropped by the test sshd"'):
+        assert needle in fs, needle
+    assert fs.index("host = ptyhost.ConsoleHostFilter()") < fs.index("d, answer = host.feed(d)") < fs.index('hooks += d.count(b"\\x1b]9278;")')
+    doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md"), encoding="utf-8").read()
+    assert "console_host_filter_r19" in doc and "r10-r19-winssh.md" in doc
 
 
 @check

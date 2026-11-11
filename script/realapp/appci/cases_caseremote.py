@@ -39,8 +39,34 @@ def in_msys_managed_ssh(ctx, body):
     try:
         return body()
     finally:
+        msys_managed_ssh_restore(ctx)
+
+
+def msys_managed_ssh_restore(ctx):
+    """types the `unset` and PROVES it. Round 14, agent@gitbash: ssh_nested_typeahead_wrapper failed with the pane still in the remote shell, so the
+    `unset` typed here ran there (or nowhere); the runner then got the pane back to the local shell without a relaunch, and the next case,
+    ssh_failing_not_local, ran with the managed path still switched on (its keys were held, `kh_hold_exit branch=held`, where the three passing
+    rows of the same run show `branch=gate_open_live`) and failed. The proof is a line the shell in front runs: it appends `<token>:<the
+    variable's value, or off>` to ~/.appci_where. Proven = the LOCAL shell answered `off`. Not proven at first: the pane is brought back to
+    the local shell (return_to_local types `exit` only at a proven remote shell) and the two lines are typed once more. Still not proven:
+    ctx.relaunch_wanted says why and the runner relaunches the app after the case (a fresh pane has a fresh shell). -> None when proven,
+    else the reason. A ctx without the probe (the selftest's stand-in) only gets the `unset` typed."""
+    why = None
+    for attempt in range(2):
         ctx.be.type(msys_managed_ssh_lines(False), 12, enter=True)
         time.sleep(0.5)
+        if not hasattr(ctx, "probe"):
+            return None
+        tok = "m" + ctx.ptok(8)
+        where, toks = ctx.probe("echo %s:${%s:-off} >> ~/.appci_where" % (tok, MSYS_MANAGED_SSH), tok, ".appci_where", remote=True)
+        if where == "local" and toks == [tok + ":off"]:
+            return None
+        why = "the `unset %s` after the case is not proven in the pane's local shell: the proof line ran in %s and answered %r" % (
+            MSYS_MANAGED_SSH, {"remote": "the REMOTE shell", "local": "the local shell", "none": "no shell"}[where], [t.split(":", 1)[-1] for t in toks])
+        if attempt == 0:
+            ctx.return_to_local()
+    ctx.relaunch_wanted = why
+    return why
 
 
 def rm_remote(ctx, *names):
@@ -1007,8 +1033,9 @@ def _remote_tab_no_helper(ctx, r):
         ctx.reset()
         return
     time.sleep(1.0)
-    if ctx.where_now() != "remote":      # precondition: never judge Tab against a local shell
-        r.check(False, "precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s); Tab not judged" % ctx.where_now())
+    where = ctx.where_now()              # ONE probe: the row names the answer that was judged (round 14: a second probe was typed for the text and said "remote")
+    if where != "remote":                # precondition: never judge Tab against a local shell
+        r.check(False, "precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s); Tab not judged" % where)
         ctx.reset()
         return
     rmark, lmark = len(ctx.prof.commands(remote=True)), ctx.cmd_mark()
@@ -1066,8 +1093,9 @@ def _remote_tab_enter_no_helper(ctx, r):
         ctx.reset()
         return
     time.sleep(1.0)
-    if ctx.where_now() != "remote":      # precondition: never judge Tab+Enter against a local shell
-        r.check(False, "precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s); Tab+Enter not judged" % ctx.where_now())
+    where = ctx.where_now()
+    if where != "remote":                # precondition: never judge Tab+Enter against a local shell
+        r.check(False, "precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s); Tab+Enter not judged" % where)
         ctx.reset()
         return
     lmark = ctx.cmd_mark()

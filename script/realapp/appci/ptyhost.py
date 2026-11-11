@@ -51,6 +51,65 @@ def strip_startup_da1(first):
     return first, b""
 
 
+# Round 14 (docs/design/r10-r19-winssh.md): the DA1 request is not the only thing the `app` arm's console host says to ITS terminal, and it
+# is not the first: every exec opened with `ESC [ 1 t` (4 bytes, `starts 1b5b3174` in rounds 13 and 14), so strip_startup_da1 never matched
+# and the app's answer arrived at the remote prompt as typed text (`62c` in front of the first line). The console host also switches its
+# terminal to win32-input-mode (`ESC [ ? 9001 h`). The terminal here is the ssh client's console: the app's own console host around msys
+# ssh.exe. It obeys, and from then on hands ssh every control key as a key record (`ESC [ 13;28;13;1;0;1 _` for Enter, four records for a
+# line feed), which ssh sends to the server as bytes: sshd.log `ESC 5, CR 0, LF 0` on a session that typed one line and its Enter, and
+# `ESC 3000, CR 0, LF 0` on round 13's typed bootstrap (75934 bytes received of 62007 written). The remote bash got the records as text and
+# no Enter, so no line ran: every managed Git Bash case, rounds 12 to 14. A POSIX sshd's pty says none of this to its client. The filter
+# below takes these requests out of the output of the `app` arm, wherever a read boundary falls, and answers the DA1 request itself.
+CONSOLE_HOST_ANYWHERE = DA1_QUERIES + (b"\x1b[?9001h", b"\x1b[?9001l", b"\x1b[?1004h", b"\x1b[?1004l")
+CONSOLE_HOST_LEADING = (b"\x1b[1t",)   # "the window is shown": only before the first other byte, a program may send it later for itself
+
+
+class ConsoleHostFilter:
+    """feed(chunk) -> (bytes for the client, bytes to write back to the pseudo console). Removes the console host's own requests to its
+    terminal from the `app` arm's output: the DA1 request (answered with DA1_REPLY, once per request), win32-input-mode and focus-event
+    mode on and off anywhere, `ESC [ 1 t` only in the leading run. A sequence cut by a read boundary is held until the next chunk
+    (flush() gives back what is still held at the end). `seen` counts what was removed, by sequence, for the log."""
+
+    def __init__(self):
+        self.held = b""
+        self.leading = True
+        self.seen = {}
+
+    def feed(self, d):
+        buf, self.held = self.held + d, b""
+        out, reply, i = bytearray(), b"", 0
+        while i < len(buf):
+            if buf[i] != 0x1b:
+                out.append(buf[i])
+                self.leading = False
+                i += 1
+                continue
+            rest = buf[i:i + 16]
+            cands = CONSOLE_HOST_ANYWHERE + (CONSOLE_HOST_LEADING if self.leading else ())
+            hit = next((q for q in cands if rest.startswith(q)), None)
+            if hit:
+                self.seen[hit] = self.seen.get(hit, 0) + 1
+                if hit in DA1_QUERIES:
+                    reply += DA1_REPLY
+                i += len(hit)
+                continue
+            tail = buf[i:]
+            if len(tail) < 16 and any(q.startswith(tail) for q in cands):
+                self.held = tail            # the start of one of them, cut by the read: decided with the next chunk
+                break
+            out.append(0x1b)
+            self.leading = False
+            i += 1
+        return bytes(out), reply
+
+    def flush(self):
+        d, self.held = self.held, b""
+        return d
+
+    def text(self):
+        return ", ".join("%s x%d" % (q.hex(), n) for q, n in sorted(self.seen.items())) or "none"
+
+
 class InputStats:
     """what the client sent on one session, for the `client input ended` line (#2051: round 12's managed sessions received MORE bytes than the
     app wrote, about one byte per packet at 1.3 KB/s, and the log could not say what the bytes were)"""
@@ -58,6 +117,8 @@ class InputStats:
     def __init__(self, now=None):
         self.t0 = self.t1 = None
         self.n = self.esc = self.cr = self.lf = self.ctl = self.high = 0
+        self.win32 = 0                  # win32-input-mode key records (ESC [ <numbers and ;> _): a POSIX terminal never sends one
+        self._csi = None                # the CSI being read, across chunks: None = not in one, b"" = after ESC, else b"[" + parameters
         self.head = b""
         self.now = now or time.time
 
@@ -70,6 +131,17 @@ class InputStats:
         if len(self.head) < 48:
             self.head += d[:48 - len(self.head)]
         for b in d:
+            if b == 0x1b:
+                self._csi = b""
+            elif self._csi is not None:
+                if self._csi == b"" and b == 0x5b:
+                    self._csi = b"["
+                elif self._csi and (0x30 <= b <= 0x39 or b == 0x3b) and len(self._csi) < 40:
+                    self._csi += bytes([b])
+                else:
+                    if len(self._csi) > 1 and b == 0x5f:
+                        self.win32 += 1
+                    self._csi = None
             if b == 0x1b:
                 self.esc += 1
             elif b == 0x0d:
@@ -86,8 +158,9 @@ class InputStats:
             return "nothing received"
         dur = self.t1 - self.t0
         rate = (" %.0f bytes/s," % (self.n / dur)) if dur >= 0.5 else ""
-        return "%.1f s first to last byte,%s ESC %d, CR %d, LF %d, other control %d, non-ASCII %d; starts %r" % (
-            dur, rate, self.esc, self.cr, self.lf, self.ctl, self.high, self.head)
+        w32 = "" if not self.win32 else " of which %d in win32-input key records (the client's console was switched to win32-input-mode)," % self.win32
+        return "%.1f s first to last byte,%s ESC %d,%s CR %d, LF %d, other control %d, non-ASCII %d; starts %r" % (
+            dur, rate, self.esc, w32, self.cr, self.lf, self.ctl, self.high, self.head)
 
 
 def msys_path(p):

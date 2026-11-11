@@ -128,6 +128,17 @@ def typeahead_rep_plan(reps):
     return [("tr%02d" % i, i >= half) for i in range(reps)]
 
 
+def non_shell_enters(log):
+    """pure: what every Enter of `log` (app log text) that was NOT routed to the shell was about to submit: the `deferred= buffer= input_type=` tail of
+    its hop=enter_begin line. Round 14, agent@gitbash: two reps lost or merged lines while the row's enter_route said `AI=7`, and nothing said which
+    text those seven Enters carried (a line of the rep, half a line, the precmd set-up line) or in which rep they fell."""
+    out = []
+    for l in log.splitlines():
+        if "hop=enter_begin" in l and " input_type=" in l and not l.rsplit(" input_type=", 1)[1].startswith("Shell"):
+            out.append(l.split("hop=enter_begin", 1)[1].strip()[:200])
+    return out
+
+
 @case("gitbash_typeahead_reps", order=76, gui=True)
 def c_gitbash_typeahead_reps(ctx, r):
     """#1393 ("Git Bash 25 ms/key typeahead still loses lines"; 6 of 84 reps lost a line on build/r18bj, every loss permanent): the issue's protocol in the
@@ -143,14 +154,22 @@ def c_gitbash_typeahead_reps(ctx, r):
     bad, slow_on = [], False
     try:
         for tag, slow in plan:
+            off = ctx.log_size()
             if slow and not slow_on:
                 ctx.be.type("__tr_slow() { sleep %s; }; precmd_functions+=(__tr_slow)" % SLOW_PRECMD_S, 12, enter=True)
                 time.sleep(2.0)
                 slow_on = True
+                stray = non_shell_enters(ctx.log_since(off))
+                if stray:           # the set-up line itself did not go to the shell: the "slow" reps are then not slow, and an agent turn may be running
+                    r.note("the precmd set-up line typed before %s was not routed to the shell: %s" % (tag, " | ".join(stray[:2])))
+                off = ctx.log_size()
             before = len(r.fails)
             cases.effect_run(ctx, r, tag, TYPEAHEAD_LINES, 0.0)
+            stray = non_shell_enters(ctx.log_since(off))
             if len(r.fails) > before:
                 bad.append(tag + ("(slow precmd)" if slow else ""))
+            if stray:               # evidence only, no new verdict: the file and rec.log checks of effect_run are the oracle
+                r.note("%s: %d Enter(s) of this rep were not routed to the shell: %s" % (tag, len(stray), " | ".join(stray[:6])))
     finally:
         if slow_on:
             time.sleep(1.0)

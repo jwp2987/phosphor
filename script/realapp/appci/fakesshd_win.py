@@ -348,6 +348,9 @@ def handle(ch, srv):
 
             def pump_out():
                 t_open, sent, hooks, first_seen = time.time(), 0, 0, False
+                # round 14 (ptyhost.ConsoleHostFilter): what the `app` arm's console host says to its terminal (DA1 request, win32-input-mode,
+                # focus events, "window shown") is not program output and a POSIX pty sends none of it: taken out, the DA1 request answered here.
+                host = ptyhost.ConsoleHostFilter() if arm == "app" else None
                 while True:
                     d = cp.read()
                     if not d:
@@ -355,15 +358,17 @@ def handle(ch, srv):
                     if not sent and not first_seen:
                         first_seen = True
                         log("conpty first output after %.2f s: %d bytes (starts %s)" % (time.time() - t_open, len(d), d[:16].hex()))   # r18ct: 0 bytes ever = the shell's output is not on the pseudo console
-                        if arm == "app":
-                            # #2051: the app's console host asks its terminal for the device attributes before anything runs and waits for the
-                            # answer (about 3 s per exec in round 12). A POSIX pty asks nothing: answered here, not passed on (ptyhost.py).
-                            d, asked = ptyhost.strip_startup_da1(d)
-                            if asked:
-                                cp.write(ptyhost.DA1_REPLY)
-                                log("console host start-up request %s answered by the test sshd, not sent to the client" % asked.hex())
-                            if not d:
-                                continue
+                    if host is not None:
+                        before = dict(host.seen)
+                        d, answer = host.feed(d)
+                        if answer:
+                            cp.write(answer)
+                        for q in host.seen:
+                            if q not in before:      # once per kind, when it is first seen; the totals are on the `console host said` line at the end
+                                log("console host start-up request %s %s, not sent to the client" % (
+                                    q.hex(), "answered by the test sshd" if q in ptyhost.DA1_QUERIES else "dropped by the test sshd"))
+                        if not d:
+                            continue
                     hooks += d.count(b"\x1b]9278;")
                     sent += len(d)
                     t_s = time.time()
@@ -373,6 +378,15 @@ def handle(ch, srv):
                         break
                     if time.time() - t_s > 2.0:      # r18u19 (H7): the CLIENT stopped taking output (channel window full)
                         log("conpty output: sending %d bytes to the client took %.1f s (%d sent in total)" % (len(d), time.time() - t_s, sent))
+                if host is not None:
+                    rest = host.flush()
+                    if rest:
+                        try:
+                            ch.sendall(rest)
+                            sent += len(rest)
+                        except Exception:
+                            pass
+                    log("console host said to its terminal (not sent to the client): %s" % host.text())
                 log("conpty output ended: %d bytes sent to the client in total" % sent)
                 if kind == "exec":
                     # #2007: a managed session's remote side prints the SSH and InitShell hooks first (two OSC 9278). 0 here with output above means

@@ -489,7 +489,7 @@ decl("intl_wide_type intl_wide_paste intl_wide_edit intl_wide_program intl_compo
 decl("intl_deadkey_option intl_altgr_ps intl_altgr_bash", needs=_merge(INPUT, PROMPT, dict(extra_meta_keys=APP_DEFAULT)),
      note="Option dead keys (macOS) and AltGr (Windows, German layout): with Option / Alt acting as Meta the character is not composed")
 # ---- ssh on the harness's own test host
-decl("ssh_failing_not_local ssh_hanging_host_not_local", needs=_merge(INPUT, SSH),
+decl("ssh_failing_not_local ssh_hanging_host_not_local ssh_gitbash_failing_not_local_managed", needs=_merge(INPUT, SSH),
      note="an ssh that fails or hangs while connecting: the typed line runs locally once (plain-terminal pass-through of the managed ssh path)")
 decl("remote_heredoc_paste latency_enter_ssh ssh_drop_reconnect", needs=_merge(INPUT, SSH))
 decl("remote_session_ext", needs=_merge(INPUT, SSH), sets=("ssh_extension_install",), note="always_install for the case (app relaunched), then never_install again")

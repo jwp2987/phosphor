@@ -72,6 +72,8 @@ PROVING = (
     "ssh_gitbash_managed", "ssh_gitbash_typeahead_managed", "ssh_gitbash_kill_switch",
     # #2051: the managed session of the Git Bash pane gets its bootstrap in the remote command, nothing bootstrap-sized is typed; skips itself elsewhere
     "ssh_gitbash_bootstrap_in_command",
+    # round 14 (docs/design/r10-r19-winssh.md): a line typed behind a FAILING ssh with that managed path switched on runs locally once; skips itself elsewhere
+    "ssh_gitbash_failing_not_local_managed",
     # #2007: the local leg of that session (a long escape sequence from an msys program reaches the app whole); skips itself off the Git Bash pane
     "gitbash_long_osc_reaches_app",
     # Windows handover and secrets (#1882, #1883, #1891): Read-Host marker, Git Bash precmd `read -s`
@@ -3550,6 +3552,32 @@ def c_ssh_fail(ctx, r):
     that accepts and never speaks, so the ssh is provably still connecting (TCP accepted, connection open) when the line is typed and fails only after its
     ConnectTimeout; the case checks that proof first (a harness failure if the ssh was not connecting), and logs the app's ssh gate state / release time next to
     the first MUSTNOT key so a pass or a fail is unambiguous."""
+    ssh_fail_body(ctx, r)
+
+
+def wait_ssh_gave_up(srv, ct, now=time.time, sleep=time.sleep, quiet=3.0):
+    """-> (wall time the LAST connection to the hanging listener closed, connections accepted in all). "ssh failed" used to be the moment no
+    connection was open, once. With the Git Bash managed-ssh wrapper switched on that is too early: the wrapper first asks the server for its
+    banner (ssh-keyscan -T 5, one connection that closes unanswered) and only then starts ssh (a second connection, ConnectTimeout later).
+    Round 14, agent@gitbash: the case ran with that switch left on by the case before it, read the effect file 6 s after the FIRST close, while
+    ssh was still connecting, and reported the line as lost. The failure is now: no connection open for `quiet` s in a row (a later connection
+    starts the wait again), bounded by 2 * (ct + 8) s; at the bound the time is that of the last close seen, or now."""
+    deadline, closed_at = now() + 2 * (ct + 8), None
+    n = 0
+    while now() < deadline:
+        n, alive = srv.poll()
+        if alive:
+            closed_at = None
+        elif closed_at is None:
+            closed_at = now()
+        elif now() - closed_at >= quiet:
+            break
+        sleep(0.1)
+    return (closed_at if closed_at is not None else now()), n
+
+
+def ssh_fail_body(ctx, r):
+    """ssh_failing_not_local, and (inside cases_caseremote.in_msys_managed_ssh) ssh_gitbash_failing_not_local_managed"""
     ctx.rm("sf.txt")
     ct = 6
     srv = HangingTcpServer()
@@ -3570,10 +3598,12 @@ def c_ssh_fail(ctx, r):
         n2, alive2 = srv.poll()
         r.note("ssh_failing_not_local: ssh started %.2f s before the first MUSTNOT key; the hanging listener had accepted %d connection(s), %d still open when typing began and %d when it ended "
                "(ConnectTimeout %d s)" % (t_type - t_ssh, n, alive, alive2, ct))
-        # wait for the ssh to fail (its connection closes), then give the hand-back time to land
-        ctx.until(lambda: srv.poll()[1] == 0, ct + 8)
-        t_failed = time.time()
-        time.sleep(6)
+        # wait for the ssh to fail (its last connection closes and none follows), then give the hand-back time to land: 6 s after the failure, as before
+        t_failed, n_all = wait_ssh_gave_up(srv, ct)
+        time.sleep(max(0.0, 6 - (time.time() - t_failed)))
+        if n_all != n:
+            r.note("the hanging listener accepted %d connection(s) in all (%d when the line was typed): more than one is the Git Bash wrapper's banner check "
+                   "followed by ssh itself (the managed path is switched on in this shell)" % (n_all, n))
         ev = ctx.app_hop_lines(SSH_GATE_RX, t_type - 0.5)
         first = next(((t, l) for t, l in ev if t is not None and t >= t_type and ("kh_hold_entry" in l or "kh_holding_set holding=true" in l or "gate_open kind=ssh_connect" in l)), None)      # r18e9: other hops that prove the same hold
         rel = [(t, l) for t, l in ev if t is not None and ("kh_hold_exit" in l or "kh_iq_release" in l) and t >= t_type]
