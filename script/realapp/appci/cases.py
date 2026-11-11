@@ -1108,6 +1108,23 @@ class Ctx:
                 time.sleep(0.05 * (attempt + 1))
         return []
 
+    def await_file_size(self, name, size, timeout, step=0.05):
+        """#2093: True once the work-dir file `name` is at least `size` bytes, False when it never gets there within `timeout` s (the give-up net: the
+        caller reads the file then, as before). It only STATs the file. On Windows a read handle held at the instant PowerShell's Add-Content opens the
+        file makes Add-Content fail ("being used by another process") and the line is never written; a stat takes no read access, so it shares with
+        every writer. lines() is for after this returned."""
+        path = os.path.join(self.W, name)
+        end = time.time() + timeout
+        while True:
+            try:
+                if os.path.getsize(path) >= size:
+                    return True
+            except OSError:
+                pass
+            if time.time() >= end:
+                return False
+            time.sleep(step)
+
     def rm(self, *names):
         for n in names:
             try:
@@ -2098,6 +2115,27 @@ def forgiven_by_reference(n, got_lines, ctrl):
     return lost <= max(ctrl.get("bad", 0), 0) + (1 if (ctrl.get("exact_bad") or 0) > 0 and not ctrl.get("bad") else 0) and lost <= MAX_FORGIVEN_LOST
 
 
+def effect_file_bytes(shell, toks, win):
+    """#2093: the size of the effect file once every append_cmd() line of `toks` ran: one line per token, ended by CR LF where a Windows PowerShell
+    (Add-Content) or cmd.exe (echo) wrote it and by LF everywhere else (bash/zsh/fish echo, Git Bash's echo, nu's save --append, pwsh off Windows)."""
+    nl = 2 if (win and shell in ("pwsh", "cmd")) else 1
+    return sum(len(t.encode("utf-8")) + nl for t in toks)
+
+
+def await_effect_file(ctx, r, tag, fname, shell, toks, timeout):
+    """Waits for the burst's effect file to be complete. Windows (#2093): by size, with stat only (Ctx.await_file_size), so the harness holds no read
+    handle on the file while a line of the burst may still open it; the 30th line of a round 13 gap-0 burst was accepted and run by PowerShell and
+    never written. A file that never reaches the size is read after the timeout exactly as before (a lost line still fails). Elsewhere a reader
+    cannot make an append fail and the lines are polled as they always were."""
+    if not ctx.win:
+        ctx.until(lambda: len(ctx.lines(fname)) >= len(toks), timeout)
+        return
+    if not ctx.await_file_size(fname, effect_file_bytes(shell, toks, True), timeout) and ctx.lines(fname) == list(toks):
+        # every line is there and the size was never reached: effect_file_bytes is wrong for this shell, and each burst waits out its timeout
+        r.note("%s: HARNESS: the effect file has every line but not the expected size (effect_file_bytes, shell %s): the size wait ran to its %d s timeout" % (
+            tag, shell, timeout))
+
+
 def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
     """attribute: optional callable(gap) -> enter-control dict (run_enter_control). When given and the run fails with merged lines (a lost
     Enter), the failure is an APP bug only if the reference terminal kept every Enter in the same session (#1482)."""
@@ -2119,7 +2157,7 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
             ctx.be.type(cmd, ctx.rng.randint(10, 25), enter=True)
         if gap:
             time.sleep(gap)
-    ctx.until(lambda: len(ctx.lines(fname)) >= n, 20 + n * 0.5)
+    await_effect_file(ctx, r, tag, fname, shell, exp, 20 + n * 0.5)
     time.sleep(0.5)
     got = ctx.lines(fname)
     ok = got == exp
@@ -2185,6 +2223,11 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
             bad = [(h, w) for h, w in zip(have, want) if h != w]
             r.check(not bad, "%s: PowerShell received %d of %d lines NOT exactly as typed (PSReadLine history; first: got %r, want %r)" % (
                 tag, len(bad), len(want), bad[0][0] if bad else None, bad[0][1] if bad else None))
+            if not ok and not bad:
+                # #2093: the failure above stands; this says where to look. Every line was accepted by PowerShell, so none was lost on the way in.
+                r.note("%s: PSReadLine history has all %d typed lines exactly and in order: PowerShell accepted every line, so a line missing from the "
+                       "effect file is a command that ran and did not write (e.g. Add-Content refused the file: 'being used by another process'), "
+                       "not lost typing (#2093)" % (tag, len(want)))
         else:
             r.metric("command_text_unverified_" + tag, dict(history_lines=len(have), typed=len(want)))
             r.note("%s: command text NOT verified in the PowerShell pane: PSReadLine history has %d new line(s) for %d typed (file missing, filtered or not yet written); the effect file (exact lines, no extras) was checked only" % (tag, len(have), len(want)))
@@ -3922,7 +3965,9 @@ def run_enter_control(ctx, r, n):
                 ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, fname), ctx.rng.randint(10, 25), enter=True)
                 if gap:
                     time.sleep(gap)
-            ctx.until(lambda: len(ctx.lines(fname)) >= n, 20 + n * 0.5)
+            # #2093: the same wait as effect_run. A reference line lost to the harness's own read would count as a reference loss, and one reference
+            # loss forgives one Phosphor loss (forgiven_by_reference).
+            await_effect_file(ctx, r, "enter control %s" % fname, fname, ctx.pane_shell(), exp, 20 + n * 0.5)
             time.sleep(0.5)
             got = set(ctx.lines(fname))
             bad = sum(1 for t in exp if t not in got)
