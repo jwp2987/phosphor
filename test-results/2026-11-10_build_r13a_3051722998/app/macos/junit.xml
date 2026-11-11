@@ -1,0 +1,373 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="160" failures="0" skipped="50">
+<testcase classname="terminal" name="mode_proof" time="4.10">
+</testcase>
+<testcase classname="terminal" name="cadence" time="7.70">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="42.20">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="78.40">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="68.10">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="7.90">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="27.50">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="557.20">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_flood_ab" time="409.40">
+</testcase>
+<testcase classname="terminal" name="ps_ctrl_break" time="2.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ps_ctrl_scrolllock_break" time="1.40">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ps_fast_command_young_enter" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe" time="17.50">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_questions" time="17.60">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_vim_typeahead" time="21.60">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_unsupported_tcsh" time="15.50">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_prompt" time="17.80">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_probe" time="18.00">
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe_empty_ps1" time="17.70">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="2.60">
+<skipped message="no passwordless sudo on this runner (sudo -n true failed)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_exec_fish_rc" time="18.10">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_docker_t_without_i" time="2.50">
+<skipped message="docker with a local alpine image is not available (never pulled by the harness)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_zsh_newuser_install" time="6.70">
+<skipped message="this zsh runs no zsh-newuser-install with an empty startup directory (proved on a pty before the case types anything)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="16.10">
+</testcase>
+<testcase classname="terminal" name="gitbash_long_osc_reaches_app" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="42.50">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="11.70">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="7.50">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing_wrapper" time="1.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead_wrapper" time="1.60">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="493.50">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="30.10">
+<skipped message="NO-REFERENCE (not a pass): #2037 key to frame without the wait for the display pass (the app's own share): median 1.50 ms (p95 2.00, n=60); the wait itself: median 4.59 ms (max 7.68)"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="126.90">
+</testcase>
+<testcase classname="terminal" name="latency_paint_ab" time="223.30">
+</testcase>
+<testcase classname="terminal" name="latency_key_views_ab" time="263.80">
+</testcase>
+<testcase classname="terminal" name="routing_table" time="80.40">
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="16.20">
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="9.60">
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="11.70">
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="1.40">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_typeahead_managed" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_kill_switch" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="6.70">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="36.10">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="56.80">
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_output" time="13.10">
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_drag" time="1.60">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="terminal" name="ctrl_c_no_esc_i_local" time="34.00">
+</testcase>
+<testcase classname="terminal" name="giveup_keys_reach_shell" time="23.20">
+</testcase>
+<testcase classname="terminal" name="ps_read_host_secure" time="1.50">
+<skipped message="PowerShell pane only (Read-Host -AsSecureString; the Git Bash pane's bash `read -s` announces nothing on ConPTY, see gitbash_precmd_secret)"/>
+</testcase>
+<testcase classname="terminal" name="gitbash_precmd_secret" time="1.50">
+<skipped message="Git Bash pane only (bash precmd_functions; ConPTY prompt hold)"/>
+</testcase>
+<testcase classname="terminal" name="precmd_secret_honor_ps1" time="39.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: [hp0] the pane is not a bash with WARP_HONOR_PS1=0 after the relaunch with terminal.input.honor_ps1 = false (the pane says: honor_ps1=False bash=False):"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="13.80">
+</testcase>
+<testcase classname="terminal" name="zero_network_startup" time="1.50">
+<skipped message="zero_network_startup (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="keyring_unavailable_startup" time="1.40">
+<skipped message="needs the Linux App launcher (its private D-Bus session decides which Secret Service exists)"/>
+</testcase>
+<testcase classname="terminal" name="claude_plugin_offline" time="1.50">
+<skipped message="claude_plugin_offline (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="agent_plugins_offline" time="1.50">
+<skipped message="agent_plugins_offline (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_many" time="116.70">
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_panel_click" time="1.50">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="1.40">
+<skipped message="network_gate_switch (this platform: macos)"/>
+</testcase>
+<testcase classname="terminal" name="output_frames" time="82.90">
+</testcase>
+<testcase classname="terminal" name="cb_report_problem" time="7.60">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="3.00">
+</testcase>
+<testcase classname="agent" name="cadence" time="7.60">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="67.10">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="8.00">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="27.10">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="557.60">
+</testcase>
+<testcase classname="agent" name="ctrl_c_flood_ab" time="408.20">
+</testcase>
+<testcase classname="agent" name="ps_ctrl_break" time="2.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ps_ctrl_scrolllock_break" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ps_fast_command_young_enter" time="1.40">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe" time="17.60">
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_questions" time="17.70">
+</testcase>
+<testcase classname="agent" name="subshell_ready_vim_typeahead" time="21.40">
+</testcase>
+<testcase classname="agent" name="subshell_ready_unsupported_tcsh" time="15.60">
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_prompt" time="17.90">
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_probe" time="18.10">
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe_empty_ps1" time="17.80">
+</testcase>
+<testcase classname="agent" name="subshell_ready_relay_shape" time="2.70">
+<skipped message="no passwordless sudo on this runner (sudo -n true failed)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_exec_fish_rc" time="18.10">
+</testcase>
+<testcase classname="agent" name="subshell_ready_docker_t_without_i" time="2.50">
+<skipped message="docker with a local alpine image is not available (never pulled by the harness)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_zsh_newuser_install" time="6.70">
+<skipped message="this zsh runs no zsh-newuser-install with an empty startup directory (proved on a pty before the case types anything)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="16.10">
+</testcase>
+<testcase classname="agent" name="gitbash_long_osc_reaches_app" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="42.60">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="11.70">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="7.40">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing_wrapper" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead_wrapper" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="413.00">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="30.90">
+<skipped message="NO-REFERENCE (not a pass): #2037 key to frame without the wait for the display pass (the app's own share): median 1.62 ms (p95 2.52, n=60); the wait itself: median 4.87 ms (max 7.40)"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="126.60">
+</testcase>
+<testcase classname="agent" name="latency_paint_ab" time="221.90">
+</testcase>
+<testcase classname="agent" name="latency_key_views_ab" time="263.10">
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="51.80">
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="9.60">
+</testcase>
+<testcase classname="agent" name="routing_table" time="76.80">
+</testcase>
+<testcase classname="agent" name="routing_typo_head" time="10.90">
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="16.20">
+</testcase>
+<testcase classname="agent" name="agent_lrc_no_false_takeover" time="125.50">
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="9.60">
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="11.70">
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_managed" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_typeahead_managed" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_kill_switch" time="1.50">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="35.80">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="58.40">
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_output" time="12.70">
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_drag" time="1.50">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="agent" name="ctrl_c_no_esc_i_local" time="33.70">
+</testcase>
+<testcase classname="agent" name="agent_view_left_by_double_ctrl_c_after_ctrl_c_no_esc_i_local" time="0.00">
+</testcase>
+<testcase classname="agent" name="giveup_keys_reach_shell" time="23.40">
+</testcase>
+<testcase classname="agent" name="precmd_secret_honor_ps1" time="37.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: [hp0] the pane is not a bash with WARP_HONOR_PS1=0 after the relaunch with terminal.input.honor_ps1 = false (the pane says: honor_ps1=False bash=False):"/>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="13.80">
+</testcase>
+<testcase classname="agent" name="keyring_unavailable_startup" time="1.50">
+<skipped message="needs the Linux App launcher (its private D-Bus session decides which Secret Service exists)"/>
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_many" time="116.50">
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_panel_click" time="1.50">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="agent" name="output_frames" time="82.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_password" time="30.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_accept" time="17.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_reject" time="76.30">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_conflict" time="27.60">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_touch_only" time="20.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_edit_endings" time="88.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_429" time="20.50">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_500" time="31.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_disconnect" time="17.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_down" time="32.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_slow_cancel" time="16.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_fault_queued_rows" time="36.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_key" time="130.20">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_vim" time="31.40">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_stream" time="1.50">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_queued" time="1.60">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_quit_blocked" time="1.50">
+<skipped message="a clean quit through the app's own quit key (the harness has no usable quit key on macOS / Windows) (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_question_answer" time="15.40">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_cut" time="8.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_nodone" time="35.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_trunc" time="7.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_empty" time="8.10">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_slow" time="20.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_ctrl_c" time="11.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_steer" time="11.50">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_after_command" time="19.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_question_steer_at_end" time="15.50">
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_enter" time="300.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_ssh" time="72.00">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_stream" time="51.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_queued" time="58.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_restart_kill_blocked" time="57.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_steer_fast" time="31.90">
+</testcase>
+<testcase classname="agent@fake" name="agent_interactive_less" time="34.20">
+</testcase>
+<testcase classname="agent@fake" name="agent_noninteractive_no_takeover" time="35.10">
+</testcase>
+<testcase classname="agent@fake" name="network_gate_notice" time="1.50">
+<skipped message="network_gate_notice (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_deny_allow" time="1.50">
+<skipped message="agent_gate (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_off_live" time="1.50">
+<skipped message="agent_gate (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_mcp_faults" time="31.20">
+<skipped message="precondition: the healthy control server's tool was not offered to the model or the call never returned (servers seen: []; starts (0, 0)): the app did not load ~/.warp/.mcp.json, so no fault could be "/>
+</testcase>
+<testcase classname="agent@fake" name="agent_gate_key_never_leaves" time="2.60">
+<skipped message="agent_gate (this platform: macos)"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_multitab_streaming" time="168.10">
+</testcase>
+</testsuite>

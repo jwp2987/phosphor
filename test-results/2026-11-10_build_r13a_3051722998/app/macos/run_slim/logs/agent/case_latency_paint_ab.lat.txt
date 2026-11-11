@@ -1,0 +1,1420 @@
+2026-11-10T23:05:37Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794351937330.756
+2026-11-10T23:05:37Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794351937330.760
+2026-11-10T23:05:37Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351937330.806
+2026-11-10T23:05:37Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794351937330.829
+2026-11-10T23:05:37Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794351937330.841
+2026-11-10T23:05:37Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351937330.845
+2026-11-10T23:05:37Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351937331.192
+2026-11-10T23:05:37Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351937331.216
+2026-11-10T23:05:37Z [DEBUG] input_order hop=precmd_seen consumed=false seq_mode=false enters=0 precmds=0 t=1794351937348.597
+2026-11-10T23:05:37Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794351937348.827
+2026-11-10T23:05:37Z [DEBUG] input_order hop=notify_cause view=Input cause=new_14 t=1794351937348.837
+2026-11-10T23:05:37Z [DEBUG] input_order hop=decset_2004 on=true t=1794351937348.836
+2026-11-10T23:05:37Z [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794351937349.560
+2026-11-10T23:05:37Z [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794351937349.566
+2026-11-10T23:05:37Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children t=1794351937349.591
+2026-11-10T23:05:37Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children_2 t=1794351937349.596
+2026-11-10T23:05:37Z [DEBUG] input_order hop=handoff_request_skipped reason=line_editor_not_proven t=1794351937349.605
+2026-11-10T23:05:37Z [DEBUG] input_order hop=handoff_decision decision=Legacy retry=false t=1794351937349.610
+2026-11-10T23:05:37Z [DEBUG] input_order hop=frame_skip_run skipped=2 held_ms=16 key_frame_skipped=0 t=1794351937366.178
+2026-11-10T23:05:37Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=8 key_frame_skipped=0 t=1794351937391.112
+2026-11-10T23:05:44Z [DEBUG] input_order hop=os_key_event age_ms=2.039 enter=false ctrl=true t=1794351944918.170
+2026-11-10T23:05:44Z [DEBUG] input_order hop=keydown_menu ctrl=true cmd=false t=1794351944942.050
+2026-11-10T23:05:45Z [DEBUG] input_order hop=os_key_event age_ms=0.989 enter=false ctrl=true t=1794351945430.360
+2026-11-10T23:05:45Z [DEBUG] input_order hop=mac_ctrl stage=key_down_impl_entry since_send_ms=0.404 t=1794351945430.833
+2026-11-10T23:05:45Z [DEBUG] input_order hop=mac_ctrl stage=after_interpret_key_events since_send_ms=0.840 t=1794351945431.269
+2026-11-10T23:05:45Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=1 key="u" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794351945431.534
+2026-11-10T23:05:45Z [DEBUG] input_order hop=mac_ctrl stage=after_handle_view_event since_send_ms=1.236 t=1794351945431.666
+2026-11-10T23:05:45Z [DEBUG] input_order hop=key_frame_sched ms=0.07 t=1794351945431.727
+2026-11-10T23:05:45Z [DEBUG] input_order hop=key_frame_now drawn=1 ms=2.36 t=1794351945434.050
+2026-11-10T23:05:45Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=23.93 key_to_presented_ms=26.30 sync=0 wait_ms=0.96 t=1794351945458.034
+2026-11-10T23:05:45Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=22 key_frame_skipped=0 t=1794351945966.731
+2026-11-10T23:05:47Z [DEBUG] input_order hop=os_key_event age_ms=2.557 enter=false ctrl=false t=1794351947922.798
+2026-11-10T23:05:47Z [DEBUG] input_order hop=kh_pane_key seq=1 seq=1 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351947925.077
+2026-11-10T23:05:47Z [DEBUG] input_order hop=kh_editor_action seq=1 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794351947925.104
+2026-11-10T23:05:47Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351947925.529
+2026-11-10T23:05:47Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351947925.882
+2026-11-10T23:05:47Z [DEBUG] input_order hop=kh_edit_sync seq=1 us=1434 t=1794351947927.177
+2026-11-10T23:05:47Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351947927.272
+2026-11-10T23:05:47Z [DEBUG] input_order hop=kh_pane_key seq=1 seq=1 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351947927.722
+2026-11-10T23:05:47Z [DEBUG] input_order hop=key_frame_sched ms=0.22 t=1794351947927.839
+2026-11-10T23:05:47Z [DEBUG] input_order hop=key_frame layout=true t=1794351947929.454
+2026-11-10T23:05:47Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=26 render_ms=0.24 layout_ms=0.77 after_layout_ms=0.04 paint_ms=0.47 hover_ms=0.00 total_ms=1.72 layout_top=EditorView:0.47,Workspace:0.08,Terminal:0.05 paint_top=Workspace:0.17,EditorView:0.06,AgentViewZeroState:0.05 t=1794351947929.615
+2026-11-10T23:05:47Z [DEBUG] input_order hop=key_frame_now drawn=1 ms=4.34 t=1794351947932.126
+2026-11-10T23:05:47Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=33.98 key_to_presented_ms=41.86 sync=0 wait_ms=1.81 t=1794351947966.056
+2026-11-10T23:05:47Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=33 key_frame_skipped=0 t=1794351947966.353
+2026-11-10T23:05:48Z [DEBUG] input_order hop=os_key_event age_ms=2.150 enter=false ctrl=false t=1794351948825.502
+2026-11-10T23:05:48Z [DEBUG] input_order hop=kh_editor_action seq=1 kind=backspace focused=true hold_active=false buffer_chars=1 buffer="m" t=1794351948826.382
+2026-11-10T23:05:48Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=3 key=backspace ctrl=false alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794351948826.778
+2026-11-10T23:05:48Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351948826.926
+2026-11-10T23:05:48Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351948827.091
+2026-11-10T23:05:48Z [DEBUG] input_order hop=kh_edit_sync seq=1 us=81 t=1794351948827.131
+2026-11-10T23:05:48Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351948827.174
+2026-11-10T23:05:48Z [DEBUG] input_order hop=key_frame_sched ms=0.04 t=1794351948827.427
+2026-11-10T23:05:48Z [DEBUG] input_order hop=key_frame_now drawn=1 ms=3.23 t=1794351948830.629
+2026-11-10T23:05:48Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=19.04 key_to_presented_ms=22.80 sync=0 wait_ms=1.21 t=1794351948849.552
+2026-11-10T23:05:49Z [DEBUG] input_order hop=os_key_event age_ms=3.404 enter=false ctrl=false t=1794351949733.999
+2026-11-10T23:05:49Z [DEBUG] input_order hop=kh_pane_key seq=2 seq=2 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351949736.295
+2026-11-10T23:05:49Z [DEBUG] input_order hop=kh_editor_action seq=2 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794351949736.338
+2026-11-10T23:05:49Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351949736.840
+2026-11-10T23:05:49Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351949737.143
+2026-11-10T23:05:49Z [DEBUG] input_order hop=kh_edit_sync seq=2 us=117 t=1794351949737.184
+2026-11-10T23:05:49Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351949737.217
+2026-11-10T23:05:49Z [DEBUG] input_order hop=kh_pane_key seq=2 seq=2 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351949737.567
+2026-11-10T23:05:49Z [DEBUG] input_order hop=key_frame_sched ms=0.12 t=1794351949737.666
+2026-11-10T23:05:49Z [DEBUG] input_order hop=key_frame layout=true t=1794351949738.927
+2026-11-10T23:05:49Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=27 render_ms=0.24 layout_ms=0.37 after_layout_ms=0.03 paint_ms=0.51 hover_ms=0.00 total_ms=1.33 layout_top=EditorView:0.10,Workspace:0.06,Terminal:0.05 paint_top=Workspace:0.18,EditorView:0.07,AgentViewZeroState:0.05 t=1794351949739.118
+2026-11-10T23:05:49Z [DEBUG] input_order hop=key_frame_now drawn=1 ms=3.21 t=1794351949740.827
+2026-11-10T23:05:49Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=30.36 key_to_presented_ms=34.70 sync=0 wait_ms=0.09 t=1794351949771.256
+2026-11-10T23:05:50Z [DEBUG] input_order hop=os_key_event age_ms=3.174 enter=false ctrl=false t=1794351950629.173
+2026-11-10T23:05:50Z [DEBUG] input_order hop=kh_editor_action seq=2 kind=backspace focused=true hold_active=false buffer_chars=1 buffer="m" t=1794351950631.160
+2026-11-10T23:05:50Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=5 key=backspace ctrl=false alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794351950631.615
+2026-11-10T23:05:50Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351950631.906
+2026-11-10T23:05:50Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351950632.210
+2026-11-10T23:05:50Z [DEBUG] input_order hop=kh_edit_sync seq=2 us=117 t=1794351950632.265
+2026-11-10T23:05:50Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351950632.320
+2026-11-10T23:05:50Z [DEBUG] input_order hop=key_frame_sched ms=0.08 t=1794351950632.787
+2026-11-10T23:05:50Z [DEBUG] input_order hop=key_frame_now drawn=1 ms=3.42 t=1794351950636.149
+2026-11-10T23:05:50Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=30.91 key_to_presented_ms=35.29 sync=0 wait_ms=0.11 t=1794351950668.441
+2026-11-10T23:05:51Z [DEBUG] input_order hop=os_key_event age_ms=3.294 enter=false ctrl=false t=1794351951525.393
+2026-11-10T23:05:51Z [DEBUG] input_order hop=kh_pane_key seq=3 seq=3 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351951527.865
+2026-11-10T23:05:51Z [DEBUG] input_order hop=kh_editor_action seq=3 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794351951527.909
+2026-11-10T23:05:51Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351951528.478
+2026-11-10T23:05:51Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351951528.829
+2026-11-10T23:05:51Z [DEBUG] input_order hop=kh_edit_sync seq=3 us=126 t=1794351951528.873
+2026-11-10T23:05:51Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351951528.906
+2026-11-10T23:05:51Z [DEBUG] input_order hop=kh_pane_key seq=3 seq=3 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351951529.289
+2026-11-10T23:05:51Z [DEBUG] input_order hop=key_frame_sched ms=0.12 t=1794351951529.391
+2026-11-10T23:05:51Z [DEBUG] input_order hop=key_frame layout=true t=1794351951530.743
+2026-11-10T23:05:51Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=27 render_ms=0.26 layout_ms=0.41 after_layout_ms=0.03 paint_ms=0.54 hover_ms=0.00 total_ms=1.42 layout_top=EditorView:0.10,Workspace:0.07,Terminal:0.05 paint_top=Workspace:0.20,EditorView:0.07,AgentViewZeroState:0.05 t=1794351951530.882
+2026-11-10T23:05:51Z [DEBUG] input_order hop=key_frame_now drawn=1 ms=3.27 t=1794351951532.610
+2026-11-10T23:05:51Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=30.24 key_to_presented_ms=34.87 sync=0 wait_ms=0.09 t=1794351951561.969
+2026-11-10T23:05:52Z [DEBUG] input_order hop=os_key_event age_ms=4.377 enter=false ctrl=false t=1794351952412.302
+2026-11-10T23:05:52Z [DEBUG] input_order hop=kh_editor_action seq=3 kind=backspace focused=true hold_active=false buffer_chars=1 buffer="m" t=1794351952413.970
+2026-11-10T23:05:52Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=7 key=backspace ctrl=false alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794351952414.330
+2026-11-10T23:05:52Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351952414.574
+2026-11-10T23:05:52Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351952414.825
+2026-11-10T23:05:52Z [DEBUG] input_order hop=kh_edit_sync seq=3 us=99 t=1794351952414.871
+2026-11-10T23:05:52Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351952414.910
+2026-11-10T23:05:52Z [DEBUG] input_order hop=key_frame_sched ms=0.08 t=1794351952415.363
+2026-11-10T23:05:52Z [DEBUG] input_order hop=key_frame_now drawn=1 ms=3.39 t=1794351952418.699
+2026-11-10T23:05:52Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=31.63 key_to_presented_ms=35.64 sync=0 wait_ms=0.10 t=1794351952449.930
+2026-11-10T23:05:53Z [DEBUG] input_order hop=os_key_event age_ms=2.806 enter=false ctrl=true t=1794351953021.153
+2026-11-10T23:05:53Z [DEBUG] input_order hop=keydown_menu ctrl=true cmd=false t=1794351953028.824
+2026-11-10T23:05:53Z [DEBUG] input_order hop=os_key_event age_ms=5.657 enter=false ctrl=true t=1794351953617.049
+2026-11-10T23:05:53Z [DEBUG] input_order hop=mac_ctrl stage=key_down_impl_entry since_send_ms=0.344 t=1794351953617.478
+2026-11-10T23:05:53Z [DEBUG] input_order hop=mac_ctrl stage=after_interpret_key_events since_send_ms=0.479 t=1794351953617.612
+2026-11-10T23:05:53Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=8 key="u" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794351953617.845
+2026-11-10T23:05:53Z [DEBUG] input_order hop=mac_ctrl stage=after_handle_view_event since_send_ms=0.824 t=1794351953617.957
+2026-11-10T23:05:53Z [DEBUG] input_order hop=key_frame_sched ms=0.04 t=1794351953617.993
+2026-11-10T23:05:53Z [DEBUG] input_order hop=key_frame_now drawn=1 ms=2.12 t=1794351953620.107
+2026-11-10T23:05:53Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=25.15 key_to_presented_ms=27.07 sync=0 wait_ms=0.85 t=1794351953648.999
+2026-11-10T23:05:54Z [DEBUG] input_order hop=view_mode mode=terminal pane=1495 t=1794351954552.069
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794351954554.505
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794351954554.558
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794351954554.595
+2026-11-10T23:05:54Z [DEBUG] input_order hop=view_mode mode=agent pane=1495 t=1794351954555.545
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794351954556.470
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794351954556.484
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794351954556.490
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351954556.531
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=new_12 t=1794351954556.588
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=new_12 t=1794351954556.618
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=new_2 t=1794351954556.678
+2026-11-10T23:05:54Z [DEBUG] input_order hop=key_view_skip enabled=1 t=1794351954556.757
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794351954556.847
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794351954556.855
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351954556.859
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794351954556.953
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794351954556.959
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794351954556.965
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=new_11 t=1794351954556.982
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794351954556.998
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794351954557.002
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794351954557.005
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351954557.024
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794351954557.428
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794351954557.437
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351954557.440
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954602.592
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954602.637
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954602.666
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954602.677
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954602.687
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954602.926
+2026-11-10T23:05:54Z [DEBUG] input_order hop=decset_2004 on=true t=1794351954629.373
+2026-11-10T23:05:54Z [DEBUG] input_order hop=decset_2004 on=false t=1794351954640.864
+2026-11-10T23:05:54Z [DEBUG] input_order frame layout=true t=1794351954641.343
+2026-11-10T23:05:54Z [DEBUG] input_order hop=ui_item kind=frame ms=28.52 iter=1 layout=true render_ms=11.85 layout_paint_ms=16.67 t=1794351954641.359
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954655.095
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children t=1794351954659.842
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children_2 t=1794351954659.853
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=new_16 t=1794351954659.870
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=1022 of=56708 t=1794351954670.632
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=2 of=55686 t=1794351954670.660
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=11 of=55684 t=1794351954670.668
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=9 of=55673 t=1794351954670.676
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55664 t=1794351954670.681
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954670.685
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=49 of=55658 t=1794351954670.770
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954670.777
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=70 of=55609 t=1794351954670.837
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=4 of=55539 t=1794351954670.854
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954670.859
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55535 t=1794351954670.892
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=20 of=55527 t=1794351954670.903
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954670.907
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=71 of=55507 t=1794351954670.976
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=19 of=55436 t=1794351954670.986
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=10 of=55417 t=1794351954670.991
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=10 of=55407 t=1794351954670.997
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55397 t=1794351954671.001
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55389 t=1794351954671.006
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55381 t=1794351954671.010
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55373 t=1794351954671.014
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55365 t=1794351954671.018
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55357 t=1794351954671.023
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=36 of=55349 t=1794351954671.041
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=9 of=55313 t=1794351954671.045
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55304 t=1794351954671.049
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55296 t=1794351954671.054
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55288 t=1794351954671.058
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55281 t=1794351954671.061
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55274 t=1794351954671.065
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55267 t=1794351954671.068
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55260 t=1794351954671.073
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55252 t=1794351954671.076
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55245 t=1794351954671.080
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55238 t=1794351954671.084
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55231 t=1794351954671.087
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55224 t=1794351954671.091
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55217 t=1794351954671.094
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55210 t=1794351954671.098
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55203 t=1794351954671.102
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55196 t=1794351954671.106
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55189 t=1794351954671.109
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55182 t=1794351954671.113
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55175 t=1794351954671.117
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55167 t=1794351954671.120
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55160 t=1794351954671.124
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55153 t=1794351954671.128
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55146 t=1794351954671.131
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55139 t=1794351954671.135
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55132 t=1794351954671.139
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55124 t=1794351954671.143
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55117 t=1794351954671.146
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55110 t=1794351954671.150
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55103 t=1794351954671.153
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55096 t=1794351954671.157
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55089 t=1794351954671.161
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55082 t=1794351954671.164
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55075 t=1794351954671.168
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=4 of=55068 t=1794351954671.171
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954671.174
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=1007 of=55064 t=1794351954680.184
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=32 of=54057 t=1794351954680.216
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=429 of=54025 t=1794351954680.258
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954680.265
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=496 of=53596 t=1794351954680.324
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954680.334
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=345 of=53100 t=1794351954680.377
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954680.386
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=349 of=52755 t=1794351954680.438
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954680.444
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=505 of=52406 t=1794351954680.502
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954680.509
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=473 of=51901 t=1794351954680.561
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954680.567
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=477 of=51428 t=1794351954680.618
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=242 of=50951 t=1794351954680.641
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954680.645
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=992 of=50709 t=1794351954680.744
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=235 of=49717 t=1794351954680.767
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954680.771
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=944 of=49482 t=1794351954680.874
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954680.891
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=1007 of=48538 t=1794351954680.997
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.008
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=662 of=47531 t=1794351954681.076
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.083
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=386 of=46869 t=1794351954681.128
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.134
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=615 of=46483 t=1794351954681.199
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.205
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=450 of=45868 t=1794351954681.254
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.261
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=561 of=45418 t=1794351954681.321
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.326
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=801 of=44857 t=1794351954681.403
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.409
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=490 of=44056 t=1794351954681.461
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.467
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=452 of=43566 t=1794351954681.518
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.523
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=363 of=43114 t=1794351954681.571
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.576
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=725 of=42751 t=1794351954681.647
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.660
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=222 of=42026 t=1794351954681.690
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.696
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=920 of=41804 t=1794351954681.787
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.793
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=461 of=40884 t=1794351954681.843
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.849
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=536 of=40423 t=1794351954681.906
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.912
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=455 of=39887 t=1794351954681.962
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954681.968
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=560 of=39432 t=1794351954682.027
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.033
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=325 of=38872 t=1794351954682.088
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.092
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=41 of=38547 t=1794351954682.107
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=62 of=38506 t=1794351954682.119
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.122
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=233 of=38444 t=1794351954682.163
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.172
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=758 of=38211 t=1794351954682.259
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=62 of=37453 t=1794351954682.270
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=712 of=37391 t=1794351954682.346
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.356
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=568 of=36679 t=1794351954682.425
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.434
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=439 of=36111 t=1794351954682.488
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.494
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=718 of=35672 t=1794351954682.566
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.571
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=406 of=34954 t=1794351954682.618
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.624
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=756 of=34548 t=1794351954682.704
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=29 of=33792 t=1794351954682.716
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=159 of=33763 t=1794351954682.740
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.744
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=645 of=33604 t=1794351954682.813
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.818
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=489 of=32959 t=1794351954682.871
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.876
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=660 of=32470 t=1794351954682.943
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.949
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=331 of=31810 t=1794351954682.992
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954682.997
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=716 of=31479 t=1794351954683.077
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.088
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=190 of=30763 t=1794351954683.119
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=135 of=30573 t=1794351954683.136
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=177 of=30438 t=1794351954683.155
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.159
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=22 of=30261 t=1794351954683.164
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=83 of=30239 t=1794351954683.175
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=179 of=30156 t=1794351954683.194
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.197
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=106 of=29977 t=1794351954683.209
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=147 of=29871 t=1794351954683.227
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=447 of=29724 t=1794351954683.266
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.269
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=963 of=29277 t=1794351954683.352
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.359
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=424 of=28314 t=1794351954683.408
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.413
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=984 of=27890 t=1794351954683.514
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.520
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=455 of=26906 t=1794351954683.570
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.575
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=883 of=26451 t=1794351954683.665
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.674
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=592 of=25568 t=1794351954683.734
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.739
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=787 of=24976 t=1794351954683.818
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=364 of=24189 t=1794351954683.849
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.853
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=709 of=23825 t=1794351954683.969
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954683.975
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=852 of=23116 t=1794351954684.051
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.057
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=575 of=22264 t=1794351954684.117
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.122
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=755 of=21689 t=1794351954684.215
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.220
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=935 of=20934 t=1794351954684.309
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.315
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=139 of=19999 t=1794351954684.350
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=149 of=19860 t=1794351954684.368
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.372
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=129 of=19711 t=1794351954684.394
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=105 of=19582 t=1794351954684.409
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=76 of=19477 t=1794351954684.420
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=153 of=19401 t=1794351954684.437
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=26 of=19248 t=1794351954684.442
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=95 of=19222 t=1794351954684.454
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=94 of=19127 t=1794351954684.465
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=133 of=19033 t=1794351954684.483
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.487
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=977 of=18900 t=1794351954684.622
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.628
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=110 of=17923 t=1794351954684.659
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.663
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=97 of=17813 t=1794351954684.683
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=156 of=17716 t=1794351954684.701
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=99 of=17560 t=1794351954684.714
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=84 of=17461 t=1794351954684.724
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=83 of=17377 t=1794351954684.734
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=75 of=17294 t=1794351954684.743
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=68 of=17219 t=1794351954684.752
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=222 of=17151 t=1794351954684.774
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.777
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=491 of=16929 t=1794351954684.851
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=48 of=16438 t=1794351954684.883
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.888
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=250 of=16390 t=1794351954684.929
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954684.935
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=902 of=16140 t=1794351954685.024
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.029
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=405 of=15238 t=1794351954685.077
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.083
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=118 of=14833 t=1794351954685.103
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=148 of=14715 t=1794351954685.123
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.126
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=331 of=14567 t=1794351954685.165
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.171
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=168 of=14236 t=1794351954685.199
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=134 of=14068 t=1794351954685.217
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=183 of=13934 t=1794351954685.240
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.243
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=995 of=13751 t=1794351954685.340
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.346
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=464 of=12756 t=1794351954685.398
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.405
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=121 of=12292 t=1794351954685.420
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=182 of=12171 t=1794351954685.440
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.443
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=940 of=11989 t=1794351954685.538
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.544
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=1018 of=11049 t=1794351954685.640
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.647
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=290 of=10031 t=1794351954685.688
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.693
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=349 of=9741 t=1794351954685.735
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.740
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=178 of=9392 t=1794351954685.766
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=40 of=9214 t=1794351954685.775
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=88 of=9174 t=1794351954685.786
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=79 of=9086 t=1794351954685.796
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=137 of=9007 t=1794351954685.812
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.815
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=824 of=8870 t=1794351954685.898
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.904
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=557 of=8046 t=1794351954685.976
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954685.982
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=298 of=7489 t=1794351954686.017
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954686.021
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=521 of=7191 t=1794351954686.078
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954686.083
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=980 of=6670 t=1794351954686.176
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=142 of=5690 t=1794351954686.195
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=118 of=5548 t=1794351954686.210
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=130 of=5430 t=1794351954686.225
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=75 of=5300 t=1794351954686.236
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=114 of=5225 t=1794351954686.249
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=99 of=5111 t=1794351954686.261
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=116 of=5012 t=1794351954686.275
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=68 of=4896 t=1794351954686.284
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=74 of=4828 t=1794351954686.293
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=159 of=4754 t=1794351954686.312
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=34 of=4595 t=1794351954686.318
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=82 of=4561 t=1794351954686.328
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=66 of=4479 t=1794351954686.337
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=169 of=4413 t=1794351954686.355
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954686.358
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=935 of=4244 t=1794351954686.455
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=142 of=3309 t=1794351954686.470
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=103 of=3167 t=1794351954686.481
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=92 of=3064 t=1794351954686.492
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=108 of=2972 t=1794351954686.505
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=107 of=2864 t=1794351954686.517
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=86 of=2757 t=1794351954686.528
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=39 of=2671 t=1794351954686.534
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=88 of=2632 t=1794351954686.545
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=84 of=2544 t=1794351954686.556
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=81 of=2460 t=1794351954686.566
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=79 of=2379 t=1794351954686.576
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=97 of=2300 t=1794351954686.588
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=68 of=2203 t=1794351954686.597
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=117 of=2135 t=1794351954686.611
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=124 of=2018 t=1794351954686.625
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=88 of=1894 t=1794351954686.632
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954686.635
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=83 of=1806 t=1794351954686.647
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=110 of=1723 t=1794351954686.660
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=137 of=1613 t=1794351954686.676
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=75 of=1476 t=1794351954686.686
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=148 of=1401 t=1794351954686.703
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954686.706
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_partial wrote=971 of=1253 t=1794351954686.795
+2026-11-10T23:05:54Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351954686.798
+2026-11-10T23:05:54Z [DEBUG] input_order hop=drawable_wait wait_ms=16.52 key_frame=false t=1794351954715.731
+2026-11-10T23:05:54Z [DEBUG] input_order hop=decset_2004 on=false t=1794351954724.515
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_block_completed_event t=1794351954724.965
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794351954725.053
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794351954725.062
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794351954725.066
+2026-11-10T23:05:54Z [DEBUG] input_order hop=precmd_seen consumed=false seq_mode=false enters=0 precmds=0 t=1794351954725.112
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351954725.131
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794351954725.168
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794351954725.185
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351954725.189
+2026-11-10T23:05:54Z [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794351954726.047
+2026-11-10T23:05:54Z [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794351954726.054
+2026-11-10T23:05:54Z [DEBUG] input_order hop=prompt_fact_sample what=secret_read answer=false us=4 t=1794351954726.960
+2026-11-10T23:05:54Z [DEBUG] input_order hop=prompt_fact_sample what=secret_read answer=false us=0 t=1794351954727.033
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954727.087
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954727.108
+2026-11-10T23:05:54Z [DEBUG] input_order frame layout=true t=1794351954733.831
+2026-11-10T23:05:54Z [DEBUG] input_order hop=prompt_fact_sample what=secret_read answer=false us=4 t=1794351954776.009
+2026-11-10T23:05:54Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=16 key_frame_skipped=0 t=1794351954799.293
+2026-11-10T23:05:54Z [DEBUG] input_order hop=decset_2004 on=false t=1794351954860.246
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_block_completed_event t=1794351954861.969
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794351954862.003
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794351954862.009
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794351954862.013
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351954862.055
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794351954862.074
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794351954862.084
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351954862.087
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954862.259
+2026-11-10T23:05:54Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351954862.280
+2026-11-10T23:05:54Z [DEBUG] input_order hop=precmd_seen consumed=false seq_mode=false enters=0 precmds=0 t=1794351954877.483
+2026-11-10T23:05:54Z [DEBUG] input_order hop=decset_2004 on=true t=1794351954877.728
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794351954877.792
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=new_14 t=1794351954877.809
+2026-11-10T23:05:54Z [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794351954878.551
+2026-11-10T23:05:54Z [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794351954878.565
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children t=1794351954878.592
+2026-11-10T23:05:54Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children_2 t=1794351954878.598
+2026-11-10T23:05:54Z [DEBUG] input_order hop=handoff_request_skipped reason=line_editor_not_proven t=1794351954878.607
+2026-11-10T23:05:54Z [DEBUG] input_order hop=handoff_decision decision=Legacy retry=false t=1794351954878.611
+2026-11-10T23:05:54Z [DEBUG] input_order hop=frame_skip_run skipped=3 held_ms=25 key_frame_skipped=0 t=1794351954890.968
+2026-11-10T23:05:54Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=10 key_frame_skipped=0 t=1794351954924.292
+2026-11-10T23:06:02Z [DEBUG] input_order hop=os_key_event age_ms=3.483 enter=false ctrl=true t=1794351962454.185
+2026-11-10T23:06:02Z [DEBUG] input_order hop=keydown_menu ctrl=true cmd=false t=1794351962480.034
+2026-11-10T23:06:03Z [DEBUG] input_order hop=os_key_event age_ms=1.043 enter=false ctrl=true t=1794351963020.765
+2026-11-10T23:06:03Z [DEBUG] input_order hop=mac_ctrl stage=key_down_impl_entry since_send_ms=0.399 t=1794351963021.247
+2026-11-10T23:06:03Z [DEBUG] input_order hop=mac_ctrl stage=after_interpret_key_events since_send_ms=0.836 t=1794351963021.684
+2026-11-10T23:06:03Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=1 key="u" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794351963021.955
+2026-11-10T23:06:03Z [DEBUG] input_order hop=mac_ctrl stage=after_handle_view_event since_send_ms=1.241 t=1794351963022.088
+2026-11-10T23:06:03Z [DEBUG] input_order hop=key_frame_sched ms=6.48 t=1794351963028.566
+2026-11-10T23:06:03Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=21.97 key_to_presented_ms=31.55 sync=0 wait_ms=1.38 t=1794351963053.667
+2026-11-10T23:06:05Z [DEBUG] input_order hop=os_key_event age_ms=2.434 enter=false ctrl=false t=1794351965048.869
+2026-11-10T23:06:05Z [DEBUG] input_order hop=kh_pane_key seq=1 seq=1 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351965050.915
+2026-11-10T23:06:05Z [DEBUG] input_order hop=kh_editor_action seq=1 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794351965050.941
+2026-11-10T23:06:05Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351965051.408
+2026-11-10T23:06:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351965051.733
+2026-11-10T23:06:05Z [DEBUG] input_order hop=kh_edit_sync seq=1 us=1305 t=1794351965052.934
+2026-11-10T23:06:05Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351965052.970
+2026-11-10T23:06:05Z [DEBUG] input_order hop=kh_pane_key seq=1 seq=1 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351965053.352
+2026-11-10T23:06:05Z [DEBUG] input_order hop=key_frame_sched ms=1.54 t=1794351965054.799
+2026-11-10T23:06:05Z [DEBUG] input_order hop=key_frame layout=true t=1794351965056.876
+2026-11-10T23:06:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=27 render_ms=0.24 layout_ms=1.14 after_layout_ms=0.10 paint_ms=0.49 hover_ms=0.00 total_ms=2.13 layout_top=EditorView:0.70,AcceptAutosuggestionKeybinding:0.18,Workspace:0.07 paint_top=AcceptAutosuggestionKeybinding:0.19,Workspace:0.09,EditorView:0.06 t=1794351965057.049
+2026-11-10T23:06:05Z [DEBUG] input_order hop=frame_skip_run skipped=2 held_ms=15 key_frame_skipped=1 t=1794351965071.749
+2026-11-10T23:06:05Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=30.90 key_to_presented_ms=53.18 sync=1 wait_ms=0.04 t=1794351965103.422
+2026-11-10T23:06:05Z [DEBUG] input_order hop=os_key_event age_ms=3.523 enter=false ctrl=false t=1794351965939.379
+2026-11-10T23:06:05Z [DEBUG] input_order hop=kh_editor_action seq=1 kind=backspace focused=true hold_active=false buffer_chars=1 buffer="m" t=1794351965941.312
+2026-11-10T23:06:05Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=3 key=backspace ctrl=false alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794351965942.021
+2026-11-10T23:06:05Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351965942.267
+2026-11-10T23:06:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351965942.526
+2026-11-10T23:06:05Z [DEBUG] input_order hop=kh_edit_sync seq=1 us=100 t=1794351965942.566
+2026-11-10T23:06:05Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351965942.600
+2026-11-10T23:06:05Z [DEBUG] input_order hop=key_frame_sched ms=2.41 t=1794351965945.372
+2026-11-10T23:06:05Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=24.99 key_to_presented_ms=33.28 sync=0 wait_ms=1.69 t=1794351965974.422
+2026-11-10T23:06:06Z [DEBUG] input_order hop=os_key_event age_ms=3.170 enter=false ctrl=false t=1794351966826.898
+2026-11-10T23:06:06Z [DEBUG] input_order hop=kh_pane_key seq=2 seq=2 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351966829.327
+2026-11-10T23:06:06Z [DEBUG] input_order hop=kh_editor_action seq=2 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794351966829.369
+2026-11-10T23:06:06Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351966829.918
+2026-11-10T23:06:06Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351966830.232
+2026-11-10T23:06:06Z [DEBUG] input_order hop=kh_edit_sync seq=2 us=121 t=1794351966830.274
+2026-11-10T23:06:06Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351966830.305
+2026-11-10T23:06:06Z [DEBUG] input_order hop=kh_pane_key seq=2 seq=2 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351966830.689
+2026-11-10T23:06:06Z [DEBUG] input_order hop=key_frame_sched ms=2.18 t=1794351966832.850
+2026-11-10T23:06:06Z [DEBUG] input_order hop=key_frame layout=true t=1794351966834.259
+2026-11-10T23:06:06Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=27 render_ms=0.26 layout_ms=0.43 after_layout_ms=0.04 paint_ms=0.56 hover_ms=0.00 total_ms=1.47 layout_top=EditorView:0.12,Workspace:0.07,Terminal:0.06 paint_top=Workspace:0.20,EditorView:0.07,AgentViewZeroState:0.05 t=1794351966834.414
+2026-11-10T23:06:06Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=30.74 key_to_presented_ms=37.43 sync=0 wait_ms=0.07 t=1794351966866.752
+2026-11-10T23:06:07Z [DEBUG] input_order hop=os_key_event age_ms=3.360 enter=false ctrl=false t=1794351967724.772
+2026-11-10T23:06:07Z [DEBUG] input_order hop=kh_editor_action seq=2 kind=backspace focused=true hold_active=false buffer_chars=1 buffer="m" t=1794351967726.697
+2026-11-10T23:06:07Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=5 key=backspace ctrl=false alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794351967727.075
+2026-11-10T23:06:07Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351967727.327
+2026-11-10T23:06:07Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351967727.582
+2026-11-10T23:06:07Z [DEBUG] input_order hop=kh_edit_sync seq=2 us=91 t=1794351967727.621
+2026-11-10T23:06:07Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351967727.658
+2026-11-10T23:06:07Z [DEBUG] input_order hop=key_frame_sched ms=4.80 t=1794351967732.835
+2026-11-10T23:06:07Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=30.70 key_to_presented_ms=39.52 sync=0 wait_ms=0.07 t=1794351967766.861
+2026-11-10T23:06:08Z [DEBUG] input_order hop=os_key_event age_ms=4.122 enter=false ctrl=false t=1794351968633.038
+2026-11-10T23:06:08Z [DEBUG] input_order hop=kh_pane_key seq=3 seq=3 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351968635.184
+2026-11-10T23:06:08Z [DEBUG] input_order hop=kh_editor_action seq=3 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794351968635.215
+2026-11-10T23:06:08Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351968635.668
+2026-11-10T23:06:08Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351968635.968
+2026-11-10T23:06:08Z [DEBUG] input_order hop=kh_edit_sync seq=3 us=125 t=1794351968636.013
+2026-11-10T23:06:08Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351968636.042
+2026-11-10T23:06:08Z [DEBUG] input_order hop=kh_pane_key seq=3 seq=3 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351968636.387
+2026-11-10T23:06:08Z [DEBUG] input_order hop=key_frame_sched ms=4.79 t=1794351968641.160
+2026-11-10T23:06:08Z [DEBUG] input_order hop=key_frame layout=true t=1794351968642.523
+2026-11-10T23:06:08Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=27 render_ms=0.25 layout_ms=0.41 after_layout_ms=0.04 paint_ms=0.56 hover_ms=0.00 total_ms=1.44 layout_top=EditorView:0.11,Workspace:0.07,Terminal:0.05 paint_top=Workspace:0.19,EditorView:0.07,AgentViewZeroState:0.06 t=1794351968642.680
+2026-11-10T23:06:08Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=30.78 key_to_presented_ms=39.67 sync=0 wait_ms=0.07 t=1794351968675.286
+2026-11-10T23:06:09Z [DEBUG] input_order hop=os_key_event age_ms=3.353 enter=false ctrl=false t=1794351969528.216
+2026-11-10T23:06:09Z [DEBUG] input_order hop=kh_editor_action seq=3 kind=backspace focused=true hold_active=false buffer_chars=1 buffer="m" t=1794351969530.181
+2026-11-10T23:06:09Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=7 key=backspace ctrl=false alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794351969530.585
+2026-11-10T23:06:09Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351969530.835
+2026-11-10T23:06:09Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794351969531.092
+2026-11-10T23:06:09Z [DEBUG] input_order hop=kh_edit_sync seq=3 us=94 t=1794351969531.134
+2026-11-10T23:06:09Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794351969531.167
+2026-11-10T23:06:09Z [DEBUG] input_order hop=key_frame_sched ms=1.23 t=1794351969532.775
+2026-11-10T23:06:09Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=31.23 key_to_presented_ms=36.05 sync=0 wait_ms=0.05 t=1794351969566.938
+2026-11-10T23:06:10Z [DEBUG] input_order hop=os_key_event age_ms=8.176 enter=false ctrl=true t=1794351970111.355
+2026-11-10T23:06:10Z [DEBUG] input_order hop=keydown_menu ctrl=true cmd=false t=1794351970116.572
+2026-11-10T23:06:10Z [DEBUG] input_order hop=os_key_event age_ms=2.913 enter=false ctrl=true t=1794351970695.371
+2026-11-10T23:06:10Z [DEBUG] input_order hop=mac_ctrl stage=key_down_impl_entry since_send_ms=0.260 t=1794351970695.710
+2026-11-10T23:06:10Z [DEBUG] input_order hop=mac_ctrl stage=after_interpret_key_events since_send_ms=0.386 t=1794351970695.836
+2026-11-10T23:06:10Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=8 key="u" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794351970696.053
+2026-11-10T23:06:10Z [DEBUG] input_order hop=mac_ctrl stage=after_handle_view_event since_send_ms=0.716 t=1794351970696.166
+2026-11-10T23:06:10Z [DEBUG] input_order hop=key_frame_sched ms=7.30 t=1794351970703.462
+2026-11-10T23:06:10Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=22.02 key_to_presented_ms=32.01 sync=0 wait_ms=1.34 t=1794351970728.172
+2026-11-10T23:06:11Z [DEBUG] input_order hop=view_mode mode=terminal pane=1495 t=1794351971638.945
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794351971641.373
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794351971641.407
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794351971641.421
+2026-11-10T23:06:11Z [DEBUG] input_order hop=view_mode mode=agent pane=1495 t=1794351971642.321
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794351971643.234
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794351971643.248
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794351971643.259
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351971643.302
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=new_12 t=1794351971643.363
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=new_12 t=1794351971643.392
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=new_2 t=1794351971643.452
+2026-11-10T23:06:11Z [DEBUG] input_order hop=key_view_skip enabled=1 t=1794351971643.529
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794351971643.618
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794351971643.625
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351971643.629
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794351971643.716
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794351971643.724
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794351971643.730
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=new_11 t=1794351971643.750
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794351971643.768
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794351971643.772
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794351971643.775
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351971643.792
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794351971644.144
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794351971644.152
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794351971644.156
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351971690.534
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351971690.573
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351971690.586
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351971690.597
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351971690.608
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351971690.845
+2026-11-10T23:06:11Z [DEBUG] input_order hop=decset_2004 on=true t=1794351971710.820
+2026-11-10T23:06:11Z [DEBUG] input_order hop=decset_2004 on=false t=1794351971722.788
+2026-11-10T23:06:11Z [DEBUG] input_order frame layout=true t=1794351971727.984
+2026-11-10T23:06:11Z [DEBUG] input_order hop=ui_item kind=frame ms=26.99 iter=1 layout=true render_ms=10.17 layout_paint_ms=16.82 t=1794351971728.038
+2026-11-10T23:06:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794351971742.079
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children t=1794351971746.855
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children_2 t=1794351971746.878
+2026-11-10T23:06:11Z [DEBUG] input_order hop=notify_cause view=Input cause=new_16 t=1794351971746.899
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=1022 of=56708 t=1794351971753.393
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=22 of=55686 t=1794351971753.443
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55664 t=1794351971753.450
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351971753.456
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=20 of=55658 t=1794351971753.548
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=4 of=55638 t=1794351971753.555
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55634 t=1794351971753.559
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=9 of=55626 t=1794351971753.564
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=4 of=55617 t=1794351971753.568
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=3 of=55613 t=1794351971753.571
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=1 of=55610 t=1794351971753.575
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351971753.578
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=102 of=55609 t=1794351971753.701
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351971753.707
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=35 of=55507 t=1794351971753.726
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=4 of=55472 t=1794351971753.731
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351971753.734
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=21 of=55468 t=1794351971753.768
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=34 of=55447 t=1794351971753.792
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=10 of=55413 t=1794351971753.799
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55403 t=1794351971753.806
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55395 t=1794351971753.812
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55388 t=1794351971753.819
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55380 t=1794351971753.826
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55372 t=1794351971753.832
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=37 of=55365 t=1794351971753.857
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55328 t=1794351971753.863
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55321 t=1794351971753.868
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55314 t=1794351971753.875
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55307 t=1794351971753.881
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55301 t=1794351971753.887
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55294 t=1794351971753.893
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55287 t=1794351971753.900
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55281 t=1794351971753.906
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55274 t=1794351971753.912
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55267 t=1794351971753.919
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55261 t=1794351971753.925
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55255 t=1794351971753.932
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55248 t=1794351971753.939
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55241 t=1794351971753.945
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55234 t=1794351971753.951
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55227 t=1794351971753.957
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55221 t=1794351971753.964
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55214 t=1794351971753.970
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55207 t=1794351971753.977
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55200 t=1794351971753.983
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55193 t=1794351971753.989
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55187 t=1794351971753.995
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55181 t=1794351971754.001
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55175 t=1794351971754.007
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55168 t=1794351971754.013
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55161 t=1794351971754.020
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55154 t=1794351971754.026
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55148 t=1794351971754.032
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55142 t=1794351971754.038
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55136 t=1794351971754.045
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55130 t=1794351971754.051
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55124 t=1794351971754.057
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55117 t=1794351971754.064
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55110 t=1794351971754.070
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55104 t=1794351971754.076
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55098 t=1794351971754.082
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=28 of=55092 t=1794351971754.297
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351971754.308
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=1007 of=55064 t=1794351971763.650
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=233 of=54057 t=1794351971763.682
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794351971763.688
+2026-11-10T23:06:11Z [DEBUG] input_order hop=pty_write_partial wrote=752 of=53824 t=1794351971763.771
+=== lat_evidence: 3548 of 4967 matching lines omitted (cap 161812 bytes) ===
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=555 of=46483 t=1794352091666.793
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091666.797
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=510 of=45928 t=1794352091666.852
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091666.858
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=145 of=45418 t=1794352091666.890
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=160 of=45273 t=1794352091666.910
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091666.913
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=1014 of=45113 t=1794352091667.013
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.018
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=841 of=44099 t=1794352091667.102
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.108
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=336 of=43258 t=1794352091667.151
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.157
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=821 of=42922 t=1794352091667.238
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.243
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=517 of=42101 t=1794352091667.300
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.306
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=263 of=41584 t=1794352091667.345
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.351
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=898 of=41321 t=1794352091667.438
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.444
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=490 of=40423 t=1794352091667.495
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.501
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=501 of=39933 t=1794352091667.557
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.563
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=443 of=39432 t=1794352091667.612
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.617
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=593 of=38989 t=1794352091667.679
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.684
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=405 of=38396 t=1794352091667.730
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.736
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=600 of=37991 t=1794352091667.801
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.806
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=583 of=37391 t=1794352091667.863
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.869
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=511 of=36808 t=1794352091667.922
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.928
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=524 of=36297 t=1794352091667.983
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091667.989
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=543 of=35773 t=1794352091668.046
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.051
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=407 of=35230 t=1794352091668.100
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.106
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=275 of=34823 t=1794352091668.151
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=35 of=34548 t=1794352091668.164
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=212 of=34513 t=1794352091668.193
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.197
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=275 of=34301 t=1794352091668.239
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.253
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=341 of=34026 t=1794352091668.303
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.312
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=1022 of=33685 t=1794352091668.407
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.413
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=475 of=32663 t=1794352091668.465
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.470
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=537 of=32188 t=1794352091668.527
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.533
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=511 of=31651 t=1794352091668.586
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.592
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=377 of=31140 t=1794352091668.637
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.642
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=708 of=30763 t=1794352091668.712
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.717
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=778 of=30055 t=1794352091668.786
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=442 of=29277 t=1794352091668.825
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.829
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=869 of=28835 t=1794352091668.906
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.912
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=437 of=27966 t=1794352091668.962
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091668.968
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=623 of=27529 t=1794352091669.029
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.035
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=561 of=26906 t=1794352091669.092
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.097
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=499 of=26345 t=1794352091669.150
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.155
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=513 of=25846 t=1794352091669.209
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.214
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=488 of=25333 t=1794352091669.265
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.271
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=656 of=24845 t=1794352091669.335
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.341
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=605 of=24189 t=1794352091669.398
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.404
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=383 of=23584 t=1794352091669.450
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.455
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=937 of=23201 t=1794352091669.538
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.554
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=221 of=22264 t=1794352091669.582
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.588
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=897 of=22043 t=1794352091669.676
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.681
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=503 of=21146 t=1794352091669.735
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.740
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=547 of=20643 t=1794352091669.797
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.802
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=422 of=20096 t=1794352091669.852
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.858
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=215 of=19674 t=1794352091669.918
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=211 of=19459 t=1794352091669.954
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091669.959
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=175 of=19248 t=1794352091670.000
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.010
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=670 of=19073 t=1794352091670.083
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.088
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=117 of=18403 t=1794352091670.112
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=111 of=18286 t=1794352091670.126
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=101 of=18175 t=1794352091670.137
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=93 of=18074 t=1794352091670.148
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=109 of=17981 t=1794352091670.161
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=110 of=17872 t=1794352091670.175
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=93 of=17762 t=1794352091670.186
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=109 of=17669 t=1794352091670.198
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=99 of=17560 t=1794352091670.210
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=84 of=17461 t=1794352091670.221
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=86 of=17377 t=1794352091670.231
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=82 of=17291 t=1794352091670.241
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=280 of=17209 t=1794352091670.269
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.273
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=998 of=16929 t=1794352091670.373
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.389
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=77 of=15931 t=1794352091670.405
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=162 of=15854 t=1794352091670.425
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.429
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=705 of=15692 t=1794352091670.580
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.585
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=382 of=14987 t=1794352091670.631
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.637
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=489 of=14605 t=1794352091670.695
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.700
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=526 of=14116 t=1794352091670.757
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.762
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=471 of=13590 t=1794352091670.814
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.819
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=561 of=13119 t=1794352091670.877
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.883
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=593 of=12558 t=1794352091670.943
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091670.948
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=565 of=11965 t=1794352091671.005
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.010
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=541 of=11400 t=1794352091671.066
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.072
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=498 of=10859 t=1794352091671.123
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.129
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=491 of=10361 t=1794352091671.181
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.187
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=478 of=9870 t=1794352091671.239
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.281
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=50 of=9392 t=1794352091671.294
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=128 of=9342 t=1794352091671.309
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=128 of=9214 t=1794352091671.324
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=79 of=9086 t=1794352091671.333
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=137 of=9007 t=1794352091671.348
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=125 of=8870 t=1794352091671.363
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=80 of=8745 t=1794352091671.372
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=174 of=8665 t=1794352091671.391
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.394
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=114 of=8491 t=1794352091671.421
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.425
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=37 of=8377 t=1794352091671.437
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=84 of=8340 t=1794352091671.455
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.459
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=71 of=8256 t=1794352091671.478
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.482
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=50 of=8185 t=1794352091671.498
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=58 of=8135 t=1794352091671.515
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=27 of=8077 t=1794352091671.525
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=100 of=8050 t=1794352091671.547
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.550
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=278 of=7950 t=1794352091671.603
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=958 of=7672 t=1794352091671.701
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.709
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=896 of=6714 t=1794352091671.803
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=270 of=5818 t=1794352091671.833
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.838
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=716 of=5548 t=1794352091671.916
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091671.921
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=44 of=4832 t=1794352091671.937
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=138 of=4788 t=1794352091671.954
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=4650 t=1794352091671.958
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=82 of=4643 t=1794352091671.968
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=82 of=4561 t=1794352091671.978
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=66 of=4479 t=1794352091671.987
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=169 of=4413 t=1794352091672.006
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=28 of=4244 t=1794352091672.012
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=246 of=4216 t=1794352091672.059
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091672.073
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=360 of=3970 t=1794352091672.131
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=31 of=3610 t=1794352091672.178
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=108 of=3579 t=1794352091672.203
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091672.207
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=71 of=3471 t=1794352091672.230
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091672.234
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=46 of=3400 t=1794352091672.249
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=187 of=3354 t=1794352091672.278
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091672.282
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=410 of=3167 t=1794352091672.348
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=457 of=2757 t=1794352091672.418
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=97 of=2300 t=1794352091672.435
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=68 of=2203 t=1794352091672.445
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=117 of=2135 t=1794352091672.461
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=85 of=2018 t=1794352091672.473
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=127 of=1933 t=1794352091672.485
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=193 of=1806 t=1794352091672.503
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=66 of=1613 t=1794352091672.514
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=146 of=1547 t=1794352091672.595
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=545 of=1401 t=1794352091672.638
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352091672.643
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=261 of=856 t=1794352091672.686
+2026-11-10T23:08:11Z [DEBUG] input_order hop=pty_write_partial wrote=231 of=595 t=1794352091672.711
+2026-11-10T23:08:11Z [DEBUG] input_order hop=drawable_wait wait_ms=8.10 key_frame=false t=1794352091681.066
+2026-11-10T23:08:11Z [DEBUG] input_order hop=drawable_wait wait_ms=7.90 key_frame=false t=1794352091689.411
+2026-11-10T23:08:11Z [DEBUG] input_order hop=drawable_wait wait_ms=8.31 key_frame=false t=1794352091706.080
+2026-11-10T23:08:11Z [DEBUG] input_order hop=decset_2004 on=false t=1794352091713.506
+2026-11-10T23:08:11Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_block_completed_event t=1794352091713.990
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794352091714.059
+2026-11-10T23:08:11Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794352091714.067
+2026-11-10T23:08:11Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794352091714.071
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352091714.127
+2026-11-10T23:08:11Z [DEBUG] input_order hop=precmd_seen consumed=false seq_mode=false enters=0 precmds=0 t=1794352091714.129
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794352091714.197
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794352091714.215
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352091714.219
+2026-11-10T23:08:11Z [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794352091715.105
+2026-11-10T23:08:11Z [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794352091715.114
+2026-11-10T23:08:11Z [DEBUG] input_order hop=prompt_fact_sample what=secret_read answer=false us=4 t=1794352091715.983
+2026-11-10T23:08:11Z [DEBUG] input_order hop=prompt_fact_sample what=secret_read answer=false us=0 t=1794352091716.052
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352091716.110
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352091716.131
+2026-11-10T23:08:11Z [DEBUG] input_order frame layout=true t=1794352091724.199
+2026-11-10T23:08:11Z [DEBUG] input_order hop=prompt_fact_sample what=secret_read answer=false us=5 t=1794352091765.028
+2026-11-10T23:08:11Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=16 key_frame_skipped=0 t=1794352091789.646
+2026-11-10T23:08:11Z [DEBUG] input_order hop=decset_2004 on=false t=1794352091860.129
+2026-11-10T23:08:11Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_block_completed_event t=1794352091860.594
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794352091860.642
+2026-11-10T23:08:11Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794352091860.650
+2026-11-10T23:08:11Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794352091860.656
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352091860.711
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794352091860.736
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794352091860.749
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352091860.753
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352091861.087
+2026-11-10T23:08:11Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352091861.113
+2026-11-10T23:08:11Z [DEBUG] input_order hop=precmd_seen consumed=false seq_mode=false enters=0 precmds=0 t=1794352091879.164
+2026-11-10T23:08:11Z [DEBUG] input_order hop=decset_2004 on=true t=1794352091879.383
+2026-11-10T23:08:11Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794352091879.470
+2026-11-10T23:08:11Z [DEBUG] input_order hop=notify_cause view=Input cause=new_14 t=1794352091879.486
+2026-11-10T23:08:11Z [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794352091880.228
+2026-11-10T23:08:11Z [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794352091880.233
+2026-11-10T23:08:11Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children t=1794352091880.258
+2026-11-10T23:08:11Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children_2 t=1794352091880.264
+2026-11-10T23:08:11Z [DEBUG] input_order hop=handoff_request_skipped reason=line_editor_not_proven t=1794352091880.276
+2026-11-10T23:08:11Z [DEBUG] input_order hop=handoff_decision decision=Legacy retry=false t=1794352091880.281
+2026-11-10T23:08:11Z [DEBUG] input_order hop=frame_skip_run skipped=2 held_ms=24 key_frame_skipped=0 t=1794352091889.670
+2026-11-10T23:08:11Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=4 key_frame_skipped=0 t=1794352091914.608
+2026-11-10T23:08:12Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=25 key_frame_skipped=0 t=1794352092064.675
+2026-11-10T23:08:19Z [DEBUG] input_order hop=os_key_event age_ms=7.122 enter=false ctrl=true t=1794352099426.769
+2026-11-10T23:08:19Z [DEBUG] input_order hop=keydown_menu ctrl=true cmd=false t=1794352099452.738
+2026-11-10T23:08:19Z [DEBUG] input_order hop=os_key_event age_ms=1.709 enter=false ctrl=true t=1794352099993.319
+2026-11-10T23:08:19Z [DEBUG] input_order hop=mac_ctrl stage=key_down_impl_entry since_send_ms=0.408 t=1794352099993.798
+2026-11-10T23:08:19Z [DEBUG] input_order hop=mac_ctrl stage=after_interpret_key_events since_send_ms=0.862 t=1794352099994.251
+2026-11-10T23:08:19Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=1 key="u" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794352099994.515
+2026-11-10T23:08:19Z [DEBUG] input_order hop=mac_ctrl stage=after_handle_view_event since_send_ms=1.256 t=1794352099994.645
+2026-11-10T23:08:19Z [DEBUG] input_order hop=key_frame_sched ms=3.34 t=1794352099997.980
+2026-11-10T23:08:20Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=22.83 key_to_presented_ms=28.51 sync=0 wait_ms=0.97 t=1794352100023.096
+2026-11-10T23:08:22Z [DEBUG] input_order hop=os_key_event age_ms=1.847 enter=false ctrl=false t=1794352102026.866
+2026-11-10T23:08:22Z [DEBUG] input_order hop=kh_pane_key seq=1 seq=1 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352102028.074
+2026-11-10T23:08:22Z [DEBUG] input_order hop=kh_editor_action seq=1 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794352102028.094
+2026-11-10T23:08:22Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352102028.325
+2026-11-10T23:08:22Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794352102028.548
+2026-11-10T23:08:22Z [DEBUG] input_order hop=kh_edit_sync seq=1 us=886 t=1794352102029.356
+2026-11-10T23:08:22Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352102029.390
+2026-11-10T23:08:22Z [DEBUG] input_order hop=kh_pane_key seq=1 seq=1 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352102029.641
+2026-11-10T23:08:22Z [DEBUG] input_order hop=key_frame_sched ms=1.71 t=1794352102031.298
+2026-11-10T23:08:22Z [DEBUG] input_order hop=key_frame layout=true t=1794352102032.389
+2026-11-10T23:08:22Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=27 render_ms=0.17 layout_ms=0.46 after_layout_ms=0.03 paint_ms=0.34 hover_ms=0.00 total_ms=1.10 layout_top=EditorView:0.25,AcceptAutosuggestionKeybinding:0.09,Workspace:0.03 paint_top=AcceptAutosuggestionKeybinding:0.15,Workspace:0.06,EditorView:0.03 t=1794352102032.498
+2026-11-10T23:08:22Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=16 key_frame_skipped=1 t=1794352102048.504
+2026-11-10T23:08:22Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=32.03 key_to_presented_ms=53.30 sync=1 wait_ms=0.03 t=1794352102081.097
+2026-11-10T23:08:22Z [DEBUG] input_order hop=os_key_event age_ms=3.257 enter=false ctrl=false t=1794352102926.041
+2026-11-10T23:08:22Z [DEBUG] input_order hop=kh_editor_action seq=1 kind=backspace focused=true hold_active=false buffer_chars=1 buffer="m" t=1794352102927.967
+2026-11-10T23:08:22Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=3 key=backspace ctrl=false alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794352102928.597
+2026-11-10T23:08:22Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352102928.844
+2026-11-10T23:08:22Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794352102929.096
+2026-11-10T23:08:22Z [DEBUG] input_order hop=kh_edit_sync seq=1 us=94 t=1794352102929.131
+2026-11-10T23:08:22Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352102929.160
+2026-11-10T23:08:22Z [DEBUG] input_order hop=key_frame_sched ms=2.00 t=1794352102931.514
+2026-11-10T23:08:22Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=24.88 key_to_presented_ms=32.77 sync=0 wait_ms=1.75 t=1794352102960.653
+2026-11-10T23:08:23Z [DEBUG] input_order hop=os_key_event age_ms=3.723 enter=false ctrl=false t=1794352103812.391
+2026-11-10T23:08:23Z [DEBUG] input_order hop=kh_pane_key seq=2 seq=2 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352103814.788
+2026-11-10T23:08:23Z [DEBUG] input_order hop=kh_editor_action seq=2 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794352103814.819
+2026-11-10T23:08:23Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352103815.291
+2026-11-10T23:08:23Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794352103815.613
+2026-11-10T23:08:23Z [DEBUG] input_order hop=kh_edit_sync seq=2 us=133 t=1794352103815.661
+2026-11-10T23:08:23Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352103815.694
+2026-11-10T23:08:23Z [DEBUG] input_order hop=kh_pane_key seq=2 seq=2 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352103816.076
+2026-11-10T23:08:23Z [DEBUG] input_order hop=key_frame_sched ms=2.99 t=1794352103819.041
+2026-11-10T23:08:23Z [DEBUG] input_order hop=key_frame layout=true t=1794352103820.398
+2026-11-10T23:08:23Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=27 render_ms=0.27 layout_ms=0.40 after_layout_ms=0.04 paint_ms=0.51 hover_ms=0.00 total_ms=1.42 layout_top=EditorView:0.11,Workspace:0.07,Terminal:0.05 paint_top=Workspace:0.19,EditorView:0.07,AgentViewZeroState:0.05 t=1794352103820.548
+2026-11-10T23:08:23Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=26.61 key_to_presented_ms=33.93 sync=0 wait_ms=0.08 t=1794352103848.316
+2026-11-10T23:08:24Z [DEBUG] input_order hop=os_key_event age_ms=3.528 enter=false ctrl=false t=1794352104716.067
+2026-11-10T23:08:24Z [DEBUG] input_order hop=kh_editor_action seq=2 kind=backspace focused=true hold_active=false buffer_chars=1 buffer="m" t=1794352104718.051
+2026-11-10T23:08:24Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=5 key=backspace ctrl=false alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794352104718.492
+2026-11-10T23:08:24Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352104718.781
+2026-11-10T23:08:24Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794352104719.090
+2026-11-10T23:08:24Z [DEBUG] input_order hop=kh_edit_sync seq=2 us=121 t=1794352104719.146
+2026-11-10T23:08:24Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352104719.200
+2026-11-10T23:08:24Z [DEBUG] input_order hop=key_frame_sched ms=3.57 t=1794352104723.167
+2026-11-10T23:08:24Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=26.60 key_to_presented_ms=34.38 sync=0 wait_ms=0.07 t=1794352104752.555
+2026-11-10T23:08:25Z [DEBUG] input_order hop=os_key_event age_ms=3.480 enter=false ctrl=false t=1794352105610.935
+2026-11-10T23:08:25Z [DEBUG] input_order hop=kh_pane_key seq=3 seq=3 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352105613.392
+2026-11-10T23:08:25Z [DEBUG] input_order hop=kh_editor_action seq=3 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794352105613.433
+2026-11-10T23:08:25Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352105613.987
+2026-11-10T23:08:25Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794352105614.340
+2026-11-10T23:08:25Z [DEBUG] input_order hop=kh_edit_sync seq=3 us=130 t=1794352105614.384
+2026-11-10T23:08:25Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352105614.416
+2026-11-10T23:08:25Z [DEBUG] input_order hop=kh_pane_key seq=3 seq=3 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352105614.795
+2026-11-10T23:08:25Z [DEBUG] input_order hop=key_frame_sched ms=4.26 t=1794352105619.032
+2026-11-10T23:08:25Z [DEBUG] input_order hop=key_frame layout=true t=1794352105620.570
+2026-11-10T23:08:25Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=27 render_ms=0.30 layout_ms=0.45 after_layout_ms=0.05 paint_ms=0.58 hover_ms=0.00 total_ms=1.60 layout_top=EditorView:0.12,Workspace:0.08,Terminal:0.06 paint_top=Workspace:0.21,EditorView:0.07,AgentViewZeroState:0.06 t=1794352105620.750
+2026-11-10T23:08:25Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=34.72 key_to_presented_ms=43.67 sync=0 wait_ms=0.07 t=1794352105656.332
+2026-11-10T23:08:26Z [DEBUG] input_order hop=os_key_event age_ms=3.151 enter=false ctrl=false t=1794352106512.998
+2026-11-10T23:08:26Z [DEBUG] input_order hop=kh_editor_action seq=3 kind=backspace focused=true hold_active=false buffer_chars=1 buffer="m" t=1794352106514.988
+2026-11-10T23:08:26Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=7 key=backspace ctrl=false alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794352106515.452
+2026-11-10T23:08:26Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352106515.740
+2026-11-10T23:08:26Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794352106516.020
+2026-11-10T23:08:26Z [DEBUG] input_order hop=kh_edit_sync seq=3 us=95 t=1794352106516.061
+2026-11-10T23:08:26Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794352106516.098
+2026-11-10T23:08:26Z [DEBUG] input_order hop=key_frame_sched ms=1.03 t=1794352106517.513
+2026-11-10T23:08:26Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=28.05 key_to_presented_ms=33.26 sync=0 wait_ms=0.07 t=1794352106551.745
+2026-11-10T23:08:27Z [DEBUG] input_order hop=os_key_event age_ms=2.892 enter=false ctrl=true t=1794352107132.256
+2026-11-10T23:08:27Z [DEBUG] input_order hop=keydown_menu ctrl=true cmd=false t=1794352107137.979
+2026-11-10T23:08:27Z [DEBUG] input_order hop=os_key_event age_ms=5.400 enter=false ctrl=true t=1794352107697.694
+2026-11-10T23:08:27Z [DEBUG] input_order hop=mac_ctrl stage=key_down_impl_entry since_send_ms=0.261 t=1794352107698.020
+2026-11-10T23:08:27Z [DEBUG] input_order hop=mac_ctrl stage=after_interpret_key_events since_send_ms=0.377 t=1794352107698.134
+2026-11-10T23:08:27Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=8 key="u" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794352107698.348
+2026-11-10T23:08:27Z [DEBUG] input_order hop=mac_ctrl stage=after_handle_view_event since_send_ms=0.702 t=1794352107698.459
+2026-11-10T23:08:27Z [DEBUG] input_order hop=key_frame_sched ms=3.63 t=1794352107702.087
+2026-11-10T23:08:27Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=31.29 key_to_presented_ms=36.72 sync=0 wait_ms=0.77 t=1794352107735.305
+2026-11-10T23:08:28Z [DEBUG] input_order hop=view_mode mode=terminal pane=1495 t=1794352108639.396
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794352108641.660
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794352108641.685
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794352108641.700
+2026-11-10T23:08:28Z [DEBUG] input_order hop=view_mode mode=agent pane=1495 t=1794352108642.714
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794352108643.705
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794352108643.725
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794352108643.732
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352108643.772
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=new_12 t=1794352108643.830
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=new_12 t=1794352108643.858
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=new_2 t=1794352108643.918
+2026-11-10T23:08:28Z [DEBUG] input_order hop=key_view_skip enabled=1 t=1794352108644.000
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794352108644.096
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794352108644.102
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352108644.106
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794352108644.194
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794352108644.200
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794352108644.206
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=new_11 t=1794352108644.221
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794352108644.237
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794352108644.241
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794352108644.244
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352108644.265
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794352108644.742
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794352108644.750
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352108644.753
+2026-11-10T23:08:28Z [DEBUG] input_order hop=ui_item kind=frame ms=26.13 iter=1 layout=true render_ms=10.14 layout_paint_ms=15.99 t=1794352108716.677
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children t=1794352108738.227
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children_2 t=1794352108738.235
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=new_16 t=1794352108738.248
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108740.959
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108741.032
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108741.051
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108741.061
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108741.083
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108741.325
+2026-11-10T23:08:28Z [DEBUG] input_order frame layout=true t=1794352108743.030
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108744.451
+2026-11-10T23:08:28Z [DEBUG] input_order hop=decset_2004 on=true t=1794352108760.979
+2026-11-10T23:08:28Z [DEBUG] input_order hop=decset_2004 on=false t=1794352108772.067
+2026-11-10T23:08:28Z [DEBUG] input_order hop=drawable_wait wait_ms=3.99 key_frame=false t=1794352108785.132
+2026-11-10T23:08:28Z [DEBUG] input_order hop=drawable_wait wait_ms=15.28 key_frame=false t=1794352108793.416
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=1022 of=56708 t=1794352108801.131
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108801.143
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=28 of=55686 t=1794352108801.183
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108801.188
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=45 of=55658 t=1794352108801.273
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=4 of=55613 t=1794352108801.293
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55609 t=1794352108801.314
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108801.321
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=48 of=55601 t=1794352108801.357
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=10 of=55553 t=1794352108801.366
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55543 t=1794352108801.372
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55536 t=1794352108801.378
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55529 t=1794352108801.385
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55521 t=1794352108801.391
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55513 t=1794352108801.396
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108801.399
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=46 of=55507 t=1794352108801.456
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=19 of=55461 t=1794352108801.470
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=10 of=55442 t=1794352108801.479
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55432 t=1794352108801.486
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=9 of=55424 t=1794352108801.493
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55415 t=1794352108801.499
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55409 t=1794352108801.505
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55401 t=1794352108801.511
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55394 t=1794352108801.518
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55386 t=1794352108801.525
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55378 t=1794352108801.530
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55371 t=1794352108801.536
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55364 t=1794352108801.542
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55357 t=1794352108801.549
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55350 t=1794352108801.554
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55343 t=1794352108801.561
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55336 t=1794352108801.567
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55328 t=1794352108801.573
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=12 of=55321 t=1794352108801.583
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55309 t=1794352108801.589
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55303 t=1794352108801.595
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55296 t=1794352108801.601
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55289 t=1794352108801.607
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=8 of=55282 t=1794352108801.614
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55274 t=1794352108801.620
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55267 t=1794352108801.626
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55260 t=1794352108801.632
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55254 t=1794352108801.638
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55248 t=1794352108801.643
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55242 t=1794352108801.648
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=5 of=55236 t=1794352108801.667
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=19 of=55231 t=1794352108801.682
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55212 t=1794352108801.688
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=7 of=55206 t=1794352108801.696
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55199 t=1794352108801.702
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=6 of=55193 t=1794352108801.708
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=42 of=55187 t=1794352108801.737
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=81 of=55145 t=1794352108801.799
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108801.804
+2026-11-10T23:08:28Z [DEBUG] input_order hop=drawable_wait wait_ms=8.05 key_frame=false t=1794352108810.067
+2026-11-10T23:08:28Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=8 key_frame_skipped=0 t=1794352108810.612
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=902 of=55064 t=1794352108811.009
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=266 of=54162 t=1794352108811.077
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108811.082
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=472 of=53896 t=1794352108811.152
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108811.166
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=390 of=53424 t=1794352108811.225
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108811.235
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=154 of=53034 t=1794352108811.266
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=168 of=52880 t=1794352108811.287
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=132 of=52712 t=1794352108811.303
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=144 of=52580 t=1794352108811.319
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=51 of=52436 t=1794352108811.327
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=92 of=52385 t=1794352108811.338
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=92 of=52293 t=1794352108811.348
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=86 of=52201 t=1794352108811.358
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=110 of=52115 t=1794352108811.371
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=104 of=52005 t=1794352108811.382
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=102 of=51901 t=1794352108811.394
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=27 of=51799 t=1794352108811.399
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=167 of=51772 t=1794352108811.417
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108811.421
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=177 of=51605 t=1794352108811.441
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108811.444
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=477 of=51428 t=1794352108811.511
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108811.521
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=382 of=50951 t=1794352108811.607
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=77 of=50569 t=1794352108811.642
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=175 of=50492 t=1794352108811.669
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108811.673
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=3 of=50317 t=1794352108811.680
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=832 of=50314 t=1794352108811.787
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108811.798
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=286 of=49482 t=1794352108811.847
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108811.861
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=806 of=49196 t=1794352108811.966
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=349 of=48390 t=1794352108811.998
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.003
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=175 of=48041 t=1794352108812.031
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=171 of=47866 t=1794352108812.052
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.057
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=158 of=47695 t=1794352108812.083
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=139 of=47537 t=1794352108812.101
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.105
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=53 of=47398 t=1794352108812.123
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=153 of=47345 t=1794352108812.148
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.152
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=920 of=47192 t=1794352108812.285
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.294
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=109 of=46272 t=1794352108812.314
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=140 of=46163 t=1794352108812.331
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=95 of=46023 t=1794352108812.342
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=91 of=45928 t=1794352108812.353
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=98 of=45837 t=1794352108812.365
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=105 of=45739 t=1794352108812.377
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=104 of=45634 t=1794352108812.388
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=112 of=45530 t=1794352108812.401
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=145 of=45418 t=1794352108812.418
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.421
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=649 of=45273 t=1794352108812.506
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.510
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=1022 of=44624 t=1794352108812.616
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.630
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=112 of=43602 t=1794352108812.646
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=90 of=43490 t=1794352108812.658
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=142 of=43400 t=1794352108812.675
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.681
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=214 of=43258 t=1794352108812.732
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=221 of=43044 t=1794352108812.770
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.776
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=65 of=42823 t=1794352108812.786
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=93 of=42758 t=1794352108812.798
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=135 of=42665 t=1794352108812.813
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=138 of=42530 t=1794352108812.830
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=51 of=42392 t=1794352108812.838
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=201 of=42341 t=1794352108812.857
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108812.861
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=947 of=42140 t=1794352108812.962
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=309 of=41193 t=1794352108813.006
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.013
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=556 of=40884 t=1794352108813.102
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=153 of=40328 t=1794352108813.121
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=131 of=40175 t=1794352108813.138
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=111 of=40044 t=1794352108813.151
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=117 of=39933 t=1794352108813.167
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=90 of=39816 t=1794352108813.179
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=85 of=39726 t=1794352108813.190
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=171 of=39641 t=1794352108813.209
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.212
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=114 of=39470 t=1794352108813.234
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=307 of=39356 t=1794352108813.277
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.282
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=838 of=39049 t=1794352108813.382
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=46 of=38211 t=1794352108813.400
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=77 of=38165 t=1794352108813.419
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.423
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=97 of=38088 t=1794352108813.444
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=206 of=37991 t=1794352108813.467
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.471
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=163 of=37785 t=1794352108813.497
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=120 of=37622 t=1794352108813.518
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=49 of=37502 t=1794352108813.528
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=91 of=37453 t=1794352108813.539
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=416 of=37362 t=1794352108813.572
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.576
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=569 of=36946 t=1794352108813.645
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.650
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=604 of=36377 t=1794352108813.713
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.727
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=311 of=35773 t=1794352108813.774
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.782
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=914 of=35462 t=1794352108813.876
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.882
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=733 of=34548 t=1794352108813.962
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108813.970
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=978 of=33815 t=1794352108814.075
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=1001 of=32837 t=1794352108814.199
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108814.210
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=332 of=31836 t=1794352108814.262
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108814.272
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=456 of=31504 t=1794352108814.355
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108814.365
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=285 of=31048 t=1794352108814.413
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108814.424
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=926 of=30763 t=1794352108814.544
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108814.551
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=1002 of=29837 t=1794352108814.638
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108814.645
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=589 of=28835 t=1794352108814.701
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108814.707
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=418 of=28246 t=1794352108814.757
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108814.764
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=299 of=27828 t=1794352108814.815
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108814.821
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=370 of=27529 t=1794352108814.862
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108814.869
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=153 of=27159 t=1794352108814.894
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=148 of=27006 t=1794352108814.913
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=52 of=26858 t=1794352108814.921
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=152 of=26806 t=1794352108814.938
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=93 of=26654 t=1794352108814.949
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=110 of=26561 t=1794352108814.962
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=106 of=26451 t=1794352108814.974
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=215 of=26345 t=1794352108814.998
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.002
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=972 of=26130 t=1794352108815.098
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=182 of=25158 t=1794352108815.118
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.123
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=787 of=24976 t=1794352108815.199
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=364 of=24189 t=1794352108815.234
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.238
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=709 of=23825 t=1794352108815.312
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.318
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=852 of=23116 t=1794352108815.395
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.403
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=517 of=22264 t=1794352108815.457
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.463
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=444 of=21747 t=1794352108815.513
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.519
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=554 of=21303 t=1794352108815.577
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.583
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=439 of=20749 t=1794352108815.633
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.640
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=466 of=20310 t=1794352108815.692
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.698
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=415 of=19844 t=1794352108815.748
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.754
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=586 of=19429 t=1794352108815.815
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.821
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=403 of=18843 t=1794352108815.869
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.875
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=477 of=18440 t=1794352108815.928
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108815.934
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=559 of=17963 t=1794352108816.005
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=100 of=17404 t=1794352108816.032
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.037
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=914 of=17304 t=1794352108816.137
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.147
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=226 of=16390 t=1794352108816.181
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.187
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=861 of=16164 t=1794352108816.274
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.281
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=424 of=15303 t=1794352108816.330
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.336
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=489 of=14879 t=1794352108816.393
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.398
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=456 of=14390 t=1794352108816.450
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.455
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=480 of=13934 t=1794352108816.509
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.515
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=470 of=13454 t=1794352108816.567
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.577
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=377 of=12984 t=1794352108816.620
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.626
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=771 of=12607 t=1794352108816.701
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.707
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=481 of=11836 t=1794352108816.760
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.766
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=496 of=11355 t=1794352108816.819
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.825
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=498 of=10859 t=1794352108816.878
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.884
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=491 of=10361 t=1794352108816.937
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108816.943
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=478 of=9870 t=1794352108816.996
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.002
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=442 of=9392 t=1794352108817.053
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.059
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=459 of=8950 t=1794352108817.140
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.145
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=386 of=8491 t=1794352108817.191
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.197
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=684 of=8105 t=1794352108817.266
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.272
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=479 of=7421 t=1794352108817.325
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.331
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=435 of=6942 t=1794352108817.380
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.386
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=618 of=6507 t=1794352108817.448
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.454
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=486 of=5889 t=1794352108817.508
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.518
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=357 of=5403 t=1794352108817.561
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.568
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=567 of=5046 t=1794352108817.631
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.637
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=441 of=4479 t=1794352108817.686
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.692
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=459 of=4038 t=1794352108817.744
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.751
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=478 of=3579 t=1794352108817.805
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.811
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=455 of=3101 t=1794352108817.862
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.871
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=385 of=2646 t=1794352108817.917
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.923
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=593 of=2261 t=1794352108817.987
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108817.993
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=562 of=1668 t=1794352108818.059
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108818.068
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=511 of=1106 t=1794352108818.142
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108818.151
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_partial wrote=556 of=595 t=1794352108818.210
+2026-11-10T23:08:28Z [DEBUG] input_order hop=pty_write_wouldblock queued=0 t=1794352108818.216
+2026-11-10T23:08:28Z [DEBUG] input_order hop=decset_2004 on=false t=1794352108857.662
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_block_completed_event t=1794352108858.144
+2026-11-10T23:08:28Z [DEBUG] input_order hop=precmd_seen consumed=false seq_mode=false enters=0 precmds=0 t=1794352108858.216
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794352108858.305
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794352108858.317
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794352108858.322
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352108858.384
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794352108858.418
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794352108858.432
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352108858.436
+2026-11-10T23:08:28Z [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794352108859.198
+2026-11-10T23:08:28Z [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794352108859.206
+2026-11-10T23:08:28Z [DEBUG] input_order hop=prompt_fact_sample what=secret_read answer=false us=3 t=1794352108859.282
+2026-11-10T23:08:28Z [DEBUG] input_order hop=prompt_fact_sample what=secret_read answer=false us=0 t=1794352108859.335
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108859.390
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108859.425
+2026-11-10T23:08:28Z [DEBUG] input_order frame layout=true t=1794352108861.327
+2026-11-10T23:08:28Z [DEBUG] input_order hop=prompt_fact_sample what=secret_read answer=false us=4 t=1794352108909.187
+2026-11-10T23:08:28Z [DEBUG] input_order hop=decset_2004 on=false t=1794352108989.967
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_block_completed_event t=1794352108990.151
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=true t=1794352108990.195
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794352108990.203
+2026-11-10T23:08:28Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794352108990.207
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352108990.260
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_editor seq=0 self_focused=true t=1794352108990.285
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_input seq=0 self_focused=false t=1794352108990.294
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_focus_terminal_view seq=0 self_focused=false ssh_holding=false t=1794352108990.298
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108990.622
+2026-11-10T23:08:28Z [DEBUG] input_order hop=kh_pane_key seq=0 seq=0 class=Composition target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794352108990.646
+2026-11-10T23:08:29Z [DEBUG] input_order hop=precmd_seen consumed=false seq_mode=false enters=0 precmds=0 t=1794352109009.174
+2026-11-10T23:08:29Z [DEBUG] input_order hop=decset_2004 on=true t=1794352109009.402
+2026-11-10T23:08:29Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794352109009.444
+2026-11-10T23:08:29Z [DEBUG] input_order hop=notify_cause view=Input cause=new_14 t=1794352109009.457
+2026-11-10T23:08:29Z [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794352109010.247
+2026-11-10T23:08:29Z [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794352109010.254
+2026-11-10T23:08:29Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children t=1794352109010.282
+2026-11-10T23:08:29Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children_2 t=1794352109010.290
+2026-11-10T23:08:29Z [DEBUG] input_order hop=handoff_request_skipped reason=line_editor_not_proven t=1794352109010.300
+2026-11-10T23:08:29Z [DEBUG] input_order hop=handoff_decision decision=Legacy retry=false t=1794352109010.305
+2026-11-10T23:08:29Z [DEBUG] input_order hop=frame_skip_run skipped=2 held_ms=25 key_frame_skipped=0 t=1794352109019.102
+2026-11-10T23:08:29Z [DEBUG] input_order hop=frame_skip_run skipped=1 held_ms=2 key_frame_skipped=0 t=1794352109043.639
+2026-11-10T23:08:36Z [DEBUG] input_order hop=os_key_event age_ms=2.067 enter=false ctrl=true t=1794352116082.941
+2026-11-10T23:08:36Z [DEBUG] input_order hop=keydown_menu ctrl=true cmd=false t=1794352116107.469
+2026-11-10T23:08:36Z [DEBUG] input_order hop=os_key_event age_ms=0.994 enter=false ctrl=true t=1794352116645.501
+2026-11-10T23:08:36Z [DEBUG] input_order hop=mac_ctrl stage=key_down_impl_entry since_send_ms=0.396 t=1794352116645.965
+2026-11-10T23:08:36Z [DEBUG] input_order hop=mac_ctrl stage=after_interpret_key_events since_send_ms=0.844 t=1794352116646.412
+2026-11-10T23:08:36Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=1 key="u" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794352116646.669
+2026-11-10T23:08:36Z [DEBUG] input_order hop=mac_ctrl stage=after_handle_view_event since_send_ms=1.240 t=1794352116646.810
+2026-11-10T23:08:36Z [DEBUG] input_order hop=key_frame_sched ms=0.07 t=1794352116646.872
+2026-11-10T23:08:36Z [DEBUG] input_order hop=key_frame_now drawn=1 ms=2.35 t=1794352116649.187
+2026-11-10T23:08:36Z [DEBUG] input_order hop=key_presented submit_to_presented_ms=19.61 key_to_presented_ms=22.02 sync=0 wait_ms=0.98 t=1794352116668.857
