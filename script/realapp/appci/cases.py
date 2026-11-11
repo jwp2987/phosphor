@@ -147,6 +147,10 @@ PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*", "lab_enter_no_network_wa
 PROVING += ("grid_snapshot_render", "freeze_and_wake")
 PROVING_FAKE += ("freeze_and_wake",)
 PROVING_LAB += ("lab_freeze_and_wake.*",)
+# round 15 wave 4, desktop integration (docs/design/r14-test-gaps.md T35 / T37 / T38 / T39, design docs/design/r15-w4desk.md; #2075, #2078): display
+# scale 1.25 / 1.5 / 2 and a second output, desktop notifications (a recording service on the app's private bus), a real file drag, a real input method
+PROVING += ("scale_matrix", "desktop_notification", "desktop_notification_agent_question", "drag_drop_file", "ime_compose")
+PROVING_FAKE += ("desktop_notification_agent_question",)
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):
@@ -6497,3 +6501,4 @@ import cases_pointer  # noqa: E402,F401  (r14 wave 3a: link_and_path_click, sele
 import cases_w4core  # noqa: E402,F401  (r15 wave 4 core, #2075, T34 / T36: grid_snapshot_render, freeze_and_wake, lab_freeze_and_wake.*)
 import cases_r15_defects  # noqa: E402,F401  (round 15, #2080 / #2081: scroll_keys_foreground, primary_absent_clipboard_kept)
 import cases_r15_w5c  # noqa: E402,F401  (round 15 wave 5c, T48: gpu_real_render; T47 / T49 / #2071 changed cases that already existed)
+import cases_desk  # noqa: E402,F401  (r15 wave 4, T35/T37/T38/T39: scale_matrix, desktop_notification, desktop_notification_agent_question, drag_drop_file, ime_compose)

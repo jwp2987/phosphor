@@ -8304,6 +8304,8 @@ import selftest_w4win  # noqa: E402  (round 15 wave 4, #2060: the Windows pointe
 CHECKS.extend(selftest_w4win.CHECKS)
 import selftest_r15_w5c  # noqa: E402  (round 15 wave 5c: #2071 scripted recycle answer, T47 privilege-boundary preconditions, T49 process sampling, T48 gpu_real_render)
 CHECKS.extend(selftest_r15_w5c.CHECKS)
+import selftest_desk  # noqa: E402  (round 15 wave 4: cases_desk.py, notify_recorder.py, dragsrc.py; its checks live in their own file)
+CHECKS.extend(selftest_desk.CHECKS)
 
 
 def main():

@@ -2790,6 +2790,7 @@ impl AppContext {
         // presuppose the GUI registry.
         T: Entity,
     {
+        crate::input_order::log_desktop_notification(content.title(), content.body());
         self.platform_delegate.send_desktop_notification(
             content,
             window_id,

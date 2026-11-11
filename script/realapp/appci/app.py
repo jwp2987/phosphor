@@ -30,6 +30,9 @@ if [ -z "$APPCI_NO_KEYRING" ]; then
   fi
   printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || echo "WARNING: gnome-keyring-daemon unavailable" >&2
 fi
+# r15 (r14-test-gaps T37 / T39): a case's own session services (the recording notification service, an input-method daemon) start INSIDE this
+# private bus, before the app. The case writes the lines and names the file in APPCI_SESSION_PRE (App.extra_env, one launch); unset for every other case.
+if [ -n "$APPCI_SESSION_PRE" ] && [ -r "$APPCI_SESSION_PRE" ]; then . "$APPCI_SESSION_PRE"; fi
 echo $$ > "%(run)s/app.pid"
 cd "%(home)s/w"
 exec %(wrap)s"%(bin)s" >> "%(run)s/app.stdout" 2>&1
