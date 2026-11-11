@@ -65,6 +65,12 @@ GITBASH_ONLY = {
     "ui_ghost_accept": "asserts the exact line from rec.log: runs in the Git Bash pane",
     "ui_ctrl_r": "asserts the exact line from rec.log: runs in the Git Bash pane",
     "ui_palette": "asserts the exact line from rec.log: runs in the Git Bash pane",
+    # round 14 wave 2 (cases_agent_w2.py; docs/design/r14-test-gaps.md 7.1 names the Git Bash pane for T11-T15)
+    "agent_model_switch": "specified for the Git Bash pane (r14-test-gaps 7.1 T11). The case types no shell line, so nothing is missing in PowerShell: a second run there costs about 3 minutes and proves the same provider routing: runs in the Git Bash pane",
+    "agent_anthropic_wire": "its approval step is agent_approval's (`echo tok >> file`, the Git Bash pane's rec.log / pty-write count): runs in the Git Bash pane",
+    "agent_autorun_permissions": "the commands under test are POSIX (`ls`, `rm`, `;`, `$(...)`, a pipe to `sh`) and the allow list's matcher is tested with them: runs in the Git Bash pane",
+    "agent_conversation_resume": "specified for the Git Bash pane (r14-test-gaps 7.1 T14). The relaunch waits for the shell's prompt.log, which a PowerShell pane does not write (-NoProfile): runs in the Git Bash pane",
+    "agent_block_context": "`cat file` must be proven to have reached the shell from rec.log before its block is asked about; a PowerShell pane has no rc hook: runs in the Git Bash pane",
     "ui_completions_as_you_type_local": "asserts the menu on screen after typing in the Git Bash pane (the as-you-type default under test)",
     "ui_copy_wrapped_output": "#1976: `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (keyboard and clipboard only)",
     "routing_table": "asserts what the shell received from rec.log: runs in the Git Bash pane",

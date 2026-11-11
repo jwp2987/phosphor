@@ -7822,6 +7822,8 @@ def r14_w1b_pure_parts():
     assert reg["meta_and_word_keys"]["order"] > 94 and reg["first_run_defaults"]["order"] > reg["meta_and_word_keys"]["order"], "the banner and the relaunch come late in a pass"
     doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md"), encoding="utf-8").read()
     assert all(("`%s`" % n) in doc for n in names) and "r14_w1b_pure_parts" in doc and "#2079" in doc, "docs/testing.md does not describe every new case"
+import selftest_agent_w2  # noqa: E402  (round 14 wave 2: cases_agent_w2.py and the fake model's Anthropic wire)
+CHECKS.extend(selftest_agent_w2.CHECKS)
 
 
 def main():
