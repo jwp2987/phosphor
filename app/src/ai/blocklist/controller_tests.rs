@@ -4196,6 +4196,135 @@ fn a_result_a_pane_close_discarded_is_in_no_later_request() {
     });
 }
 
+/// Everything a request of the conversation is built from or leaves behind, and the text a copy
+/// or an export of it gives, as one string: the parameters of every in-flight stream, the
+/// inputs of every exchange, every message of every task, and `export_to_markdown` (the text
+/// `terminal/input.rs` attaches to a prompt). The same places
+/// [`result_ids_sent_or_recorded`] reads, as text.
+fn everything_sent_recorded_or_exported(
+    controller: &super::BlocklistAIController,
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+    app: &warpui::AppContext,
+) -> String {
+    let mut text = String::new();
+    for stream in controller.in_flight_response_streams.streams_for_test() {
+        text.push_str(&format!("{:?}\n", stream.as_ref(app).params_for_test()));
+    }
+    let history = BlocklistAIHistoryModel::as_ref(app);
+    let conversation = history
+        .conversation(&conversation_id)
+        .expect("conversation should exist");
+    for exchange in conversation.all_exchanges() {
+        text.push_str(&format!("{:?}\n", exchange.input));
+    }
+    for task in conversation.all_tasks() {
+        for message in task.messages() {
+            text.push_str(&format!("{message:?}\n"));
+        }
+    }
+    text.push_str(&conversation.export_to_markdown(Some(controller.action_model.as_ref(app))));
+    text
+}
+
+/// #2103, the note of a restored pane (owner decision 2026-11-11): the reply whose finished
+/// results a close discarded says "Results from before this tab was closed were not sent to
+/// the agent. ..." on screen. It is SCREEN ONLY: on the paths the test above checks for the
+/// discarded result (every request, every exchange, every task message) and in the copy /
+/// export text, the note's words never appear, before the next prompt or after it. The note
+/// itself stays with its reply as history across those prompts.
+#[test]
+fn the_note_of_a_restored_pane_is_in_no_request_and_no_export() {
+    use crate::ai::agent::GrepResult;
+    use crate::ai::blocklist::action_model::RESULTS_WITHHELD_BY_CLOSE_NOTE as NOTE;
+    use crate::features::FeatureFlag;
+
+    // Any request or export that held the note would hold this part of it.
+    const NEEDLE: &str = "were not sent to the agent";
+    assert!(NOTE.contains(NEEDLE));
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+        let discarded_id = AIAgentActionId::from("ran-before-close".to_owned());
+        let reply = [discarded_id.clone()];
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(
+                        "ran-before-close",
+                        &root_task_id,
+                        GrepResult::Success {
+                            matched_files: vec![],
+                        },
+                    ),
+                );
+            });
+            assert_eq!(
+                controller
+                    .action_model
+                    .as_ref(ctx)
+                    .results_withheld_by_close_note(&reply),
+                None,
+                "control: no close, no note"
+            );
+            close_and_restore_pane(controller, conversation_id, ctx);
+            assert_eq!(
+                controller
+                    .action_model
+                    .as_ref(ctx)
+                    .results_withheld_by_close_note(&reply),
+                Some(NOTE),
+                "precondition: the restored reply shows the note"
+            );
+            controller.send_user_query_in_conversation(
+                "what next".to_owned(),
+                conversation_id,
+                None,
+                ctx,
+            );
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        controller.update(&mut app, |controller, ctx| {
+            let text = everything_sent_recorded_or_exported(controller, conversation_id, ctx);
+            assert!(
+                text.contains("what next"),
+                "precondition: the prompt after the undo is in what was read: {text}"
+            );
+            assert!(
+                !text.contains(NEEDLE),
+                "the note is on screen only; it is in a request, the history or the export: {text}"
+            );
+            controller.send_user_query_in_conversation(
+                "and then".to_owned(),
+                conversation_id,
+                None,
+                ctx,
+            );
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        controller.update(&mut app, |controller, ctx| {
+            let text = everything_sent_recorded_or_exported(controller, conversation_id, ctx);
+            assert!(text.contains("and then"), "precondition: {text}");
+            assert!(!text.contains(NEEDLE), "{text}");
+            assert_eq!(
+                controller
+                    .action_model
+                    .as_ref(ctx)
+                    .results_withheld_by_close_note(&reply),
+                Some(NOTE),
+                "the note stays with its reply as history: the card it explains still shows \
+                 the kept status"
+            );
+        });
+    });
+}
+
 /// Positive control for the test above: with no close, the same finished result DOES travel
 /// with the user's next prompt (`send_query` prepends the finished results). Without this,
 /// "no result in the request" could be an artifact of the setup.

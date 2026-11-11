@@ -7146,6 +7146,19 @@ that discards something: `hop=agent_close_discard conversation=<id> results=<n> 
   app logged no discard line. NOT judged: the look of the restored cards (no log line or OCR text tells a check mark from a cancel mark);
   screenshot `close_undo_restored` is kept for a person. Self-test `agent_close_undo_pieces_2103`.
   Run: `python3 script/realapp/appci/run.py --cases agent_close_undo_call_status`.
+- **The note of a restored pane** (owner decision 2026-11-11, design `docs/design/r18-closenote.md`; nothing compiled or run when written).
+  A reply whose finished results a close discarded and kept for status says, as its last line, "Results from before this tab was closed were
+  not sent to the agent. Tell it what happened if it matters." (`action_model.rs` `RESULTS_WITHHELD_BY_CLOSE_NOTE`). Screen only.
+  - Unit, `block/view_impl/output_tests.rs` `discarded_by_close_tests::the_reply_of_a_restored_pane_notes_that_its_results_were_not_sent`:
+    the decision the block draws from, with the pane's real action model and a real close-discard. No note before the close (control); the
+    note for a reply holding a discarded call (one that ran, one that was cancelled, both: one note); none for another reply or an empty one;
+    none in the kill switch's arm (`keep_status = false`). It pins the wording. It does not paint the line.
+  - Unit, `controller_tests.rs` `the_note_of_a_restored_pane_is_in_no_request_and_no_export`: the same close, undo and two prompts as
+    `a_result_a_pane_close_discarded_is_in_no_later_request`, read as text on the same paths (every in-flight stream's parameters, every
+    exchange's inputs, every task message) plus `export_to_markdown` (copy, export, the conversation attachment): the note's words are in
+    none of them, before or after the prompts (precondition: each prompt IS in that text), and the note is still on its reply afterwards
+    (it stays as history).
+  - What the next run should show: both unit tests pass.
 - **What the next run should show.** The five unit tests above pass; both paced fuzz tests, the matrix rows with `CloseTab` and the corpus
   replay pass with the exception gone (a new I1 failure after a close is a new finding, not this change's noise); the app case PASSES in the
   agent@fake pass with `close_discard_results >= 1`.

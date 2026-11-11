@@ -1264,7 +1264,54 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
         output_items.add_child(render_stopped_output(props, app))
     }
 
+    // #2103: last in the reply, so it is the line right above the input of a restored pane.
+    if let Some(note) = results_withheld_by_close_note(props, app) {
+        output_items.add_child(
+            render_results_withheld_by_close_note(note, app)
+                .with_agent_output_item_spacing(app)
+                .finish(),
+        );
+    }
+
     output_items.finish()
+}
+
+/// #2103 (owner decision 2026-11-11): the note under a reply some of whose finished results a
+/// pane close discarded, or `None`. After the undo the card of such a call can say it ran while
+/// the model is told the reply's calls were interrupted (#848); the note says so, in words.
+/// The decision is the action model's (`results_withheld_by_close_note`): this only hands it
+/// the calls of this block's reply.
+fn results_withheld_by_close_note(props: Props, app: &AppContext) -> Option<&'static str> {
+    let action_model = props.action_model.as_ref(app);
+    // Every frame of every reply block comes through here: nothing is read from the reply
+    // unless a close has kept a result in this pane.
+    if !action_model.has_results_withheld_by_close() {
+        return None;
+    }
+    let output = props.model.status(app).output_to_render()?;
+    let action_ids: Vec<AIAgentActionId> = output
+        .get()
+        .actions()
+        .map(|action| action.id.clone())
+        .collect();
+    action_model.results_withheld_by_close_note(&action_ids)
+}
+
+/// The note as an element: plain wrapping text in the secondary text colour (the colour of the
+/// other hints under a card; readable, not the disabled grey), no icon and no colour carrying
+/// the meaning. Not selectable, so a selection copied out of the reply never holds it: it is
+/// not part of the conversation.
+fn render_results_withheld_by_close_note(note: &'static str, app: &AppContext) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    Text::new(
+        note,
+        appearance.ui_font_family(),
+        appearance.monospace_font_size(),
+    )
+    .with_color(blended_colors::text_sub(theme, theme.background()))
+    .with_selectable(false)
+    .finish()
 }
 
 fn should_render_stopped_output(props: Props, app: &AppContext) -> bool {

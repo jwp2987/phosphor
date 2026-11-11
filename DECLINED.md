@@ -714,8 +714,13 @@ upstream's behavior is actually a defect rather than a preference.
     (`results_discarded_by_close`), no request path and no copy / export text reads them,
     and a restored pane shows the call that ran as run and the cancelled one as cancelled
     (before, both had no status and showed as cancelled). The model is still told, by the
-    next request's preflight, that those calls were interrupted. Kill switch
-    `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` erases them as before.
+    next request's preflight, that those calls were interrupted, and the restored reply
+    says so on screen (owner decision 2026-11-11, `docs/design/r18-closenote.md`): "Results
+    from before this tab was closed were not sent to the agent. Tell it what happened if it
+    matters." That line is drawn by the reply's block only; it is in no request, no copy /
+    export text and not in the conversation. Kill switch
+    `PHOSPHOR_CLOSE_KEEPS_CALL_STATUS=0` erases the results as before (and then there is no
+    line).
     Since #2104 the stop also cancels, then and there, the calls of a batch that was still
     preprocessing (they used to get their cancelled result whenever the batch's future came
     back, with no event, so a result could appear in a closed pane after the close had

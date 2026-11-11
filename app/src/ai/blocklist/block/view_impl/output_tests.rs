@@ -545,6 +545,118 @@ mod discarded_by_close_tests {
             }
         })
     }
+
+    /// #2103, the note (owner decision 2026-11-11): what the block of a reply decides on when
+    /// it draws "Results from before this tab was closed were not sent to the agent. ..."
+    /// under the reply. With the pane's real action model and a real close-discard:
+    ///
+    /// * before the close: no note (a finished, unsent result is still going to be sent);
+    /// * after the close and its undo: the reply that holds a discarded call has the note,
+    ///   whichever of its calls was discarded (one that ran, one that was cancelled), once
+    ///   for the reply however many there were;
+    /// * a reply with none of those calls, and an empty reply: no note;
+    /// * the kill switch's arm (the close erases, `keep_status = false`): no note.
+    ///
+    /// Scope: the decision `output::results_withheld_by_close_note` takes from the action
+    /// model. It does not paint the line.
+    #[test]
+    fn the_reply_of_a_restored_pane_notes_that_its_results_were_not_sent() {
+        use crate::ai::blocklist::action_model::RESULTS_WITHHELD_BY_CLOSE_NOTE;
+
+        assert_eq!(
+            RESULTS_WITHHELD_BY_CLOSE_NOTE,
+            "Results from before this tab was closed were not sent to the agent. Tell it what \
+             happened if it matters.",
+            "the note's wording (the app case agent_close_undo_call_status reads it off the \
+             screen, and its self-test pins this line)"
+        );
+
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+            app.add_singleton_model(|_| {
+                crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
+            let terminal = add_window_with_terminal(&mut app, None);
+            let terminal_view_id = terminal.read(&app, |view, _| view.id());
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            let action_model = controller.read(&app, |controller, _| {
+                controller.action_model_for_test().clone()
+            });
+            let (conversation_id, task_id) =
+                BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                    let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                    let task_id = history
+                        .conversation(&id)
+                        .expect("conversation should exist")
+                        .get_root_task_id()
+                        .clone();
+                    (id, task_id)
+                });
+
+            let ran = AIAgentActionId::from("ran-before-close".to_owned());
+            let stopped = AIAgentActionId::from("stopped-before-close".to_owned());
+            let other_reply = AIAgentActionId::from("call-of-another-reply".to_owned());
+            let erased = AIAgentActionId::from("erased-by-the-kill-switch".to_owned());
+            let success = || GrepResult::Success {
+                matched_files: vec![],
+            };
+            action_model.update(&mut app, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(&ran, &task_id, success()),
+                );
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(&stopped, &task_id, GrepResult::Cancelled),
+                );
+            });
+            let note = |app: &App, ids: &[&AIAgentActionId]| {
+                action_model.read(app, |action_model, _| {
+                    action_model.results_withheld_by_close_note(ids.iter().copied())
+                })
+            };
+
+            assert!(
+                !action_model.read(&app, |model, _| model.has_results_withheld_by_close()),
+                "control: before the close nothing is withheld"
+            );
+            assert_eq!(note(&app, &[&ran, &stopped]), None);
+
+            // The close and its undo, as the pane drives its controller.
+            controller.update(&mut app, |controller, ctx| {
+                controller.set_suspended_for_close(true);
+                controller.discard_pending_work_for_close(conversation_id, ctx);
+                controller.set_suspended_for_close(false);
+            });
+
+            let shown = Some(RESULTS_WITHHELD_BY_CLOSE_NOTE);
+            assert!(action_model.read(&app, |model, _| model.has_results_withheld_by_close()));
+            assert_eq!(note(&app, &[&ran, &stopped]), shown);
+            assert_eq!(note(&app, &[&ran]), shown);
+            assert_eq!(note(&app, &[&stopped]), shown);
+            assert_eq!(note(&app, &[&other_reply, &ran]), shown);
+            assert_eq!(
+                note(&app, &[&other_reply]),
+                None,
+                "a reply the close took nothing from has no note"
+            );
+            assert_eq!(note(&app, &[]), None);
+
+            // The kill switch's arm: the close erases, keeps nothing, and there is no note.
+            action_model.update(&mut app, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    grep_result(&erased, &task_id, success()),
+                );
+                assert_eq!(
+                    action_model.discard_finished_action_results_for_close(conversation_id, false),
+                    1
+                );
+            });
+            assert_eq!(note(&app, &[&erased]), None);
+        })
+    }
 }
 
 // #1011: reasoning text was rendered with `selectable = false`, so it was excluded from the

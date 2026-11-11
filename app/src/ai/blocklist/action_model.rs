@@ -390,6 +390,17 @@ pub(crate) fn close_keeps_call_status_enabled_from(value: Option<&str>) -> bool 
     )
 }
 
+/// #2103, the note of a restored pane (owner decision 2026-11-11). After a pane close and its
+/// undo, the card of a call can say it ran (the close kept its status) while the model is told
+/// on the next request that the reply's calls were interrupted (#848: a discarded result is
+/// never sent). This line, shown under that reply, tells the user so.
+///
+/// SCREEN ONLY. It is drawn by the reply's block (`block/view_impl/output.rs`) from
+/// [`BlocklistAIActionModel::results_withheld_by_close_note`] and exists nowhere else: it is not
+/// an input, an output message or a result, so no request, copy or export can hold it.
+pub(crate) const RESULTS_WITHHELD_BY_CLOSE_NOTE: &str = "Results from before this tab was closed \
+     were not sent to the agent. Tell it what happened if it matters.";
+
 /// Kill switch for #2104: `PHOSPHOR_STOP_SETTLES_PREPROCESSING=0` (also `off`, `false`, `no`)
 /// restores what a stop (and a new turn) did with a batch that was still preprocessing: its
 /// calls got no result until the batch's future came back, if it ever did, and that late result
@@ -2434,6 +2445,38 @@ impl BlocklistAIActionModel {
     #[cfg(test)]
     pub(crate) fn is_result_discarded_by_close(&self, id: &AIAgentActionId) -> bool {
         self.results_discarded_by_close.contains_key(id)
+    }
+
+    /// Whether the status `id`'s card shows comes from a result a pane close discarded: the
+    /// result was kept for the card (#2103) and the model never received it (#848).
+    pub(crate) fn is_result_withheld_by_close(&self, id: &AIAgentActionId) -> bool {
+        self.results_discarded_by_close.contains_key(id)
+            && self.get_action_result_for_export(id).is_none()
+    }
+
+    /// Whether a pane close has kept any result for its call's status (#2103). The cheap
+    /// question a reply block asks on every frame before it looks at its calls.
+    pub(crate) fn has_results_withheld_by_close(&self) -> bool {
+        !self.results_discarded_by_close.is_empty()
+    }
+
+    /// #2103: the note a reply's block shows under the reply whose calls are `action_ids`, or
+    /// `None`. It is shown exactly when a pane close discarded at least one finished result of
+    /// that reply and kept it for its call's status (the close that logs
+    /// `hop=agent_close_discard results>=1 kept_status=1`): never with the kill switch off (the
+    /// close then keeps nothing), never for a reply no close touched.
+    ///
+    /// It stays with the reply as history, for as long as the cards it explains show the kept
+    /// status (this session; the kept results are not persisted). See
+    /// [`RESULTS_WITHHELD_BY_CLOSE_NOTE`] for why it can reach no request.
+    pub(crate) fn results_withheld_by_close_note<'a>(
+        &self,
+        action_ids: impl IntoIterator<Item = &'a AIAgentActionId>,
+    ) -> Option<&'static str> {
+        action_ids
+            .into_iter()
+            .any(|id| self.is_result_withheld_by_close(id))
+            .then_some(RESULTS_WITHHELD_BY_CLOSE_NOTE)
     }
 
     /// The control flow for initiating cancellations across suggested plans, requested commands,
