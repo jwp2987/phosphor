@@ -87,6 +87,24 @@ through the general encoder). Hex is per byte, so the joined hex is exactly the 
 message: the bytes on the wire do not change. Kill switch `PHOSPHOR_BASH_HOOK_HEX_CACHE=0` (read at
 every prompt, in the shell that runs the hooks; the old whole-message encoding).
 
+Measured after the change (same laptop, bash 5.3.9, remote-flavoured shell, honored prompt; 200
+calls of each function inside the bootstrapped shell, output to /dev/null; cache off = the kill
+switch, i.e. the old code path, in the same build):
+
+| function | cache off | cache on |
+|---|---|---|
+| `__bp_precmd_invoke_cmd` (everything the shell runs between a command's end and the prompt) | 4.17 ms | 2.46 ms |
+| `__warp_precmd_impl` (CommandFinished + Precmd) | 3.18 ms | 1.47 ms |
+| `__warp_preexec_impl` (empty `BASH_COMMAND`) | 0.75 ms | 0.60 ms |
+
+Enter-to-Precmd of `true` through the pty (median of 31, four rounds): remote 6.1 to 5.2 / 5.6 ms,
+local 5.8 / 6.3 to 5.0 / 4.1 ms (noisy: the pty round trip and readline are in it). The byte loop
+costs about 8 us a byte here (not the 4 the comment in the file says), plus about 30 us per call
+for `local LC_ALL=C`. What is left in `__warp_precmd_impl` (about 1.5 ms) was not broken down
+further. On the lab host the precmd side was about 21 ms behind zsh; if the same share comes off
+there, the next lab run's `enter_to_next_prompt_app_ms` for bash drops by roughly 8 to 10 ms. That
+is a prediction, not a measurement.
+
 Rejected: a faster general encoder (a lookup table still loops per byte); `${d//?/3&}` (needs bash
 5.2 and `patsub_replacement`, which a user can switch off); touching zsh or fish (no gap measured).
 Not found by reading and therefore not changed: what makes the lab's bash 5.2 another ~4 ms slower

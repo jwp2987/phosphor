@@ -439,8 +439,13 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           fi
           __warp_hex_encode_to "$truncated_command"
           encoded_message=$__warp_preexec_hex_head$__warp_hex$__warp_preexec_hex_tail
-          __warp_hex_encode_to "${__warp_seq}}}"
-          encoded_message+=$__warp_hex
+          if [[ ${PHOSPHOR_BASH_HOOK_HEX_CACHE-} == 0 ]]; then
+            __warp_hex_encode_to "${__warp_seq}}}"
+            encoded_message+=$__warp_hex
+          else
+            __warp_hex_digits_to "$__warp_seq"
+            encoded_message+=${__warp_hex}7d7d
+          fi
           __warp_emit_hex_message
           warp_maybe_send_reset_grid_osc
         fi
@@ -712,7 +717,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # report the same ID. The Precmd carries this completion metadata so the client can classify
         # it and, if the CommandFinished was missed, recover the completion.
         : "${block_id:=0}"
-        local next_block_id="precmd-${WARP_SESSION_ID:-}-$((block_id++))"
+        local __warp_block_n=$((block_id++))
+        local next_block_id="precmd-${WARP_SESSION_ID:-}-$__warp_block_n"
         # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends,
         # so the app can order them against what it has parsed (arithmetic only, no fork).
         __warp_seq=$((${__warp_seq:-0} + 1))
@@ -723,7 +729,22 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
           warp_send_hook_via_kv_pairs_end_and_reset_grid
         else
-          warp_send_json_message "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": $exit_code, \"next_block_id\": \"$next_block_id\", \"session_id\": ${WARP_SESSION_ID:-}}}"
+          # Phosphor (#2030): only the exit code and the block counter change between prompts in this
+          # message, and the byte loop of __warp_hex_encode_to costs three shell commands a byte
+          # (about 145 bytes here, on every prompt). The fixed text is encoded once per session id
+          # (__warp_hook_hex_pieces) and joined with the hex of the two numbers; hex is per byte, so
+          # the result is exactly the hex of the whole message. PHOSPHOR_BASH_HOOK_HEX_CACHE=0
+          # encodes the whole message every time, as before.
+          if [[ ${PHOSPHOR_BASH_HOOK_HEX_CACHE-} == 0 ]]; then
+            warp_send_json_message "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": $exit_code, \"next_block_id\": \"$next_block_id\", \"session_id\": ${WARP_SESSION_ID:-}}}"
+          else
+            __warp_hook_hex_pieces
+            __warp_hex_digits_to "$exit_code"
+            encoded_message=$__warp_cf_hex_a$__warp_hex$__warp_cf_hex_b
+            __warp_hex_digits_to "$__warp_block_n"
+            encoded_message+=$__warp_hex$__warp_cf_hex_c
+            __warp_emit_hex_message
+          fi
           warp_maybe_send_reset_grid_osc
         fi
 
@@ -1013,12 +1034,33 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           local __warp_pc_head="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\","
           local __warp_pc_mid="\"pwd\": \"$escaped_pwd\",\"ps1\": \"$escaped_ps1\",\"honor_ps1\": $honor_ps1,\"ps1_is_encoded\": true,\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": ${WARP_SESSION_ID:-},\"seq\": "
           local __warp_pc_tail="$__warp_seq${__phosphor_cl_json-}}}"
-          __warp_hex_encode_to "$__warp_pc_head"
-          encoded_message=$__warp_hex
-          __warp_hex_encode_mid_to "$__warp_pc_mid"
-          encoded_message+=$__warp_hex
-          __warp_hex_encode_to "$__warp_pc_tail"
-          encoded_message+=$__warp_hex
+          if [[ ${PHOSPHOR_BASH_HOOK_HEX_CACHE-} == 0 ]]; then
+            __warp_hex_encode_to "$__warp_pc_head"
+            encoded_message=$__warp_hex
+            __warp_hex_encode_mid_to "$__warp_pc_mid"
+            encoded_message+=$__warp_hex
+            __warp_hex_encode_to "$__warp_pc_tail"
+            encoded_message+=$__warp_hex
+          else
+            # Phosphor (#2030): the head's fixed text comes from the per-session cache (see the
+            # CommandFinished message above); only the exit code, the block counter and seq are
+            # encoded here. The listing, when there is one, is encoded as before.
+            __warp_hook_hex_pieces
+            __warp_hex_digits_to "$exit_code"
+            encoded_message=$__warp_pc_hex_a$__warp_hex$__warp_pc_hex_b
+            __warp_hex_digits_to "$__warp_block_n"
+            encoded_message+=$__warp_hex$__warp_pc_hex_c
+            __warp_hex_encode_mid_to "$__warp_pc_mid"
+            encoded_message+=$__warp_hex
+            __warp_hex_digits_to "$__warp_seq"
+            encoded_message+=$__warp_hex
+            if [[ -n ${__phosphor_cl_json-} ]]; then
+              __warp_hex_encode_to "${__phosphor_cl_json}}}"
+              encoded_message+=$__warp_hex
+            else
+              encoded_message+=7d7d
+            fi
+          fi
           __warp_emit_hex_message
         fi
         # Phosphor (#2052): the Precmd is out; the user stage of the precmd starts. (Not after an
@@ -1239,6 +1281,45 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       __warp_hexmid_in=$1
       __warp_hexmid_out=$__warp_hex
       __warp_hexmid_valid=1
+    }
+
+    # Phosphor (#2030): hex of a string of decimal digits into $__warp_hex: the byte of a digit d is
+    # 0x3d, so the hex is `3` + the digit, digit by digit, with no printf. Anything else (empty, a
+    # sign, a letter) goes through __warp_hex_encode_to, so the answer is right for every input.
+    __warp_hex_digits_to () {
+      local __d=${1-}
+      case $__d in
+        '' | *[!0123456789]*) __warp_hex_encode_to "$__d"; return 0 ;;
+      esac
+      __warp_hex=
+      while [[ -n $__d ]]; do
+        __warp_hex+=3${__d:0:1}
+        __d=${__d:1}
+      done
+    }
+
+    # Phosphor (#2030): the fixed text of the CommandFinished message and of the Precmd head,
+    # hex-encoded once per session id (the id is part of the text). The pieces, with the numbers
+    # that go between them:
+    #   CommandFinished  a <exit code> b <block counter> c
+    #   Precmd head      a <exit code> b <block counter> c
+    __warp_hook_hex_pieces () {
+      if [[ -n ${__warp_cf_hex_a:-} && ${__warp_hook_hex_sid-} == "${WARP_SESSION_ID:-}" ]]; then
+        return 0
+      fi
+      __warp_hex_encode_to "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": "
+      __warp_cf_hex_a=$__warp_hex
+      __warp_hex_encode_to ", \"next_block_id\": \"precmd-${WARP_SESSION_ID:-}-"
+      __warp_cf_hex_b=$__warp_hex
+      __warp_hex_encode_to "\", \"session_id\": ${WARP_SESSION_ID:-}}}"
+      __warp_cf_hex_c=$__warp_hex
+      __warp_hex_encode_to "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": "
+      __warp_pc_hex_a=$__warp_hex
+      __warp_hex_encode_to ",\"next_block_id\": \"precmd-${WARP_SESSION_ID:-}-"
+      __warp_pc_hex_b=$__warp_hex
+      __warp_hex_encode_to "\","
+      __warp_pc_hex_c=$__warp_hex
+      __warp_hook_hex_sid=${WARP_SESSION_ID:-}
     }
 
     # Phosphor (#1203): what `warp_escape_ps1 "$(builtin echo "$1")"` printed, without the three
