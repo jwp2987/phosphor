@@ -30,6 +30,9 @@ BOTH = {
     # #2072 (r14-test-gaps T9, T10): both handle the pane themselves. meta_and_word_keys reads PSReadLine history in the PowerShell pane and runs its
     # raw-reader half in the Git Bash pane only; first_run_defaults SKIPs in the Git Bash pane (that pane exists only through a setting)
     "meta_and_word_keys", "first_run_defaults",
+    # r14 wave 2b. T16: the fake model on the host and app-log hops only; it skips itself when the profile has vertical tabs off (no live settings
+    # rewrite on Windows). T19: append_cmd / pane_shell, effect file, rec.log or the PSReadLine history; stop by pid and taskkill.
+    "agent_hidden_tab_attention", "history_survives_restart",
     "crash_kill9_restore", "crash_corrupt_db",       # #1541: taskkill /F /T + relaunch on the same profile (cases_robust.hard_kill; state under %LOCALAPPDATA%\\phosphor)
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
@@ -97,6 +100,8 @@ GITBASH_ONLY = {
     "find_basic": "#2072: `cat` of fixture files and the exact line after Escape from rec.log: runs in the Git Bash pane, judged from the app log (hop=find_state, hop=find_scroll) without OCR",
     "agent_approval": "uses rec.log and effect files in bash syntax: runs in the Git Bash pane (needs the CI model)",
     "hostile_output_recovers": "#2072 (T8): `cat` of a binary file, a POSIX command list around hostile_out.py and rec.log for the exact line: runs in the Git Bash pane",
+    "osc52_write_read": "r14 T18: the OSC 52 sequences are written with bash `printf` and every line is checked against rec.log; PowerShell has neither: runs in the Git Bash pane",
+    "restore_shows_history": "r14 T20: the token is printed by bash `printf '%s%s\\n' A B` so the command text never holds it, and rec.log proves nothing re-ran: runs in the Git Bash pane",
 }
 # PowerShell-only: the same idea as a case that already exists for the other pane
 PS_ONLY = {
@@ -163,6 +168,7 @@ NOT_WINDOWS = {
     "scroll_keys_position": "#2072: the scroll position is read from the screen by OCR and the Windows runner has no OCR engine; the app logs no scroll-position hop yet (T34's grid hop would serve)",
     "sudo_su_real_shell": "sudo/su/ksu do not exist in a Windows pane (#1536)",
     "ssh_drop_reconnect": "not yet ported: the `~.` escape and `kill -9 $$` need verifying against the msys/Win32 ssh clients (#1535)",
+    "settings_ui_toggle_persists": "r14 T17: the Windows backend has no verified Ctrl-, chord, and the case hand-edits the settings file while the app runs (the Windows config path is not wired into cases_ui.settings_path)",
     "cb_settings_ui_open": "the Windows backend has no verified Ctrl-, chord and the page is not OCR-able there",
     "cb_settings_migration": "needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle); the Windows relaunch is the separate runner flow",
     "cb_report_problem": "the Windows Downloads folder is a known folder, not under the scratch HOME, so the bundle does not land where the case looks (set PHOSPHOR_DIAG_BUNDLE_DIR in the app's environment to enable)",

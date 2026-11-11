@@ -5626,3 +5626,69 @@ Not covered by these cases: a terminal-mode twin (the scripted model exists only
 command deny list (T13 tests the allow list path); an explicit "attach this block" key (T15 uses the automatic attachment of blocks run since the
 last prompt); the strikethrough display mode's copy.
 Run one: `APPCI_FAKE_MODEL=1 python3 script/realapp/appci/run.py --modes agent --cases agent_model_switch` (any of the five names).
+## Round 14, wave 2b: agent attention and state across restarts (T16 to T20; design `docs/design/r14-w2b.md`; nothing compiled or run when written)
+Five app cases from `docs/design/r14-test-gaps.md` 7.1, in `appci/cases_r14_state.py`. All five are in `cases.PROVING` (fix tier) and
+stay there: no case leaves PROVING before a numbered release. Worked, unproven: only the self-test ran. Typing is at 10 to 25 ms per
+key with instant Enter and every typed line is checked against what the shell received (`rec.log`; the PSReadLine history in the
+PowerShell pane). Costs are estimates per platform pass, both modes together; the first run records the real ones.
+| case | modes | platforms | est. | what a defect looks like |
+|---|---|---|---|---|
+| `agent_hidden_tab_attention` | agent, fake-model pass (`PROVING_FAKE`) | Linux, macOS; Windows when the profile has vertical tabs on (else SKIP: no live settings rewrite there) | 3 min | the row of a hidden tab never shows the waiting state, shows it for the wrong tab, or keeps it after the answer; keys typed in tab 1 answer the card |
+| `settings_ui_toggle_persists` | terminal, agent | Linux (Wayland, X11), macOS; `winmap.NOT_WINDOWS` | 3 min | a keyboard change writes other keys, is not applied, is gone after a relaunch; a hand edit is not reloaded (#2026) |
+| `osc52_write_read` | terminal, agent | Linux, macOS, Windows Git Bash (`winmap.GITBASH_ONLY`); the ssh half needs the ssh test host | 2 min | a program's OSC 52 write does not reach the clipboard; a read query is answered |
+| `history_survives_restart` | terminal, agent | all five (both Windows panes) | 3 min | a command typed before a quit or a kill -9 is not recalled, is recalled as another line or twice; an agent prompt lands in the shell's history file |
+| `restore_shows_history` | terminal, agent | Linux, macOS, Windows Git Bash (`winmap.GITBASH_ONLY`) | 3 min | the restored view does not hold the earlier output or conversation; a command re-runs |
+Estimated extra fix-tier time: Linux about +14 min, macOS about +14 min, Windows about +10 min over both panes.
+Two trace-only app log lines were added for these cases (through `warpui::input_order::log_hop`, so they are on wherever the other
+`hop=` lines are, the Windows launcher included; one `enabled()` check when logging is off; no behaviour change):
+- `hop=vtab_row_status view=<id> status=<name>` (`workspace/view/vertical_tabs.rs` `log_row_status_hop`): the status badge the
+  vertical tabs panel draws for a terminal row, written when it changes for that view. Names: `ConversationStatus::hop_state_name()`
+  (`blocked`, `in_progress`, `success`, `error`, `transient_error`, `cancelled`, `waiting_for_events`; `hop=turn` uses the same
+  function now), `none` for an agent row with no badge, `no_agent` for a plain terminal. Unit tests in `vertical_tabs_tests.rs`:
+  `conversation_status_hop_names_are_the_ones_the_cases_read`, `row_status_name_follows_the_badge_the_row_draws`,
+  `row_status_hop_has_a_fixed_format_and_logs_only_changes`.
+- `hop=osc52_clipboard op=<write|read> access=<deny|write_only|read_write> allowed=<bool>` (`Osc52ClipboardAccess::hop_detail`,
+  logged where `terminal/view.rs` decides a `ClipboardStore` / `ClipboardLoad`). Unit test in `terminal/settings_tests.rs`:
+  `osc52_hop_detail_names_the_request_the_setting_and_the_outcome`.
+Per case:
+- `agent_hidden_tab_attention`. The waiting state is an icon badge on the row; the word "Blocked" is only in the hover sidecar, so
+  OCR cannot be the oracle (it only notes whether the row's title was read; the screenshot is for a person). Tab 2 asks the scripted
+  model with the `ask_slow` fault (the question arrives 12 s after the prompt); the case shows tab 1 and proves it answers (`pwd`).
+  Then nothing is typed until the row is judged: the ask action reaches `blocked`, a `hop=vtab_row_status ... status=blocked` line
+  follows within 5 s, logged after the switch, for exactly one view, and no row was `blocked` before the question arrived (the two
+  controls: a hop that never, or always, says `blocked` fails). A burst of shell lines and one prose line typed in tab 1 are exact
+  and leave the ask open (no tool result at the model). Tab 2's key and Enter: the ask is `done`, the model gets the answer, the
+  turn ends `success`; back in tab 1 that row ends `success`. A question that arrives before tab 2 is hidden is NOREF, not a pass.
+- `settings_ui_toggle_persists`. Only the Network page has a keyboard focus ring, so the two changes are made through the command
+  palette ("vertical tab layout", "Increase font size"; `ctrl-shift->` is tried when the palette row did nothing). Oracles: the
+  settings key opens one more tab (`hop=tab_activate count=`); the file's flat key set differs in exactly
+  `appearance.vertical_tabs.enabled` and `appearance.text.font_size` (`toml_flat`, any other key is named in the failure); the
+  pane's `stty size` moves (no Pillow needed); after a relaunch both values are in the file and "Decrease font size" writes the
+  saved value minus one (an app that ignored the file writes its default minus one); a hand edit moves `stty size` (control); the
+  file put back to the bytes the app wrote last moves it back (#2026); the app's next write keeps the undone value. The original
+  file is restored at the end. SKIP when the profile writes the vertical tabs key in a form `toml_text` cannot read.
+- `osc52_write_read`. The expectation follows `terminal.osc52_clipboard_access` when the profile sets it (unset: write allowed,
+  read denied, #1963). Write: `printf '\033]52;c;<base64>\a'`, the clipboard is a sentinel first and must hold the token after;
+  one `op=write` hop. Read on Linux and macOS: `appci/osc52_reader.py` (raw tty) sends the query and DSR 5; it must get `ESC[0n`
+  (control: replies reach it) and no `ESC]52;` bytes nor the clipboard's base64; one `op=read allowed=false` hop (the query did
+  arrive). Git Bash has no termios in the harness Python: the query goes out with `printf`, the hop is the verdict and the exact
+  lines typed right after show no reply landed in the shell's input. Then the write and the query again from the remote shell of
+  `ssh fake`. No ssh test host: a note in a local run, NOREF where the run requires the host (#2043).
+- `history_survives_restart`. Per round three append-commands, the stop, the relaunch, three recalls: Up + Enter (the last
+  command; on Windows the command's own prefix is typed first, because the harness types a key-proof line after every relaunch),
+  a typed prefix + Up + Enter, Ctrl-R + a fragment + Enter. Each must make the shell receive exactly the original line once, and
+  the effect file must hold each token twice. Round 1 stops with the quit key on Linux and by pid elsewhere (said in a note),
+  round 2 with kill -9 (`taskkill /T /F` on Windows). The shell's own history file (`.bash_history`, `.zsh_history`, PSReadLine's)
+  holds each typed command at most once before the recalls, and never the agent prompt typed between the rounds (agent mode).
+- `restore_shows_history`. `restore_session` on for the case (`fresh_app` puts it back). The token is printed by
+  `printf '%s%s\n' A B`, so only the OUTPUT holds it. Find is judged from the app's `hop=find_scroll` lines, no OCR: `result=scroll`
+  for the token before the stop (precondition) and after the relaunch; a token never printed must not give `result=scroll`
+  (control). Agent mode adds one agent turn and the same Find for its text (with the fake model the token is in the reply only;
+  with a real provider it is the prompt's); no provider, a turn that did not end `success`, or a Find that does not reach the
+  conversation before the stop make that half NOREF with the reason. Nothing re-ran: the effect file and `rec.log` are unchanged.
+Self-test: `r14_w2b_state_cases` (`appci/selftest.py`) runs every pure part on the input a defect would produce (no waiting row,
+two waiting rows, a row waiting too early; another settings key changed; an OSC 52 reply split over two reads; a recall that ran
+the typed prefix; a Find with no match), pins the registry rows and the app texts the cases read, and fails when a case loses one
+of its controls.
+Run one: `python3 script/realapp/appci/run.py --cases history_survives_restart` (add `APPCI_FAKE_MODEL=1` for
+`agent_hidden_tab_attention`).

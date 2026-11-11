@@ -119,6 +119,26 @@ impl Osc52ClipboardAccess {
             Self::ReadWrite => "Read and write",
         }
     }
+
+    /// The detail of one `hop=osc52_clipboard` line: which half of OSC 52 a program asked for
+    /// (`op=write` sets the clipboard, `op=read` queries it), the setting in force and whether
+    /// it let the request through. Names only, never the clipboard's content. Trace only: the
+    /// real-app case `osc52_write_read` reads it to see that a query reached the app and was
+    /// refused, where "the program got no reply" alone could not tell a refusal from a query
+    /// that never arrived.
+    pub fn hop_detail(self, write: bool) -> String {
+        let (op, allowed) = if write {
+            ("write", self.allows_write())
+        } else {
+            ("read", self.allows_read())
+        };
+        let access = match self {
+            Self::Deny => "deny",
+            Self::WriteOnly => "write_only",
+            Self::ReadWrite => "read_write",
+        };
+        format!("op={op} access={access} allowed={allowed}")
+    }
 }
 
 impl TerminalSettings {

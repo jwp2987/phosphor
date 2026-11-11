@@ -104,12 +104,16 @@ PROVING = (
     # wire format, the safe allow list (auto-run) against rm / `;` / `$(...)` / a pipe to sh, a conversation reopened after a restart, a block's output
     # as context with redaction off and on. All need the scripted model (PROVING_FAKE).
     "agent_model_switch", "agent_anthropic_wire", "agent_autorun_permissions", "agent_conversation_resume", "agent_block_context",
+    # round 14 wave 2b (docs/design/r14-test-gaps.md T16-T20, docs/design/r14-w2b.md): an agent waiting in a hidden tab, a setting changed in the app by
+    # keyboard, OSC 52 write / read, history across a quit and a kill -9, the restored view showing earlier output and conversations
+    "agent_hidden_tab_attention", "settings_ui_toggle_persists", "osc52_write_read", "history_survives_restart", "restore_shows_history",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
 PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_interactive_", "agent_noninteractive_", "agent_latency_", "agent_fault_", "agent_restart_",
                                                          "agent_gate_", "agent_question_")) or n in ("agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming", "network_gate_notice",
-                                                                                                      "agent_model_switch", "agent_anthropic_wire", "agent_autorun_permissions", "agent_conversation_resume", "agent_block_context"))
+                                                                                                      "agent_model_switch", "agent_anthropic_wire", "agent_autorun_permissions", "agent_conversation_resume", "agent_block_context",
+                                                                                                    "agent_hidden_tab_attention"))
 # The PROVING lab cases (cases_lab*.py, the fake ssh lab). Globs, as --cases takes them. The fix tier plays app-test-lab-linux with these
 # (script/ci/ci_seq.py LAB_FIX_CASES), Linux only, APPCI_FAKE_MODEL=1, APPCI_LAB_MATRIX=quick.
 # #1970 / #1983 (round 10): the slow-link and Ctrl-C lab cases had existed since 2026-11-08 but no tier ever played them. lab_enter_no_network_wait is new;
@@ -6449,3 +6453,4 @@ import cases_wrap_vtabs  # noqa: E402,F401  (#1976: ui_copy_wrapped_output / _dr
 import cases_r14_w1a  # noqa: E402,F401  (#2072: round 14 wave 1: history_up_recall, scroll_keys_position, find_basic, tab_lifecycle_keys, routing_table_powershell)
 import cases_daily_b  # noqa: E402,F401  (#2072: r14-test-gaps wave 1 T6-T10: agent_basics_powershell, job_control, hostile_output_recovers, meta_and_word_keys, first_run_defaults)
 import cases_agent_w2  # noqa: E402,F401  (round 14 wave 2, T11-T15: agent_model_switch, agent_anthropic_wire, agent_autorun_permissions, agent_conversation_resume, agent_block_context)
+import cases_r14_state  # noqa: E402,F401  (round 14 wave 2b, T16-T20: agent_hidden_tab_attention, settings_ui_toggle_persists, osc52_write_read, history_survives_restart, restore_shows_history)

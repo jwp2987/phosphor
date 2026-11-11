@@ -70,3 +70,34 @@ fn osc52_write_notice_fires_once() {
         });
     });
 }
+
+/// `hop=osc52_clipboard op=<write|read> access=<setting> allowed=<bool>`: the exact detail the
+/// real-app case `osc52_write_read` parses (`cases_r14_state.OSC52_HOP_RE`), for every setting.
+#[test]
+fn osc52_hop_detail_names_the_request_the_setting_and_the_outcome() {
+    let default = Osc52ClipboardAccess::default();
+    assert_eq!(
+        default.hop_detail(true),
+        "op=write access=write_only allowed=true"
+    );
+    assert_eq!(
+        default.hop_detail(false),
+        "op=read access=write_only allowed=false"
+    );
+    assert_eq!(
+        Osc52ClipboardAccess::Deny.hop_detail(true),
+        "op=write access=deny allowed=false"
+    );
+    assert_eq!(
+        Osc52ClipboardAccess::Deny.hop_detail(false),
+        "op=read access=deny allowed=false"
+    );
+    assert_eq!(
+        Osc52ClipboardAccess::ReadWrite.hop_detail(true),
+        "op=write access=read_write allowed=true"
+    );
+    assert_eq!(
+        Osc52ClipboardAccess::ReadWrite.hop_detail(false),
+        "op=read access=read_write allowed=true"
+    );
+}

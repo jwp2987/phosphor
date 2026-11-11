@@ -1125,15 +1125,7 @@ impl AIConversation {
         if std::mem::discriminant(&prev_status) != std::mem::discriminant(&new_status) {
             // `hop=turn`: a conversation's turn state changed. State names only, never the
             // blocked action's description or an error message.
-            let state = match &new_status {
-                ConversationStatus::InProgress => "in_progress",
-                ConversationStatus::Success => "success",
-                ConversationStatus::Error => "error",
-                ConversationStatus::TransientError => "transient_error",
-                ConversationStatus::Cancelled => "cancelled",
-                ConversationStatus::Blocked { .. } => "blocked",
-                ConversationStatus::WaitingForEvents => "waiting_for_events",
-            };
+            let state = new_status.hop_state_name();
             // Through the input-order hop logger like every other `hop=` line: a plain `info!` here
             // is filtered out by the app-test RUST_LOG (only named targets are on), so no case ever
             // saw a `success`/`error` turn.
@@ -5041,6 +5033,22 @@ impl std::fmt::Display for ConversationStatus {
 }
 
 impl ConversationStatus {
+    /// The state name the `hop=` log lines use for this status (`hop=turn state=`, and the
+    /// vertical tabs panel's `hop=vtab_row_status status=`). A name only: never the blocked
+    /// action's description. The real-app cases parse these names, so a rename here changes
+    /// what they read (pinned by `conversation_status_hop_names_are_the_ones_the_cases_read`).
+    pub(crate) fn hop_state_name(&self) -> &'static str {
+        match self {
+            ConversationStatus::InProgress => "in_progress",
+            ConversationStatus::Success => "success",
+            ConversationStatus::Error => "error",
+            ConversationStatus::TransientError => "transient_error",
+            ConversationStatus::Cancelled => "cancelled",
+            ConversationStatus::Blocked { .. } => "blocked",
+            ConversationStatus::WaitingForEvents => "waiting_for_events",
+        }
+    }
+
     pub fn render_icon(&self, appearance: &Appearance) -> warpui::elements::Icon {
         match self {
             ConversationStatus::InProgress => in_progress_icon(appearance),

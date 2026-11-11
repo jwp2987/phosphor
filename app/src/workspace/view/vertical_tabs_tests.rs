@@ -1488,3 +1488,87 @@ fn test_each_agent_signal_is_sufficient_on_its_own() {
         "a terminal with none of the three signals must stay in the Terminal band"
     );
 }
+
+/// The names `hop=turn state=` and `hop=vtab_row_status status=` print. The real-app cases
+/// (`script/realapp/appci`: `cases_agent_resilience.TURN_RE`, `cases_r14_state.ROW_STATUS_RE`)
+/// parse them, so a rename must fail here first.
+#[test]
+fn conversation_status_hop_names_are_the_ones_the_cases_read() {
+    let blocked = ConversationStatus::Blocked {
+        blocked_action: "a question with a secret in it".to_string(),
+    };
+    assert_eq!(blocked.hop_state_name(), "blocked");
+    assert_eq!(
+        ConversationStatus::InProgress.hop_state_name(),
+        "in_progress"
+    );
+    assert_eq!(ConversationStatus::Success.hop_state_name(), "success");
+    assert_eq!(ConversationStatus::Error.hop_state_name(), "error");
+    assert_eq!(
+        ConversationStatus::TransientError.hop_state_name(),
+        "transient_error"
+    );
+    assert_eq!(ConversationStatus::Cancelled.hop_state_name(), "cancelled");
+    assert_eq!(
+        ConversationStatus::WaitingForEvents.hop_state_name(),
+        "waiting_for_events"
+    );
+}
+
+/// The status badge name of a terminal row: the agent's conversation status, `none` for an
+/// agent row without a badge, `no_agent` for a plain terminal. The blocked action's text never
+/// reaches the name.
+#[test]
+fn row_status_name_follows_the_badge_the_row_draws() {
+    use super::row_status_name;
+    use crate::ui_components::icon_with_status::IconWithStatusVariant;
+
+    let blocked = IconWithStatusVariant::OzAgent {
+        status: Some(ConversationStatus::Blocked {
+            blocked_action: "ask the user".to_string(),
+        }),
+        is_ambient: false,
+    };
+    assert_eq!(row_status_name(Some(&blocked)), "blocked");
+    let done = IconWithStatusVariant::OzAgent {
+        status: Some(ConversationStatus::Success),
+        is_ambient: false,
+    };
+    assert_eq!(row_status_name(Some(&done)), "success");
+    let cli = IconWithStatusVariant::CLIAgent {
+        agent: CLIAgent::Claude,
+        status: Some(ConversationStatus::InProgress),
+        is_ambient: false,
+    };
+    assert_eq!(row_status_name(Some(&cli)), "in_progress");
+    let no_badge = IconWithStatusVariant::OzAgent {
+        status: None,
+        is_ambient: false,
+    };
+    assert_eq!(row_status_name(Some(&no_badge)), "none");
+    assert_eq!(row_status_name(None), "no_agent");
+}
+
+/// `hop=vtab_row_status view=<id> status=<name>`: the exact detail text, and one line per
+/// change of a view's status (a row is rendered on every frame; an unchanged status must not
+/// log again, another view's status is tracked on its own).
+#[test]
+fn row_status_hop_has_a_fixed_format_and_logs_only_changes() {
+    use super::{row_status_changed, row_status_hop_detail};
+    use std::collections::HashMap;
+
+    assert_eq!(
+        row_status_hop_detail(EntityId::from_usize(42), "blocked"),
+        "view=42 status=blocked"
+    );
+
+    let mut logged = HashMap::new();
+    let (a, b) = (EntityId::from_usize(1), EntityId::from_usize(2));
+    assert!(row_status_changed(&mut logged, a, "in_progress"));
+    assert!(!row_status_changed(&mut logged, a, "in_progress"));
+    assert!(row_status_changed(&mut logged, b, "in_progress"));
+    assert!(row_status_changed(&mut logged, a, "blocked"));
+    assert!(!row_status_changed(&mut logged, a, "blocked"));
+    assert!(!row_status_changed(&mut logged, b, "in_progress"));
+    assert!(row_status_changed(&mut logged, a, "success"));
+}
