@@ -42,8 +42,8 @@ mod suggestion_chip_view;
 pub mod summarization_cancel_dialog;
 pub(crate) mod telemetry;
 // The calling thread's CPU clock, which the detection request's compute is measured on (#1651).
-pub(crate) mod thread_cpu;
 pub(crate) mod repeated_failure;
+pub(crate) mod thread_cpu;
 pub(crate) mod turn_invariant;
 pub mod usage;
 
