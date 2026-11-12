@@ -191,18 +191,33 @@ def _sweep_dir(dirpath):
     if os.name != "nt":
         return
     me = os.getpid()
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('%s') -and $_.ProcessId -ne %d } | "
-          "ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.Name }" % (dirpath.replace("'", "''"), me))
+    # every process: pid, parent pid, does its command line name the build dir, name. The job's OWN chain (this script's ancestors: the bash
+    # running run_suite.sh, the job's PowerShell, the runner's step script) also names the build dir and must never be ended (review 2026-11-12).
+    ps = ("Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2} {3}' -f $_.ProcessId, $_.ParentProcessId, "
+          "[int]([bool]($_.CommandLine -and $_.CommandLine.Contains('%s'))), $_.Name }" % dirpath.replace("'", "''"))
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60).stdout
     except Exception as e:      # noqa: BLE001
         _log("dir sweep skipped: %s" % e)
         return
-    for ln in out.splitlines():
-        f = ln.split(None, 1)
-        if f and f[0].isdigit() and int(f[0]) != me:
-            _log("dir sweep: ending leftover pid %s (%s)" % (f[0], f[1] if len(f) > 1 else ""))
-            _kill_pid(int(f[0]))
+    for pid, name in sweep_victims(out, me):
+        _log("dir sweep: ending leftover pid %d (%s)" % (pid, name))
+        _kill_pid(pid)
+
+
+def sweep_victims(table, me):
+    """pure: from 'pid ppid names_dir name' lines, the (pid, name) to end: names the build dir, and is neither `me` nor any ancestor of `me`."""
+    parent, rows = {}, []
+    for ln in table.splitlines():
+        f = ln.split(None, 3)
+        if len(f) >= 3 and f[0].isdigit() and f[1].isdigit():
+            parent[int(f[0])] = int(f[1])
+            rows.append((int(f[0]), f[2] == "1", f[3] if len(f) > 3 else ""))
+    spare, p = set(), me
+    while p and p not in spare:
+        spare.add(p)
+        p = parent.get(p)
+    return [(pid, name) for pid, names_dir, name in rows if names_dir and pid not in spare]
 
 
 def run(cmd, timeout_s=None, grace=5.0, done_re=None, done_grace=90.0):
@@ -266,6 +281,11 @@ def run(cmd, timeout_s=None, grace=5.0, done_re=None, done_grace=90.0):
 
 def self_test():
     import tempfile, textwrap
+    # the dir sweep never ends this script or its ancestors (the job's own shell chain names the build dir too)
+    tbl = "\n".join(["100 1 1 powershell.exe", "200 100 1 bash.exe", "300 200 0 python.exe", "400 300 1 git.exe", "500 1 1 git.exe", "600 1 0 msedge.exe"])
+    assert sweep_victims(tbl, 300) == [(400, "git.exe"), (500, "git.exe")], sweep_victims(tbl, 300)
+    assert sweep_victims("1 0 1 x\n2 1 1 y", 2) == [], "a chain up to the root is spared"
+    print("ok   dir sweep spares run_bounded's own ancestors (the job's shell chain)")
     py = sys.executable
     d = tempfile.mkdtemp(prefix="rb-")
     leaker = os.path.join(d, "leaker.py")
