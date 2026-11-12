@@ -271,9 +271,9 @@ def macptr_case_gates_on_macos():
     """which cases ask for the Mac pointer and the chords, and which still skip there with a stated reason"""
     for fn in (U.c_mouse_copy, WV.c_copy_wrapped_drag, WV.c_vertical_tabs_panel_click, WU.c_context_menu_actions, WU.c_tab_pointer_use):
         assert "mouse_or_skip(ctx, r, mac=True)" in inspect.getsource(fn), fn.__name__
-    assert P.MAC_POINTER_CASES == ("link_and_path_click", "selection_modes")
+    assert P.MAC_POINTER_CASES == ("link_and_path_click", "selection_modes", "wheel_scroll")
     mac_ctx = types.SimpleNamespace(be=_mac_be(), win=False)
-    for name, want in (("primary_and_middle_click", "no PRIMARY selection"), ("wheel_scroll", "not played on macOS yet"), ("some_new_case", "not enabled")):
+    for name, want in (("primary_and_middle_click", "no PRIMARY selection"), ("some_new_case", "not enabled")):
         try:
             P.linux_pointer_or_skip(mac_ctx, Rec(), name)
             raise AssertionError(name)
@@ -285,6 +285,18 @@ def macptr_case_gates_on_macos():
             raise AssertionError(name)
         except Skipped as e:
             assert "NEEDS: the mptr tool" in str(e), str(e)
+    # wheel_scroll: the Mac arm sends the wheel through MacMouse.wheel (mptr w:), not xdotool / the Wayland holder, and asks for the Vision word reader
+    wsrc = inspect.getsource(P.wheel)
+    assert 'ctx.be.name == "mac"' in wsrc and "m.wheel(x, y, steps)" in wsrc and wsrc.index("m.wheel") < wsrc.index("xdotool")
+    assert "U.need_tesseract(r, ctx)" in inspect.getsource(P.c_wheel_scroll)
+    calls = []
+    fake = types.SimpleNamespace(wheel=lambda x, y, n: calls.append(("wheel", x, y, n)), move=lambda x, y: calls.append(("move", x, y)))
+    P.time.sleep, _sl = (lambda *_: None), P.time.sleep
+    try:
+        P.wheel(types.SimpleNamespace(be=types.SimpleNamespace(name="mac")), fake, 10, 20, -3)
+    finally:
+        P.time.sleep = _sl
+    assert calls == [("move", 10, 20), ("wheel", 10, 20, -3)], calls
     assert "the divider drag was not run" in inspect.getsource(P.c_pane_resize_maximize)
     # Held on macOS sets the modifier on the run's mouse and clears it, and starts no Linux tool
     mouse = types.SimpleNamespace(mods=0)
