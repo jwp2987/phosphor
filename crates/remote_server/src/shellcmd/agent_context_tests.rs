@@ -269,17 +269,29 @@ fn skills_script_survives_missing_roots_in_every_shell() {
             output: stdout,
             exit: code,
         });
-        let mut got: Vec<(String, Vec<u8>)> =
-            files.into_iter().map(|f| (f.path, f.bytes)).collect();
+        // Paths are compared below the temp home's own directory name: under Git Bash on Windows
+        // the shell spells the same home `/tmp/.tmpXYZ` while the test knows it as
+        // `C:\Users\...\Temp\.tmpXYZ` (r22c test-workspace-rest-windows).
+        let home_name = h.file_name().unwrap().to_string_lossy().into_owned();
+        let below_home = |p: &str| -> String {
+            let p = p.replace('\\', "/");
+            match p.find(&format!("/{home_name}/")) {
+                Some(i) => p[i + home_name.len() + 2..].to_string(),
+                None => p,
+            }
+        };
+        let mut got: Vec<(String, Vec<u8>)> = files
+            .into_iter()
+            .map(|f| (below_home(&f.path), f.bytes))
+            .collect();
         got.sort();
-        let root = h.display();
         let want = vec![
             (
-                format!("{root}/.claude/skills/alpha/SKILL.md"),
+                ".claude/skills/alpha/SKILL.md".to_string(),
                 b"alpha body".to_vec(),
             ),
             (
-                format!("{root}/.codex/skills/beta gamma/SKILL.md"),
+                ".codex/skills/beta gamma/SKILL.md".to_string(),
                 b"beta body".to_vec(),
             ),
             // `.opencode/skills/.hidden` is NOT a skill: hidden directories are left out, as the
