@@ -630,6 +630,19 @@ fn test_zsh_hooks_survive_strict_options_and_failing_precmd() {
     );
 }
 
+/// #2116: a lone ESC typed ahead into the shell's line makes the typeahead request `ESC i` reach
+/// readline as `ESC ESC i`; the bootstrap must answer that too, or the deferred Enter waits for a
+/// report that never comes.
+#[test]
+fn bash_report_request_survives_a_pending_escape() {
+    let bash = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    assert!(bash.contains(r#"bind -x '"\ei":"warp_report_input"'"#));
+    assert!(
+        bash.contains(r#"bind '"\e\ei":"\ei"'"#),
+        "bash_body.sh lost the ESC ESC i macro that keeps the report request alive (#2116)"
+    );
+}
+
 /// #935: a pasted multi-line command must title the tab with its first line and an ellipsis
 /// instead of running the lines together ("gradle onegradle two"). Runs the real `warp_title`
 /// of the bash bootstrap with a stub `__warp_emit`; skipped, visibly, when bash is missing.

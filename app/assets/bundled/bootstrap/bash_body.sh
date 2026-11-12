@@ -847,6 +847,15 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           bind -x '"\ei":"warp_report_input"'
           bind -m vi-insert -x '"\ei":"warp_report_input"' 2>/dev/null
           bind -m vi-command -x '"\ei":"warp_report_input"' 2>/dev/null
+          # #2116: a lone ESC the app wrote earlier (the Escape key, typed ahead into the line
+          # while a command ran) leaves readline waiting for the key after it, so the request
+          # `ESC i` arrived as `ESC ESC i`, matched nothing, and the report never came (the
+          # deferred Enter then waited out its 10 s patience on Git Bash). `ESC ESC i` is the
+          # same request: a macro that replays `ESC i` (a macro, as the comment on the
+          # native-completions binds below explains: a three-key `bind -x` ran nothing before
+          # bash 4.3).
+          bind '"\e\ei":"\ei"' 2>/dev/null
+          bind -m vi-insert '"\e\ei":"\ei"' 2>/dev/null
         fi
         
         # We need to register bindkeys to enable intra-session switching of the prompt 
