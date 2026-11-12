@@ -7311,7 +7311,7 @@ def fakesshd_app_arm_da1_and_input_stats_2051():
     assert sr.setup_timeline("nothing") == "armed decision=not logged; no setup progress event logged"
     src = open(os.path.join(HERE, "cases_subshell_ready.py")).read()
     assert 'r.note("clear: setup " + setup_timeline(ctx.log_since(off)))' in src
-    assert src.count('r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)" % dt)') == 2     # the budget is not touched
+    assert src.count('r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)') == 2     # the budget is not touched (r26 #2025 may only append a note)
     doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
     assert "fakesshd_app_arm_da1_and_input_stats_2051" in doc and "#2051" in doc
 
