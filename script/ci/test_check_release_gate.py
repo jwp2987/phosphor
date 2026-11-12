@@ -57,12 +57,12 @@ class Gate(unittest.TestCase):
             self.assertIn(n, PLAIN)
         self.assertNotIn("fuzz-smoke-windows", PLAIN)      # unsupported on Windows
         self.assertFalse([n for n in PLAIN if n.startswith(("bench", "mutants"))])
-        self.assertEqual(set(APPS), {"app-test-linux-wayland", "app-test-linux-x11", "app-test-macos", "app-test-windows"})
+        self.assertEqual(set(APPS), {"app-test-linux-wayland", "app-test-macos", "app-test-windows"})   # owner 2026-11-12: no X11 in the gate
 
     def test_wrong_sha(self):
-        r = dict(ALL_RES, **{"appci-out/x11/run/results.json": good(sha="b" * 40)})
+        r = dict(ALL_RES, **{"appci-out/wayland/run/results.json": good(sha="b" * 40)})
         self.assertTrue(any("not " + SHA in x for x in self.problems(results=r)))
-        r = dict(ALL_RES, **{"appci-out/x11/run/results.json": {"meta": {"tier": "release"}, "summary": {"pass": 3}}})   # a pre-gate results.json: no sha
+        r = dict(ALL_RES, **{"appci-out/wayland/run/results.json": {"meta": {"tier": "release"}, "summary": {"pass": 3}}})   # a pre-gate results.json: no sha
         self.assertTrue(self.problems(results=r))
 
     def test_wrong_tier(self):

@@ -10,7 +10,7 @@
 #   fix       (~1 h)   check-linux; test-linux with a nextest filter (--tests, or derived from the git diff);
 #                      test-warpui-core only when its crate changed, test-workspace-rest on every code change (#1496); builds for --platforms
 #                      (default: derived from the diff); app tests in SMOKE mode (APPCI_TIER=smoke). Round 15 (#2058): on the Linux box that is
-#                      the Wayland job, THEN the X11 job in both session modes, THEN the lab job with the PROVING lab cases, one at a time
+#                      the Wayland job, THEN the lab job with the PROVING lab cases, one at a time
 #                      (box_app_sequence). A platform whose
 #                      app-affecting paths (APP_NONAFFECTING below, inverted) equal those of the newest earlier build/*
 #                      pipeline with a SUCCESSFUL, unexpired build job REUSES that build (app-test-*-reuse, job id passed as
@@ -33,7 +33,7 @@
 #                      mutants, mutants-warpui-core and their -macos / -windows twins, one job at a time per machine, no build, no unit or app test.
 #                      They measure the code and its tests, not the app. Run on demand; --collect archives them like any suite (test-results/).
 #   targeted           (owner 2026-11-11) the proof run of a round's fixes, BEFORE the whole harness: only what --cases-file names. Per platform
-#                      (linux-wayland, linux-x11, linux-lab, macos, macos-lab, windows, windows-lab) the case names or globs, passed to that job
+#                      (linux-wayland, linux-lab, macos, macos-lab, windows, windows-lab) the case names or globs, passed to that job
 #                      as APPCI_CASES exactly, with optional arm filters (modes -> APPCI_MODES, win_shells -> APPCI_WIN_SHELLS); per machine the
 #                      unit / integration suites (default: the machine's three unit suites when it plays an app job). Every platform with an app job
 #                      BUILDS (no reuse); unit suites first; a platform without cases is not played and not failed ("not in this targeted run").
@@ -49,7 +49,7 @@ import glapi                                    # every GitLab call: honours Ret
 PROJECT = "88085499"
 LINUX, MAC, WIN = "linux", "macos", "windows"
 BUILD = {LINUX: "build-linux-x86_64", MAC: "build-macos-arm64", WIN: "build-windows-x86_64"}
-APP = {LINUX: ["app-test-linux-wayland", "app-test-linux-x11"], MAC: ["app-test-macos"], WIN: ["app-test-windows"]}
+APP = {LINUX: ["app-test-linux-wayland"], MAC: ["app-test-macos"], WIN: ["app-test-windows"]}
 UNIT_SUFFIX = ["test", "test-warpui-core", "test-workspace-rest"]
 HEAVY_SUFFIX = ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke"]
 # Owner 2026-11-12: bench and mutants measure the code and its tests, not the app, so they are NOT in the release tier; the `repo-validation` tier
@@ -140,7 +140,9 @@ LAB_PLAT_MATRIX = "quick"                       # macOS and Windows: the client 
 LAB_PLAT_PROVING_ONLY_TIERS = ("candidate", "release")
 # The lab jobs keep their own APPCI_CASES ("lab_*"). That glob never sweeps in the replay (run.py plays lab_replay* only when --cases names it), so the
 # replay is played once, by its own job.
-X11_MODES = "terminal,agent"                    # #2058: the X11 pass runs BOTH session modes (agent mode had never run there)
+# Owner decision 2026-11-12: DROP X11. app-test-linux-x11 (and -reuse) is played by NO tier (targeted, fix, candidate, release, repo-validation); the job stays in
+# .gitlab-ci.yml as a manual job, run by hand only. Linux app coverage is Wayland plus the lab. A result of a hand-run X11 job is still collected (APP_RESULT_DIR).
+X11_REFUSED = ("linux-x11", "X11 is not played by any tier (owner 2026-11-12); run app-test-linux-x11 by hand")
 NEEDS_PREFIX = "NEEDS: "                        # a status that starts with this names a machine change: verdict NEEDS (listed, never a pass, not a code failure)
 NOT_PLAYABLE = "not playable"
 # lab_helper.py's own messages for a missing build tool (missing_tools): the job installs nothing, so this is the owner's machine change (#2062)
@@ -166,10 +168,10 @@ def lab_tier_vars(plat, tier="candidate", globs=None, all_families=None):
 
 def box_app_sequence(tier, reuse=False, lab_globs=None):
     """The Linux box's app jobs in play order, as [(job, extra play-time variables)]. The driver plays them ONE AT A TIME, each waited for before the next
-    (owner: one app test at a time on a machine; the resource group only stops an overlap, it does not order). Wayland first, then X11 in both modes
-    (#2058: every tier), then the lab: the PROVING lab cases in the fix tier, every family in candidate / release, and there the replay last (#2063)."""
+    (owner: one app test at a time on a machine; the resource group only stops an overlap, it does not order). Wayland first, then the lab
+    (X11 is played by no tier, owner 2026-11-12): the PROVING lab cases in the fix tier, every family in candidate / release, and there the replay last (#2063)."""
     sfx = "-reuse" if reuse else ""
-    seq = [("app-test-linux-wayland" + sfx, {}), ("app-test-linux-x11" + sfx, {"APPCI_MODES": X11_MODES})]
+    seq = [("app-test-linux-wayland" + sfx, {})]
     if tier == "fix":
         globs = proving_lab_globs() if lab_globs is None else lab_globs
         if globs:
@@ -255,7 +257,7 @@ def red_unit_rows(red, build, apps):
 #    "suites": {"linux": ["test-linux", "integration-linux"], "macos": []},      (default for a machine with app cases: its three unit suites)
 #    "filters": {"test-linux": "test(/terminal::view/)"}}                         (optional nextest filterset per unit suite: TEST_FILTER)
 # The app platforms, in the order one machine plays them (one app job at a time on a machine, as in every tier):
-TARGETED_APP = {"linux-wayland": (LINUX, "app-test-linux-wayland"), "linux-x11": (LINUX, "app-test-linux-x11"), "linux-lab": (LINUX, LAB_APP[LINUX]),
+TARGETED_APP = {"linux-wayland": (LINUX, "app-test-linux-wayland"), "linux-lab": (LINUX, LAB_APP[LINUX]),
                 "macos": (MAC, "app-test-macos"), "macos-lab": (MAC, LAB_APP[MAC]), "windows": (WIN, "app-test-windows"), "windows-lab": (WIN, LAB_APP[WIN])}
 NOT_TARGETED = "not in this targeted run"      # a job the cases file does not name: not played, not judged, NOT a failure (verdict SKIPPED)
 TARGETED_APP_TIER = "targeted"                 # APPCI_TIER of a targeted app job (results.json meta.tier). Not "smoke": a named case runs at full strength
@@ -305,6 +307,8 @@ def targeted_spec(doc):
     if not isinstance(plats, dict):
         bad.append("`platforms` must be an object"); plats = {}
     for key, ent in plats.items():
+        if key == X11_REFUSED[0]:
+            bad.append("%s: %s" % (key, X11_REFUSED[1])); continue
         if key not in TARGETED_APP:
             bad.append("unknown platform %r (known: %s)" % (key, ", ".join(TARGETED_APP))); continue
         if isinstance(ent, list):
@@ -386,7 +390,7 @@ def targeted_spec(doc):
 
 def targeted_vars(key, ent):
     """the play-time variables of the targeted app job of platform `key`: APPCI_CASES is the file's list, comma-joined, in the file's order, and nothing
-    else; the arm filters only when the file gives them (x11: both session modes, as in every tier, #2058); a lab job gets the scripted model and the
+    else; the arm filters only when the file gives them; a lab job gets the scripted model and the
     matrix of the candidate tier (an exactly named arm bypasses the matrix in run.py; a glob is filtered by it)."""
     p = TARGETED_APP[key][0]
     cases = list(ent["cases"])
@@ -397,8 +401,6 @@ def targeted_vars(key, ent):
     v = {"APPCI_TIER": TARGETED_APP_TIER, "APPCI_CASES": ",".join(cases)}
     if ent.get("modes"):
         v["APPCI_MODES"] = ",".join(ent["modes"])
-    elif key == "linux-x11":
-        v["APPCI_MODES"] = X11_MODES
     if ent.get("win_shells"):
         v["APPCI_WIN_SHELLS"] = ",".join(ent["win_shells"])
     if key.endswith("-lab"):
@@ -924,14 +926,16 @@ def self_test_r15(yml, src):
     before = lambda seq, a, b: a in seq and b in seq and seq.index(a) < seq.index(b)
     x11 = job_block("app-test-linux-x11")
     rows = [
-        # #2058: the fix tier plays x11, both modes, after wayland and before the lab; fresh and reused; the job no longer leaves in smoke
-        (box_app_sequence("fix", lab_globs=g) == [("app-test-linux-wayland", {}), ("app-test-linux-x11", {"APPCI_MODES": "terminal,agent"}), (LAB_FIX_JOB, lab_fix_vars(g))],
-         "fix tier, box: wayland, then x11 in both modes, then the PROVING lab cases"),
-        ([n for n, _ in box_app_sequence("fix", True, g)] == ["app-test-linux-wayland-reuse", "app-test-linux-x11-reuse", "app-test-lab-linux-reuse"],
+        # owner 2026-11-12: X11 is dropped; the box plays wayland, then the lab (fresh and reused)
+        (box_app_sequence("fix", lab_globs=g) == [("app-test-linux-wayland", {}), (LAB_FIX_JOB, lab_fix_vars(g))],
+         "fix tier, box: wayland, then the PROVING lab cases (no x11, owner 2026-11-12)"),
+        ([n for n, _ in box_app_sequence("fix", True, g)] == ["app-test-linux-wayland-reuse", "app-test-lab-linux-reuse"],
          "fix tier on a reused build: the same order with the -reuse jobs"),
-        ([n for n, _ in box_app_sequence("fix", lab_globs=())] == ["app-test-linux-wayland", "app-test-linux-x11"], "no PROVING lab glob: no lab job, x11 still played"),
-        (bool(x11) and "exit 77" not in "\n".join(l for l in x11.splitlines() if not l.lstrip().startswith("#")) and "--mode x11" in x11,
-         "app-test-linux-x11 runs in every tier (no exit 77 for APPCI_TIER=smoke)"),
+        ([n for n, _ in box_app_sequence("fix", lab_globs=())] == ["app-test-linux-wayland"], "no PROVING lab glob: no lab job, wayland only"),
+        (bool(x11) and "--mode x11" in x11 and "app-test-linux-x11" not in sum(APP.values(), [])
+         and all(not any("x11" in n for n in seq) for seq in list(fix.values()) + list(cand.values()) + list(rel.values()))
+         and not any("x11" in n for t in ("fix", "candidate", "release") for r_ in (False, True) for n, _ in box_app_sequence(t, r_, g)),
+         "no tier plays app-test-linux-x11 or its -reuse job (owner 2026-11-12); the job stays in .gitlab-ci.yml, run by hand"),
         (all(re.search(r"^%s:" % re.escape(n), yml, re.M) for n in ("app-test-linux-x11-reuse", LAB_APP[MAC], LAB_APP[WIN], REPLAY_JOB, LAB_HELPER_JOB)),
          "every job the plan names exists in .gitlab-ci.yml"),
         (("= (TIER" + "_SKIP, None)") not in src, "the driver marks no app job skipped by tier any more"),
@@ -962,7 +966,7 @@ def self_test_r15(yml, src):
         (tier_plan("fix", reuse=(LINUX, MAC), lab_globs=g)[MAC] == ["app-test-macos-reuse"] and BUILD[LINUX] not in tier_plan("fix", reuse=(LINUX,), lab_globs=g)[LINUX],
          "fix tier reuse: no build job for a reused platform"),
         # #2056 / #2063 / #2064: the candidate tier
-        (cand[LINUX][-4:] == ["app-test-linux-wayland", "app-test-linux-x11", "app-test-lab-linux", "app-test-replay-linux"], "candidate, box: wayland, x11, the lab, the replay, in that order"),
+        (cand[LINUX][-3:] == ["app-test-linux-wayland", "app-test-lab-linux", "app-test-replay-linux"], "candidate, box: wayland, the lab, the replay, in that order"),
         (all(before(cand[LINUX], n, "app-test-linux-wayland") for n in BOX_EXTRA + ["test-linux", LAB_HELPER_JOB, LAB_IMAGE_JOB]),
          "candidate, box: unit, integration and usage suites, the lab image and the lab helper before the first app job"),
         (before(cand[LINUX], LAB_HELPER_JOB, "test-linux") and before(cand[LINUX], "check-linux", LAB_HELPER_JOB), "candidate: lab-helper right after check-linux (the Mac / Windows lab jobs take its artifact)"),
@@ -1075,7 +1079,7 @@ def self_test_targeted(yml, src):
     played = lambda o: [n for k, n, _ in o.calls if k in ("play", "play_wait")]
     idx = lambda o, kind, name: next(i for i, c in enumerate(o.calls) if c[0] == kind and c[1] == name)
     silent = lambda m: None
-    doc = {"platforms": {"linux-wayland": {"cases": ["tab_enter", "ssh_*", "tab_enter"], "modes": ["agent"]}, "linux-x11": [], "macos": {"cases": []},
+    doc = {"platforms": {"linux-wayland": {"cases": ["tab_enter", "ssh_*", "tab_enter"], "modes": ["agent"]}, "macos": {"cases": []},
                          "windows": {"cases": ["big_paste", "gitbash_subshell"], "win_shells": ["gitbash"]}},
            "suites": {"linux": ["integration-linux", "test-linux"]}, "filters": {"test-linux": "test(/terminal::view/)"}, "note": "x"}
     spec = targeted_spec(doc)
@@ -1113,8 +1117,8 @@ def self_test_targeted(yml, src):
         (names(LINUX) == ["test-linux", "integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]", BUILD[LINUX], "app-test-linux-wayland"]
          and names(WIN) == unit_suites(WIN) + [BUILD[WIN], "app-test-windows"],
          "an explicit suite list is exact (`integration-linux` = its three shards); unit suites come BEFORE the build (owner 2026-11-12); no list = the machine's three unit suites"),
-        (MAC not in plan["machines"] and not any("macos" in n for n in played(o)) and "app-test-linux-x11" not in played(o)
-         and all(o.timeline[n] == (NOT_TARGETED, None) and verdict(n, NOT_TARGETED) == "SKIPPED" for n in ("app-test-macos", BUILD[MAC], "app-test-linux-x11", "test-macos", REPLAY_JOB))
+        (MAC not in plan["machines"] and not any("macos" in n for n in played(o)) 
+         and all(o.timeline[n] == (NOT_TARGETED, None) and verdict(n, NOT_TARGETED) == "SKIPPED" for n in ("app-test-macos", BUILD[MAC], "test-macos", REPLAY_JOB))
          and all(verdict(k, v[0]) not in ("FAIL", "OFFLINE") for k, v in o.timeline.items()),
          "a platform with no cases is not played and not failed: its jobs are listed as `not in this targeted run`, verdict SKIPPED"),
         (vars_of["test-linux"] == {"TEST_FILTER": "test(/terminal::view/)"} and vars_of["integration-linux: [1]"] is None, "a suite's filter is passed as TEST_FILTER, to that suite only"),
@@ -1137,8 +1141,9 @@ def self_test_targeted(yml, src):
         (idx(ol, "helper", LAB_HELPER_JOB) < idx(ol, "play_wait", LAB_APP[MAC]) and idx(ol, "image", LAB_IMAGE_JOB) < idx(ol, "play_wait", LAB_APP[LINUX]),
          "the Mac lab job waits for the box's lab image and helper jobs"),
         (oi.timeline[LAB_APP[MAC]][0] == LAB_IMAGE_FAIL == oi.timeline[LAB_APP[LINUX]][0] and LAB_APP[MAC] not in played(oi), "no lab image: the planned lab jobs are FAIL rows, not played"),
-        (targeted_vars("linux-x11", {"cases": ["a"]})["APPCI_MODES"] == X11_MODES and targeted_vars("linux-x11", {"cases": ["a"], "modes": ["terminal"]})["APPCI_MODES"] == "terminal",
-         "the x11 job gets both session modes unless the file narrows them"),
+        (raises({"platforms": {"linux-x11": ["a"]}}) and raises({"platforms": {"linux-x11": []}}) and "linux-x11" not in TARGETED_APP
+         and "X11 is not played by any tier (owner 2026-11-12)" in raises({"platforms": {"linux-wayland": ["a"], "linux-x11": {"cases": ["a"]}}}),
+         "a cases file that names linux-x11 is REFUSED with a clear message (owner 2026-11-12), never silently dropped"),
         (targeted_vars("windows", {"cases": ["a"]})["APPCI_CASES"].split(",")[0] == "mode_proof" and targeted_vars("macos", {"cases": ["mode_proof", "a"]})["APPCI_CASES"] == "mode_proof,a"
          and "mode_proof" not in targeted_vars("linux-lab", {"cases": ["lab_x.bash.lan.nohelper"]})["APPCI_CASES"],
          "every targeted app job plays mode_proof first, once (owner: the mode a row claims is proven every run); a lab job is left as listed"),
@@ -1155,8 +1160,8 @@ def self_test_targeted(yml, src):
          "a misspelled key, platform, suite or variable, a name with a comma or space, a lab case on a non-lab platform (and the reverse), the replay, a filter for a suite that is not played and an empty file are all refused"),
         ("unknown platform 'wayland'" in raises({"platforms": {"wayland": ["a"], "macos": {"x": 1}}}) and "unknown key 'x'" in raises({"platforms": {"wayland": ["a"], "macos": {"x": 1}}}), "every problem of a file is named at once"),
         (app_tier_name("targeted") == "targeted" != app_tier_name("fix"), "targeted app runs record tier=targeted (a named case runs at full strength, not at the smoke settings)"),
-        (all(re.search(r"^%s:" % re.escape(j), yml, re.M) for _, j in TARGETED_APP.values()) and list(TARGETED_APP)[:3] == ["linux-wayland", "linux-x11", "linux-lab"],
-         "every targeted platform is a job of .gitlab-ci.yml; the box plays wayland, x11, lab in that order"),
+        (all(re.search(r"^%s:" % re.escape(j), yml, re.M) for _, j in TARGETED_APP.values()) and list(TARGETED_APP)[:2] == ["linux-wayland", "linux-lab"],
+         "every targeted platform is a job of .gitlab-ci.yml; the box plays wayland, lab in that order"),
         ('"${APPCI_TIER:-}" = targeted' in yml, "the Wayland job leaves out its fixed xwayland pass in a targeted run (that pass has its own case list)"),
         ("APPCI_MODES" in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "realapp", "windows", "ci", "app_test.ps1")).read(), "the Windows app job reads APPCI_MODES (it used to ignore it)"),
         ('if tier_env == "targeted" else None)' in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "realapp", "appci", "run.py")).read(),
@@ -1686,7 +1691,7 @@ def main():
         rv = dict(appvars, APPCI_BUILD_JOB_ID=str(r["job"]), APPCI_BUILD_PIPELINE_ID=str(r["pipeline"]), APPCI_BUILD_SHA=r["sha"], APPCI_BUILD_JOB_NAME=BUILD[p], APPCI_BUILD_REF=r.get("ref", ""))
         if p == LINUX:
             # Round 15 (#2058): the box plays its reused app jobs like its fresh ones: after the box unit suites (owner 2026-11-05; this path used to
-            # start them at once, beside the suites), one at a time, wayland, x11 in both modes, then the PROVING lab cases.
+            # start them at once, beside the suites), one at a time, wayland, then the PROVING lab cases.
             def box_reuse_apps(rv=rv):
                 box_units_done.wait()
                 if box_red:                             # owner 2026-11-12: no app tests on red unit tests
@@ -1745,7 +1750,7 @@ def main():
             return
         # owner 2026-11-12: the unit suites (every machine, every tier that runs them) already ran BEFORE this build was played, and were green
         if p_of[b] == LINUX:
-            # Round 15 (#2058, #2063): wayland, then x11 in both modes, then the lab (fix: the PROVING lab cases, owner rule 2026-11-09; candidate /
+            # Round 15 (#2058, #2063): wayland, then the lab (fix: the PROVING lab cases, owner rule 2026-11-09; candidate /
             # release: every family, then the replay), each waited for before the next is played
             run_box_apps(box_app_sequence(tier), appvars)
             return
@@ -2058,7 +2063,7 @@ def check_app_results(jobs, timeline):
 def verdict(name, status):
     """Per-job verdict. Every job in the timeline counts, app tests included (they are allow_failure in GitLab, so the
     pipeline is green regardless; this verdict is the one that is not). Only an explicit tier skip is neutral (no job has one since round 15: the
-    fix tier plays the x11 job); a NEEDS status (a machine change, named) is listed apart and does not fail the tier; bench,
+    fix tier plays the lab job); a NEEDS status (a machine change, named) is listed apart and does not fail the tier; bench,
     mutants and fuzz are informational (not gating) and keep their status. Anything else that is not success fails."""
     if status in (TIER_SKIP, PLATFORM_UNSUPPORTED, NOT_TARGETED):
         return "SKIPPED"                       # NOT_TARGETED: a job the targeted run's cases file does not name; not played, never a failure

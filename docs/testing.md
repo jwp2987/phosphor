@@ -313,8 +313,9 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 | `diag-mac`, `diag-windows` | test | manual | read-only environment reports |
 | `build-linux-x86_64`, `build-macos-arm64`, `build-windows-x86_64` | build | manual | AppImage+deb (launches `--version`), ad-hoc signed DMG, unsigned Inno installer; `dist/` artifacts, 3 days |
 | `build-{linux,macos,windows}-profiling` | build | manual | unstripped `profiling` profile binary (`docs/profiling.md`) |
-| `app-test-linux-wayland`, `app-test-linux-x11`, `app-test-macos`, `app-test-windows` | apptest | manual, allow_failure, played by `ci_seq.py` after each build | real-app matrix on the built artifact, section 2.8 |
-| `app-test-{linux-wayland,linux-x11,macos,windows}-reuse` | apptest | manual, allow_failure, played by `ci_seq.py` (fix tier) only | the same job on an EARLIER pipeline's build of an app-identical commit (no `needs`; uses the build cached on the same machine, GitLab download only as a fallback), section 2.9 |
+| `app-test-linux-wayland`, `app-test-macos`, `app-test-windows` | apptest | manual, allow_failure, played by `ci_seq.py` after each build | real-app matrix on the built artifact, section 2.8 |
+| `app-test-linux-x11` | apptest | manual, allow_failure, played by NO tier (owner 2026-11-12: X11 dropped; run by hand only) | the old private-Xvfb pass; a hand run is still collected (`collect_results.py`, `APP_RESULT_DIR`) |
+| `app-test-{linux-wayland,macos,windows}-reuse` (and `app-test-linux-x11-reuse`, by hand only) | apptest | manual, allow_failure, played by `ci_seq.py` (fix tier) only | the same job on an EARLIER pipeline's build of an app-identical commit (no `needs`; uses the build cached on the same machine, GitLab download only as a fallback), section 2.9 |
 | `release-gate` | test | `v*` tag only | refuses the tag unless the commit has a green release-tier run (section 2.9 "Release gate") |
 | `release-*`, `cli-*`, `release-publish` | build/publish | `v*` tag (manual dry run on main) | release pipeline, never run end to end on all platforms; `release-meta` and `release-publish` `needs:` every guard, check, suite and `release-gate` |
 
@@ -530,8 +531,7 @@ Each also has a `-reuse` twin that tests an earlier app-identical build (2.9). H
 `script/ci/ci_seq.py` plays them after each successful build, so every numbered build runs them. The play-time variable
 `APPCI_TIER` selects the size: `smoke` (fix tier) or `full`/empty/`release` (candidate = `full`, release = `release`, which the release gate requires; everything below). Smoke = the cases
 `mode_proof`, `cadence`, `fast_typing`, `paste_instant_enter`, `tab_enter`, `ctrl_c_d`, `ssh_connect_typing`, `ssh_enter_then_immediate_command`, `ssh_nested_typeahead`, `latency_enter`, `latency_key_log`, `md_viewer` in both
-modes (`SMOKE` in `script/realapp/appci/cases.py`, applied by `run.py`); on Linux the `wayland` run (without its `xwayland` pass) and, since
-round 15 (#2058), `app-test-linux-x11` in both modes after it; the SAME list on Windows, where a case that cannot run in a pane shell is a SKIP with its reason
+modes (`SMOKE` in `script/realapp/appci/cases.py`, applied by `run.py`); on Linux the `wayland` run (without its `xwayland` pass) (X11 is played by no tier, owner 2026-11-12); the SAME list on Windows, where a case that cannot run in a pane shell is a SKIP with its reason
 (winmap.py); it includes `ssh_connect_typing`, `ssh_enter_then_immediate_command` and `ssh_nested_typeahead` on every platform, the hand-over cases behind
 the ConPTY release blocker #1349. Target <= 10 min per platform; UNMEASURED so far (the full matrix has not been timed
 either).
@@ -1182,16 +1182,15 @@ One driver, three sizes and the targeted proof run (below the table): `python3 s
 It plays only manual jobs that have not run yet (never a re-run), passes per-job variables (`TEST_FILTER`, `APPCI_TIER`) through the
 play API, and ends with a table of job, status, VERDICT (PASS / FAIL / SKIPPED / INFO) and minutes, plus an `overall:` line. The exit code is non-zero when ANY
 played job fails, app tests included (they are `allow_failure` in GitLab, so the pipeline is green regardless; the ci_seq verdict is the one that is not). An app
-test that never ran because its build failed counts as FAIL. Since round 15 no job is `skipped by tier`: the fix tier plays the x11 job too (#2058; it used
-to exit 77 in smoke). A status that starts with `NEEDS: ` (a named machine change, e.g. `lab-helper` without zig, #2062) has the verdict `NEEDS`: listed under
+test that never ran because its build failed counts as FAIL. Since round 15 no job is `skipped by tier`: the x11 job is played by no tier at all (owner 2026-11-12: X11 dropped). A status that starts with `NEEDS: ` (a named machine change, e.g. `lab-helper` without zig, #2062) has the verdict `NEEDS`: listed under
 the table, never a pass, and it does not fail the tier. A job the plan names that is absent or cannot be played is a FAIL row. bench/mutants/fuzz are INFO. `--dry-run` prints the plan per machine. Heavy jobs stay manual: the script is how you start them, after asking.
 
 | tier | runs | target | when |
 |---|---|---|---|
-| `fix` | `check-linux`; `test-linux` with a nextest filter; `test-warpui-core` only if its crate changed; `test-workspace-rest` on every code change (#1496); builds for the chosen platforms only; app tests in SMOKE + PROVING mode on those platforms (the PROVING cases, incl. the `agent@fake` pass). On the Linux box, one at a time and in this order: `app-test-linux-wayland`, `app-test-linux-x11` in both modes (round 15, #2058), `app-test-lab-linux` with the PROVING lab cases | ~1 h before PROVING; about 2.5 h on Linux while the PROVING list is long, and about as much again for the x11 pass (not measured; section 'Round 15: tier reach') | every push of a fix |
-| `candidate` | `check-linux`; all three suites unfiltered; all three builds; the FULL app matrix on every platform (both Linux passes); on macOS and Windows also the three unit suites (`test-<plat>`, `test-warpui-core-<plat>`, `test-workspace-rest-<plat>`), played BEFORE that platform's release build and app tests, one at a time on the same machine (owner 2026-11-05: unit tests first; 2026-11-12: before the BUILD too, in every tier); on the Linux box the unit, integration and usage suites likewise run before the box's build, which runs before the Wayland/X11 app tests. A red unit suite stops that machine's build and its app/lab jobs (rows `not built (unit suite ...)` / `not run (unit suite ...)`, FAIL); the other machines go on. In the release tier every machine's heavy suites (input-timers-strict, loom, fuzz) follow its app tests, so compile and mutation load never overlaps the latency and typing cases (r18u31). Round 15 (#2056, #2063, #2064): also `sshlab-image` and `lab-helper` right after `check-linux`; on the box after wayland and x11 the lab with every family (`app-test-lab-linux`, `LAB_CANDIDATE_MATRIX`) and `app-test-replay-linux`; on macOS and Windows the lab job (`app-test-lab-macos`, `app-test-lab-windows`, quick matrix; round 16, owner 2026-11-11: in the candidate AND release tiers only the `PROVING_LAB` globs, not every family) after that platform's app tests | ~6 h before round 15; the lab adds an estimated 3 to 6 h on the box and 2.5 to 4 h on each of macOS and Windows (not measured) | a batch of fixes is ready; nothing is "done" until a candidate passes |
+| `fix` | `check-linux`; `test-linux` with a nextest filter; `test-warpui-core` only if its crate changed; `test-workspace-rest` on every code change (#1496); builds for the chosen platforms only; app tests in SMOKE + PROVING mode on those platforms (the PROVING cases, incl. the `agent@fake` pass). On the Linux box, one at a time and in this order: `app-test-linux-wayland`, then `app-test-lab-linux` with the PROVING lab cases (no X11, owner 2026-11-12) | ~1 h before PROVING; about 2.5 h on Linux while the PROVING list is long | every push of a fix |
+| `candidate` | `check-linux`; all three suites unfiltered; all three builds; the FULL app matrix on every platform (both Linux passes); on macOS and Windows also the three unit suites (`test-<plat>`, `test-warpui-core-<plat>`, `test-workspace-rest-<plat>`), played BEFORE that platform's release build and app tests, one at a time on the same machine (owner 2026-11-05: unit tests first; 2026-11-12: before the BUILD too, in every tier); on the Linux box the unit, integration and usage suites likewise run before the box's build, which runs before the Wayland app tests. A red unit suite stops that machine's build and its app/lab jobs (rows `not built (unit suite ...)` / `not run (unit suite ...)`, FAIL); the other machines go on. In the release tier every machine's heavy suites (input-timers-strict, loom, fuzz) follow its app tests, so compile and mutation load never overlaps the latency and typing cases (r18u31). Round 15 (#2056, #2063, #2064): also `sshlab-image` and `lab-helper` right after `check-linux`; on the box after wayland and x11 the lab with every family (`app-test-lab-linux`, `LAB_CANDIDATE_MATRIX`) and `app-test-replay-linux`; on macOS and Windows the lab job (`app-test-lab-macos`, `app-test-lab-windows`, quick matrix; round 16, owner 2026-11-11: in the candidate AND release tiers only the `PROVING_LAB` globs, not every family) after that platform's app tests | ~6 h before round 15; the lab adds an estimated 3 to 6 h on the box and 2.5 to 4 h on each of macOS and Windows (not measured) | a batch of fixes is ready; nothing is "done" until a candidate passes |
 | `repo-validation` (alias `repo`; `python3 script/ci/ci_seq.py build/<ref> --tier repo-validation`) | ONLY `bench`, `bench-remote-server` (box), `mutants`, `mutants-warpui-core` and their `-macos` / `-windows` twins, one job at a time per machine (machines in parallel); no build, no unit suite, no app or lab job; the per-job timeouts and `--running-factor` (RUNNING-DEADLINE) apply; `--collect` archives them under `test-results/` (`unit/<job>.json` with a summary, manifest tier `repo-validation`). Verdicts are INFO | hours (mutants dominate; `mutants-warpui-core` alone ~3 h) | on demand, NOT a gate and NOT part of any other tier (owner 2026-11-12): they measure the code and its tests, not the app, so a release does not wait for them |
-| `release` | candidate + `input-timers-strict`, `test-shuttle-loom`, `fuzz-smoke` on the box, and the same three with the `-macos` and `-windows` suffix after each platform's app tests (`fuzz-smoke-windows` is reported `unsupported on platform`, never played). `bench` and `mutants` are NOT in it (owner 2026-11-12: see `repo-validation`) | ~13-17 h, set by the Linux box (measured 2026-11-12 from recent jobs: Wayland 3.5-6 h + X11 4-5 h + lab 2-4 h + units/build ~1.3 h + heavy ~1 h, one app job at a time); Mac ~4-8 h and Windows ~5-10 h in parallel; the full lab and heavy suites have never completed, so the first run records the real figure | before a numbered release (then also the manual checklist of section 5) |
+| `release` | candidate + `input-timers-strict`, `test-shuttle-loom`, `fuzz-smoke` on the box, and the same three with the `-macos` and `-windows` suffix after each platform's app tests (`fuzz-smoke-windows` is reported `unsupported on platform`, never played). `bench` and `mutants` are NOT in it (owner 2026-11-12: see `repo-validation`) | ~13-17 h, set by the Linux box (measured 2026-11-12 from recent jobs: Wayland 3.5-6 h + lab 2-4 h + units/build ~1.3 h + heavy ~1 h, one app job at a time); Mac ~4-8 h and Windows ~5-10 h in parallel; the full lab and heavy suites have never completed, so the first run records the real figure | before a numbered release (then also the manual checklist of section 5) |
 
 **The targeted tier: prove a round's fixes first, then run the whole harness (owner 2026-11-11; `docs/design/r10-r19-targeted.md`). Worked, unproven: only the self-tests and `--dry-run` ran; no pipeline was played when written.**
 Fixes that come out of a round are proven with a TARGETED run first: only the cases that failed, on the OS where they failed, plus the cases that touch the
@@ -1217,7 +1216,7 @@ app job plays mode_proof first".
    "suites": {"linux": ["test-linux", "integration-linux"], "macos": []},
    "filters": {"test-linux": "test(/terminal::view/)"}}
   ```
-  Platforms: `linux-wayland`, `linux-x11`, `linux-lab`, `macos`, `macos-lab`, `windows`, `windows-lab` (the jobs `app-test-linux-wayland`, `app-test-linux-x11`,
+  Platforms: `linux-wayland`, `linux-lab`, `macos`, `macos-lab`, `windows`, `windows-lab` (the jobs `app-test-linux-wayland`,
   `app-test-lab-linux`, `app-test-macos`, `app-test-lab-macos`, `app-test-windows`, `app-test-lab-windows`). A platform is a list of case names or globs, or an
   object: `cases`; `modes` (terminal / agent -> `APPCI_MODES`); `win_shells` (Windows pane passes -> `APPCI_WIN_SHELLS`); `lab_matrix` (lab platforms ->
   `APPCI_LAB_MATRIX`; default the candidate tier's matrix for that platform; an exactly named arm bypasses the matrix, a glob is filtered by it); `vars` (other
@@ -1230,7 +1229,7 @@ app job plays mode_proof first".
   non-lab platform (and the reverse), a filter for a suite the run does not play, or a file with nothing to play; every problem is named at once. A case name
   the harness does not know is refused by `run.py` itself (#1508: a FAIL row, never an empty green selection).
 - **What it plays.** `check-linux` is waited for. Every platform with an app job BUILDS (no reuse, like candidate). On each machine, one job at a time:
-  the unit suites first, then ONLY the app jobs that have cases, in the order wayland, x11, lab. Each app job gets `APPCI_CASES` = the file's names, comma
+  the unit suites first, then ONLY the app jobs that have cases, in the order wayland, lab. A platform `linux-x11` is REFUSED by `targeted_spec` ("X11 is not played by any tier (owner 2026-11-12)"), never silently dropped; `failed_cases.py` never writes one (rows of the x11 job, `--add linux-x11=...` and `--proving linux-x11` are dropped with a printed note). Each app job gets `APPCI_CASES` = the file's names, comma
   joined, in the file's order, and `APPCI_TIER=targeted` (recorded as `meta.tier`). That is NOT `smoke`: a named case runs at full strength (the soak is 60
   minutes, `md_viewer_big` runs), as in the candidate run where it failed. A lab job also gets the scripted model, and `sshlab-image` and `lab-helper` are
   played first on the box. The Wayland job leaves out its fixed xwayland pass in a targeted run (that pass has its own case list). `app-test-windows` now
@@ -1254,7 +1253,7 @@ app job plays mode_proof first".
   `<job>.fails` name lists, `app-fails.txt` and `failed-jobs.txt`. Always read the file and `--dry-run` it before playing: it is a proposal, the related
   cases are yours to add.
 - **The rest of a round's targeted file (coordinator / owner 2026-11-11).** `--noref` also takes every other NOREF row (nothing was judged). `--proving
-  linux-x11` is for a job with NO result in the round: its whole `PROVING` list (a `-lab` platform: the `PROVING_LAB` globs with the quick matrix, what the
+  linux-wayland` is for a job with NO result in the round: its whole `PROVING` list (a `-lab` platform: the `PROVING_LAB` globs with the quick matrix, what the
   fix tier's lab job plays); when the job's result lands, run the helper again with its trace and its failures are added. `--changed-since <commit>` adds
   every case that was ADDED or CHANGED since that commit and so has never played: the `@case` functions of `script/realapp/appci/cases*.py` whose own
   code differs, or that use a changed helper or table of the same file (also through another helper), to `--changed-platforms` (default
@@ -1382,7 +1381,7 @@ is everything EXCEPT the list `APP_NONAFFECTING` in `script/ci/ci_seq.py`: `docs
 prepare_*}` and any new unlisted path rebuild (fail safe). Each platform prints its decision (`macos: reusing build job N from pipeline P
 (commit C), app unchanged` or `macos: building, app changed in: <paths>`); `--no-reuse` forces builds. `candidate` and `release` NEVER reuse.
 Reused Mac and Windows builds start their app test right after `check-linux` (no build to wait for). On the box a reused build is tested like a fresh
-one since round 15: after the box unit suites, `app-test-linux-wayland-reuse`, then `app-test-linux-x11-reuse` (both modes, #2058), then
+one since round 15: after the box unit suites, `app-test-linux-wayland-reuse`, then
 `app-test-lab-linux-reuse`, one at a time.
 
 **Fix-tier filter derivation.** Without `--tests`, `ci_seq.py` runs `git diff --name-only <base>..<ref>` (base = merge-base with the
@@ -3621,7 +3620,7 @@ Real gaps that remain (each checked against `.gitlab-ci.yml` and `script/realapp
   are judged on overhead over the reference; when no reference can be measured the verdict is `NO-REFERENCE`, not pass.
 - `integration-linux` is manual and `allow_failure: true` in CI, but a hard gate in `precheck` and, since 2026-11-09, in the candidate and release tier verdicts; macOS and Windows have no
   nextest job (`check-macos`/`check-windows` are `cargo check`; the Mac also runs `usage-test-macos`).
-- Wayland input is tested with a headless sway only (XWayland as a reduced pass in the full tier; X11 is a full pass in every tier since round 15, #2058, worked, unproven); GPU-backed rendering is untested on CI
+- Wayland input is tested with a headless sway only (XWayland as a reduced pass in the full tier; X11 is played by no tier, owner 2026-11-12); GPU-backed rendering is untested on CI
   (llvmpipe/pixman only, or the box's render node).
 - The release pipeline has never run end to end; macOS Intel and Linux aarch64 are partial or dropped.
 - `check_workspace_clean` is deliberately not wired anywhere (see the comment in `script/precheck`).
@@ -3670,7 +3669,7 @@ suite, so the unit totals, the NEW / FIXED lists and `check_test_results`' "ever
 no summary line, or whose summary disagrees with its rows, says so in a note; no row at all is not a result (the trace's error lines are kept).
 `lab-helper` and `sshlab-image` keep their ERROR lines (`manifest.json` `setup`, shown in the README when red). The run's tier is `--tier`, else the
 ordinary app runs' own `meta.tier` (`smoke` / `full` / `release`; lab and replay rows do not count), else inferred from which jobs ran: the integration
-suite having run marks a candidate. A long x11 run used to mark one, which the fix tier now has too (#2058). `python3 script/ci/collect_results.py
+suite having run marks a candidate. A long x11 run (hand-run only now) used to mark one. `python3 script/ci/collect_results.py
 --self-test` checks these parts (no network).
 
 **Layout.**
@@ -6580,17 +6579,18 @@ scripted model: `agent_approval` runs in the ordinary agent pass with the config
 `winmap` entry (`crash_kill9_restore`, `paste_multiline_prompt` both panes; `ui_resize_typing`, `ui_split_panes` SKIP with the missing capability; the rest
 Git Bash only). Cost: not measured; `session_restore` and `crash_kill9_restore` relaunch the app, `alt_screen_programs` and `remote_session_legacy` are the
 long ones. The first fix-tier run records it.
-**X11 in the fix tier, both modes (#2058).** `app-test-linux-x11` no longer leaves with exit 77 when `APPCI_TIER=smoke`; it runs `SMOKE + PROVING` (and the
-`agent@fake` pass) under Xvfb like the Wayland job does under sway. `ci_seq.py` passes `APPCI_MODES=terminal,agent`. Agent mode had never run on X11.
+**X11 in the fix tier, both modes (#2058).** SUPERSEDED 2026-11-12: see the X11 decision below. `app-test-linux-x11` still has no exit 77 in smoke and can be run by hand with `APPCI_MODES=terminal,agent`, but no tier plays it.
+
+**X11 is dropped (owner decision 2026-11-12).** `app-test-linux-x11` and `-reuse` are played by NO tier: targeted, fix, candidate, release, repo-validation. The jobs stay in `.gitlab-ci.yml` as manual jobs ("not in any tier, owner 2026-11-12; run by hand only"), and a hand-run result is still collected. Linux app coverage is Wayland plus the lab. `ci_seq.box_app_sequence` is wayland, then the lab (then the replay in candidate / release). A cases file naming `linux-x11` is refused; `failed_cases.py` drops x11 rows with a note. The self-tests pin all of it (no tier plays the job, the refusal, the drop). This is a decision, not a weakened test: the plans no longer contain the X11 rows.
 **One app job at a time on the box, in a fixed order.** `ci_seq.box_app_sequence(tier)` is the list and the driver plays each entry only after the one
-before it has ended: `app-test-linux-wayland`, `app-test-linux-x11`, the lab job, and in candidate / release `app-test-replay-linux`. All of it after the
+before it has ended: `app-test-linux-wayland`, the lab job, and in candidate / release `app-test-replay-linux`. All of it after the
 box's unit suites (and in candidate / release after `integration-linux`, `-pwsh` and `usage-test-linux`). The resource group `little-thing-gui` only kept
 two app jobs from overlapping; it did not order them. A reused Linux build follows the same order with the `-reuse` jobs and, new, also waits for the unit suites.
 **The lab in the candidate and release tiers (#2063).**
 | machine | job | play-time variables | when |
 | box | `sshlab-image` | none | at the start (a no-op when the image tag exists); every lab job waits for it |
 | box | `lab-helper` | none | right after `check-linux`, before the builds and unit suites |
-| box | `app-test-lab-linux` | `APPCI_FAKE_MODEL=1`, `APPCI_LAB_MATRIX` = `ci_seq.LAB_CANDIDATE_MATRIX` | after wayland and x11 |
+| box | `app-test-lab-linux` | `APPCI_FAKE_MODEL=1`, `APPCI_LAB_MATRIX` = `ci_seq.LAB_CANDIDATE_MATRIX` | after wayland |
 | box | `app-test-replay-linux` | the job's own (`lab_replay*`, 15 minutes per mode) | last on the box, before the release tier's heavy suites |
 | Mac | `app-test-lab-macos` | `APPCI_FAKE_MODEL=1`, `APPCI_LAB_MATRIX=quick` | after `app-test-macos`, before the Mac's heavy suites |
 | Windows | `app-test-lab-windows` | the same | after `app-test-windows`; the lab cases run in the Git Bash pane (`winmap.lab_skip_reason`) |
@@ -6624,9 +6624,9 @@ variables, the `.gitlab-ci.yml` rows, the `NEEDS` classifier and verdicts, the `
 `selftest.py`, so by the `guards` job): `r15_daily_slice_runs_in_the_fix_tier` (with the control that a case outside `SMOKE + PROVING` is not selected),
 `r15_candidate_lab_matrix_covers_every_family` (reads `ci_seq`'s constants against the case registry; the control is the quick matrix, which misses
 families), `r15_helper_arm_without_a_helper_file_skips_with_needs`, and `r15_tier_drivers_self_tests_and_docs`, which runs the two CI self-tests above.
-**Not changed (owner decisions).** The release gate's job list (`ci_seq.release_gate_jobs`, `ci_seq.APP`, `check_release_gate.py`): the lab jobs, the
+**Not changed (owner decisions), except that X11 left the gate on 2026-11-12 (no tier plays it).** The release gate's job list (`ci_seq.release_gate_jobs`, `ci_seq.APP`, `check_release_gate.py`): the lab jobs, the
 replay and `lab-helper` are played and judged by the release tier's verdict but a tag does not require them. Which matrix the Mac and Windows lab jobs play.
-Whether the fix tier keeps the x11 pass after its first clean run.
+(Superseded 2026-11-12: no tier plays X11.)
 **Round 23 (#2063, #2042, #2062): the Mac and Windows lab with every family.** `ci_seq.py --tier candidate|release --lab-all-families` makes
 `app-test-lab-macos` / `-windows` play the job's own `lab_*` (every lab family, quick matrix, scripted model) instead of only the `PROVING_LAB` globs;
 without the flag the owner's 2026-11-11 rule stands (PROVING_LAB only). A targeted run reaches the same jobs with the `macos-lab` / `windows-lab` keys of

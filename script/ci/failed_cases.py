@@ -6,14 +6,14 @@
 #                                     [--changed-since GIT_REF [--changed-platforms a,b]] [--self-test]
 #
 # Owner 2026-11-11: the fixes of a round are proven with a targeted run first (only the cases that failed, on the OS where they failed, plus the cases
-# that touch the changed code), and only then the whole harness. This helper does the first half: per platform (linux-wayland, linux-x11, linux-lab,
+# that touch the changed code), and only then the whole harness. This helper does the first half: per platform (linux-wayland, linux-lab,
 # macos, macos-lab, windows, windows-lab) the names of the cases whose row was FAIL or UNVERIFIABLE, and per machine the suites to play (its three unit
 # suites, unit tests first, plus every integration / usage suite that failed there). `--add` is for the second half, the related cases a person names:
 #   --add windows=ssh_connect_typing,big_paste     more cases for an app platform (repeatable)
 #   --add linux=integration-linux                  more suites for a machine (linux | macos | windows)
 #
 #   --noref                                        also every other NOREF row (not judged: a latency case with no comparison, a host that was not there)
-#   --proving linux-x11                            a job with NO result in that round: its whole PROVING list (a -lab platform: the PROVING_LAB globs)
+#   --proving linux-wayland                         a job with NO result in that round: its whole PROVING list (a -lab platform: the PROVING_LAB globs)
 #   --changed-since <ref>                          every case ADDED or CHANGED since that commit (it has never played): the @case functions of
 #                                                  script/realapp/appci/cases*.py whose own code, or a helper of the same file they use, differs from
 #                                                  <ref>; added to --changed-platforms (default linux-wayland,macos,windows; a case skips itself where it
@@ -40,6 +40,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import ci_seq  # noqa: E402  (the platform, job and suite tables: one source)
 
+X11_KEY, X11_JOB = "linux-x11", "app-test-linux-x11"
+X11_NOTE = "X11 is not played by any tier (owner 2026-11-12); never written into a cases file"
 JOB_PLATFORM = {job: key for key, (_, job) in ci_seq.TARGETED_APP.items()}
 FOLLOW_ON_RX = re.compile(r"^(?:pane_not_local_after|pane_wedged_after|left_agent_mode_after)_(.+)$")
 ANSI_RX = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -257,6 +259,10 @@ def build(rows, suites, norow=(), notes=(), registry=None, adds=()):
         return (name in registry) if registry is not None else not re.match(r"^(preflight|launch|harness|restore|needs_owner|case_selection|startup_shell_pass)$", name)
     for job, label, name in rows:
         key = platform_of_job(job)
+        if re.sub(r"-reuse$", "", job or "") == X11_JOB:
+            info["not_targeted"].append("%s: %s (%s)" % (job, name, X11_NOTE))
+            print("failed_cases: dropping %s row %s: %s" % (job, name, X11_NOTE), file=sys.stderr)
+            continue
         if key is None:
             info["not_targeted"].append("%s: %s (no targeted platform for this job)" % (job, name))
             continue
@@ -293,7 +299,10 @@ def build(rows, suites, norow=(), notes=(), registry=None, adds=()):
                 info["fake_pass"][key].append(name)
     extra_suites = {}
     for where, names, *why in adds:
-        if where in ci_seq.TARGETED_APP:
+        if where == X11_KEY:
+            info["not_targeted"].append("%s=%s (%s)" % (where, ",".join(names), X11_NOTE))
+            print("failed_cases: dropping %s (%d case(s)): %s" % (where, len(names), X11_NOTE), file=sys.stderr)
+        elif where in ci_seq.TARGETED_APP:
             e = entry(where)
             fresh = [n for n in names if n not in e["cases"]]
             e["cases"] += fresh
@@ -394,7 +403,8 @@ def self_test():
         (f["platforms"]["windows"] == {"cases": ["big_paste", "fake_case", "md_viewer", "soak"], "modes": ["terminal", "agent"], "win_shells": ["powershell", "gitbash"]},
          "Windows: pane passes become win_shells (no pane = powershell), a follow-on row adds its case"),
         (f["platforms"]["macos"] == {"cases": ["tab_enter"], "modes": ["terminal"]} and f["info"]["dropped"] == {"macos": ["needs_owner"]}, "a row that is no registered case is left out and listed; a -reuse job is its platform"),
-        (f["platforms"]["linux-x11"] == {"cases": ["tab_enter"]}, "a name with no known mode (a .fails list) gives no mode filter"),
+        ("linux-x11" not in f["platforms"] and any("X11 is not played" in x for x in f["info"]["not_targeted"]),
+         "rows of app-test-linux-x11 are dropped with a note, never written as linux-x11 (owner 2026-11-12)"),
         (f["platforms"]["linux-lab"]["cases"] == ["lab_raw_key_arrival.bash.lan.nohelper"] and f["platforms"]["macos-lab"] == {"cases": ["lab_raw_key_arrival.*"]}
          and any("replay" in x for x in f["info"]["not_targeted"]), "lab rows go to the lab platform; the replay is not targeted and is listed"),
         (f["suites"] == {"linux": ["test-linux", "test-warpui-core", "test-workspace-rest", "integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]"],
@@ -406,10 +416,12 @@ def self_test():
         (spec_ok and list(plan["machines"]) == ["linux", "macos", "windows"], "the file this helper writes is a valid cases file for ci_seq.py --tier targeted"),
         (build(rows, [], registry=reg, adds=[("windows", ["ssh_connect_typing", "big_paste"])])["platforms"]["windows"] == {"cases": ["big_paste", "fake_case", "md_viewer", "soak", "ssh_connect_typing"]},
          "--add adds related cases once; a case with no known arm lifts the mode and pane filters (it may need any pass)"),
+        ("linux-x11" not in build([], [], registry=reg, adds=[("linux-x11", ["tab_enter"], "w"), ("linux-wayland", ["tab_enter"], "w")])["platforms"],
+         "--add / --proving linux-x11 is dropped with a note (owner 2026-11-12)"),
         (is_bad("NOREF", "within noise", True, True) and not is_bad("SKIP", "x", True, True) and not is_bad("PASS", "", True, True), "--noref takes every NOREF row, never a PASS or a SKIP"),
-        (build([], [], registry=reg, adds=[("linux-x11", ["tab_enter", "soak"], "why x"), ("linux-lab", ["lab_raw_key_arrival.*"], "why lab")])
-         == {"platforms": {"linux-x11": {"cases": ["soak", "tab_enter"]}, "linux-lab": {"cases": ["lab_raw_key_arrival.*"]}}, "suites": {"linux": ci_seq.unit_suites("linux")},
-             "info": {"added": {"linux-x11": {"why x": ["soak", "tab_enter"]}, "linux-lab": {"why lab": ["lab_raw_key_arrival.*"]}}}},
+        (build([], [], registry=reg, adds=[("linux-wayland", ["tab_enter", "soak"], "why x"), ("linux-lab", ["lab_raw_key_arrival.*"], "why lab")])
+         == {"platforms": {"linux-wayland": {"cases": ["soak", "tab_enter"]}, "linux-lab": {"cases": ["lab_raw_key_arrival.*"]}}, "suites": {"linux": ci_seq.unit_suites("linux")},
+             "info": {"added": {"linux-wayland": {"why x": ["soak", "tab_enter"]}, "linux-lab": {"why lab": ["lab_raw_key_arrival.*"]}}}},
          "a whole list added for a job with no result is in the file with its reason under info.added"),
         (changed_cases(_OLD, _NEW) == {"c_new": "new", "c_body": "changed", "c_helper": "uses changed _h2", "c_table": "uses changed TABLE"} and changed_cases(None, _NEW).keys() == {"c_new", "c_body", "c_helper", "c_table", "c_same"},
          "--changed-since: a new case, a case whose code changed, and a case that uses a changed helper or table of its file (also through another helper); an untouched case is not listed; a new file = all its cases"),
@@ -458,6 +470,9 @@ def main():
     unmapped = []
     try:
         for key in a.proving:
+            if key == X11_KEY:
+                print("failed_cases: dropping --proving %s: %s" % (key, X11_NOTE), file=sys.stderr)
+                continue
             if key not in ci_seq.TARGETED_APP:
                 raise ValueError("--proving %s: not a platform (%s)" % (key, ", ".join(ci_seq.TARGETED_APP)))
             proving, proving_lab = proving_lists()
