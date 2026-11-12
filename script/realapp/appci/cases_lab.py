@@ -285,6 +285,22 @@ def connect_or_fail(ctx, r, arm, label=""):
     return secs
 
 
+# ---- #2019 FOLLOW-UP (owner 2026-11-12, docs/design/ssh-fish-nu-managed.md): a host whose login shell is fish or nu now gets a MANAGED session (the wrapper's
+# staged shim, the app writes the bootstrap: `hop=bootstrap_staged`). Every gate below reads the connect's own app log, so a managed fish / nu connect (the
+# ManagedSSHSessionStarting hook, no PlainSSHFallback) is judged IN FULL, and the gates fire again only when the kill switch PHOSPHOR_SSH_FISH_NU_MANAGED=0 puts the
+# plain session back. STAGED_BOOTSTRAP_RE is the evidence that the managed way ran; managed_fish_nu_evidence() turns its absence into a failed check.
+STAGED_BOOTSTRAP_RE = re.compile(r"hop=bootstrap_staged\b")
+
+
+def managed_fish_nu_evidence(shell, log_text):
+    """pure: None when this is not a managed fish / nu connect (nothing to prove); else (ok, message): ok = the log has the staged-bootstrap hop."""
+    text = log_text or ""
+    if shell not in ("fish", "nu") or not MANAGED_SESSION_RE.search(text) or PLAIN_SESSION_HOOK in text:
+        return None
+    return (bool(STAGED_BOOTSTRAP_RE.search(text)), "the %s host's connect is a managed session but the app log has no `hop=bootstrap_staged` (the bootstrap the "
+            "shim waits for was not written by the app)" % shell)
+
+
 # ---- #2019: a host whose LOGIN shell is fish or nu gets a plain ssh session, by decision (DECLINED.md, PLAIN_SESSION_DECLINED). The agent works on a
 # remote host through the managed session, so an agent-mode arm on such a host has nothing to judge: in a plain session the keys are ssh's and the agent
 # prompt would be typed into the remote shell. The premise is read from the APP'S OWN LOG of this connect, never from the arm's name alone.
@@ -351,6 +367,9 @@ def agent_connect(ctx, r, arm):
     time.sleep(1.0 + 2 * rtt_s(arm))
     why = plain_session_limit(arm["shell"], ctx.log_since(off))
     if why is None:
+        proof = managed_fish_nu_evidence(arm["shell"], ctx.log_since(off))
+        if proof is not None:
+            r.check(proof[0], proof[1])
         return True
     r.metric("plain_session_by_decision", arm["shell"])
     r.unverifiable(why)
@@ -376,6 +395,9 @@ def plain_gate(ctx, r, arm, off, feature):
     line) return False and are judged in full."""
     why = plain_session_feature_limit(arm["shell"], ctx.log_since(off), feature)
     if not why:
+        proof = managed_fish_nu_evidence(arm["shell"], ctx.log_since(off))
+        if proof is not None:
+            r.check(proof[0], proof[1])
         return False
     r.metric("plain_session_by_decision", arm["shell"])
     r.unverifiable(why)

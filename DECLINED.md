@@ -3414,6 +3414,13 @@ Design and evidence: `docs/design/r10-r16-keys2.md`. Worked, unproven when writt
   `PHOSPHOR_SCROLLBACK_KEYS_AT_PROMPT=0` (round 15's reach) and `PHOSPHOR_SCROLLBACK_KEYS=0` (none).
 
 ## A remote host whose login shell is fish or nu gets a plain ssh session: no agent tools on that host (#2019) — DECIDED 2026-11-10
+**SUPERSEDED 2026-11-12 (owner: "just make the change").** A fish or nu login shell now gets a MANAGED session: the
+wrapper delivers a small `sh` shim as the remote command (it prints the `SSH` hook and `InitShell`, the app writes the
+real fish / nu bootstrap, the shim sources it and prints `ExitShell` at the end); design
+`docs/design/ssh-fish-nu-managed.md`, tests `script/test_ssh_fish_nu_managed`, unit tests in `terminal/bootstrap_test.rs`.
+Kill switch `PHOSPHOR_SSH_FISH_NU_MANAGED=0` restores exactly the plain session described below, and the lab gates
+(`cases_lab.plain_gate`, `plain_session_limit`) fire again for it. The text below is the record of the 2026-11-10
+decision and stays true for csh, tcsh, xonsh, elvish (still plain) and for the kill switch.
 `ssh <host>` from a Phosphor pane hands sshd a POSIX sh script as the remote command, and sshd runs it as
 `<login shell> -c <script>`. fish and nushell (also csh, tcsh, xonsh, elvish) parse the whole text before running any of
 it and refuse it, so before round 10 the session to such a host ended at once (#2019; the same text is in the pinned

@@ -337,18 +337,19 @@ fn a_reclaimed_tty_holds_again() {
     assert_eq!(idle.phase(false), SshPhase::Idle);
 }
 
-/// #2120: the remote command bootstraps bash and zsh and nothing else, so only their `SSH` hook
+/// #2120: the remote command bootstraps bash and zsh (and, since the #2019 follow-up, fish and nu
+/// through the staged shim) and nothing else, so only their `SSH` hook
 /// announces a session. The names are compared whole, as the remote command's `case` does: a
 /// login shell called `bash5` or `-bash` is started plain by it as well.
 #[test]
 fn only_a_shell_the_remote_command_bootstraps_announces_a_session() {
-    for shell in ["bash", "zsh"] {
+    for shell in ["bash", "zsh", "fish", "nu"] {
         assert!(ssh_remote_command_bootstraps(shell), "{shell}");
         assert!(ssh_hook_announces_session_with(shell, true), "{shell}");
     }
     for shell in [
-        "sh", "dash", "ash", "ksh", "ksh93", "mksh", "busybox", "fish", "nu", "tcsh", "bash5",
-        "-bash", "Bash", "zsh-5.9", "",
+        "sh", "dash", "ash", "ksh", "ksh93", "mksh", "busybox", "tcsh", "csh", "xonsh", "bash5",
+        "-bash", "Bash", "zsh-5.9", "fish5", "Nu", "",
     ] {
         assert!(!ssh_remote_command_bootstraps(shell), "{shell:?}");
         assert!(!ssh_hook_announces_session_with(shell, true), "{shell:?}");

@@ -54,12 +54,16 @@ pub const TTY_OWNED_AT_ARM: bool = cfg!(all(windows, not(test)));
 /// #2120: whether the wrapper's remote command bootstraps a login shell of this name, i.e.
 /// whether an `InitShell` can follow the `SSH` hook that names it. The remote command prints the
 /// hook for every login shell (`remote_shell` is the last component of the remote `$SHELL`) and
-/// then starts a bootstrapped shell for exactly these two names; for every other one (sh, dash,
+/// then starts a bootstrapped shell for exactly these names (bash and zsh by the remote command
+/// itself, fish and nu by the staged shim of the #2019 follow-up); for every other one (sh, dash,
 /// ash, ksh, mksh, ...) it prints the MotD and runs `exec "$SHELL" -l` (#2126; `exec "$SHELL"`
 /// after sourcing `/etc/profile` for a shell that refuses `-l`): a plain login from there on. Keep in step with the `case` at the end of the remote command in
 /// `bootstrap/bash_body.sh`, `zsh_body.sh` and `fish.sh`.
 pub fn ssh_remote_command_bootstraps(remote_shell: &str) -> bool {
-    matches!(remote_shell, "bash" | "zsh")
+    // #2019 follow-up (owner 2026-11-12): fish and nu are bootstrapped too, by the wrapper's
+    // staged shim (`bootstrap::staged_ssh_bootstrap_applies`): the SSH hook of those two names is
+    // printed by that shim, which goes on to print InitShell and run the bootstrap the app sends.
+    matches!(remote_shell, "bash" | "zsh" | "fish" | "nu")
 }
 
 /// #2120: the rule the model and the view both read, so the connect gate and the phase machine

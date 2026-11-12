@@ -398,6 +398,43 @@ pub(crate) fn app_writes_bootstrap(session_info: &SessionInfo) -> bool {
     !session_info.is_legacy_ssh_session.bootstrap_in_command()
 }
 
+/// #2019 follow-up (owner 2026-11-12, `docs/design/ssh-fish-nu-managed.md`): whether this ssh
+/// session's remote shell is a fish or nu that the wrapper's staged shim started. The shim
+/// printed the `SSH` hook and `InitShell` itself and now waits for the bootstrap file: the
+/// header line [`staged_ssh_bootstrap_payload`] writes, then the bytes. Only a legacy ssh session
+/// (the `SSH` hook named the shell) that does not carry its bootstrap in the command, and never
+/// a subshell typed inside one.
+pub(crate) fn staged_ssh_bootstrap_applies(session_info: &SessionInfo) -> bool {
+    matches!(
+        session_info.is_legacy_ssh_session,
+        IsLegacySSHSession::Yes {
+            bootstrap_in_command: false,
+            ..
+        }
+    ) && session_info.subshell_info.is_none()
+        && matches!(
+            session_info.shell.shell_type(),
+            ShellType::Fish | ShellType::Nu
+        )
+}
+
+/// What the staged shim reads from the tty: the byte count of the bootstrap on a line of its own
+/// (digits and `\n`), then exactly that many bytes, which the shim writes to a file of the remote
+/// host and has the shell `source`. nu has no way to evaluate text, so it is a file for fish too;
+/// the nu file starts with the one init statement that cannot come from the shim's environment
+/// (`nu_init_shell.nu` sets it for a local nu).
+pub(crate) fn staged_ssh_bootstrap_payload(script: &[u8], shell_type: ShellType) -> Vec<u8> {
+    let prefix: &[u8] = match shell_type {
+        ShellType::Nu => b"$env.config.show_banner = false\n",
+        _ => b"",
+    };
+    let len = prefix.len() + script.len();
+    let mut out = format!("{len}\n").into_bytes();
+    out.extend_from_slice(prefix);
+    out.extend_from_slice(script);
+    out
+}
+
 /// The bootstrap to write into the shell: the counted-read form of the bash script
 /// ([`bash_counted_read_bootstrap`]) for an ssh session whose remote reported `raw_bootstrap`,
 /// otherwise `script` unchanged.

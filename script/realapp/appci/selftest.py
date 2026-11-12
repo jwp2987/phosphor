@@ -8238,7 +8238,11 @@ def lab_plain_session_limit_2019():
     assert calls == ["connect lab-u_nu", "leave", "reset"] and r.metrics.get("plain_session_by_decision") == "nu", calls
     ok, r, calls = drive("nu", plain, left=False)            # the pane must still be left: that check is not waived
     assert ok is False and len(r.fails) == 1 and "exit" in r.fails[0] and len(r.noref) == 1
-    for shell, log in (("bash", plain), ("bash", managed), ("pwsh", plain), ("nu", managed), ("nu", ""), ("fish", managed)):
+    # #2019 follow-up (owner 2026-11-12): a managed fish / nu connect carries the staged-bootstrap hop (the app wrote the bootstrap the shim waits for)
+    staged = managed + "15:49:23.6 [DEBUG] input_order hop=bootstrap_staged shell=Fish bytes=81234 t=2\n"
+    ok, r, calls = drive("nu", managed)
+    assert ok is True and len(r.fails) == 1 and "hop=bootstrap_staged" in r.fails[0] and not r.noref, (r.fails, r.noref)
+    for shell, log in (("bash", plain), ("bash", managed), ("pwsh", plain), ("nu", staged), ("nu", ""), ("fish", staged)):
         ok, r, calls = drive(shell, log)
         assert ok is True and not r.fails and not r.noref and calls == ["connect lab-u_" + shell], (shell, calls, r.noref)
     ok, r, calls = drive("nu", plain, connected=False)       # no remote prompt is a FAIL on every shell, never the limitation

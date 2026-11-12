@@ -53,6 +53,28 @@ def r22_gate_limits_fish_and_nu_only_and_reads_the_log():
         assert CL.plain_session_feature_limit(sh, plain, "f") is None, "bash/zsh stay fully judged"
 
 
+@check
+def r24_a_managed_fish_or_nu_connect_is_judged_in_full_and_the_kill_switch_restores_the_gate():
+    """#2019 follow-up (owner 2026-11-12): a fish / nu connect whose log shows the managed session is not gated (every gate reads the log), its proof is the
+    staged-bootstrap hop, and the plain session of PHOSPHOR_SSH_FISH_NU_MANAGED=0 (PlainSSHFallback, no managed line) is gated as before"""
+    import cases  # noqa: F401
+    import cases_lab as CL
+    managed = "Received ManagedSSHSessionStarting hook\nhop=bootstrap_staged shell=Fish bytes=81234\n"
+    managed_no_stage = "Received ManagedSSHSessionStarting hook\n"
+    plain = CL.PLAIN_SESSION_HOOK + "\nhop=ssh_wrapper verdict managed=false\n"
+    for sh in ("fish", "nu"):
+        assert CL.plain_session_limit(sh, managed) is None, "a managed fish/nu agent arm is judged"
+        assert CL.plain_session_feature_limit(sh, managed, "f") is None, "a managed fish/nu feature arm is judged"
+        assert CL.managed_fish_nu_evidence(sh, managed)[0] is True
+        assert CL.managed_fish_nu_evidence(sh, managed_no_stage)[0] is False, "managed but the app never wrote the bootstrap: a failed check"
+        assert CL.managed_fish_nu_evidence(sh, plain) is None, "the kill switch's plain session proves nothing"
+        assert CL.managed_fish_nu_evidence(sh, "") is None
+        assert CL.plain_session_limit(sh, plain) is not None, "the kill switch gates the arm again"
+        assert CL.plain_session_feature_limit(sh, plain, "f") is not None
+    for sh in ("bash", "zsh"):
+        assert CL.managed_fish_nu_evidence(sh, managed) is None
+
+
 class _R:
     def __init__(self):
         self.rows = []
