@@ -274,3 +274,16 @@ def r24_a_terminal_case_that_ends_in_agent_view_is_blamed():
     assert i_agent_check < i_guard, "both post-case mode checks exist (agent pass and terminal pass)"
     import inspect
     assert "enters_agent" in inspect.signature(cases.case).parameters, "cases.case() takes enters_agent (cases registered another way read it as False via c.get)"
+
+
+@check
+def r24_mode_proof_ocr_hint_without_slash_is_not_agent():
+    """r24a Windows mode_proof false FAIL: Windows OCR dropped the '/' of the terminal hint 'ctrl-shift-<enter> new /agent conversation', which then
+    matched the agent header. The hint (with or without the slash) is never the header; a real header or ESC bar still counts."""
+    import cases
+    f = lambda t: cases.ocr_agent_markers(" ".join(t.lower().split()))[0]
+    assert not f("run commands, or ask the agent a question ctrl-shift-↵ new /agent conversation")
+    assert not f("ctrl shift enter new agent conversation ctrl-shift-↵ new /agent conversation")
+    assert f("new agent conversation esc for terminal ci ollama / gpt-oss:20b")
+    assert f("make a pr esc for terminal ctrl alt r to resume conversation")
+    assert f("new agent conversation ... ctrl-shift-↵ new /agent conversation")

@@ -1202,6 +1202,9 @@ returned []); checked in the built image: bash, zsh, fish, nu and pwsh all retur
 unit suites first (they never need the release build), then its build, then its app/lab jobs. A unit suite that does not succeed stops that machine's build
 and its app and lab jobs (rows "not built (unit suite ...)" / "not run (unit suite ... failed)"); the other machines go on. Fix the unit failures, rebuild, then app tests. Self-test: "a red unit suite stops
 that machine's app jobs".
+**mode_proof OCR: the terminal hint is never the agent header** (r24a Windows): `cases.ocr_agent_markers` drops any `new [/]agent conversation`
+that follows the ctrl/shift/enter chord of the terminal hint before looking for the header, because Windows OCR can read the hint without its `/`.
+Self-test `r24_mode_proof_ocr_hint_without_slash_is_not_agent`.
 **A terminal case must END in terminal mode** (owner 2026-11-12, #2170 follow-up): run.py checks the pane's mode after every terminal-pass case, as it
 already did after agent-pass cases; agent view there is a FAIL row `entered_agent_view_in_<case>` (candidate APP: input routed to the agent), unless the
 case declares `enters_agent=True` in `cases.case()`. Before, the pre-case guard quietly fixed the pane and the case that switched it passed.

@@ -2209,7 +2209,14 @@ def ocr_agent_markers(low):
     app log said agent, the screen had the new header and the ESC bar, and the old marker strings failed the case on a correct screen).
     The 'new /agent conversation' hint under a prompt means a TERMINAL session and does not count as an agent marker."""
     hint = "/agent" in low and "conversation" in low
-    header = "new phosphor agent conversation" in low or "new agent conversation" in low
+    # r24a Windows mode_proof: Windows OCR read the hint line once with and once WITHOUT its '/', so 'ctrl-shift-<enter> new agent conversation'
+    # matched the header and a terminal screen failed. Any 'new [/]agent conversation' that follows the ctrl/shift/enter chord of the hint is
+    # the hint, never the header; the hint flag also covers the slash-less read.
+    hint_re = r"(?:ctrl|shift|enter|return|↵)[^a-z0-9]{0,6}(?:\S{0,12}\s+){0,2}new\s*/?\s*agent\s+conversation"
+    if re.search(hint_re, low):
+        hint = True
+    low_wo_hint = re.sub(hint_re, " ", low)
+    header = "new phosphor agent conversation" in low_wo_hint or "new agent conversation" in low_wo_hint
     esc_bar = "esc for terminal" in low
     placeholder = "ask anything" in low
     return (header or esc_bar or placeholder) and not (hint and not (header or esc_bar)), hint
