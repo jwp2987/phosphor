@@ -21,6 +21,32 @@ def check(f):
     return f
 
 
+# The real ACCEPTED_FOR_RELEASE is EMPTY (every v0.1.17 acceptance was removed for v0.2.0, owner 2026-11-12). These made-up entries exercise the mechanism
+# (KNOWN inside the window and platform, FAIL past it) and exist only while a fixture check runs.
+FIXTURE_ACCEPTED = {
+    "editor_open_cost": {"issue": 9001, "release": "0.1.17", "why": "fixture: open cost accepted"},
+    "latency_enter_overhead": {"issue": 9002, "release": "0.1.17", "platforms": ("linux",), "why": "fixture: Enter overhead accepted"},
+    "ctrl_c_flood": {"issue": 9003, "release": "0.1.17", "platforms": ("macos", "linux", "windows"), "why": "fixture: flood overhead accepted"},
+    "tabs_streaming_reorder_1658": {"issue": 9004, "release": "0.1.17", "platforms": ("windows",), "why": "fixture: reorder accepted"},
+    "editor_close_trim_ui": {"issue": 9001, "release": "0.1.17", "platforms": ("linux",), "why": "fixture: close trim accepted"},
+    "remote_heredoc_remote_editor": {"issue": 9005, "release": "0.1.17", "why": "fixture: the remote shell's line editor is the bottleneck"}}
+
+
+def _with_fixture_accepted(f):
+    import functools
+
+    @functools.wraps(f)
+    def wrapper(*a, **k):
+        saved = dict(cases.ACCEPTED_FOR_RELEASE)
+        cases.ACCEPTED_FOR_RELEASE.update(FIXTURE_ACCEPTED)
+        try:
+            return f(*a, **k)
+        finally:
+            cases.ACCEPTED_FOR_RELEASE.clear()
+            cases.ACCEPTED_FOR_RELEASE.update(saved)
+    return wrapper
+
+
 def _ctx(tmp, log_path=None):
     c = types.SimpleNamespace(W=tmp, prof=types.SimpleNamespace(rhome=tmp), log_path=log_path, ocr_calls=0)
     c.lines = lambda name, remote=False: cases.Ctx.lines(c, name, remote)
@@ -1771,6 +1797,7 @@ def r18u19_windows_relaunch_heredoc_io_and_back_line():
 
 
 @check
+@_with_fixture_accepted
 def r18u22_heredoc_wrapper_mirror_and_control_verdicts():
     """#1129 (r18u22): the harness's copy of the app's one-line wrapper is byte-identical to posix_long_command.rs (format string, script head, both
     size thresholds); a step with no file is KNOWN only when the plain-ssh control proves the remote line editor is the bottleneck (and only up to
@@ -1817,7 +1844,7 @@ def r18u22_heredoc_wrapper_mirror_and_control_verdicts():
         r = cases.Result("t", "terminal")
         rm.judge_step(None, r, rec("hd_big.txt", 180.6, peak={"bash": 100.0, "app": 292.5}), ctl_env, False)
         assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("KNOWN: L: remote file not byte-exact") and "ENV: plain ssh" in r.notes[0], (r.fails, r.notes)
-        assert "ACCEPTED_FOR_RELEASE #1129 v0.1.17" in r.notes[0] and "the app's one-line wrapper is the slow path" in r.notes[0], r.notes
+        assert "ACCEPTED_FOR_RELEASE #9005 v0.1.17" in r.notes[0] and "the app's one-line wrapper is the slow path" in r.notes[0], r.notes
         assert "'bash': 100.0" in r.notes[0], r.notes                               # the numbers travel with the verdict
         cases.app_version = lambda repo=None: "0.1.18"
         r = cases.Result("t", "terminal")
@@ -1868,10 +1895,8 @@ def r18u22_heredoc_wrapper_mirror_and_control_verdicts():
         assert len(r.fails) == 1 and "does not cover it" in r.fails[0], r.fails
     finally:
         cases.app_version = orig_v
-    assert cases.accepted_for_release("remote_heredoc_remote_editor", "0.1.17")["issue"] == 1129
+    assert cases.accepted_for_release("remote_heredoc_remote_editor", "0.1.17")["issue"] == 9005
     assert cases.accepted_for_release("remote_heredoc_remote_editor", "0.1.18") is None
-    v = cases.app_version()
-    assert v and cases.version_tuple(v) <= (0, 1, 17), "ACCEPTED_FOR_RELEASE remote_heredoc_remote_editor (#1129) was for v0.1.17; app/Cargo.toml is %s: re-decide it" % v
     # the case: the 600 KB step runs LAST (its timeout must not take the zsh/fish steps with it), a step without a file ends the stuck remote shell,
     # the remote shell's pid is recorded on connect, and the verdicts come after the control
     src = inspect.getsource(rm.c_remote_heredoc)
@@ -3331,6 +3356,16 @@ def editor_memory_breakdown_close_and_cycles():
 
 
 @check
+def accepted_for_release_is_empty():
+    """owner 2026-11-12: every v0.1.17 acceptance (#1606, #1607, #1653, #1658, #1129) is removed for v0.2.0; a new entry needs a new owner decision,
+    so the real dict stays empty and no flood allowance constant exists (the Ctrl-C-under-flood budget is the owner's 20 ms)."""
+    assert cases.ACCEPTED_FOR_RELEASE == {}, cases.ACCEPTED_FOR_RELEASE
+    assert not hasattr(cases, "CTRLC_FLOOD_RELEASE_MS")
+    assert cases.accepted_for_release("editor_open_cost", "0.1.0") is None
+
+
+@check
+@_with_fixture_accepted
 def editor_memory_close_trim_and_accepted_open_cost():
     """#1607: the heap_trim / buffer_dropped log lines parse (signed freed_estimate); a reopen into reused heap counts as opened when the app
     logged its open line; the open-cost budget is KNOWN (numbers printed, not a failure) only while the ACCEPTED_FOR_RELEASE release has not been
@@ -3355,16 +3390,13 @@ def editor_memory_close_trim_and_accepted_open_cost():
         assert cases.version_tuple("v0.1.17") == (0, 1, 17) and cases.version_tuple("0.1.9") < cases.version_tuple("0.1.17")
         assert cases.version_tuple("") is None and cases.version_tuple("x") is None
         acc = cases.ACCEPTED_FOR_RELEASE["editor_open_cost"]
-        assert acc["issue"] == 1607 and acc["release"] == "0.1.17", acc
+        assert acc["issue"] == 9001 and acc["release"] == "0.1.17", acc
         assert cases.accepted_for_release("editor_open_cost", "0.1.16") and cases.accepted_for_release("editor_open_cost", "0.1.17")
         assert cases.accepted_for_release("editor_open_cost", "0.1.18") is None
         assert cases.accepted_for_release("editor_open_cost", "garbage") is None       # fail closed
         assert cases.accepted_for_release("no_such_key", "0.1.16") is None
         v = cases.app_version()
         assert v and cases.version_tuple(v), "app/Cargo.toml [package] version unreadable: %r" % v
-        assert cases.version_tuple(v) <= cases.version_tuple(acc["release"]), (
-            "ACCEPTED_FOR_RELEASE editor_open_cost (#1607) was for v%s; app/Cargo.toml is now %s: re-decide it with the owner (remove the entry or "
-            "renew it with a new decision), do not just bump the release" % (acc["release"], v))
         # within the window: over budget is KNOWN with the numbers and the marker, never a failure
         orig = cases.app_version
         try:
@@ -3373,7 +3405,7 @@ def editor_memory_close_trim_and_accepted_open_cost():
             assert not cases.mem_judge_known(r, {"rss": 201.0, "phys_footprint": 50.0}, {"rss": 0.0, "phys_footprint": 0.0}, 100, "cost %.0f MB of %s",
                                              "editor_open_cost")
             assert not r.fails and len(r.notes) == 1, (r.fails, r.notes)
-            assert r.notes[0].startswith("KNOWN: cost 201 MB of rss") and "ACCEPTED_FOR_RELEASE #1607 v0.1.17" in r.notes[0], r.notes
+            assert r.notes[0].startswith("KNOWN: cost 201 MB of rss") and "ACCEPTED_FOR_RELEASE #9001 v0.1.17" in r.notes[0], r.notes
             cases.app_version = lambda repo=None: "0.1.18"
             r = cases.Result("t", "terminal")
             assert not cases.mem_judge_known(r, {"rss": 201.0}, {"rss": 0.0}, 100, "cost %.0f MB of %s", "editor_open_cost")
@@ -3419,6 +3451,7 @@ def editor_memory_owner_2026_11_10():
 
 
 @check
+@_with_fixture_accepted
 def editor_memory_owner_2026_11_05():
     """owner 2026-11-05 (#1607): macOS after-close judged on phys_footprint only (RSS reported); Linux/Windows keep every figure; the default close
     trim's UI pause is KNOWN on Linux only (the entry is Linux-scoped; the A/B routing is in editor_trim_ab)."""
@@ -3435,7 +3468,7 @@ def editor_memory_owner_2026_11_05():
         r = cases.Result("t", "terminal")      # Linux / Windows: rss is judged
         assert not cases.mem_judge_closed(r, {"rss": 90.0}, {"rss": 0.0}, 60, w) and r.fails == ["held 90 MB of rss"] and not r.notes, (r.fails, r.notes)
         acc = cases.ACCEPTED_FOR_RELEASE["editor_close_trim_ui"]
-        assert acc["issue"] == 1607 and acc["release"] == "0.1.17" and acc["platforms"] == ("linux",), acc
+        assert acc["issue"] == 9001 and acc["release"] == "0.1.17" and acc["platforms"] == ("linux",), acc
         orig_p = cases.plat
         try:
             for plat_, close, known in (("linux-x11", True, True), ("linux-wayland", True, True), ("linux-x11", False, False), ("macos", True, False), ("windows", True, False)):
@@ -3443,7 +3476,7 @@ def editor_memory_owner_2026_11_05():
                 r = cases.Result("t", "terminal")
                 cases.trim_ui_verdict(r, close, True, "trim A/B: put 9.0 ms")
                 if known:
-                    assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("KNOWN: trim A/B: put 9.0 ms") and "ACCEPTED_FOR_RELEASE #1607 v0.1.17" in r.notes[0], (plat_, r.fails, r.notes)
+                    assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("KNOWN: trim A/B: put 9.0 ms") and "ACCEPTED_FOR_RELEASE #9001 v0.1.17" in r.notes[0], (plat_, r.fails, r.notes)
                 elif not close:
                     # owner 2026-11-10 (#1340): the opt-in open trim is an experiment, reported and never a FAIL (it failed the row before that decision)
                     assert not r.fails and r.notes == [cases.TRIM_EXPERIMENT + "OUTSIDE the budget: trim A/B: put 9.0 ms"], (plat_, r.fails, r.notes)
@@ -3893,6 +3926,7 @@ def app_find_hook_harness_side_1789():
 
 
 @check
+@_with_fixture_accepted
 def tabs_streaming_reorder_known_1658():
     """#1658 (owner 2026-11-04): the Windows streaming-tabs reorder is KNOWN at 0.1.17; FAIL on Linux, after 0.1.17, and whenever the app log shows a discard"""
     exp = ["a1", "b2", "c3", "d4"]
@@ -3909,7 +3943,7 @@ def tabs_streaming_reorder_known_1658():
             cases.streaming_exact_lines(Ctx(log), r, got, exp, "typing", 0)
             return r
         r = run("windows", "0.1.17", "young_hold_handed_back\n")
-        assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("KNOWN: typing: 2/4 exact lines") and "ACCEPTED_FOR_RELEASE #1658 v0.1.17" in r.notes[0], (r.fails, r.notes)
+        assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("KNOWN: typing: 2/4 exact lines") and "ACCEPTED_FOR_RELEASE #9004 v0.1.17" in r.notes[0], (r.fails, r.notes)
         r = run("linux-x11", "0.1.17", "")
         assert len(r.fails) == 1 and not r.notes, (r.fails, r.notes)
         r = run("windows", "0.1.18", "")
@@ -3926,6 +3960,7 @@ def tabs_streaming_reorder_known_1658():
 
 
 @check
+@_with_fixture_accepted
 def latency_known_v0117_enter_and_flood():
     """v0.1.17 (#1606, #1653): an over-budget latency_enter overhead (macOS / Linux) or Ctrl-C-under-flood overhead is KNOWN at 0.1.17 and FAIL at 0.1.18;
     other verdicts (regression vs baseline) and other platforms still fail."""
@@ -3934,9 +3969,9 @@ def latency_known_v0117_enter_and_flood():
     flood = dict(rec, budget_ms=45)
     orig_v, orig_p = cases.app_version, cases.plat
     try:
-        for plat_, key, rc, issue, ok in (("linux-wayland", "latency_enter_overhead", rec, 1606, True),
-                                          ("linux-x11", "latency_enter_overhead", rec, 1606, True), ("windows", "latency_enter_overhead", rec, 1606, False),
-                                          ("macos", "ctrl_c_flood", flood, 1653, True), ("linux-x11", "ctrl_c_flood", flood, 1653, True)):
+        for plat_, key, rc, issue, ok in (("linux-wayland", "latency_enter_overhead", rec, 9002, True),
+                                          ("linux-x11", "latency_enter_overhead", rec, 9002, True), ("windows", "latency_enter_overhead", rec, 9002, False),
+                                          ("macos", "ctrl_c_flood", flood, 9003, True), ("linux-x11", "ctrl_c_flood", flood, 9003, True)):
             cases.plat = lambda p=plat_: p
             cases.app_version = lambda repo=None: "0.1.17"
             r = cases.Result("t", "terminal")
@@ -3956,7 +3991,6 @@ def latency_known_v0117_enter_and_flood():
         assert len(r.fails) == 1, r.fails
         for k in ("latency_enter_overhead", "ctrl_c_flood"):
             assert cases.accepted_for_release(k, "0.1.17") and cases.accepted_for_release(k, "0.1.18") is None
-        assert cases.CTRLC_FLOOD_RELEASE_MS == "45"
     finally:
         cases.app_version, cases.plat = orig_v, orig_p
 
