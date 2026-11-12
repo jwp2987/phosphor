@@ -231,6 +231,7 @@ terminal-banner-shell-config-incompatible = 你的 shell 配置与 Phosphor 不�
 terminal-banner-did-you-intend = 你是否想用{" "}
 terminal-banner-move-cursor =  移动光标？
 terminal-toast-powershell-subshells-not-supported = 不支持 PowerShell 子 shell
+terminal-ssh-no-helper-notice = 已在没有 Phosphor 辅助程序的情况下连接:部分远程功能改用 shell 实现。
 terminal-dont-ask-again = 不再询问此主机
 terminal-clear-upload = 清除上传
 terminal-manage-defaults = 管理默认值

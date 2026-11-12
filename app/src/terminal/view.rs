@@ -36,6 +36,7 @@ use wakeup_redraw::{FooterFingerprint, RenderFingerprint, WakeupRedraw};
 pub mod ssh_file_upload;
 pub(crate) mod ssh_kept_text_banner;
 pub(crate) mod ssh_no_helper_chip;
+pub(crate) mod ssh_no_helper_notice;
 pub(crate) mod ssh_remote_server_choice_view;
 pub(crate) mod ssh_remote_server_failed_banner;
 mod tab_metadata;
@@ -3908,6 +3909,9 @@ pub struct TerminalView {
     /// the `insert_rich_content` helper function.
     rich_content_views: Vec<RichContent>,
 
+    /// Sessions that already showed the "connected without the helper" notice (#1960).
+    ssh_no_helper_notice_sessions: HashSet<SessionId>,
+
     /// Cached view ids for usage footers keyed by the AI block view id that owns them.
     usage_footer_view_ids: HashMap<EntityId, EntityId>,
 
@@ -5813,6 +5817,7 @@ impl TerminalView {
             block_filter_editor,
             active_filter_editor_block_index: None,
             rich_content_views: Vec::new(),
+            ssh_no_helper_notice_sessions: HashSet::new(),
             usage_footer_view_ids: Default::default(),
             rewind_reverts: Default::default(),
             block_onboarding_active: false,
@@ -14945,6 +14950,11 @@ impl TerminalView {
             // already has its own banner. None of those is an error, so it
             // shows nothing (v0.1.12 parity); only the feature-disabled case
             // keeps a neutral note, with no red `ERROR:` detail line.
+            // #1960: a managed ssh session that runs without the helper (including a
+            // one-connection session, which never has one): one dim line, once per session.
+            SessionsEvent::SshNoHelper { session_id } => {
+                self.show_ssh_no_helper_notice(session_id, ctx);
+            }
             SessionsEvent::LegacySshFallback { session_id, reason } => {
                 // The no-helper path is the primary design: a quiet, dismissable chip, never a
                 // banner. It shows for every reason (declined, pending, or flag off).

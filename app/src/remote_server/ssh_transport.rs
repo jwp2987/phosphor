@@ -1027,9 +1027,10 @@ mod tests {
     /// connection "bulk" (IPQoS default `af21 cs1`), which Wi-Fi queues penalise by 40-200 ms
     /// per keystroke. Every bootstrap wrapper pins both classes before ControlMaster, but only
     /// when `ssh -G` reports exactly that default, so a user-configured IPQoS is never
-    /// overridden. OpenSSH >= 10.1 reports `ef cs0` (its bulk class is best effort, which no
-    /// queue penalises) and is deliberately not pinned: `script/test_ssh_keepalive` holds
-    /// both, `docs/design/r14-remoteprox.md` has the reasons.
+    /// overridden. OpenSSH >= 10.1 reports `ef cs0`; there (owner 2026-11-12) both classes are
+    /// pinned to `ef`, the class plain ssh uses for an interactive session
+    /// (`WARP_SSH_IPQOS_EF=0` opts out). `script/test_ssh_keepalive` holds the choice per
+    /// version, `docs/design/r14-remoteprox.md` has the reasons.
     #[test]
     fn interactive_ssh_wrappers_pin_ipqos_only_for_the_default() {
         for (name, script) in [
@@ -1071,6 +1072,10 @@ mod tests {
             assert!(
                 script.contains("IPQoS=af21 af21"),
                 "{name}: must pin the interactive class"
+            );
+            assert!(
+                script.contains("IPQoS=ef ef") && script.contains("\"ef cs0\""),
+                "{name}: must pin ef for the OpenSSH 10.1+ default"
             );
         }
     }

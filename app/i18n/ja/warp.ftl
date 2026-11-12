@@ -195,6 +195,7 @@ terminal-banner-shell-config-incompatible = シェルの設定が Phosphor と�
 terminal-banner-did-you-intend = もしかして {" "}
 terminal-banner-move-cursor =  でカーソルを移動しようとしましたか?
 terminal-toast-powershell-subshells-not-supported = PowerShell サブシェルは未対応
+terminal-ssh-no-helper-notice = Phosphor ヘルパーなしで接続しました。一部のリモート機能はシェル経由で動作します。
 terminal-dont-ask-again = このホストでは次回から確認しない
 terminal-clear-upload = アップロードをクリア
 terminal-manage-defaults = デフォルトを管理

@@ -1005,6 +1005,10 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         set -l warp_ipqos_default (printf '%s\n' $warp_ssh_g | command sed -n 's/^ipqos //p')
         if test "$warp_ipqos_default" = "af21 cs1"
             set warp_ipqos_args -o "IPQoS=af21 af21"
+        else if test "$warp_ipqos_default" = "ef cs0"; and test "$WARP_SSH_IPQOS_EF" != "0"
+            # #985 (owner 2026-11-12): OpenSSH >= 10.1: the class plain ssh uses for an interactive
+            # session; WARP_SSH_IPQOS_EF=0 opts out.
+            set warp_ipqos_args -o "IPQoS=ef ef"
         end
         # #1171: ssh's default ServerAliveInterval is 0, so a silently dead link (laptop sleep, wifi
         # handover) is never noticed while idle and takes ~15 min to notice with unacked data. Add

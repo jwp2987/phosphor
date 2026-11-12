@@ -1496,8 +1496,15 @@ builtin read "$@"'
           # >= 10.1 (`ef cs0`: best effort, not a penalised class) is left alone (r14-remoteprox.md).
           local -a warp_ipqos_args
           warp_ipqos_args=()
-          if [[ "$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^ipqos //p')" == "af21 cs1" ]]; then
+          local warp_ssh_ipqos
+          warp_ssh_ipqos="$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^ipqos //p')"
+          if [[ "$warp_ssh_ipqos" == "af21 cs1" ]]; then
               warp_ipqos_args=(-o "IPQoS=af21 af21")
+          # #985 (owner 2026-11-12): OpenSSH >= 10.1 (`ef cs0`): pin the class plain ssh uses for an
+          # interactive session, so the helper's tty-less channel cannot demote it.
+          # WARP_SSH_IPQOS_EF=0 opts out.
+          elif [[ "$warp_ssh_ipqos" == "ef cs0" && "${WARP_SSH_IPQOS_EF:-1}" != "0" ]]; then
+              warp_ipqos_args=(-o "IPQoS=ef ef")
           fi
           # #1171: ssh's default ServerAliveInterval is 0, so a silently dead link (laptop sleep, wifi
           # handover) is never noticed while idle and takes ~15 min to notice with unacked data. Add
