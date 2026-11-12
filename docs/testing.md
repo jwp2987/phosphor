@@ -1211,6 +1211,8 @@ Self-test `r24_mode_proof_ocr_hint_without_slash_is_not_agent`.
 **A terminal case must END in terminal mode** (owner 2026-11-12, #2170 follow-up): run.py checks the pane's mode after every terminal-pass case, as it
 already did after agent-pass cases; agent view there is a FAIL row `entered_agent_view_in_<case>` (candidate APP: input routed to the agent), unless the
 case declares `enters_agent=True` in `cases.case()`. Before, the pre-case guard quietly fixed the pane and the case that switched it passed.
+**A targeted app job soaks for 10 minutes** (`APPCI_SOAK_MIN=10`, the fix tier's length; a cases file's `vars` may override it): in r24a the 60-minute
+soak ran once per pane and mode (four times on Windows) and pushed `app-test-windows` toward its 8 h limit. The full hour is the release tier's.
 **Every targeted app job plays `mode_proof` first** (ci_seq `targeted_vars`; not lab jobs), whatever the cases file lists: the round 15 Windows targeted
 run had no `mode_proof` row, so nothing proved the app was in the mode its rows claimed (owner 2026-11-11, raised repeatedly). Self-test: "every targeted
 app job plays mode_proof first".

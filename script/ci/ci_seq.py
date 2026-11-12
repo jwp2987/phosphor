@@ -399,6 +399,10 @@ def targeted_vars(key, ent):
         # the failed cases left mode_proof out, so nothing proved terminal vs agent mode on any platform. It always plays first (order=1).
         cases.insert(0, "mode_proof")
     v = {"APPCI_TIER": TARGETED_APP_TIER, "APPCI_CASES": ",".join(cases)}
+    if not key.endswith("-lab"):
+        # r24a Windows: the 60-min soak ran once per pane AND mode (4x on Windows) and pushed the job toward its 8 h limit. A targeted run proves fixes:
+        # it soaks for the fix tier's 10 minutes (cases_robust.SOAK_FIX_MIN); the full hour is the release tier's. A cases file may still set its own.
+        v["APPCI_SOAK_MIN"] = "10"
     if ent.get("modes"):
         v["APPCI_MODES"] = ",".join(ent["modes"])
     if ent.get("win_shells"):
@@ -1106,10 +1110,10 @@ def self_test_targeted(yml, src):
         (ok_run and sorted(set(played(o))) == sorted({BUILD[LINUX], BUILD[WIN], "test-linux", "integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]",
                                                        "test-windows", "test-warpui-core-windows", "test-workspace-rest-windows", "app-test-linux-wayland", "app-test-windows"}),
          "targeted plays only the jobs the cases file names (builds for the platforms with cases, the listed suites, the app jobs with cases)"),
-        (vars_of["app-test-linux-wayland"] == {"APPCI_TIER": "targeted", "APPCI_CASES": "mode_proof,tab_enter,ssh_*", "APPCI_MODES": "agent"}
+        (vars_of["app-test-linux-wayland"] == {"APPCI_TIER": "targeted", "APPCI_CASES": "mode_proof,tab_enter,ssh_*", "APPCI_MODES": "agent", "APPCI_SOAK_MIN": "10"}
          and next(v for k, n, v in o.calls if k == "play_wait" and n == "app-test-linux-wayland") == vars_of["app-test-linux-wayland"],
          "APPCI_CASES is the file's names, in the file's order, each once, after mode_proof (always first on an app job: the mode is proven), with the mode filter as APPCI_MODES"),
-        (vars_of["app-test-windows"] == {"APPCI_TIER": "targeted", "APPCI_CASES": "mode_proof,big_paste,gitbash_subshell", "APPCI_WIN_SHELLS": "gitbash"},
+        (vars_of["app-test-windows"] == {"APPCI_TIER": "targeted", "APPCI_CASES": "mode_proof,big_paste,gitbash_subshell", "APPCI_WIN_SHELLS": "gitbash", "APPCI_SOAK_MIN": "10"},
          "the Windows pane filter is passed as APPCI_WIN_SHELLS; no APPCI_MODES when the file gives none"),
         (all(idx(o, "play_wait", u) < idx(o, "play_wait", "app-test-linux-wayland") for u in ("test-linux", "integration-linux: [3]"))
          and all(idx(o, "play_wait", u) < idx(o, "play_wait", "app-test-windows") for u in unit_suites(WIN)),
@@ -1147,7 +1151,7 @@ def self_test_targeted(yml, src):
         (targeted_vars("windows", {"cases": ["a"]})["APPCI_CASES"].split(",")[0] == "mode_proof" and targeted_vars("macos", {"cases": ["mode_proof", "a"]})["APPCI_CASES"] == "mode_proof,a"
          and "mode_proof" not in targeted_vars("linux-lab", {"cases": ["lab_x.bash.lan.nohelper"]})["APPCI_CASES"],
          "every targeted app job plays mode_proof first, once (owner: the mode a row claims is proven every run); a lab job is left as listed"),
-        (targeted_vars("macos", {"cases": ["a"], "vars": {"APPCI_FAKE_MODEL": "1"}}) == {"APPCI_TIER": "targeted", "APPCI_CASES": "mode_proof,a", "APPCI_FAKE_MODEL": "1"}, "extra APPCI_* variables of a platform are passed on"),
+        (targeted_vars("macos", {"cases": ["a"], "vars": {"APPCI_FAKE_MODEL": "1"}}) == {"APPCI_TIER": "targeted", "APPCI_CASES": "mode_proof,a", "APPCI_FAKE_MODEL": "1", "APPCI_SOAK_MIN": "10"}, "extra APPCI_* variables of a platform are passed on"),
         (units_only["machines"] == {MAC: [("test-macos", None, "unit")]} and BUILD[MAC] in units_only["not_played"], "suites alone need no build"),
         # a wrong file is an error, never a smaller run
         (all(raises(d) for d in (
